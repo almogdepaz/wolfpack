@@ -32,11 +32,15 @@ interface SessionMeta {
 
 function readSessionMeta(agentId: string, sessionKey: string): SessionMeta | null {
   try {
+    // ctx.agentId may be "agent" while actual agent dir is "main"
+    // Extract from sessionKey (format: "agent:<name>:...")
+    const skMatch = sessionKey.match(/^agent:([^:]+):/);
+    const resolvedAgentId = skMatch ? skMatch[1] : agentId;
     const p = join(
       process.env.HOME ?? "~",
       ".clawdbot",
       "agents",
-      agentId,
+      resolvedAgentId,
       "sessions",
       "sessions.json"
     );
@@ -60,6 +64,24 @@ function extractTmuxName(groupName: string): string | null {
   // Sanitize: only allow alphanumeric, dash, underscore, dot
   if (!/^[a-zA-Z0-9._-]+$/.test(name)) return null;
   return name;
+}
+
+/**
+ * Strip Clawdbot's message wrapper to get the raw user text.
+ * Input format: "[WhatsApp <jid> <time>] <sender>: <body>\n[message_id: ...]"
+ * Returns just "<body>".
+ */
+function extractMessageBody(prompt: string): string {
+  // Match: [WhatsApp ...] Sender: <body>
+  const headerMatch = prompt.match(/^\[WhatsApp [^\]]+\]\s*[^:]+:\s*/);
+  if (!headerMatch) return prompt; // Not a WhatsApp wrapper, return as-is
+
+  let body = prompt.slice(headerMatch[0].length);
+
+  // Strip trailing [message_id: ...] line
+  body = body.replace(/\n\[message_id:\s*[^\]]*\]\s*$/, "");
+
+  return body.trim();
 }
 
 export default function register(api: ClawdbotPluginApi) {
@@ -89,14 +111,18 @@ export default function register(api: ClawdbotPluginApi) {
     ) => {
       const { sessionKey, agentId } = ctx;
       if (!sessionKey) return undefined;
-      if (!stateDir) return undefined; // Service not started yet
+      if (!stateDir) return undefined;
 
       // Only act on WhatsApp group sessions
       const groupJid = extractGroupJid(sessionKey);
       if (!groupJid) return undefined;
 
       const prefix = (pluginConfig as Record<string, unknown>).outputPrefix as string ?? DEFAULT_OUTPUT_PREFIX;
-      const userMessage = event.prompt ?? "";
+      const rawPrompt = event.prompt ?? "";
+
+      // Strip Clawdbot message wrapper:
+      // [WhatsApp <jid> <time>] <sender>: <body>\n[message_id: ...]
+      const userMessage = extractMessageBody(rawPrompt);
 
       // --- Echo detection (all modes) ---
       if (userMessage.startsWith(prefix)) {
@@ -187,13 +213,10 @@ export default function register(api: ClawdbotPluginApi) {
       if (!meta?.subject) return undefined;
 
       const tmuxName = extractTmuxName(meta.subject);
-      if (!tmuxName) return undefined; // Group doesn't have cc- prefix
+      if (!tmuxName) return undefined;
 
       // Check if tmux session exists
-      if (!(await tmuxSessionExists(tmuxName))) {
-        // No matching tmux session — behave normally
-        return undefined;
-      }
+      if (!(await tmuxSessionExists(tmuxName))) return undefined;
 
       // Auto-bridge! Enable and start watching.
       const entry = enableBridge(stateDir, sessionKey, tmuxName, groupJid, meta.subject);
