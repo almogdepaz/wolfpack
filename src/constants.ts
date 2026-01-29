@@ -1,0 +1,9 @@
+export const DEFAULT_OUTPUT_PREFIX = "\u{1F916}";
+export const DEFAULT_QUIET_TIMEOUT_MS = 1000;
+export const DEFAULT_MAX_OUTPUT_CHARS = 12000;
+export const WHATSAPP_TEXT_CHUNK_LIMIT = 4000;
+export const BRIDGE_STATE_FILE = "claude-bridge-state.json";
+export const LOG_DIR = "/tmp";
+export const LOG_FILE_PREFIX = "claude-bridge-";
+export const ECHO_TTL_MS = 30_000;
+export const GROUP_NAME_PREFIX = "cc-";

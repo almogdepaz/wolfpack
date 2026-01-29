@@ -1,0 +1,9 @@
+{
+  "name": "@clawdbot/claude-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bridge WhatsApp group chats to Claude Code tmux sessions",
+  "clawdbot": {
+    "extensions": ["./index.ts"]
+  }
+}
