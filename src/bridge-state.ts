@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { BRIDGE_STATE_FILE } from "./constants.js";
+import { BRIDGE_STATE_FILE, TOKEN_FILE } from "./constants.js";
 
 export interface BridgeEntry {
   enabled: boolean;
@@ -108,4 +108,54 @@ export function getAllBridges(stateDir: string): Array<[string, BridgeEntry]> {
   return Object.entries(state.bridges).filter(
     ([, e]) => e.enabled && isValidGroupJid(e.groupJid)
   );
+}
+
+// =============================================================================
+// Token management (tokens written by shell script, consumed by plugin)
+// =============================================================================
+
+interface TokenEntry {
+  tmuxSession: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+interface TokenFile {
+  tokens: Record<string, TokenEntry>;
+}
+
+function tokenFilePath(): string {
+  return join(process.env.HOME ?? "~", ".clawdbot", TOKEN_FILE);
+}
+
+function loadTokens(): TokenFile {
+  const p = tokenFilePath();
+  if (!existsSync(p)) return { tokens: {} };
+  try {
+    return JSON.parse(readFileSync(p, "utf-8"));
+  } catch {
+    return { tokens: {} };
+  }
+}
+
+function saveTokens(data: TokenFile): void {
+  writeFileSync(tokenFilePath(), JSON.stringify(data, null, 2));
+}
+
+/**
+ * Consume a token: validate it exists and hasn't expired, delete it, return the tmuxSession.
+ * Returns null if token is invalid or expired.
+ */
+export function consumeToken(token: string): { tmuxSession: string } | null {
+  const data = loadTokens();
+  const entry = data.tokens[token];
+  if (!entry) return null;
+
+  // Always delete the token (consumed or expired)
+  delete data.tokens[token];
+  saveTokens(data);
+
+  if (Date.now() > entry.expiresAt) return null;
+
+  return { tmuxSession: entry.tmuxSession };
 }

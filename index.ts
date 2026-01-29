@@ -1,8 +1,5 @@
 import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import {
-  loadState,
   enableBridge,
   disableBridge,
   pauseBridge,
@@ -11,6 +8,7 @@ import {
   getAllBridges,
   extractGroupJid,
   isValidGroupJid,
+  consumeToken,
 } from "./src/bridge-state.js";
 import {
   tmuxSessionExists,
@@ -21,37 +19,6 @@ import { DEFAULT_OUTPUT_PREFIX, GROUP_NAME_PREFIX } from "./src/constants.js";
 
 let stateDir: string;
 
-// =============================================================================
-// sessions.json reader — get group name from Clawdbot session metadata
-// =============================================================================
-interface SessionMeta {
-  subject?: string;
-  groupId?: string;
-  chatType?: string;
-}
-
-function readSessionMeta(agentId: string, sessionKey: string): SessionMeta | null {
-  try {
-    // ctx.agentId may be "agent" while actual agent dir is "main"
-    // Extract from sessionKey (format: "agent:<name>:...")
-    const skMatch = sessionKey.match(/^agent:([^:]+):/);
-    const resolvedAgentId = skMatch ? skMatch[1] : agentId;
-    const p = join(
-      process.env.HOME ?? "~",
-      ".clawdbot",
-      "agents",
-      resolvedAgentId,
-      "sessions",
-      "sessions.json"
-    );
-    if (!existsSync(p)) return null;
-    const data = JSON.parse(readFileSync(p, "utf-8"));
-    return data[sessionKey] ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Extract tmux session name from a group name with the cc- prefix.
  * "cc-playground" -> "playground", "random-group" -> null
@@ -61,7 +28,6 @@ function extractTmuxName(groupName: string): string | null {
   if (!lower.startsWith(GROUP_NAME_PREFIX)) return null;
   const name = groupName.slice(GROUP_NAME_PREFIX.length).trim();
   if (!name) return null;
-  // Sanitize: only allow alphanumeric, dash, underscore, dot
   if (!/^[a-zA-Z0-9._-]+$/.test(name)) return null;
   return name;
 }
@@ -82,6 +48,32 @@ function extractMessageBody(prompt: string): string {
   body = body.replace(/\n\[message_id:\s*[^\]]*\]\s*$/, "");
 
   return body.trim();
+}
+
+/**
+ * Get group subject (name) via WhatsApp API.
+ */
+async function getGroupSubject(api: ClawdbotPluginApi, groupJid: string): Promise<string | null> {
+  try {
+    const listener = api.runtime.channel.whatsapp.getActiveWebListener("default");
+    const meta = await listener.sock.groupMetadata(groupJid);
+    return meta?.subject ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validate that a WhatsApp group has exactly 1 participant (solo group).
+ */
+async function validateSoloGroup(api: ClawdbotPluginApi, groupJid: string): Promise<boolean> {
+  try {
+    const listener = api.runtime.channel.whatsapp.getActiveWebListener("default");
+    const meta = await listener.sock.groupMetadata(groupJid);
+    return meta.participants.length === 1;
+  } catch {
+    return false;
+  }
 }
 
 export default function register(api: ClawdbotPluginApi) {
@@ -109,7 +101,7 @@ export default function register(api: ClawdbotPluginApi) {
       event: { prompt: string; messages: unknown[] },
       ctx: { agentId: string; sessionKey: string; workspaceDir: string }
     ) => {
-      const { sessionKey, agentId } = ctx;
+      const { sessionKey } = ctx;
       if (!sessionKey) return undefined;
       if (!stateDir) return undefined;
 
@@ -208,48 +200,73 @@ export default function register(api: ClawdbotPluginApi) {
         }
       }
 
-      // === NO BRIDGE — check for auto-pairing ===
-      const meta = readSessionMeta(agentId, sessionKey);
-      if (!meta?.subject) return undefined;
+      // === NO BRIDGE — check for !activate <token> ===
+      const activateMatch = userMessage.match(/^!activate\s+(\S+)$/i);
+      if (!activateMatch) return undefined;
 
-      const tmuxName = extractTmuxName(meta.subject);
-      if (!tmuxName) return undefined;
+      const token = activateMatch[1];
+      const tokenResult = consumeToken(token);
 
-      // Check if tmux session exists
-      if (!(await tmuxSessionExists(tmuxName))) return undefined;
+      if (!tokenResult) {
+        return {
+          prependContext: `[SYSTEM: Invalid or expired activation token. Reply: "Activation failed: invalid or expired token. Generate a new one via Telegram."]`,
+        };
+      }
 
-      // Auto-bridge! Enable and start watching.
-      const entry = enableBridge(stateDir, sessionKey, tmuxName, groupJid, meta.subject);
+      // Validate group name matches token's tmux session
+      // We need the group subject — read from session metadata
+      const groupSubject = await getGroupSubject(api, groupJid);
+      if (!groupSubject) {
+        return {
+          prependContext: `[SYSTEM: Could not read group metadata. Reply: "Activation failed: unable to verify group name."]`,
+        };
+      }
+
+      const tmuxName = extractTmuxName(groupSubject);
+      if (!tmuxName || tmuxName !== tokenResult.tmuxSession) {
+        return {
+          prependContext: `[SYSTEM: Group name mismatch. Expected cc-${tokenResult.tmuxSession}, got "${groupSubject}". Reply: "Activation failed: group name doesn't match the bridge session."]`,
+        };
+      }
+
+      // Validate solo group (only 1 participant)
+      const isSolo = await validateSoloGroup(api, groupJid);
+      if (!isSolo) {
+        return {
+          prependContext: `[SYSTEM: Group has more than 1 participant. Reply: "Activation failed: bridge groups must have only you as a member (solo group)."]`,
+        };
+      }
+
+      // Check tmux session exists
+      if (!(await tmuxSessionExists(tmuxName))) {
+        return {
+          prependContext: `[SYSTEM: tmux session "${tmuxName}" not found. Reply: "Activation failed: tmux session doesn't exist."]`,
+        };
+      }
+
+      // All checks passed — activate bridge
+      const entry = enableBridge(stateDir, sessionKey, tmuxName, groupJid, groupSubject);
       if (!entry) return undefined;
 
       await outputWatcher.addSession(sessionKey, tmuxName, groupJid);
 
-      // First-bridge confirmation message
       try {
         await sendToGroup(
           groupJid,
-          `\u{1F517} Bridge activated: "${meta.subject}" \u2194 tmux "${tmuxName}"\nMessages here will be forwarded to Claude Code.\nPrefix with ! to talk to Clawdbot. Use !pause / !resume to control the bridge.`
+          `Bridge activated: "${groupSubject}" <-> tmux "${tmuxName}"\nMessages here will be forwarded to Claude Code.\nPrefix with ! to talk to Clawdbot. Use !pause / !resume to control the bridge.`
         );
       } catch {
         // Non-fatal
       }
 
-      logger.info(`Auto-bridged "${meta.subject}" -> tmux "${tmuxName}" (${groupJid})`);
+      logger.info(`Token-activated bridge: "${groupSubject}" -> tmux "${tmuxName}" (${groupJid})`);
 
-      // Forward the current message that triggered the bridge
-      try {
-        await tmuxSendText(tmuxName, userMessage);
-        return {
-          prependContext: [
-            `[BRIDGE MODE — auto-bridged and message forwarded to tmux "${tmuxName}"]`,
-            `The message has already been sent. Reply with just "\u2192" and nothing else.`,
-          ].join("\n"),
-        };
-      } catch (err) {
-        return {
-          prependContext: `[BRIDGE ERROR] Auto-bridged but failed to forward: ${err}. Tell the user.`,
-        };
-      }
+      return {
+        prependContext: [
+          `[BRIDGE MODE — activated via token, tmux "${tmuxName}"]`,
+          `Bridge is now active. Reply: "Bridge activated successfully."`,
+        ].join("\n"),
+      };
     }
   );
 

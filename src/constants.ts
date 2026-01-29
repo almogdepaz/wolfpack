@@ -7,3 +7,5 @@ export const LOG_DIR = "/tmp";
 export const LOG_FILE_PREFIX = "claude-bridge-";
 export const ECHO_TTL_MS = 30_000;
 export const GROUP_NAME_PREFIX = "cc-";
+export const TOKEN_FILE = "claude-bridge-tokens.json";
+export const TOKEN_TTL_MS = 300_000; // 5 minutes

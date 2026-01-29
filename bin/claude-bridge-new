@@ -60,6 +60,10 @@ if ! command -v claude &>/dev/null; then
   exit 1
 fi
 
+CLAWDBOT_DIR="${HOME}/.clawdbot"
+TOKEN_FILE="${CLAWDBOT_DIR}/claude-bridge-tokens.json"
+TOKEN_TTL=300  # 5 minutes
+
 # ── Check for existing session ───────────────────────────────────────────────
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   warn "tmux session '$SESSION_NAME' already exists"
@@ -72,9 +76,35 @@ fi
 info "Creating tmux session '$SESSION_NAME' in $PROJECT_DIR"
 tmux new-session -d -s "$SESSION_NAME" -c "$PROJECT_DIR"
 
-# Start Claude Code in non-interactive mode
-info "Starting Claude Code (--dangerously-skip-permissions)"
-tmux send-keys -t "$SESSION_NAME" "claude --dangerously-skip-permissions" Enter
+# Start Claude Code in bridge mode
+BRIDGE_PROMPT="You are being controlled via a WhatsApp bridge. Rules: Keep ALL responses concise (1-3 sentences) unless the user says elaborate or expand. NEVER use interactive prompts, multiple-choice questions, or ask the user to select options. When using tools, summarize the result in 1-2 sentences. Do not dump raw file contents or command output. If you need clarification, ask a single short question. Do not use markdown formatting. Plain text only."
+
+info "Starting Claude Code (bridge mode)"
+tmux send-keys -t "$SESSION_NAME" "claude --dangerously-skip-permissions --append-system-prompt \"$BRIDGE_PROMPT\"" Enter
+
+# ── Generate activation token ────────────────────────────────────────────────
+TOKEN=$(openssl rand -hex 16)
+NOW=$(date +%s)
+EXPIRES=$((NOW + TOKEN_TTL))
+
+# Ensure token file exists with valid JSON
+if [[ ! -f "$TOKEN_FILE" ]]; then
+  echo '{"tokens":{}}' > "$TOKEN_FILE"
+fi
+
+# Add token using a temp file for atomic write
+TMPFILE=$(mktemp)
+python3 -c "
+import json, sys
+with open('$TOKEN_FILE') as f:
+    data = json.load(f)
+data['tokens']['$TOKEN'] = {
+    'tmuxSession': '$SESSION_NAME',
+    'createdAt': $NOW,
+    'expiresAt': $EXPIRES
+}
+json.dump(data, sys.stdout, indent=2)
+" > "$TMPFILE" && mv "$TMPFILE" "$TOKEN_FILE"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
@@ -83,5 +113,9 @@ echo ""
 echo "  Attach:  tmux attach -t $SESSION_NAME"
 echo "  Kill:    tmux kill-session -t $SESSION_NAME"
 echo ""
-echo "  Now create a WhatsApp group named '${SESSION_NAME}' and send 'bridge' in it."
+echo "  Activation token: $TOKEN"
+echo "  Expires in ${TOKEN_TTL}s"
+echo ""
+echo "  Create a WhatsApp solo group named 'cc-${SESSION_NAME}',"
+echo "  then send: !activate $TOKEN"
 echo ""
