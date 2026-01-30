@@ -164,20 +164,33 @@ async function uniqueSessionName(base: string): Promise<string> {
   return `${base}-${i}`;
 }
 
+async function isAllowedSession(session: string): Promise<boolean> {
+  const allowed = await tmuxList();
+  return allowed.includes(session);
+}
+
 // ── HTTP helpers ──
 
 function json(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-  });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
+
+const MAX_BODY = 64 * 1024; // 64KB
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        req.destroy();
+        reject(new Error("body too large"));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
@@ -239,7 +252,7 @@ const routes: Record<
     const { session, text, noEnter } = JSON.parse(await readBody(req));
     if (!session || !text)
       return json(res, { error: "missing session or text" }, 400);
-    if (!(await tmuxExists(session)))
+    if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     await tmuxSend(session, text, !!noEnter);
     json(res, { ok: true });
@@ -289,7 +302,7 @@ const routes: Record<
     };
     if (!session || !key)
       return json(res, { error: "missing session or key" }, 400);
-    if (!(await tmuxExists(session)))
+    if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     // Only allow known safe key names
     const allowed = [
@@ -329,7 +342,7 @@ const routes: Record<
   "POST /api/kill": async (req, res) => {
     const { session } = JSON.parse(await readBody(req)) as { session: string };
     if (!session) return json(res, { error: "missing session" }, 400);
-    if (!(await tmuxExists(session)))
+    if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     await exec("tmux", ["kill-session", "-t", session]);
     json(res, { ok: true });
@@ -343,7 +356,7 @@ const routes: Record<
     };
     if (!session || !cols || !rows)
       return json(res, { error: "missing params" }, 400);
-    if (!(await tmuxExists(session)))
+    if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     await tmuxResize(
       session,
@@ -357,7 +370,7 @@ const routes: Record<
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
     if (!session) return json(res, { error: "missing session param" }, 400);
-    if (!(await tmuxExists(session)))
+    if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     const history = url.searchParams.get("history") === "1";
     const pane = await capturePane(session, history);
@@ -375,7 +388,8 @@ const server = createServer(async (req, res) => {
     try {
       await handler(req, res);
     } catch (err) {
-      if (!res.headersSent) json(res, { error: String(err) }, 500);
+      console.error("Route error:", err);
+      if (!res.headersSent) json(res, { error: "internal error" }, 500);
     }
   } else {
     res.writeHead(404);
