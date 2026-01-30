@@ -18,10 +18,18 @@ import {
   statSync,
 } from "node:fs";
 import { join, basename } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+
+// resolve absolute path to tmux — launchd doesn't have homebrew in PATH
+const TMUX = (() => {
+  for (const p of ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]) {
+    try { execFileSync("test", ["-x", p]); return p; } catch {}
+  }
+  return "tmux"; // fallback to PATH lookup
+})();
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
 const PUBLIC_DIR = join(import.meta.dirname, "public");
@@ -58,7 +66,7 @@ function saveSettings(s: Settings): void {
 
 async function tmuxList(): Promise<string[]> {
   try {
-    const { stdout } = await exec("tmux", [
+    const { stdout } = await exec(TMUX, [
       "list-sessions",
       "-F",
       "#{session_name}:#{pane_current_path}",
@@ -76,7 +84,7 @@ async function tmuxList(): Promise<string[]> {
 
 async function tmuxExists(session: string): Promise<boolean> {
   try {
-    await exec("tmux", ["has-session", "-t", session]);
+    await exec(TMUX, ["has-session", "-t", session]);
     return true;
   } catch {
     return false;
@@ -88,12 +96,12 @@ async function tmuxSend(
   text: string,
   noEnter = false,
 ): Promise<void> {
-  await exec("tmux", ["send-keys", "-l", "-t", session, text]);
-  if (!noEnter) await exec("tmux", ["send-keys", "-t", session, "Enter"]);
+  await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
+  if (!noEnter) await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
 }
 
 async function tmuxSendKey(session: string, key: string): Promise<void> {
-  await exec("tmux", ["send-keys", "-t", session, key]);
+  await exec(TMUX, ["send-keys", "-t", session, key]);
 }
 
 async function tmuxResize(
@@ -101,7 +109,7 @@ async function tmuxResize(
   cols: number,
   rows: number,
 ): Promise<void> {
-  await exec("tmux", [
+  await exec(TMUX, [
     "resize-window",
     "-t",
     session,
@@ -116,7 +124,7 @@ async function capturePane(session: string, history = false): Promise<string> {
   try {
     const args = ["capture-pane", "-t", session, "-p", "-J"];
     if (history) args.push("-S", "-500");
-    const { stdout } = await exec("tmux", args);
+    const { stdout } = await exec(TMUX, args);
     return stdout;
   } catch {
     return "";
@@ -129,14 +137,14 @@ async function tmuxNewSession(
   cmd?: string,
 ): Promise<void> {
   const agentCmd = cmd || loadSettings().agentCmd || "claude";
-  await exec("tmux", [
+  await exec(TMUX, [
     "new-session",
     "-d",
     "-s",
     name,
     "-c",
     cwd,
-    ...agentCmd.split(/\s+/),
+    `/bin/zsh -lic '${agentCmd.replace(/'/g, "'\\''")}'`,
   ]);
 }
 
@@ -344,7 +352,7 @@ const routes: Record<
     if (!session) return json(res, { error: "missing session" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    await exec("tmux", ["kill-session", "-t", session]);
+    await exec(TMUX, ["kill-session", "-t", session]);
     json(res, { ok: true });
   },
 
