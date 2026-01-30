@@ -145,20 +145,67 @@ async function setup() {
 
   print("");
 
-  if (!hasNode) {
-    print(red("  Node.js is required. Install from https://nodejs.org"));
-    process.exit(1);
-  }
-  if (!hasTmux) {
-    print(red("  tmux is required. Install with: brew install tmux"));
-    process.exit(1);
-  }
+  const missing: string[] = [];
+  if (!hasNode) missing.push("node");
+  if (!hasTmux) missing.push("tmux");
+  if (!hasTailscale) missing.push("tailscale");
 
-  if (!hasTailscale) {
-    print(red("  Tailscale is required for remote access."));
-    print(dim("  Install from https://tailscale.com/download"));
-    const cont = await ask("  Continue without Tailscale? (y/n) ");
-    if (cont.toLowerCase() !== "y") process.exit(1);
+  if (missing.length > 0) {
+    try {
+      execSync("brew --version", { stdio: "ignore" });
+    } catch {
+      print(red("  Homebrew is required to install missing dependencies."));
+      print(dim("  Install from https://brew.sh"));
+      process.exit(1);
+    }
+
+    print(`  Will install: ${bold(missing.join(", "))}`);
+    const proceed = await ask("  Proceed? (y/n) ");
+    if (proceed.toLowerCase() !== "y") {
+      print(red("  Aborted."));
+      process.exit(1);
+    }
+
+    const brewPkgs = missing.filter((p) => p !== "tailscale");
+    const brewCasks = missing.filter((p) => p === "tailscale");
+
+    if (brewPkgs.length > 0) {
+      print(`  Installing ${brewPkgs.join(", ")}...`);
+      execSync(`brew install --quiet ${brewPkgs.join(" ")}`, { stdio: "inherit" });
+    }
+
+    if (brewCasks.length > 0) {
+      print("  Installing Tailscale (GUI app)...");
+      execSync("brew install --cask --quiet tailscale", { stdio: "inherit" });
+    }
+
+    // Verify
+    print("");
+    let verifyFail = false;
+    for (const pkg of missing) {
+      if (pkg === "tailscale") {
+        if (tailscaleBin()) {
+          print(`  ${green("✓")} Tailscale installed`);
+          print(dim("  Open Tailscale.app and sign in to enable remote access."));
+        } else {
+          print(`  ${red("✗")} Tailscale failed to install`);
+          verifyFail = true;
+        }
+      } else {
+        if (check(pkg, `${pkg} --version`)) {
+          // check() already prints ✓
+        } else {
+          verifyFail = true;
+        }
+      }
+    }
+
+    if (verifyFail) {
+      print(red("\n  Some dependencies failed to install."));
+      process.exit(1);
+    }
+
+    print("");
   }
 
   // Dev directory
