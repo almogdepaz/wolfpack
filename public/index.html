@@ -384,6 +384,19 @@
         margin-left: auto;
         -webkit-tap-highlight-color: transparent;
       }
+      .loading-text {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: #8b949e;
+        font-size: 14px;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.4; }
+        50% { opacity: 1; }
+      }
       .settings-gear {
         background: none;
         border: none;
@@ -671,7 +684,14 @@
         }
       }
 
+      function showTerminalLoading(label) {
+        showView("terminal");
+        const term = document.getElementById("terminal");
+        term.innerHTML = `<span class="loading-text">Starting session in ${esc(label)}…</span>`;
+      }
+
       async function createSession(project) {
+        showTerminalLoading(project);
         try {
           const data = await api("/create", {
             method: "POST",
@@ -680,14 +700,19 @@
           });
           if (data.session) {
             openSession(data.session);
+          } else {
+            document.getElementById("terminal").textContent = "Failed to create session.";
           }
-        } catch {}
+        } catch {
+          document.getElementById("terminal").textContent = "Failed to create session.";
+        }
       }
 
       async function createNewProject() {
         const input = document.getElementById("new-project-name");
         const name = input.value.trim();
         if (!name) return;
+        showTerminalLoading(name);
         try {
           const data = await api("/create", {
             method: "POST",
@@ -696,8 +721,12 @@
           });
           if (data.session) {
             openSession(data.session);
+          } else {
+            document.getElementById("terminal").textContent = "Failed to create session.";
           }
-        } catch {}
+        } catch {
+          document.getElementById("terminal").textContent = "Failed to create session.";
+        }
       }
 
       // ── Terminal ──
