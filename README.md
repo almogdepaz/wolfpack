@@ -29,7 +29,7 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile command center for your AI coding agents. Control tmux-based agent sessions (Claude, Codex, Gemini, etc.) from your phone via a PWA.
+Mobile command center for your AI coding agents. Control tmux-based agent sessions (Claude, Codex, Gemini, etc.) from your phone via a web app.
 
 ## Quick Install
 
@@ -85,9 +85,9 @@ On first run, `wolfpack` walks you through:
 - **Live terminal** — Capture-pane polling gives you a real-time terminal view
 - **Project picker** — Start new sessions from any folder in your projects directory
 - **Agent presets** — Quick-switch between Claude, Codex, Gemini, or custom commands
-- **Terminal controls** — Tab, Enter, Escape, arrow keys, y/n, Ctrl-C buttons for TUI interaction
+- **Terminal controls** — Enter, Escape, arrow keys, Ctrl-C buttons for TUI interaction
 - **Auto-resize** — Tmux pane resizes to match your phone screen
-- **PWA** — Install as an app on your phone's home screen
+- **Web app** — Install as an app on your phone's home screen
 - **Reconnect handling** — Shows status when connection drops, auto-recovers
 
 ## Remote Access
@@ -105,7 +105,7 @@ Your phone connects over Tailscale's encrypted network. No ports to open, no DNS
 ## How It Works
 
 ```
-Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
+Phone (web app) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
 ```
 
 - Server uses `tmux capture-pane` to snapshot terminal output (clean, no ANSI codes)
