@@ -100,6 +100,7 @@ Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux ses
 - Client polls every 1s for updates
 - Text input and key presses are sent via `tmux send-keys`
 - Tailscale provides encrypted transport and DNS — no port forwarding needed
+- **The server has no built-in authentication.** Tailscale is the security layer — only devices on your tailnet can reach it. Do not expose the server to the public internet without adding your own auth.
 
 ## Config
 
