@@ -53,7 +53,7 @@ wolfpack
 
 - **Node.js** (v18+)
 - **tmux**
-- **Tailscale** (for remote access from phone)
+- **Tailscale** (for remote access from phone) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
 
 ## Usage
 
@@ -89,6 +89,18 @@ On first run, `wolfpack` walks you through:
 - **Auto-resize** — Tmux pane resizes to match your phone screen
 - **PWA** — Install as an app on your phone's home screen
 - **Reconnect handling** — Shows status when connection drops, auto-recovers
+
+## Remote Access
+
+To control your agents from your phone:
+
+1. Install [Tailscale](https://tailscale.com/download) on both your computer and phone
+2. Sign in to the same Tailscale account on both devices
+3. Run `wolfpack setup` and say **y** to "Enable Tailscale HTTPS access?"
+4. Wolfpack displays a QR code — scan it with your phone's camera
+5. Bookmark or "Add to Home Screen" for a native app experience
+
+Your phone connects over Tailscale's encrypted network. No ports to open, no DNS to configure — it just works anywhere both devices have internet.
 
 ## How It Works
 
