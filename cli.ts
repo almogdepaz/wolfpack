@@ -108,7 +108,7 @@ function check(name: string, cmd: string): boolean {
 function remoteUrl(config: Config): string | null {
   if (!config.tailscaleHostname) return null;
   const suffix = config.tailscalePort ? `:${config.tailscalePort}` : "";
-  return `https://${config.tailscaleHostname}${suffix}/`;
+  return `https://${config.tailscaleHostname}${suffix}`;
 }
 
 function loadConfig(): Config | null {
