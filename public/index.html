@@ -62,6 +62,8 @@
   .dot.blue { background: #58a6ff; }
   .dot.gray { background: #484f58; }
   .card-name { font-size: 15px; font-weight: 500; font-family: 'SF Mono', monospace; }
+  .card-preview { font-size: 12px; color: #8b949e; font-family: 'SF Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .card-info { flex: 1; min-width: 0; }
   .card-sub { font-size: 12px; color: #484f58; margin-left: auto; }
 
   .new-btn {
@@ -127,7 +129,7 @@
     border-top: 1px solid #30363d;
     flex-shrink: 0;
   }
-  #input-bar input {
+  #input-bar textarea {
     flex: 1;
     background: #0d1117;
     border: 1px solid #30363d;
@@ -137,8 +139,13 @@
     font-size: 16px;
     font-family: 'SF Mono', monospace;
     outline: none;
+    resize: none;
+    overflow-y: hidden;
+    min-height: 36px;
+    max-height: 120px;
+    line-height: 1.4;
   }
-  #input-bar input:focus { border-color: #58a6ff; }
+  #input-bar textarea:focus { border-color: #58a6ff; }
   #input-bar button {
     background: #238636;
     border: none;
@@ -148,6 +155,15 @@
     font-size: 18px;
     cursor: pointer;
     flex-shrink: 0;
+    align-self: flex-end;
+  }
+  .newline-btn {
+    background: #21262d !important;
+    border: 1px solid #30363d !important;
+    color: #8b949e !important;
+    font-size: 12px !important;
+    width: 32px !important;
+    align-self: flex-end;
   }
 
   .new-project-row {
@@ -226,6 +242,28 @@
     font-size: 14px;
     cursor: pointer;
   }
+  .session-select {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 14px;
+    font-family: 'SF Mono', monospace;
+    padding: 2px 6px;
+    outline: none;
+    max-width: 180px;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .scroll-toggle {
+    background: none;
+    border: none;
+    color: #8b949e;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px;
+  }
+  .scroll-toggle.active { color: #3fb950; }
   .kill-btn {
     background: none;
     border: none;
@@ -250,7 +288,9 @@
 
 <header>
   <button class="back-btn" id="back-btn">&larr;</button>
-  <h1 id="header-title">bridge</h1>
+  <h1 id="header-title">wolfpack</h1>
+  <select id="session-switcher" class="session-select" style="display:none" onchange="switchSession(this.value)"></select>
+  <button class="scroll-toggle" id="scroll-toggle" style="display:none" onclick="toggleHistory()" title="Scroll back">&#8593;</button>
   <button class="settings-gear" id="gear-btn" onclick="showSettings()">&#9881;</button>
 </header>
 
@@ -298,7 +338,8 @@
   </div>
   <div id="input-bar">
     <button class="action-btn" id="toggle-bar" onclick="toggleActionBar()" style="width:40px;padding:8px 0">⌨</button>
-    <input id="msg-input" type="text" placeholder="$ " autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <textarea id="msg-input" rows="1" placeholder="$ " autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+    <button class="newline-btn" onclick="insertNewline()">↵</button>
     <button onclick="sendMsg()">&#9654;</button>
   </div>
 </div>
@@ -308,6 +349,8 @@ const BASE = '/api';
 let currentSession = null;
 let currentView = 'sessions';
 let pollTimer = null;
+let showHistory = false;
+let allSessions = [];
 
 async function api(path, opts) {
   const res = await fetch(BASE + path, opts);
@@ -324,11 +367,17 @@ function showView(name) {
 
   const gear = document.getElementById('gear-btn');
 
+  const switcher = document.getElementById('session-switcher');
+  const scrollBtn = document.getElementById('scroll-toggle');
+
+  switcher.style.display = 'none';
+  scrollBtn.style.display = 'none';
+
   if (name === 'sessions') {
     back.style.display = 'none';
     back.onclick = null;
     gear.style.display = '';
-    title.textContent = 'bridge';
+    title.textContent = 'wolfpack';
   } else if (name === 'projects') {
     back.style.display = 'block';
     back.onclick = () => { stopPolling(); showView('sessions'); loadSessions(); };
@@ -341,9 +390,12 @@ function showView(name) {
     title.textContent = 'settings';
   } else if (name === 'terminal') {
     back.style.display = 'block';
-    back.onclick = () => { stopPolling(); currentSession = null; showView('sessions'); loadSessions(); };
+    back.onclick = () => { stopPolling(); currentSession = null; showHistory = false; showView('sessions'); loadSessions(); };
     gear.style.display = 'none';
-    title.textContent = currentSession;
+    title.textContent = '';
+    switcher.style.display = '';
+    scrollBtn.style.display = '';
+    loadSessionSwitcher();
   }
 }
 
@@ -353,12 +405,16 @@ async function loadSessions() {
   const el = document.getElementById('session-list');
   try {
     const data = await api('/sessions');
+    allSessions = data.sessions || [];
     let html = '<div class="new-btn" onclick="showProjectPicker()">+ New Session</div>';
     if (data.sessions?.length) {
       html += data.sessions.map(s => `
         <div class="card" onclick="openSession('${esc(s.name)}')">
           <div class="dot green"></div>
-          <div class="card-name">${esc(s.name)}</div>
+          <div class="card-info">
+            <div class="card-name">${esc(s.name)}</div>
+            <div class="card-preview">${esc(s.lastLine || '')}</div>
+          </div>
           <button class="kill-btn" onclick="killSession('${esc(s.name)}', event)">&times;</button>
         </div>
       `).join('');
@@ -470,7 +526,8 @@ let pollFails = 0;
 async function poll() {
   if (!currentSession) return;
   try {
-    const data = await api('/poll?session=' + encodeURIComponent(currentSession));
+    const histParam = showHistory ? '&history=1' : '';
+    const data = await api('/poll?session=' + encodeURIComponent(currentSession) + histParam);
     pollFails = 0;
     const term = document.getElementById('terminal');
     const statusEl = document.getElementById('conn-status');
@@ -479,6 +536,7 @@ async function poll() {
       const wasAtBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
       term.textContent = data.pane;
       if (wasAtBottom) term.scrollTop = term.scrollHeight;
+      checkForAttention(data.pane);
     }
   } catch {
     pollFails++;
@@ -494,11 +552,45 @@ async function sendMsg() {
   const text = input.value.trim();
   if (!text || !currentSession) return;
   input.value = '';
-  await api('/send', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session: currentSession, text }),
-  });
+  autoGrow(input);
+  // Multi-line: send each line with noEnter, then Enter between
+  const lines = text.split('\n');
+  if (lines.length === 1) {
+    await api('/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: currentSession, text }),
+    });
+  } else {
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i]) {
+        await api('/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: currentSession, text: lines[i], noEnter: true }),
+        });
+      }
+      await api('/key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: currentSession, key: 'Enter' }),
+      });
+    }
+  }
+}
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function insertNewline() {
+  const input = document.getElementById('msg-input');
+  const start = input.selectionStart;
+  input.value = input.value.slice(0, start) + '\n' + input.value.slice(input.selectionEnd);
+  input.selectionStart = input.selectionEnd = start + 1;
+  autoGrow(input);
+  input.focus();
 }
 
 async function sendKey(key) {
@@ -525,8 +617,88 @@ async function killSession(name, e) {
   loadSessions();
 }
 
+async function loadSessionSwitcher() {
+  try {
+    const data = await api('/sessions');
+    allSessions = data.sessions || [];
+    const sel = document.getElementById('session-switcher');
+    sel.innerHTML = allSessions.map(s =>
+      `<option value="${esc(s.name)}" ${s.name === currentSession ? 'selected' : ''}>${esc(s.name)}</option>`
+    ).join('');
+  } catch {}
+}
+
+function switchSession(name) {
+  if (name === currentSession) return;
+  stopPolling();
+  showHistory = false;
+  document.getElementById('scroll-toggle').classList.remove('active');
+  currentSession = name;
+  document.getElementById('terminal').textContent = '';
+  resizePane();
+  startPolling();
+}
+
+function toggleHistory() {
+  showHistory = !showHistory;
+  document.getElementById('scroll-toggle').classList.toggle('active', showHistory);
+  poll(); // immediate refresh
+}
+
+// ── Notifications ──
+
+let notificationsEnabled = false;
+let lastPaneText = '';
+
+function requestNotifications() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().then(p => { notificationsEnabled = p === 'granted'; });
+  } else if ('Notification' in window && Notification.permission === 'granted') {
+    notificationsEnabled = true;
+  }
+}
+
+const ATTENTION_PATTERNS = [
+  /\? \(y\/n\)/i,
+  /\[Y\/n\]/i,
+  /\[yes\/no\]/i,
+  /Do you want to/i,
+  /Press Enter/i,
+  /permission/i,
+  /approve/i,
+  /waiting for/i,
+  /Error:/i,
+  /error\[/i,
+  /failed/i,
+  /❌/,
+];
+
+function checkForAttention(paneText) {
+  if (!notificationsEnabled || !currentSession) return;
+  if (document.visibilityState === 'visible') return; // don't notify if looking at it
+
+  const lastLines = paneText.trimEnd().split('\n').slice(-5).join('\n');
+  if (lastLines === lastPaneText) return;
+  lastPaneText = lastLines;
+
+  for (const pat of ATTENTION_PATTERNS) {
+    if (pat.test(lastLines)) {
+      new Notification(`Wolfpack: ${currentSession}`, {
+        body: lastLines.slice(-120),
+        tag: 'wolfpack-attention', // collapse duplicates
+      });
+      break;
+    }
+  }
+}
+
+requestNotifications();
+
 document.getElementById('msg-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') sendMsg();
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+document.getElementById('msg-input').addEventListener('input', (e) => {
+  autoGrow(e.target);
 });
 
 document.getElementById('new-project-name').addEventListener('keydown', (e) => {

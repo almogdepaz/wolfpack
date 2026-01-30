@@ -56,9 +56,9 @@ async function tmuxExists(session: string): Promise<boolean> {
   try { await exec("tmux", ["has-session", "-t", session]); return true; } catch { return false; }
 }
 
-async function tmuxSend(session: string, text: string): Promise<void> {
+async function tmuxSend(session: string, text: string, noEnter = false): Promise<void> {
   await exec("tmux", ["send-keys", "-l", "-t", session, text]);
-  await exec("tmux", ["send-keys", "-t", session, "Enter"]);
+  if (!noEnter) await exec("tmux", ["send-keys", "-t", session, "Enter"]);
 }
 
 async function tmuxSendKey(session: string, key: string): Promise<void> {
@@ -69,9 +69,11 @@ async function tmuxResize(session: string, cols: number, rows: number): Promise<
   await exec("tmux", ["resize-window", "-t", session, "-x", String(cols), "-y", String(rows)]);
 }
 
-async function capturePane(session: string): Promise<string> {
+async function capturePane(session: string, history = false): Promise<string> {
   try {
-    const { stdout } = await exec("tmux", ["capture-pane", "-t", session, "-p", "-J"]);
+    const args = ["capture-pane", "-t", session, "-p", "-J"];
+    if (history) args.push("-S", "-500");
+    const { stdout } = await exec("tmux", args);
     return stdout;
   } catch { return ""; }
 }
@@ -141,14 +143,20 @@ const routes: Record<string, (req: IncomingMessage, res: ServerResponse) => void
 
   "GET /api/sessions": async (_req, res) => {
     const sessions = await tmuxList();
-    json(res, { sessions: sessions.map((name) => ({ name })) });
+    const results = await Promise.all(sessions.map(async (name) => {
+      const pane = await capturePane(name);
+      const lines = pane.trimEnd().split("\n");
+      const lastLine = lines[lines.length - 1]?.trim() || "";
+      return { name, lastLine };
+    }));
+    json(res, { sessions: results });
   },
 
   "POST /api/send": async (req, res) => {
-    const { session, text } = JSON.parse(await readBody(req));
+    const { session, text, noEnter } = JSON.parse(await readBody(req));
     if (!session || !text) return json(res, { error: "missing session or text" }, 400);
     if (!(await tmuxExists(session))) return json(res, { error: "session not found" }, 404);
-    await tmuxSend(session, text);
+    await tmuxSend(session, text, !!noEnter);
     json(res, { ok: true });
   },
 
@@ -228,7 +236,8 @@ const routes: Record<string, (req: IncomingMessage, res: ServerResponse) => void
     const session = url.searchParams.get("session");
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await tmuxExists(session))) return json(res, { error: "session not found" }, 404);
-    const pane = await capturePane(session);
+    const history = url.searchParams.get("history") === "1";
+    const pane = await capturePane(session, history);
     json(res, { pane });
   },
 };
