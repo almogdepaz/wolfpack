@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-REPO="https://github.com/AAlmog/wolfpack.git"
+REPO="https://github.com/almogdepaz/wolfpack.git"
 INSTALL_DIR="$HOME/.wolfpack/app"
 
 bold() { printf "\033[1m%s\033[0m" "$1"; }

@@ -42,7 +42,7 @@ This checks prerequisites, clones the repo, installs dependencies, and runs the 
 ## Manual Install
 
 ```bash
-git clone https://github.com/AAlmog/wolfpack.git ~/.wolfpack/app
+git clone https://github.com/almogdepaz/wolfpack.git ~/.wolfpack/app
 cd ~/.wolfpack/app
 npm install
 npm link
