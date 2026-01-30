@@ -238,6 +238,7 @@
         border: none;
         border-radius: 6px;
         width: 40px;
+        height: 38px;
         color: white;
         font-size: 18px;
         cursor: pointer;
@@ -363,17 +364,6 @@
         -webkit-appearance: none;
         appearance: none;
       }
-      .scroll-toggle {
-        background: none;
-        border: none;
-        color: #8b949e;
-        font-size: 16px;
-        cursor: pointer;
-        padding: 4px;
-      }
-      .scroll-toggle.active {
-        color: #3fb950;
-      }
       .kill-btn {
         background: none;
         border: none;
@@ -405,6 +395,76 @@
         cursor: pointer;
         padding: 4px;
       }
+      .search-btn {
+        background: none;
+        border: none;
+        color: #8b949e;
+        font-size: 18px;
+        cursor: pointer;
+        padding: 4px;
+        display: none;
+      }
+      #search-bar {
+        display: none;
+        position: absolute;
+        top: 48px;
+        left: 0;
+        right: 0;
+        z-index: 20;
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+        padding: 8px 10px;
+        gap: 8px;
+        align-items: center;
+      }
+      #search-bar.visible {
+        display: flex;
+      }
+      #search-bar input {
+        flex: 1;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: #e0e0e0;
+        font-size: 14px;
+        font-family: "SF Mono", monospace;
+        outline: none;
+      }
+      #search-bar input:focus {
+        border-color: #58a6ff;
+      }
+      #search-bar button {
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 4px;
+        color: #e0e0e0;
+        font-size: 14px;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      #search-count {
+        color: #8b949e;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      #terminal mark {
+        background: #6e5c00;
+        color: #e0e0e0;
+        border-radius: 2px;
+      }
+      #terminal mark.search-current {
+        background: #e3872d;
+        color: #fff;
+      }
+      .dot.yellow {
+        background: #d29922;
+        animation: dot-pulse 1.5s ease-in-out infinite;
+      }
+      @keyframes dot-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
     </style>
   </head>
   <body>
@@ -417,15 +477,7 @@
         style="display: none"
         onchange="switchSession(this.value)"
       ></select>
-      <button
-        class="scroll-toggle"
-        id="scroll-toggle"
-        style="display: none"
-        onclick="toggleHistory()"
-        title="Scroll back"
-      >
-        &#8593;
-      </button>
+      <button class="search-btn" id="search-btn" onclick="toggleSearch()">&#128269;</button>
       <button class="settings-gear" id="gear-btn" onclick="showSettings()">
         &#9881;
       </button>
@@ -476,6 +528,13 @@
 
     <!-- Terminal view -->
     <div id="terminal-view" class="view">
+      <div id="search-bar">
+        <input id="search-input" type="text" placeholder="Search..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        <span id="search-count"></span>
+        <button onclick="prevMatch()">&#9650;</button>
+        <button onclick="nextMatch()">&#9660;</button>
+        <button onclick="closeSearch()">&#10005;</button>
+      </div>
       <div
         id="conn-status"
         style="
@@ -491,22 +550,14 @@
         Reconnecting...
       </div>
       <div id="terminal"></div>
-      <div id="action-bar">
+      <div id="action-bar" class="visible">
         <button class="action-btn" onclick="sendKey('Enter')">Enter</button>
         <button class="action-btn" onclick="sendKey('Escape')">Esc</button>
-        <button class="action-btn" onclick="sendKey('Up')">↑</button>
-        <button class="action-btn" onclick="sendKey('Down')">↓</button>
+        <button class="action-btn" onclick="sendKey('Up')"><b>↑</b></button>
+        <button class="action-btn" onclick="sendKey('Down')"><b>↓</b></button>
         <button class="action-btn danger" onclick="sendKey('C-c')">^C</button>
       </div>
       <div id="input-bar">
-        <button
-          class="action-btn"
-          id="toggle-bar"
-          onclick="toggleActionBar()"
-          style="width: 40px; padding: 8px 0"
-        >
-          ⌨
-        </button>
         <input
           id="msg-input"
           type="text"
@@ -527,7 +578,6 @@
       let currentSession = null;
       let currentView = "sessions";
       let pollTimer = null;
-      let showHistory = false;
       let allSessions = [];
 
       async function api(path, opts) {
@@ -548,10 +598,9 @@
         const gear = document.getElementById("gear-btn");
 
         const switcher = document.getElementById("session-switcher");
-        const scrollBtn = document.getElementById("scroll-toggle");
 
         switcher.style.display = "none";
-        scrollBtn.style.display = "none";
+        document.getElementById("search-btn").style.display = "none";
 
         if (name === "sessions") {
           back.style.display = "none";
@@ -579,15 +628,15 @@
           back.style.display = "block";
           back.onclick = () => {
             stopPolling();
+            closeSearch();
             currentSession = null;
-            showHistory = false;
             showView("sessions");
             loadSessions();
           };
           gear.style.display = "none";
           title.textContent = "";
           switcher.style.display = "";
-          scrollBtn.style.display = "";
+          document.getElementById("search-btn").style.display = "";
           loadSessionSwitcher();
         }
       }
@@ -604,16 +653,21 @@
           if (data.sessions?.length) {
             html += data.sessions
               .map(
-                (s) => `
+                (s) => {
+                  const lastLine = s.lastLine || "";
+                  const needsAttention = ATTENTION_PATTERNS.some((p) => p.test(lastLine));
+                  const dotClass = needsAttention ? "yellow" : "green";
+                  return `
         <div class="card" onclick="openSession('${esc(s.name)}')">
-          <div class="dot green"></div>
+          <div class="dot ${dotClass}"></div>
           <div class="card-info">
             <div class="card-name">${esc(s.name)}</div>
             <div class="card-preview">${esc(s.lastLine || "")}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${esc(s.name)}', event)">&times;</button>
         </div>
-      `,
+      `;
+                },
               )
               .join("");
           }
@@ -758,9 +812,8 @@
       async function poll() {
         if (!currentSession) return;
         try {
-          const histParam = showHistory ? "&history=1" : "";
           const data = await api(
-            "/poll?session=" + encodeURIComponent(currentSession) + histParam,
+            "/poll?session=" + encodeURIComponent(currentSession),
           );
           pollFails = 0;
           const term = document.getElementById("terminal");
@@ -769,7 +822,12 @@
           if (data.pane != null && data.pane.trim() !== "") {
             const wasAtBottom =
               term.scrollHeight - term.scrollTop - term.clientHeight < 40;
-            term.textContent = data.pane;
+            lastRawPane = data.pane;
+            if (searchActive && searchTerm) {
+              applySearchHighlights();
+            } else {
+              term.textContent = data.pane;
+            }
             if (wasAtBottom) term.scrollTop = term.scrollHeight;
             checkForAttention(data.pane);
           }
@@ -786,36 +844,44 @@
         const input = document.getElementById("msg-input");
         const text = msgBuffer.trim();
         if (!text || !currentSession) return;
+        // Clear UI immediately for responsiveness, but keep text for retry
+        const saved = msgBuffer;
         msgBuffer = "";
         input.value = "";
         document.getElementById("msg-preview").style.display = "none";
-        // Multi-line: send each line with noEnter, then Enter between
-        const lines = text.split("\n");
-        if (lines.length === 1) {
-          await api("/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: currentSession, text }),
-          });
-        } else {
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i]) {
-              await api("/send", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  session: currentSession,
-                  text: lines[i],
-                  noEnter: true,
-                }),
-              });
-            }
-            await api("/key", {
+        try {
+          // Multi-line: send each line with noEnter, then Enter between
+          const lines = text.split("\n");
+          if (lines.length === 1) {
+            await api("/send", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ session: currentSession, key: "Enter" }),
+              body: JSON.stringify({ session: currentSession, text }),
             });
+          } else {
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i]) {
+                await api("/send", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    session: currentSession,
+                    text: lines[i],
+                    noEnter: true,
+                  }),
+                });
+              }
+              await api("/key", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ session: currentSession, key: "Enter" }),
+              });
+            }
           }
+        } catch {
+          // Restore buffer on failure so user can retry
+          msgBuffer = saved;
+          syncInput();
         }
       }
 
@@ -864,10 +930,6 @@
         });
       }
 
-      function toggleActionBar() {
-        document.getElementById("action-bar").classList.toggle("visible");
-      }
-
       async function killSession(name, e) {
         e.stopPropagation();
         if (!confirm(`Kill session "${name}"?`)) return;
@@ -896,20 +958,10 @@
       function switchSession(name) {
         if (name === currentSession) return;
         stopPolling();
-        showHistory = false;
-        document.getElementById("scroll-toggle").classList.remove("active");
         currentSession = name;
         document.getElementById("terminal").textContent = "";
         resizePane();
         startPolling();
-      }
-
-      function toggleHistory() {
-        showHistory = !showHistory;
-        document
-          .getElementById("scroll-toggle")
-          .classList.toggle("active", showHistory);
-        poll(); // immediate refresh
       }
 
       // ── Notifications ──
@@ -959,6 +1011,7 @@
               body: lastLines.slice(-120),
               tag: "wolfpack-attention", // collapse duplicates
             });
+            navigator.vibrate?.([200, 100, 200]);
             break;
           }
         }
@@ -1037,6 +1090,95 @@
         });
         showSettings();
       }
+
+      // ── Search ──
+
+      let searchActive = false;
+      let searchTerm = "";
+      let searchMatches = [];
+      let searchIndex = -1;
+      let lastRawPane = "";
+
+      function toggleSearch() {
+        const bar = document.getElementById("search-bar");
+        if (searchActive) {
+          closeSearch();
+        } else {
+          searchActive = true;
+          bar.classList.add("visible");
+          document.getElementById("search-input").focus();
+        }
+      }
+
+      function closeSearch() {
+        searchActive = false;
+        searchTerm = "";
+        searchMatches = [];
+        searchIndex = -1;
+        document.getElementById("search-bar").classList.remove("visible");
+        document.getElementById("search-input").value = "";
+        document.getElementById("search-count").textContent = "";
+        // Restore plain text
+        const term = document.getElementById("terminal");
+        if (lastRawPane) term.textContent = lastRawPane;
+      }
+
+      function doSearch() {
+        searchTerm = document.getElementById("search-input").value;
+        if (!searchTerm) {
+          document.getElementById("search-count").textContent = "";
+          const term = document.getElementById("terminal");
+          if (lastRawPane) term.textContent = lastRawPane;
+          searchMatches = [];
+          searchIndex = -1;
+          return;
+        }
+        searchIndex = 0;
+        applySearchHighlights();
+      }
+
+      function applySearchHighlights() {
+        const term = document.getElementById("terminal");
+        if (!searchTerm || !lastRawPane) return;
+        const escaped = lastRawPane.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const escapedTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp(escapedTerm.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"), "gi");
+        let count = 0;
+        let current = searchIndex;
+        const html = escaped.replace(re, (m) => {
+          const cls = count === current ? "search-current" : "";
+          count++;
+          return `<mark class="${cls}">${m}</mark>`;
+        });
+        searchMatches = Array.from({ length: count });
+        if (count > 0 && searchIndex >= count) searchIndex = 0;
+        document.getElementById("search-count").textContent = count > 0 ? `${searchIndex + 1}/${count}` : "0/0";
+        term.innerHTML = html;
+        // Scroll to current match
+        const cur = term.querySelector("mark.search-current");
+        if (cur) cur.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+
+      function nextMatch() {
+        if (searchMatches.length === 0) return;
+        searchIndex = (searchIndex + 1) % searchMatches.length;
+        applySearchHighlights();
+      }
+
+      function prevMatch() {
+        if (searchMatches.length === 0) return;
+        searchIndex = (searchIndex - 1 + searchMatches.length) % searchMatches.length;
+        applySearchHighlights();
+      }
+
+      document.getElementById("search-input").addEventListener("input", doSearch);
+      document.getElementById("search-input").addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeSearch();
+        else if (e.key === "Enter") {
+          e.preventDefault();
+          if (e.shiftKey) prevMatch(); else nextMatch();
+        }
+      });
 
       function esc(s) {
         const d = document.createElement("div");
