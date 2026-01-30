@@ -34,7 +34,7 @@ Mobile command center for your AI coding agents. Control tmux-based agent sessio
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/master/install.sh | bash
 ```
 
 This checks prerequisites, clones the repo, installs dependencies, and runs the setup wizard.
