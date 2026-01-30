@@ -54,19 +54,27 @@ for l in lines:
 `;
 
   try {
-    const result = execSync(`python3 -c ${JSON.stringify(script)} ${JSON.stringify(url)}`, {
-      encoding: "utf-8",
-      timeout: 5000,
-    });
+    const result = execSync(
+      `python3 -c ${JSON.stringify(script)} ${JSON.stringify(url)}`,
+      {
+        encoding: "utf-8",
+        timeout: 5000,
+      },
+    );
 
     if (result.includes("__NO_QR__")) {
       // No QR library — install qrcode and retry once
       try {
-        execSync("python3 -m pip install --quiet qrcode 2>/dev/null", { timeout: 15000 });
-        const retry = execSync(`python3 -c ${JSON.stringify(script)} ${JSON.stringify(url)}`, {
-          encoding: "utf-8",
-          timeout: 5000,
+        execSync("python3 -m pip install --quiet qrcode 2>/dev/null", {
+          timeout: 15000,
         });
+        const retry = execSync(
+          `python3 -c ${JSON.stringify(script)} ${JSON.stringify(url)}`,
+          {
+            encoding: "utf-8",
+            timeout: 5000,
+          },
+        );
         if (!retry.includes("__NO_QR__")) {
           console.log(retry);
           return;

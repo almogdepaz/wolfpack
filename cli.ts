@@ -1,6 +1,12 @@
 #!/usr/bin/env npx tsx
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import * as readline from "node:readline";
 import { printQR } from "./qr.js";
@@ -16,13 +22,21 @@ interface Config {
 }
 
 function ask(question: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
   return new Promise((resolve) => {
-    rl.question(question, (answer) => { rl.close(); resolve(answer.trim()); });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
   });
 }
 
-function print(msg: string) { console.log(msg); }
+function print(msg: string) {
+  console.log(msg);
+}
 
 const WOLF = `
         ...:.
@@ -52,10 +66,18 @@ const WOLF = `
             .=###***+++*++++--:.:::.   :-=::.:..-:---:
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 `;
-function bold(s: string) { return `\x1b[1m${s}\x1b[0m`; }
-function green(s: string) { return `\x1b[32m${s}\x1b[0m`; }
-function red(s: string) { return `\x1b[31m${s}\x1b[0m`; }
-function dim(s: string) { return `\x1b[2m${s}\x1b[0m`; }
+function bold(s: string) {
+  return `\x1b[1m${s}\x1b[0m`;
+}
+function green(s: string) {
+  return `\x1b[32m${s}\x1b[0m`;
+}
+function red(s: string) {
+  return `\x1b[31m${s}\x1b[0m`;
+}
+function dim(s: string) {
+  return `\x1b[2m${s}\x1b[0m`;
+}
 
 function check(name: string, cmd: string): boolean {
   try {
@@ -75,7 +97,11 @@ function remoteUrl(config: Config): string | null {
 }
 
 function loadConfig(): Config | null {
-  try { return JSON.parse(readFileSync(CONFIG_PATH, "utf-8")); } catch { return null; }
+  try {
+    return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 function saveConfig(c: Config) {
@@ -116,7 +142,8 @@ async function setup() {
 
   // Dev directory
   const defaultDev = join(process.env.HOME ?? "~", "Dev");
-  const devDir = (await ask(`  Projects directory [${defaultDev}]: `)) || defaultDev;
+  const devDir =
+    (await ask(`  Projects directory [${defaultDev}]: `)) || defaultDev;
 
   if (!existsSync(devDir)) {
     const create = await ask(`  ${devDir} doesn't exist. Create it? (y/n) `);
@@ -137,7 +164,9 @@ async function setup() {
   let tailscaleHostname: string | undefined;
   if (hasTailscale) {
     try {
-      const status = execSync("tailscale status --self --json", { encoding: "utf-8" });
+      const status = execSync("tailscale status --self --json", {
+        encoding: "utf-8",
+      });
       const parsed = JSON.parse(status);
       tailscaleHostname = parsed.Self?.DNSName?.replace(/\.$/, "");
     } catch {}
@@ -154,11 +183,22 @@ async function setup() {
       tailscalePort = Number(tsPortStr) || undefined;
       const tsFlag = tailscalePort ? `--https=${tailscalePort}` : "";
       try {
-        execSync(`tailscale serve --bg ${tsFlag} ${port}`.replace(/  +/g, " "), { stdio: "inherit" });
+        execSync(
+          `tailscale serve --bg ${tsFlag} ${port}`.replace(/  +/g, " "),
+          { stdio: "inherit" },
+        );
         const suffix = tailscalePort ? `:${tailscalePort}` : "";
-        print(green(`  Tailscale serving at https://${tailscaleHostname}${suffix}/`));
+        print(
+          green(
+            `  Tailscale serving at https://${tailscaleHostname}${suffix}/`,
+          ),
+        );
       } catch {
-        print(red("  Failed to configure tailscale serve. You can do it manually later."));
+        print(
+          red(
+            "  Failed to configure tailscale serve. You can do it manually later.",
+          ),
+        );
       }
     }
   }
@@ -171,7 +211,9 @@ async function setup() {
   print(`  Config saved to ${dim(CONFIG_PATH)}`);
   print("");
   // Offer launchd service
-  const installService = await ask("  Start wolfpack automatically on login? (y/n) ");
+  const installService = await ask(
+    "  Start wolfpack automatically on login? (y/n) ",
+  );
   if (installService.toLowerCase() === "y") {
     saveConfig(config); // ensure config is saved before generating plist
     serviceInstall();
@@ -226,7 +268,12 @@ async function start() {
 // ── Launch agent (launchd) ──
 
 const PLIST_LABEL = "com.wolfpack.server";
-const PLIST_PATH = join(process.env.HOME ?? "~", "Library", "LaunchAgents", `${PLIST_LABEL}.plist`);
+const PLIST_PATH = join(
+  process.env.HOME ?? "~",
+  "Library",
+  "LaunchAgents",
+  `${PLIST_LABEL}.plist`,
+);
 
 function generatePlist(): string {
   const nodePath = process.execPath;
@@ -278,11 +325,15 @@ function serviceInstall() {
   }
 
   const plist = generatePlist();
-  mkdirSync(join(process.env.HOME ?? "~", "Library", "LaunchAgents"), { recursive: true });
+  mkdirSync(join(process.env.HOME ?? "~", "Library", "LaunchAgents"), {
+    recursive: true,
+  });
   writeFileSync(PLIST_PATH, plist);
 
   // Unload first if already loaded
-  try { execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`); } catch {}
+  try {
+    execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+  } catch {}
   execSync(`launchctl load ${PLIST_PATH}`);
 
   print("");
@@ -297,27 +348,41 @@ function serviceInstall() {
 }
 
 function serviceUninstall() {
-  try { execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`); } catch {}
-  try { unlinkSync(PLIST_PATH); } catch {}
+  try {
+    execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+  } catch {}
+  try {
+    unlinkSync(PLIST_PATH);
+  } catch {}
   print(green("  Wolfpack service removed."));
 }
 
 function serviceStop() {
-  try { execSync(`launchctl unload ${PLIST_PATH}`); } catch {}
+  try {
+    execSync(`launchctl unload ${PLIST_PATH}`);
+  } catch {}
   print(green("  Wolfpack service stopped."));
 }
 
 function serviceStart() {
-  try { execSync(`launchctl load ${PLIST_PATH}`); } catch {}
+  try {
+    execSync(`launchctl load ${PLIST_PATH}`);
+  } catch {}
   print(green("  Wolfpack service started."));
 }
 
 function serviceStatus() {
   try {
-    const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, { encoding: "utf-8" });
+    const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, {
+      encoding: "utf-8",
+    });
     if (out.includes("PID")) {
       const pidMatch = out.match(/"PID"\s*=\s*(\d+)/);
-      print(green(`  Wolfpack is running${pidMatch ? ` (PID ${pidMatch[1]})` : ""}`));
+      print(
+        green(
+          `  Wolfpack is running${pidMatch ? ` (PID ${pidMatch[1]})` : ""}`,
+        ),
+      );
     } else {
       print(dim("  Wolfpack service is loaded but not running."));
     }
@@ -335,11 +400,15 @@ function uninstall() {
   serviceUninstall();
 
   // Remove npm global link
-  try { execSync("npm unlink -g wolfpack 2>/dev/null"); } catch {}
+  try {
+    execSync("npm unlink -g wolfpack 2>/dev/null");
+  } catch {}
 
   // Remove config dir
   const rmDir = WOLFPACK_DIR;
-  try { execSync(`rm -rf ${JSON.stringify(rmDir)}`); } catch {}
+  try {
+    execSync(`rm -rf ${JSON.stringify(rmDir)}`);
+  } catch {}
 
   print("");
   print(green("  Wolfpack uninstalled."));
