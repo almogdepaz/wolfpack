@@ -1,9 +1,12 @@
 {
-  "name": "@clawdbot/claude-bridge",
+  "name": "wolfpack",
   "version": "0.1.0",
   "type": "module",
-  "description": "Bridge WhatsApp group chats to Claude Code tmux sessions",
-  "clawdbot": {
-    "extensions": ["./index.ts"]
+  "description": "Mobile bridge to your AI coding agents via tmux",
+  "bin": {
+    "wolfpack": "./cli.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.0.0"
   }
 }

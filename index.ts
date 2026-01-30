@@ -16,6 +16,8 @@ import {
 } from "./src/tmux-io.js";
 import * as outputWatcher from "./src/output-watcher.js";
 import { DEFAULT_OUTPUT_PREFIX, GROUP_NAME_PREFIX } from "./src/constants.js";
+import { registerWebRoutes } from "./src/web-routes.js";
+import { registerApiRoutes, setStateDir, onOutputByTmuxName } from "./src/api-routes.js";
 
 let stateDir: string;
 
@@ -81,6 +83,10 @@ export default function register(api: ClawdbotPluginApi) {
   const pluginConfig = api.pluginConfig ?? {};
 
   logger.info("claude-bridge plugin loaded");
+
+  // Register PWA web routes and API routes
+  registerWebRoutes(api as any);
+  registerApiRoutes(api as any);
 
   // Helper to send a WhatsApp message to a group
   async function sendToGroup(groupJid: string, text: string): Promise<void> {
@@ -278,6 +284,7 @@ export default function register(api: ClawdbotPluginApi) {
 
     async start(params) {
       stateDir = params.stateDir;
+      setStateDir(stateDir);
       const svcLogger = params.logger;
 
       const sendFn = async (groupJid: string, text: string) => {
@@ -305,6 +312,7 @@ export default function register(api: ClawdbotPluginApi) {
           quietTimeoutMs: (pluginConfig as Record<string, unknown>).quietTimeoutMs as number | undefined,
           maxOutputChars: (pluginConfig as Record<string, unknown>).maxOutputChars as number | undefined,
         },
+        onOutputFn: onOutputByTmuxName,
       });
 
       // Restore watchers for previously enabled bridges (non-paused only)

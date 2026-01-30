@@ -34,10 +34,13 @@ const watchers = new Map<string, WatcherHandle>();
 // Track recently sent messages to prevent echo loops
 const recentlySent = new Map<string, number>();
 
+type OutputCallbackFn = (tmuxSession: string, text: string) => void;
+
 let sendMessage: SendMessageFn | null = null;
 let logInfo: LogFn = console.log;
 let logError: LogFn = console.error;
 let config: OutputWatcherConfig = {};
+let onOutputFn: OutputCallbackFn | null = null;
 
 function logPath(tmuxSession: string): string {
   return join(LOG_DIR, `${LOG_FILE_PREFIX}${tmuxSession}.log`);
@@ -112,6 +115,11 @@ async function flushBuffer(sessionKey: string): Promise<void> {
   if (text.length > maxChars) {
     text = text.slice(-maxChars); // Keep the tail (most recent output)
     text = `[...truncated]\n${text}`;
+  }
+
+  // Notify PWA poll buffer
+  if (onOutputFn) {
+    try { onOutputFn(handle.tmuxSession, text); } catch {}
   }
 
   const prefix = getPrefix();
@@ -189,6 +197,14 @@ function onFileChange(sessionKey: string): void {
 
     // Accumulate in buffer
     handle.buffer += newData;
+
+    // Push raw output to PWA poll buffer immediately
+    if (onOutputFn) {
+      const cleaned = stripAnsi(newData).trim();
+      if (cleaned) {
+        try { onOutputFn(handle.tmuxSession, cleaned); } catch {}
+      }
+    }
 
     // Reset quiet timer
     if (handle.flushTimer) {
@@ -295,11 +311,13 @@ export function init(params: {
   logInfoFn: LogFn;
   logErrorFn: LogFn;
   config: OutputWatcherConfig;
+  onOutputFn?: OutputCallbackFn;
 }): void {
   sendMessage = params.sendMessageFn;
   logInfo = params.logInfoFn;
   logError = params.logErrorFn;
   config = params.config;
+  onOutputFn = params.onOutputFn ?? null;
 
   // Periodically clean echo cache
   setInterval(cleanEchoCache, ECHO_TTL_MS);
