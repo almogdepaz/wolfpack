@@ -79,6 +79,21 @@ function dim(s: string) {
   return `\x1b[2m${s}\x1b[0m`;
 }
 
+const TAILSCALE_MAC_CLI =
+  "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+
+function tailscaleBin(): string | null {
+  try {
+    execSync("tailscale version", { stdio: "ignore" });
+    return "tailscale";
+  } catch {}
+  try {
+    execSync(`${TAILSCALE_MAC_CLI} version`, { stdio: "ignore" });
+    return TAILSCALE_MAC_CLI;
+  } catch {}
+  return null;
+}
+
 function check(name: string, cmd: string): boolean {
   try {
     execSync(cmd, { stdio: "ignore" });
@@ -120,7 +135,13 @@ async function setup() {
 
   const hasNode = check("Node.js", "node --version");
   const hasTmux = check("tmux", "tmux -V");
-  const hasTailscale = check("Tailscale", "tailscale version");
+  const tsBin = tailscaleBin();
+  const hasTailscale = !!tsBin;
+  if (hasTailscale) {
+    print(`  ${green("✓")} Tailscale`);
+  } else {
+    print(`  ${red("✗")} Tailscale`);
+  }
 
   print("");
 
@@ -162,9 +183,10 @@ async function setup() {
 
   // Tailscale hostname
   let tailscaleHostname: string | undefined;
+  let tailscalePort: number | undefined;
   if (hasTailscale) {
     try {
-      const status = execSync("tailscale status --self --json", {
+      const status = execSync(`${tsBin} status --self --json`, {
         encoding: "utf-8",
       });
       const parsed = JSON.parse(status);
@@ -177,14 +199,13 @@ async function setup() {
 
     // Setup tailscale serve
     const serveTailscale = await ask("  Enable Tailscale HTTPS access? (y/n) ");
-    let tailscalePort: number | undefined;
     if (serveTailscale.toLowerCase() === "y" && tailscaleHostname) {
       const tsPortStr = await ask("  Tailscale HTTPS port [443]: ");
       tailscalePort = Number(tsPortStr) || undefined;
       const tsFlag = tailscalePort ? `--https=${tailscalePort}` : "";
       try {
         execSync(
-          `tailscale serve --bg ${tsFlag} ${port}`.replace(/  +/g, " "),
+          `${tsBin} serve --bg ${tsFlag} ${port}`.replace(/  +/g, " "),
           { stdio: "inherit" },
         );
         const suffix = tailscalePort ? `:${tailscalePort}` : "";
@@ -216,20 +237,22 @@ async function setup() {
   );
   if (installService.toLowerCase() === "y") {
     saveConfig(config); // ensure config is saved before generating plist
-    serviceInstall();
+    try {
+      serviceInstall();
+    } catch (e) {
+      print(red(`  Service install failed: ${e}`));
+    }
   } else {
     print(`  Run ${bold("wolfpack")} to start the server.`);
     print(`  Or ${bold("wolfpack service install")} to auto-start on login.`);
   }
 
-  const url = remoteUrl(config);
-  if (url) {
-    print(`  Access from phone: ${bold(url)}`);
-    print("");
-    print(dim("  Scan to open on your phone:"));
-    print("");
-    printQR(url);
-  }
+  const url = remoteUrl(config) ?? `http://localhost:${config.port}/`;
+  print(`  Access from phone: ${bold(url)}`);
+  print("");
+  print(dim("  Scan to open on your phone:"));
+  print("");
+  printQR(url);
   print("");
 }
 
@@ -252,13 +275,11 @@ async function start() {
   print(`  Projects: ${dim(config.devDir)}`);
   print(`  Local:    ${dim(`http://localhost:${config.port}/`)}`);
   const url = remoteUrl(config);
-  if (url) {
-    print(`  Remote:   ${dim(url)}`);
-    print("");
-    print(dim("  Scan to open on your phone:"));
-    print("");
-    printQR(url);
-  }
+  if (url) print(`  Remote:   ${dim(url)}`);
+  print("");
+  print(dim("  Scan to open on your phone:"));
+  print("");
+  printQR(url ?? `http://localhost:${config.port}/`);
   print("");
 
   // Import and run serve

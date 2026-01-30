@@ -200,7 +200,7 @@
         border-top: 1px solid #30363d;
         flex-shrink: 0;
       }
-      #input-bar textarea {
+      #input-bar input {
         flex: 1;
         background: #0d1117;
         border: 1px solid #30363d;
@@ -210,14 +210,28 @@
         font-size: 16px;
         font-family: "SF Mono", monospace;
         outline: none;
-        resize: none;
-        overflow-y: hidden;
-        min-height: 36px;
-        max-height: 120px;
-        line-height: 1.4;
+        text-overflow: ellipsis;
       }
-      #input-bar textarea:focus {
+      #input-bar input:focus {
         border-color: #58a6ff;
+      }
+      #msg-preview {
+        display: none;
+        position: fixed;
+        bottom: 60px;
+        left: 10px;
+        right: 10px;
+        background: #1c2330;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 12px;
+        color: #e0e0e0;
+        font-size: 14px;
+        font-family: "SF Mono", monospace;
+        white-space: pre-wrap;
+        max-height: 50vh;
+        overflow-y: auto;
+        z-index: 10;
       }
       #input-bar button {
         background: #238636;
@@ -484,18 +498,19 @@
         >
           ⌨
         </button>
-        <textarea
+        <input
           id="msg-input"
-          rows="1"
+          type="text"
           placeholder="$ "
           autocomplete="off"
           autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
-        ></textarea>
+        />
         <button class="newline-btn" onclick="insertNewline()">↵</button>
         <button onclick="sendMsg()">&#9654;</button>
       </div>
+      <div id="msg-preview"></div>
     </div>
 
     <script>
@@ -734,10 +749,11 @@
 
       async function sendMsg() {
         const input = document.getElementById("msg-input");
-        const text = input.value.trim();
+        const text = msgBuffer.trim();
         if (!text || !currentSession) return;
+        msgBuffer = "";
         input.value = "";
-        autoGrow(input);
+        document.getElementById("msg-preview").style.display = "none";
         // Multi-line: send each line with noEnter, then Enter between
         const lines = text.split("\n");
         if (lines.length === 1) {
@@ -768,20 +784,39 @@
         }
       }
 
-      function autoGrow(el) {
-        el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 120) + "px";
+      // Multi-line buffer — stored separately, displayed flattened in input
+      let msgBuffer = "";
+
+      function syncInput() {
+        const input = document.getElementById("msg-input");
+        input.value = msgBuffer.replace(/\n/g, "⏎");
+        updatePreview();
+      }
+
+      function updatePreview() {
+        const preview = document.getElementById("msg-preview");
+        if (msgBuffer.includes("\n")) {
+          preview.textContent = msgBuffer;
+          preview.style.display = "block";
+        } else {
+          preview.style.display = "none";
+        }
       }
 
       function insertNewline() {
         const input = document.getElementById("msg-input");
-        const start = input.selectionStart;
-        input.value =
-          input.value.slice(0, start) +
-          "\n" +
-          input.value.slice(input.selectionEnd);
-        input.selectionStart = input.selectionEnd = start + 1;
-        autoGrow(input);
+        // Reconstruct cursor position in buffer
+        const flat = input.value;
+        const pos = input.selectionStart;
+        // Map flat position back to buffer position
+        let bufPos = 0, flatPos = 0;
+        while (flatPos < pos && bufPos < msgBuffer.length) {
+          if (msgBuffer[bufPos] === "\n") flatPos += 1; // ⏎ is 1 char
+          else flatPos += 1;
+          bufPos++;
+        }
+        msgBuffer = msgBuffer.slice(0, bufPos) + "\n" + msgBuffer.slice(bufPos);
+        syncInput();
         input.focus();
       }
 
@@ -896,14 +931,28 @@
 
       requestNotifications();
 
+      // Dismiss preview when tapping terminal area
+      document.getElementById("terminal").addEventListener("click", () => {
+        document.getElementById("msg-preview").style.display = "none";
+      });
+
       document.getElementById("msg-input").addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
+        if (e.key === "Enter") {
           e.preventDefault();
           sendMsg();
         }
       });
       document.getElementById("msg-input").addEventListener("input", (e) => {
-        autoGrow(e.target);
+        // Sync typed text back to buffer (user may have edited the flat string)
+        const val = e.target.value;
+        // If no ⏎ markers, it's a simple single-line edit
+        if (!val.includes("⏎") && !msgBuffer.includes("\n")) {
+          msgBuffer = val;
+        } else {
+          // Reconstruct: replace ⏎ back to \n
+          msgBuffer = val.replace(/⏎/g, "\n");
+        }
+        updatePreview();
       });
 
       document

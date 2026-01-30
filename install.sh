@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set +e
 
 REPO="https://github.com/almogdepaz/wolfpack.git"
 INSTALL_DIR="$HOME/.wolfpack/app"
@@ -49,7 +49,7 @@ else
   fail=1
 fi
 
-if command -v tailscale &>/dev/null; then
+if command -v tailscale &>/dev/null || [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; then
   echo "  $(green '✓') Tailscale"
 else
   echo "  $(red '✗') Tailscale not found (needed for remote access)"
@@ -67,19 +67,19 @@ fi
 
 # ── Install ──
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-  echo "  Updating existing install..."
-  git -C "$INSTALL_DIR" pull --quiet
-else
-  echo "  Cloning wolfpack..."
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  git clone --quiet "$REPO" "$INSTALL_DIR"
+if [ -d "$INSTALL_DIR" ]; then
+  echo "  Removing old install..."
+  rm -rf "$INSTALL_DIR"
 fi
+
+echo "  Cloning wolfpack..."
+mkdir -p "$(dirname "$INSTALL_DIR")"
+git clone --quiet "$REPO" "$INSTALL_DIR"
 
 echo "  Installing dependencies..."
 cd "$INSTALL_DIR"
-npm install --silent 2>/dev/null
-npm link --silent 2>/dev/null
+npm install --silent
+npm link --silent
 
 echo ""
 
@@ -89,8 +89,8 @@ if command -v wolfpack &>/dev/null; then
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
   echo ""
-  # Run setup
-  exec wolfpack setup
+  # Run setup — reattach to terminal since stdin is the curl pipe
+  exec wolfpack setup < /dev/tty
 else
   echo "  $(red '✗') wolfpack not found on PATH after install"
   echo "  Try: $(dim 'npx tsx ~/.wolfpack/app/cli.ts setup')"
