@@ -343,7 +343,14 @@ const routes: Record<
   "POST /api/settings": async (req, res) => {
     const body = JSON.parse(await readBody(req)) as Partial<Settings>;
     const settings = loadSettings();
-    if (body.agentCmd != null) settings.agentCmd = body.agentCmd.trim();
+    if (body.agentCmd != null) {
+      const cmd = body.agentCmd.trim();
+      // Only allow safe characters: alphanumeric, spaces, hyphens, dots, slashes, equals
+      if (!/^[a-zA-Z0-9 \-._/=]+$/.test(cmd)) {
+        return json(res, { error: "invalid characters in agent command" }, 400);
+      }
+      settings.agentCmd = cmd;
+    }
     saveSettings(settings);
     json(res, { ok: true, settings });
   },
@@ -406,6 +413,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Claude Bridge PWA: http://localhost:${PORT}/`);
+const HOST = process.env.WOLFPACK_HOST || "127.0.0.1";
+
+server.listen(PORT, HOST, () => {
+  console.log(`Claude Bridge PWA: http://${HOST}:${PORT}/`);
 });

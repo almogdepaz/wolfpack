@@ -314,6 +314,10 @@ async function start() {
   // Inject config into env for serve.ts
   process.env.WOLFPACK_DEV_DIR = config.devDir;
   process.env.WOLFPACK_PORT = String(config.port);
+  // Bind to all interfaces only when Tailscale remote access is configured
+  if (config.tailscaleHostname) {
+    process.env.WOLFPACK_HOST = "0.0.0.0";
+  }
 
   print(dim(WOLF));
   print(bold("  WOLFPACK"));
@@ -351,6 +355,7 @@ function generatePlist(): string {
   const env: Record<string, string> = {};
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
+  if (config?.tailscaleHostname) env.WOLFPACK_HOST = "0.0.0.0";
 
   const envEntries = Object.entries(env)
     .map(([k, v]) => `      <key>${k}</key>\n      <string>${v}</string>`)

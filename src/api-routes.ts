@@ -18,14 +18,25 @@ const outputBuffers = new Map<string, string[]>();
 const MAX_BUFFER_LINES = 200;
 
 function json(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
+
+const MAX_BODY = 64 * 1024; // 64KB
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        req.destroy();
+        reject(new Error("body too large"));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
@@ -71,6 +82,7 @@ export function registerApiRoutes(api: PluginApi): void {
       const body = JSON.parse(await readBody(req));
       const { session, text } = body as { session: string; text: string };
       if (!session || !text) return json(res, { error: "missing session or text" }, 400);
+      if (!/^[a-zA-Z0-9._-]+$/.test(session)) return json(res, { error: "invalid session name" }, 400);
       if (!(await tmuxSessionExists(session))) return json(res, { error: "session not found" }, 404);
       await tmuxSendText(session, text);
       json(res, { ok: true });
