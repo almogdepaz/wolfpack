@@ -53,7 +53,7 @@ wolfpack
 
 - **Node.js** (v18+)
 - **tmux**
-- **Tailscale** (for remote access from phone) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
+- **Tailscale** (required) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
 
 ## Usage
 
@@ -85,7 +85,10 @@ On first run, `wolfpack` walks you through:
 - **Live terminal** — Capture-pane polling gives you a real-time terminal view
 - **Project picker** — Start new sessions from any folder in your projects directory
 - **Agent presets** — Quick-switch between Claude, Codex, Gemini, or custom commands
-- **Terminal controls** — Tab, Enter, Escape, arrow keys, y/n, Ctrl-C buttons for TUI interaction
+- **Terminal controls** — Enter, Escape, arrow keys, Ctrl-C buttons for TUI interaction
+- **Search** — Find text in terminal output with match navigation
+- **Notifications** — Browser notifications and vibration when a session needs attention (prompts, errors)
+- **Session status** — Color-coded dots show which sessions need input
 - **Auto-resize** — Tmux pane resizes to match your phone screen
 - **PWA** — Install as an app on your phone's home screen
 - **Reconnect handling** — Shows status when connection drops, auto-recovers
@@ -128,11 +131,11 @@ Wolfpack is opinionated. It assumes you keep your projects in a single directory
 Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
 ```
 
-- Server uses `tmux capture-pane` to snapshot terminal output (clean, no ANSI codes)
+- Server uses `tmux capture-pane` to snapshot terminal output
 - Client polls every 1s for updates
 - Text input and key presses are sent via `tmux send-keys`
 - Tailscale provides encrypted transport and DNS — no port forwarding needed
-- **The server has no built-in authentication.** Tailscale is the security layer — only devices on your tailnet can reach it. Do not expose the server to the public internet without adding your own auth.
+- **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
 
 ## Config
 
