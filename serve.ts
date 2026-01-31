@@ -413,8 +413,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-const HOST = process.env.WOLFPACK_HOST || "127.0.0.1";
-
-server.listen(PORT, HOST, () => {
-  console.log(`Claude Bridge PWA: http://${HOST}:${PORT}/`);
+server.listen(PORT, () => {
+  console.log(`Claude Bridge PWA: http://localhost:${PORT}/`);
 });
