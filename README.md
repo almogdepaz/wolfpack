@@ -55,18 +55,6 @@ wolfpack
 - **tmux**
 - **Tailscale** (required) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
 
-## How It Works
-
-```
-Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
-```
-
-- Server uses `tmux capture-pane` to snapshot terminal output
-- Client polls every 1s for updates
-- Text input and key presses are sent via `tmux send-keys`
-- Tailscale provides encrypted transport and DNS — no port forwarding needed
-- **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
-
 ## Workflow
 
 Wolfpack is opinionated. It assumes you keep your projects in a single directory (`~/Dev` by default) and that each AI agent session maps to one project folder.
@@ -86,6 +74,18 @@ Wolfpack is opinionated. It assumes you keep your projects in a single directory
 - The projects directory is the source of truth for what you can launch sessions against
 - You pick the agent command once in settings, and every new session uses it
 - This is a control surface, not a full terminal emulator — it's built for the back-and-forth of AI coding, not for running vim
+
+## How It Works
+
+```
+Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
+```
+
+- Server uses `tmux capture-pane` to snapshot terminal output
+- Client polls every 1s for updates
+- Text input and key presses are sent via `tmux send-keys`
+- Tailscale provides encrypted transport and DNS — no port forwarding needed
+- **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
 
 ## Usage
 
