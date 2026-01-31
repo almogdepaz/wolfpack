@@ -100,7 +100,7 @@ async function tmuxSend(
 ): Promise<void> {
   await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
   if (!noEnter) {
-    await sleep(50);
+    await sleep(100);
     await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
   }
 }
