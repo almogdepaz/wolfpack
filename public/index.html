@@ -573,6 +573,8 @@
       let currentSession = null;
       let currentView = "sessions";
       let pollTimer = null;
+      let pollInterval = 1000;
+      let fastPollUntil = 0;
       let allSessions = [];
 
       async function api(path, opts) {
@@ -792,12 +794,22 @@
 
       function startPolling() {
         poll();
-        pollTimer = setInterval(poll, 1000);
+        schedulePoll();
+      }
+
+      function schedulePoll() {
+        if (pollTimer) clearTimeout(pollTimer);
+        const interval = Date.now() < fastPollUntil ? 200 : 1000;
+        pollTimer = setTimeout(() => { poll().then(schedulePoll); }, interval);
+      }
+
+      function enterFastPoll() {
+        fastPollUntil = Date.now() + 5000;
       }
 
       function stopPolling() {
         if (pollTimer) {
-          clearInterval(pollTimer);
+          clearTimeout(pollTimer);
           pollTimer = null;
         }
       }
@@ -852,6 +864,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session: currentSession, text: text.replace(/\n/g, " ") }),
           });
+          enterFastPoll();
         } catch {
           input.value = saved;
           autoResizeInput();
@@ -876,6 +889,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session: currentSession, key }),
         });
+        enterFastPoll();
       }
 
       async function killSession(name, e) {
