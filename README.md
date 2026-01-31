@@ -55,6 +55,38 @@ wolfpack
 - **tmux**
 - **Tailscale** (required) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
 
+## How It Works
+
+```
+Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
+```
+
+- Server uses `tmux capture-pane` to snapshot terminal output
+- Client polls every 1s for updates
+- Text input and key presses are sent via `tmux send-keys`
+- Tailscale provides encrypted transport and DNS — no port forwarding needed
+- **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
+
+## Workflow
+
+Wolfpack is opinionated. It assumes you keep your projects in a single directory (`~/Dev` by default) and that each AI agent session maps to one project folder.
+
+**The loop:**
+
+1. Open Wolfpack on your phone
+2. Tap **+ New Session** — pick an existing project or create a new one
+3. Wolfpack starts a tmux session in that project's directory and launches your configured agent (Claude, Codex, etc.)
+4. You interact with the agent from your phone — send prompts, approve actions, answer questions
+5. When done, kill the session or leave it running for later
+
+**Key assumptions:**
+
+- Sessions are scoped to project directories, but you can have multiple sessions per project
+- Sessions live in tmux — they persist if you close the app or lose connection
+- The projects directory is the source of truth for what you can launch sessions against
+- You pick the agent command once in settings, and every new session uses it
+- This is a control surface, not a full terminal emulator — it's built for the back-and-forth of AI coding, not for running vim
+
 ## Usage
 
 ```bash
@@ -104,38 +136,6 @@ To control your agents from your phone:
 5. Bookmark or "Add to Home Screen" for a native app experience
 
 Your phone connects over Tailscale's encrypted network. No ports to open, no DNS to configure — it just works anywhere both devices have internet.
-
-## Workflow
-
-Wolfpack is opinionated. It assumes you keep your projects in a single directory (`~/Dev` by default) and that each AI agent session maps to one project folder.
-
-**The loop:**
-
-1. Open Wolfpack on your phone
-2. Tap **+ New Session** — pick an existing project or create a new one
-3. Wolfpack starts a tmux session in that project's directory and launches your configured agent (Claude, Codex, etc.)
-4. You interact with the agent from your phone — send prompts, approve actions, answer questions
-5. When done, kill the session or leave it running for later
-
-**Key assumptions:**
-
-- Sessions are scoped to project directories, but you can have multiple sessions per project
-- Sessions live in tmux — they persist if you close the app or lose connection
-- The projects directory is the source of truth for what you can launch sessions against
-- You pick the agent command once in settings, and every new session uses it
-- This is a control surface, not a full terminal emulator — it's built for the back-and-forth of AI coding, not for running vim
-
-## How It Works
-
-```
-Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
-```
-
-- Server uses `tmux capture-pane` to snapshot terminal output
-- Client polls every 1s for updates
-- Text input and key presses are sent via `tmux send-keys`
-- Tailscale provides encrypted transport and DNS — no port forwarding needed
-- **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
 
 ## Config
 
