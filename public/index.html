@@ -58,6 +58,7 @@
         display: none;
         flex-direction: column;
         flex: 1;
+        min-height: 0;
         overflow: hidden;
       }
       .view.visible {
@@ -144,6 +145,7 @@
 
       #terminal {
         flex: 1;
+        min-height: 0;
         overflow-y: auto;
         padding: 8px 10px;
         font-family: "SF Mono", "Menlo", "Consolas", monospace;
@@ -397,7 +399,6 @@
         font-size: 18px;
         cursor: pointer;
         padding: 4px;
-        display: none;
       }
       #search-bar {
         display: none;
@@ -814,15 +815,18 @@
           const statusEl = document.getElementById("conn-status");
           if (statusEl) statusEl.style.display = "none";
           if (data.pane != null && data.pane.trim() !== "") {
-            const wasAtBottom =
-              term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+            const changed = data.pane !== lastRawPane;
             lastRawPane = data.pane;
-            if (searchActive && searchTerm) {
-              applySearchHighlights();
-            } else {
-              term.textContent = data.pane;
+            if (changed) {
+              const wasAtBottom =
+                term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+              if (searchActive && searchTerm) {
+                applySearchHighlights();
+              } else {
+                term.textContent = data.pane;
+              }
+              if (wasAtBottom) term.scrollTop = term.scrollHeight;
             }
-            if (wasAtBottom) term.scrollTop = term.scrollHeight;
             checkForAttention(data.pane);
           }
         } catch {
