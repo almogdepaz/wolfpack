@@ -551,7 +551,7 @@
         <button class="action-btn" onclick="sendKey('Escape')">Esc</button>
         <button class="action-btn" onclick="sendKey('Up')" style="font-size:24px;font-weight:bold">↑</button>
         <button class="action-btn" onclick="sendKey('Down')" style="font-size:24px;font-weight:bold">↓</button>
-        <button class="action-btn danger" onclick="sendKey('C-c')">^C</button>
+        <button class="action-btn danger" onclick="closeSession()">^C</button>
       </div>
       <div id="input-bar">
         <textarea
@@ -1112,6 +1112,30 @@
         searchIndex = (searchIndex - 1 + searchMatches.length) % searchMatches.length;
         applySearchHighlights();
       }
+
+      async function closeSession() {
+        const session = currentSession;
+        stopPolling();
+        closeSearch();
+        currentSession = null;
+        showView("sessions");
+        if (session) {
+          await api("/kill", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session }),
+          });
+        }
+        loadSessions();
+      }
+
+      // Ctrl+C closes session and returns to main menu
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "c" && (e.ctrlKey || e.metaKey) && currentView === "terminal") {
+          e.preventDefault();
+          closeSession();
+        }
+      });
 
       document.getElementById("search-input").addEventListener("input", doSearch);
       document.getElementById("search-input").addEventListener("keydown", (e) => {
