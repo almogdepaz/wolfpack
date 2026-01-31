@@ -123,7 +123,8 @@ async function tmuxResize(
 async function capturePane(session: string, history = false): Promise<string> {
   try {
     const args = ["capture-pane", "-t", session, "-p", "-J"];
-    if (history) args.push("-S", "-500");
+    // Always capture some scrollback so the PWA terminal can scroll
+    args.push("-S", "-2000");
     const { stdout } = await exec(TMUX, args);
     return stdout;
   } catch {
