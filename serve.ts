@@ -96,8 +96,12 @@ async function tmuxSend(
   text: string,
   noEnter = false,
 ): Promise<void> {
-  await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
-  if (!noEnter) await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
+  if (noEnter) {
+    await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
+  } else {
+    // Send text + Enter in one command to avoid race conditions
+    await exec(TMUX, ["send-keys", "-l", "-t", session, text + "\n"]);
+  }
 }
 
 async function tmuxSendKey(session: string, key: string): Promise<void> {

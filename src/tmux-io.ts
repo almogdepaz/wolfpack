@@ -16,10 +16,9 @@ export async function tmuxSendText(
   session: string,
   text: string
 ): Promise<void> {
-  // Use -l (literal) to avoid tmux interpreting special characters
-  await exec("tmux", ["send-keys", "-l", "-t", session, text]);
-  // Send Enter separately since -l mode doesn't interpret key names
-  await exec("tmux", ["send-keys", "-t", session, "Enter"]);
+  // Send text + newline in one command to avoid race conditions
+  // -l (literal) mode treats \n as a literal newline which acts as Enter
+  await exec("tmux", ["send-keys", "-l", "-t", session, text + "\n"]);
 }
 
 export async function tmuxStartPipePane(
