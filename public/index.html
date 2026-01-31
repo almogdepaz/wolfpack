@@ -1017,11 +1017,15 @@
           });
           enterFastPoll();
 
-          // Enter retry: if pane hasn't changed after 2s, resend Enter
+          // Enter retry: if text is still on the prompt line after 2s, resend Enter
+          const sentText = text.replace(/\n/g, " ");
           if (enterRetryTimer) clearTimeout(enterRetryTimer);
           enterRetryTimer = setTimeout(() => {
-            if (lastRawPane === paneBeforeSend && currentSession) {
-              sendKey("Enter");
+            if (currentSession && lastRawPane) {
+              const lastLine = lastRawPane.trimEnd().split("\n").pop() || "";
+              if (lastLine.includes(sentText)) {
+                sendKey("Enter");
+              }
             }
             enterRetryTimer = null;
           }, 2000);
@@ -1323,6 +1327,15 @@
         d.textContent = s;
         return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
       }
+
+      // Re-poll immediately when returning from background tab
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && currentSession && currentView === "terminal") {
+          poll();
+          enterFastPoll();
+          schedulePoll();
+        }
+      });
 
       loadSessions();
 
