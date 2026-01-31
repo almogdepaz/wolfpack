@@ -12,13 +12,15 @@ export async function tmuxSessionExists(session: string): Promise<boolean> {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export async function tmuxSendText(
   session: string,
   text: string
 ): Promise<void> {
-  // Send text + newline in one command to avoid race conditions
-  // -l (literal) mode treats \n as a literal newline which acts as Enter
-  await exec("tmux", ["send-keys", "-l", "-t", session, text + "\n"]);
+  await exec("tmux", ["send-keys", "-l", "-t", session, text]);
+  await sleep(50);
+  await exec("tmux", ["send-keys", "-t", session, "Enter"]);
 }
 
 export async function tmuxStartPipePane(

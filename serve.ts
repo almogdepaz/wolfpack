@@ -91,16 +91,17 @@ async function tmuxExists(session: string): Promise<boolean> {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function tmuxSend(
   session: string,
   text: string,
   noEnter = false,
 ): Promise<void> {
-  if (noEnter) {
-    await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
-  } else {
-    // Send text + Enter in one command to avoid race conditions
-    await exec(TMUX, ["send-keys", "-l", "-t", session, text + "\n"]);
+  await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
+  if (!noEnter) {
+    await sleep(50);
+    await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
   }
 }
 
