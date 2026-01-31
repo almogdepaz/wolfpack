@@ -19,7 +19,7 @@ export async function tmuxSendText(
   text: string
 ): Promise<void> {
   await exec("tmux", ["send-keys", "-l", "-t", session, text]);
-  await sleep(50);
+  await sleep(100);
   await exec("tmux", ["send-keys", "-t", session, "Enter"]);
 }
 
