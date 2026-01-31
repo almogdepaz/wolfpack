@@ -961,7 +961,7 @@
           const term = document.getElementById("terminal");
           const statusEl = document.getElementById("conn-status");
           if (statusEl) statusEl.style.display = "none";
-          if (data.pane != null && data.pane.trim() !== "") {
+          if (data.pane != null) {
             const changed = data.pane !== lastRawPane;
             lastRawPane = data.pane;
             if (changed) {
@@ -980,7 +980,7 @@
               }
               if (wasAtBottom) term.scrollTop = term.scrollHeight;
             }
-            checkForAttention(data.pane);
+            if (data.pane.trim()) checkForAttention(data.pane);
           }
         } catch {
           pollFails++;
