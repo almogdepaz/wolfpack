@@ -242,8 +242,7 @@ async function setup() {
     }
 
     // Setup tailscale serve
-    const serveTailscale = await ask("  Enable Tailscale HTTPS access? (y/n) ");
-    if (serveTailscale.toLowerCase() === "y" && tailscaleHostname) {
+    if (tailscaleHostname) {
       try {
         execSync(
           `${tsBin} serve --bg ${port}`,
