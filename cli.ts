@@ -18,7 +18,6 @@ interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
-  tailscalePort?: number;
 }
 
 function ask(question: string): Promise<string> {
@@ -107,8 +106,7 @@ function check(name: string, cmd: string): boolean {
 
 function remoteUrl(config: Config): string | null {
   if (!config.tailscaleHostname) return null;
-  const suffix = config.tailscalePort ? `:${config.tailscalePort}` : "";
-  return `https://${config.tailscaleHostname}${suffix}`;
+  return `https://${config.tailscaleHostname}`;
 }
 
 function loadConfig(): Config | null {
@@ -230,7 +228,6 @@ async function setup() {
 
   // Tailscale hostname
   let tailscaleHostname: string | undefined;
-  let tailscalePort: number | undefined;
   if (hasTailscale) {
     try {
       const status = execSync(`${tsBin} status --self --json`, {
@@ -247,18 +244,14 @@ async function setup() {
     // Setup tailscale serve
     const serveTailscale = await ask("  Enable Tailscale HTTPS access? (y/n) ");
     if (serveTailscale.toLowerCase() === "y" && tailscaleHostname) {
-      const tsPortStr = await ask("  Tailscale HTTPS port [443]: ");
-      tailscalePort = Number(tsPortStr) || undefined;
-      const tsFlag = tailscalePort ? `--https=${tailscalePort}` : "";
       try {
         execSync(
-          `${tsBin} serve --bg ${tsFlag} ${port}`.replace(/  +/g, " "),
+          `${tsBin} serve --bg ${port}`,
           { stdio: "inherit" },
         );
-        const suffix = tailscalePort ? `:${tailscalePort}` : "";
         print(
           green(
-            `  Tailscale serving at https://${tailscaleHostname}${suffix}/`,
+            `  Tailscale serving at https://${tailscaleHostname}/`,
           ),
         );
       } catch {
@@ -271,7 +264,7 @@ async function setup() {
     }
   }
 
-  const config: Config = { devDir, port, tailscaleHostname, tailscalePort };
+  const config: Config = { devDir, port, tailscaleHostname };
   saveConfig(config);
 
   print("");
