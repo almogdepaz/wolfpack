@@ -29,7 +29,7 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile command center for your AI coding agents. Control tmux-based agent sessions (Claude, Codex, Gemini, etc.) from your phone via a PWA.
+Mobile command center for your AI coding agents. Control tmux-based agent sessions (Claude, Codex, Gemini, etc.) from your phone via a Web App.
 
 ## Quick Install
 
@@ -78,7 +78,7 @@ Wolfpack is opinionated. It assumes you keep your projects in a single directory
 ## How It Works
 
 ```
-Phone (PWA) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
+Phone (Web App) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
 ```
 
 - Server uses `tmux capture-pane` to snapshot terminal output
@@ -122,7 +122,7 @@ On first run, `wolfpack` walks you through:
 - **Notifications** — Browser notifications and vibration when a session needs attention (prompts, errors)
 - **Session status** — Color-coded dots show which sessions need input
 - **Auto-resize** — Tmux pane resizes to match your phone screen
-- **PWA** — Install as an app on your phone's home screen
+- **Web App** — Install as an app on your phone's home screen
 - **Reconnect handling** — Shows status when connection drops, auto-recovers
 
 ## Remote Access
