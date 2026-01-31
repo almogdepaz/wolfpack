@@ -200,7 +200,7 @@
         border-top: 1px solid #30363d;
         flex-shrink: 0;
       }
-      #input-bar input {
+      #input-bar textarea {
         flex: 1;
         background: #0d1117;
         border: 1px solid #30363d;
@@ -210,9 +210,12 @@
         font-size: 16px;
         font-family: "SF Mono", monospace;
         outline: none;
-        text-overflow: ellipsis;
+        resize: none;
+        overflow-y: auto;
+        line-height: 1.4;
+        max-height: 120px;
       }
-      #input-bar input:focus {
+      #input-bar textarea:focus {
         border-color: #58a6ff;
       }
       #msg-preview {
@@ -243,14 +246,6 @@
         font-size: 18px;
         cursor: pointer;
         flex-shrink: 0;
-        align-self: flex-end;
-      }
-      .newline-btn {
-        background: #21262d !important;
-        border: 1px solid #30363d !important;
-        color: #8b949e !important;
-        font-size: 12px !important;
-        width: 32px !important;
         align-self: flex-end;
       }
 
@@ -553,21 +548,20 @@
       <div id="action-bar" class="visible">
         <button class="action-btn" onclick="sendKey('Enter')">Enter</button>
         <button class="action-btn" onclick="sendKey('Escape')">Esc</button>
-        <button class="action-btn" onclick="sendKey('Up')"><b>↑</b></button>
-        <button class="action-btn" onclick="sendKey('Down')"><b>↓</b></button>
+        <button class="action-btn" onclick="sendKey('Up')" style="font-size:20px">↑</button>
+        <button class="action-btn" onclick="sendKey('Down')" style="font-size:20px">↓</button>
         <button class="action-btn danger" onclick="sendKey('C-c')">^C</button>
       </div>
       <div id="input-bar">
-        <input
+        <textarea
           id="msg-input"
-          type="text"
+          rows="1"
           placeholder="$ "
           autocomplete="off"
           autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
-        />
-        <button class="newline-btn" onclick="insertNewline()">↵</button>
+        ></textarea>
         <button onclick="sendMsg()">&#9654;</button>
       </div>
       <div id="msg-preview"></div>
@@ -842,83 +836,33 @@
 
       async function sendMsg() {
         const input = document.getElementById("msg-input");
-        const text = msgBuffer.trim();
+        const text = input.value.trim();
         if (!text || !currentSession) return;
-        // Clear UI immediately for responsiveness, but keep text for retry
-        const saved = msgBuffer;
-        msgBuffer = "";
+        const saved = text;
         input.value = "";
+        autoResizeInput();
         document.getElementById("msg-preview").style.display = "none";
         try {
-          // Multi-line: send each line with noEnter, then Enter between
-          const lines = text.split("\n");
-          if (lines.length === 1) {
-            await api("/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ session: currentSession, text }),
-            });
-          } else {
-            for (let i = 0; i < lines.length; i++) {
-              if (lines[i]) {
-                await api("/send", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    session: currentSession,
-                    text: lines[i],
-                    noEnter: true,
-                  }),
-                });
-              }
-              await api("/key", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ session: currentSession, key: "Enter" }),
-              });
-            }
-          }
+          await api("/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session: currentSession, text: text.replace(/\n/g, " ") }),
+          });
         } catch {
-          // Restore buffer on failure so user can retry
-          msgBuffer = saved;
-          syncInput();
+          input.value = saved;
+          autoResizeInput();
         }
       }
 
-      // Multi-line buffer — stored separately, displayed flattened in input
-      let msgBuffer = "";
-
-      function syncInput() {
-        const input = document.getElementById("msg-input");
-        input.value = msgBuffer.replace(/\n/g, "⏎");
-        updatePreview();
-      }
-
       function updatePreview() {
+        const input = document.getElementById("msg-input");
         const preview = document.getElementById("msg-preview");
-        if (msgBuffer.includes("\n")) {
-          preview.textContent = msgBuffer;
+        if (input.scrollWidth > input.clientWidth) {
+          preview.textContent = input.value;
           preview.style.display = "block";
         } else {
           preview.style.display = "none";
         }
-      }
-
-      function insertNewline() {
-        const input = document.getElementById("msg-input");
-        // Reconstruct cursor position in buffer
-        const flat = input.value;
-        const pos = input.selectionStart;
-        // Map flat position back to buffer position
-        let bufPos = 0, flatPos = 0;
-        while (flatPos < pos && bufPos < msgBuffer.length) {
-          if (msgBuffer[bufPos] === "\n") flatPos += 1; // ⏎ is 1 char
-          else flatPos += 1;
-          bufPos++;
-        }
-        msgBuffer = msgBuffer.slice(0, bufPos) + "\n" + msgBuffer.slice(bufPos);
-        syncInput();
-        input.focus();
       }
 
       async function sendKey(key) {
@@ -1024,22 +968,16 @@
         document.getElementById("msg-preview").style.display = "none";
       });
 
-      document.getElementById("msg-input").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          sendMsg();
-        }
-      });
-      document.getElementById("msg-input").addEventListener("input", (e) => {
-        // Sync typed text back to buffer (user may have edited the flat string)
-        const val = e.target.value;
-        // If no ⏎ markers, it's a simple single-line edit
-        if (!val.includes("⏎") && !msgBuffer.includes("\n")) {
-          msgBuffer = val;
-        } else {
-          // Reconstruct: replace ⏎ back to \n
-          msgBuffer = val.replace(/⏎/g, "\n");
-        }
+      // Auto-resize textarea as content grows
+      function autoResizeInput() {
+        const ta = document.getElementById("msg-input");
+        ta.style.height = "auto";
+        ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+      }
+
+      const msgInput = document.getElementById("msg-input");
+      msgInput.addEventListener("input", () => {
+        autoResizeInput();
         updatePreview();
       });
 
