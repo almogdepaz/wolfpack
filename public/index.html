@@ -573,8 +573,7 @@
       let currentSession = null;
       let currentView = "sessions";
       let pollTimer = null;
-      let pollInterval = 1000;
-      let fastPollUntil = 0;
+      let fastPoll = false;
       let allSessions = [];
 
       async function api(path, opts) {
@@ -799,12 +798,12 @@
 
       function schedulePoll() {
         if (pollTimer) clearTimeout(pollTimer);
-        const interval = Date.now() < fastPollUntil ? 200 : 1000;
+        const interval = fastPoll ? 200 : 1000;
         pollTimer = setTimeout(() => { poll().then(schedulePoll); }, interval);
       }
 
       function enterFastPoll() {
-        fastPollUntil = Date.now() + 5000;
+        fastPoll = true;
       }
 
       function stopPolling() {
@@ -830,6 +829,7 @@
             const changed = data.pane !== lastRawPane;
             lastRawPane = data.pane;
             if (changed) {
+              fastPoll = false;
               const wasAtBottom =
                 term.scrollHeight - term.scrollTop - term.clientHeight < 40;
               if (searchActive && searchTerm) {
