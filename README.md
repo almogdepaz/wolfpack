@@ -33,6 +33,12 @@ Mobile command center for your AI coding agents. Control tmux-based agent sessio
 
 Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monitor output, and wrangle multiple agents all from one screen.
 
+<p align="center">
+  <img src="docs/menu.jpeg" width="300" alt="Session list" />
+  &nbsp;&nbsp;
+  <img src="docs/session.jpeg" width="300" alt="Terminal view" />
+</p>
+
 ## Quick Install
 
 ```bash
