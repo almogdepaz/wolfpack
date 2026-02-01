@@ -4,5 +4,6 @@ STATUS.md
 *.log
 *.gif
 *.png
+!public/icon-*.png
 *.jpeg
 *.jpg
