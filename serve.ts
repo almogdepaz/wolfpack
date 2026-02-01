@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 /**
- * Standalone Claude Bridge PWA server.
- * Zero clawdbot dependencies. Serves a live tmux pane viewer via capture-pane.
+ * Standalone Wolfpack PWA server.
+ * Serves a live tmux pane viewer via capture-pane.
  *
  * Usage: npx tsx serve.ts [port]
  */
@@ -216,7 +216,10 @@ function serveFile(
   contentType: string,
 ): void {
   try {
-    const content = readFileSync(join(PUBLIC_DIR, filename), "utf-8");
+    const isText = /text\/|json|javascript|xml|css/.test(contentType);
+    const content = isText
+      ? readFileSync(join(PUBLIC_DIR, filename), "utf-8")
+      : readFileSync(join(PUBLIC_DIR, filename));
     res.writeHead(200, { "Content-Type": contentType });
     res.end(content);
   } catch {
@@ -234,13 +237,14 @@ const routes: Record<
   "GET /": (_req, res) =>
     serveFile(res, "index.html", "text/html; charset=utf-8"),
   "GET /manifest.json": (_req, res) =>
-    serveFile(res, "manifest.json", "application/json"),
+    serveFile(res, "manifest.json", "application/manifest+json"),
   "GET /sw.js": (_req, res) => {
     try {
       const content = readFileSync(join(PUBLIC_DIR, "sw.js"), "utf-8");
       res.writeHead(200, {
         "Content-Type": "application/javascript",
         "Service-Worker-Allowed": "/",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
       });
       res.end(content);
     } catch {
@@ -413,11 +417,37 @@ const server = createServer(async (req, res) => {
       if (!res.headersSent) json(res, { error: "internal error" }, 500);
     }
   } else {
+    // Static file fallback from public/
+    const safePath = url.pathname.replace(/^\/+/, "");
+    if (safePath && !safePath.includes("\0")) {
+      const filePath = join(PUBLIC_DIR, safePath);
+      // Prevent path traversal — resolved path must stay inside PUBLIC_DIR
+      if (!filePath.startsWith(PUBLIC_DIR + "/")) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+      try {
+        const stat = await import("node:fs/promises").then((fs) => fs.stat(filePath));
+        if (stat.isFile()) {
+          const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+          const mimeMap: Record<string, string> = {
+            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+            svg: "image/svg+xml", ico: "image/x-icon", webp: "image/webp",
+            js: "application/javascript", css: "text/css",
+            json: "application/json", html: "text/html",
+            woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf",
+          };
+          serveFile(res, safePath, mimeMap[ext] ?? "application/octet-stream");
+          return;
+        }
+      } catch {}
+    }
     res.writeHead(404);
     res.end("Not Found");
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`Claude Bridge PWA: http://localhost:${PORT}/`);
+  console.log(`Wolfpack PWA: http://localhost:${PORT}/`);
 });
