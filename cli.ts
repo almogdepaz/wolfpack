@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env -S npx tsx
 import { execSync, execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import * as readline from "node:readline";
+import { platform } from "node:os";
 import { printQR } from "./qr.js";
+
+const IS_MACOS = platform() === "darwin";
+const IS_LINUX = platform() === "linux";
 
 const WOLFPACK_DIR = join(process.env.HOME ?? "~", ".wolfpack");
 const CONFIG_PATH = join(WOLFPACK_DIR, "config.json");
@@ -104,6 +108,28 @@ function check(name: string, cmd: string): boolean {
   }
 }
 
+function checkNodeVersion(): boolean {
+  try {
+    const version = execSync("node --version", { encoding: "utf-8" }).trim();
+    const match = version.match(/^v(\d+)\.(\d+)/);
+    if (!match) {
+      print(`  ${red("✗")} Node.js (could not parse version)`);
+      return false;
+    }
+    const [, major, minor] = match.map(Number);
+    // import.meta.dirname requires Node 20.11+
+    if (major > 20 || (major === 20 && minor >= 11)) {
+      print(`  ${green("✓")} Node.js ${version}`);
+      return true;
+    }
+    print(`  ${red("✗")} Node.js ${version} (need >=20.11)`);
+    return false;
+  } catch {
+    print(`  ${red("✗")} Node.js not found`);
+    return false;
+  }
+}
+
 function remoteUrl(config: Config): string | null {
   if (!config.tailscaleHostname) return null;
   return `https://${config.tailscaleHostname}`;
@@ -131,7 +157,7 @@ async function setup() {
   // Check prerequisites
   print(bold("  Checking prerequisites...\n"));
 
-  const hasNode = check("Node.js", "node --version");
+  const hasNode = checkNodeVersion();
   const hasTmux = check("tmux", "tmux -V");
   const tsBin = tailscaleBin();
   const hasTailscale = !!tsBin;
@@ -149,11 +175,23 @@ async function setup() {
   if (!hasTailscale) missing.push("tailscale");
 
   if (missing.length > 0) {
-    try {
-      execSync("brew --version", { stdio: "ignore" });
-    } catch {
-      print(red("  Homebrew is required to install missing dependencies."));
-      print(dim("  Install from https://brew.sh"));
+    if (IS_MACOS) {
+      try {
+        execSync("brew --version", { stdio: "ignore" });
+      } catch {
+        print(red("  Homebrew is required to install missing dependencies."));
+        print(dim("  Install from https://brew.sh"));
+        process.exit(1);
+      }
+    } else if (IS_LINUX) {
+      try {
+        execSync("apt --version", { stdio: "ignore" });
+      } catch {
+        print(red("  apt is required to install missing dependencies."));
+        process.exit(1);
+      }
+    } else {
+      print(red("  Unsupported platform. Please install manually: " + missing.join(", ")));
       process.exit(1);
     }
 
@@ -164,17 +202,42 @@ async function setup() {
       process.exit(1);
     }
 
-    const brewPkgs = missing.filter((p) => p !== "tailscale");
-    const brewCasks = missing.filter((p) => p === "tailscale");
+    if (IS_MACOS) {
+      const brewPkgs = missing.filter((p) => p !== "tailscale");
+      const brewCasks = missing.filter((p) => p === "tailscale");
 
-    if (brewPkgs.length > 0) {
-      print(`  Installing ${brewPkgs.join(", ")}...`);
-      execSync(`brew install --quiet ${brewPkgs.join(" ")}`, { stdio: "inherit" });
-    }
+      if (brewPkgs.length > 0) {
+        print(`  Installing ${brewPkgs.join(", ")}...`);
+        execSync(`brew install --quiet ${brewPkgs.join(" ")}`, { stdio: "inherit" });
+      }
 
-    if (brewCasks.length > 0) {
-      print("  Installing Tailscale (GUI app)...");
-      execSync("brew install --cask --quiet tailscale", { stdio: "inherit" });
+      if (brewCasks.length > 0) {
+        print("  Installing Tailscale (GUI app)...");
+        execSync("brew install --cask --quiet tailscale", { stdio: "inherit" });
+      }
+    } else if (IS_LINUX) {
+      // Map package names to apt package names
+      const aptPkgMap: Record<string, string> = {
+        node: "nodejs",
+        tmux: "tmux",
+      };
+      const aptPkgs = missing
+        .filter((p) => p !== "tailscale")
+        .map((p) => aptPkgMap[p] || p);
+
+      if (aptPkgs.length > 0) {
+        print(`  Installing ${aptPkgs.join(", ")}...`);
+        execSync(`sudo apt update -qq && sudo apt install -y -qq ${aptPkgs.join(" ")}`, {
+          stdio: "inherit",
+        });
+      }
+
+      if (missing.includes("tailscale")) {
+        print("  Installing Tailscale...");
+        execSync("curl -fsSL https://tailscale.com/install.sh | sudo sh", {
+          stdio: "inherit",
+        });
+      }
     }
 
     // Verify
@@ -184,7 +247,11 @@ async function setup() {
       if (pkg === "tailscale") {
         if (tailscaleBin()) {
           print(`  ${green("✓")} Tailscale installed`);
-          print(dim("  Open Tailscale.app and sign in to enable remote access."));
+          if (IS_MACOS) {
+            print(dim("  Open Tailscale.app and sign in to enable remote access."));
+          } else {
+            print(dim("  Run 'sudo tailscale up' to sign in."));
+          }
         } else {
           print(`  ${red("✗")} Tailscale failed to install`);
           verifyFail = true;
@@ -228,9 +295,10 @@ async function setup() {
 
   // Tailscale hostname
   let tailscaleHostname: string | undefined;
+  const sudoPrefix = IS_LINUX ? "sudo " : "";
   if (hasTailscale) {
     try {
-      const status = execSync(`${tsBin} status --self --json`, {
+      const status = execSync(`${sudoPrefix}${tsBin} status --self --json`, {
         encoding: "utf-8",
       });
       const parsed = JSON.parse(status);
@@ -239,13 +307,15 @@ async function setup() {
 
     if (tailscaleHostname) {
       print(dim(`  Detected Tailscale hostname: ${tailscaleHostname}`));
+    } else if (IS_LINUX) {
+      print(dim("  Tailscale not logged in. Run 'sudo tailscale up' first."));
     }
 
     // Setup tailscale serve
     if (tailscaleHostname) {
       try {
         execSync(
-          `${tsBin} serve --bg ${port}`,
+          `${sudoPrefix}${tsBin} serve --bg ${port}`,
           { stdio: "inherit" },
         );
         print(
@@ -259,6 +329,9 @@ async function setup() {
             "  Failed to configure tailscale serve. You can do it manually later.",
           ),
         );
+        if (IS_LINUX) {
+          print(dim(`  Try: sudo tailscale serve --bg ${port}`));
+        }
       }
     }
   }
@@ -325,7 +398,7 @@ async function start() {
   await import("./serve.js");
 }
 
-// ── Launch agent (launchd) ──
+// ── Service management (launchd on macOS, systemd on Linux) ──
 
 const PLIST_LABEL = "com.wolfpack.server";
 const PLIST_PATH = join(
@@ -333,6 +406,14 @@ const PLIST_PATH = join(
   "Library",
   "LaunchAgents",
   `${PLIST_LABEL}.plist`,
+);
+const SYSTEMD_SERVICE = "wolfpack";
+const SYSTEMD_PATH = join(
+  process.env.HOME ?? "~",
+  ".config",
+  "systemd",
+  "user",
+  `${SYSTEMD_SERVICE}.service`,
 );
 
 function generatePlist(): string {
@@ -377,6 +458,33 @@ ${envEntries}
 </plist>`;
 }
 
+function generateSystemdUnit(): string {
+  const nodePath = process.execPath;
+  const tsxPath = join(import.meta.dirname, "node_modules", ".bin", "tsx");
+  const servePath = join(import.meta.dirname, "serve.ts");
+  const config = loadConfig();
+  const envLines: string[] = [
+    `Environment=PATH=${join(nodePath, "..")}:/usr/local/bin:/usr/bin:/bin`,
+  ];
+  if (config?.devDir) envLines.push(`Environment=WOLFPACK_DEV_DIR=${config.devDir}`);
+  if (config?.port) envLines.push(`Environment=WOLFPACK_PORT=${config.port}`);
+
+  return `[Unit]
+Description=Wolfpack AI Agent Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${tsxPath} ${servePath}
+Restart=always
+RestartSec=5
+${envLines.join("\n")}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
 function serviceInstall() {
   const config = loadConfig();
   if (!config) {
@@ -384,21 +492,49 @@ function serviceInstall() {
     process.exit(1);
   }
 
-  const plist = generatePlist();
-  mkdirSync(join(process.env.HOME ?? "~", "Library", "LaunchAgents"), {
-    recursive: true,
-  });
-  writeFileSync(PLIST_PATH, plist);
+  if (IS_MACOS) {
+    const plist = generatePlist();
+    mkdirSync(join(process.env.HOME ?? "~", "Library", "LaunchAgents"), {
+      recursive: true,
+    });
+    writeFileSync(PLIST_PATH, plist);
 
-  // Unload first if already loaded
-  try {
-    execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
-  } catch {}
-  execSync(`launchctl load ${PLIST_PATH}`);
+    // Unload first if already loaded
+    try {
+      execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+    } catch {}
+    execSync(`launchctl load ${PLIST_PATH}`);
 
-  print("");
-  print(green("  Wolfpack service installed and started."));
-  print(dim(`  Plist: ${PLIST_PATH}`));
+    print("");
+    print(green("  Wolfpack service installed and started."));
+    print(dim(`  Plist: ${PLIST_PATH}`));
+  } else if (IS_LINUX) {
+    const unit = generateSystemdUnit();
+    mkdirSync(join(process.env.HOME ?? "~", ".config", "systemd", "user"), {
+      recursive: true,
+    });
+    writeFileSync(SYSTEMD_PATH, unit);
+
+    execSync("systemctl --user daemon-reload");
+    execSync(`systemctl --user enable ${SYSTEMD_SERVICE}`);
+    execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
+
+    // Enable linger so user services start at boot, not just on login
+    try {
+      execSync(`sudo loginctl enable-linger ${process.env.USER}`);
+    } catch {
+      print(dim("  Note: Could not enable linger. Service may not start at boot."));
+      print(dim("  Run: sudo loginctl enable-linger $USER"));
+    }
+
+    print("");
+    print(green("  Wolfpack service installed and started."));
+    print(dim(`  Unit: ${SYSTEMD_PATH}`));
+  } else {
+    print(red("  Service install not supported on this platform."));
+    process.exit(1);
+  }
+
   print(dim(`  Log:   ~/.wolfpack/wolfpack.log`));
   print("");
   print("  Wolfpack will now start automatically on login.");
@@ -408,50 +544,102 @@ function serviceInstall() {
 }
 
 function serviceUninstall() {
-  try {
-    execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
-  } catch {}
-  try {
-    unlinkSync(PLIST_PATH);
-  } catch {}
+  if (IS_MACOS) {
+    try {
+      execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+    } catch {}
+    try {
+      unlinkSync(PLIST_PATH);
+    } catch {}
+  } else if (IS_LINUX) {
+    try {
+      execSync(`systemctl --user stop ${SYSTEMD_SERVICE} 2>/dev/null`);
+    } catch {}
+    try {
+      execSync(`systemctl --user disable ${SYSTEMD_SERVICE} 2>/dev/null`);
+    } catch {}
+    try {
+      unlinkSync(SYSTEMD_PATH);
+    } catch {}
+    try {
+      execSync("systemctl --user daemon-reload");
+    } catch {}
+  }
   print(green("  Wolfpack service removed."));
 }
 
 function serviceStop() {
-  try {
-    execSync(`launchctl unload ${PLIST_PATH}`);
-  } catch {}
+  if (IS_MACOS) {
+    try {
+      execSync(`launchctl unload ${PLIST_PATH}`);
+    } catch {}
+  } else if (IS_LINUX) {
+    try {
+      execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
+    } catch {}
+  }
   print(green("  Wolfpack service stopped."));
 }
 
 function serviceStart() {
-  try {
-    execSync(`launchctl load ${PLIST_PATH}`);
-  } catch {}
+  if (IS_MACOS) {
+    try {
+      execSync(`launchctl load ${PLIST_PATH}`);
+    } catch {}
+  } else if (IS_LINUX) {
+    try {
+      execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
+    } catch {}
+  }
   print(green("  Wolfpack service started."));
 }
 
 function serviceStatus() {
-  try {
-    const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, {
-      encoding: "utf-8",
-    });
-    if (out.includes("PID")) {
-      const pidMatch = out.match(/"PID"\s*=\s*(\d+)/);
-      print(
-        green(
-          `  Wolfpack is running${pidMatch ? ` (PID ${pidMatch[1]})` : ""}`,
-        ),
-      );
-    } else {
-      print(dim("  Wolfpack service is loaded but not running."));
+  if (IS_MACOS) {
+    try {
+      const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, {
+        encoding: "utf-8",
+      });
+      if (out.includes("PID")) {
+        const pidMatch = out.match(/"PID"\s*=\s*(\d+)/);
+        print(
+          green(
+            `  Wolfpack is running${pidMatch ? ` (PID ${pidMatch[1]})` : ""}`,
+          ),
+        );
+      } else {
+        print(dim("  Wolfpack service is loaded but not running."));
+      }
+    } catch {
+      if (existsSync(PLIST_PATH)) {
+        print(dim("  Wolfpack service is installed but not loaded."));
+      } else {
+        print(dim("  Wolfpack service is not installed."));
+      }
     }
-  } catch {
-    if (existsSync(PLIST_PATH)) {
-      print(dim("  Wolfpack service is installed but not loaded."));
-    } else {
-      print(dim("  Wolfpack service is not installed."));
+  } else if (IS_LINUX) {
+    try {
+      const out = execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, {
+        encoding: "utf-8",
+      }).trim();
+      if (out === "active") {
+        const pidOut = execSync(
+          `systemctl --user show ${SYSTEMD_SERVICE} --property=MainPID --value`,
+          { encoding: "utf-8" },
+        ).trim();
+        print(green(`  Wolfpack is running (PID ${pidOut})`));
+      } else {
+        print(dim(`  Wolfpack service status: ${out}`));
+      }
+    } catch {
+      if (existsSync(SYSTEMD_PATH)) {
+        print(dim("  Wolfpack service is installed but not running."));
+      } else {
+        print(dim("  Wolfpack service is not installed."));
+      }
     }
+  } else {
+    print(dim("  Service status not supported on this platform."));
   }
 }
 

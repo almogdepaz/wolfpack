@@ -2,6 +2,9 @@
   "name": "wolfpack",
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.11.0"
+  },
   "description": "Mobile bridge to your AI coding agents via tmux",
   "bin": {
     "wolfpack": "./cli.ts"
