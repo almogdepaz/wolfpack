@@ -252,12 +252,18 @@ const routes: Record<
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const customName = url.searchParams.get("name");
+      const host = (req.headers.host ?? "localhost").replace(/[:.]/g, "-");
       const manifest = JSON.parse(
         readFileSync(join(PUBLIC_DIR, "manifest.json"), "utf-8"),
       );
+      manifest.id = `/?host=${host}`;
       if (customName) {
         manifest.name = customName;
         manifest.short_name = customName;
+      } else {
+        const label = host.split("-").slice(0, -1).join("-") || host;
+        manifest.name = `Wolfpack (${label})`;
+        manifest.short_name = label;
       }
       res.writeHead(200, { "Content-Type": "application/manifest+json" });
       res.end(JSON.stringify(manifest, null, 2));
