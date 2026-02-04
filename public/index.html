@@ -54,8 +54,8 @@
       }
       .header-center {
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 8px;
         justify-self: center;
       }
       header h1 {
@@ -720,14 +720,17 @@
         <button class="back-btn" id="back-btn">&lt; BACK</button>
       </div>
       <div class="header-center" id="header-center">
-        <span id="wolf-icon" style="font-size:20px;line-height:1">🐺</span>
-        <h1 id="header-title">wolfpack</h1>
-        <select
-          id="session-switcher"
-          class="session-select"
-          style="display: none"
-          onchange="switchSession(this.value)"
-        ></select>
+        <div id="header-machine-label" style="display:none;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:1px;text-align:center;line-height:1;margin-bottom:2px"></div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="wolf-icon" style="font-size:20px;line-height:1">🐺</span>
+          <h1 id="header-title">wolfpack</h1>
+          <select
+            id="session-switcher"
+            class="session-select"
+            style="display: none"
+            onchange="switchSession(this.value)"
+          ></select>
+        </div>
       </div>
       <div class="header-right">
         <button class="search-btn" id="search-btn" onclick="toggleSearch()">&#128269;</button>
@@ -915,6 +918,7 @@
 
         switcher.style.display = "none";
         document.getElementById("search-btn").style.display = "none";
+        document.getElementById("header-machine-label").style.display = "none";
 
         // Stop session auto-refresh when leaving sessions view
         if (sessionRefreshTimer) {
@@ -964,6 +968,14 @@
           wolfIcon.style.display = "";
           switcher.style.display = "";
           document.getElementById("search-btn").style.display = "";
+          const hml = document.getElementById("header-machine-label");
+          if (getMachines().length > 0) {
+            const mName = currentMachine
+              ? (getMachines().find(m => m.url === currentMachine)?.name || "remote")
+              : (selfName || "local");
+            hml.textContent = mName;
+            hml.style.display = "";
+          }
           loadSessionSwitcher();
         }
       }
@@ -1330,7 +1342,7 @@
         for (const g of groups) {
           for (const s of g.sessions) {
             const val = g.machine.url ? g.machine.url + "|" + s.name : s.name;
-            const label = machines.length > 0 ? g.machine.name + ": " + s.name : s.name;
+            const label = s.name;
             const selected = s.name === currentSession && g.machine.url === currentMachine ? "selected" : "";
             opts += `<option value="${esc(val)}" ${selected}>${esc(label)}</option>`;
           }
