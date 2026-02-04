@@ -498,12 +498,19 @@
       }
       .settings-gear {
         background: none;
-        border: none;
-        color: #555;
-        font-size: 20px;
+        border: 1px solid #555;
+        border-radius: 2px;
+        color: #b0b0b0;
+        font-size: 18px;
         cursor: pointer;
-        padding: 4px;
-        transition: color 0.15s ease;
+        padding: 6px;
+        min-width: 36px;
+        min-height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s ease;
+        -webkit-tap-highlight-color: transparent;
       }
       .settings-gear:active {
         color: #00ff41;
@@ -604,12 +611,13 @@
       .machine-add-btn {
         margin-left: auto;
         background: none;
-        border: 1px solid #333;
+        border: 1px solid #00ff41;
         border-radius: 2px;
-        color: #555;
-        font-size: 14px;
-        width: 28px;
-        height: 28px;
+        color: #00ff41;
+        font-size: 16px;
+        font-weight: 700;
+        width: 30px;
+        height: 30px;
         cursor: pointer;
         display: flex;
         align-items: center;
