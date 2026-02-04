@@ -18,6 +18,7 @@ import {
   statSync,
 } from "node:fs";
 import { join, basename } from "node:path";
+import { hostname } from "node:os";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -197,8 +198,14 @@ async function isAllowedSession(session: string): Promise<boolean> {
 
 // ── HTTP helpers ──
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 function json(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
+  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
   res.end(JSON.stringify(data));
 }
 
@@ -289,6 +296,13 @@ const routes: Record<
       res.writeHead(404);
       res.end("Not Found");
     }
+  },
+
+  "GET /api/info": (_req, res) => {
+    const name = hostname()
+      .replace(/\.local$/, "")
+      .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
+    json(res, { name });
   },
 
   "GET /api/sessions": async (_req, res) => {
@@ -444,6 +458,13 @@ const routes: Record<
 // ── Server ──
 
 const server = createServer(async (req, res) => {
+  // CORS preflight
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url ?? "/", "http://localhost");
   const key = `${req.method ?? "GET"} ${url.pathname}`;
   const handler = routes[key];
