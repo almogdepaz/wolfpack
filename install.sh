@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+
+# Re-exec under bash if running under a different shell (e.g. dash on Ubuntu)
+if [ -z "$BASH_VERSION" ]; then
+  if [ -f "$0" ]; then
+    exec bash "$0" "$@"
+  else
+    echo "  This installer requires bash. Please run:"
+    echo "    curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash"
+    exit 1
+  fi
+fi
+
 set +e
 
 REPO="https://github.com/almogdepaz/wolfpack.git"
