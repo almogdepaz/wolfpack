@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env -S npx tsx
 /**
  * Standalone Wolfpack PWA server.
  * Serves a live tmux pane viewer via capture-pane.
@@ -29,6 +29,18 @@ const TMUX = (() => {
     try { execFileSync("test", ["-x", p]); return p; } catch {}
   }
   return "tmux"; // fallback to PATH lookup
+})();
+
+// resolve user's shell — Ubuntu defaults to bash, macOS to zsh
+const SHELL = (() => {
+  const envShell = process.env.SHELL;
+  if (envShell) {
+    try { execFileSync("test", ["-x", envShell]); return envShell; } catch {}
+  }
+  for (const p of ["/bin/zsh", "/bin/bash", "/bin/sh"]) {
+    try { execFileSync("test", ["-x", p]); return p; } catch {}
+  }
+  return "/bin/sh";
 })();
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
@@ -150,7 +162,7 @@ async function tmuxNewSession(
     name,
     "-c",
     cwd,
-    `/bin/zsh -lic '${agentCmd.replace(/'/g, "'\\''")}'`,
+    `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}'`,
   ]);
 }
 
@@ -236,9 +248,35 @@ const routes: Record<
 > = {
   "GET /": (_req, res) =>
     serveFile(res, "index.html", "text/html; charset=utf-8"),
-  "GET /manifest.json": (_req, res) =>
-    serveFile(res, "manifest.json", "application/manifest+json"),
+  "GET /manifest.json": (req, res) => {
+    try {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const customName = url.searchParams.get("name");
+      const host = (req.headers.host ?? "localhost").replace(/[:.]/g, "-");
+      const manifest = JSON.parse(
+        readFileSync(join(PUBLIC_DIR, "manifest.json"), "utf-8"),
+      );
+      manifest.id = `/?host=${host}`;
+      if (customName) {
+        manifest.name = customName;
+        manifest.short_name = customName;
+      } else {
+        const label = host.split("-").slice(0, -1).join("-") || host;
+        manifest.name = `Wolfpack (${label})`;
+        manifest.short_name = label;
+      }
+      res.writeHead(200, { "Content-Type": "application/manifest+json" });
+      res.end(JSON.stringify(manifest, null, 2));
+    } catch {
+      res.writeHead(404);
+      res.end("Not Found");
+    }
+  },
   "GET /sw.js": (_req, res) => {
+    // Return 404 for SW to prevent Brave from treating as installable PWA
+    res.writeHead(404);
+    res.end("Not Found");
+    return;
     try {
       const content = readFileSync(join(PUBLIC_DIR, "sw.js"), "utf-8");
       res.writeHead(200, {

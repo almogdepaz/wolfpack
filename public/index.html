@@ -12,7 +12,13 @@
       name="apple-mobile-web-app-status-bar-style"
       content="black-translucent"
     />
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" id="manifest-link" href="/manifest.json" />
+    <script>
+      // Pass ?name= param to manifest for custom PWA app naming
+      const p = new URLSearchParams(window.location.search);
+      const n = p.get("name");
+      if (n) document.getElementById("manifest-link").href = "/manifest.json?name=" + encodeURIComponent(n);
+    </script>
     <title>Wolfpack</title>
     <style>
       * {
@@ -1339,8 +1345,12 @@
 
       loadSessions();
 
+      // SW removed — lets Brave use "Add to Home screen" with name prompt
+      // while manifest display:standalone still hides address bar
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("/sw.js", { scope: "/" });
+        navigator.serviceWorker.getRegistrations().then(regs =>
+          regs.forEach(r => r.unregister())
+        );
       }
     </script>
   </body>
