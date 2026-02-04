@@ -142,6 +142,12 @@
       .dot.gray {
         background: #333;
       }
+      .card-machine {
+        font-size: 10px;
+        color: #444;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
       .card-name {
         font-size: 13px;
         font-weight: 600;
@@ -1035,6 +1041,7 @@
               return `<div class="card" onclick="openSession('${esc(s.name)}', '${mUrl}')">
                 <div class="dot ${dotClass}"></div>
                 <div class="card-info">
+                  <div class="card-machine">${mName}</div>
                   <div class="card-name">${esc(s.name)}</div>
                   <div class="card-preview">${esc(lastLine)}</div>
                 </div>
@@ -1502,7 +1509,9 @@
         try {
           await addMachine(url);
           input.value = "";
-          renderMachinesList();
+          showView("sessions");
+          loadSessions();
+          return;
         } catch (e) {
           errorEl.textContent = "Failed to connect — check URL and ensure Wolfpack is running";
         }
@@ -1532,7 +1541,8 @@
                   try {
                     await addMachine(raw);
                     document.getElementById("machine-url-input").value = "";
-                    renderMachinesList();
+                    showView("sessions");
+                    loadSessions();
                   } catch {
                     document.getElementById("machine-add-error").textContent = "QR detected but failed to connect";
                   }
