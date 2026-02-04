@@ -33,17 +33,14 @@ Mobile command center for your AI coding agents. Control tmux-based agent sessio
 
 Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monitor output, and wrangle multiple agents all from one screen.
 
+install it on your phone's home screen for a native app experience. After setup, scan the QR code with your phone and tap **"Add to Home Screen"** .
+
 <p align="center">
   <img src="docs/menu.jpeg" width="300" alt="Session list" />
   &nbsp;&nbsp;
   <img src="docs/session.jpeg" width="300" alt="Terminal view" />
 </p>
 
-## Install as App
-
-Wolfpack is a Progressive Web App — install it on your phone's home screen for a native app experience. After setup, scan the QR code with your phone and tap **"Add to Home Screen"** (or the install prompt in your browser). It runs in standalone mode with no browser chrome.
-
-If you run Wolfpack on multiple machines, each one installs as a separate app on your home screen (e.g. `Wolfpack (macbook)`, `Wolfpack (desktop)`).
 
 ## Quick Install
 
