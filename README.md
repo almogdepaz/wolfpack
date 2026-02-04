@@ -31,13 +31,16 @@
 
 Mobile command center for your AI coding agents. Control tmux-based agent sessions (Claude, Codex, Gemini, etc.) from your phone via a Web App.
 
-Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monitor output, and wrangle multiple agents all from one screen.
+Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monitor output, and wrangle multiple agents all from one screen on multiple machines.
+
+install it on your phone's home screen for a native app experience. After setup, scan the QR code with your phone and tap **"Add to Home Screen"** .
 
 <p align="center">
   <img src="docs/menu.jpeg" width="300" alt="Session list" />
   &nbsp;&nbsp;
   <img src="docs/session.jpeg" width="300" alt="Terminal view" />
 </p>
+
 
 ## Quick Install
 
@@ -130,7 +133,8 @@ On first run, `wolfpack` walks you through:
 - **Notifications** — Browser notifications and vibration when a session needs attention (prompts, errors)
 - **Session status** — Color-coded dots show which sessions need input
 - **Auto-resize** — Tmux pane resizes to match your phone screen
-- **Web App** — Install as an app on your phone's home screen
+- **Multi-machine** — Connect one phone to multiple Wolfpack servers across different computers
+- **Web App** — Install as a standalone app on your phone's home screen (PWA)
 - **Reconnect handling** — Shows status when connection drops, auto-recovers
 
 ## Remote Access
@@ -141,9 +145,23 @@ To control your agents from your phone:
 2. Sign in to the same Tailscale account on both devices
 3. Run `wolfpack setup` and say **y** to "Enable Tailscale HTTPS access?"
 4. Wolfpack displays a QR code — scan it with your phone's camera
-5. Bookmark or "Add to Home Screen" for a native app experience
+5. Tap **"Add to Home Screen"** to install the app (see [Install as App](#install-as-app))
 
 Your phone connects over Tailscale's encrypted network. No ports to open, no DNS to configure — it just works anywhere both devices have internet.
+
+## Multi-Machine Support
+
+You can connect one phone to multiple computers running Wolfpack. Sessions from all machines appear in a single grouped view with online/offline status indicators.
+
+**Setup:**
+
+1. Install and run Wolfpack on each machine (`curl` install + `wolfpack setup`)
+2. Make sure all machines and your phone are on the same Tailscale network
+3. On your phone, open Wolfpack and go to **Settings**
+4. Tap **Add Machine** and either scan the QR code from the other machine's setup or paste its URL (e.g. `https://other-machine.tailnet-name.ts.net`)
+5. The new machine's sessions appear in the session list, grouped by machine name
+
+Each machine runs its own independent Wolfpack server with its own projects directory and config. Your phone fetches sessions from all registered machines in parallel and routes commands to the correct server.
 
 ## Config
 
