@@ -964,11 +964,11 @@
 
       // ── Sessions ──
 
-      async function loadSessions() {
-        const el = document.getElementById("session-list");
-        const machines = getMachines();
+      // Shared session groups cache for switcher reuse
+      let lastSessionGroups = [];
 
-        // Fetch from self + all remotes in parallel
+      async function fetchSessionGroups() {
+        const machines = getMachines();
         const fetches = [
           api("/sessions").then(d => ({ machine: { url: "", name: selfName || "this machine" }, sessions: d.sessions || [], online: true }))
             .catch(() => ({ machine: { url: "", name: selfName || "this machine" }, sessions: [], online: false })),
@@ -979,18 +979,47 @@
           )
         ];
         const groups = await Promise.all(fetches);
-
-        // Sort remotes alphabetically, self always first
         groups.sort((a, b) => {
           if (!a.machine.url) return -1;
           if (!b.machine.url) return 1;
           return a.machine.name.localeCompare(b.machine.name);
         });
-
-        // Flatten for allSessions
+        lastSessionGroups = groups;
         allSessions = [];
         groups.forEach(g => g.sessions.forEach(s => allSessions.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name })));
+        return groups;
+      }
 
+      async function loadSessions() {
+        const el = document.getElementById("session-list");
+        const machines = getMachines();
+        const groups = await fetchSessionGroups();
+        const multiMachine = machines.length > 0;
+
+        // Single-machine: flat list like original
+        if (!multiMachine) {
+          const self = groups[0];
+          let html = '<div class="new-btn" onclick="showProjectPicker()">+ New Session</div>';
+          if (self && self.online && self.sessions.length) {
+            html += self.sessions.map(s => {
+              const lastLine = s.lastLine || "";
+              const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
+              const dotClass = needsAttention ? "yellow" : "green";
+              return `<div class="card" onclick="openSession('${esc(s.name)}')">
+                <div class="dot ${dotClass}"></div>
+                <div class="card-info">
+                  <div class="card-name">${esc(s.name)}</div>
+                  <div class="card-preview">${esc(lastLine)}</div>
+                </div>
+                <button class="kill-btn" onclick="killSession('${esc(s.name)}', event)">&times;</button>
+              </div>`;
+            }).join("");
+          }
+          el.innerHTML = html;
+          return;
+        }
+
+        // Multi-machine: grouped by machine
         let html = "";
         for (const g of groups) {
           const mUrl = esc(g.machine.url);
@@ -1286,15 +1315,9 @@
         loadSessions();
       }
 
-      async function loadSessionSwitcher() {
+      function loadSessionSwitcher() {
         const machines = getMachines();
-        const fetches = [
-          api("/sessions").then(d => ({ machine: { url: "", name: selfName || "this machine" }, sessions: d.sessions || [] })).catch(() => ({ machine: { url: "", name: selfName || "this machine" }, sessions: [] })),
-          ...machines.map(m =>
-            api("/sessions", undefined, m.url).then(d => ({ machine: m, sessions: d.sessions || [] })).catch(() => ({ machine: m, sessions: [] }))
-          )
-        ];
-        const groups = await Promise.all(fetches);
+        const groups = lastSessionGroups;
         const sel = document.getElementById("session-switcher");
         let opts = "";
         for (const g of groups) {
