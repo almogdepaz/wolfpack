@@ -498,14 +498,14 @@
       }
       .settings-gear {
         background: none;
-        border: 1px solid #555;
+        border: 1px solid #00ff41;
         border-radius: 2px;
         color: #b0b0b0;
-        font-size: 18px;
+        font-size: 22px;
         cursor: pointer;
         padding: 6px;
-        min-width: 36px;
-        min-height: 36px;
+        min-width: 40px;
+        min-height: 40px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -513,7 +513,8 @@
         -webkit-tap-highlight-color: transparent;
       }
       .settings-gear:active {
-        color: #00ff41;
+        background: #00ff41;
+        color: #0a0a0a;
       }
       .search-btn {
         background: none;
@@ -762,9 +763,14 @@
           autocorrect="off"
           autocapitalize="off"
         />
-        <button onclick="createNewProject()">Create</button>
+        <button onclick="selectNewProject()">Create</button>
       </div>
       <div id="project-list" class="list"></div>
+    </div>
+
+    <!-- Agent picker view -->
+    <div id="agent-view" class="view">
+      <div id="agent-list" class="list"></div>
     </div>
 
     <!-- Settings view -->
@@ -797,6 +803,14 @@
             />
             <button onclick="saveCustomCmd()">Save</button>
           </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Claude Config (~/.claude/CLAUDE.md)</div>
+          <div id="claude-config-preview" style="background:#0a0a0a;border:1px solid #222;border-radius:2px;padding:10px;font-size:11px;color:#888;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-bottom:12px">Loading...</div>
+          <div class="settings-label">Push to machines</div>
+          <div id="claude-config-machines" style="margin-bottom:12px"></div>
+          <button onclick="pushClaudeConfig()" style="background:none;border:1px solid #00ff41;border-radius:2px;padding:10px 20px;color:#00ff41;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease">Push Selected</button>
+          <div id="claude-config-status" style="margin-top:8px;font-size:11px;color:#555"></div>
         </div>
       </div>
     </div>
@@ -952,7 +966,15 @@
             loadSessions();
           };
           gear.style.display = "none";
-          title.textContent = "new session";
+          title.textContent = "select project";
+          wolfIcon.style.display = "none";
+        } else if (name === "agent") {
+          back.style.display = "block";
+          back.onclick = () => {
+            showView("projects");
+          };
+          gear.style.display = "none";
+          title.textContent = "select agent";
           wolfIcon.style.display = "none";
         } else if (name === "settings") {
           back.style.display = "block";
@@ -1137,7 +1159,7 @@
           el.innerHTML = data.projects
             .map(
               (p) => `
-      <div class="card" onclick="createSession('${esc(p)}')">
+      <div class="card" onclick="selectProject('${esc(p)}')">
         <div class="dot blue"></div>
         <div class="card-name">${esc(p)}</div>
       </div>
@@ -1155,6 +1177,79 @@
         term.innerHTML = '<span class="loading-text">Starting session in ' + esc(label) + '\u2026</span>';
       }
 
+      let selectedProject = "";
+      let isNewProject = false;
+
+      function selectProject(project) {
+        selectedProject = project;
+        isNewProject = false;
+        showAgentPicker();
+      }
+
+      function selectNewProject() {
+        const input = document.getElementById("new-project-name");
+        const name = input.value.trim();
+        if (!name) return;
+        selectedProject = name;
+        isNewProject = true;
+        showAgentPicker();
+      }
+
+      async function showAgentPicker() {
+        showView("agent");
+        const el = document.getElementById("agent-list");
+        el.innerHTML = '<div class="empty">Loading...</div>';
+        try {
+          const data = await api("/settings", undefined, projectMachine);
+          const presets = Object.entries(data.presets || {});
+          const customCmds = data.settings?.customCmds || [];
+          let html = presets.map(([label, cmd]) => `
+            <div class="card" onclick="createSessionWithAgent('${esc(cmd)}')">
+              <div class="dot blue"></div>
+              <div class="card-name">${esc(label)}</div>
+            </div>
+          `).join("");
+          html += customCmds.map(cmd => `
+            <div class="card" onclick="createSessionWithAgent('${esc(cmd)}')">
+              <div class="dot green"></div>
+              <div class="card-name">${esc(cmd)}</div>
+            </div>
+          `).join("");
+          el.innerHTML = html;
+        } catch {
+          el.innerHTML = '<div class="empty">Failed to load agents</div>';
+        }
+      }
+
+      async function createSessionWithAgent(cmd) {
+        const machine = projectMachine;
+        showTerminalLoading(selectedProject);
+        try {
+          const body = isNewProject
+            ? { newProject: selectedProject, cmd }
+            : { project: selectedProject, cmd };
+          const data = await api("/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }, machine);
+          if (data.session) {
+            currentSession = data.session;
+            currentMachine = machine;
+            loadSessionSwitcher();
+            resizePane();
+            startPolling();
+          } else {
+            showView("sessions");
+            loadSessions();
+          }
+        } catch {
+          showView("sessions");
+          loadSessions();
+        }
+      }
+
+      // Legacy - keeping for now but not used
       async function createSession(project) {
         const machine = projectMachine;
         showTerminalLoading(project);
@@ -1180,6 +1275,7 @@
         }
       }
 
+      // Legacy - not used
       async function createNewProject() {
         const input = document.getElementById("new-project-name");
         const name = input.value.trim();
@@ -1498,6 +1594,7 @@
       async function showSettings() {
         showView("settings");
         renderMachinesList();
+        loadClaudeConfig();
         // Show QR button if BarcodeDetector is available
         if ("BarcodeDetector" in window) {
           document.getElementById("qr-scan-btn").style.display = "";
@@ -1507,17 +1604,95 @@
         try {
           const data = await api("/settings");
           const current = data.settings?.agentCmd || "claude";
-          document.getElementById("custom-cmd").value = current;
+          document.getElementById("custom-cmd").value = "";
 
+          // Presets (built-in)
           const presets = Object.entries(data.presets || {});
-          el.innerHTML = presets
+          let html = presets
             .map(
               ([label, cmd]) => `
       <button class="preset-btn ${cmd === current ? "selected" : ""}" onclick="selectPreset('${esc(cmd)}')">${esc(label)}</button>
     `,
             )
             .join("");
+
+          // Custom commands
+          const customCmds = data.settings?.customCmds || [];
+          html += customCmds.map(cmd => `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <button class="preset-btn ${cmd === current ? "selected" : ""}" onclick="selectPreset('${esc(cmd)}')" style="flex:1;margin-bottom:0">${esc(cmd)}</button>
+        <button onclick="deleteCustomCmd('${esc(cmd)}')" style="background:none;border:1px solid #cc3333;border-radius:2px;color:#cc3333;padding:8px 12px;cursor:pointer;font-size:16px">&times;</button>
+      </div>
+    `).join("");
+
+          el.innerHTML = html;
         } catch {}
+      }
+
+      let currentClaudeConfig = "";
+
+      async function loadClaudeConfig() {
+        const preview = document.getElementById("claude-config-preview");
+        const machinesEl = document.getElementById("claude-config-machines");
+        preview.textContent = "Loading...";
+        try {
+          const data = await api("/claude-config");
+          currentClaudeConfig = data.content || "";
+          preview.textContent = currentClaudeConfig || "(empty or not found)";
+        } catch {
+          preview.textContent = "(failed to load)";
+        }
+        // Render machine checkboxes
+        const machines = getMachines();
+        if (!machines.length) {
+          machinesEl.innerHTML = '<div style="color:#444;font-size:12px">No remote machines to push to</div>';
+        } else {
+          machinesEl.innerHTML = machines.map(m => `
+            <label style="display:flex;align-items:center;gap:8px;padding:6px 0;color:#b0b0b0;font-size:13px;cursor:pointer">
+              <input type="checkbox" class="claude-config-target" value="${esc(m.url)}" style="width:18px;height:18px">
+              ${esc(m.name)}
+            </label>
+          `).join("");
+        }
+      }
+
+      async function pushClaudeConfig() {
+        const statusEl = document.getElementById("claude-config-status");
+        const checkboxes = document.querySelectorAll(".claude-config-target:checked");
+        const targets = Array.from(checkboxes).map(cb => cb.value);
+        if (!targets.length) {
+          statusEl.textContent = "No machines selected";
+          statusEl.style.color = "#cc3333";
+          return;
+        }
+        if (!currentClaudeConfig) {
+          statusEl.textContent = "No config to push";
+          statusEl.style.color = "#cc3333";
+          return;
+        }
+        statusEl.textContent = "Pushing...";
+        statusEl.style.color = "#555";
+        const results = await Promise.all(targets.map(async url => {
+          try {
+            const res = await api("/claude-config", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ content: currentClaudeConfig }),
+            }, url);
+            return { url, ok: res.ok };
+          } catch {
+            return { url, ok: false };
+          }
+        }));
+        const success = results.filter(r => r.ok).length;
+        const failed = results.filter(r => !r.ok).length;
+        if (failed === 0) {
+          statusEl.textContent = `Pushed to ${success} machine${success > 1 ? "s" : ""}`;
+          statusEl.style.color = "#00ff41";
+        } else {
+          statusEl.textContent = `${success} ok, ${failed} failed`;
+          statusEl.style.color = "#ff6600";
+        }
       }
 
       async function renderMachinesList() {
@@ -1628,7 +1803,16 @@
         await api("/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentCmd: cmd }),
+          body: JSON.stringify({ addCustomCmd: cmd }),
+        });
+        showSettings();
+      }
+
+      async function deleteCustomCmd(cmd) {
+        await api("/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deleteCustomCmd: cmd }),
         });
         showSettings();
       }

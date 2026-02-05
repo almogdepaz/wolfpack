@@ -53,9 +53,11 @@ const VERSION = "1.1.0";
 
 interface Settings {
   agentCmd: string;
+  customCmds?: string[];
 }
 
 const AGENT_PRESETS: Record<string, string> = {
+  shell: "shell",
   claude: "claude",
   "claude --dangerously-skip-permissions":
     "claude --dangerously-skip-permissions",
@@ -66,9 +68,10 @@ const AGENT_PRESETS: Record<string, string> = {
 
 function loadSettings(): Settings {
   try {
-    return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+    const s = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+    return { agentCmd: s.agentCmd || "claude", customCmds: s.customCmds || [] };
   } catch {
-    return { agentCmd: "claude" };
+    return { agentCmd: "claude", customCmds: [] };
   }
 }
 
@@ -157,6 +160,10 @@ async function tmuxNewSession(
   cmd?: string,
 ): Promise<void> {
   const agentCmd = cmd || loadSettings().agentCmd || "claude";
+  // "shell" = plain interactive shell, no command
+  const shellCmd = agentCmd === "shell"
+    ? SHELL
+    : `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}; exec ${SHELL}'`;
   await exec(TMUX, [
     "new-session",
     "-d",
@@ -164,7 +171,7 @@ async function tmuxNewSession(
     name,
     "-c",
     cwd,
-    `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}; exec ${SHELL}'`,
+    shellCmd,
   ]);
 }
 
@@ -331,13 +338,19 @@ const routes: Record<
   },
 
   "POST /api/create": async (req, res) => {
-    const { project, newProject } = JSON.parse(await readBody(req)) as {
+    const { project, newProject, cmd } = JSON.parse(await readBody(req)) as {
       project?: string;
       newProject?: string;
+      cmd?: string;
     };
     const folderName = newProject?.trim() || project?.trim();
     if (!folderName || !/^[a-zA-Z0-9._-]+$/.test(folderName)) {
       return json(res, { error: "invalid project name" }, 400);
+    }
+
+    // Validate cmd if provided
+    if (cmd && cmd !== "shell" && !/^[a-zA-Z0-9 \-._/=]+$/.test(cmd)) {
+      return json(res, { error: "invalid characters in command" }, 400);
     }
 
     const projectDir = join(DEV_DIR, folderName);
@@ -358,7 +371,7 @@ const routes: Record<
     }
 
     const sessionName = await uniqueSessionName(folderName);
-    await tmuxNewSession(sessionName, projectDir);
+    await tmuxNewSession(sessionName, projectDir, cmd);
     json(res, { ok: true, session: sessionName });
   },
 
@@ -399,18 +412,66 @@ const routes: Record<
   },
 
   "POST /api/settings": async (req, res) => {
-    const body = JSON.parse(await readBody(req)) as Partial<Settings>;
+    const body = JSON.parse(await readBody(req)) as {
+      agentCmd?: string;
+      addCustomCmd?: string;
+      deleteCustomCmd?: string;
+    };
     const settings = loadSettings();
+    const cmdRegex = /^[a-zA-Z0-9 \-._/=]+$/;
+
     if (body.agentCmd != null) {
       const cmd = body.agentCmd.trim();
-      // Only allow safe characters: alphanumeric, spaces, hyphens, dots, slashes, equals
-      if (!/^[a-zA-Z0-9 \-._/=]+$/.test(cmd)) {
+      if (cmd !== "shell" && !cmdRegex.test(cmd)) {
         return json(res, { error: "invalid characters in agent command" }, 400);
       }
       settings.agentCmd = cmd;
     }
+    if (body.addCustomCmd != null) {
+      const cmd = body.addCustomCmd.trim();
+      if (!cmdRegex.test(cmd)) {
+        return json(res, { error: "invalid characters in command" }, 400);
+      }
+      if (!settings.customCmds) settings.customCmds = [];
+      if (!settings.customCmds.includes(cmd) && !AGENT_PRESETS[cmd]) {
+        settings.customCmds.push(cmd);
+      }
+      settings.agentCmd = cmd;
+    }
+    if (body.deleteCustomCmd != null) {
+      settings.customCmds = (settings.customCmds || []).filter(c => c !== body.deleteCustomCmd);
+      if (settings.agentCmd === body.deleteCustomCmd) {
+        settings.agentCmd = "claude";
+      }
+    }
     saveSettings(settings);
     json(res, { ok: true, settings });
+  },
+
+  "GET /api/claude-config": async (_req, res) => {
+    const configPath = join(process.env.HOME ?? "~", ".claude", "CLAUDE.md");
+    try {
+      const content = readFileSync(configPath, "utf-8");
+      json(res, { content });
+    } catch {
+      json(res, { content: "", exists: false });
+    }
+  },
+
+  "POST /api/claude-config": async (req, res) => {
+    const { content } = JSON.parse(await readBody(req)) as { content: string };
+    if (typeof content !== "string") {
+      return json(res, { error: "missing content" }, 400);
+    }
+    const configDir = join(process.env.HOME ?? "~", ".claude");
+    const configPath = join(configDir, "CLAUDE.md");
+    try {
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(configPath, content, "utf-8");
+      json(res, { ok: true });
+    } catch (e) {
+      json(res, { error: "failed to write config" }, 500);
+    }
   },
 
   "POST /api/kill": async (req, res) => {
