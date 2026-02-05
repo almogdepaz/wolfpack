@@ -1217,7 +1217,7 @@
 
       function schedulePoll() {
         if (pollTimer) clearTimeout(pollTimer);
-        const interval = fastPoll ? 200 : 1000;
+        const interval = fastPoll ? 100 : 500;
         pollTimer = setTimeout(() => { poll().then(schedulePoll); }, interval);
       }
 
@@ -1465,6 +1465,24 @@
         autoResizeInput();
         updatePreview();
       });
+      msgInput.addEventListener("keydown", (e) => {
+        if (currentView !== "terminal") return;
+        const empty = !msgInput.value.trim();
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          if (empty) {
+            sendKey("Enter");
+          } else {
+            sendMsg();
+          }
+        } else if (e.key === "ArrowUp" && empty) {
+          e.preventDefault();
+          sendKey("Up");
+        } else if (e.key === "ArrowDown" && empty) {
+          e.preventDefault();
+          sendKey("Down");
+        }
+      });
 
       document
         .getElementById("new-project-name")
@@ -1711,13 +1729,6 @@
         loadSessions();
       }
 
-      // Ctrl+C closes session and returns to main menu
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "c" && (e.ctrlKey || e.metaKey) && currentView === "terminal") {
-          e.preventDefault();
-          closeSession();
-        }
-      });
 
       document.getElementById("search-input").addEventListener("input", doSearch);
       document.getElementById("search-input").addEventListener("keydown", (e) => {
