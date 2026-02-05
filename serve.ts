@@ -163,7 +163,7 @@ async function tmuxNewSession(
     name,
     "-c",
     cwd,
-    `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}'`,
+    `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}; exec ${SHELL}'`,
   ]);
 }
 
