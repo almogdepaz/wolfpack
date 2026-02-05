@@ -49,6 +49,7 @@ const PUBLIC_DIR = join(import.meta.dirname, "public");
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
 const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
+const VERSION = "1.1.0";
 
 interface Settings {
   agentCmd: string;
@@ -302,7 +303,7 @@ const routes: Record<
     const name = hostname()
       .replace(/\.local$/, "")
       .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
-    json(res, { name });
+    json(res, { name, version: VERSION });
   },
 
   "GET /api/sessions": async (_req, res) => {

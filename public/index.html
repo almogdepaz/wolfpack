@@ -893,13 +893,15 @@
         return machines;
       }
 
-      // Self name, fetched once
+      // Self info, fetched once
       let selfName = "";
+      let selfVersion = "";
       (async () => {
         try {
           const resp = await fetch("/api/info");
           const info = await resp.json();
           selfName = info.name || "this machine";
+          selfVersion = info.version || "";
         } catch { selfName = "this machine"; }
       })();
 
@@ -996,12 +998,13 @@
       async function fetchSessionGroups() {
         const machines = getMachines();
         const fetches = [
-          api("/sessions").then(d => ({ machine: { url: "", name: selfName || "this machine" }, sessions: d.sessions || [], online: true }))
-            .catch(() => ({ machine: { url: "", name: selfName || "this machine" }, sessions: [], online: false })),
+          Promise.all([api("/sessions"), api("/info")])
+            .then(([d, info]) => ({ machine: { url: "", name: info.name || selfName || "this machine", version: info.version || "" }, sessions: d.sessions || [], online: true }))
+            .catch(() => ({ machine: { url: "", name: selfName || "this machine", version: selfVersion }, sessions: [], online: false })),
           ...machines.map(m =>
-            api("/sessions", undefined, m.url)
-              .then(d => ({ machine: m, sessions: d.sessions || [], online: true }))
-              .catch(() => ({ machine: m, sessions: [], online: false }))
+            Promise.all([api("/sessions", undefined, m.url), api("/info", undefined, m.url)])
+              .then(([d, info]) => ({ machine: { ...m, version: info.version || "" }, sessions: d.sessions || [], online: true }))
+              .catch(() => ({ machine: { ...m, version: "" }, sessions: [], online: false }))
           )
         ];
         const groups = await Promise.all(fetches);
@@ -1010,6 +1013,11 @@
           if (!b.machine.url) return 1;
           return a.machine.name.localeCompare(b.machine.name);
         });
+        // Determine newest version across all online machines
+        const versions = groups.filter(g => g.online && g.machine.version).map(g => g.machine.version);
+        const newestVersion = versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0] || "";
+        // Mark outdated: has older version OR no version at all (very old)
+        groups.forEach(g => g.outdated = g.online && newestVersion && g.machine.version !== newestVersion);
         lastSessionGroups = groups;
         allSessions = [];
         groups.forEach(g => g.sessions.forEach(s => allSessions.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name })));
@@ -1051,8 +1059,9 @@
           const mUrl = esc(g.machine.url);
           const mName = esc(g.machine.name);
           const statusDot = g.online ? "green" : "red";
+          const versionWarning = g.outdated ? `<span style="color:#ff6600;margin-left:6px;font-size:14px" title="Needs update${g.machine.version ? ' (v' + esc(g.machine.version) + ')' : ''}">⚠</span>` : "";
           html += `<div class="machine-group">`;
-          html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<button class="machine-add-btn" onclick="showProjectPicker('${mUrl}')">+</button></div>`;
+          html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}${versionWarning}<button class="machine-add-btn" onclick="showProjectPicker('${mUrl}')">+</button></div>`;
           if (g.online && g.sessions.length) {
             html += g.sessions.map(s => {
               const lastLine = s.lastLine || "";
