@@ -49,7 +49,7 @@ const PUBLIC_DIR = join(import.meta.dirname, "public");
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
 const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
-const VERSION = "1.1.0";
+const VERSION = "2.0.0";
 
 interface Settings {
   agentCmd: string;
@@ -117,7 +117,7 @@ async function tmuxSend(
 ): Promise<void> {
   await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
   if (!noEnter) {
-    await sleep(100);
+    await sleep(30);
     await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
   }
 }
@@ -142,7 +142,7 @@ async function tmuxResize(
   ]);
 }
 
-async function capturePane(session: string, history = false): Promise<string> {
+async function capturePane(session: string): Promise<string> {
   try {
     const args = ["capture-pane", "-t", session, "-p", "-J"];
     // Always capture some scrollback so the PWA terminal can scroll
@@ -263,23 +263,11 @@ const routes: Record<
 > = {
   "GET /": (_req, res) =>
     serveFile(res, "index.html", "text/html; charset=utf-8"),
-  "GET /manifest.json": (req, res) => {
+  "GET /manifest.json": (_req, res) => {
     try {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      const customName = url.searchParams.get("name");
-      const host = (req.headers.host ?? "localhost").replace(/[:.]/g, "-");
       const manifest = JSON.parse(
         readFileSync(join(PUBLIC_DIR, "manifest.json"), "utf-8"),
       );
-      manifest.id = `/?host=${host}`;
-      if (customName) {
-        manifest.name = customName;
-        manifest.short_name = customName;
-      } else {
-        const label = host.split("-").slice(0, -1).join("-") || host;
-        manifest.name = `Wolfpack (${label})`;
-        manifest.short_name = label;
-      }
       res.writeHead(200, { "Content-Type": "application/manifest+json" });
       res.end(JSON.stringify(manifest, null, 2));
     } catch {
@@ -507,8 +495,7 @@ const routes: Record<
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    const history = url.searchParams.get("history") === "1";
-    const pane = await capturePane(session, history);
+    const pane = await capturePane(session);
     json(res, { pane });
   },
 };

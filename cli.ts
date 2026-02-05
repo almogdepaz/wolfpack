@@ -416,6 +416,10 @@ const SYSTEMD_PATH = join(
   `${SYSTEMD_SERVICE}.service`,
 );
 
+function xmlEsc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function generatePlist(): string {
   const nodePath = process.execPath;
   const tsxPath = join(import.meta.dirname, "node_modules", ".bin", "tsx");
@@ -426,24 +430,26 @@ function generatePlist(): string {
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
 
   const envEntries = Object.entries(env)
-    .map(([k, v]) => `      <key>${k}</key>\n      <string>${v}</string>`)
+    .map(([k, v]) => `      <key>${xmlEsc(k)}</key>\n      <string>${xmlEsc(v)}</string>`)
     .join("\n");
+
+  const logPath = xmlEsc(join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log"));
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${PLIST_LABEL}</string>
+  <string>${xmlEsc(PLIST_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${tsxPath}</string>
-    <string>${servePath}</string>
+    <string>${xmlEsc(tsxPath)}</string>
+    <string>${xmlEsc(servePath)}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${join(nodePath, "..")}:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${xmlEsc(join(nodePath, "..") + ":/usr/local/bin:/usr/bin:/bin")}</string>
 ${envEntries}
   </dict>
   <key>RunAtLoad</key>
@@ -451,9 +457,9 @@ ${envEntries}
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log")}</string>
+  <string>${logPath}</string>
   <key>StandardErrorPath</key>
-  <string>${join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log")}</string>
+  <string>${logPath}</string>
 </dict>
 </plist>`;
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'wolfpack-v2';
+const CACHE_NAME = 'wolfpack-v7';
 const SHELL_FILES = [
   '/',
   '/index.html',
