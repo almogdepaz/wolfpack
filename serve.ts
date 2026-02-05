@@ -49,7 +49,7 @@ const PUBLIC_DIR = join(import.meta.dirname, "public");
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
 const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
-const VERSION = "2.0.0";
+const VERSION = "1.1.0";
 
 interface Settings {
   agentCmd: string;
@@ -117,7 +117,7 @@ async function tmuxSend(
 ): Promise<void> {
   await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
   if (!noEnter) {
-    await sleep(30);
+    await sleep(50);
     await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
   }
 }
