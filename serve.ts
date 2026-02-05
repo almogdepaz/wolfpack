@@ -51,6 +51,19 @@ const DEV_DIR =
 const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
 const VERSION = "1.1.0";
 
+// CORS origin allowlist — replaces wildcard "*"
+const WOLFPACK_CONFIG_PATH = join(process.env.HOME ?? "~", ".wolfpack", "config.json");
+const ALLOWED_ORIGINS = (() => {
+  const origins = new Set<string>();
+  origins.add(`http://localhost:${PORT}`);
+  origins.add(`http://127.0.0.1:${PORT}`);
+  try {
+    const cfg = JSON.parse(readFileSync(WOLFPACK_CONFIG_PATH, "utf-8"));
+    if (cfg.tailscaleHostname) origins.add(`https://${cfg.tailscaleHostname}`);
+  } catch {}
+  return origins;
+})();
+
 interface Settings {
   agentCmd: string;
   customCmds?: string[];
@@ -86,25 +99,19 @@ async function tmuxList(): Promise<string[]> {
     const { stdout } = await exec(TMUX, [
       "list-sessions",
       "-F",
-      "#{session_name}:#{pane_current_path}",
+      "#{session_name}\t#{pane_current_path}",
     ]);
     return stdout
       .trim()
       .split("\n")
       .filter(Boolean)
-      .filter((line) => line.split(":").slice(1).join(":").startsWith(DEV_DIR))
-      .map((line) => line.split(":")[0]);
+      .filter((line) => {
+        const tab = line.indexOf("\t");
+        return tab !== -1 && line.substring(tab + 1).startsWith(DEV_DIR);
+      })
+      .map((line) => line.substring(0, line.indexOf("\t")));
   } catch {
     return [];
-  }
-}
-
-async function tmuxExists(session: string): Promise<boolean> {
-  try {
-    await exec(TMUX, ["has-session", "-t", session]);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -206,14 +213,8 @@ async function isAllowedSession(session: string): Promise<boolean> {
 
 // ── HTTP helpers ──
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
-
 function json(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
 
@@ -503,9 +504,24 @@ const routes: Record<
 // ── Server ──
 
 const server = createServer(async (req, res) => {
+  // CORS origin check
+  const origin = req.headers.origin;
+  if (origin) {
+    if (ALLOWED_ORIGINS.has(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Vary", "Origin");
+    } else {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "origin not allowed" }));
+      return;
+    }
+  }
+
   // CORS preflight
   if (req.method === "OPTIONS") {
-    res.writeHead(204, CORS_HEADERS);
+    res.writeHead(204);
     res.end();
     return;
   }

@@ -1373,7 +1373,6 @@
         void btn.offsetWidth; // force reflow
         btn.classList.add("send-flash");
 
-        const paneBeforeSend = lastRawPane;
         try {
           await api("/send", {
             method: "POST",
@@ -1382,16 +1381,11 @@
           }, currentMachine);
           enterFastPoll();
 
-          // Enter retry: if text is still on the prompt line after 2s, resend Enter
-          const sentText = text.replace(/\n/g, " ");
+          // Enter retry: if pane hasn't changed within 800ms, Enter may have been dropped.
+          // Timer is cleared on any pane change (in poll()), so this only fires if truly stuck.
           if (enterRetryTimer) clearTimeout(enterRetryTimer);
           enterRetryTimer = setTimeout(() => {
-            if (currentSession && lastRawPane) {
-              const lastLine = lastRawPane.trimEnd().split("\n").pop() || "";
-              if (lastLine.includes(sentText)) {
-                sendKey("Enter");
-              }
-            }
+            if (currentSession) sendKey("Enter");
             enterRetryTimer = null;
           }, 800);
         } catch {
@@ -1581,12 +1575,22 @@
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
           stopBgAttention();
+          // Restart session refresh if on sessions view
+          if (currentView === "sessions" && !sessionRefreshTimer) {
+            loadSessions();
+            sessionRefreshTimer = setInterval(loadSessions, 5000);
+          }
           if (currentSession && currentView === "terminal") {
             poll();
             enterFastPoll();
             schedulePoll();
           }
         } else {
+          // Stop session refresh when backgrounded — bgAttention covers notifications
+          if (sessionRefreshTimer) {
+            clearInterval(sessionRefreshTimer);
+            sessionRefreshTimer = null;
+          }
           startBgAttention();
         }
       });

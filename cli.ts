@@ -470,10 +470,10 @@ function generateSystemdUnit(): string {
   const servePath = join(import.meta.dirname, "serve.ts");
   const config = loadConfig();
   const envLines: string[] = [
-    `Environment=PATH=${join(nodePath, "..")}:/usr/local/bin:/usr/bin:/bin`,
+    `Environment="PATH=${join(nodePath, "..")}:/usr/local/bin:/usr/bin:/bin"`,
   ];
-  if (config?.devDir) envLines.push(`Environment=WOLFPACK_DEV_DIR=${config.devDir}`);
-  if (config?.port) envLines.push(`Environment=WOLFPACK_PORT=${config.port}`);
+  if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${config.devDir}"`);
+  if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);
 
   return `[Unit]
 Description=Wolfpack AI Agent Bridge
@@ -481,7 +481,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${tsxPath} ${servePath}
+ExecStart="${tsxPath}" "${servePath}"
 Restart=always
 RestartSec=5
 ${envLines.join("\n")}
@@ -507,9 +507,9 @@ function serviceInstall() {
 
     // Unload first if already loaded
     try {
-      execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
     } catch {}
-    execSync(`launchctl load ${PLIST_PATH}`);
+    execSync(`launchctl load "${PLIST_PATH}"`);
 
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -552,7 +552,7 @@ function serviceInstall() {
 function serviceUninstall() {
   if (IS_MACOS) {
     try {
-      execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
     } catch {}
     try {
       unlinkSync(PLIST_PATH);
@@ -577,7 +577,7 @@ function serviceUninstall() {
 function serviceStop() {
   if (IS_MACOS) {
     try {
-      execSync(`launchctl unload ${PLIST_PATH}`);
+      execSync(`launchctl unload "${PLIST_PATH}"`);
     } catch {}
   } else if (IS_LINUX) {
     try {
@@ -590,7 +590,7 @@ function serviceStop() {
 function serviceStart() {
   if (IS_MACOS) {
     try {
-      execSync(`launchctl load ${PLIST_PATH}`);
+      execSync(`launchctl load "${PLIST_PATH}"`);
     } catch {}
   } else if (IS_LINUX) {
     try {
