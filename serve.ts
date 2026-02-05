@@ -115,17 +115,18 @@ async function tmuxList(): Promise<string[]> {
     const { stdout } = await exec(TMUX, [
       "list-sessions",
       "-F",
-      "#{session_name}\t#{pane_current_path}",
+      "#{session_name}|||#{pane_current_path}",
     ]);
+    const SEP = "|||";
     return stdout
       .trim()
       .split("\n")
       .filter(Boolean)
       .filter((line) => {
-        const tab = line.indexOf("\t");
-        return tab !== -1 && line.substring(tab + 1).startsWith(DEV_DIR);
+        const idx = line.indexOf(SEP);
+        return idx !== -1 && line.substring(idx + SEP.length).startsWith(DEV_DIR);
       })
-      .map((line) => line.substring(0, line.indexOf("\t")));
+      .map((line) => line.substring(0, line.indexOf(SEP)));
   } catch {
     return [];
   }
