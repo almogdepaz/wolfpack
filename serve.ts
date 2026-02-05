@@ -52,17 +52,33 @@ const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
 const VERSION = "1.1.0";
 
 // CORS origin allowlist — replaces wildcard "*"
-const WOLFPACK_CONFIG_PATH = join(process.env.HOME ?? "~", ".wolfpack", "config.json");
-const ALLOWED_ORIGINS = (() => {
-  const origins = new Set<string>();
-  origins.add(`http://localhost:${PORT}`);
-  origins.add(`http://127.0.0.1:${PORT}`);
+const ALLOWED_ORIGINS = new Set<string>([
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+]);
+
+// Extract tailnet suffix (e.g. "tailnet-name.ts.net") from config
+const TAILNET_SUFFIX = (() => {
   try {
-    const cfg = JSON.parse(readFileSync(WOLFPACK_CONFIG_PATH, "utf-8"));
-    if (cfg.tailscaleHostname) origins.add(`https://${cfg.tailscaleHostname}`);
+    const cfg = JSON.parse(readFileSync(join(process.env.HOME ?? "~", ".wolfpack", "config.json"), "utf-8"));
+    const h = cfg.tailscaleHostname as string; // e.g. "machine.tailnet-name.ts.net"
+    const dot = h.indexOf(".");
+    if (dot !== -1) return h.substring(dot + 1); // "tailnet-name.ts.net"
   } catch {}
-  return origins;
+  return "";
 })();
+
+function isAllowedOrigin(origin: string): boolean {
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  // Allow devices on the same tailnet only
+  if (TAILNET_SUFFIX) {
+    try {
+      const url = new URL(origin);
+      if (url.protocol === "https:" && url.hostname.endsWith("." + TAILNET_SUFFIX)) return true;
+    } catch {}
+  }
+  return false;
+}
 
 interface Settings {
   agentCmd: string;
@@ -507,7 +523,7 @@ const server = createServer(async (req, res) => {
   // CORS origin check
   const origin = req.headers.origin;
   if (origin) {
-    if (ALLOWED_ORIGINS.has(origin)) {
+    if (isAllowedOrigin(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
