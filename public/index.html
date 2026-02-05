@@ -1745,12 +1745,9 @@
 
       loadSessions();
 
-      // SW removed — lets Brave use "Add to Home screen" with name prompt
-      // while manifest display:standalone still hides address bar
+      // Register service worker for offline caching
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.getRegistrations().then(regs =>
-          regs.forEach(r => r.unregister())
-        );
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
       }
     </script>
   </body>

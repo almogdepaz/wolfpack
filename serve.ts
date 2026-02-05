@@ -281,10 +281,6 @@ const routes: Record<
     }
   },
   "GET /sw.js": (_req, res) => {
-    // Return 404 for SW to prevent Brave from treating as installable PWA
-    res.writeHead(404);
-    res.end("Not Found");
-    return;
     try {
       const content = readFileSync(join(PUBLIC_DIR, "sw.js"), "utf-8");
       res.writeHead(200, {
