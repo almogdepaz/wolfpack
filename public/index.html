@@ -583,77 +583,6 @@
         -webkit-tap-highlight-color: transparent;
       }
       .machine-remove-btn:active { color: #ff4444; }
-      .machine-add-row {
-        display: flex;
-        gap: 8px;
-        margin-top: 8px;
-      }
-      .machine-add-row input {
-        flex: 1;
-        background: #0a0a0a;
-        border: 1px solid #222;
-        border-radius: 2px;
-        padding: 10px 12px;
-        color: #e0e0e0;
-        font-size: 13px;
-        font-family: inherit;
-        outline: none;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-      }
-      .machine-add-row input:focus {
-        border-color: #00ff41;
-        box-shadow: 0 0 6px #00ff4180;
-      }
-      .machine-add-row button {
-        background: none;
-        border: 1px solid #00ff41;
-        border-radius: 2px;
-        padding: 8px 16px;
-        color: #00ff41;
-        font-size: 13px;
-        font-family: inherit;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        white-space: nowrap;
-      }
-      .machine-add-row button:active {
-        background: #00ff41;
-        color: #0a0a0a;
-      }
-      #qr-overlay {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.9);
-        z-index: 100;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-      }
-      #qr-overlay.visible { display: flex; }
-      #qr-overlay video {
-        width: 80vw;
-        max-width: 400px;
-        border-radius: 4px;
-      }
-      #qr-overlay .qr-close {
-        margin-top: 16px;
-        background: none;
-        border: 1px solid #fff;
-        border-radius: 2px;
-        color: #fff;
-        padding: 10px 24px;
-        font-size: 14px;
-        font-family: inherit;
-        cursor: pointer;
-      }
-      .machine-add-error {
-        color: #cc3333;
-        font-size: 11px;
-        margin-top: 4px;
-      }
     </style>
   </head>
   <body>
@@ -712,12 +641,8 @@
         <div class="settings-section">
           <div class="settings-label">Machines</div>
           <div id="machines-list"></div>
-          <div class="machine-add-row">
-            <input id="machine-url-input" type="url" placeholder="http://192.168.1.x:18790" autocomplete="off" autocorrect="off" autocapitalize="off" />
-            <button onclick="addMachineFromInput()">Add</button>
-            <button id="qr-scan-btn" onclick="startQrScan()" style="display:none">Scan</button>
-          </div>
-          <div id="machine-add-error" class="machine-add-error"></div>
+          <button onclick="discoverMachines()" style="margin-top:12px;background:none;border:1px solid #00ff41;border-radius:2px;padding:10px 20px;color:#00ff41;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease;width:100%">Discover Tailnet</button>
+          <div id="discover-status" style="margin-top:6px;font-size:11px;color:#555"></div>
         </div>
         <div class="settings-section">
           <div class="settings-label">Claude Config (~/.claude/CLAUDE.md)</div>
@@ -728,12 +653,6 @@
           <div id="claude-config-status" style="margin-top:8px;font-size:11px;color:#555"></div>
         </div>
       </div>
-    </div>
-
-    <!-- QR scanner overlay -->
-    <div id="qr-overlay">
-      <video id="qr-video" autoplay playsinline></video>
-      <button class="qr-close" onclick="stopQrScan()">Close</button>
     </div>
 
     <!-- Terminal view -->
@@ -805,17 +724,6 @@
         localStorage.setItem("wolfpack-machines", JSON.stringify(list));
       }
 
-      async function addMachine(url) {
-        url = url.replace(/\/+$/, "");
-        const machines = getMachines();
-        if (machines.some(m => m.url === url)) return machines;
-        const resp = await fetch(url + "/api/info");
-        const info = await resp.json();
-        machines.push({ url, name: info.name || url });
-        saveMachines(machines);
-        return machines;
-      }
-
       function removeMachine(url) {
         const machines = getMachines().filter(m => m.url !== url);
         saveMachines(machines);
@@ -832,6 +740,22 @@
           selfName = info.name || "this machine";
           selfVersion = info.version || "";
         } catch { selfName = "this machine"; }
+        // Auto-discover wolfpack peers on tailnet
+        try {
+          const d = await api("/discover");
+          const peers = d.peers || [];
+          if (peers.length) {
+            const machines = getMachines();
+            let added = 0;
+            for (const p of peers) {
+              if (!machines.some(m => m.url === p.url)) {
+                machines.push({ url: p.url, name: p.name || p.hostname });
+                added++;
+              }
+            }
+            if (added > 0) { saveMachines(machines); loadSessions(); }
+          }
+        } catch {}
       })();
 
       async function api(path, opts, machineUrl) {
@@ -1053,6 +977,9 @@
             g.outdated = g.online && g.machine.version !== newestVersion;
           });
         }
+
+        // Sort by number of open terminals (most first)
+        groups.sort((a, b) => b.sessions.length - a.sessions.length);
 
         // Build final HTML, only touch DOM if changed
         const html = groups.map(g => renderGroupHtml(g)).join("");
@@ -1569,9 +1496,6 @@
         .addEventListener("keydown", (e) => {
           if (e.key === "Enter") selectNewProject();
         });
-      document.getElementById("machine-url-input").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") addMachineFromInput();
-      });
 
       // ── Settings ──
 
@@ -1579,10 +1503,6 @@
         showView("settings");
         renderMachinesList();
         loadClaudeConfig();
-        // Show QR button if BarcodeDetector is available
-        if ("BarcodeDetector" in window) {
-          document.getElementById("qr-scan-btn").style.display = "";
-        }
       }
 
       let currentClaudeConfig = "";
@@ -1678,70 +1598,43 @@
         renderMachinesList();
       }
 
-      async function addMachineFromInput() {
-        const input = document.getElementById("machine-url-input");
-        const errorEl = document.getElementById("machine-add-error");
-        errorEl.textContent = "";
-        const url = input.value.trim();
-        if (!url) return;
+      async function discoverMachines() {
+        const statusEl = document.getElementById("discover-status");
+        statusEl.textContent = "Scanning tailnet...";
+        statusEl.style.color = "#555";
         try {
-          await addMachine(url);
-          input.value = "";
-          showView("sessions");
-          loadSessions();
-          return;
-        } catch (e) {
-          errorEl.textContent = "Failed to connect — check URL and ensure Wolfpack is running";
-        }
-      }
-
-      // ── QR Scanner ──
-      let qrStream = null;
-      let qrAnimFrame = null;
-
-      async function startQrScan() {
-        const overlay = document.getElementById("qr-overlay");
-        const video = document.getElementById("qr-video");
-        overlay.classList.add("visible");
-        try {
-          qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-          video.srcObject = qrStream;
-          const detector = new BarcodeDetector({ formats: ["qr_code"] });
-          const scanFrame = async () => {
-            if (!qrStream) return;
-            try {
-              const barcodes = await detector.detect(video);
-              if (barcodes.length > 0) {
-                const raw = barcodes[0].rawValue;
-                if (raw && (raw.startsWith("http://") || raw.startsWith("https://"))) {
-                  stopQrScan();
-                  document.getElementById("machine-url-input").value = raw;
-                  try {
-                    await addMachine(raw);
-                    document.getElementById("machine-url-input").value = "";
-                    showView("sessions");
-                    loadSessions();
-                  } catch {
-                    document.getElementById("machine-add-error").textContent = "QR detected but failed to connect";
-                  }
-                  return;
-                }
-              }
-            } catch {}
-            qrAnimFrame = requestAnimationFrame(scanFrame);
-          };
-          qrAnimFrame = requestAnimationFrame(scanFrame);
+          const data = await api("/discover");
+          if (data.error) {
+            statusEl.textContent = data.error;
+            statusEl.style.color = "#cc3333";
+            return;
+          }
+          const peers = data.peers || [];
+          if (!peers.length) {
+            statusEl.textContent = "No wolfpack instances found on tailnet";
+            statusEl.style.color = "#555";
+            return;
+          }
+          const machines = getMachines();
+          let added = 0;
+          for (const p of peers) {
+            if (!machines.some(m => m.url === p.url)) {
+              machines.push({ url: p.url, name: p.name || p.hostname });
+              added++;
+            }
+          }
+          if (added > 0) {
+            saveMachines(machines);
+            renderMachinesList();
+          }
+          statusEl.textContent = added > 0
+            ? `Found ${peers.length}, added ${added} new`
+            : `Found ${peers.length}, all already added`;
+          statusEl.style.color = "#00ff41";
         } catch {
-          stopQrScan();
+          statusEl.textContent = "Discovery failed";
+          statusEl.style.color = "#cc3333";
         }
-      }
-
-      function stopQrScan() {
-        if (qrAnimFrame) { cancelAnimationFrame(qrAnimFrame); qrAnimFrame = null; }
-        if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }
-        const overlay = document.getElementById("qr-overlay");
-        overlay.classList.remove("visible");
-        document.getElementById("qr-video").srcObject = null;
       }
 
       // ── Search ──

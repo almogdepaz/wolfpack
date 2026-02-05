@@ -507,6 +507,51 @@ const routes: Record<
     json(res, { ok: true });
   },
 
+  "GET /api/discover": async (_req, res) => {
+    // Find wolfpack instances on the tailnet
+    // System binary first — macOS GUI CLI fails without GUI context
+    const tsBin = [
+      "/usr/local/bin/tailscale",
+      "/usr/bin/tailscale",
+      "/opt/homebrew/bin/tailscale",
+      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ].find((p) => { try { execFileSync("test", ["-x", p]); return true; } catch { return false; } });
+    if (!tsBin) return json(res, { peers: [], error: "tailscale not found" });
+
+    try {
+      const { stdout } = await exec(tsBin, ["status", "--json"], { maxBuffer: 10 * 1024 * 1024 });
+      const status = JSON.parse(stdout);
+      const self = status.Self?.DNSName?.replace(/\.$/, "");
+      const peers: { hostname: string; url: string }[] = [];
+      for (const [, peer] of Object.entries(status.Peer || {}) as [string, any][]) {
+        if (!peer.Online) continue;
+        const dns = peer.DNSName?.replace(/\.$/, "");
+        if (!dns || dns === self) continue;
+        peers.push({ hostname: dns, url: `https://${dns}` });
+      }
+
+      // Probe each peer for wolfpack (parallel, 3s timeout)
+      const results = await Promise.all(
+        peers.map(async (p) => {
+          try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 3000);
+            const r = await fetch(p.url + "/api/info", { signal: ctrl.signal });
+            clearTimeout(timer);
+            const info = await r.json();
+            return { ...p, name: info.name || p.hostname, version: info.version, wolfpack: true };
+          } catch {
+            return { ...p, wolfpack: false };
+          }
+        }),
+      );
+      json(res, { peers: results.filter((r) => r.wolfpack) });
+    } catch (e: any) {
+      console.error("discover error:", e?.message || e);
+      json(res, { peers: [], error: "failed to query tailscale" });
+    }
+  },
+
   "GET /api/poll": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
