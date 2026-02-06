@@ -1491,6 +1491,15 @@
         }
       });
 
+      // Global arrow keys → tmux when in terminal and textarea not focused
+      document.addEventListener("keydown", (e) => {
+        if (currentView !== "terminal") return;
+        if (document.activeElement === msgInput) return;
+        const keyMap = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Enter: "Enter", Escape: "Escape" };
+        const mapped = keyMap[e.key];
+        if (mapped) { e.preventDefault(); sendKey(mapped); }
+      });
+
       document
         .getElementById("new-project-name")
         .addEventListener("keydown", (e) => {
