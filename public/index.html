@@ -1127,6 +1127,8 @@
           if (data.session) {
             currentSession = data.session;
             currentMachine = machine;
+            // Refresh session list so switcher has the new session
+            await loadSessions();
             loadSessionSwitcher();
             resizePane();
             startPolling();
@@ -1291,6 +1293,8 @@
           }
         }
         sel.innerHTML = opts;
+        // Set value programmatically — webkit ignores selected attr via innerHTML
+        sel.value = currentMachine ? currentMachine + "|" + currentSession : currentSession;
       }
 
       function switchSession(val) {
