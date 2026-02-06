@@ -237,6 +237,12 @@ else
 fi
 
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+
+# Remove macOS quarantine flag (prevents "damaged and can't be opened" error)
+if $IS_MACOS; then
+  xattr -cr "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null
+fi
+
 echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
 echo ""
 
