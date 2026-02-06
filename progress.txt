@@ -31,3 +31,18 @@
 - cleaned dead code in sw.js route (unreachable `readFileSync` block after early return)
 - removed dynamic `import("node:fs/promises")` — no longer needed
 - verified: all 6 assets still load correctly via import, bun compat tests pass (24/24)
+
+## 2026-02-06: Phase 1.4 — refactor cli.ts service generation (COMPLETE)
+- rewrote `generatePlist()`: ProgramArguments now uses `process.execPath` (the compiled binary) instead of tsx/serve.ts
+- rewrote `generateSystemdUnit()`: ExecStart now uses `process.execPath` instead of tsx/serve.ts
+- removed all `import.meta.dirname` usage from cli.ts (was used for tsx/serve.ts paths)
+- removed all `tsx` and `node_modules` references from service generation
+- simplified PATH env in both plist and systemd unit — no longer includes node's bin dir
+- removed `checkNodeVersion()` function entirely — no longer needed with binary distribution
+- removed `node` from missing deps check in `setup()`
+- removed `nodejs` from apt package map
+- removed `npm unlink -g wolfpack` from `uninstall()` — no npm in binary world
+- updated uninstall messages to reference binary path instead of npm global command
+- updated shebang from `#!/usr/bin/env -S npx tsx` to `#!/usr/bin/env bun`
+- removed unused `execFileSync` import
+- verified: no `import.meta.dirname` or `tsx` references remain in cli.ts, file parses cleanly

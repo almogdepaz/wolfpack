@@ -1,5 +1,5 @@
-#!/usr/bin/env -S npx tsx
-import { execSync, execFileSync } from "node:child_process";
+#!/usr/bin/env bun
+import { execSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -108,27 +108,6 @@ function check(name: string, cmd: string): boolean {
   }
 }
 
-function checkNodeVersion(): boolean {
-  try {
-    const version = execSync("node --version", { encoding: "utf-8" }).trim();
-    const match = version.match(/^v(\d+)\.(\d+)/);
-    if (!match) {
-      print(`  ${red("✗")} Node.js (could not parse version)`);
-      return false;
-    }
-    const [, major, minor] = match.map(Number);
-    // import.meta.dirname requires Node 20.11+
-    if (major > 20 || (major === 20 && minor >= 11)) {
-      print(`  ${green("✓")} Node.js ${version}`);
-      return true;
-    }
-    print(`  ${red("✗")} Node.js ${version} (need >=20.11)`);
-    return false;
-  } catch {
-    print(`  ${red("✗")} Node.js not found`);
-    return false;
-  }
-}
 
 function remoteUrl(config: Config): string | null {
   if (!config.tailscaleHostname) return null;
@@ -157,7 +136,6 @@ async function setup() {
   // Check prerequisites
   print(bold("  Checking prerequisites...\n"));
 
-  const hasNode = checkNodeVersion();
   const hasTmux = check("tmux", "tmux -V");
   const tsBin = tailscaleBin();
   const hasTailscale = !!tsBin;
@@ -170,7 +148,6 @@ async function setup() {
   print("");
 
   const missing: string[] = [];
-  if (!hasNode) missing.push("node");
   if (!hasTmux) missing.push("tmux");
   if (!hasTailscale) missing.push("tailscale");
 
@@ -218,7 +195,6 @@ async function setup() {
     } else if (IS_LINUX) {
       // Map package names to apt package names
       const aptPkgMap: Record<string, string> = {
-        node: "nodejs",
         tmux: "tmux",
       };
       const aptPkgs = missing
@@ -417,9 +393,7 @@ const SYSTEMD_PATH = join(
 );
 
 function generatePlist(): string {
-  const nodePath = process.execPath;
-  const tsxPath = join(import.meta.dirname, "node_modules", ".bin", "tsx");
-  const servePath = join(import.meta.dirname, "serve.ts");
+  const binaryPath = process.execPath;
   const config = loadConfig();
   const env: Record<string, string> = {};
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
@@ -437,13 +411,12 @@ function generatePlist(): string {
   <string>${PLIST_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${tsxPath}</string>
-    <string>${servePath}</string>
+    <string>${binaryPath}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${join(nodePath, "..")}:/usr/local/bin:/usr/bin:/bin</string>
+    <string>/usr/local/bin:/usr/bin:/bin</string>
 ${envEntries}
   </dict>
   <key>RunAtLoad</key>
@@ -459,12 +432,10 @@ ${envEntries}
 }
 
 function generateSystemdUnit(): string {
-  const nodePath = process.execPath;
-  const tsxPath = join(import.meta.dirname, "node_modules", ".bin", "tsx");
-  const servePath = join(import.meta.dirname, "serve.ts");
+  const binaryPath = process.execPath;
   const config = loadConfig();
   const envLines: string[] = [
-    `Environment=PATH=${join(nodePath, "..")}:/usr/local/bin:/usr/bin:/bin`,
+    `Environment=PATH=/usr/local/bin:/usr/bin:/bin`,
   ];
   if (config?.devDir) envLines.push(`Environment=WOLFPACK_DEV_DIR=${config.devDir}`);
   if (config?.port) envLines.push(`Environment=WOLFPACK_PORT=${config.port}`);
@@ -475,7 +446,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${tsxPath} ${servePath}
+ExecStart=${binaryPath}
 Restart=always
 RestartSec=5
 ${envLines.join("\n")}
@@ -647,11 +618,6 @@ function uninstall() {
   // Stop and remove launchd service
   serviceUninstall();
 
-  // Remove npm global link
-  try {
-    execSync("npm unlink -g wolfpack 2>/dev/null");
-  } catch {}
-
   // Remove config dir
   const rmDir = WOLFPACK_DIR;
   try {
@@ -661,9 +627,9 @@ function uninstall() {
   print("");
   print(green("  Wolfpack uninstalled."));
   print(dim(`  Removed ${rmDir}`));
-  print(dim("  Removed global 'wolfpack' command"));
   print("");
-  print(dim("  The app source remains where you cloned it."));
+  print(dim("  The wolfpack binary remains at: " + process.execPath));
+  print(dim("  Delete it manually if you want a full removal."));
   print("");
 }
 

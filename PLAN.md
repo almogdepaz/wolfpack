@@ -51,12 +51,12 @@ All 6 node: modules (`node:http`, `node:fs`, `node:child_process`, `node:os`, `n
 - [x] remove `import.meta.dirname` usage for public dir resolution (keep for other paths if needed)
 
 ### 1.4 refactor cli.ts service generation
-- [ ] launchd plist: `ProgramArguments` should point to the binary itself (`wolfpack`), not `tsx serve.ts`
-- [ ] systemd unit: `ExecStart` should point to the binary itself
-- [ ] remove all references to `tsx`, `node_modules`, `process.execPath` in service generation
-- [ ] binary path: use `process.execPath` (in bun compile this is the binary itself)
-- [ ] remove `checkNodeVersion()` from setup — no longer needed
-- [ ] remove node from missing deps check
+- [x] launchd plist: `ProgramArguments` should point to the binary itself (`wolfpack`), not `tsx serve.ts`
+- [x] systemd unit: `ExecStart` should point to the binary itself
+- [x] remove all references to `tsx`, `node_modules`, `process.execPath` in service generation
+- [x] binary path: use `process.execPath` (in bun compile this is the binary itself)
+- [x] remove `checkNodeVersion()` from setup — no longer needed
+- [x] remove node from missing deps check
 
 ### 1.5 qr.ts
 - [ ] inline or vendor `qrcode-terminal` if it causes bun issues, otherwise leave as-is (bun bundles npm deps automatically)
