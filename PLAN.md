@@ -59,7 +59,10 @@ All 6 node: modules (`node:http`, `node:fs`, `node:child_process`, `node:os`, `n
 - [x] remove node from missing deps check
 
 ### 1.5 qr.ts
-- [ ] inline or vendor `qrcode-terminal` if it causes bun issues, otherwise leave as-is (bun bundles npm deps automatically)
+- [x] inline or vendor `qrcode-terminal` if it causes bun issues, otherwise leave as-is (bun bundles npm deps automatically)
+
+#### qr.ts results
+Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Works perfectly in both cases — pure JS, 12 modules bundled, QR output renders correctly from compiled binary. No vendoring or inlining needed; leaving as-is.
 
 ---
 

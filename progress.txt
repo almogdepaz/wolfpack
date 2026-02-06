@@ -46,3 +46,11 @@
 - updated shebang from `#!/usr/bin/env -S npx tsx` to `#!/usr/bin/env bun`
 - removed unused `execFileSync` import
 - verified: no `import.meta.dirname` or `tsx` references remain in cli.ts, file parses cleanly
+
+## 2026-02-06: Phase 1.5 — qr.ts verification (COMPLETE)
+- tested `qrcode-terminal` under bun runtime: works perfectly
+- tested `qrcode-terminal` under `bun build --compile`: bundles and runs correctly (12 modules bundled)
+- QR output renders correctly from compiled binary
+- pure JS package, zero native deps — no vendoring or inlining needed
+- decision: leave as-is, bun handles it automatically
+- phase 1 is now FULLY COMPLETE
