@@ -519,7 +519,12 @@ const routes: Record<
     if (!tsBin) return json(res, { peers: [], error: "tailscale not found" });
 
     try {
-      const { stdout } = await exec(tsBin, ["status", "--json"], { maxBuffer: 10 * 1024 * 1024 });
+      // Use login shell so macOS Tailscale GUI CLI gets the Aqua session context
+      // (direct execFile fails from launchd services — no Mach bootstrap namespace)
+      const { stdout } = await exec(
+        "/bin/sh", ["-l", "-c", `"${tsBin}" status --json`],
+        { maxBuffer: 10 * 1024 * 1024 },
+      );
       const status = JSON.parse(stdout);
       const self = status.Self?.DNSName?.replace(/\.$/, "");
       const peers: { hostname: string; url: string }[] = [];
