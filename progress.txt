@@ -89,3 +89,8 @@
 - kept wolf ASCII art banner
 - still runs `wolfpack setup` at end (with fallback to direct binary path if not on PATH yet)
 - bash syntax check passes
+
+## 2026-02-06: Phase 4.1 — remove package-lock.json (COMPLETE)
+- removed `package-lock.json` from git tracking (`git rm -f`)
+- added `package-lock.json` to `.gitignore` to prevent re-addition
+- bun uses `bun.lock` instead; npm lockfile is no longer needed
