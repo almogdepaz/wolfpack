@@ -12,13 +12,7 @@
       name="apple-mobile-web-app-status-bar-style"
       content="black-translucent"
     />
-    <link rel="manifest" id="manifest-link" href="/manifest.json" />
-    <script>
-      // Pass ?name= param to manifest for custom PWA app naming
-      const p = new URLSearchParams(window.location.search);
-      const n = p.get("name");
-      if (n) document.getElementById("manifest-link").href = "/manifest.json?name=" + encodeURIComponent(n);
-    </script>
+    <link rel="manifest" href="/manifest.json" />
     <title>Wolfpack</title>
     <style>
       * {
@@ -59,8 +53,8 @@
         justify-self: center;
       }
       header h1 {
-        font-size: 13px;
-        font-weight: 600;
+        font-size: 15px;
+        font-weight: 900;
         text-transform: uppercase;
         letter-spacing: 3px;
         color: #00ff41;
@@ -77,15 +71,15 @@
         background: none;
         border: 1px solid #00ff41;
         color: #00ff41;
-        font-size: 13px;
+        font-size: 11px;
         font-family: inherit;
         text-transform: uppercase;
         letter-spacing: 1px;
         cursor: pointer;
-        padding: 8px 14px;
+        padding: 6px 10px;
         border-radius: 2px;
         transition: all 0.15s ease;
-        min-height: 38px;
+        min-height: 34px;
         -webkit-tap-highlight-color: transparent;
       }
       .back-btn:active {
@@ -113,11 +107,11 @@
         background: #111;
         border: 1px solid #222;
         border-radius: 2px;
-        padding: 14px 16px;
-        margin-bottom: 8px;
+        padding: 12px 14px;
+        margin-bottom: 6px;
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
         transition: all 0.15s ease;
@@ -143,14 +137,14 @@
         background: #333;
       }
       .card-machine {
-        font-size: 10px;
-        color: #444;
+        font-size: 9px;
+        color: #383838;
         text-transform: uppercase;
         letter-spacing: 1px;
       }
       .card-name {
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 800;
         color: #00ff41;
         text-transform: uppercase;
         letter-spacing: 2px;
@@ -386,67 +380,6 @@
         text-transform: uppercase;
         letter-spacing: 2px;
       }
-      .preset-btn {
-        display: block;
-        width: 100%;
-        background: #111;
-        border: 1px solid #222;
-        border-radius: 2px;
-        padding: 12px 16px;
-        margin-bottom: 6px;
-        color: #b0b0b0;
-        font-size: 13px;
-        font-family: inherit;
-        text-align: left;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        transition: all 0.15s ease;
-      }
-      .preset-btn:active {
-        background: #1a1a1a;
-      }
-      .preset-btn.selected {
-        border-color: #00ff41;
-        color: #00ff41;
-      }
-      .custom-cmd-row {
-        display: flex;
-        gap: 8px;
-        margin-top: 12px;
-      }
-      .custom-cmd-row input {
-        flex: 1;
-        background: #0a0a0a;
-        border: 1px solid #222;
-        border-radius: 2px;
-        padding: 10px 12px;
-        color: #e0e0e0;
-        font-size: 13px;
-        font-family: inherit;
-        outline: none;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-      }
-      .custom-cmd-row input:focus {
-        border-color: #00ff41;
-        box-shadow: 0 0 6px #00ff4180;
-      }
-      .custom-cmd-row button {
-        background: none;
-        border: 1px solid #00ff41;
-        border-radius: 2px;
-        padding: 8px 16px;
-        color: #00ff41;
-        font-size: 13px;
-        font-family: inherit;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        cursor: pointer;
-        transition: all 0.15s ease;
-      }
-      .custom-cmd-row button:active {
-        background: #00ff41;
-        color: #0a0a0a;
-      }
       .session-select {
         background: transparent;
         border: none;
@@ -498,14 +431,14 @@
       }
       .settings-gear {
         background: none;
-        border: 1px solid #555;
+        border: 1px solid #00ff41;
         border-radius: 2px;
         color: #b0b0b0;
-        font-size: 18px;
+        font-size: 22px;
         cursor: pointer;
         padding: 6px;
-        min-width: 36px;
-        min-height: 36px;
+        min-width: 40px;
+        min-height: 40px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -513,7 +446,8 @@
         -webkit-tap-highlight-color: transparent;
       }
       .settings-gear:active {
-        color: #00ff41;
+        background: #00ff41;
+        color: #0a0a0a;
       }
       .search-btn {
         background: none;
@@ -596,28 +530,28 @@
         0%, 100% { opacity: 1; }
         50% { opacity: 0.4; }
       }
-      .machine-group { margin-bottom: 12px; }
+      .machine-group { margin-bottom: 6px; }
       .machine-header {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 8px 4px 4px;
-        font-size: 11px;
-        color: #555;
+        gap: 6px;
+        padding: 6px 4px 3px;
+        font-size: 10px;
+        color: #444;
         text-transform: uppercase;
         letter-spacing: 2px;
       }
-      .machine-header .dot { width: 7px; height: 7px; }
+      .machine-header .dot { width: 6px; height: 6px; }
       .machine-add-btn {
         margin-left: auto;
         background: none;
         border: 1px solid #00ff41;
         border-radius: 2px;
         color: #00ff41;
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 700;
-        width: 30px;
-        height: 30px;
+        width: 26px;
+        height: 26px;
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -625,7 +559,7 @@
         -webkit-tap-highlight-color: transparent;
         transition: all 0.15s ease;
       }
-      .machine-add-btn:active { border-color: #00ff41; color: #00ff41; }
+      .machine-add-btn:active { background: #00ff41; color: #0a0a0a; }
       .machine-item {
         display: flex;
         align-items: center;
@@ -637,7 +571,7 @@
         margin-bottom: 6px;
       }
       .machine-item .dot { width: 8px; height: 8px; }
-      .machine-item-name { flex: 1; font-size: 13px; color: #b0b0b0; }
+      .machine-item-name { flex: 1; font-size: 13px; color: #b0b0b0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .machine-item-url { font-size: 11px; color: #444; margin-left: 4px; }
       .machine-remove-btn {
         background: none;
@@ -649,77 +583,6 @@
         -webkit-tap-highlight-color: transparent;
       }
       .machine-remove-btn:active { color: #ff4444; }
-      .machine-add-row {
-        display: flex;
-        gap: 8px;
-        margin-top: 8px;
-      }
-      .machine-add-row input {
-        flex: 1;
-        background: #0a0a0a;
-        border: 1px solid #222;
-        border-radius: 2px;
-        padding: 10px 12px;
-        color: #e0e0e0;
-        font-size: 13px;
-        font-family: inherit;
-        outline: none;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-      }
-      .machine-add-row input:focus {
-        border-color: #00ff41;
-        box-shadow: 0 0 6px #00ff4180;
-      }
-      .machine-add-row button {
-        background: none;
-        border: 1px solid #00ff41;
-        border-radius: 2px;
-        padding: 8px 16px;
-        color: #00ff41;
-        font-size: 13px;
-        font-family: inherit;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        cursor: pointer;
-        transition: all 0.15s ease;
-        white-space: nowrap;
-      }
-      .machine-add-row button:active {
-        background: #00ff41;
-        color: #0a0a0a;
-      }
-      #qr-overlay {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.9);
-        z-index: 100;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-      }
-      #qr-overlay.visible { display: flex; }
-      #qr-overlay video {
-        width: 80vw;
-        max-width: 400px;
-        border-radius: 4px;
-      }
-      #qr-overlay .qr-close {
-        margin-top: 16px;
-        background: none;
-        border: 1px solid #fff;
-        border-radius: 2px;
-        color: #fff;
-        padding: 10px 24px;
-        font-size: 14px;
-        font-family: inherit;
-        cursor: pointer;
-      }
-      .machine-add-error {
-        color: #cc3333;
-        font-size: 11px;
-        margin-top: 4px;
-      }
     </style>
   </head>
   <body>
@@ -728,7 +591,7 @@
         <button class="back-btn" id="back-btn">&lt; BACK</button>
       </div>
       <div class="header-center" id="header-center">
-        <div id="header-machine-label" style="display:none;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:1px;text-align:center;line-height:1;margin-bottom:2px"></div>
+        <div id="header-machine-label" style="display:none;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:1px;text-align:center;line-height:1;margin-bottom:8px"></div>
         <div style="display:flex;align-items:center;gap:8px">
           <span id="wolf-icon" style="font-size:20px;line-height:1">🐺</span>
           <h1 id="header-title">wolfpack</h1>
@@ -762,9 +625,14 @@
           autocorrect="off"
           autocapitalize="off"
         />
-        <button onclick="createNewProject()">Create</button>
+        <button onclick="selectNewProject()">Create</button>
       </div>
       <div id="project-list" class="list"></div>
+    </div>
+
+    <!-- Agent picker view -->
+    <div id="agent-view" class="view">
+      <div id="agent-list" class="list"></div>
     </div>
 
     <!-- Settings view -->
@@ -773,38 +641,18 @@
         <div class="settings-section">
           <div class="settings-label">Machines</div>
           <div id="machines-list"></div>
-          <div class="machine-add-row">
-            <input id="machine-url-input" type="url" placeholder="http://192.168.1.x:18790" autocomplete="off" autocorrect="off" autocapitalize="off" />
-            <button onclick="addMachineFromInput()">Add</button>
-            <button id="qr-scan-btn" onclick="startQrScan()" style="display:none">Scan</button>
-          </div>
-          <div id="machine-add-error" class="machine-add-error"></div>
+          <button onclick="discoverMachines()" style="margin-top:12px;background:none;border:1px solid #00ff41;border-radius:2px;padding:10px 20px;color:#00ff41;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease;width:100%">Discover Tailnet</button>
+          <div id="discover-status" style="margin-top:6px;font-size:11px;color:#555"></div>
         </div>
         <div class="settings-section">
-          <div class="settings-label">Agent Command</div>
-          <div id="preset-list"></div>
-          <div class="settings-label" style="margin-top: 16px">
-            Custom Command
-          </div>
-          <div class="custom-cmd-row">
-            <input
-              id="custom-cmd"
-              type="text"
-              placeholder="e.g. aider --model gpt-4o"
-              autocomplete="off"
-              autocorrect="off"
-              autocapitalize="off"
-            />
-            <button onclick="saveCustomCmd()">Save</button>
-          </div>
+          <div class="settings-label">Claude Config (~/.claude/CLAUDE.md)</div>
+          <div id="claude-config-preview" style="background:#0a0a0a;border:1px solid #222;border-radius:2px;padding:10px;font-size:11px;color:#888;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-bottom:12px">Loading...</div>
+          <div class="settings-label">Push to machines</div>
+          <div id="claude-config-machines" style="margin-bottom:12px"></div>
+          <button onclick="pushClaudeConfig()" style="background:none;border:1px solid #00ff41;border-radius:2px;padding:10px 20px;color:#00ff41;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease">Push Selected</button>
+          <div id="claude-config-status" style="margin-top:8px;font-size:11px;color:#555"></div>
         </div>
       </div>
-    </div>
-
-    <!-- QR scanner overlay -->
-    <div id="qr-overlay">
-      <video id="qr-video" autoplay playsinline></video>
-      <button class="qr-close" onclick="stopQrScan()">Close</button>
     </div>
 
     <!-- Terminal view -->
@@ -839,7 +687,7 @@
         <button class="action-btn" onclick="sendKey('Escape')">Esc</button>
         <button class="action-btn" onclick="sendKey('Up')" style="font-size:20px">&#9650;</button>
         <button class="action-btn" onclick="sendKey('Down')" style="font-size:20px">&#9660;</button>
-        <button class="action-btn danger" onclick="closeSession()">^C</button>
+        <button class="action-btn danger" onclick="confirmKillSession()">^C</button>
       </div>
       <div id="input-bar">
         <textarea
@@ -876,31 +724,38 @@
         localStorage.setItem("wolfpack-machines", JSON.stringify(list));
       }
 
-      async function addMachine(url) {
-        url = url.replace(/\/+$/, "");
-        const machines = getMachines();
-        if (machines.some(m => m.url === url)) return machines;
-        const resp = await fetch(url + "/api/info");
-        const info = await resp.json();
-        machines.push({ url, name: info.name || url });
-        saveMachines(machines);
-        return machines;
-      }
-
       function removeMachine(url) {
         const machines = getMachines().filter(m => m.url !== url);
         saveMachines(machines);
         return machines;
       }
 
-      // Self name, fetched once
+      // Self info, fetched once
       let selfName = "";
+      let selfVersion = "";
       (async () => {
         try {
           const resp = await fetch("/api/info");
           const info = await resp.json();
           selfName = info.name || "this machine";
+          selfVersion = info.version || "";
         } catch { selfName = "this machine"; }
+        // Auto-discover wolfpack peers on tailnet
+        try {
+          const d = await api("/discover");
+          const peers = d.peers || [];
+          if (peers.length) {
+            const machines = getMachines();
+            let added = 0;
+            for (const p of peers) {
+              if (!machines.some(m => m.url === p.url)) {
+                machines.push({ url: p.url, name: p.name || p.hostname });
+                added++;
+              }
+            }
+            if (added > 0) { saveMachines(machines); loadSessions(); }
+          }
+        } catch {}
       })();
 
       async function api(path, opts, machineUrl) {
@@ -923,10 +778,12 @@
 
         const switcher = document.getElementById("session-switcher");
         const wolfIcon = document.getElementById("wolf-icon");
+        const headerCenter = document.getElementById("header-center");
 
         switcher.style.display = "none";
         document.getElementById("search-btn").style.display = "none";
         document.getElementById("header-machine-label").style.display = "none";
+        headerCenter.style.transform = "";
 
         // Stop session auto-refresh when leaving sessions view
         if (sessionRefreshTimer) {
@@ -950,7 +807,15 @@
             loadSessions();
           };
           gear.style.display = "none";
-          title.textContent = "new session";
+          title.textContent = "select project";
+          wolfIcon.style.display = "none";
+        } else if (name === "agent") {
+          back.style.display = "block";
+          back.onclick = () => {
+            showView("projects");
+          };
+          gear.style.display = "none";
+          title.textContent = "select agent";
           wolfIcon.style.display = "none";
         } else if (name === "settings") {
           back.style.display = "block";
@@ -975,6 +840,7 @@
           title.textContent = "";
           wolfIcon.style.display = "";
           switcher.style.display = "";
+          headerCenter.style.transform = "";
           document.getElementById("search-btn").style.display = "";
           const hml = document.getElementById("header-machine-label");
           if (getMachines().length > 0) {
@@ -993,92 +859,148 @@
       // Shared session groups cache for switcher reuse
       let lastSessionGroups = [];
 
-      async function fetchSessionGroups() {
-        const machines = getMachines();
-        const fetches = [
-          api("/sessions").then(d => ({ machine: { url: "", name: selfName || "this machine" }, sessions: d.sessions || [], online: true }))
-            .catch(() => ({ machine: { url: "", name: selfName || "this machine" }, sessions: [], online: false })),
-          ...machines.map(m =>
-            api("/sessions", undefined, m.url)
-              .then(d => ({ machine: m, sessions: d.sessions || [], online: true }))
-              .catch(() => ({ machine: m, sessions: [], online: false }))
-          )
-        ];
-        const groups = await Promise.all(fetches);
-        groups.sort((a, b) => {
-          if (!a.machine.url) return -1;
-          if (!b.machine.url) return 1;
-          return a.machine.name.localeCompare(b.machine.name);
-        });
-        lastSessionGroups = groups;
-        allSessions = [];
-        groups.forEach(g => g.sessions.forEach(s => allSessions.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name })));
-        return groups;
+      function renderGroupHtml(g) {
+        const mUrl = esc(g.machine.url);
+        const mName = esc(g.machine.name);
+        const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
+        const versionWarning = g.outdated ? `<span style="color:#ff6600;margin-left:6px;font-size:11px;padding:3px 8px;border:1px solid #00ff41;border-radius:2px;cursor:pointer;-webkit-tap-highlight-color:transparent;letter-spacing:1px" onclick="event.stopPropagation();alert('Running v${esc(g.machine.version || "?")} — newer version available on another machine')">⚠ UPDATE</span>` : "";
+        let html = `<div class="machine-group" data-machine="${mUrl}">`;
+        html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}${versionWarning}<button class="machine-add-btn" onclick="showProjectPicker('${mUrl}')">+</button></div>`;
+        if (g.pending) {
+          html += `<div style="padding:4px 4px;color:#555;font-size:11px">Connecting...</div>`;
+        } else if (g.online && g.sessions.length) {
+          html += g.sessions.map(s => {
+            const lastLine = s.lastLine || "";
+            const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
+            const dotClass = needsAttention ? "yellow" : "green";
+            return `<div class="card" onclick="openSession('${esc(s.name)}', '${mUrl}')">
+              <div class="dot ${dotClass}"></div>
+              <div class="card-info">
+                <div class="card-machine">${mName}</div>
+                <div class="card-name">${esc(s.name)}</div>
+                <div class="card-preview">${esc(lastLine)}</div>
+              </div>
+              <button class="kill-btn" onclick="killSession('${esc(s.name)}', event, '${mUrl}')">&times;</button>
+            </div>`;
+          }).join("");
+        } else if (!g.online) {
+          html += `<div style="padding:4px 4px;color:#555;font-size:11px">Offline</div>`;
+        }
+        html += `</div>`;
+        return html;
       }
+
+      function renderSingleMachineHtml(g) {
+        let html = '<div class="new-btn" onclick="showProjectPicker()">+ New Session</div>';
+        if (g.online && g.sessions.length) {
+          html += g.sessions.map(s => {
+            const lastLine = s.lastLine || "";
+            const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
+            const dotClass = needsAttention ? "yellow" : "green";
+            return `<div class="card" onclick="openSession('${esc(s.name)}')">
+              <div class="dot ${dotClass}"></div>
+              <div class="card-info">
+                <div class="card-name">${esc(s.name)}</div>
+                <div class="card-preview">${esc(lastLine)}</div>
+              </div>
+              <button class="kill-btn" onclick="killSession('${esc(s.name)}', event)">&times;</button>
+            </div>`;
+          }).join("");
+        }
+        return html;
+      }
+
+      function fetchMachine(machineUrl, machineMeta) {
+        return Promise.all([api("/sessions", undefined, machineUrl || undefined), api("/info", undefined, machineUrl || undefined)])
+          .then(([d, info]) => ({
+            machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
+            sessions: d.sessions || [], online: true, pending: false,
+          }))
+          .catch(() => ({
+            machine: { ...machineMeta, url: machineUrl, version: "" },
+            sessions: [], online: false, pending: false,
+          }));
+      }
+
+      let firstLoad = true;
+      let lastSessionsHtml = "";
 
       async function loadSessions() {
         const el = document.getElementById("session-list");
         const machines = getMachines();
-        const groups = await fetchSessionGroups();
         const multiMachine = machines.length > 0;
 
-        // Single-machine: flat list like original
+        // Single-machine: just fetch and render
         if (!multiMachine) {
-          const self = groups[0];
-          let html = '<div class="new-btn" onclick="showProjectPicker()">+ New Session</div>';
-          if (self && self.online && self.sessions.length) {
-            html += self.sessions.map(s => {
-              const lastLine = s.lastLine || "";
-              const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
-              const dotClass = needsAttention ? "yellow" : "green";
-              return `<div class="card" onclick="openSession('${esc(s.name)}')">
-                <div class="dot ${dotClass}"></div>
-                <div class="card-info">
-                  <div class="card-name">${esc(s.name)}</div>
-                  <div class="card-preview">${esc(lastLine)}</div>
-                </div>
-                <button class="kill-btn" onclick="killSession('${esc(s.name)}', event)">&times;</button>
-              </div>`;
-            }).join("");
-          }
-          el.innerHTML = html;
+          const g = await fetchMachine("", { name: selfName || "this machine" });
+          lastSessionGroups = [g];
+          allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
+          const html = renderSingleMachineHtml(g);
+          if (html !== lastSessionsHtml) { el.innerHTML = html; lastSessionsHtml = html; }
+          firstLoad = false;
           return;
         }
 
-        // Multi-machine: grouped by machine
-        let html = "";
-        for (const g of groups) {
-          const mUrl = esc(g.machine.url);
-          const mName = esc(g.machine.name);
-          const statusDot = g.online ? "green" : "red";
-          html += `<div class="machine-group">`;
-          html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<button class="machine-add-btn" onclick="showProjectPicker('${mUrl}')">+</button></div>`;
-          if (g.online && g.sessions.length) {
-            html += g.sessions.map(s => {
-              const lastLine = s.lastLine || "";
-              const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
-              const dotClass = needsAttention ? "yellow" : "green";
-              return `<div class="card" onclick="openSession('${esc(s.name)}', '${mUrl}')">
-                <div class="dot ${dotClass}"></div>
-                <div class="card-info">
-                  <div class="card-machine">${mName}</div>
-                  <div class="card-name">${esc(s.name)}</div>
-                  <div class="card-preview">${esc(lastLine)}</div>
-                </div>
-                <button class="kill-btn" onclick="killSession('${esc(s.name)}', event, '${mUrl}')">&times;</button>
-              </div>`;
-            }).join("");
-          } else if (!g.online) {
-            html += `<div style="padding:4px 4px;color:#555;font-size:11px">Offline</div>`;
-          }
-          html += `</div>`;
+        // Multi-machine
+        const allMachines = [
+          { url: "", meta: { name: selfName || "this machine" } },
+          ...machines.map(m => ({ url: m.url, meta: m })),
+        ];
+
+        // Only show placeholders on first load
+        if (firstLoad) {
+          el.innerHTML = allMachines.map(m =>
+            renderGroupHtml({ machine: { ...m.meta, url: m.url }, sessions: [], online: false, pending: true })
+          ).join("");
         }
-        el.innerHTML = html;
+
+        const groups = new Array(allMachines.length);
+
+        const promises = allMachines.map((m, i) =>
+          fetchMachine(m.url, m.meta).then(g => {
+            groups[i] = g;
+            if (firstLoad) {
+              const placeholder = el.querySelector(`[data-machine="${esc(m.url)}"]`);
+              if (placeholder) {
+                const tmp = document.createElement("div");
+                tmp.innerHTML = renderGroupHtml(g);
+                placeholder.replaceWith(tmp.firstElementChild);
+              }
+            }
+          })
+        );
+
+        await Promise.all(promises);
+
+        // Version outdated check
+        const versions = groups.filter(g => g.online && g.machine.version).map(g => g.machine.version);
+        const newestVersion = versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0] || "";
+        if (newestVersion) {
+          groups.forEach(g => {
+            g.outdated = g.online && g.machine.version !== newestVersion;
+          });
+        }
+
+        // Sort by number of open terminals (most first)
+        groups.sort((a, b) => b.sessions.length - a.sessions.length);
+
+        // Build final HTML, only touch DOM if changed
+        const html = groups.map(g => renderGroupHtml(g)).join("");
+        if (html !== lastSessionsHtml) {
+          el.innerHTML = html;
+          lastSessionsHtml = html;
+        }
+
+        firstLoad = false;
+        lastSessionGroups = groups;
+        allSessions = [];
+        groups.forEach(g => g.sessions.forEach(s => allSessions.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name })));
       }
 
       function openSession(name, machineUrl) {
         currentSession = name;
         currentMachine = machineUrl || "";
+        lastRawPane = null;
         showView("terminal");
         document.getElementById("terminal").textContent = "";
         resizePane();
@@ -1128,7 +1050,7 @@
           el.innerHTML = data.projects
             .map(
               (p) => `
-      <div class="card" onclick="createSession('${esc(p)}')">
+      <div class="card" onclick="selectProject('${esc(p)}')">
         <div class="dot blue"></div>
         <div class="card-name">${esc(p)}</div>
       </div>
@@ -1146,46 +1068,67 @@
         term.innerHTML = '<span class="loading-text">Starting session in ' + esc(label) + '\u2026</span>';
       }
 
-      async function createSession(project) {
-        const machine = projectMachine;
-        showTerminalLoading(project);
-        try {
-          const data = await api("/create", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project }),
-          }, machine);
-          if (data.session) {
-            currentSession = data.session;
-            currentMachine = machine;
-            loadSessionSwitcher();
-            resizePane();
-            startPolling();
-          } else {
-            showView("sessions");
-            loadSessions();
-          }
-        } catch {
-          showView("sessions");
-          loadSessions();
-        }
+      let selectedProject = "";
+      let isNewProject = false;
+
+      function selectProject(project) {
+        selectedProject = project;
+        isNewProject = false;
+        showAgentPicker();
       }
 
-      async function createNewProject() {
+      function selectNewProject() {
         const input = document.getElementById("new-project-name");
         const name = input.value.trim();
         if (!name) return;
-        const machine = projectMachine;
-        showTerminalLoading(name);
+        selectedProject = name;
+        isNewProject = true;
+        showAgentPicker();
+      }
+
+      async function showAgentPicker() {
+        showView("agent");
+        const el = document.getElementById("agent-list");
+        el.innerHTML = '<div class="empty">Loading...</div>';
         try {
+          const data = await api("/settings", undefined, projectMachine);
+          const presets = Object.entries(data.presets || {});
+          const customCmds = data.settings?.customCmds || [];
+          let html = presets.map(([label, cmd]) => `
+            <div class="card" onclick="createSessionWithAgent('${esc(cmd)}')">
+              <div class="dot blue"></div>
+              <div class="card-name">${esc(label)}</div>
+            </div>
+          `).join("");
+          html += customCmds.map(cmd => `
+            <div class="card" onclick="createSessionWithAgent('${esc(cmd)}')">
+              <div class="dot green"></div>
+              <div class="card-name">${esc(cmd)}</div>
+            </div>
+          `).join("");
+          el.innerHTML = html;
+        } catch {
+          el.innerHTML = '<div class="empty">Failed to load agents</div>';
+        }
+      }
+
+      async function createSessionWithAgent(cmd) {
+        const machine = projectMachine;
+        showTerminalLoading(selectedProject);
+        try {
+          const body = isNewProject
+            ? { newProject: selectedProject, cmd }
+            : { project: selectedProject, cmd };
           const data = await api("/create", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ newProject: name }),
+            body: JSON.stringify(body),
           }, machine);
           if (data.session) {
             currentSession = data.session;
             currentMachine = machine;
+            // Refresh session list so switcher has the new session
+            await loadSessions();
             loadSessionSwitcher();
             resizePane();
             startPolling();
@@ -1208,7 +1151,7 @@
 
       function schedulePoll() {
         if (pollTimer) clearTimeout(pollTimer);
-        const interval = fastPoll ? 200 : 1000;
+        const interval = fastPoll ? 100 : 500;
         pollTimer = setTimeout(() => { poll().then(schedulePoll); }, interval);
       }
 
@@ -1283,7 +1226,6 @@
         void btn.offsetWidth; // force reflow
         btn.classList.add("send-flash");
 
-        const paneBeforeSend = lastRawPane;
         try {
           await api("/send", {
             method: "POST",
@@ -1292,18 +1234,13 @@
           }, currentMachine);
           enterFastPoll();
 
-          // Enter retry: if text is still on the prompt line after 2s, resend Enter
-          const sentText = text.replace(/\n/g, " ");
+          // Enter retry: if pane hasn't changed within 800ms, Enter may have been dropped.
+          // Timer is cleared on any pane change (in poll()), so this only fires if truly stuck.
           if (enterRetryTimer) clearTimeout(enterRetryTimer);
           enterRetryTimer = setTimeout(() => {
-            if (currentSession && lastRawPane) {
-              const lastLine = lastRawPane.trimEnd().split("\n").pop() || "";
-              if (lastLine.includes(sentText)) {
-                sendKey("Enter");
-              }
-            }
+            if (currentSession) sendKey("Enter");
             enterRetryTimer = null;
-          }, 2000);
+          }, 800);
         } catch {
           input.value = saved;
           autoResizeInput();
@@ -1356,6 +1293,8 @@
           }
         }
         sel.innerHTML = opts;
+        // Set value programmatically — webkit ignores selected attr via innerHTML
+        sel.value = currentMachine ? currentMachine + "|" + currentSession : currentSession;
       }
 
       function switchSession(val) {
@@ -1381,7 +1320,7 @@
       // ── Notifications ──
 
       let notificationsEnabled = false;
-      let lastPaneText = "";
+
 
       function requestNotifications() {
         if ("Notification" in window && Notification.permission === "default") {
@@ -1411,33 +1350,105 @@
         /❌/,
       ];
 
+      // Per-session notification tracking: { "machineUrl|sessionName": "lastNotifiedText" }
+      const notifiedSessions = {};
+
       function checkForAttention(paneText) {
         if (!notificationsEnabled || !currentSession) return;
         if (document.visibilityState === "visible") return;
+        checkSessionAttention(currentSession, currentMachine, paneText);
+      }
+
+      function checkSessionAttention(sessionName, machineUrl, paneText) {
+        if (!notificationsEnabled) return;
+        if (document.visibilityState === "visible") return;
 
         const lastLines = paneText.trimEnd().split("\n").slice(-5).join("\n");
-        if (lastLines === lastPaneText) return;
-        lastPaneText = lastLines;
+        const key = (machineUrl || "") + "|" + sessionName;
+        if (notifiedSessions[key] === lastLines) return;
 
         for (const pat of ATTENTION_PATTERNS) {
           if (pat.test(lastLines)) {
-            const machineName = currentMachine
-              ? (getMachines().find(m => m.url === currentMachine)?.name || "remote")
+            notifiedSessions[key] = lastLines;
+            const machineName = machineUrl
+              ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
               : (selfName || "local");
             const title = getMachines().length > 0
-              ? `Wolfpack (${machineName}): ${currentSession}`
-              : `Wolfpack: ${currentSession}`;
+              ? `${machineName}: ${sessionName}`
+              : `Wolfpack: ${sessionName}`;
             new Notification(title, {
               body: lastLines.slice(-120),
-              tag: "wolfpack-attention",
+              tag: "wolfpack-" + key,
             });
             navigator.vibrate?.([200, 100, 200]);
-            break;
+            return;
           }
         }
+        // No pattern matched — clear so we can re-notify if it matches again later
+        delete notifiedSessions[key];
+      }
+
+      // Background attention check for ALL sessions (runs regardless of current view)
+      let bgAttentionTimer = null;
+
+      async function checkAllSessionsAttention() {
+        if (!notificationsEnabled) return;
+        if (document.visibilityState === "visible") return;
+        try {
+          const machines = getMachines();
+          const fetches = [
+            api("/sessions").then(d => ({ sessions: d.sessions || [], machineUrl: "" })).catch(() => null),
+            ...machines.map(m =>
+              api("/sessions", undefined, m.url).then(d => ({ sessions: d.sessions || [], machineUrl: m.url })).catch(() => null)
+            ),
+          ];
+          const results = await Promise.all(fetches);
+          for (const r of results) {
+            if (!r) continue;
+            for (const s of r.sessions) {
+              // Skip current session — poll() already handles it
+              if (s.name === currentSession && r.machineUrl === currentMachine) continue;
+              if (s.lastLine) checkSessionAttention(s.name, r.machineUrl, s.lastLine);
+            }
+          }
+        } catch {}
+      }
+
+      function startBgAttention() {
+        if (bgAttentionTimer) return;
+        bgAttentionTimer = setInterval(checkAllSessionsAttention, 10000);
+      }
+
+      function stopBgAttention() {
+        if (bgAttentionTimer) { clearInterval(bgAttentionTimer); bgAttentionTimer = null; }
       }
 
       requestNotifications();
+      startBgAttention();
+
+      // Pause bg attention when visible, resume when hidden; re-poll terminal on foreground
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          stopBgAttention();
+          // Restart session refresh if on sessions view
+          if (currentView === "sessions" && !sessionRefreshTimer) {
+            loadSessions();
+            sessionRefreshTimer = setInterval(loadSessions, 5000);
+          }
+          if (currentSession && currentView === "terminal") {
+            poll();
+            enterFastPoll();
+            schedulePoll();
+          }
+        } else {
+          // Stop session refresh when backgrounded — bgAttention covers notifications
+          if (sessionRefreshTimer) {
+            clearInterval(sessionRefreshTimer);
+            sessionRefreshTimer = null;
+          }
+          startBgAttention();
+        }
+      });
 
       // Dismiss preview when tapping terminal area
       document.getElementById("terminal").addEventListener("click", () => {
@@ -1456,41 +1467,124 @@
         autoResizeInput();
         updatePreview();
       });
+      // Mobile: Enter adds newline, Shift+Enter submits
+      // Desktop: Enter submits, Shift+Enter adds newline
+      const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+      msgInput.addEventListener("keydown", (e) => {
+        if (currentView !== "terminal") return;
+        const empty = !msgInput.value.trim();
+        if (e.key === "Enter") {
+          if (isMobile) {
+            // Mobile: Enter adds newline, Shift+Enter submits
+            if (e.shiftKey) {
+              e.preventDefault();
+              if (empty) sendKey("Enter"); else sendMsg();
+            }
+            // else: let Enter add newline naturally
+          } else {
+            // Desktop: Enter submits, Shift+Enter adds newline
+            if (!e.shiftKey) {
+              e.preventDefault();
+              if (empty) sendKey("Enter"); else sendMsg();
+            }
+          }
+        } else if (e.key === "ArrowUp" && empty) {
+          e.preventDefault();
+          sendKey("Up");
+        } else if (e.key === "ArrowDown" && empty) {
+          e.preventDefault();
+          sendKey("Down");
+        }
+      });
+
+      // Global arrow keys → tmux when in terminal and textarea not focused
+      document.addEventListener("keydown", (e) => {
+        if (currentView !== "terminal") return;
+        if (document.activeElement === msgInput) return;
+        const keyMap = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Enter: "Enter", Escape: "Escape" };
+        const mapped = keyMap[e.key];
+        if (mapped) { e.preventDefault(); sendKey(mapped); }
+      });
 
       document
         .getElementById("new-project-name")
         .addEventListener("keydown", (e) => {
-          if (e.key === "Enter") createNewProject();
+          if (e.key === "Enter") selectNewProject();
         });
-      document.getElementById("machine-url-input").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") addMachineFromInput();
-      });
 
       // ── Settings ──
 
       async function showSettings() {
         showView("settings");
         renderMachinesList();
-        // Show QR button if BarcodeDetector is available
-        if ("BarcodeDetector" in window) {
-          document.getElementById("qr-scan-btn").style.display = "";
-        }
-        const el = document.getElementById("preset-list");
-        el.innerHTML = "";
-        try {
-          const data = await api("/settings");
-          const current = data.settings?.agentCmd || "claude";
-          document.getElementById("custom-cmd").value = current;
+        loadClaudeConfig();
+      }
 
-          const presets = Object.entries(data.presets || {});
-          el.innerHTML = presets
-            .map(
-              ([label, cmd]) => `
-      <button class="preset-btn ${cmd === current ? "selected" : ""}" onclick="selectPreset('${esc(cmd)}')">${esc(label)}</button>
-    `,
-            )
-            .join("");
-        } catch {}
+      let currentClaudeConfig = "";
+
+      async function loadClaudeConfig() {
+        const preview = document.getElementById("claude-config-preview");
+        const machinesEl = document.getElementById("claude-config-machines");
+        preview.textContent = "Loading...";
+        try {
+          const data = await api("/claude-config");
+          currentClaudeConfig = data.content || "";
+          preview.textContent = currentClaudeConfig || "(empty or not found)";
+        } catch {
+          preview.textContent = "(failed to load)";
+        }
+        // Render machine checkboxes
+        const machines = getMachines();
+        if (!machines.length) {
+          machinesEl.innerHTML = '<div style="color:#444;font-size:12px">No remote machines to push to</div>';
+        } else {
+          machinesEl.innerHTML = machines.map(m => `
+            <label style="display:flex;align-items:center;gap:8px;padding:6px 0;color:#b0b0b0;font-size:13px;cursor:pointer">
+              <input type="checkbox" class="claude-config-target" value="${esc(m.url)}" style="width:18px;height:18px">
+              ${esc(m.name)}
+            </label>
+          `).join("");
+        }
+      }
+
+      async function pushClaudeConfig() {
+        const statusEl = document.getElementById("claude-config-status");
+        const checkboxes = document.querySelectorAll(".claude-config-target:checked");
+        const targets = Array.from(checkboxes).map(cb => cb.value);
+        if (!targets.length) {
+          statusEl.textContent = "No machines selected";
+          statusEl.style.color = "#cc3333";
+          return;
+        }
+        if (!currentClaudeConfig) {
+          statusEl.textContent = "No config to push";
+          statusEl.style.color = "#cc3333";
+          return;
+        }
+        statusEl.textContent = "Pushing...";
+        statusEl.style.color = "#555";
+        const results = await Promise.all(targets.map(async url => {
+          try {
+            const res = await api("/claude-config", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ content: currentClaudeConfig }),
+            }, url);
+            return { url, ok: res.ok };
+          } catch {
+            return { url, ok: false };
+          }
+        }));
+        const success = results.filter(r => r.ok).length;
+        const failed = results.filter(r => !r.ok).length;
+        if (failed === 0) {
+          statusEl.textContent = `Pushed to ${success} machine${success > 1 ? "s" : ""}`;
+          statusEl.style.color = "#00ff41";
+        } else {
+          statusEl.textContent = `${success} ok, ${failed} failed`;
+          statusEl.style.color = "#ff6600";
+        }
       }
 
       async function renderMachinesList() {
@@ -1520,90 +1614,43 @@
         renderMachinesList();
       }
 
-      async function addMachineFromInput() {
-        const input = document.getElementById("machine-url-input");
-        const errorEl = document.getElementById("machine-add-error");
-        errorEl.textContent = "";
-        const url = input.value.trim();
-        if (!url) return;
+      async function discoverMachines() {
+        const statusEl = document.getElementById("discover-status");
+        statusEl.textContent = "Scanning tailnet...";
+        statusEl.style.color = "#555";
         try {
-          await addMachine(url);
-          input.value = "";
-          showView("sessions");
-          loadSessions();
-          return;
-        } catch (e) {
-          errorEl.textContent = "Failed to connect — check URL and ensure Wolfpack is running";
-        }
-      }
-
-      // ── QR Scanner ──
-      let qrStream = null;
-      let qrAnimFrame = null;
-
-      async function startQrScan() {
-        const overlay = document.getElementById("qr-overlay");
-        const video = document.getElementById("qr-video");
-        overlay.classList.add("visible");
-        try {
-          qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-          video.srcObject = qrStream;
-          const detector = new BarcodeDetector({ formats: ["qr_code"] });
-          const scanFrame = async () => {
-            if (!qrStream) return;
-            try {
-              const barcodes = await detector.detect(video);
-              if (barcodes.length > 0) {
-                const raw = barcodes[0].rawValue;
-                if (raw && (raw.startsWith("http://") || raw.startsWith("https://"))) {
-                  stopQrScan();
-                  document.getElementById("machine-url-input").value = raw;
-                  try {
-                    await addMachine(raw);
-                    document.getElementById("machine-url-input").value = "";
-                    showView("sessions");
-                    loadSessions();
-                  } catch {
-                    document.getElementById("machine-add-error").textContent = "QR detected but failed to connect";
-                  }
-                  return;
-                }
-              }
-            } catch {}
-            qrAnimFrame = requestAnimationFrame(scanFrame);
-          };
-          qrAnimFrame = requestAnimationFrame(scanFrame);
+          const data = await api("/discover");
+          if (data.error) {
+            statusEl.textContent = data.error;
+            statusEl.style.color = "#cc3333";
+            return;
+          }
+          const peers = data.peers || [];
+          if (!peers.length) {
+            statusEl.textContent = "No wolfpack instances found on tailnet";
+            statusEl.style.color = "#555";
+            return;
+          }
+          const machines = getMachines();
+          let added = 0;
+          for (const p of peers) {
+            if (!machines.some(m => m.url === p.url)) {
+              machines.push({ url: p.url, name: p.name || p.hostname });
+              added++;
+            }
+          }
+          if (added > 0) {
+            saveMachines(machines);
+            renderMachinesList();
+          }
+          statusEl.textContent = added > 0
+            ? `Found ${peers.length}, added ${added} new`
+            : `Found ${peers.length}, all already added`;
+          statusEl.style.color = "#00ff41";
         } catch {
-          stopQrScan();
+          statusEl.textContent = "Discovery failed";
+          statusEl.style.color = "#cc3333";
         }
-      }
-
-      function stopQrScan() {
-        if (qrAnimFrame) { cancelAnimationFrame(qrAnimFrame); qrAnimFrame = null; }
-        if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }
-        const overlay = document.getElementById("qr-overlay");
-        overlay.classList.remove("visible");
-        document.getElementById("qr-video").srcObject = null;
-      }
-
-      async function selectPreset(cmd) {
-        await api("/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentCmd: cmd }),
-        });
-        showSettings();
-      }
-
-      async function saveCustomCmd() {
-        const cmd = document.getElementById("custom-cmd").value.trim();
-        if (!cmd) return;
-        await api("/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentCmd: cmd }),
-        });
-        showSettings();
       }
 
       // ── Search ──
@@ -1612,7 +1659,7 @@
       let searchTerm = "";
       let searchMatches = [];
       let searchIndex = -1;
-      let lastRawPane = "";
+      let lastRawPane = null;
 
       function toggleSearch() {
         const bar = document.getElementById("search-bar");
@@ -1702,13 +1749,11 @@
         loadSessions();
       }
 
-      // Ctrl+C closes session and returns to main menu
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "c" && (e.ctrlKey || e.metaKey) && currentView === "terminal") {
-          e.preventDefault();
+      function confirmKillSession() {
+        if (confirm(`Kill session "${currentSession}"?`)) {
           closeSession();
         }
-      });
+      }
 
       document.getElementById("search-input").addEventListener("input", doSearch);
       document.getElementById("search-input").addEventListener("keydown", (e) => {
@@ -1725,23 +1770,12 @@
         return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
       }
 
-      // Re-poll immediately when returning from background tab
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && currentSession && currentView === "terminal") {
-          poll();
-          enterFastPoll();
-          schedulePoll();
-        }
-      });
 
       loadSessions();
 
-      // SW removed — lets Brave use "Add to Home screen" with name prompt
-      // while manifest display:standalone still hides address bar
+      // Register service worker for offline caching
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.getRegistrations().then(regs =>
-          regs.forEach(r => r.unregister())
-        );
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
       }
     </script>
   </body>

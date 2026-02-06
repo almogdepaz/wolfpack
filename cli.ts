@@ -392,6 +392,10 @@ const SYSTEMD_PATH = join(
   `${SYSTEMD_SERVICE}.service`,
 );
 
+function xmlEsc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function generatePlist(): string {
   const binaryPath = process.execPath;
   const config = loadConfig();
@@ -400,15 +404,17 @@ function generatePlist(): string {
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
 
   const envEntries = Object.entries(env)
-    .map(([k, v]) => `      <key>${k}</key>\n      <string>${v}</string>`)
+    .map(([k, v]) => `      <key>${xmlEsc(k)}</key>\n      <string>${xmlEsc(v)}</string>`)
     .join("\n");
+
+  const logPath = xmlEsc(join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log"));
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${PLIST_LABEL}</string>
+  <string>${xmlEsc(PLIST_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${binaryPath}</string>
@@ -424,9 +430,9 @@ ${envEntries}
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log")}</string>
+  <string>${logPath}</string>
   <key>StandardErrorPath</key>
-  <string>${join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log")}</string>
+  <string>${logPath}</string>
 </dict>
 </plist>`;
 }
@@ -437,8 +443,8 @@ function generateSystemdUnit(): string {
   const envLines: string[] = [
     `Environment=PATH=/usr/local/bin:/usr/bin:/bin`,
   ];
-  if (config?.devDir) envLines.push(`Environment=WOLFPACK_DEV_DIR=${config.devDir}`);
-  if (config?.port) envLines.push(`Environment=WOLFPACK_PORT=${config.port}`);
+  if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${config.devDir}"`);
+  if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);
 
   return `[Unit]
 Description=Wolfpack AI Agent Bridge
@@ -472,9 +478,9 @@ function serviceInstall() {
 
     // Unload first if already loaded
     try {
-      execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
     } catch {}
-    execSync(`launchctl load ${PLIST_PATH}`);
+    execSync(`launchctl load "${PLIST_PATH}"`);
 
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -517,7 +523,7 @@ function serviceInstall() {
 function serviceUninstall() {
   if (IS_MACOS) {
     try {
-      execSync(`launchctl unload ${PLIST_PATH} 2>/dev/null`);
+      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
     } catch {}
     try {
       unlinkSync(PLIST_PATH);
@@ -542,7 +548,7 @@ function serviceUninstall() {
 function serviceStop() {
   if (IS_MACOS) {
     try {
-      execSync(`launchctl unload ${PLIST_PATH}`);
+      execSync(`launchctl unload "${PLIST_PATH}"`);
     } catch {}
   } else if (IS_LINUX) {
     try {
@@ -555,7 +561,7 @@ function serviceStop() {
 function serviceStart() {
   if (IS_MACOS) {
     try {
-      execSync(`launchctl load ${PLIST_PATH}`);
+      execSync(`launchctl load "${PLIST_PATH}"`);
     } catch {}
   } else if (IS_LINUX) {
     try {

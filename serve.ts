@@ -49,12 +49,44 @@ const PORT =
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
 const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
+const VERSION = "1.1.0";
+
+// CORS origin allowlist — replaces wildcard "*"
+const ALLOWED_ORIGINS = new Set<string>([
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+]);
+
+// Extract tailnet suffix (e.g. "tailnet-name.ts.net") from config
+const TAILNET_SUFFIX = (() => {
+  try {
+    const cfg = JSON.parse(readFileSync(join(process.env.HOME ?? "~", ".wolfpack", "config.json"), "utf-8"));
+    const h = cfg.tailscaleHostname as string; // e.g. "machine.tailnet-name.ts.net"
+    const dot = h.indexOf(".");
+    if (dot !== -1) return h.substring(dot + 1); // "tailnet-name.ts.net"
+  } catch {}
+  return "";
+})();
+
+function isAllowedOrigin(origin: string): boolean {
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  // Allow devices on the same tailnet only
+  if (TAILNET_SUFFIX) {
+    try {
+      const url = new URL(origin);
+      if (url.protocol === "https:" && url.hostname.endsWith("." + TAILNET_SUFFIX)) return true;
+    } catch {}
+  }
+  return false;
+}
 
 interface Settings {
   agentCmd: string;
+  customCmds?: string[];
 }
 
 const AGENT_PRESETS: Record<string, string> = {
+  shell: "shell",
   claude: "claude",
   "claude --dangerously-skip-permissions":
     "claude --dangerously-skip-permissions",
@@ -65,9 +97,10 @@ const AGENT_PRESETS: Record<string, string> = {
 
 function loadSettings(): Settings {
   try {
-    return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+    const s = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+    return { agentCmd: s.agentCmd || "claude", customCmds: s.customCmds || [] };
   } catch {
-    return { agentCmd: "claude" };
+    return { agentCmd: "claude", customCmds: [] };
   }
 }
 
@@ -82,25 +115,20 @@ async function tmuxList(): Promise<string[]> {
     const { stdout } = await exec(TMUX, [
       "list-sessions",
       "-F",
-      "#{session_name}:#{pane_current_path}",
+      "#{session_name}|||#{pane_current_path}",
     ]);
+    const SEP = "|||";
     return stdout
       .trim()
       .split("\n")
       .filter(Boolean)
-      .filter((line) => line.split(":").slice(1).join(":").startsWith(DEV_DIR))
-      .map((line) => line.split(":")[0]);
+      .filter((line) => {
+        const idx = line.indexOf(SEP);
+        return idx !== -1 && line.substring(idx + SEP.length).startsWith(DEV_DIR);
+      })
+      .map((line) => line.substring(0, line.indexOf(SEP)));
   } catch {
     return [];
-  }
-}
-
-async function tmuxExists(session: string): Promise<boolean> {
-  try {
-    await exec(TMUX, ["has-session", "-t", session]);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -113,7 +141,7 @@ async function tmuxSend(
 ): Promise<void> {
   await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
   if (!noEnter) {
-    await sleep(100);
+    await sleep(50);
     await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
   }
 }
@@ -138,7 +166,7 @@ async function tmuxResize(
   ]);
 }
 
-async function capturePane(session: string, history = false): Promise<string> {
+async function capturePane(session: string): Promise<string> {
   try {
     const args = ["capture-pane", "-t", session, "-p", "-J"];
     // Always capture some scrollback so the PWA terminal can scroll
@@ -156,6 +184,10 @@ async function tmuxNewSession(
   cmd?: string,
 ): Promise<void> {
   const agentCmd = cmd || loadSettings().agentCmd || "claude";
+  // "shell" = plain interactive shell, no command
+  const shellCmd = agentCmd === "shell"
+    ? SHELL
+    : `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}; exec ${SHELL}'`;
   await exec(TMUX, [
     "new-session",
     "-d",
@@ -163,7 +195,7 @@ async function tmuxNewSession(
     name,
     "-c",
     cwd,
-    `${SHELL} -lic '${agentCmd.replace(/'/g, "'\\''")}'`,
+    shellCmd,
   ]);
 }
 
@@ -198,14 +230,8 @@ async function isAllowedSession(session: string): Promise<boolean> {
 
 // ── HTTP helpers ──
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
-
 function json(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
 
@@ -281,7 +307,7 @@ const routes: Record<
     const name = hostname()
       .replace(/\.local$/, "")
       .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
-    json(res, { name });
+    json(res, { name, version: VERSION });
   },
 
   "GET /api/sessions": async (_req, res) => {
@@ -313,13 +339,19 @@ const routes: Record<
   },
 
   "POST /api/create": async (req, res) => {
-    const { project, newProject } = JSON.parse(await readBody(req)) as {
+    const { project, newProject, cmd } = JSON.parse(await readBody(req)) as {
       project?: string;
       newProject?: string;
+      cmd?: string;
     };
     const folderName = newProject?.trim() || project?.trim();
     if (!folderName || !/^[a-zA-Z0-9._-]+$/.test(folderName)) {
       return json(res, { error: "invalid project name" }, 400);
+    }
+
+    // Validate cmd if provided
+    if (cmd && cmd !== "shell" && !/^[a-zA-Z0-9 \-._/=]+$/.test(cmd)) {
+      return json(res, { error: "invalid characters in command" }, 400);
     }
 
     const projectDir = join(DEV_DIR, folderName);
@@ -340,7 +372,7 @@ const routes: Record<
     }
 
     const sessionName = await uniqueSessionName(folderName);
-    await tmuxNewSession(sessionName, projectDir);
+    await tmuxNewSession(sessionName, projectDir, cmd);
     json(res, { ok: true, session: sessionName });
   },
 
@@ -381,18 +413,66 @@ const routes: Record<
   },
 
   "POST /api/settings": async (req, res) => {
-    const body = JSON.parse(await readBody(req)) as Partial<Settings>;
+    const body = JSON.parse(await readBody(req)) as {
+      agentCmd?: string;
+      addCustomCmd?: string;
+      deleteCustomCmd?: string;
+    };
     const settings = loadSettings();
+    const cmdRegex = /^[a-zA-Z0-9 \-._/=]+$/;
+
     if (body.agentCmd != null) {
       const cmd = body.agentCmd.trim();
-      // Only allow safe characters: alphanumeric, spaces, hyphens, dots, slashes, equals
-      if (!/^[a-zA-Z0-9 \-._/=]+$/.test(cmd)) {
+      if (cmd !== "shell" && !cmdRegex.test(cmd)) {
         return json(res, { error: "invalid characters in agent command" }, 400);
       }
       settings.agentCmd = cmd;
     }
+    if (body.addCustomCmd != null) {
+      const cmd = body.addCustomCmd.trim();
+      if (!cmdRegex.test(cmd)) {
+        return json(res, { error: "invalid characters in command" }, 400);
+      }
+      if (!settings.customCmds) settings.customCmds = [];
+      if (!settings.customCmds.includes(cmd) && !AGENT_PRESETS[cmd]) {
+        settings.customCmds.push(cmd);
+      }
+      settings.agentCmd = cmd;
+    }
+    if (body.deleteCustomCmd != null) {
+      settings.customCmds = (settings.customCmds || []).filter(c => c !== body.deleteCustomCmd);
+      if (settings.agentCmd === body.deleteCustomCmd) {
+        settings.agentCmd = "claude";
+      }
+    }
     saveSettings(settings);
     json(res, { ok: true, settings });
+  },
+
+  "GET /api/claude-config": async (_req, res) => {
+    const configPath = join(process.env.HOME ?? "~", ".claude", "CLAUDE.md");
+    try {
+      const content = readFileSync(configPath, "utf-8");
+      json(res, { content });
+    } catch {
+      json(res, { content: "", exists: false });
+    }
+  },
+
+  "POST /api/claude-config": async (req, res) => {
+    const { content } = JSON.parse(await readBody(req)) as { content: string };
+    if (typeof content !== "string") {
+      return json(res, { error: "missing content" }, 400);
+    }
+    const configDir = join(process.env.HOME ?? "~", ".claude");
+    const configPath = join(configDir, "CLAUDE.md");
+    try {
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(configPath, content, "utf-8");
+      json(res, { ok: true });
+    } catch (e) {
+      json(res, { error: "failed to write config" }, 500);
+    }
   },
 
   "POST /api/kill": async (req, res) => {
@@ -422,14 +502,63 @@ const routes: Record<
     json(res, { ok: true });
   },
 
+  "GET /api/discover": async (_req, res) => {
+    // Find wolfpack instances on the tailnet
+    // System binary first — macOS GUI CLI fails without GUI context
+    const tsBin = [
+      "/usr/local/bin/tailscale",
+      "/usr/bin/tailscale",
+      "/opt/homebrew/bin/tailscale",
+      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ].find((p) => { try { execFileSync("test", ["-x", p]); return true; } catch { return false; } });
+    if (!tsBin) return json(res, { peers: [], error: "tailscale not found" });
+
+    try {
+      // Use login shell so macOS Tailscale GUI CLI gets the Aqua session context
+      // (direct execFile fails from launchd services — no Mach bootstrap namespace)
+      const { stdout } = await exec(
+        "/bin/sh", ["-l", "-c", `"${tsBin}" status --json`],
+        { maxBuffer: 10 * 1024 * 1024 },
+      );
+      const status = JSON.parse(stdout);
+      const self = status.Self?.DNSName?.replace(/\.$/, "");
+      const peers: { hostname: string; url: string }[] = [];
+      for (const [, peer] of Object.entries(status.Peer || {}) as [string, any][]) {
+        if (!peer.Online) continue;
+        const dns = peer.DNSName?.replace(/\.$/, "");
+        if (!dns || dns === self) continue;
+        peers.push({ hostname: dns, url: `https://${dns}` });
+      }
+
+      // Probe each peer for wolfpack (parallel, 3s timeout)
+      const results = await Promise.all(
+        peers.map(async (p) => {
+          try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 3000);
+            const r = await fetch(p.url + "/api/info", { signal: ctrl.signal });
+            clearTimeout(timer);
+            const info = await r.json();
+            return { ...p, name: info.name || p.hostname, version: info.version, wolfpack: true };
+          } catch {
+            return { ...p, wolfpack: false };
+          }
+        }),
+      );
+      json(res, { peers: results.filter((r) => r.wolfpack) });
+    } catch (e: any) {
+      console.error("discover error:", e?.message || e);
+      json(res, { peers: [], error: "failed to query tailscale" });
+    }
+  },
+
   "GET /api/poll": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    const history = url.searchParams.get("history") === "1";
-    const pane = await capturePane(session, history);
+    const pane = await capturePane(session);
     json(res, { pane });
   },
 };
@@ -437,9 +566,24 @@ const routes: Record<
 // ── Server ──
 
 const server = createServer(async (req, res) => {
+  // CORS origin check
+  const origin = req.headers.origin;
+  if (origin) {
+    if (isAllowedOrigin(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Vary", "Origin");
+    } else {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "origin not allowed" }));
+      return;
+    }
+  }
+
   // CORS preflight
   if (req.method === "OPTIONS") {
-    res.writeHead(204, CORS_HEADERS);
+    res.writeHead(204);
     res.end();
     return;
   }
