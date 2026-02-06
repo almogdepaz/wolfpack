@@ -110,7 +110,7 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 ### 4.1 remove node-specific files
 - [x] remove `package-lock.json`
 - [ ] simplify `package.json` to just metadata (or remove entirely, use bunfig.toml)
-- [ ] remove `tsx` dependency references
+- [x] remove `tsx` dependency references
 - [ ] add `bunfig.toml` if needed
 
 ### 4.2 generated file management

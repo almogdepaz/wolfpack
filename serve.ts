@@ -1,9 +1,9 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env bun
 /**
  * Standalone Wolfpack PWA server.
  * Serves a live tmux pane viewer via capture-pane.
  *
- * Usage: npx tsx serve.ts [port]
+ * Usage: bun serve.ts [port]
  */
 import {
   createServer,

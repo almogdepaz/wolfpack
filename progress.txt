@@ -94,3 +94,12 @@
 - removed `package-lock.json` from git tracking (`git rm -f`)
 - added `package-lock.json` to `.gitignore` to prevent re-addition
 - bun uses `bun.lock` instead; npm lockfile is no longer needed
+
+## 2026-02-06: Phase 4.1 — remove tsx dependency references (COMPLETE)
+- removed `tsx` from `package.json` dependencies
+- removed `engines.node` constraint from `package.json` (no longer relevant for binary distribution)
+- updated `serve.ts` shebang from `#!/usr/bin/env -S npx tsx` to `#!/usr/bin/env bun`
+- updated `serve.ts` usage comment from `npx tsx serve.ts` to `bun serve.ts`
+- verified: no `tsx` references remain in source files (only in `.claude/settings.local.json` which is not project code)
+- `bun install` succeeds, tsx package removed from node_modules
+- gen-assets and cli.ts parse/build correctly
