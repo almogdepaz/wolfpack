@@ -32,9 +32,9 @@ All 6 node: modules (`node:http`, `node:fs`, `node:child_process`, `node:os`, `n
 **execFileSync / execFile (promisified)**: fully supported in bun. `promisify(execFile)` works. the `test -x` pattern used for tmux/shell resolution (serve.ts:28-44) is fine.
 
 ### 1.2 embed public/ assets
-- [ ] create `public-assets.ts` — build-time generated module that exports all files from `public/` as a `Map<string, string|Buffer>`
-- [ ] write `scripts/gen-assets.ts` to scan `public/` and generate the module (each file imported as text/bytes)
-- [ ] the generated module looks like:
+- [x] create `public-assets.ts` — build-time generated module that exports all files from `public/` as a `Map<string, string|Buffer>`
+- [x] write `scripts/gen-assets.ts` to scan `public/` and generate the module (each file imported as text/bytes)
+- [x] the generated module looks like:
   ```ts
   export const assets = new Map<string, { content: string | Uint8Array; mime: string }>([
     ["index.html", { content: "...", mime: "text/html; charset=utf-8" }],

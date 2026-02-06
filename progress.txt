@@ -11,3 +11,11 @@
 - execFileSync/execFile(promisified): fully supported, no issues
 - node:fs/promises dynamic import (serve.ts:490): supported
 - updated PLAN.md with detailed audit results
+
+## 2026-02-06: Phase 1.2 — embed public/ assets (COMPLETE)
+- created `scripts/gen-assets.ts` — scans `public/` and generates `public-assets.ts`
+- text files (html, json) embedded as JSON-escaped strings
+- binary files (png) embedded as base64, decoded to Uint8Array at import time
+- generated module exports `Map<string, { content: string | Uint8Array; mime: string }>`
+- verified: all 6 assets load correctly, binary sizes match originals exactly
+- also created `scripts/bun-compat-test.ts` (24 tests, all pass)
