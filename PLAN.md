@@ -93,15 +93,15 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 ## phase 3: installer update
 
 ### 3.1 rewrite `install.sh`
-- [ ] detect OS + arch (`uname -s`, `uname -m`)
-- [ ] map to binary name (`wolfpack-linux-x64`, `wolfpack-darwin-arm64`, etc.)
-- [ ] download from `https://github.com/almogdepaz/wolfpack/releases/latest/download/<binary>`
-- [ ] install to `~/.wolfpack/bin/wolfpack` (or `/usr/local/bin/wolfpack`)
-- [ ] `chmod +x`
-- [ ] add to PATH if needed (or symlink to /usr/local/bin)
-- [ ] still check for tmux + tailscale (those remain system deps)
-- [ ] remove all node/npm/git-clone logic
-- [ ] run `wolfpack setup` at end
+- [x] detect OS + arch (`uname -s`, `uname -m`)
+- [x] map to binary name (`wolfpack-linux-x64`, `wolfpack-darwin-arm64`, etc.)
+- [x] download from `https://github.com/almogdepaz/wolfpack/releases/latest/download/<binary>`
+- [x] install to `~/.wolfpack/bin/wolfpack` (or `/usr/local/bin/wolfpack`)
+- [x] `chmod +x`
+- [x] add to PATH if needed (or symlink to /usr/local/bin)
+- [x] still check for tmux + tailscale (those remain system deps)
+- [x] remove all node/npm/git-clone logic
+- [x] run `wolfpack setup` at end
 
 ---
 

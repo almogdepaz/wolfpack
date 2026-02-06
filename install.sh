@@ -13,8 +13,10 @@ fi
 
 set +e
 
-REPO="https://github.com/almogdepaz/wolfpack.git"
-INSTALL_DIR="$HOME/.wolfpack/app"
+REPO_OWNER="almogdepaz"
+REPO_NAME="wolfpack"
+INSTALL_DIR="$HOME/.wolfpack/bin"
+BINARY_NAME="wolfpack"
 
 bold() { printf "\033[1m%s\033[0m" "$1"; }
 green() { printf "\033[32m%s\033[0m" "$1"; }
@@ -29,6 +31,33 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
   IS_LINUX=true
 fi
+
+# Detect OS + arch and map to binary name
+detect_target() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    *)
+      echo "  $(red "Unsupported OS: $os")"
+      exit 1
+      ;;
+  esac
+
+  case "$arch" in
+    x86_64|amd64) arch="x64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *)
+      echo "  $(red "Unsupported architecture: $arch")"
+      exit 1
+      ;;
+  esac
+
+  echo "${BINARY_NAME}-${os}-${arch}"
+}
 
 cat << 'WOLF'
 
@@ -51,26 +80,9 @@ echo "  $(bold 'WOLFPACK') — AI Agent Bridge"
 echo "  $(dim 'Deploy your pack. Command from anywhere.')"
 echo ""
 
-# ── Prerequisites ──
+# ── Prerequisites (tmux + tailscale only) ──
 
 missing=()
-
-if command -v node &>/dev/null; then
-  node_version=$(node --version)
-  # Extract major.minor from vX.Y.Z
-  major=$(echo "$node_version" | sed -E 's/^v([0-9]+)\..*/\1/')
-  minor=$(echo "$node_version" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
-  # import.meta.dirname requires Node 20.11+
-  if [ "$major" -gt 20 ] || { [ "$major" -eq 20 ] && [ "$minor" -ge 11 ]; }; then
-    echo "  $(green '✓') Node.js $node_version"
-  else
-    echo "  $(red '✗') Node.js $node_version (need >=20.11)"
-    missing+=("node")
-  fi
-else
-  echo "  $(red '✗') Node.js not found"
-  missing+=("node")
-fi
 
 if command -v tmux &>/dev/null; then
   echo "  $(green '✓') tmux $(tmux -V)"
@@ -116,7 +128,6 @@ if [ ${#missing[@]} -gt 0 ]; then
   fi
 
   if $IS_MACOS; then
-    # Separate CLI tools from cask apps
     brew_pkgs=()
     brew_casks=()
     for pkg in "${missing[@]}"; do
@@ -141,8 +152,6 @@ if [ ${#missing[@]} -gt 0 ]; then
     for pkg in "${missing[@]}"; do
       if [ "$pkg" = "tailscale" ]; then
         : # handled separately
-      elif [ "$pkg" = "node" ]; then
-        apt_pkgs+=("nodejs")
       else
         apt_pkgs+=("$pkg")
       fi
@@ -153,7 +162,6 @@ if [ ${#missing[@]} -gt 0 ]; then
       sudo apt update -qq && sudo apt install -y -qq "${apt_pkgs[@]}"
     fi
 
-    # Install tailscale via official script (requires sudo)
     for pkg in "${missing[@]}"; do
       if [ "$pkg" = "tailscale" ]; then
         echo "  Installing Tailscale..."
@@ -197,35 +205,85 @@ if [ ${#missing[@]} -gt 0 ]; then
   fi
 fi
 
-# ── Install ──
+# ── Download binary ──
 
-if [ -d "$INSTALL_DIR" ]; then
-  echo "  Removing old install..."
-  rm -rf "$INSTALL_DIR"
+TARGET=$(detect_target)
+DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${TARGET}"
+
+echo "  Detected target: $(bold "$TARGET")"
+echo "  Downloading from GitHub releases..."
+
+mkdir -p "$INSTALL_DIR"
+
+if command -v curl &>/dev/null; then
+  if ! curl -fSL --progress-bar -o "${INSTALL_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"; then
+    echo ""
+    echo "  $(red 'Download failed.')"
+    echo "  URL: $DOWNLOAD_URL"
+    echo "  Check that a release exists at:"
+    echo "    https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+    exit 1
+  fi
+elif command -v wget &>/dev/null; then
+  if ! wget -q --show-progress -O "${INSTALL_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"; then
+    echo ""
+    echo "  $(red 'Download failed.')"
+    echo "  URL: $DOWNLOAD_URL"
+    exit 1
+  fi
+else
+  echo "  $(red 'Neither curl nor wget found. Cannot download.')"
+  exit 1
 fi
 
-echo "  Cloning wolfpack..."
-mkdir -p "$(dirname "$INSTALL_DIR")"
-git clone --quiet "$REPO" "$INSTALL_DIR"
+chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
+echo ""
 
-echo "  Installing dependencies..."
-cd "$INSTALL_DIR"
-npm install --silent
-npm link --silent
+# ── Add to PATH ──
+
+SYMLINK_DIR="/usr/local/bin"
+
+# Check if already on PATH
+if command -v wolfpack &>/dev/null; then
+  echo "  $(green '✓') wolfpack is already on PATH"
+elif [ -d "$SYMLINK_DIR" ] && [ -w "$SYMLINK_DIR" ]; then
+  ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"
+  echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
+else
+  # Try with sudo
+  if [ -d "$SYMLINK_DIR" ]; then
+    echo "  Creating symlink in ${SYMLINK_DIR} (requires sudo)..."
+    if sudo ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"; then
+      echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
+    else
+      echo "  $(dim "Could not symlink to ${SYMLINK_DIR}")"
+      echo "  Add to your PATH manually:"
+      echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+    fi
+  else
+    echo "  Add to your PATH manually:"
+    echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
+  fi
+fi
 
 echo ""
 
-# Verify
+# ── Run setup ──
+
 if command -v wolfpack &>/dev/null; then
   echo "  $(green '✓') $(bold 'wolfpack') installed"
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
   echo ""
-  # Run setup — reattach to terminal since stdin is the curl pipe
   exec wolfpack setup < /dev/tty
-else
-  echo "  $(red '✗') wolfpack not found on PATH after install"
-  echo "  Try: $(dim 'npx tsx ~/.wolfpack/app/cli.ts setup')"
+elif [ -x "${INSTALL_DIR}/${BINARY_NAME}" ]; then
+  echo "  $(green '✓') $(bold 'wolfpack') installed"
   echo ""
+  echo "  Run $(bold 'wolfpack') to start."
+  echo ""
+  exec "${INSTALL_DIR}/${BINARY_NAME}" setup < /dev/tty
+else
+  echo "  $(red '✗') wolfpack binary not found after install"
   exit 1
 fi

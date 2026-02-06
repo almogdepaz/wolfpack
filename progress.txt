@@ -75,3 +75,17 @@
 - creates GitHub Release with auto-generated release notes via `softprops/action-gh-release@v2`
 - uploads all 4 binaries + checksums as release assets
 - phase 2 is now FULLY COMPLETE
+
+## 2026-02-06: Phase 3.1 — rewrite install.sh (COMPLETE)
+- completely rewrote `install.sh` to download pre-built binary instead of git clone + npm install
+- `detect_target()` function maps `uname -s` + `uname -m` to binary name (e.g. `wolfpack-darwin-arm64`)
+- downloads from `https://github.com/almogdepaz/wolfpack/releases/latest/download/<target>`
+- supports both curl and wget for download
+- installs binary to `~/.wolfpack/bin/wolfpack`, chmod +x
+- symlinks to `/usr/local/bin/wolfpack` for PATH access (with sudo fallback, manual instructions if both fail)
+- removed ALL node/npm/git-clone logic (no more `npm install`, `npm link`, `git clone`)
+- removed node.js version check from prerequisites
+- kept tmux + tailscale as system deps (unchanged install logic for those)
+- kept wolf ASCII art banner
+- still runs `wolfpack setup` at end (with fallback to direct binary path if not on PATH yet)
+- bash syntax check passes
