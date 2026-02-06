@@ -44,11 +44,11 @@ All 6 node: modules (`node:http`, `node:fs`, `node:child_process`, `node:os`, `n
   ```
 
 ### 1.3 refactor serve.ts
-- [ ] replace `readFileSync(join(PUBLIC_DIR, ...))` with lookups from embedded assets map
-- [ ] `serveFile()` reads from map instead of disk
-- [ ] manifest.json route: parse from embedded template, mutate at runtime (same as now)
-- [ ] remove `PUBLIC_DIR` constant
-- [ ] remove `import.meta.dirname` usage for public dir resolution (keep for other paths if needed)
+- [x] replace `readFileSync(join(PUBLIC_DIR, ...))` with lookups from embedded assets map
+- [x] `serveFile()` reads from map instead of disk
+- [x] manifest.json route: parse from embedded template, mutate at runtime (same as now)
+- [x] remove `PUBLIC_DIR` constant
+- [x] remove `import.meta.dirname` usage for public dir resolution (keep for other paths if needed)
 
 ### 1.4 refactor cli.ts service generation
 - [ ] launchd plist: `ProgramArguments` should point to the binary itself (`wolfpack`), not `tsx serve.ts`

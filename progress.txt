@@ -19,3 +19,15 @@
 - generated module exports `Map<string, { content: string | Uint8Array; mime: string }>`
 - verified: all 6 assets load correctly, binary sizes match originals exactly
 - also created `scripts/bun-compat-test.ts` (24 tests, all pass)
+
+## 2026-02-06: Phase 1.3 — refactor serve.ts (COMPLETE)
+- imported embedded `assets` map from `public-assets.ts` into `serve.ts`
+- rewrote `serveFile()` to look up from assets map instead of `readFileSync(join(PUBLIC_DIR, ...))`
+- rewrote manifest.json route to parse from embedded asset (`assets.get("manifest.json")`)
+- rewrote static file fallback to serve from embedded assets map (no more `fs.stat` + disk reads)
+- removed `PUBLIC_DIR` constant entirely
+- removed `import.meta.dirname` usage for public dir (only remains for SETTINGS_PATH — phase 1.4)
+- removed unused `basename` import from `node:path`
+- cleaned dead code in sw.js route (unreachable `readFileSync` block after early return)
+- removed dynamic `import("node:fs/promises")` — no longer needed
+- verified: all 6 assets still load correctly via import, bun compat tests pass (24/24)

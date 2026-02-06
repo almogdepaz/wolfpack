@@ -17,7 +17,8 @@ import {
   mkdirSync,
   statSync,
 } from "node:fs";
-import { join, basename } from "node:path";
+import { join } from "node:path";
+import { assets } from "./public-assets.js";
 import { hostname } from "node:os";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -45,7 +46,6 @@ const SHELL = (() => {
 })();
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
-const PUBLIC_DIR = join(import.meta.dirname, "public");
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
 const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
@@ -232,19 +232,16 @@ function readBody(req: IncomingMessage): Promise<string> {
 function serveFile(
   res: ServerResponse,
   filename: string,
-  contentType: string,
+  contentType?: string,
 ): void {
-  try {
-    const isText = /text\/|json|javascript|xml|css/.test(contentType);
-    const content = isText
-      ? readFileSync(join(PUBLIC_DIR, filename), "utf-8")
-      : readFileSync(join(PUBLIC_DIR, filename));
-    res.writeHead(200, { "Content-Type": contentType });
-    res.end(content);
-  } catch {
+  const asset = assets.get(filename);
+  if (!asset) {
     res.writeHead(404);
     res.end("Not Found");
+    return;
   }
+  res.writeHead(200, { "Content-Type": contentType ?? asset.mime });
+  res.end(asset.content);
 }
 
 // ── Routes ──
@@ -256,46 +253,28 @@ const routes: Record<
   "GET /": (_req, res) =>
     serveFile(res, "index.html", "text/html; charset=utf-8"),
   "GET /manifest.json": (req, res) => {
-    try {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      const customName = url.searchParams.get("name");
-      const host = (req.headers.host ?? "localhost").replace(/[:.]/g, "-");
-      const manifest = JSON.parse(
-        readFileSync(join(PUBLIC_DIR, "manifest.json"), "utf-8"),
-      );
-      manifest.id = `/?host=${host}`;
-      if (customName) {
-        manifest.name = customName;
-        manifest.short_name = customName;
-      } else {
-        const label = host.split("-").slice(0, -1).join("-") || host;
-        manifest.name = `Wolfpack (${label})`;
-        manifest.short_name = label;
-      }
-      res.writeHead(200, { "Content-Type": "application/manifest+json" });
-      res.end(JSON.stringify(manifest, null, 2));
-    } catch {
-      res.writeHead(404);
-      res.end("Not Found");
+    const asset = assets.get("manifest.json");
+    if (!asset) { res.writeHead(404); res.end("Not Found"); return; }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const customName = url.searchParams.get("name");
+    const host = (req.headers.host ?? "localhost").replace(/[:.]/g, "-");
+    const manifest = JSON.parse(asset.content as string);
+    manifest.id = `/?host=${host}`;
+    if (customName) {
+      manifest.name = customName;
+      manifest.short_name = customName;
+    } else {
+      const label = host.split("-").slice(0, -1).join("-") || host;
+      manifest.name = `Wolfpack (${label})`;
+      manifest.short_name = label;
     }
+    res.writeHead(200, { "Content-Type": "application/manifest+json" });
+    res.end(JSON.stringify(manifest, null, 2));
   },
   "GET /sw.js": (_req, res) => {
     // Return 404 for SW to prevent Brave from treating as installable PWA
     res.writeHead(404);
     res.end("Not Found");
-    return;
-    try {
-      const content = readFileSync(join(PUBLIC_DIR, "sw.js"), "utf-8");
-      res.writeHead(200, {
-        "Content-Type": "application/javascript",
-        "Service-Worker-Allowed": "/",
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-      });
-      res.end(content);
-    } catch {
-      res.writeHead(404);
-      res.end("Not Found");
-    }
   },
 
   "GET /api/info": (_req, res) => {
@@ -476,31 +455,15 @@ const server = createServer(async (req, res) => {
       if (!res.headersSent) json(res, { error: "internal error" }, 500);
     }
   } else {
-    // Static file fallback from public/
+    // Static file fallback from embedded assets
     const safePath = url.pathname.replace(/^\/+/, "");
-    if (safePath && !safePath.includes("\0")) {
-      const filePath = join(PUBLIC_DIR, safePath);
-      // Prevent path traversal — resolved path must stay inside PUBLIC_DIR
-      if (!filePath.startsWith(PUBLIC_DIR + "/")) {
-        res.writeHead(403);
-        res.end("Forbidden");
+    if (safePath && !safePath.includes("\0") && !safePath.includes("/")) {
+      const asset = assets.get(safePath);
+      if (asset) {
+        res.writeHead(200, { "Content-Type": asset.mime });
+        res.end(asset.content);
         return;
       }
-      try {
-        const stat = await import("node:fs/promises").then((fs) => fs.stat(filePath));
-        if (stat.isFile()) {
-          const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-          const mimeMap: Record<string, string> = {
-            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
-            svg: "image/svg+xml", ico: "image/x-icon", webp: "image/webp",
-            js: "application/javascript", css: "text/css",
-            json: "application/json", html: "text/html",
-            woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf",
-          };
-          serveFile(res, safePath, mimeMap[ext] ?? "application/octet-stream");
-          return;
-        }
-      } catch {}
     }
     res.writeHead(404);
     res.end("Not Found");
