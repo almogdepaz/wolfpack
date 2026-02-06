@@ -1,0 +1,13 @@
+# Progress Log
+
+## 2026-02-06: Phase 1.1 — bun compat audit (COMPLETE)
+- audited all 6 node: modules used across codebase — all supported in bun ≥1.2
+- qrcode-terminal: pure JS, no native deps, will bundle cleanly
+- import.meta.dirname: CONFIRMED returns /$bunfs/root/ in compiled binaries (by design)
+  - 4 usages identified that need migration (2 in serve.ts, 2 in cli.ts)
+  - serve.ts PUBLIC_DIR → solved by asset embedding (phase 1.2)
+  - serve.ts SETTINGS_PATH → needs relocation to ~/.wolfpack/
+  - cli.ts plist/systemd refs → solved by process.execPath (phase 1.4)
+- execFileSync/execFile(promisified): fully supported, no issues
+- node:fs/promises dynamic import (serve.ts:490): supported
+- updated PLAN.md with detailed audit results

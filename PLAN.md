@@ -13,10 +13,23 @@
 ## phase 1: bun compatibility + asset embedding
 
 ### 1.1 audit bun compat
-- [ ] verify all node APIs used work in bun (`node:http`, `node:fs`, `node:child_process`, `node:os`, `node:readline`, `node:util`)
-- [ ] verify `qrcode-terminal` npm package works under bun
-- [ ] verify `import.meta.dirname` behavior in bun compile mode
-- [ ] check `execFileSync`, `execFile` (promisified) behavior
+- [x] verify all node APIs used work in bun (`node:http`, `node:fs`, `node:child_process`, `node:os`, `node:readline`, `node:util`)
+- [x] verify `qrcode-terminal` npm package works under bun
+- [x] verify `import.meta.dirname` behavior in bun compile mode
+- [x] check `execFileSync`, `execFile` (promisified) behavior
+
+#### audit results
+All 6 node: modules (`node:http`, `node:fs`, `node:child_process`, `node:os`, `node:readline`, `node:util`) are supported in bun ≥1.2. Also `node:fs/promises` (dynamic import in serve.ts:490) works fine.
+
+**qrcode-terminal**: pure JS, zero node-specific APIs. will bundle cleanly with bun. no vendoring needed.
+
+**import.meta.dirname**: CONFIRMED RISK. in `bun build --compile`, `import.meta.dirname` returns `/$bunfs/root/` (virtual embedded FS), NOT the real directory. this is by design (oven-sh/bun#8476, closed as "not planned"). workaround: use `process.execPath` for binary location, or `process.cwd()` for working dir. current usages that need fixing:
+- `serve.ts:48` — `PUBLIC_DIR = join(import.meta.dirname, "public")` → replaced by embedded assets (phase 1.2)
+- `serve.ts:51` — `SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json")` → use `~/.wolfpack/bridge-settings.json` or similar
+- `cli.ts:421-422` — plist generation refs tsx/serve.ts → replaced by `process.execPath` (phase 1.4)
+- `cli.ts:463-464` — systemd unit refs tsx/serve.ts → replaced by `process.execPath` (phase 1.4)
+
+**execFileSync / execFile (promisified)**: fully supported in bun. `promisify(execFile)` works. the `test -x` pattern used for tmux/shell resolution (serve.ts:28-44) is fine.
 
 ### 1.2 embed public/ assets
 - [ ] create `public-assets.ts` — build-time generated module that exports all files from `public/` as a `Map<string, string|Buffer>`
