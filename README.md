@@ -45,23 +45,16 @@ Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monito
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
 ```
 
-This checks prerequisites, clones the repo, installs dependencies, and runs the setup wizard.
+Downloads a pre-built binary for your platform, installs it to `~/.wolfpack/bin/`, and runs the setup wizard.
 
-## Manual Install
-
-```bash
-git clone https://github.com/almogdepaz/wolfpack.git ~/.wolfpack/app
-cd ~/.wolfpack/app
-npm install
-npm link
-wolfpack
-```
+Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 
 ## Prerequisites
 
-- **Node.js** (v18+)
 - **tmux**
 - **Tailscale** (required) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
+
+No Node.js or npm required — wolfpack ships as a standalone binary.
 
 ## Workflow
 
@@ -112,7 +105,7 @@ wolfpack uninstall          # Remove everything (service, config, global command
 
 On first run, `wolfpack` walks you through:
 
-1. Checking prerequisites (Node.js, tmux, Tailscale)
+1. Checking prerequisites (tmux, Tailscale)
 2. Setting your projects directory (default: `~/Dev`)
 3. Choosing a port (default: `18790`)
 4. Enabling Tailscale HTTPS access
@@ -157,7 +150,26 @@ Stored in `~/.wolfpack/config.json`:
 }
 ```
 
-Agent command preset stored in `bridge-settings.json` in the app directory.
+Agent command preset stored in `bridge-settings.json` alongside the binary.
+
+## Building from Source
+
+Requires [Bun](https://bun.sh/) (v1.2+).
+
+```bash
+git clone https://github.com/almogdepaz/wolfpack.git
+cd wolfpack
+bun install
+bun run scripts/build.ts
+```
+
+Binaries are output to `dist/` for all supported platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64).
+
+For local development without compiling:
+
+```bash
+bun run cli.ts
+```
 
 ## License
 

@@ -126,3 +126,15 @@
   - 15 modules bundled per target
 - dev workflow requires only bun installed — no node/npm needed
 - README documentation deferred to phase 4.4
+
+## 2026-02-06: Phase 4.4 — update README (COMPLETE)
+- replaced "Quick Install" description: now says it downloads a pre-built binary (not clone+npm)
+- removed "Manual Install" section entirely (git clone + npm install + npm link flow is dead)
+- removed Node.js from Prerequisites — only tmux + Tailscale remain
+- added "No Node.js or npm required" note under prerequisites
+- updated Setup Wizard step 1 to say "tmux, Tailscale" instead of "Node.js, tmux, Tailscale"
+- updated bridge-settings.json config reference (no longer "in the app directory")
+- added "Building from Source" section: bun install, bun run scripts/build.ts, dev mode via bun run cli.ts
+- added supported platforms line (macOS Apple Silicon/Intel, Linux x64/arm64)
+- phase 4.4 is COMPLETE — all sub-tasks in PLAN.md are now checked off
+- ALL PHASES COMPLETE (1.1–4.4)

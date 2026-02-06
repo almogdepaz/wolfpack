@@ -124,9 +124,9 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 - [ ] document in README (→ phase 4.4)
 
 ### 4.4 update README
-- [ ] new install instructions (curl one-liner downloads binary)
-- [ ] remove node prereq
-- [ ] add "building from source" section for contributors
+- [x] new install instructions (curl one-liner downloads binary)
+- [x] remove node prereq
+- [x] add "building from source" section for contributors
 
 ---
 
