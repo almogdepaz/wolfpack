@@ -65,3 +65,13 @@
   - darwin-arm64: 57MB, darwin-x64: 62MB, linux-arm64: 92MB, linux-x64: 97MB
 - verified native binary (darwin-arm64) runs correctly — shows help/logo output
 - 15 modules bundled per target
+
+## 2026-02-06: Phase 2.2 — GitHub Actions release workflow (COMPLETE)
+- created `.github/workflows/release.yml`
+- triggers on tag push matching `v*`
+- uses `oven-sh/setup-bun@v2` to install latest bun
+- runs `bun install` then `bun run scripts/build.ts` to build all 4 targets
+- generates SHA256 checksums file (`checksums-sha256.txt`) in dist/
+- creates GitHub Release with auto-generated release notes via `softprops/action-gh-release@v2`
+- uploads all 4 binaries + checksums as release assets
+- phase 2 is now FULLY COMPLETE

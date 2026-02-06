@@ -81,12 +81,12 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 - [x] add `dist/` to `.gitignore`
 
 ### 2.2 github actions (`.github/workflows/release.yml`)
-- [ ] trigger on tag push (`v*`)
-- [ ] install bun
-- [ ] run build script
-- [ ] create github release with tag name
-- [ ] upload all 4 binaries as release assets
-- [ ] (optional) attach sha256 checksums
+- [x] trigger on tag push (`v*`)
+- [x] install bun
+- [x] run build script
+- [x] create github release with tag name
+- [x] upload all 4 binaries as release assets
+- [x] (optional) attach sha256 checksums
 
 ---
 
