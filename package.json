@@ -3,9 +3,6 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Mobile bridge to your AI coding agents via tmux",
-  "bin": {
-    "wolfpack": "./cli.ts"
-  },
   "dependencies": {
     "qrcode-terminal": "^0.12.0"
   }

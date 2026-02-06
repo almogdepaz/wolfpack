@@ -109,9 +109,9 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 
 ### 4.1 remove node-specific files
 - [x] remove `package-lock.json`
-- [ ] simplify `package.json` to just metadata (or remove entirely, use bunfig.toml)
+- [x] simplify `package.json` to just metadata (or remove entirely, use bunfig.toml)
 - [x] remove `tsx` dependency references
-- [ ] add `bunfig.toml` if needed
+- [x] add `bunfig.toml` if needed (not needed — bun defaults work fine)
 
 ### 4.2 generated file management
 - [ ] `public-assets.ts` should be gitignored (generated at build time)

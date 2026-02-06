@@ -103,3 +103,11 @@
 - verified: no `tsx` references remain in source files (only in `.claude/settings.local.json` which is not project code)
 - `bun install` succeeds, tsx package removed from node_modules
 - gen-assets and cli.ts parse/build correctly
+
+## 2026-02-06: Phase 4.1 — simplify package.json (COMPLETE)
+- removed `"bin"` field from `package.json` — no longer relevant with binary distribution (no npm link/npx)
+- kept `name`, `version`, `type`, `description`, `dependencies` — all still needed for bun's package management
+- `qrcode-terminal` dependency stays — it's a real npm dep used by `qr.ts`, resolved by bun at build time
+- decided against `bunfig.toml` — bun works fine with `package.json` defaults, no custom config needed
+- verified: `bun install` succeeds, no references to removed `"bin"` field anywhere in codebase
+- phase 4.1 is now FULLY COMPLETE
