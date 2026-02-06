@@ -591,9 +591,9 @@
         <button class="back-btn" id="back-btn">&lt; BACK</button>
       </div>
       <div class="header-center" id="header-center">
-        <div id="header-machine-label" style="display:none;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:1px;text-align:center;line-height:1;margin-bottom:2px"></div>
-        <div style="display:flex;align-items:center;gap:8px;position:relative">
-          <span id="wolf-icon" style="font-size:20px;line-height:1;position:absolute;right:100%;margin-right:8px">🐺</span>
+        <div id="header-machine-label" style="display:none;font-size:11px;color:#666;text-transform:uppercase;letter-spacing:1px;text-align:center;line-height:1;margin-bottom:8px"></div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="wolf-icon" style="font-size:20px;line-height:1">🐺</span>
           <h1 id="header-title">wolfpack</h1>
           <select
             id="session-switcher"
@@ -778,10 +778,12 @@
 
         const switcher = document.getElementById("session-switcher");
         const wolfIcon = document.getElementById("wolf-icon");
+        const headerCenter = document.getElementById("header-center");
 
         switcher.style.display = "none";
         document.getElementById("search-btn").style.display = "none";
         document.getElementById("header-machine-label").style.display = "none";
+        headerCenter.style.transform = "";
 
         // Stop session auto-refresh when leaving sessions view
         if (sessionRefreshTimer) {
@@ -838,6 +840,7 @@
           title.textContent = "";
           wolfIcon.style.display = "";
           switcher.style.display = "";
+          headerCenter.style.transform = "";
           document.getElementById("search-btn").style.display = "";
           const hml = document.getElementById("header-machine-label");
           if (getMachines().length > 0) {
