@@ -111,3 +111,18 @@
 - decided against `bunfig.toml` — bun works fine with `package.json` defaults, no custom config needed
 - verified: `bun install` succeeds, no references to removed `"bin"` field anywhere in codebase
 - phase 4.1 is now FULLY COMPLETE
+
+## 2026-02-06: Phase 4.2 — generated file management (COMPLETE)
+- confirmed `public-assets.ts` is already gitignored (added in earlier phase)
+- confirmed file is not tracked by git
+- confirmed `scripts/build.ts` runs gen-assets as step 1, so the file is always regenerated before builds
+- decision: gitignore (generated at build time), no need to commit for dev convenience
+- phase 4.2 is COMPLETE
+
+## 2026-02-06: Phase 4.3 — dev workflow verification (COMPLETE)
+- verified `bun run cli.ts` works for local dev (server starts, fails only due to port already in use)
+- verified `bun run scripts/build.ts` produces all 4 binaries successfully:
+  - linux-x64, linux-arm64, darwin-x64, darwin-arm64
+  - 15 modules bundled per target
+- dev workflow requires only bun installed — no node/npm needed
+- README documentation deferred to phase 4.4

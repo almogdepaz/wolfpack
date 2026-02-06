@@ -114,14 +114,14 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 - [x] add `bunfig.toml` if needed (not needed — bun defaults work fine)
 
 ### 4.2 generated file management
-- [ ] `public-assets.ts` should be gitignored (generated at build time)
-- [ ] OR committed for dev convenience — TBD
+- [x] `public-assets.ts` is gitignored (generated at build time)
+- [x] decision: gitignore — build script runs gen-assets as step 1, no need to commit
 
 ### 4.3 dev workflow
-- [ ] developers still need bun installed to build/run
-- [ ] `bun run cli.ts` for dev (works without compile)
-- [ ] `bun run scripts/build.ts` to produce binaries
-- [ ] document in README
+- [x] developers still need bun installed to build/run
+- [x] `bun run cli.ts` for dev (works without compile) — verified
+- [x] `bun run scripts/build.ts` to produce binaries — verified, all 4 targets build
+- [ ] document in README (→ phase 4.4)
 
 ### 4.4 update README
 - [ ] new install instructions (curl one-liner downloads binary)
