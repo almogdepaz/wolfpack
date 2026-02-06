@@ -54,3 +54,14 @@
 - pure JS package, zero native deps — no vendoring or inlining needed
 - decision: leave as-is, bun handles it automatically
 - phase 1 is now FULLY COMPLETE
+
+## 2026-02-06: Phase 2.1 — build script (COMPLETE)
+- created `scripts/build.ts` — orchestrates full build pipeline
+  - step 1: runs `scripts/gen-assets.ts` to generate embedded assets
+  - step 2: creates `dist/` directory
+  - step 3: compiles for all 4 targets (linux-x64, linux-arm64, darwin-x64, darwin-arm64)
+- `dist/` already in `.gitignore` (added in earlier phase)
+- tested: all 4 binaries compile successfully
+  - darwin-arm64: 57MB, darwin-x64: 62MB, linux-arm64: 92MB, linux-x64: 97MB
+- verified native binary (darwin-arm64) runs correctly — shows help/logo output
+- 15 modules bundled per target

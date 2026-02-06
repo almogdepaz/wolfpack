@@ -69,16 +69,16 @@ Tested `qrcode-terminal` under both `bun` runtime and `bun build --compile`. Wor
 ## phase 2: build pipeline
 
 ### 2.1 build script (`scripts/build.ts`)
-- [ ] run `scripts/gen-assets.ts` first to generate embedded assets
-- [ ] compile for all 4 targets:
+- [x] run `scripts/gen-assets.ts` first to generate embedded assets
+- [x] compile for all 4 targets:
   ```
   bun build --compile --target=bun-linux-x64 cli.ts --outfile dist/wolfpack-linux-x64
   bun build --compile --target=bun-linux-arm64 cli.ts --outfile dist/wolfpack-linux-arm64
   bun build --compile --target=bun-darwin-x64 cli.ts --outfile dist/wolfpack-darwin-x64
   bun build --compile --target=bun-darwin-arm64 cli.ts --outfile dist/wolfpack-darwin-arm64
   ```
-- [ ] output to `dist/`
-- [ ] add `dist/` to `.gitignore`
+- [x] output to `dist/`
+- [x] add `dist/` to `.gitignore`
 
 ### 2.2 github actions (`.github/workflows/release.yml`)
 - [ ] trigger on tag push (`v*`)
