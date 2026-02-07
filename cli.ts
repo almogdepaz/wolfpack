@@ -376,9 +376,7 @@ async function setup() {
             "  Failed to configure tailscale serve. You can do it manually later.",
           ),
         );
-        if (IS_LINUX) {
-          print(dim(`  Try: sudo tailscale serve --bg ${port}`));
-        }
+        print(dim(`  Try: ${sudoPrefix}tailscale serve --bg ${port}`));
       }
     }
   }
