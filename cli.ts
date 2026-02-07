@@ -2,6 +2,7 @@
 import { execSync } from "node:child_process";
 import {
   closeSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   openSync,
@@ -10,7 +11,7 @@ import {
   writeFileSync,
   unlinkSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { platform } from "node:os";
 import { printQR } from "./qr.js";
 
@@ -85,6 +86,13 @@ function red(s: string) {
 }
 function dim(s: string) {
   return `\x1b[2m${s}\x1b[0m`;
+}
+function yellow(s: string) {
+  return `\x1b[33m${s}\x1b[0m`;
+}
+
+function sleepSync(ms: number) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 const TAILSCALE_MAC_CLI =
@@ -277,23 +285,81 @@ async function setup() {
   // Tailscale hostname
   let tailscaleHostname: string | undefined;
   const sudoPrefix = IS_LINUX ? "sudo " : "";
-  if (hasTailscale) {
+
+  function tryGetTsHostname(): string | undefined {
     try {
       const status = execSync(`${sudoPrefix}${tsBin} status --self --json`, {
         encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
       });
       const parsed = JSON.parse(status);
-      tailscaleHostname = parsed.Self?.DNSName?.replace(/\.$/, "");
-    } catch {}
+      return parsed.Self?.DNSName?.replace(/\.$/, "") || undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
-    if (tailscaleHostname) {
-      print(dim(`  Detected Tailscale hostname: ${tailscaleHostname}`));
-    } else if (IS_LINUX) {
-      print(dim("  Tailscale not logged in. Run 'sudo tailscale up' first."));
+  if (hasTailscale) {
+    tailscaleHostname = tryGetTsHostname();
+
+    // Wait for Tailscale sign-in if not logged in
+    if (!tailscaleHostname) {
+      if (IS_MACOS) {
+        print(dim("  Launching Tailscale.app for sign-in..."));
+        try {
+          execSync("open /Applications/Tailscale.app", { stdio: "ignore" });
+        } catch {}
+      } else if (IS_LINUX) {
+        print(dim("  Run 'sudo tailscale up' in another terminal to sign in."));
+      }
+
+      print(yellow("  Waiting for Tailscale sign-in... (press Enter to skip)"));
+
+      // Non-blocking tty fd for skip detection
+      let ttyFd: number | null = null;
+      try {
+        ttyFd = openSync("/dev/tty", fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      } catch {}
+
+      const MAX_POLLS = 60; // ~2 min at 2s intervals
+      for (let i = 0; i < MAX_POLLS; i++) {
+        sleepSync(2000);
+        tailscaleHostname = tryGetTsHostname();
+        if (tailscaleHostname) break;
+
+        // Check for Enter keypress (non-blocking)
+        if (ttyFd !== null) {
+          try {
+            const skipBuf = Buffer.alloc(64);
+            const bytesRead = readSync(ttyFd, skipBuf, 0, skipBuf.length, null);
+            if (bytesRead > 0) {
+              print(dim("  Skipped Tailscale sign-in."));
+              break;
+            }
+          } catch {
+            // EAGAIN — no input yet, continue polling
+          }
+        }
+
+        // Progress dots every 10s
+        if (i > 0 && i % 5 === 0) {
+          const remaining = Math.round((MAX_POLLS - i) * 2);
+          process.stdout.write(dim(`  Still waiting... (${remaining}s remaining, Enter to skip)\n`));
+        }
+      }
+
+      if (ttyFd !== null) {
+        try { closeSync(ttyFd); } catch {}
+      }
+
+      if (!tailscaleHostname) {
+        print(yellow("  Tailscale not signed in. Run 'wolfpack setup' again after signing in."));
+      }
     }
 
     // Setup tailscale serve
     if (tailscaleHostname) {
+      print(dim(`  Detected Tailscale hostname: ${tailscaleHostname}`));
       try {
         execSync(
           `${sudoPrefix}${tsBin} serve --bg ${port}`,
@@ -400,8 +466,19 @@ function xmlEsc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function programArgs(): string[] {
+  const exe = process.execPath;
+  // When running via `bun run cli.ts`, execPath is the bun binary —
+  // we need to add the script path so launchd/systemd actually runs wolfpack.
+  const isBunRuntime = exe.endsWith("/bun") || exe.endsWith("/bun.exe");
+  if (isBunRuntime && process.argv[1]) {
+    return [exe, resolve(process.argv[1])];
+  }
+  return [exe];
+}
+
 function generatePlist(): string {
-  const binaryPath = process.execPath;
+  const args = programArgs();
   const config = loadConfig();
   const env: Record<string, string> = {};
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
@@ -413,6 +490,8 @@ function generatePlist(): string {
 
   const logPath = xmlEsc(join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log"));
 
+  const argsXml = args.map(a => `    <string>${xmlEsc(a)}</string>`).join("\n");
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -421,7 +500,7 @@ function generatePlist(): string {
   <string>${xmlEsc(PLIST_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${binaryPath}</string>
+${argsXml}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -442,7 +521,7 @@ ${envEntries}
 }
 
 function generateSystemdUnit(): string {
-  const binaryPath = process.execPath;
+  const args = programArgs();
   const config = loadConfig();
   const envLines: string[] = [
     `Environment=PATH=/usr/local/bin:/usr/bin:/bin`,
@@ -456,7 +535,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${binaryPath}
+ExecStart=${args.join(" ")}
 Restart=always
 RestartSec=5
 ${envLines.join("\n")}
