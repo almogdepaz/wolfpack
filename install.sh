@@ -250,15 +250,26 @@ echo ""
 
 SYMLINK_DIR="/usr/local/bin"
 
-# Check if already on PATH
-if command -v wolfpack &>/dev/null; then
-  echo "  $(green '✓') wolfpack is already on PATH"
-elif [ -d "$SYMLINK_DIR" ] && [ -w "$SYMLINK_DIR" ]; then
-  ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"
-  echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
-else
-  # Try with sudo
-  if [ -d "$SYMLINK_DIR" ]; then
+# Check if already on PATH — but verify it points to our binary
+EXISTING=$(command -v wolfpack 2>/dev/null || true)
+NEEDS_LINK=true
+
+if [ -n "$EXISTING" ]; then
+  RESOLVED=$(readlink -f "$EXISTING" 2>/dev/null || realpath "$EXISTING" 2>/dev/null || echo "$EXISTING")
+  if [ "$RESOLVED" = "${INSTALL_DIR}/${BINARY_NAME}" ]; then
+    echo "  $(green '✓') wolfpack is already on PATH"
+    NEEDS_LINK=false
+  else
+    echo "  $(dim "Replacing stale wolfpack at ${EXISTING}")"
+    rm -f "$EXISTING" 2>/dev/null || sudo rm -f "$EXISTING" 2>/dev/null || true
+  fi
+fi
+
+if $NEEDS_LINK; then
+  if [ -d "$SYMLINK_DIR" ] && [ -w "$SYMLINK_DIR" ]; then
+    ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"
+    echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
+  elif [ -d "$SYMLINK_DIR" ]; then
     echo "  Creating symlink in ${SYMLINK_DIR} (requires sudo)..."
     if sudo ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"; then
       echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
