@@ -3,6 +3,7 @@ node_modules/
 package-lock.json
 bridge-settings.json
 STATUS.md
+CLAUDE.md
 *.log
 *.gif
 *.png
