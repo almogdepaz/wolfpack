@@ -48,7 +48,7 @@ const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
-const SETTINGS_PATH = join(import.meta.dirname, "bridge-settings.json");
+const SETTINGS_PATH = join(process.env.HOME ?? "~", ".wolfpack", "bridge-settings.json");
 const VERSION = "1.1.0";
 
 // CORS origin allowlist — replaces wildcard "*"
