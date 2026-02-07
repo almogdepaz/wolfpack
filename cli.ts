@@ -8,7 +8,6 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import * as readline from "node:readline";
 import { platform } from "node:os";
 import { printQR } from "./qr.js";
 
@@ -25,16 +24,20 @@ interface Config {
 }
 
 function ask(question: string): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
+  const fs = require("node:fs");
+  process.stdout.write(question);
+  const buf = Buffer.alloc(1024);
+  let fd: number;
+  try {
+    fd = fs.openSync("/dev/tty", "r");
+  } catch {
+    // No tty (piped context) — read from stdin
+    const n = fs.readSync(0, buf, 0, buf.length, null);
+    return Promise.resolve(buf.subarray(0, n).toString("utf-8").split("\n")[0].trim());
+  }
+  const n = fs.readSync(fd, buf, 0, buf.length, null);
+  fs.closeSync(fd);
+  return Promise.resolve(buf.subarray(0, n).toString("utf-8").trim());
 }
 
 function print(msg: string) {
