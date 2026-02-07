@@ -48,7 +48,14 @@ install it on your phone's home screen for a native app experience. After setup,
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
 ```
 
-Downloads a pre-built binary for your platform, installs it to `~/.wolfpack/bin/`, and runs the setup wizard.
+The install script will:
+
+1. Check prerequisites (tmux, Tailscale)
+2. Download a pre-built binary for your platform from GitHub releases
+3. Install to `~/.wolfpack/bin/` and symlink to `/usr/local/bin/`
+4. On macOS: strip quarantine flags and ad-hoc codesign (requires Xcode CLI tools)
+5. Replace any stale `wolfpack` binary already on PATH
+6. Run the interactive setup wizard
 
 Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 
@@ -86,7 +93,7 @@ Phone (Web App) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux
 ```
 
 - Server uses `tmux capture-pane` to snapshot terminal output
-- Client polls every 1s for updates
+- Client polls every 500ms for updates (100ms after recent input)
 - Text input and key presses are sent via `tmux send-keys`
 - Tailscale provides encrypted transport and DNS — no port forwarding needed
 - **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
@@ -96,7 +103,7 @@ Phone (Web App) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux
 ```bash
 wolfpack                    # Start the server (runs setup on first launch)
 wolfpack setup              # Re-run the setup wizard
-wolfpack service install    # Auto-start on login (macOS launchd)
+wolfpack service install    # Auto-start on login (launchd / systemd)
 wolfpack service stop       # Stop the background service
 wolfpack service start      # Start the background service
 wolfpack service status     # Check if running
@@ -120,8 +127,8 @@ On first run, `wolfpack` walks you through:
 - **Session management** — View, create, and kill tmux agent sessions
 - **Live terminal** — Capture-pane polling gives you a real-time terminal view
 - **Project picker** — Start new sessions from any folder in your projects directory
-- **Agent presets** — Quick-switch between Claude, Codex, Gemini, or custom commands
-- **Terminal controls** — Enter, Escape, arrow keys, Ctrl-C buttons for TUI interaction
+- **Agent picker** — Choose agent per session (Claude, Codex, Gemini, or custom commands)
+- **Terminal controls** — Enter, Escape, arrow keys, kill session button for TUI interaction
 - **Search** — Find text in terminal output with match navigation
 - **Notifications** — Browser notifications and vibration when a session needs attention (prompts, errors)
 - **Session status** — Color-coded dots show which sessions need input
@@ -168,7 +175,7 @@ Stored in `~/.wolfpack/config.json`:
 }
 ```
 
-Agent command preset stored in `bridge-settings.json` alongside the binary.
+Agent command and settings stored in `~/.wolfpack/bridge-settings.json`.
 
 ## Building from Source
 
@@ -181,12 +188,14 @@ bun install
 bun run scripts/build.ts
 ```
 
-Binaries are output to `dist/` for all supported platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64).
+This generates the embedded asset bundle (`public-assets.ts`) and compiles binaries for all supported platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64) into `dist/`.
 
 For local development without compiling:
 
 ```bash
-bun run cli.ts
+bun install
+bun run scripts/gen-assets.ts   # generate embedded assets (required once)
+bun run cli.ts                  # start the server
 ```
 
 ## License

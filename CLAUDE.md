@@ -19,7 +19,7 @@ index.html ──────────→  serve.ts:18790  ──────
 ## Trust Model
 
 **No authentication.** Relies on Tailscale device-level network auth.
-- CORS `Access-Control-Allow-Origin: *` — any origin can call API
+- CORS origin-allowlisted (localhost + same tailnet only)
 - Session visibility filtered by DEV_DIR (projects directory)
 
 ## Key Validation Boundaries
@@ -28,13 +28,13 @@ index.html ──────────→  serve.ts:18790  ──────
 2. **Agent commands**: `/^[a-zA-Z0-9 \-._/=]+$/` — no shell metacharacters
 3. **Key allowlist**: 13 named keys (Enter, Escape, arrows, y, n, C-c, C-d, C-z, etc.)
 4. **Session auth**: `isAllowedSession()` checks against `tmuxList()` (DEV_DIR filtered)
-5. **Path traversal**: Static files checked via `startsWith(PUBLIC_DIR + "/")`
+5. **Static files**: Served from embedded asset map (no filesystem access)
 6. **Body size**: 64KB max
 
 ## File Locations
 
 - `~/.wolfpack/config.json` — user config (devDir, port, tailscaleHostname)
-- `bridge-settings.json` — agent command setting (in app directory)
+- `~/.wolfpack/bridge-settings.json` — agent command setting
 - `~/.wolfpack/wolfpack.log` — service logs
 
 ## Commands
@@ -50,20 +50,19 @@ wolfpack uninstall    # Full removal
 
 ### tmux Helpers
 
-- `tmuxList()` uses colon-delimited format — fragile if session names contain `:`
+- `tmuxList()` uses `|||` delimiter — handles session names with colons
 - `tmuxSend()` uses `-l` flag for literal mode — prevents key interpretation
 - `capturePane()` always captures 2000 lines scrollback
 
 ### Frontend
 
 - `esc()` function for HTML escaping in innerHTML — handles `<>&'"`
-- Polling: 1s normal, 200ms fast after input
+- Polling: 500ms normal, 100ms fast after input
 - localStorage stores remote machine registry
 
 ### Known Remaining Issues
 
-1. Fragile: Session names with colons break `tmuxList()` parsing
-2. Missing: No fetch timeout for remote machine health checks
+1. Missing: No fetch timeout for remote machine health checks
 
 ### Fixed Issues (recent audit)
 
@@ -80,7 +79,7 @@ wolfpack uninstall    # Full removal
 - The regex validations are the security boundary for command injection
 - Quote escaping in `tmuxNewSession()`: `replace(/'/g, "'\\''")` — standard shell technique
 - Session authorization happens on every mutation via `isAllowedSession()`
-- CORS * is intentional but allows any webpage to call API if port is known
+- CORS is origin-allowlisted (localhost + tailnet hostnames)
 
 ## Testing
 
@@ -88,6 +87,5 @@ No test files in this project. Manual testing against running tmux sessions.
 
 ## Dependencies
 
-Only 2 runtime deps:
-- `qrcode-terminal` — QR code printing
-- `tsx` — TypeScript execution (no build step)
+Ships as a standalone bun-compiled binary. One build-time npm dep:
+- `qrcode-terminal` — QR code printing (bundled into binary)
