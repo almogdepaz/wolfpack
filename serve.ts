@@ -255,18 +255,14 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function serveFile(
-  res: ServerResponse,
-  filename: string,
-  contentType?: string,
-): void {
+function serveFile(res: ServerResponse, filename: string): void {
   const asset = assets.get(filename);
   if (!asset) {
     res.writeHead(404);
     res.end("Not Found");
     return;
   }
-  res.writeHead(200, { "Content-Type": contentType ?? asset.mime });
+  res.writeHead(200, { "Content-Type": asset.mime });
   res.end(asset.content);
 }
 
@@ -276,8 +272,7 @@ const routes: Record<
   string,
   (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 > = {
-  "GET /": (_req, res) =>
-    serveFile(res, "index.html", "text/html; charset=utf-8"),
+  "GET /": (_req, res) => serveFile(res, "index.html"),
   "GET /manifest.json": (req, res) => {
     const asset = assets.get("manifest.json");
     if (!asset) { res.writeHead(404); res.end("Not Found"); return; }
@@ -470,7 +465,7 @@ const routes: Record<
       mkdirSync(configDir, { recursive: true });
       writeFileSync(configPath, content, "utf-8");
       json(res, { ok: true });
-    } catch (e) {
+    } catch {
       json(res, { error: "failed to write config" }, 500);
     }
   },

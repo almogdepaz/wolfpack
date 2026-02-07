@@ -8,6 +8,7 @@ STATUS.md
 *.png
 !public/icon-*.png
 *.jpeg
+!docs/*.jpeg
 *.jpg
 public-assets.ts
 dist/

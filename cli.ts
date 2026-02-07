@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 import { execSync } from "node:child_process";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   writeFileSync,
   unlinkSync,
 } from "node:fs";
@@ -23,21 +26,20 @@ interface Config {
   tailscaleHostname?: string;
 }
 
-function ask(question: string): Promise<string> {
-  const fs = require("node:fs");
+function ask(question: string): string {
   process.stdout.write(question);
   const buf = Buffer.alloc(1024);
   let fd: number;
   try {
-    fd = fs.openSync("/dev/tty", "r");
+    fd = openSync("/dev/tty", "r");
   } catch {
     // No tty (piped context) — read from stdin
-    const n = fs.readSync(0, buf, 0, buf.length, null);
-    return Promise.resolve(buf.subarray(0, n).toString("utf-8").split("\n")[0].trim());
+    const n = readSync(0, buf, 0, buf.length, null);
+    return buf.subarray(0, n).toString("utf-8").split("\n")[0].trim();
   }
-  const n = fs.readSync(fd, buf, 0, buf.length, null);
-  fs.closeSync(fd);
-  return Promise.resolve(buf.subarray(0, n).toString("utf-8").trim());
+  const n = readSync(fd, buf, 0, buf.length, null);
+  closeSync(fd);
+  return buf.subarray(0, n).toString("utf-8").trim();
 }
 
 function print(msg: string) {
@@ -176,7 +178,7 @@ async function setup() {
     }
 
     print(`  Will install: ${bold(missing.join(", "))}`);
-    const proceed = await ask("  Proceed? (y/n) ");
+    const proceed = ask("  Proceed? (y/n) ");
     if (proceed.toLowerCase() !== "y") {
       print(red("  Aborted."));
       process.exit(1);
@@ -255,10 +257,10 @@ async function setup() {
   // Dev directory
   const defaultDev = join(process.env.HOME ?? "~", "Dev");
   const devDir =
-    (await ask(`  Projects directory [${defaultDev}]: `)) || defaultDev;
+    (ask(`  Projects directory [${defaultDev}]: `)) || defaultDev;
 
   if (!existsSync(devDir)) {
-    const create = await ask(`  ${devDir} doesn't exist. Create it? (y/n) `);
+    const create = ask(`  ${devDir} doesn't exist. Create it? (y/n) `);
     if (create.toLowerCase() === "y") {
       mkdirSync(devDir, { recursive: true });
       print(green(`  Created ${devDir}`));
@@ -269,7 +271,7 @@ async function setup() {
   }
 
   // Port
-  const portStr = await ask("  Server port [18790]: ");
+  const portStr = ask("  Server port [18790]: ");
   const port = Number(portStr) || 18790;
 
   // Tailscale hostname
@@ -323,11 +325,10 @@ async function setup() {
   print(`  Config saved to ${dim(CONFIG_PATH)}`);
   print("");
   // Offer launchd service
-  const installService = await ask(
+  const installService = ask(
     "  Start wolfpack automatically on login? (y/n) ",
   );
   if (installService.toLowerCase() === "y") {
-    saveConfig(config); // ensure config is saved before generating plist
     try {
       serviceInstall();
     } catch (e) {

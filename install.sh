@@ -238,9 +238,16 @@ fi
 
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
-# Remove macOS quarantine flag (prevents "damaged and can't be opened" error)
+# Remove macOS quarantine/provenance flags and ad-hoc sign
 if $IS_MACOS; then
   xattr -cr "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null
+  if ! codesign --sign - --force "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null; then
+    echo ""
+    echo "  $(red 'Failed to codesign binary. macOS will block unsigned binaries.')"
+    echo "  Install Xcode CLI tools and re-run:"
+    echo "    $(bold 'xcode-select --install')"
+    exit 1
+  fi
 fi
 
 echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
