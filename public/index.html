@@ -595,6 +595,7 @@
         <div style="display:flex;align-items:center;gap:8px">
           <span id="wolf-icon" style="font-size:20px;line-height:1">🐺</span>
           <h1 id="header-title">wolfpack</h1>
+          <span id="header-version" style="font-size:9px;color:#444;letter-spacing:1px"></span>
           <select
             id="session-switcher"
             class="session-select"
@@ -739,6 +740,9 @@
           const info = await resp.json();
           selfName = info.name || "this machine";
           selfVersion = info.version || "";
+          // Show version in header
+          const vEl = document.getElementById("header-version");
+          if (vEl && selfVersion) vEl.textContent = "v" + selfVersion;
         } catch { selfName = "this machine"; }
         // Auto-discover wolfpack peers on tailnet
         try {
@@ -1133,10 +1137,13 @@
             resizePane();
             startPolling();
           } else {
+            const msg = data.error || "Server returned no session (is wolfpack up to date?)";
+            alert("Failed to create session: " + msg);
             showView("sessions");
             loadSessions();
           }
-        } catch {
+        } catch (e) {
+          alert("Failed to create session: " + (e.message || "network error"));
           showView("sessions");
           loadSessions();
         }
