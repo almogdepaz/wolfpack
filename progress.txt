@@ -38,3 +38,28 @@
   - `ralph-start` case: back→ralph, populate form
   - Ralph button visibility toggled per view (shown on sessions only)
 - Regenerated `public-assets.ts` via `bun run scripts/gen-assets.ts`
+
+## Phase 2d: JavaScript functions — DONE
+- Added 7 functions to `public/index.html` (lines 1120-1276) before `// ── Sessions ──`:
+  1. `loadRalphLoops()` — fetches `/api/ralph`, renders sorted card list (active-first), progress bars, status badges
+  2. `openRalphDetail(project)` — sets `currentRalphProject`, navigates to detail view
+  3. `refreshRalphDetail()` — fetches loop status + log, renders header/progress/actions, auto-scrolls log, stops polling when loop finishes
+  4. `cancelRalph()` — confirm dialog → POST `/api/ralph/cancel`, refreshes detail
+  5. `loadRalphStartForm()` — fetches `/api/projects`, populates project `<select>` dropdown
+  6. `startRalph()` — reads form inputs, POST `/api/ralph/start`, navigates to ralph list on success
+  7. `restartRalph()` — navigates to start form, pre-selects current project after 300ms delay
+- Regenerated `public-assets.ts` via `bun run scripts/gen-assets.ts`
+
+## Phase 3: Verification — DONE
+- Full audit of serve.ts confirmed all backend components present:
+  - RALPH_BIN, RalphStatus interface, parseRalphLog(), findRalphPid(), scanRalphLoops()
+  - All 4 API routes: GET /api/ralph, GET /api/ralph/log, POST /api/ralph/start, POST /api/ralph/cancel
+- Full audit of public/index.html confirmed all frontend components present:
+  - All CSS styles (ralph-card, ralph-bar, ralph-status, dot.purple, etc.)
+  - All 3 views (ralph-view, ralph-detail-view, ralph-start-view)
+  - Navigation button (ralph-btn) with showView() integration
+  - All 7 JS functions (loadRalphLoops, openRalphDetail, refreshRalphDetail, cancelRalph, loadRalphStartForm, startRalph, restartRalph)
+- public-assets.ts is current (regenerated during Phase 2)
+- No TypeScript errors (bun transpiles cleanly)
+
+## ALL PHASES COMPLETE
