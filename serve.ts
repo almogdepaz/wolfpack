@@ -949,13 +949,10 @@ const routes: Record<
     }
 
     const agentName = agent || "claude";
-    const AGENT_CMDS: Record<string, { bin: string; args: (p: string) => string[] }> = {
-      claude: {
-        bin: "claude",
-        args: (p) => ["--print", "--dangerously-skip-permissions", "-p", p],
-      },
-      codex: { bin: "codex", args: (p) => ["exec", p, "--yolo"] },
-      gemini: { bin: "gemini", args: (p) => ["-p", p, "--yolo"] },
+    const AGENT_CMDS: Record<string, { bin: string; args: string[] }> = {
+      claude: { bin: "claude", args: ["--print", "--dangerously-skip-permissions"] },
+      codex: { bin: "codex", args: ["exec", "--yolo"] },
+      gemini: { bin: "gemini", args: ["--yolo"] },
     };
     const agentCfg = AGENT_CMDS[agentName];
     if (!agentCfg) {
@@ -1007,12 +1004,26 @@ Here is the plan file:
 
 ${planContent}`;
 
-        const { stdout } = await exec(agentCfg.bin, agentCfg.args(prompt), {
-          cwd: projectDir,
-          timeout: 120000,
-          maxBuffer: 5 * 1024 * 1024,
+        // Pipe prompt via stdin to avoid OS arg length limits on large plans
+        const result = await new Promise<string>((resolve, reject) => {
+          const proc = spawn(agentCfg.bin, agentCfg.args, {
+            cwd: projectDir,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          let stdout = "";
+          let stderr = "";
+          proc.stdout!.on("data", (d: Buffer) => { stdout += d.toString(); });
+          proc.stderr!.on("data", (d: Buffer) => { stderr += d.toString(); });
+          proc.on("close", (code) => {
+            if (code === 0) resolve(stdout.trim());
+            else reject(new Error(stderr || `agent exited with code ${code}`));
+          });
+          proc.on("error", reject);
+          proc.stdin!.write(prompt);
+          proc.stdin!.end();
+          // Timeout after 2 minutes
+          setTimeout(() => { try { proc.kill(); } catch {} reject(new Error("numbering timed out")); }, 120000);
         });
-        const result = stdout.trim();
         if (!result) {
           writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: agent returned empty output\nfinished: ${new Date().toISOString()}\n`);
           return;
