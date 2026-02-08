@@ -362,6 +362,15 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
       }
     }
 
+    // stale numbering detection: if numbering with no pid, no finish, and
+    // started > 3 min ago, the server likely restarted mid-numbering
+    if (status.numbering && !status.finished && status.pid === 0 && status.started) {
+      const elapsed = Date.now() - new Date(status.started).getTime();
+      if (elapsed > 3 * 60 * 1000) {
+        status.numbering = false;
+      }
+    }
+
     // last output lines (skip markers and blanks)
     const meaningful = lines.filter(
       (l) => l.trim() && !l.startsWith("===") && !l.startsWith("plan:") &&
