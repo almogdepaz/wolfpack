@@ -161,12 +161,6 @@
         flex: 1;
         min-width: 0;
       }
-      .card-sub {
-        font-size: 12px;
-        color: #333;
-        margin-left: auto;
-      }
-
       .new-btn {
         background: none;
         border: 1px solid #00ff41;
@@ -598,6 +592,7 @@
       .ralph-card.running { border-left: 3px solid #00ff41; }
       .ralph-card.done { border-left: 3px solid #00ff41; }
       .ralph-card.limit { border-left: 3px solid #ff6600; }
+      .ralph-card.numbering { border-left: 3px solid #f1c40f; }
       .ralph-card.idle { border-left: 3px solid #333; }
       .ralph-card:active {
         background: #1a1a1a;
@@ -640,6 +635,7 @@
       .ralph-bar-fill.running { background: #00ff41; }
       .ralph-bar-fill.done { background: #00ff41; }
       .ralph-bar-fill.limit { background: #ff6600; }
+      .ralph-bar-fill.numbering { background: #f1c40f; }
       .ralph-bar-fill.idle { background: #333; }
       .ralph-iter {
         font-size: 11px;
@@ -658,6 +654,7 @@
       .ralph-status.done { color: #00ff41; background: #00ff4115; }
       .ralph-status.idle { color: #555; background: #55555515; }
       .ralph-status.limit { color: #ff6600; background: #ff660015; }
+      .ralph-status.numbering { color: #f1c40f; background: #f1c40f15; }
       .ralph-status.failed { color: #cc3333; }
       .dot.purple {
         background: #9b59b6;
@@ -1156,12 +1153,15 @@
           });
           el.innerHTML = loops.map(loop => {
             const hitLimit = !loop.active && !loop.completed && loop.finished;
-            const status = loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-            const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
-            const dotClass = loop.active ? "purple" : "gray";
-            // running: show iteration progress. not running: show task progress
+            const status = loop.numbering ? "numbering" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
+            const statusLabel = loop.numbering ? "NUMBERING" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+            const dotClass = loop.numbering ? "yellow" : loop.active ? "purple" : "gray";
+            // running: show iteration progress. numbering: show spinner. not running: show task progress
             let pct, progressLabel;
-            if (loop.active) {
+            if (loop.numbering) {
+              pct = 0;
+              progressLabel = '0/? tasks';
+            } else if (loop.active) {
               pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
               progressLabel = loop.iteration + '/' + loop.totalIterations + ' iter';
             } else {
@@ -1207,10 +1207,13 @@
             return;
           }
           const hitLimit = !loop.active && !loop.completed && loop.finished;
-          const status = loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-          const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+          const status = loop.numbering ? "numbering" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
+          const statusLabel = loop.numbering ? "NUMBERING" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
           let pct, progressLabel;
-          if (loop.active) {
+          if (loop.numbering) {
+            pct = 0;
+            progressLabel = '0/? tasks';
+          } else if (loop.active) {
             pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
             progressLabel = loop.iteration + '/' + loop.totalIterations + ' iter';
           } else {
@@ -1230,14 +1233,16 @@
             (loop.finished ? '<div style="color:#888;font-size:12px">finished: ' + esc(loop.finished) + '</div>' : '');
 
           // actions
-          if (loop.active) {
+          if (loop.numbering) {
+            actions.innerHTML = '<button class="ralph-launch-btn" style="background:#f1c40f;color:#000" disabled>Numbering tasks...</button>';
+          } else if (loop.active) {
             actions.innerHTML = '<button class="ralph-launch-btn" style="background:#e74c3c" onclick="cancelRalph()">Cancel</button>';
           } else {
             actions.innerHTML = '<button class="ralph-launch-btn" onclick="restartRalph(\'' + esc(loop.planFile || '') + '\')">Restart</button>';
           }
 
-          // stop polling if loop finished
-          if (!loop.active && ralphLogPollTimer) {
+          // stop polling if loop finished (but keep polling during numbering)
+          if (!loop.active && !loop.numbering && ralphLogPollTimer) {
             clearInterval(ralphLogPollTimer);
             ralphLogPollTimer = null;
           }
@@ -1351,30 +1356,6 @@
         if (!project) { alert("select a project"); return; }
         if (!planFile) { alert("select a plan file"); return; }
 
-        // check if plan has parseable tasks
-        try {
-          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile));
-          if (tc.total === 0) {
-            if (!confirm("No numbered tasks found in " + planFile + ". Number them with " + agent + "?")) return;
-            const btn = document.querySelector(".ralph-launch-btn");
-            if (btn) { btn.textContent = "Numbering tasks..."; btn.disabled = true; }
-            try {
-              const numData = await api("/ralph/number-plan", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ project, planFile, agent }),
-              });
-              if (numData.error) { alert("Failed to number: " + numData.error); return; }
-              alert("Found " + numData.tasksTotal + " tasks. Launching.");
-            } catch (e) {
-              alert("Failed: " + e.message);
-              return;
-            } finally {
-              if (btn) { btn.textContent = "Launch Ralph"; btn.disabled = false; }
-            }
-          }
-        } catch {}
-
         const body = { project, iterations, planFile, agent };
         const branchToggle = document.getElementById("ralph-branch-toggle").checked;
         if (branchToggle) {
@@ -1383,6 +1364,31 @@
           if (!newBranch) { alert("enter a branch name"); return; }
           body.newBranch = newBranch;
           body.sourceBranch = sourceBranch;
+        }
+
+        // Check if plan has numbered tasks via task-count endpoint
+        try {
+          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile));
+          if (tc.total === 0) {
+            if (!confirm("No numbered tasks found in " + planFile + ". Number them with " + agent + "?")) return;
+            // Fire-and-forget: number in background, then auto-start
+            try {
+              const data = await api("/ralph/number-and-start", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+              });
+              if (data.error) { alert(data.error); return; }
+            } catch (e) {
+              alert("Failed: " + e.message);
+              return;
+            }
+            currentRalphProject = project;
+            showView("ralph");
+            return;
+          }
+        } catch (e) {
+          // task-count failed — proceed with start anyway
         }
 
         try {

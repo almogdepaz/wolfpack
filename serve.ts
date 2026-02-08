@@ -42,8 +42,20 @@ const SHELL = (() => {
 
 // inherit user's full PATH from login shell — launchd PATH is minimal
 try {
-  process.env.PATH = execFileSync(SHELL, ["-lc", "echo $PATH"]).toString().trim();
-} catch {}
+  const shellPath = execFileSync(SHELL, ["-lic", "echo $PATH"]).toString().trim();
+  if (shellPath) process.env.PATH = shellPath;
+} catch {
+  // fallback: manually add common dirs
+  const extra = [
+    `${process.env.HOME}/.local/bin`,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+  const cur = process.env.PATH || "";
+  const have = new Set(cur.split(":"));
+  const add = extra.filter(p => !have.has(p) && existsSync(p));
+  if (add.length) process.env.PATH = [...add, cur].join(":");
+}
 
 const TMUX = "tmux";
 
@@ -231,6 +243,7 @@ interface RalphStatus {
   project: string;
   active: boolean;
   completed: boolean;
+  numbering: boolean;
   iteration: number;
   totalIterations: number;
   agent: string;
@@ -278,6 +291,7 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     project,
     active: false,
     completed: false,
+    numbering: false,
     iteration: 0,
     totalIterations: 0,
     agent: "",
@@ -307,6 +321,7 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
       if (startMatch) status.started = startMatch[1].trim();
       const pidMatch = line.match(/^pid:\s*(\d+)/);
       if (pidMatch) status.pid = Number(pidMatch[1]);
+      if (/^status:\s*numbering/.test(line)) status.numbering = true;
     }
 
     // parse total iterations from header line
@@ -325,6 +340,7 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     const finishedMatch = content.match(/^finished:\s*(.+)/m);
     if (finishedMatch) {
       status.finished = finishedMatch[1].trim();
+      status.numbering = false; // numbering ended (success or error)
     }
     const agentSaidDone = content.includes("<done>COMPLETE</done>") || content.includes("All tasks complete");
     const noTasksRemain = content.includes("No unchecked tasks remain");
@@ -340,6 +356,7 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
         process.kill(status.pid, 0);
         status.active = true;
         status.completed = false; // still running
+        status.numbering = false; // worker took over
       } catch {
         status.active = false;
       }
@@ -520,7 +537,7 @@ const routes: Record<
     }
 
     // Validate cmd if provided
-    if (cmd && cmd !== "shell" && !/^[a-zA-Z0-9 \-._/=]+$/.test(cmd)) {
+    if (cmd && cmd !== "shell" && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
     }
 
@@ -589,18 +606,17 @@ const routes: Record<
       deleteCustomCmd?: string;
     };
     const settings = loadSettings();
-    const cmdRegex = /^[a-zA-Z0-9 \-._/=]+$/;
 
     if (body.agentCmd != null) {
       const cmd = body.agentCmd.trim();
-      if (cmd !== "shell" && !cmdRegex.test(cmd)) {
+      if (cmd !== "shell" && !CMD_REGEX.test(cmd)) {
         return json(res, { error: "invalid characters in agent command" }, 400);
       }
       settings.agentCmd = cmd;
     }
     if (body.addCustomCmd != null) {
       const cmd = body.addCustomCmd.trim();
-      if (!cmdRegex.test(cmd)) {
+      if (!CMD_REGEX.test(cmd)) {
         return json(res, { error: "invalid characters in command" }, 400);
       }
       if (!settings.customCmds) settings.customCmds = [];
@@ -898,30 +914,29 @@ const routes: Record<
     json(res, tasks);
   },
 
-  "POST /api/ralph/number-plan": async (req, res) => {
-    const { project, planFile, agent } = JSON.parse(await readBody(req)) as {
+  "POST /api/ralph/number-and-start": async (req, res) => {
+    const { project, iterations, planFile, agent, newBranch, sourceBranch } = JSON.parse(await readBody(req)) as {
       project?: string;
+      iterations?: number;
       planFile?: string;
       agent?: string;
+      newBranch?: string;
+      sourceBranch?: string;
     };
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
     const projectDir = join(DEV_DIR, project);
     try {
-      if (!statSync(projectDir).isDirectory()) {
+      if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory()) {
         return json(res, { error: "not a directory" }, 400);
       }
     } catch {
-      return json(res, { error: "project not found" }, 404);
+      return json(res, { error: "project directory not found" }, 404);
     }
-    const plan = planFile || "PLAN.md";
-    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(plan)) {
-      return json(res, { error: "invalid plan file name" }, 400);
-    }
-    const planPath = join(projectDir, plan);
-    if (!existsSync(planPath)) {
-      return json(res, { error: "plan file not found" }, 404);
+    const existing = parseRalphLog(projectDir);
+    if (existing?.active || existing?.numbering) {
+      return json(res, { error: "ralph loop already running or numbering" }, 409);
     }
 
     const agentName = agent || "claude";
@@ -938,8 +953,36 @@ const routes: Record<
       return json(res, { error: `unknown agent: ${agentName}` }, 400);
     }
 
-    const planContent = readFileSync(planPath, "utf-8");
-    const prompt = `You are reformatting a plan file for an automated task runner.
+    const iters = Math.max(1, Math.min(50, iterations ?? 5));
+    const resolvedPlan = planFile || "PLAN.md";
+    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(resolvedPlan) || resolvedPlan === ".." || resolvedPlan === ".") {
+      return json(res, { error: "invalid plan file name" }, 400);
+    }
+    const planPath = join(projectDir, resolvedPlan);
+    if (!existsSync(planPath)) {
+      return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
+    }
+
+    // Write .ralph.log with numbering status so the card appears immediately
+    const now = new Date().toISOString();
+    const logPath = join(projectDir, ".ralph.log");
+    writeFileSync(logPath, [
+      `🥋 ralph — numbering tasks`,
+      `agent: ${agentName}`,
+      `plan: ${resolvedPlan}`,
+      `status: numbering`,
+      `started: ${now}`,
+      "",
+    ].join("\n"));
+
+    // Return immediately — numbering + start happens in background
+    json(res, { ok: true, status: "numbering" });
+
+    // Background: number the plan, then spawn the ralph worker
+    (async () => {
+      try {
+        const planContent = readFileSync(planPath, "utf-8");
+        const prompt = `You are reformatting a plan file for an automated task runner.
 
 The plan file below contains implementation sections but they are NOT numbered with the format "### N. Title".
 
@@ -955,23 +998,71 @@ Here is the plan file:
 
 ${planContent}`;
 
-    try {
-      const { stdout } = await exec(agentCfg.bin, agentCfg.args(prompt), {
-        cwd: projectDir,
-        timeout: 120000,
-        maxBuffer: 5 * 1024 * 1024,
-      });
-      const result = stdout.trim();
-      if (!result) {
-        return json(res, { error: "agent returned empty output" }, 500);
+        const { stdout } = await exec(agentCfg.bin, agentCfg.args(prompt), {
+          cwd: projectDir,
+          timeout: 120000,
+          maxBuffer: 5 * 1024 * 1024,
+        });
+        const result = stdout.trim();
+        if (!result) {
+          writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: agent returned empty output\nfinished: ${new Date().toISOString()}\n`);
+          return;
+        }
+        writeFileSync(planPath, result + "\n");
+
+        // Branch creation (optional) — same logic as /api/ralph/start
+        const BRANCH_REGEX = /^[a-zA-Z0-9._\-/]+$/;
+        if (newBranch) {
+          if (!BRANCH_REGEX.test(newBranch)) {
+            writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: invalid branch name\nfinished: ${new Date().toISOString()}\n`);
+            return;
+          }
+          const source = sourceBranch || "main";
+          try {
+            execFileSync("git", ["fetch", "origin", `${source}:${source}`], {
+              cwd: projectDir, encoding: "utf-8", timeout: 30000,
+            });
+          } catch {
+            try {
+              execFileSync("git", ["rev-parse", "--verify", source], {
+                cwd: projectDir, encoding: "utf-8", timeout: 5000,
+              });
+            } catch {
+              writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: source branch '${source}' not found\nfinished: ${new Date().toISOString()}\n`);
+              return;
+            }
+          }
+          try {
+            execFileSync("git", ["checkout", "-b", newBranch, source], {
+              cwd: projectDir, encoding: "utf-8", timeout: 10000,
+            });
+          } catch (e: any) {
+            writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: ${e.stderr || e.message || "branch creation failed"}\nfinished: ${new Date().toISOString()}\n`);
+            return;
+          }
+        }
+
+        // Spawn ralph worker — same as POST /api/ralph/start
+        const child = spawn(BUN_BIN, [RALPH_WORKER], {
+          cwd: projectDir,
+          detached: true,
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            RALPH_AGENT: agentName,
+            RALPH_ITERATIONS: String(iters),
+            RALPH_PLAN: resolvedPlan,
+            RALPH_PROGRESS: "progress.txt",
+          },
+        });
+        child.unref();
+      } catch (e: any) {
+        const msg = e.stderr || e.message || "numbering failed";
+        try {
+          writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: ${msg}\nfinished: ${new Date().toISOString()}\n`);
+        } catch {}
       }
-      writeFileSync(planPath, result + "\n");
-      const tasks = countPlanTasks(planPath);
-      json(res, { ok: true, tasksDone: tasks.done, tasksTotal: tasks.total });
-    } catch (e: any) {
-      const msg = e.stderr || e.message || "agent failed";
-      json(res, { error: msg }, 500);
-    }
+    })();
   },
 
   "POST /api/ralph/cancel": async (req, res) => {
