@@ -92,3 +92,18 @@
 - Returns 400 with "invalid plan file name" if validation fails
 - Prevents path traversal via planFile argument to ralph spawn
 - Transpiles cleanly, no errors
+
+## Security Fix 5: Add pid > 1 guard to cancel endpoint — DONE
+- Changed `if (!pid)` to `if (!pid || pid <= 1)` in POST /api/ralph/cancel (line 777)
+- Prevents `process.kill(-pid)` from killing init/launchd if findRalphPid returned pid=1
+- Defensive guard — unlikely path but catastrophic if hit
+- Transpiles cleanly, no errors
+
+## Verification — DONE
+- `bun run serve.ts` starts successfully on port 18790 (no compile errors)
+- curl test: POST /api/ralph/start with project=".." → 400 `{"error":"invalid project name"}` ✓
+- curl test: POST /api/ralph/start with planFile="../../../etc/passwd" → 400 `{"error":"invalid plan file name"}` ✓
+- curl test: POST /api/ralph/start with project="." → 400 `{"error":"invalid project name"}` ✓
+- `bun run scripts/gen-assets.ts` → regenerated public-assets.ts (no changes needed, already current)
+
+## ALL SECURITY FIXES COMPLETE + VERIFIED

@@ -774,7 +774,7 @@ const routes: Record<
     }
     const projectDir = join(DEV_DIR, project);
     const pid = await findRalphPid(projectDir);
-    if (!pid) {
+    if (!pid || pid <= 1) {
       return json(res, { error: "no active ralph loop found" }, 404);
     }
     try {
