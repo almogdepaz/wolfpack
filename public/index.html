@@ -597,6 +597,7 @@
       }
       .ralph-card.running { border-left: 3px solid #00ff41; }
       .ralph-card.done { border-left: 3px solid #00ff41; }
+      .ralph-card.limit { border-left: 3px solid #ff6600; }
       .ralph-card.idle { border-left: 3px solid #333; }
       .ralph-card:active {
         background: #1a1a1a;
@@ -638,6 +639,7 @@
       }
       .ralph-bar-fill.running { background: #00ff41; }
       .ralph-bar-fill.done { background: #00ff41; }
+      .ralph-bar-fill.limit { background: #ff6600; }
       .ralph-bar-fill.idle { background: #333; }
       .ralph-iter {
         font-size: 11px;
@@ -655,6 +657,7 @@
       .ralph-status.running { color: #00ff41; background: #00ff4115; }
       .ralph-status.done { color: #00ff41; background: #00ff4115; }
       .ralph-status.idle { color: #555; background: #55555515; }
+      .ralph-status.limit { color: #ff6600; background: #ff660015; }
       .ralph-status.failed { color: #cc3333; }
       .dot.purple {
         background: #9b59b6;
@@ -1153,8 +1156,9 @@
           });
           el.innerHTML = loops.map(loop => {
             const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-            const status = loop.active ? "running" : loop.completed ? "done" : "idle";
-            const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : "IDLE";
+            const hitLimit = !loop.active && !loop.completed && loop.finished;
+            const status = loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
+            const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "LIMIT" : "IDLE";
             const dotClass = loop.active ? "purple" : "gray";
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
             return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +
@@ -1195,8 +1199,9 @@
             return;
           }
           const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-          const status = loop.active ? "running" : "idle";
-          const statusLabel = loop.active ? "RUNNING" : "IDLE";
+          const hitLimit = !loop.active && !loop.completed && loop.finished;
+          const status = loop.active ? "running" : loop.completed ? "done" : "idle";
+          const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "LIMIT" : "IDLE";
           header.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
               '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +

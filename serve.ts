@@ -295,10 +295,9 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     // check completion
     const finishedMatch = content.match(/^finished:\s*(.+)/m);
     if (finishedMatch) {
-      status.completed = true;
       status.finished = finishedMatch[1].trim();
     }
-    if (content.includes("<done>COMPLETE</done>") || content.includes("No unchecked tasks remain")) {
+    if (content.includes("<done>COMPLETE</done>") || content.includes("No unchecked tasks remain") || content.includes("All tasks complete")) {
       status.completed = true;
       status.iteration = status.totalIterations;
     }
