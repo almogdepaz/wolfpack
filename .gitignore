@@ -13,3 +13,5 @@ CLAUDE.md
 *.jpg
 public-assets.ts
 dist/
+.ralph_iter.tmp
+progress.txt

@@ -595,13 +595,18 @@
         -webkit-tap-highlight-color: transparent;
         transition: all 0.15s ease;
       }
+      .ralph-card.running { border-left: 3px solid #00ff41; }
+      .ralph-card.idle { border-left: 3px solid #333; }
       .ralph-card:active {
         background: #1a1a1a;
-        border-color: #9b59b6;
+        border-top-color: #9b59b6;
+        border-right-color: #9b59b6;
+        border-bottom-color: #9b59b6;
       }
       .ralph-card-header {
         display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 10px;
         margin-bottom: 8px;
       }
@@ -631,21 +636,22 @@
         transition: width 0.3s ease;
       }
       .ralph-bar-fill.running { background: #00ff41; }
-      .ralph-bar-fill.done { background: #555; }
-      .ralph-bar-fill.failed { background: #cc3333; }
+      .ralph-bar-fill.idle { background: #333; }
       .ralph-iter {
         font-size: 11px;
         color: #666;
         white-space: nowrap;
       }
       .ralph-status {
-        font-size: 9px;
+        font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 1px;
         font-weight: bold;
+        padding: 2px 6px;
+        border-radius: 2px;
       }
-      .ralph-status.running { color: #00ff41; }
-      .ralph-status.done { color: #666; }
+      .ralph-status.running { color: #00ff41; background: #00ff4115; }
+      .ralph-status.idle { color: #555; background: #55555515; }
       .ralph-status.failed { color: #cc3333; }
       .dot.purple {
         background: #9b59b6;
@@ -746,11 +752,16 @@
         border: 1px solid #9b59b6;
         border-radius: 2px;
         color: #b0b0b0;
-        font-size: 18px;
+        font-size: 22px;
         cursor: pointer;
         padding: 6px;
+        min-width: 40px;
+        min-height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         -webkit-tap-highlight-color: transparent;
-        line-height: 1;
+        transition: all 0.15s ease;
       }
       .ralph-nav-btn:active { background: #1a1a1a; }
     </style>
@@ -905,15 +916,15 @@
           autocomplete="off"
         />
 
-        <label for="ralph-plan-input">Plan file (optional)</label>
-        <input
-          id="ralph-plan-input"
-          type="text"
-          placeholder="PLAN.md"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-        />
+        <label for="ralph-agent-select">Agent</label>
+        <select id="ralph-agent-select">
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+          <option value="gemini">gemini</option>
+        </select>
+
+        <label for="ralph-plan-select">Plan file</label>
+        <select id="ralph-plan-select"></select>
 
         <button class="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
       </div>
@@ -930,6 +941,7 @@
       let ralphRefreshTimer = null;
       let currentRalphProject = null;
       let ralphLogPollTimer = null;
+      let currentRalphPlanFile = "";
 
       // ── Machine registry ──
 
@@ -1135,14 +1147,15 @@
           });
           el.innerHTML = loops.map(loop => {
             const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-            const status = loop.active ? "running" : (loop.completed ? "done" : "failed");
-            const statusLabel = loop.active ? "RUNNING" : (loop.completed ? "DONE" : "STOPPED");
-            const dotClass = loop.active ? "purple" : (loop.completed ? "green" : "red");
+            const status = loop.active ? "running" : "idle";
+            const statusLabel = loop.active ? "RUNNING" : "IDLE";
+            const dotClass = loop.active ? "purple" : "gray";
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
-            return '<div class="ralph-card" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +
+            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +
               '<div class="ralph-card-header">' +
                 '<span class="ralph-card-name"><span class="dot ' + dotClass + '"></span>' + esc(loop.project) + '</span>' +
                 '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
+                '<button class="kill-btn" onclick="dismissRalph(\'' + esc(loop.project) + '\', event)">&times;</button>' +
               '</div>' +
               '<div class="ralph-progress">' +
                 '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + pct + '%"></div></div>' +
@@ -1176,8 +1189,8 @@
             return;
           }
           const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-          const status = loop.active ? "running" : (loop.completed ? "done" : "failed");
-          const statusLabel = loop.active ? "RUNNING" : (loop.completed ? "DONE" : "STOPPED");
+          const status = loop.active ? "running" : "idle";
+          const statusLabel = loop.active ? "RUNNING" : "IDLE";
           header.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
               '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
@@ -1194,7 +1207,7 @@
           if (loop.active) {
             actions.innerHTML = '<button class="ralph-launch-btn" style="background:#e74c3c" onclick="cancelRalph()">Cancel</button>';
           } else {
-            actions.innerHTML = '<button class="ralph-launch-btn" onclick="restartRalph()">Restart</button>';
+            actions.innerHTML = '<button class="ralph-launch-btn" onclick="restartRalph(\'' + esc(loop.planFile || '') + '\')">Restart</button>';
           }
 
           // stop polling if loop finished
@@ -1238,25 +1251,48 @@
           const data = await api("/projects");
           const projects = data.projects || [];
           sel.innerHTML = projects.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
-          // pre-select current project if coming from restart
           if (currentRalphProject && projects.includes(currentRalphProject)) {
             sel.value = currentRalphProject;
           }
         } catch {
           sel.innerHTML = '<option value="">failed to load projects</option>';
         }
+        sel.onchange = function() { loadPlanFiles(sel.value); };
+        await loadPlanFiles(sel.value);
+        if (currentRalphPlanFile) {
+          document.getElementById("ralph-plan-select").value = currentRalphPlanFile;
+          currentRalphPlanFile = "";
+        }
+      }
+
+      async function loadPlanFiles(project) {
+        const planSel = document.getElementById("ralph-plan-select");
+        if (!project) { planSel.innerHTML = '<option value="">select a project first</option>'; return; }
+        try {
+          const data = await api("/ralph/plans?project=" + encodeURIComponent(project));
+          const plans = data.plans || [];
+          if (plans.length === 0) {
+            planSel.innerHTML = '<option value="">no .md files found</option>';
+          } else {
+            planSel.innerHTML = plans.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
+          }
+        } catch {
+          planSel.innerHTML = '<option value="">failed to load plans</option>';
+        }
       }
 
       async function startRalph() {
         const project = document.getElementById("ralph-project-select").value;
         const iterations = parseInt(document.getElementById("ralph-iterations-input").value) || 5;
-        const planFile = document.getElementById("ralph-plan-input").value.trim() || undefined;
+        const planFile = document.getElementById("ralph-plan-select").value || undefined;
+        const agent = document.getElementById("ralph-agent-select").value;
         if (!project) { alert("select a project"); return; }
+        if (!planFile) { alert("select a plan file"); return; }
         try {
           const data = await api("/ralph/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project, iterations, planFile }),
+            body: JSON.stringify({ project, iterations, planFile, agent }),
           });
           if (data.error) { alert(data.error); return; }
           currentRalphProject = project;
@@ -1266,8 +1302,24 @@
         }
       }
 
-      function restartRalph() {
+      function restartRalph(planFile) {
+        currentRalphPlanFile = planFile || "";
         showView("ralph-start");
+      }
+
+      async function dismissRalph(project, event) {
+        event.stopPropagation();
+        if (!confirm("delete plan file for " + project + "?")) return;
+        try {
+          await api("/ralph/dismiss", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project }),
+          });
+          loadRalphLoops();
+        } catch (e) {
+          alert("failed to dismiss: " + e.message);
+        }
       }
 
       // ── Sessions ──
@@ -2189,6 +2241,7 @@
         return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
       }
 
+      showView("sessions");
       loadSessions();
 
       // Register service worker for offline caching
