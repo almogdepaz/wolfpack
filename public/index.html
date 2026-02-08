@@ -1207,7 +1207,7 @@
             return;
           }
           const hitLimit = !loop.active && !loop.completed && loop.finished;
-          const status = loop.active ? "running" : loop.completed ? "done" : "idle";
+          const status = loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
           const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
           let pct, progressLabel;
           if (loop.active) {
@@ -1350,6 +1350,30 @@
         const agent = document.getElementById("ralph-agent-select").value;
         if (!project) { alert("select a project"); return; }
         if (!planFile) { alert("select a plan file"); return; }
+
+        // check if plan has parseable tasks
+        try {
+          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile));
+          if (tc.total === 0) {
+            if (!confirm("No numbered tasks found in " + planFile + ". Number them with " + agent + "?")) return;
+            const btn = document.querySelector(".ralph-launch-btn");
+            if (btn) { btn.textContent = "Numbering tasks..."; btn.disabled = true; }
+            try {
+              const numData = await api("/ralph/number-plan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ project, planFile, agent }),
+              });
+              if (numData.error) { alert("Failed to number: " + numData.error); return; }
+              alert("Found " + numData.tasksTotal + " tasks. Launching.");
+            } catch (e) {
+              alert("Failed: " + e.message);
+              return;
+            } finally {
+              if (btn) { btn.textContent = "Launch Ralph"; btn.disabled = false; }
+            }
+          }
+        } catch {}
 
         const body = { project, iterations, planFile, agent };
         const branchToggle = document.getElementById("ralph-branch-toggle").checked;

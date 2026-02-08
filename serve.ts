@@ -28,14 +28,6 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-// resolve absolute path to tmux — launchd doesn't have homebrew in PATH
-const TMUX = (() => {
-  for (const p of ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]) {
-    try { execFileSync("test", ["-x", p]); return p; } catch {}
-  }
-  return "tmux"; // fallback to PATH lookup
-})();
-
 // resolve user's shell — Ubuntu defaults to bash, macOS to zsh
 const SHELL = (() => {
   const envShell = process.env.SHELL;
@@ -47,6 +39,14 @@ const SHELL = (() => {
   }
   return "/bin/sh";
 })();
+
+// inherit user's full PATH from login shell — launchd PATH is minimal
+try {
+  process.env.PATH = execFileSync(SHELL, ["-lc", "echo $PATH"]).toString().trim();
+} catch {}
+
+const TMUX = "tmux";
+
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
 const DEV_DIR =
@@ -359,6 +359,10 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
       const tasks = countPlanTasks(join(projectDir, status.planFile));
       status.tasksDone = tasks.done;
       status.tasksTotal = tasks.total;
+      // all tasks done in plan → mark completed regardless of how loop ended
+      if (tasks.done > 0 && tasks.done === tasks.total && !status.active) {
+        status.completed = true;
+      }
     }
 
     return status;
@@ -874,6 +878,100 @@ const routes: Record<
     child.unref();
 
     json(res, { ok: true, pid: child.pid ?? 0, branch: newBranch || undefined });
+  },
+
+  "GET /api/ralph/task-count": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    const plan = url.searchParams.get("plan");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid project" }, 400);
+    }
+    if (!plan || !/^[a-zA-Z0-9._\- ]+\.md$/.test(plan)) {
+      return json(res, { error: "invalid plan file" }, 400);
+    }
+    const planPath = join(DEV_DIR, project, plan);
+    if (!existsSync(planPath)) {
+      return json(res, { error: "plan not found" }, 404);
+    }
+    const tasks = countPlanTasks(planPath);
+    json(res, tasks);
+  },
+
+  "POST /api/ralph/number-plan": async (req, res) => {
+    const { project, planFile, agent } = JSON.parse(await readBody(req)) as {
+      project?: string;
+      planFile?: string;
+      agent?: string;
+    };
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid project name" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    try {
+      if (!statSync(projectDir).isDirectory()) {
+        return json(res, { error: "not a directory" }, 400);
+      }
+    } catch {
+      return json(res, { error: "project not found" }, 404);
+    }
+    const plan = planFile || "PLAN.md";
+    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(plan)) {
+      return json(res, { error: "invalid plan file name" }, 400);
+    }
+    const planPath = join(projectDir, plan);
+    if (!existsSync(planPath)) {
+      return json(res, { error: "plan file not found" }, 404);
+    }
+
+    const agentName = agent || "claude";
+    const AGENT_CMDS: Record<string, { bin: string; args: (p: string) => string[] }> = {
+      claude: {
+        bin: "claude",
+        args: (p) => ["--print", "--dangerously-skip-permissions", "-p", p],
+      },
+      codex: { bin: "codex", args: (p) => ["exec", p, "--yolo"] },
+      gemini: { bin: "gemini", args: (p) => ["-p", p, "--yolo"] },
+    };
+    const agentCfg = AGENT_CMDS[agentName];
+    if (!agentCfg) {
+      return json(res, { error: `unknown agent: ${agentName}` }, 400);
+    }
+
+    const planContent = readFileSync(planPath, "utf-8");
+    const prompt = `You are reformatting a plan file for an automated task runner.
+
+The plan file below contains implementation sections but they are NOT numbered with the format "### N. Title".
+
+Your job: Add sequential numbers to each implementation/task section header so they follow the pattern "### 1. Title", "### 2. Title", etc. Or if subsections exist, use "### 1a. Title", "### 1b. Title".
+
+Rules:
+- ONLY number headers that represent actionable tasks/steps
+- Do NOT number context/overview/architecture/verification sections
+- Keep ALL content exactly as-is — only modify the ### header lines to add numbers
+- Output the COMPLETE modified file, nothing else — no explanation, no code fences
+
+Here is the plan file:
+
+${planContent}`;
+
+    try {
+      const { stdout } = await exec(agentCfg.bin, agentCfg.args(prompt), {
+        cwd: projectDir,
+        timeout: 120000,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      const result = stdout.trim();
+      if (!result) {
+        return json(res, { error: "agent returned empty output" }, 500);
+      }
+      writeFileSync(planPath, result + "\n");
+      const tasks = countPlanTasks(planPath);
+      json(res, { ok: true, tasksDone: tasks.done, tasksTotal: tasks.total });
+    } catch (e: any) {
+      const msg = e.stderr || e.message || "agent failed";
+      json(res, { error: msg }, 500);
+    }
   },
 
   "POST /api/ralph/cancel": async (req, res) => {
