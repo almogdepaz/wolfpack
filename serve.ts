@@ -671,6 +671,45 @@ const routes: Record<
     json(res, { loops });
   },
 
+  "GET /api/ralph/branches": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid project" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    try {
+      if (!statSync(projectDir).isDirectory()) {
+        return json(res, { error: "not a directory" }, 400);
+      }
+    } catch {
+      return json(res, { error: "project not found" }, 404);
+    }
+    try {
+      const out = execFileSync("git", ["branch", "--list", "--no-color"], {
+        cwd: projectDir,
+        encoding: "utf-8",
+        timeout: 5000,
+      });
+      let current = "";
+      const branches: string[] = [];
+      for (const line of out.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("* ")) {
+          const name = trimmed.slice(2).trim();
+          current = name;
+          branches.push(name);
+        } else {
+          branches.push(trimmed);
+        }
+      }
+      json(res, { branches, current });
+    } catch (e: any) {
+      json(res, { error: e.stderr || e.message || "git not available" }, 500);
+    }
+  },
+
   "GET /api/ralph/plans": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const project = url.searchParams.get("project");
@@ -711,11 +750,13 @@ const routes: Record<
   },
 
   "POST /api/ralph/start": async (req, res) => {
-    const { project, iterations, planFile, agent } = JSON.parse(await readBody(req)) as {
+    const { project, iterations, planFile, agent, newBranch, sourceBranch } = JSON.parse(await readBody(req)) as {
       project?: string;
       iterations?: number;
       planFile?: string;
       agent?: string;
+      newBranch?: string;
+      sourceBranch?: string;
     };
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
@@ -732,6 +773,43 @@ const routes: Record<
     const existing = parseRalphLog(projectDir);
     if (existing?.active) {
       return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
+    }
+
+    // Branch creation (optional)
+    const BRANCH_REGEX = /^[a-zA-Z0-9._\-/]+$/;
+    if (newBranch) {
+      if (!BRANCH_REGEX.test(newBranch)) {
+        return json(res, { error: "invalid branch name" }, 400);
+      }
+      const source = sourceBranch || "main";
+      if (!BRANCH_REGEX.test(source)) {
+        return json(res, { error: "invalid source branch name" }, 400);
+      }
+      try {
+        // Update local ref from remote
+        execFileSync("git", ["fetch", "origin", `${source}:${source}`], {
+          cwd: projectDir, encoding: "utf-8", timeout: 30000,
+        });
+      } catch (e: any) {
+        // fetch can fail if no remote — try to proceed with local branch
+        const stderr = e.stderr || e.message || "";
+        // Only fail if the source branch doesn't exist locally either
+        try {
+          execFileSync("git", ["rev-parse", "--verify", source], {
+            cwd: projectDir, encoding: "utf-8", timeout: 5000,
+          });
+        } catch {
+          return json(res, { error: `failed to fetch source branch '${source}': ${stderr}` }, 400);
+        }
+      }
+      try {
+        execFileSync("git", ["checkout", "-b", newBranch, source], {
+          cwd: projectDir, encoding: "utf-8", timeout: 10000,
+        });
+      } catch (e: any) {
+        const stderr = e.stderr || e.message || "branch creation failed";
+        return json(res, { error: stderr }, 400);
+      }
     }
 
     const iters = Math.max(1, Math.min(50, iterations ?? 5));
@@ -757,7 +835,7 @@ const routes: Record<
     });
     child.unref();
 
-    json(res, { ok: true, pid: child.pid ?? 0 });
+    json(res, { ok: true, pid: child.pid ?? 0, branch: newBranch || undefined });
   },
 
   "POST /api/ralph/cancel": async (req, res) => {

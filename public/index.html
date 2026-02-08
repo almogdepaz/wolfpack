@@ -921,6 +921,17 @@
         <label for="ralph-plan-select">Plan file</label>
         <select id="ralph-plan-select"></select>
 
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="ralph-branch-toggle" onchange="toggleBranchFields()" style="width:auto;accent-color:#9b59b6" />
+          <label for="ralph-branch-toggle" style="margin:0;cursor:pointer">New branch</label>
+        </div>
+        <div id="ralph-branch-fields" style="display:none;flex-direction:column;gap:12px">
+          <label for="ralph-branch-name">Branch name</label>
+          <input id="ralph-branch-name" type="text" placeholder="feature/my-branch" autocomplete="off" autocorrect="off" autocapitalize="off" />
+          <label for="ralph-source-branch">Branch from</label>
+          <select id="ralph-source-branch"></select>
+        </div>
+
         <button class="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
       </div>
     </div>
@@ -1252,7 +1263,15 @@
         } catch {
           sel.innerHTML = '<option value="">failed to load projects</option>';
         }
-        sel.onchange = function() { loadPlanFiles(sel.value); };
+        sel.onchange = function() {
+          loadPlanFiles(sel.value);
+          if (document.getElementById("ralph-branch-toggle").checked) {
+            loadBranches(sel.value);
+          }
+        };
+        // Reset branch toggle on form load
+        document.getElementById("ralph-branch-toggle").checked = false;
+        document.getElementById("ralph-branch-fields").style.display = "none";
         await loadPlanFiles(sel.value);
         if (currentRalphPlanFile) {
           document.getElementById("ralph-plan-select").value = currentRalphPlanFile;
@@ -1276,6 +1295,34 @@
         }
       }
 
+      function toggleBranchFields() {
+        const checked = document.getElementById("ralph-branch-toggle").checked;
+        const fields = document.getElementById("ralph-branch-fields");
+        fields.style.display = checked ? "flex" : "none";
+        if (checked) {
+          loadBranches(document.getElementById("ralph-project-select").value);
+        }
+      }
+
+      async function loadBranches(project) {
+        const sel = document.getElementById("ralph-source-branch");
+        if (!project) { sel.innerHTML = '<option value="">select a project first</option>'; return; }
+        try {
+          const data = await api("/ralph/branches?project=" + encodeURIComponent(project));
+          const branches = data.branches || [];
+          if (branches.length === 0) {
+            sel.innerHTML = '<option value="">no branches found</option>';
+          } else {
+            sel.innerHTML = branches.map(b => '<option value="' + esc(b) + '"' + (b === data.current ? ' selected' : '') + '>' + esc(b) + '</option>').join("");
+            // Default to main/master if available
+            const defaultBranch = branches.find(b => b === "main") || branches.find(b => b === "master");
+            if (defaultBranch) sel.value = defaultBranch;
+          }
+        } catch {
+          sel.innerHTML = '<option value="">not a git repo</option>';
+        }
+      }
+
       async function startRalph() {
         const project = document.getElementById("ralph-project-select").value;
         const iterations = parseInt(document.getElementById("ralph-iterations-input").value) || 5;
@@ -1283,11 +1330,22 @@
         const agent = document.getElementById("ralph-agent-select").value;
         if (!project) { alert("select a project"); return; }
         if (!planFile) { alert("select a plan file"); return; }
+
+        const body = { project, iterations, planFile, agent };
+        const branchToggle = document.getElementById("ralph-branch-toggle").checked;
+        if (branchToggle) {
+          const newBranch = document.getElementById("ralph-branch-name").value.trim();
+          const sourceBranch = document.getElementById("ralph-source-branch").value;
+          if (!newBranch) { alert("enter a branch name"); return; }
+          body.newBranch = newBranch;
+          body.sourceBranch = sourceBranch;
+        }
+
         try {
           const data = await api("/ralph/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project, iterations, planFile, agent }),
+            body: JSON.stringify(body),
           });
           if (data.error) { alert(data.error); return; }
           currentRalphProject = project;
