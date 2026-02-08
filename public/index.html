@@ -596,6 +596,7 @@
         transition: all 0.15s ease;
       }
       .ralph-card.running { border-left: 3px solid #00ff41; }
+      .ralph-card.done { border-left: 3px solid #00ff41; }
       .ralph-card.idle { border-left: 3px solid #333; }
       .ralph-card:active {
         background: #1a1a1a;
@@ -636,6 +637,7 @@
         transition: width 0.3s ease;
       }
       .ralph-bar-fill.running { background: #00ff41; }
+      .ralph-bar-fill.done { background: #00ff41; }
       .ralph-bar-fill.idle { background: #333; }
       .ralph-iter {
         font-size: 11px;
@@ -651,6 +653,7 @@
         border-radius: 2px;
       }
       .ralph-status.running { color: #00ff41; background: #00ff4115; }
+      .ralph-status.done { color: #00ff41; background: #00ff4115; }
       .ralph-status.idle { color: #555; background: #55555515; }
       .ralph-status.failed { color: #cc3333; }
       .dot.purple {
@@ -752,11 +755,11 @@
         border: 1px solid #9b59b6;
         border-radius: 2px;
         color: #b0b0b0;
-        font-size: 22px;
+        font-size: 18px;
         cursor: pointer;
         padding: 6px;
-        min-width: 40px;
-        min-height: 40px;
+        width: 40px;
+        height: 40px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -1139,8 +1142,8 @@
           });
           el.innerHTML = loops.map(loop => {
             const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-            const status = loop.active ? "running" : "idle";
-            const statusLabel = loop.active ? "RUNNING" : "IDLE";
+            const status = loop.active ? "running" : loop.completed ? "done" : "idle";
+            const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : "IDLE";
             const dotClass = loop.active ? "purple" : "gray";
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
             return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +

@@ -16,6 +16,7 @@ import {
   readdirSync,
   mkdirSync,
   statSync,
+  lstatSync,
   existsSync,
   unlinkSync,
 } from "node:fs";
@@ -97,10 +98,14 @@ const AGENT_PRESETS: Record<string, string> = {
   gemini: "gemini",
 };
 
+const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
+
 function loadSettings(): Settings {
   try {
     const s = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
-    return { agentCmd: s.agentCmd || "claude", customCmds: s.customCmds || [] };
+    const agentCmd = s.agentCmd && CMD_REGEX.test(s.agentCmd) ? s.agentCmd : "claude";
+    const customCmds = (s.customCmds || []).filter((c: string) => CMD_REGEX.test(c));
+    return { agentCmd, customCmds };
   } catch {
     return { agentCmd: "claude", customCmds: [] };
   }
@@ -275,8 +280,12 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
       if (pidMatch) status.pid = Number(pidMatch[1]);
     }
 
-    // find iterations
-    const iterRegex = /=== Iteration (\d+)\/(\d+)/g;
+    // parse total iterations from header line
+    const totalMatch = content.match(/ralph — (\d+) iterations/);
+    if (totalMatch) status.totalIterations = Number(totalMatch[1]);
+
+    // find iterations (supports both old "Iteration" and new "Wax On" format)
+    const iterRegex = /=== (?:Iteration|🥋 Wax On) (\d+)\/(\d+)/g;
     let match;
     while ((match = iterRegex.exec(content)) !== null) {
       status.iteration = Number(match[1]);
@@ -289,16 +298,17 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
       status.completed = true;
       status.finished = finishedMatch[1].trim();
     }
-    if (content.includes("<done>COMPLETE</done>")) {
+    if (content.includes("<done>COMPLETE</done>") || content.includes("No unchecked tasks remain")) {
       status.completed = true;
       status.iteration = status.totalIterations;
     }
 
-    // detect active: pid alive check
-    if (!status.completed && status.pid > 1) {
+    // detect active: pid alive check (process may still be in Wax Off phase)
+    if (status.pid > 1) {
       try {
         process.kill(status.pid, 0);
         status.active = true;
+        status.completed = false; // still running
       } catch {
         status.active = false;
       }
@@ -483,7 +493,7 @@ const routes: Record<
 
     // Verify dir exists
     try {
-      if (!statSync(projectDir).isDirectory())
+      if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory())
         return json(res, { error: "not a directory" }, 400);
     } catch {
       return json(res, { error: "project directory not found" }, 404);
@@ -712,7 +722,7 @@ const routes: Record<
     }
     const projectDir = join(DEV_DIR, project);
     try {
-      if (!statSync(projectDir).isDirectory()) {
+      if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory()) {
         return json(res, { error: "not a directory" }, 400);
       }
     } catch {
@@ -726,7 +736,7 @@ const routes: Record<
 
     const iters = Math.max(1, Math.min(50, iterations ?? 5));
     const resolvedPlan = planFile || "PLAN.md";
-    if (resolvedPlan.includes("/") || resolvedPlan.includes("\\") || resolvedPlan === ".." || resolvedPlan === ".") {
+    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(resolvedPlan) || resolvedPlan === ".." || resolvedPlan === ".") {
       return json(res, { error: "invalid plan file name" }, 400);
     }
     if (!existsSync(join(projectDir, resolvedPlan))) {

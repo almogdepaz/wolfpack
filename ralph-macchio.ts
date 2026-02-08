@@ -50,7 +50,8 @@ const EXTRA_PATHS: string[] = IS_WIN
       "/opt/homebrew/sbin",
     ];
 const currentPath = process.env.PATH || "";
-const missingPaths = EXTRA_PATHS.filter(p => !currentPath.includes(p) && existsSync(p));
+const pathSegments = new Set(currentPath.split(PATH_SEP));
+const missingPaths = EXTRA_PATHS.filter(p => !pathSegments.has(p) && existsSync(p));
 if (missingPaths.length > 0) {
   process.env.PATH = [...missingPaths, currentPath].join(PATH_SEP);
 }
@@ -217,10 +218,11 @@ async function main() {
 
     // check for subtask breakdown
     const subtasks = parseSubtasks(output);
+    const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
     if (subtasks.length > 0) {
       appendSubtasksToPlan(subtasks);
-      maxIterations++;
-      appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${subtasks.length}) — extended to ${maxIterations} iterations ===\n`);
+      if (maxIterations < MAX_CEILING) maxIterations++;
+      appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${subtasks.length}) — extended to ${maxIterations} iterations (ceiling ${MAX_CEILING}) ===\n`);
       for (const st of subtasks) appendFileSync(LOG_FILE, `  + ${st}\n`);
       try { unlinkSync(ITER_FILE); } catch {}
       continue;
