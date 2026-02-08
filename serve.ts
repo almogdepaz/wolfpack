@@ -567,32 +567,6 @@ const routes: Record<
     json(res, { ok: true, settings });
   },
 
-  "GET /api/claude-config": async (_req, res) => {
-    const configPath = join(process.env.HOME ?? "~", ".claude", "CLAUDE.md");
-    try {
-      const content = readFileSync(configPath, "utf-8");
-      json(res, { content });
-    } catch {
-      json(res, { content: "", exists: false });
-    }
-  },
-
-  "POST /api/claude-config": async (req, res) => {
-    const { content } = JSON.parse(await readBody(req)) as { content: string };
-    if (typeof content !== "string") {
-      return json(res, { error: "missing content" }, 400);
-    }
-    const configDir = join(process.env.HOME ?? "~", ".claude");
-    const configPath = join(configDir, "CLAUDE.md");
-    try {
-      mkdirSync(configDir, { recursive: true });
-      writeFileSync(configPath, content, "utf-8");
-      json(res, { ok: true });
-    } catch {
-      json(res, { error: "failed to write config" }, 500);
-    }
-  },
-
   "POST /api/kill": async (req, res) => {
     const { session } = JSON.parse(await readBody(req)) as { session: string };
     if (!session) return json(res, { error: "missing session" }, 400);

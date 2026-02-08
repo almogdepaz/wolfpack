@@ -827,14 +827,6 @@
           <button onclick="discoverMachines()" style="margin-top:12px;background:none;border:1px solid #00ff41;border-radius:2px;padding:10px 20px;color:#00ff41;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease;width:100%">Discover Tailnet</button>
           <div id="discover-status" style="margin-top:6px;font-size:11px;color:#555"></div>
         </div>
-        <div class="settings-section">
-          <div class="settings-label">Claude Config (~/.claude/CLAUDE.md)</div>
-          <div id="claude-config-preview" style="background:#0a0a0a;border:1px solid #222;border-radius:2px;padding:10px;font-size:11px;color:#888;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-bottom:12px">Loading...</div>
-          <div class="settings-label">Push to machines</div>
-          <div id="claude-config-machines" style="margin-bottom:12px"></div>
-          <button onclick="pushClaudeConfig()" style="background:none;border:1px solid #00ff41;border-radius:2px;padding:10px 20px;color:#00ff41;font-size:13px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease">Push Selected</button>
-          <div id="claude-config-status" style="margin-top:8px;font-size:11px;color:#555"></div>
-        </div>
       </div>
     </div>
 
@@ -1989,73 +1981,6 @@
       async function showSettings() {
         showView("settings");
         renderMachinesList();
-        loadClaudeConfig();
-      }
-
-      let currentClaudeConfig = "";
-
-      async function loadClaudeConfig() {
-        const preview = document.getElementById("claude-config-preview");
-        const machinesEl = document.getElementById("claude-config-machines");
-        preview.textContent = "Loading...";
-        try {
-          const data = await api("/claude-config");
-          currentClaudeConfig = data.content || "";
-          preview.textContent = currentClaudeConfig || "(empty or not found)";
-        } catch {
-          preview.textContent = "(failed to load)";
-        }
-        // Render machine checkboxes
-        const machines = getMachines();
-        if (!machines.length) {
-          machinesEl.innerHTML = '<div style="color:#444;font-size:12px">No remote machines to push to</div>';
-        } else {
-          machinesEl.innerHTML = machines.map(m => `
-            <label style="display:flex;align-items:center;gap:8px;padding:6px 0;color:#b0b0b0;font-size:13px;cursor:pointer">
-              <input type="checkbox" class="claude-config-target" value="${esc(m.url)}" style="width:18px;height:18px">
-              ${esc(m.name)}
-            </label>
-          `).join("");
-        }
-      }
-
-      async function pushClaudeConfig() {
-        const statusEl = document.getElementById("claude-config-status");
-        const checkboxes = document.querySelectorAll(".claude-config-target:checked");
-        const targets = Array.from(checkboxes).map(cb => cb.value);
-        if (!targets.length) {
-          statusEl.textContent = "No machines selected";
-          statusEl.style.color = "#cc3333";
-          return;
-        }
-        if (!currentClaudeConfig) {
-          statusEl.textContent = "No config to push";
-          statusEl.style.color = "#cc3333";
-          return;
-        }
-        statusEl.textContent = "Pushing...";
-        statusEl.style.color = "#555";
-        const results = await Promise.all(targets.map(async url => {
-          try {
-            const res = await api("/claude-config", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ content: currentClaudeConfig }),
-            }, url);
-            return { url, ok: res.ok };
-          } catch {
-            return { url, ok: false };
-          }
-        }));
-        const success = results.filter(r => r.ok).length;
-        const failed = results.filter(r => !r.ok).length;
-        if (failed === 0) {
-          statusEl.textContent = `Pushed to ${success} machine${success > 1 ? "s" : ""}`;
-          statusEl.style.color = "#00ff41";
-        } else {
-          statusEl.textContent = `${success} ok, ${failed} failed`;
-          statusEl.style.color = "#ff6600";
-        }
       }
 
       async function renderMachinesList() {
