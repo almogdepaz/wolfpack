@@ -1158,7 +1158,7 @@
             const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
             const hitLimit = !loop.active && !loop.completed && loop.finished;
             const status = loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-            const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "LIMIT" : "IDLE";
+            const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
             const dotClass = loop.active ? "purple" : "gray";
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
             return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +
@@ -1201,7 +1201,7 @@
           const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
           const hitLimit = !loop.active && !loop.completed && loop.finished;
           const status = loop.active ? "running" : loop.completed ? "done" : "idle";
-          const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "LIMIT" : "IDLE";
+          const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
           header.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
               '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
