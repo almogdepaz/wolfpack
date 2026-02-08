@@ -304,9 +304,13 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
   }
 }
 
+function isValidProjectName(name: string): boolean {
+  return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
+}
+
 async function findRalphPid(projectDir: string): Promise<number> {
   try {
-    const { stdout: pidOut } = await exec("pgrep", ["-f", "bin/ralph"]);
+    const { stdout: pidOut } = await exec("pgrep", ["-f", RALPH_BIN]);
     const pids = pidOut.trim().split("\n").filter(Boolean);
 
     for (const pid of pids) {
@@ -317,7 +321,8 @@ async function findRalphPid(projectDir: string): Promise<number> {
         } else {
           // macOS
           const { stdout: lsofOut } = await exec("lsof", ["-a", "-d", "cwd", "-p", pid, "-Fn"]);
-          if (lsofOut.includes(projectDir)) return Number(pid);
+          const cwdLine = lsofOut.split("\n").find(l => l.startsWith("n"));
+          if (cwdLine && cwdLine.slice(1) === projectDir) return Number(pid);
         }
       } catch {}
     }
@@ -466,7 +471,7 @@ const routes: Record<
       cmd?: string;
     };
     const folderName = newProject?.trim() || project?.trim();
-    if (!folderName || !/^[a-zA-Z0-9._-]+$/.test(folderName)) {
+    if (!folderName || !isValidProjectName(folderName)) {
       return json(res, { error: "invalid project name" }, 400);
     }
 
@@ -693,7 +698,7 @@ const routes: Record<
   "GET /api/ralph/log": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const project = url.searchParams.get("project");
-    if (!project || !/^[a-zA-Z0-9._-]+$/.test(project)) {
+    if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project" }, 400);
     }
     const logPath = join(DEV_DIR, project, ".ralph.log");
@@ -717,7 +722,7 @@ const routes: Record<
       iterations?: number;
       planFile?: string;
     };
-    if (!project || !/^[a-zA-Z0-9._-]+$/.test(project)) {
+    if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
     const projectDir = join(DEV_DIR, project);
@@ -743,7 +748,12 @@ const routes: Record<
 
     const iters = Math.max(1, Math.min(50, iterations ?? 5));
     const args: string[] = [String(iters)];
-    if (planFile) args.push(planFile);
+    if (planFile) {
+      if (planFile.includes("/") || planFile.includes("\\") || planFile === ".." || planFile === ".") {
+        return json(res, { error: "invalid plan file name" }, 400);
+      }
+      args.push(planFile);
+    }
 
     const child = spawn(RALPH_BIN, args, {
       cwd: projectDir,
@@ -759,7 +769,7 @@ const routes: Record<
     const { project } = JSON.parse(await readBody(req)) as {
       project?: string;
     };
-    if (!project || !/^[a-zA-Z0-9._-]+$/.test(project)) {
+    if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
     const projectDir = join(DEV_DIR, project);

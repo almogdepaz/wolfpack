@@ -63,3 +63,32 @@
 - No TypeScript errors (bun transpiles cleanly)
 
 ## ALL PHASES COMPLETE
+
+## Security Fix 1: Project name validation — DONE
+- Added `isValidProjectName()` helper at line 307 of serve.ts
+- Rejects `.` and `..` as project names (directory traversal prevention)
+- Replaced all 4 inline regex checks with the helper:
+  - POST /api/create (line 473)
+  - GET /api/ralph/log (line 700)
+  - POST /api/ralph/start (line 724)
+  - POST /api/ralph/cancel (line 766)
+- Transpiles cleanly, no errors
+
+## Security Fix 2: Tighten pgrep match — DONE
+- Changed `pgrep -f "bin/ralph"` to `pgrep -f RALPH_BIN` in findRalphPid() (line 313)
+- RALPH_BIN resolves to full absolute path (e.g. `/Users/home/bin/ralph`)
+- Prevents matching unrelated processes that happen to contain "bin/ralph" in cmdline
+- Transpiles cleanly, no errors
+
+## Security Fix 3: Fix lsof substring match — DONE
+- Changed `lsofOut.includes(projectDir)` to exact match via lsof `n` field parsing (line 324-325)
+- Parses lsof output lines, finds the one starting with `n` (cwd field), slices off prefix, compares exactly
+- Prevents `/Dev/foo` from matching `/Dev/foobar` in macOS cwd detection
+- Transpiles cleanly, no errors
+
+## Security Fix 4: Sanitize planFile input — DONE
+- Added validation for `planFile` in POST /api/ralph/start (line 751-755)
+- Rejects planFile containing `/`, `\\`, or equal to `.` or `..`
+- Returns 400 with "invalid plan file name" if validation fails
+- Prevents path traversal via planFile argument to ralph spawn
+- Transpiles cleanly, no errors
