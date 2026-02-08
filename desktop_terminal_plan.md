@@ -28,7 +28,7 @@ WebSocket /ws/terminal?session=X
 
 ## Phase 1: WebSocket endpoint in serve.ts
 
-### 1a. WebSocket upgrade handler
+### ~~1a. WebSocket upgrade handler~~
 Bun has native WebSocket support but wolfpack uses `node:http` createServer. Two options:
 - **Option A**: Use `ws` npm package with the existing http server
 - **Option B**: Switch to Bun.serve() which has native WebSocket
@@ -49,7 +49,7 @@ server.on("upgrade", (req, socket, head) => {
 });
 ```
 
-### 1b. WebSocket handler function
+### ~~1b. WebSocket handler function~~
 ```
 handleTerminalWs(ws, session):
   - validate session exists
@@ -66,20 +66,20 @@ Keep capture-pane approach (not PTY piping) — simpler, reuses existing tmux he
 
 ## Phase 2: xterm.js in frontend
 
-### 2a. Load xterm.js
+### ~~2a. Load xterm.js~~
 Two options:
 - **CDN**: `<script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.min.js">` + CSS
 - **Embed**: Download and include in public/ → gen-assets.ts embeds it
 
 Recommend **CDN for dev, embed for prod**. Start with CDN, embed later if needed for offline/PWA.
 
-### 2b. Desktop terminal element
+### ~~2b. Desktop terminal element~~
 Add alongside existing terminal:
 ```html
 <div id="xterm-container" style="display:none"></div>
 ```
 
-### 2c. Desktop detection & switching
+### ~~2c. Desktop detection & switching~~
 In `showView("terminal")`:
 ```js
 const isDesktop = !('ontouchstart' in window) && window.innerWidth > 768;
@@ -93,7 +93,7 @@ if (isDesktop) {
 }
 ```
 
-### 2d. xterm.js initialization
+### ~~2d. xterm.js initialization~~
 ```js
 function initXterm(session) {
   const term = new Terminal({

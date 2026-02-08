@@ -4,6 +4,10 @@
   "type": "module",
   "description": "Mobile bridge to your AI coding agents via tmux",
   "dependencies": {
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

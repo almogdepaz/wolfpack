@@ -1,0 +1,165 @@
+# Progress Log
+
+## Phase 1a: Imports — DONE (already present)
+- `existsSync` and `spawn` were already imported in serve.ts
+
+## Phase 1b: Ralph helpers — DONE (already present)
+- `RALPH_BIN`, `RalphStatus`, `parseRalphLog()`, `findRalphPid()`, `scanRalphLoops()` all exist
+
+## Phase 1c: API routes — DONE
+- Added 4 endpoints to routes object in serve.ts:
+  - `GET /api/ralph` — lists all ralph loops via scanRalphLoops()
+  - `GET /api/ralph/log?project=X` — returns last 500 lines of .ralph.log
+  - `POST /api/ralph/start` — spawns ralph detached with validation + conflict check
+  - `POST /api/ralph/cancel` — finds PID via findRalphPid, kills process + group
+
+## Phase 2a: CSS — DONE
+- Added all ralph loop CSS styles to `public/index.html` before `</style>` (lines 588-755)
+- Styles: `.ralph-card`, `.ralph-card-header`, `.ralph-card-name`, `.ralph-progress`, `.ralph-bar`/`.ralph-bar-fill` (with `.running`/`.done`/`.failed` variants), `.ralph-iter`, `.ralph-status` (with state variants), `.dot.purple` (pulsing), `.ralph-last-output`, `.ralph-detail-header`, `.ralph-log`, `.ralph-actions`, `.ralph-start-form`, `.ralph-launch-btn`, `.ralph-empty`, `.ralph-nav-btn`
+- Purple accent (#9b59b6) used for ralph branding to distinguish from main green theme
+- Matches existing design patterns: dark bg, 2px border-radius, monospace fonts, tap-highlight-color transparent
+
+## Phase 2b: HTML views — DONE
+- Added 3 new views after terminal-view closing `</div>` (lines 878-919):
+  1. `ralph-view` — list container (`#ralph-list`) + "Start Ralph Loop" button
+  2. `ralph-detail-view` — detail header, scrollable `<pre>` log, action buttons container
+  3. `ralph-start-view` — form with project `<select>`, iterations number input (1-50, default 5), plan file text input, launch button
+- All views follow existing pattern: `<div id="X-view" class="view">` hidden by default
+- Regenerated public-assets.ts via `bun run scripts/gen-assets.ts`
+
+## Phase 2c: Navigation — DONE
+- Added 🥋 button (`ralph-nav-btn`, id=`ralph-btn`) to `header-right` div before search button
+- Button hidden by default (`style="display:none"`), shown only on sessions view via `showView()`
+- Added 3 new ralph state vars: `ralphRefreshTimer`, `currentRalphProject`, `ralphLogPollTimer`
+- Updated `showView()` with:
+  - Timer cleanup for `ralphRefreshTimer` and `ralphLogPollTimer` at top of function
+  - `ralph` case: back→sessions, load loops, auto-refresh every 3s
+  - `ralph-detail` case: back→ralph, refresh detail + poll log every 2s
+  - `ralph-start` case: back→ralph, populate form
+  - Ralph button visibility toggled per view (shown on sessions only)
+- Regenerated `public-assets.ts` via `bun run scripts/gen-assets.ts`
+
+## Phase 2d: JavaScript functions — DONE
+- Added 7 functions to `public/index.html` (lines 1120-1276) before `// ── Sessions ──`:
+  1. `loadRalphLoops()` — fetches `/api/ralph`, renders sorted card list (active-first), progress bars, status badges
+  2. `openRalphDetail(project)` — sets `currentRalphProject`, navigates to detail view
+  3. `refreshRalphDetail()` — fetches loop status + log, renders header/progress/actions, auto-scrolls log, stops polling when loop finishes
+  4. `cancelRalph()` — confirm dialog → POST `/api/ralph/cancel`, refreshes detail
+  5. `loadRalphStartForm()` — fetches `/api/projects`, populates project `<select>` dropdown
+  6. `startRalph()` — reads form inputs, POST `/api/ralph/start`, navigates to ralph list on success
+  7. `restartRalph()` — navigates to start form, pre-selects current project after 300ms delay
+- Regenerated `public-assets.ts` via `bun run scripts/gen-assets.ts`
+
+## Phase 3: Verification — DONE
+- Full audit of serve.ts confirmed all backend components present:
+  - RALPH_BIN, RalphStatus interface, parseRalphLog(), findRalphPid(), scanRalphLoops()
+  - All 4 API routes: GET /api/ralph, GET /api/ralph/log, POST /api/ralph/start, POST /api/ralph/cancel
+- Full audit of public/index.html confirmed all frontend components present:
+  - All CSS styles (ralph-card, ralph-bar, ralph-status, dot.purple, etc.)
+  - All 3 views (ralph-view, ralph-detail-view, ralph-start-view)
+  - Navigation button (ralph-btn) with showView() integration
+  - All 7 JS functions (loadRalphLoops, openRalphDetail, refreshRalphDetail, cancelRalph, loadRalphStartForm, startRalph, restartRalph)
+- public-assets.ts is current (regenerated during Phase 2)
+- No TypeScript errors (bun transpiles cleanly)
+
+## ALL PHASES COMPLETE
+
+## Security Fix 1: Project name validation — DONE
+- Added `isValidProjectName()` helper at line 307 of serve.ts
+- Rejects `.` and `..` as project names (directory traversal prevention)
+- Replaced all 4 inline regex checks with the helper:
+  - POST /api/create (line 473)
+  - GET /api/ralph/log (line 700)
+  - POST /api/ralph/start (line 724)
+  - POST /api/ralph/cancel (line 766)
+- Transpiles cleanly, no errors
+
+## Security Fix 2: Tighten pgrep match — DONE
+- Changed `pgrep -f "bin/ralph"` to `pgrep -f RALPH_BIN` in findRalphPid() (line 313)
+- RALPH_BIN resolves to full absolute path (e.g. `/Users/home/bin/ralph`)
+- Prevents matching unrelated processes that happen to contain "bin/ralph" in cmdline
+- Transpiles cleanly, no errors
+
+## Security Fix 3: Fix lsof substring match — DONE
+- Changed `lsofOut.includes(projectDir)` to exact match via lsof `n` field parsing (line 324-325)
+- Parses lsof output lines, finds the one starting with `n` (cwd field), slices off prefix, compares exactly
+- Prevents `/Dev/foo` from matching `/Dev/foobar` in macOS cwd detection
+- Transpiles cleanly, no errors
+
+## Security Fix 4: Sanitize planFile input — DONE
+- Added validation for `planFile` in POST /api/ralph/start (line 751-755)
+- Rejects planFile containing `/`, `\\`, or equal to `.` or `..`
+- Returns 400 with "invalid plan file name" if validation fails
+- Prevents path traversal via planFile argument to ralph spawn
+- Transpiles cleanly, no errors
+
+## Security Fix 5: Add pid > 1 guard to cancel endpoint — DONE
+- Changed `if (!pid)` to `if (!pid || pid <= 1)` in POST /api/ralph/cancel (line 777)
+- Prevents `process.kill(-pid)` from killing init/launchd if findRalphPid returned pid=1
+- Defensive guard — unlikely path but catastrophic if hit
+- Transpiles cleanly, no errors
+
+## Verification — DONE
+- `bun run serve.ts` starts successfully on port 18790 (no compile errors)
+- curl test: POST /api/ralph/start with project=".." → 400 `{"error":"invalid project name"}` ✓
+- curl test: POST /api/ralph/start with planFile="../../../etc/passwd" → 400 `{"error":"invalid plan file name"}` ✓
+- curl test: POST /api/ralph/start with project="." → 400 `{"error":"invalid project name"}` ✓
+- `bun run scripts/gen-assets.ts` → regenerated public-assets.ts (no changes needed, already current)
+
+## ALL SECURITY FIXES COMPLETE + VERIFIED
+
+## Desktop Terminal: Phase 1a — WebSocket upgrade handler — DONE
+- Added `ws` (v8.19.0) + `@types/ws` dependencies to package.json
+- Added `import { WebSocketServer, type WebSocket } from "ws"` to serve.ts
+- Created `ALLOWED_WS_KEYS` constant (mirrors existing HTTP key whitelist)
+- Created `WebSocketServer` instance with `noServer: true` (attaches to existing http server)
+- Implemented `handleTerminalWs(ws, session)`:
+  - 100ms capture-pane polling loop, only sends on change (diff check via string equality)
+  - Handles 3 message types: `input` (tmuxSend), `key` (tmuxSendKey with whitelist), `resize` (tmuxResize with bounds clamping)
+  - Cleans up interval on close/error
+- Added `server.on("upgrade")` handler:
+  - Only accepts `/ws/terminal` path, destroys socket for anything else
+  - Origin validation via existing `isAllowedOrigin()`
+  - Session validation via existing `isAllowedSession()`
+  - Hands off to `wss.handleUpgrade()` → `handleTerminalWs()`
+- Transpiles cleanly with bun
+
+## Desktop Terminal: Phase 2a — Load xterm.js via CDN — DONE
+- Added 4 CDN tags to `<head>` of `public/index.html` (before `</head>`):
+  - `<link>` for `@xterm/xterm@5` CSS
+  - `<script>` for `@xterm/xterm@5` main lib
+  - `<script>` for `@xterm/addon-fit@0` (auto-resize to container)
+  - `<script>` for `@xterm/addon-search@0` (in-terminal search)
+- Added `<div id="xterm-container" style="display:none">` after existing `#terminal` div
+- Added CSS for `#xterm-container` (flex:1, min-height:0, dark bg) and `.xterm` child (full height)
+- Regenerated `public-assets.ts` via gen-assets.ts (6 files embedded)
+- Transpiles cleanly with bun
+
+## Desktop Terminal: Phase 2b — Already complete (done as part of 2a)
+- `<div id="xterm-container">` and its CSS were added in Phase 2a
+
+## Desktop Terminal: Phase 2c+2d — Desktop detection, switching & xterm.js init — DONE
+- Added 5 xterm state variables: `xtermInstance`, `xtermWs`, `xtermFit`, `xtermSearch`, `useDesktopTerminal`
+- Added `isDesktop()` helper: checks `!ontouchstart && width > 768`
+- Added `initXterm(session)` function:
+  - Creates Terminal with SF Mono font, green cursor, dark theme
+  - Loads FitAddon (auto-resize) and SearchAddon
+  - Connects WebSocket (`ws://` or `wss://`) to `/ws/terminal?session=X`
+  - Handles `output` messages via `term.reset()` + `term.write()`
+  - Sends keyboard input via `term.onData()` → `{ type: "input" }`
+  - Sends resize on connect and on window resize events
+  - Hides mobile elements (#terminal, #action-bar, #input-bar)
+  - Shows #xterm-container
+- Added `destroyXterm()` function:
+  - Disposes terminal, closes WebSocket, removes resize listener
+  - Restores mobile element visibility
+- Modified `openSession()`:
+  - Desktop + local sessions: `initXterm()` (no HTTP polling)
+  - Mobile or remote sessions: existing HTTP polling flow
+- Modified `stopPolling()` to also call `destroyXterm()`
+- Integrated xterm search with existing search UI:
+  - `doSearch()` → `xtermSearch.findNext()` on desktop
+  - `nextMatch()` / `prevMatch()` → xterm search addon on desktop
+  - `closeSearch()` → `xtermSearch.clearDecorations()` on desktop
+- Regenerated `public-assets.ts` (6 files embedded)
+- Transpiles cleanly with bun (180.73 KB bundled)
