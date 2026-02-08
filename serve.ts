@@ -240,6 +240,33 @@ interface RalphStatus {
   finished: string;
   lastOutput: string;
   pid: number;
+  tasksDone: number;
+  tasksTotal: number;
+}
+
+function countPlanTasks(planPath: string): { done: number; total: number } {
+  try {
+    const plan = readFileSync(planPath, "utf-8");
+    // checkbox mode
+    if (/^- \[[ x]\] /m.test(plan)) {
+      const done = (plan.match(/^- \[x\] /gm) || []).length;
+      const pending = (plan.match(/^- \[ \] /gm) || []).length;
+      return { done, total: done + pending };
+    }
+    // section mode: ## or ### numbered headers
+    const TASK_HEADER = /^#{2,3} (\d+[a-z]?[\.\)]\s+)/;
+    let total = 0;
+    let done = 0;
+    for (const line of plan.split("\n")) {
+      if (TASK_HEADER.test(line)) {
+        total++;
+        if (line.includes("~~")) done++;
+      }
+    }
+    return { done, total };
+  } catch {
+    return { done: 0, total: 0 };
+  }
 }
 
 function parseRalphLog(projectDir: string): RalphStatus | null {
@@ -260,6 +287,8 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     finished: "",
     lastOutput: "",
     pid: 0,
+    tasksDone: 0,
+    tasksTotal: 0,
   };
 
   try {
@@ -324,6 +353,13 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
         !l.startsWith("agent:") && !l.startsWith("🥋"),
     );
     status.lastOutput = meaningful.slice(-5).join("\n");
+
+    // count tasks from plan file
+    if (status.planFile) {
+      const tasks = countPlanTasks(join(projectDir, status.planFile));
+      status.tasksDone = tasks.done;
+      status.tasksTotal = tasks.total;
+    }
 
     return status;
   } catch {

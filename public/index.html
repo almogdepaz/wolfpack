@@ -1155,11 +1155,19 @@
             return (b.started || "").localeCompare(a.started || "");
           });
           el.innerHTML = loops.map(loop => {
-            const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
             const hitLimit = !loop.active && !loop.completed && loop.finished;
             const status = loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
             const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
             const dotClass = loop.active ? "purple" : "gray";
+            // running: show iteration progress. not running: show task progress
+            let pct, progressLabel;
+            if (loop.active) {
+              pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
+              progressLabel = loop.iteration + '/' + loop.totalIterations + ' iter';
+            } else {
+              pct = loop.tasksTotal > 0 ? Math.round((loop.tasksDone / loop.tasksTotal) * 100) : 0;
+              progressLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
+            }
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
             return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +
               '<div class="ralph-card-header">' +
@@ -1169,7 +1177,7 @@
               '</div>' +
               '<div class="ralph-progress">' +
                 '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + pct + '%"></div></div>' +
-                '<span class="ralph-iter">' + loop.iteration + '/' + loop.totalIterations + '</span>' +
+                '<span class="ralph-iter">' + progressLabel + '</span>' +
               '</div>' +
               lastOut +
             '</div>';
@@ -1198,14 +1206,21 @@
             actions.innerHTML = '';
             return;
           }
-          const pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
           const hitLimit = !loop.active && !loop.completed && loop.finished;
           const status = loop.active ? "running" : loop.completed ? "done" : "idle";
           const statusLabel = loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+          let pct, progressLabel;
+          if (loop.active) {
+            pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
+            progressLabel = loop.iteration + '/' + loop.totalIterations + ' iter';
+          } else {
+            pct = loop.tasksTotal > 0 ? Math.round((loop.tasksDone / loop.tasksTotal) * 100) : 0;
+            progressLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
+          }
           header.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
               '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
-              '<span class="ralph-iter">' + loop.iteration + '/' + loop.totalIterations + '</span>' +
+              '<span class="ralph-iter">' + progressLabel + '</span>' +
             '</div>' +
             '<div class="ralph-progress">' +
               '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + pct + '%"></div></div>' +
