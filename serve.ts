@@ -25,7 +25,6 @@ import { assets } from "./public-assets.js";
 import { hostname } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { WebSocketServer, type WebSocket } from "ws";
 
 const exec = promisify(execFile);
 
@@ -335,6 +334,7 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
 function isValidProjectName(name: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
+
 
 function scanRalphLoops(): RalphStatus[] {
   const projects = listDevProjects();
@@ -939,90 +939,6 @@ const server = createServer(async (req, res) => {
     res.writeHead(404);
     res.end("Not Found");
   }
-});
-
-// ── WebSocket terminal ──
-
-const ALLOWED_WS_KEYS = [
-  "Enter", "Tab", "Escape", "Up", "Down", "Left", "Right", "BTab",
-  "y", "n", "C-c", "C-d", "C-z",
-];
-
-const wss = new WebSocketServer({ noServer: true });
-
-function handleTerminalWs(ws: WebSocket, session: string) {
-  let lastPane = "";
-  const interval = setInterval(async () => {
-    try {
-      const pane = await capturePane(session);
-      if (pane !== lastPane) {
-        lastPane = pane;
-        ws.send(JSON.stringify({ type: "output", data: pane }));
-      }
-    } catch {
-      // session may have been killed — close gracefully
-      ws.close(1011, "capture failed");
-    }
-  }, 100);
-
-  ws.on("message", async (raw) => {
-    try {
-      const msg = JSON.parse(String(raw)) as {
-        type: string;
-        data?: string;
-        key?: string;
-        cols?: number;
-        rows?: number;
-      };
-      if (msg.type === "input" && typeof msg.data === "string") {
-        await tmuxSend(session, msg.data, true);
-      } else if (msg.type === "key" && typeof msg.key === "string") {
-        if (ALLOWED_WS_KEYS.includes(msg.key)) {
-          await tmuxSendKey(session, msg.key);
-        }
-      } else if (
-        msg.type === "resize" &&
-        typeof msg.cols === "number" &&
-        typeof msg.rows === "number"
-      ) {
-        await tmuxResize(
-          session,
-          Math.max(20, Math.min(msg.cols, 300)),
-          Math.max(5, Math.min(msg.rows, 100)),
-        );
-      }
-    } catch {
-      // ignore malformed messages
-    }
-  });
-
-  ws.on("close", () => clearInterval(interval));
-  ws.on("error", () => clearInterval(interval));
-}
-
-server.on("upgrade", async (req, socket, head) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
-  if (url.pathname !== "/ws/terminal") {
-    socket.destroy();
-    return;
-  }
-
-  // origin check
-  const origin = req.headers.origin;
-  if (origin && !isAllowedOrigin(origin)) {
-    socket.destroy();
-    return;
-  }
-
-  const session = url.searchParams.get("session");
-  if (!session || !(await isAllowedSession(session))) {
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    handleTerminalWs(ws, session);
-  });
 });
 
 server.listen(PORT, () => {
