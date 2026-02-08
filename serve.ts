@@ -16,11 +16,12 @@ import {
   readdirSync,
   mkdirSync,
   statSync,
+  existsSync,
 } from "node:fs";
 import { join } from "node:path";
 import { assets } from "./public-assets.js";
 import { hostname } from "node:os";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -213,6 +214,131 @@ function listDevProjects(): string[] {
   } catch {
     return [];
   }
+}
+
+// ── Ralph loop helpers ──
+
+const RALPH_BIN = join(process.env.HOME ?? "~", "bin", "ralph");
+
+interface RalphStatus {
+  project: string;
+  active: boolean;
+  completed: boolean;
+  iteration: number;
+  totalIterations: number;
+  planFile: string;
+  progressFile: string;
+  started: string;
+  finished: string;
+  lastOutput: string;
+  pid: number;
+}
+
+function parseRalphLog(projectDir: string): RalphStatus | null {
+  const logPath = join(projectDir, ".ralph.log");
+  if (!existsSync(logPath)) return null;
+
+  const project = projectDir.split("/").pop() ?? "";
+  const status: RalphStatus = {
+    project,
+    active: false,
+    completed: false,
+    iteration: 0,
+    totalIterations: 0,
+    planFile: "",
+    progressFile: "",
+    started: "",
+    finished: "",
+    lastOutput: "",
+    pid: 0,
+  };
+
+  try {
+    const content = readFileSync(logPath, "utf-8");
+    const lines = content.split("\n");
+
+    // parse header
+    for (const line of lines.slice(0, 10)) {
+      const planMatch = line.match(/^plan:\s*(.+)/);
+      if (planMatch) status.planFile = planMatch[1].trim();
+      const progMatch = line.match(/^progress:\s*(.+)/);
+      if (progMatch) status.progressFile = progMatch[1].trim();
+      const startMatch = line.match(/^started:\s*(.+)/);
+      if (startMatch) status.started = startMatch[1].trim();
+    }
+
+    // find iterations
+    const iterRegex = /=== Iteration (\d+)\/(\d+)/g;
+    let match;
+    while ((match = iterRegex.exec(content)) !== null) {
+      status.iteration = Number(match[1]);
+      status.totalIterations = Number(match[2]);
+    }
+
+    // check completion
+    const finishedMatch = content.match(/^finished:\s*(.+)/m);
+    if (finishedMatch) {
+      status.completed = true;
+      status.finished = finishedMatch[1].trim();
+    }
+
+    // detect active: no finished line + recently modified
+    if (!status.completed) {
+      try {
+        const mtime = statSync(logPath).mtimeMs;
+        if (Date.now() - mtime < 120_000) status.active = true;
+      } catch {}
+    }
+
+    // last output lines (skip markers and blanks)
+    const meaningful = lines.filter(
+      (l) => l.trim() && !l.startsWith("===") && !l.startsWith("plan:") &&
+        !l.startsWith("progress:") && !l.startsWith("started:") &&
+        !l.startsWith("finished:") && !l.startsWith("🥋"),
+    );
+    status.lastOutput = meaningful.slice(-5).join("\n");
+
+    return status;
+  } catch {
+    return null;
+  }
+}
+
+async function findRalphPid(projectDir: string): Promise<number> {
+  try {
+    const { stdout: pidOut } = await exec("pgrep", ["-f", "bin/ralph"]);
+    const pids = pidOut.trim().split("\n").filter(Boolean);
+
+    for (const pid of pids) {
+      try {
+        if (process.platform === "linux") {
+          const { stdout: cwd } = await exec("readlink", [`/proc/${pid}/cwd`]);
+          if (cwd.trim() === projectDir) return Number(pid);
+        } else {
+          // macOS
+          const { stdout: lsofOut } = await exec("lsof", ["-a", "-d", "cwd", "-p", pid, "-Fn"]);
+          if (lsofOut.includes(projectDir)) return Number(pid);
+        }
+      } catch {}
+    }
+  } catch {}
+  return 0;
+}
+
+async function scanRalphLoops(): Promise<RalphStatus[]> {
+  const projects = listDevProjects();
+  const results: RalphStatus[] = [];
+  for (const p of projects) {
+    const dir = join(DEV_DIR, p);
+    const status = parseRalphLog(dir);
+    if (!status) continue;
+    if (status.active) {
+      status.pid = await findRalphPid(dir);
+      if (!status.pid) status.active = false; // crashed — no process found
+    }
+    results.push(status);
+  }
+  return results;
 }
 
 async function uniqueSessionName(base: string): Promise<string> {
@@ -555,6 +681,100 @@ const routes: Record<
       return json(res, { error: "session not found" }, 404);
     const pane = await capturePane(session);
     json(res, { pane });
+  },
+
+  // ── Ralph loop API ──
+
+  "GET /api/ralph": async (_req, res) => {
+    const loops = await scanRalphLoops();
+    json(res, { loops });
+  },
+
+  "GET /api/ralph/log": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !/^[a-zA-Z0-9._-]+$/.test(project)) {
+      return json(res, { error: "invalid project" }, 400);
+    }
+    const logPath = join(DEV_DIR, project, ".ralph.log");
+    if (!existsSync(logPath)) {
+      return json(res, { error: "no ralph log found" }, 404);
+    }
+    try {
+      const content = readFileSync(logPath, "utf-8");
+      const lines = content.split("\n");
+      const totalLines = lines.length;
+      const log = lines.slice(-500).join("\n");
+      json(res, { log, totalLines });
+    } catch {
+      json(res, { error: "failed to read log" }, 500);
+    }
+  },
+
+  "POST /api/ralph/start": async (req, res) => {
+    const { project, iterations, planFile } = JSON.parse(await readBody(req)) as {
+      project?: string;
+      iterations?: number;
+      planFile?: string;
+    };
+    if (!project || !/^[a-zA-Z0-9._-]+$/.test(project)) {
+      return json(res, { error: "invalid project name" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    try {
+      if (!statSync(projectDir).isDirectory()) {
+        return json(res, { error: "not a directory" }, 400);
+      }
+    } catch {
+      return json(res, { error: "project directory not found" }, 404);
+    }
+    if (!existsSync(RALPH_BIN)) {
+      return json(res, { error: "ralph binary not found" }, 500);
+    }
+
+    // check no existing active loop
+    const existing = parseRalphLog(projectDir);
+    if (existing?.active) {
+      const pid = await findRalphPid(projectDir);
+      if (pid) {
+        return json(res, { error: "ralph loop already running", pid }, 409);
+      }
+    }
+
+    const iters = Math.max(1, Math.min(50, iterations ?? 5));
+    const args: string[] = [String(iters)];
+    if (planFile) args.push(planFile);
+
+    const child = spawn(RALPH_BIN, args, {
+      cwd: projectDir,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+
+    json(res, { ok: true, pid: child.pid ?? 0 });
+  },
+
+  "POST /api/ralph/cancel": async (req, res) => {
+    const { project } = JSON.parse(await readBody(req)) as {
+      project?: string;
+    };
+    if (!project || !/^[a-zA-Z0-9._-]+$/.test(project)) {
+      return json(res, { error: "invalid project name" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    const pid = await findRalphPid(projectDir);
+    if (!pid) {
+      return json(res, { error: "no active ralph loop found" }, 404);
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+      // try to kill process group (child claude processes)
+      try { process.kill(-pid, "SIGTERM"); } catch {}
+      json(res, { ok: true, killed: pid });
+    } catch {
+      json(res, { error: "failed to kill process" }, 500);
+    }
   },
 };
 

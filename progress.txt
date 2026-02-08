@@ -1,0 +1,20 @@
+# Progress Log
+
+## Phase 1a: Imports — DONE (already present)
+- `existsSync` and `spawn` were already imported in serve.ts
+
+## Phase 1b: Ralph helpers — DONE (already present)
+- `RALPH_BIN`, `RalphStatus`, `parseRalphLog()`, `findRalphPid()`, `scanRalphLoops()` all exist
+
+## Phase 1c: API routes — DONE
+- Added 4 endpoints to routes object in serve.ts:
+  - `GET /api/ralph` — lists all ralph loops via scanRalphLoops()
+  - `GET /api/ralph/log?project=X` — returns last 500 lines of .ralph.log
+  - `POST /api/ralph/start` — spawns ralph detached with validation + conflict check
+  - `POST /api/ralph/cancel` — finds PID via findRalphPid, kills process + group
+
+## Phase 2a: CSS — DONE
+- Added all ralph loop CSS styles to `public/index.html` before `</style>` (lines 588-755)
+- Styles: `.ralph-card`, `.ralph-card-header`, `.ralph-card-name`, `.ralph-progress`, `.ralph-bar`/`.ralph-bar-fill` (with `.running`/`.done`/`.failed` variants), `.ralph-iter`, `.ralph-status` (with state variants), `.dot.purple` (pulsing), `.ralph-last-output`, `.ralph-detail-header`, `.ralph-log`, `.ralph-actions`, `.ralph-start-form`, `.ralph-launch-btn`, `.ralph-empty`, `.ralph-nav-btn`
+- Purple accent (#9b59b6) used for ralph branding to distinguish from main green theme
+- Matches existing design patterns: dark bg, 2px border-radius, monospace fonts, tap-highlight-color transparent
