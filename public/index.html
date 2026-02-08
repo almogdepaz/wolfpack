@@ -775,6 +775,7 @@
         </div>
       </div>
       <div class="header-right">
+        <button class="ralph-nav-btn" id="ralph-btn" onclick="showView('ralph')" style="display:none">&#129355;</button>
         <button class="search-btn" id="search-btn" onclick="toggleSearch()">&#128269;</button>
         <button class="settings-gear" id="gear-btn" onclick="showSettings()">&#9881;</button>
       </div>
@@ -875,6 +876,49 @@
       <div id="msg-preview"></div>
     </div>
 
+    <!-- Ralph loops list view -->
+    <div id="ralph-view" class="view">
+      <div id="ralph-list" class="list"></div>
+      <button class="ralph-launch-btn" onclick="showView('ralph-start')">+ Start Ralph Loop</button>
+    </div>
+
+    <!-- Ralph detail view -->
+    <div id="ralph-detail-view" class="view">
+      <div id="ralph-detail-header" class="ralph-detail-header"></div>
+      <pre id="ralph-log" class="ralph-log"></pre>
+      <div id="ralph-actions" class="ralph-actions"></div>
+    </div>
+
+    <!-- Ralph start form view -->
+    <div id="ralph-start-view" class="view">
+      <div class="ralph-start-form">
+        <label for="ralph-project-select">Project</label>
+        <select id="ralph-project-select"></select>
+
+        <label for="ralph-iterations-input">Iterations</label>
+        <input
+          id="ralph-iterations-input"
+          type="number"
+          min="1"
+          max="50"
+          value="5"
+          autocomplete="off"
+        />
+
+        <label for="ralph-plan-input">Plan file (optional)</label>
+        <input
+          id="ralph-plan-input"
+          type="text"
+          placeholder="PLAN.md"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+        />
+
+        <button class="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
+      </div>
+    </div>
+
     <script>
       let currentSession = null;
       let currentMachine = ""; // "" = self, URL string = remote
@@ -883,6 +927,9 @@
       let fastPoll = false;
       let allSessions = [];
       let sessionRefreshTimer = null;
+      let ralphRefreshTimer = null;
+      let currentRalphProject = null;
+      let ralphLogPollTimer = null;
 
       // ── Machine registry ──
 
@@ -949,6 +996,7 @@
         const title = document.getElementById("header-title");
 
         const gear = document.getElementById("gear-btn");
+        const ralphBtn = document.getElementById("ralph-btn");
 
         const switcher = document.getElementById("session-switcher");
         const wolfIcon = document.getElementById("wolf-icon");
@@ -958,17 +1006,28 @@
         document.getElementById("search-btn").style.display = "none";
         document.getElementById("header-machine-label").style.display = "none";
         headerCenter.style.transform = "";
+        ralphBtn.style.display = "none";
 
         // Stop session auto-refresh when leaving sessions view
         if (sessionRefreshTimer) {
           clearInterval(sessionRefreshTimer);
           sessionRefreshTimer = null;
         }
+        // Stop ralph timers when leaving ralph views
+        if (ralphRefreshTimer) {
+          clearInterval(ralphRefreshTimer);
+          ralphRefreshTimer = null;
+        }
+        if (ralphLogPollTimer) {
+          clearInterval(ralphLogPollTimer);
+          ralphLogPollTimer = null;
+        }
 
         if (name === "sessions") {
           back.style.display = "none";
           back.onclick = null;
           gear.style.display = "";
+          ralphBtn.style.display = "";
           title.textContent = "wolfpack";
           wolfIcon.style.display = "";
           // Auto-refresh session list every 5s
@@ -1025,6 +1084,36 @@
             hml.style.display = "";
           }
           loadSessionSwitcher();
+        } else if (name === "ralph") {
+          back.style.display = "block";
+          back.onclick = () => {
+            showView("sessions");
+            loadSessions();
+          };
+          gear.style.display = "none";
+          title.textContent = "ralph loops";
+          wolfIcon.style.display = "none";
+          loadRalphLoops();
+          ralphRefreshTimer = setInterval(loadRalphLoops, 3000);
+        } else if (name === "ralph-detail") {
+          back.style.display = "block";
+          back.onclick = () => {
+            showView("ralph");
+          };
+          gear.style.display = "none";
+          title.textContent = currentRalphProject || "ralph";
+          wolfIcon.style.display = "none";
+          refreshRalphDetail();
+          ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
+        } else if (name === "ralph-start") {
+          back.style.display = "block";
+          back.onclick = () => {
+            showView("ralph");
+          };
+          gear.style.display = "none";
+          title.textContent = "start ralph";
+          wolfIcon.style.display = "none";
+          loadRalphStartForm();
         }
       }
 

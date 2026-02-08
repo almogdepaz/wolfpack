@@ -18,3 +18,23 @@
 - Styles: `.ralph-card`, `.ralph-card-header`, `.ralph-card-name`, `.ralph-progress`, `.ralph-bar`/`.ralph-bar-fill` (with `.running`/`.done`/`.failed` variants), `.ralph-iter`, `.ralph-status` (with state variants), `.dot.purple` (pulsing), `.ralph-last-output`, `.ralph-detail-header`, `.ralph-log`, `.ralph-actions`, `.ralph-start-form`, `.ralph-launch-btn`, `.ralph-empty`, `.ralph-nav-btn`
 - Purple accent (#9b59b6) used for ralph branding to distinguish from main green theme
 - Matches existing design patterns: dark bg, 2px border-radius, monospace fonts, tap-highlight-color transparent
+
+## Phase 2b: HTML views — DONE
+- Added 3 new views after terminal-view closing `</div>` (lines 878-919):
+  1. `ralph-view` — list container (`#ralph-list`) + "Start Ralph Loop" button
+  2. `ralph-detail-view` — detail header, scrollable `<pre>` log, action buttons container
+  3. `ralph-start-view` — form with project `<select>`, iterations number input (1-50, default 5), plan file text input, launch button
+- All views follow existing pattern: `<div id="X-view" class="view">` hidden by default
+- Regenerated public-assets.ts via `bun run scripts/gen-assets.ts`
+
+## Phase 2c: Navigation — DONE
+- Added 🥋 button (`ralph-nav-btn`, id=`ralph-btn`) to `header-right` div before search button
+- Button hidden by default (`style="display:none"`), shown only on sessions view via `showView()`
+- Added 3 new ralph state vars: `ralphRefreshTimer`, `currentRalphProject`, `ralphLogPollTimer`
+- Updated `showView()` with:
+  - Timer cleanup for `ralphRefreshTimer` and `ralphLogPollTimer` at top of function
+  - `ralph` case: back→sessions, load loops, auto-refresh every 3s
+  - `ralph-detail` case: back→ralph, refresh detail + poll log every 2s
+  - `ralph-start` case: back→ralph, populate form
+  - Ralph button visibility toggled per view (shown on sessions only)
+- Regenerated `public-assets.ts` via `bun run scripts/gen-assets.ts`
