@@ -297,7 +297,11 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     if (finishedMatch) {
       status.finished = finishedMatch[1].trim();
     }
-    if (content.includes("<done>COMPLETE</done>") || content.includes("No unchecked tasks remain") || content.includes("All tasks complete")) {
+    const agentSaidDone = content.includes("<done>COMPLETE</done>") || content.includes("All tasks complete");
+    const noTasksRemain = content.includes("No unchecked tasks remain");
+    const noParseableTasks = content.includes("No parseable tasks found in plan");
+    // Only mark completed if agent confirmed done, or no tasks remain (but NOT if no parseable tasks on first try)
+    if (agentSaidDone || (noTasksRemain && !noParseableTasks)) {
       status.completed = true;
       status.iteration = status.totalIterations;
     }

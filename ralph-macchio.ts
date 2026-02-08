@@ -91,12 +91,57 @@ if (!agent) {
   process.exit(1);
 }
 
+function planUsesCheckboxes(): boolean {
+  try {
+    const plan = readFileSync(PLAN_FILE, "utf-8");
+    return /^- \[[ x]\] /m.test(plan);
+  } catch { return false; }
+}
+
 function extractCurrentTask(): string | null {
   try {
     const plan = readFileSync(PLAN_FILE, "utf-8");
-    const match = plan.match(/^- \[ \] (.+)$/m);
-    return match ? match[1] : null;
+
+    // checkbox mode: return first unchecked item
+    if (planUsesCheckboxes()) {
+      const match = plan.match(/^- \[ \] (.+)$/m);
+      return match ? match[1] : null;
+    }
+
+    // section mode: find first ## or ### numbered header not struck through
+    const lines = plan.split("\n");
+    const TASK_HEADER = /^(#{2,3}) \d+[a-z]?[\.\)]\s+/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (TASK_HEADER.test(line) && !line.includes("~~")) {
+        const level = line.match(/^(#{2,3})/)?.[1] || "##";
+        // collect the full section until the next header at same or higher level
+        const sectionLines = [line];
+        for (let j = i + 1; j < lines.length; j++) {
+          const nextMatch = lines[j].match(/^(#{1,3}) /);
+          if (nextMatch && nextMatch[1].length <= level.length) break;
+          sectionLines.push(lines[j]);
+        }
+        return sectionLines.join("\n").trim();
+      }
+    }
+    return null;
   } catch { return null; }
+}
+
+function markSectionDone(taskText: string): void {
+  try {
+    const plan = readFileSync(PLAN_FILE, "utf-8");
+    const headerLine = taskText.split("\n")[0];
+    if (!headerLine || !plan.includes(headerLine)) return;
+    // wrap the header content in strikethrough
+    // ### 1. Title → ### ~~1. Title~~
+    // ## 1. Title → ## ~~1. Title~~
+    const prefix = headerLine.match(/^(#{2,3} )/)?.[1] || "### ";
+    const rest = headerLine.slice(prefix.length);
+    const updated = plan.replace(headerLine, `${prefix}~~${rest}~~`);
+    writeFileSync(PLAN_FILE, updated);
+  } catch {}
 }
 
 function buildPrompt(taskDesc: string): string {
@@ -195,8 +240,9 @@ async function main() {
     // extract current task from plan
     const task = extractCurrentTask();
     if (!task) {
-      appendFileSync(LOG_FILE, `\n=== 🥋 No unchecked tasks remain — ${new Date().toString()} ===\n`);
-      await runCleanup();
+      const msg = i === 1 ? "No parseable tasks found in plan" : "No unchecked tasks remain";
+      appendFileSync(LOG_FILE, `\n=== 🥋 ${msg} — ${new Date().toString()} ===\n`);
+      if (i > 1) await runCleanup();
       appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
       process.exit(0);
     }
@@ -229,6 +275,11 @@ async function main() {
     }
 
     appendFileSync(LOG_FILE, `\n=== ✅ Iteration ${i} complete — ${new Date().toString()} ===\n`);
+
+    // mark section done in plan file (section mode only)
+    if (!planUsesCheckboxes()) {
+      markSectionDone(task);
+    }
 
     if (output.includes("<done>COMPLETE</done>")) {
       appendFileSync(LOG_FILE, `=== 🥋 All tasks complete after ${i} iterations ===\n`);
