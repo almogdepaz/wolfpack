@@ -163,3 +163,18 @@
   - `closeSearch()` → `xtermSearch.clearDecorations()` on desktop
 - Regenerated `public-assets.ts` (6 files embedded)
 - Transpiles cleanly with bun (180.73 KB bundled)
+
+## Desktop Terminal: Phase 2e — Output strategy — DONE (already implemented)
+- Server-side: `handleTerminalWs()` (serve.ts:954-966) polls capture-pane every 100ms, tracks `lastPane`, only sends on change (string equality diff)
+- Client-side: `initXterm()` ws.onmessage (index.html:1745-1753) does `term.reset()` + `term.write(msg.data)` on each `output` message
+- This matches the plan exactly: full capture-pane output, reset+write, simple approach
+- Already completed as part of Phase 2c+2d implementation
+
+## Cleanup Pass — DONE
+- Audited all 6 changed files: serve.ts, public/index.html, ralph-macchio.ts, package.json, .gitignore, desktop_terminal_plan.md
+- Checked all imports, exports, functions, constants, CSS classes, and DOM element references
+- Cross-checked consumers of public-assets.ts and ralph-macchio.ts
+- Result: no dead code found — codebase is clean
+- Removed stray double blank line in serve.ts (after isValidProjectName)
+- Marked plan section 2f (search on desktop) as done — was already implemented but not struck through
+- Transpiles cleanly (180.58 KB bundled)

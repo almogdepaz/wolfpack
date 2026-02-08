@@ -130,7 +130,7 @@ function initXterm(session) {
 }
 ```
 
-### 2e. Output strategy
+### ~~2e. Output strategy~~
 **Problem**: capture-pane returns the full screen buffer each time. xterm.js expects incremental writes, not full redraws.
 
 **Solution**: Send full capture-pane output but use `term.reset()` + `term.write()` on each update. This is slightly wasteful but:
@@ -141,7 +141,7 @@ function initXterm(session) {
 
 **Future optimization**: Track diff between captures, only send changed lines. Or switch to PTY piping for true incremental output. But start simple.
 
-### 2f. Search on desktop
+### ~~2f. Search on desktop~~
 xterm.js has a search addon (`xterm-addon-search`). Replace current DOM-based search with:
 ```js
 import { SearchAddon } from 'xterm-addon-search';

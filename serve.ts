@@ -336,7 +336,6 @@ function isValidProjectName(name: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
 
-
 function scanRalphLoops(): RalphStatus[] {
   const projects = listDevProjects();
   const results: RalphStatus[] = [];
