@@ -30,9 +30,38 @@ const ALLOWED_TOOLS = [
   "Bash(cp *)", "Bash(cat *)", "Bash(echo *)", "Bash(touch *)",
 ].join(",");
 
+// augment PATH with common bin dirs that may be missing in detached/non-interactive shells
+const IS_WIN = process.platform === "win32";
+const PATH_SEP = IS_WIN ? ";" : ":";
+const HOME = process.env.HOME || process.env.USERPROFILE || "";
+const EXTRA_PATHS: string[] = IS_WIN
+  ? [
+      join(HOME, "AppData", "Roaming", "npm"),
+      join(HOME, "AppData", "Local", "Programs", "claude"),
+      join(HOME, ".cargo", "bin"),
+    ]
+  : [
+      join(HOME, ".local", "bin"),
+      join(HOME, ".cargo", "bin"),
+      join(HOME, "bin"),
+      join(HOME, ".npm-global", "bin"),
+      "/usr/local/bin",
+      "/opt/homebrew/bin",
+      "/opt/homebrew/sbin",
+    ];
+const currentPath = process.env.PATH || "";
+const missingPaths = EXTRA_PATHS.filter(p => !currentPath.includes(p) && existsSync(p));
+if (missingPaths.length > 0) {
+  process.env.PATH = [...missingPaths, currentPath].join(PATH_SEP);
+}
+
 function resolveBin(name: string): string {
-  try { return execFileSync("which", [name], { encoding: "utf-8" }).trim(); }
-  catch { return name; }
+  const cmd = IS_WIN ? "where" : "which";
+  try {
+    const result = execFileSync(cmd, [name], { encoding: "utf-8" }).trim();
+    // `where` on windows can return multiple lines, take the first
+    return result.split("\n")[0].trim();
+  } catch { return name; }
 }
 
 interface AgentConfig {
@@ -116,6 +145,7 @@ appendFileSync(LOG_FILE, `agent: ${AGENT}\n`);
 appendFileSync(LOG_FILE, `plan: ${PLAN_FILE}\n`);
 appendFileSync(LOG_FILE, `progress: ${PROGRESS_FILE}\n`);
 appendFileSync(LOG_FILE, `pid: ${process.pid}\n`);
+appendFileSync(LOG_FILE, `bin: ${agent.bin}\n`);
 appendFileSync(LOG_FILE, `started: ${new Date().toString()}\n\n`);
 
 function parseSubtasks(output: string): string[] {
@@ -137,14 +167,21 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    child.stdout?.on("data", (d: Buffer) => chunks.push(d));
-    child.stderr?.on("data", (d: Buffer) => chunks.push(d));
+    child.stdout?.on("data", (d: Buffer) => {
+      chunks.push(d);
+      appendFileSync(LOG_FILE, d.toString("utf-8"));
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      chunks.push(d);
+      appendFileSync(LOG_FILE, d.toString("utf-8"));
+    });
 
     child.on("close", (code) => {
       resolve({ exitCode: code ?? 1, output: Buffer.concat(chunks).toString("utf-8") });
     });
 
     child.on("error", (err) => {
+      appendFileSync(LOG_FILE, `spawn error: ${err.message}\n`);
       resolve({ exitCode: 1, output: `spawn error: ${err.message}\n` });
     });
   });
@@ -158,16 +195,16 @@ async function main() {
     const task = extractCurrentTask();
     if (!task) {
       appendFileSync(LOG_FILE, `\n=== 🥋 No unchecked tasks remain — ${new Date().toString()} ===\n`);
+      await runCleanup();
       appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
       process.exit(0);
     }
 
     const prompt = buildPrompt(task);
-    appendFileSync(LOG_FILE, `\n=== Iteration ${i}/${maxIterations} — ${new Date().toString()} ===\n`);
+    appendFileSync(LOG_FILE, `\n=== 🥋 Wax On ${i}/${maxIterations} — ${new Date().toString()} ===\n`);
     appendFileSync(LOG_FILE, `task: ${task}\n\n`);
 
     const { exitCode, output } = await runIteration(prompt);
-    appendFileSync(LOG_FILE, output);
 
     // write iter file for inspection
     writeFileSync(ITER_FILE, output);
@@ -193,8 +230,9 @@ async function main() {
 
     if (output.includes("<done>COMPLETE</done>")) {
       appendFileSync(LOG_FILE, `=== 🥋 All tasks complete after ${i} iterations ===\n`);
-      appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
       try { unlinkSync(ITER_FILE); } catch {}
+      await runCleanup();
+      appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
       process.exit(0);
     }
 
@@ -202,7 +240,51 @@ async function main() {
   }
 
   appendFileSync(LOG_FILE, `=== Completed ${maxIterations} iterations ===\n`);
+  await runCleanup();
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
+}
+
+const CLEANUP_PROMPT = `You may ONLY create/edit/delete files under ${PROJECT_DIR}. Do NOT touch files outside this directory.
+
+@${PLAN_FILE} @${PROGRESS_FILE}
+
+You are running a CLEANUP pass after all tasks have been implemented.
+
+INSTRUCTIONS:
+1. Run \`git diff --name-only HEAD~10 HEAD 2>/dev/null || git diff --name-only HEAD\` to find all files changed during this session.
+2. For each changed file, review for:
+   - Dead code: unreachable functions, unused imports, orphaned variables
+   - Old code paths that were replaced but not removed
+   - Commented-out code that is no longer relevant
+   - Stale TODO/FIXME comments referencing completed work
+3. Also check files that IMPORT FROM or are closely coupled to the changed files — look for:
+   - Exports that are no longer imported anywhere
+   - Interfaces/types that lost all consumers
+   - Test helpers that test removed functionality
+4. Remove all identified dead code. Do NOT remove code that is still reachable or may be used.
+5. Run any relevant tests to confirm nothing breaks.
+6. Commit with message "chore: cleanup dead code after ralph session".
+7. Update ${PROGRESS_FILE} with what was cleaned up.
+
+RULES:
+- Do NOT add new features or refactor working code.
+- Do NOT remove comments that explain non-obvious logic.
+- Only remove code you can confirm is unreachable or unused.
+- If unsure, leave it.
+
+BEGIN.`;
+
+async function runCleanup(): Promise<void> {
+  appendFileSync(LOG_FILE, `\n=== 🥋 Wax Off — ${new Date().toString()} ===\n\n`);
+  const { exitCode, output } = await runIteration(CLEANUP_PROMPT);
+  writeFileSync(ITER_FILE, output);
+
+  if (exitCode !== 0) {
+    appendFileSync(LOG_FILE, `\n=== ⚠️  Wax Off FAILED (exit code ${exitCode}) — ${new Date().toString()} ===\n\n`);
+  } else {
+    appendFileSync(LOG_FILE, `\n=== ✅ Wax Off complete — ${new Date().toString()} ===\n`);
+  }
+  try { unlinkSync(ITER_FILE); } catch {}
 }
 
 main().catch((err) => {
