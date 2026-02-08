@@ -253,8 +253,8 @@ function countPlanTasks(planPath: string): { done: number; total: number } {
       const pending = (plan.match(/^- \[ \] /gm) || []).length;
       return { done, total: done + pending };
     }
-    // section mode: ## or ### numbered headers
-    const TASK_HEADER = /^#{2,3} (\d+[a-z]?[\.\)]\s+)/;
+    // section mode: ## or ### numbered headers (with optional ~~ strikethrough)
+    const TASK_HEADER = /^#{2,3} (?:~~)?\d+[a-z]?[\.\)]\s+/;
     let total = 0;
     let done = 0;
     for (const line of plan.split("\n")) {
