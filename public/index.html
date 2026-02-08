@@ -1154,7 +1154,7 @@
           el.innerHTML = loops.map(loop => {
             const hitLimit = !loop.active && !loop.completed && loop.finished;
             const status = loop.numbering ? "numbering" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-            const statusLabel = loop.numbering ? "NUMBERING" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+            const statusLabel = loop.numbering ? "NUMBERING TASKS" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
             const dotClass = loop.numbering ? "yellow" : loop.active ? "purple" : "gray";
             // running: show iteration progress. numbering: show spinner. not running: show task progress
             let pct, progressLabel;
@@ -1208,7 +1208,7 @@
           }
           const hitLimit = !loop.active && !loop.completed && loop.finished;
           const status = loop.numbering ? "numbering" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-          const statusLabel = loop.numbering ? "NUMBERING" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+          const statusLabel = loop.numbering ? "NUMBERING TASKS" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
           let pct, progressLabel;
           if (loop.numbering) {
             pct = 0;
