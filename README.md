@@ -92,11 +92,6 @@ Wolfpack is opinionated. It assumes you keep your projects in a single directory
 Phone (Web App) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
 ```
 
-- Server uses `tmux capture-pane` to snapshot terminal output
-- Client polls every 500ms for updates (100ms after recent input)
-- Text input and key presses are sent via `tmux send-keys`
-- Tailscale provides encrypted transport and DNS — no port forwarding needed
-- **Tailscale is the security layer.** The server has no built-in authentication — only devices on your tailnet can reach it. Do not expose the port to the public internet.
 
 ## Usage
 
