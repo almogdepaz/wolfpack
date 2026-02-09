@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { assets } from "./public-assets.js";
-import { hostname } from "node:os";
+import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -62,8 +62,8 @@ const TMUX = "tmux";
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
 const DEV_DIR =
-  process.env.WOLFPACK_DEV_DIR || join(process.env.HOME ?? "~", "Dev");
-const SETTINGS_PATH = join(process.env.HOME ?? "~", ".wolfpack", "bridge-settings.json");
+  process.env.WOLFPACK_DEV_DIR || join(homedir(), "Dev");
+const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
 const VERSION = "1.2.0";
 
 // CORS origin allowlist — replaces wildcard "*"
@@ -75,7 +75,7 @@ const ALLOWED_ORIGINS = new Set<string>([
 // Extract tailnet suffix (e.g. "tailnet-name.ts.net") from config
 const TAILNET_SUFFIX = (() => {
   try {
-    const cfg = JSON.parse(readFileSync(join(process.env.HOME ?? "~", ".wolfpack", "config.json"), "utf-8"));
+    const cfg = JSON.parse(readFileSync(join(homedir(), ".wolfpack", "config.json"), "utf-8"));
     const h = cfg.tailscaleHostname as string; // e.g. "machine.tailnet-name.ts.net"
     const dot = h.indexOf(".");
     if (dot !== -1) return h.substring(dot + 1); // "tailnet-name.ts.net"
@@ -243,7 +243,7 @@ interface RalphStatus {
   project: string;
   active: boolean;
   completed: boolean;
-  numbering: boolean;
+  cleanup: boolean;
   iteration: number;
   totalIterations: number;
   agent: string;
@@ -291,7 +291,7 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     project,
     active: false,
     completed: false,
-    numbering: false,
+    cleanup: false,
     iteration: 0,
     totalIterations: 0,
     agent: "",
@@ -321,7 +321,6 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
       if (startMatch) status.started = startMatch[1].trim();
       const pidMatch = line.match(/^pid:\s*(\d+)/);
       if (pidMatch) status.pid = Number(pidMatch[1]);
-      if (/^status:\s*numbering/.test(line)) status.numbering = true;
     }
 
     // parse total iterations from header line
@@ -340,34 +339,21 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
     const finishedMatch = content.match(/^finished:\s*(.+)/m);
     if (finishedMatch) {
       status.finished = finishedMatch[1].trim();
-      status.numbering = false; // numbering ended (success or error)
     }
-    const agentSaidDone = content.includes("<done>COMPLETE</done>") || content.includes("All tasks complete");
-    const noTasksRemain = content.includes("No unchecked tasks remain");
-    // Only mark completed if work actually happened (iteration > 0) and agent confirmed done
-    if (agentSaidDone || (noTasksRemain && status.iteration > 0)) {
-      status.completed = true;
-      status.iteration = status.totalIterations;
-    }
+    // completion is determined by plan file only (all tasks struck through)
 
-    // detect active: pid alive check (process may still be in Wax Off phase)
+    // detect active: pid alive check
     if (status.pid > 1) {
       try {
         process.kill(status.pid, 0);
         status.active = true;
         status.completed = false; // still running
-        status.numbering = false; // worker took over
+        // detect cleanup phase: "Wax Off" started but not completed
+        if (content.includes("Wax Off") && !content.includes("Wax Off complete")) {
+          status.cleanup = true;
+        }
       } catch {
         status.active = false;
-      }
-    }
-
-    // stale numbering detection: if numbering with no pid, no finish, and
-    // started > 3 min ago, the server likely restarted mid-numbering
-    if (status.numbering && !status.finished && status.pid === 0 && status.started) {
-      const elapsed = Date.now() - new Date(status.started).getTime();
-      if (elapsed > 3 * 60 * 1000) {
-        status.numbering = false;
       }
     }
 
@@ -456,6 +442,15 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+async function parseBody<T = any>(req: IncomingMessage, res: ServerResponse): Promise<T | null> {
+  try {
+    return JSON.parse(await readBody(req)) as T;
+  } catch {
+    json(res, { error: "invalid JSON body" }, 400);
+    return null;
+  }
+}
+
 function serveFile(res: ServerResponse, filename: string): void {
   const asset = assets.get(filename);
   if (!asset) {
@@ -483,8 +478,9 @@ const routes: Record<
     const manifest = JSON.parse(asset.content as string);
     manifest.id = `/?host=${host}`;
     if (customName) {
-      manifest.name = customName;
-      manifest.short_name = customName;
+      const safeName = customName.replace(/[^\w\s\-().]/g, "").slice(0, 50);
+      manifest.name = safeName;
+      manifest.short_name = safeName;
     } else {
       const label = host.split("-").slice(0, -1).join("-") || host;
       manifest.name = `Wolfpack (${label})`;
@@ -520,7 +516,9 @@ const routes: Record<
   },
 
   "POST /api/send": async (req, res) => {
-    const { session, text, noEnter } = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
+    const { session, text, noEnter } = body;
     if (!session || !text)
       return json(res, { error: "missing session or text" }, 400);
     if (!(await isAllowedSession(session)))
@@ -535,11 +533,13 @@ const routes: Record<
   },
 
   "POST /api/create": async (req, res) => {
-    const { project, newProject, cmd } = JSON.parse(await readBody(req)) as {
+    const body = await parseBody<{
       project?: string;
       newProject?: string;
       cmd?: string;
-    };
+    }>(req, res);
+    if (!body) return;
+    const { project, newProject, cmd } = body;
     const folderName = newProject?.trim() || project?.trim();
     if (!folderName || !isValidProjectName(folderName)) {
       return json(res, { error: "invalid project name" }, 400);
@@ -573,10 +573,9 @@ const routes: Record<
   },
 
   "POST /api/key": async (req, res) => {
-    const { session, key } = JSON.parse(await readBody(req)) as {
-      session: string;
-      key: string;
-    };
+    const body = await parseBody<{ session: string; key: string }>(req, res);
+    if (!body) return;
+    const { session, key } = body;
     if (!session || !key)
       return json(res, { error: "missing session or key" }, 400);
     if (!(await isAllowedSession(session)))
@@ -609,11 +608,12 @@ const routes: Record<
   },
 
   "POST /api/settings": async (req, res) => {
-    const body = JSON.parse(await readBody(req)) as {
+    const body = await parseBody<{
       agentCmd?: string;
       addCustomCmd?: string;
       deleteCustomCmd?: string;
-    };
+    }>(req, res);
+    if (!body) return;
     const settings = loadSettings();
 
     if (body.agentCmd != null) {
@@ -645,7 +645,9 @@ const routes: Record<
   },
 
   "POST /api/kill": async (req, res) => {
-    const { session } = JSON.parse(await readBody(req)) as { session: string };
+    const body = await parseBody<{ session: string }>(req, res);
+    if (!body) return;
+    const { session } = body;
     if (!session) return json(res, { error: "missing session" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
@@ -654,11 +656,13 @@ const routes: Record<
   },
 
   "POST /api/resize": async (req, res) => {
-    const { session, cols, rows } = JSON.parse(await readBody(req)) as {
+    const body = await parseBody<{
       session: string;
       cols: number;
       rows: number;
-    };
+    }>(req, res);
+    if (!body) return;
+    const { session, cols, rows } = body;
     if (!session || !cols || !rows)
       return json(res, { error: "missing params" }, 400);
     if (!(await isAllowedSession(session)))
@@ -817,14 +821,17 @@ const routes: Record<
   },
 
   "POST /api/ralph/start": async (req, res) => {
-    const { project, iterations, planFile, agent, newBranch, sourceBranch } = JSON.parse(await readBody(req)) as {
+    const body = await parseBody<{
       project?: string;
       iterations?: number;
       planFile?: string;
       agent?: string;
       newBranch?: string;
       sourceBranch?: string;
-    };
+      format?: boolean;
+    }>(req, res);
+    if (!body) return;
+    const { project, iterations, planFile, agent, newBranch, sourceBranch, format } = body;
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
@@ -888,17 +895,18 @@ const routes: Record<
       return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
     }
 
-    const child = spawn(BUN_BIN, [RALPH_WORKER], {
+    const workerArgs = [
+      RALPH_WORKER,
+      "--plan", resolvedPlan,
+      "--iterations", String(iters),
+      "--agent", agent || "claude",
+      "--progress", "progress.txt",
+      ...(format ? ["--format"] : []),
+    ];
+    const child = spawn(BUN_BIN, workerArgs, {
       cwd: projectDir,
       detached: true,
       stdio: "ignore",
-      env: {
-        ...process.env,
-        RALPH_AGENT: agent || "claude",
-        RALPH_ITERATIONS: String(iters),
-        RALPH_PLAN: resolvedPlan,
-        RALPH_PROGRESS: "progress.txt",
-      },
     });
     child.unref();
 
@@ -919,176 +927,13 @@ const routes: Record<
     if (!existsSync(planPath)) {
       return json(res, { error: "plan not found" }, 404);
     }
-    const tasks = countPlanTasks(planPath);
-    json(res, tasks);
-  },
-
-  "POST /api/ralph/number-and-start": async (req, res) => {
-    const { project, iterations, planFile, agent, newBranch, sourceBranch } = JSON.parse(await readBody(req)) as {
-      project?: string;
-      iterations?: number;
-      planFile?: string;
-      agent?: string;
-      newBranch?: string;
-      sourceBranch?: string;
-    };
-    if (!project || !isValidProjectName(project)) {
-      return json(res, { error: "invalid project name" }, 400);
-    }
-    const projectDir = join(DEV_DIR, project);
-    try {
-      if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory()) {
-        return json(res, { error: "not a directory" }, 400);
-      }
-    } catch {
-      return json(res, { error: "project directory not found" }, 404);
-    }
-    const existing = parseRalphLog(projectDir);
-    if (existing?.active || existing?.numbering) {
-      return json(res, { error: "ralph loop already running or numbering" }, 409);
-    }
-
-    const agentName = agent || "claude";
-    const AGENT_CMDS: Record<string, { bin: string; args: string[] }> = {
-      claude: { bin: "claude", args: ["--print", "--dangerously-skip-permissions"] },
-      codex: { bin: "codex", args: ["exec", "--yolo"] },
-      gemini: { bin: "gemini", args: ["--yolo"] },
-    };
-    const agentCfg = AGENT_CMDS[agentName];
-    if (!agentCfg) {
-      return json(res, { error: `unknown agent: ${agentName}` }, 400);
-    }
-
-    const iters = Math.max(1, Math.min(50, iterations ?? 5));
-    const resolvedPlan = planFile || "PLAN.md";
-    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(resolvedPlan) || resolvedPlan === ".." || resolvedPlan === ".") {
-      return json(res, { error: "invalid plan file name" }, 400);
-    }
-    const planPath = join(projectDir, resolvedPlan);
-    if (!existsSync(planPath)) {
-      return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
-    }
-
-    // Write .ralph.log with numbering status so the card appears immediately
-    const now = new Date().toISOString();
-    const logPath = join(projectDir, ".ralph.log");
-    writeFileSync(logPath, [
-      `🥋 ralph — numbering tasks`,
-      `agent: ${agentName}`,
-      `plan: ${resolvedPlan}`,
-      `status: numbering`,
-      `started: ${now}`,
-      "",
-    ].join("\n"));
-
-    // Return immediately — numbering + start happens in background
-    json(res, { ok: true, status: "numbering" });
-
-    // Background: number the plan, then spawn the ralph worker
-    (async () => {
-      try {
-        const planContent = readFileSync(planPath, "utf-8");
-        const prompt = `You are reformatting a plan file for an automated task runner.
-
-The plan file below contains implementation sections but they are NOT numbered with the format "### N. Title".
-
-Your job: Add sequential numbers to each implementation/task section header so they follow the pattern "### 1. Title", "### 2. Title", etc. Or if subsections exist, use "### 1a. Title", "### 1b. Title".
-
-Rules:
-- ONLY number headers that represent actionable tasks/steps
-- Do NOT number context/overview/architecture/verification sections
-- Keep ALL content exactly as-is — only modify the ### header lines to add numbers
-- Output the COMPLETE modified file, nothing else — no explanation, no code fences
-
-Here is the plan file:
-
-${planContent}`;
-
-        // Pipe prompt via stdin to avoid OS arg length limits on large plans
-        const result = await new Promise<string>((resolve, reject) => {
-          const proc = spawn(agentCfg.bin, agentCfg.args, {
-            cwd: projectDir,
-            stdio: ["pipe", "pipe", "pipe"],
-          });
-          let stdout = "";
-          let stderr = "";
-          proc.stdout!.on("data", (d: Buffer) => { stdout += d.toString(); });
-          proc.stderr!.on("data", (d: Buffer) => { stderr += d.toString(); });
-          proc.on("close", (code) => {
-            if (code === 0) resolve(stdout.trim());
-            else reject(new Error(stderr || `agent exited with code ${code}`));
-          });
-          proc.on("error", reject);
-          proc.stdin!.write(prompt);
-          proc.stdin!.end();
-          // Timeout after 2 minutes
-          setTimeout(() => { try { proc.kill(); } catch {} reject(new Error("numbering timed out")); }, 120000);
-        });
-        if (!result) {
-          writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: agent returned empty output\nfinished: ${new Date().toISOString()}\n`);
-          return;
-        }
-        writeFileSync(planPath, result + "\n");
-
-        // Branch creation (optional) — same logic as /api/ralph/start
-        const BRANCH_REGEX = /^[a-zA-Z0-9._\-/]+$/;
-        if (newBranch) {
-          if (!BRANCH_REGEX.test(newBranch)) {
-            writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: invalid branch name\nfinished: ${new Date().toISOString()}\n`);
-            return;
-          }
-          const source = sourceBranch || "main";
-          try {
-            execFileSync("git", ["fetch", "origin", `${source}:${source}`], {
-              cwd: projectDir, encoding: "utf-8", timeout: 30000,
-            });
-          } catch {
-            try {
-              execFileSync("git", ["rev-parse", "--verify", source], {
-                cwd: projectDir, encoding: "utf-8", timeout: 5000,
-              });
-            } catch {
-              writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: source branch '${source}' not found\nfinished: ${new Date().toISOString()}\n`);
-              return;
-            }
-          }
-          try {
-            execFileSync("git", ["checkout", "-b", newBranch, source], {
-              cwd: projectDir, encoding: "utf-8", timeout: 10000,
-            });
-          } catch (e: any) {
-            writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: ${e.stderr || e.message || "branch creation failed"}\nfinished: ${new Date().toISOString()}\n`);
-            return;
-          }
-        }
-
-        // Spawn ralph worker — same as POST /api/ralph/start
-        const child = spawn(BUN_BIN, [RALPH_WORKER], {
-          cwd: projectDir,
-          detached: true,
-          stdio: "ignore",
-          env: {
-            ...process.env,
-            RALPH_AGENT: agentName,
-            RALPH_ITERATIONS: String(iters),
-            RALPH_PLAN: resolvedPlan,
-            RALPH_PROGRESS: "progress.txt",
-          },
-        });
-        child.unref();
-      } catch (e: any) {
-        const msg = e.stderr || e.message || "numbering failed";
-        try {
-          writeFileSync(logPath, readFileSync(logPath, "utf-8") + `\nerror: ${msg}\nfinished: ${new Date().toISOString()}\n`);
-        } catch {}
-      }
-    })();
+    json(res, countPlanTasks(planPath));
   },
 
   "POST /api/ralph/cancel": async (req, res) => {
-    const { project } = JSON.parse(await readBody(req)) as {
-      project?: string;
-    };
+    const body = await parseBody<{ project?: string }>(req, res);
+    if (!body) return;
+    const { project } = body;
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
@@ -1096,6 +941,15 @@ ${planContent}`;
     const status = parseRalphLog(projectDir);
     if (!status?.active || !status.pid || status.pid <= 1) {
       return json(res, { error: "no active ralph loop found" }, 404);
+    }
+    // verify PID is actually a ralph-macchio process before killing
+    try {
+      const { stdout: cmdline } = await exec("ps", ["-p", String(status.pid), "-o", "command="]);
+      if (!cmdline.includes("ralph-macchio")) {
+        return json(res, { error: "PID does not belong to a ralph process" }, 400);
+      }
+    } catch {
+      return json(res, { error: "process not found" }, 404);
     }
     try {
       process.kill(status.pid, "SIGTERM");
@@ -1108,9 +962,9 @@ ${planContent}`;
   },
 
   "POST /api/ralph/dismiss": async (req, res) => {
-    const { project } = JSON.parse(await readBody(req)) as {
-      project?: string;
-    };
+    const body = await parseBody<{ project?: string }>(req, res);
+    if (!body) return;
+    const { project } = body;
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
@@ -1121,6 +975,10 @@ ${planContent}`;
     }
     if (!status?.planFile) {
       return json(res, { error: "no plan file found" }, 404);
+    }
+    // validate plan file name from log to prevent path traversal
+    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(status.planFile) || status.planFile.includes("..")) {
+      return json(res, { error: "invalid plan file name in log" }, 400);
     }
     const planPath = join(projectDir, status.planFile);
     if (!existsSync(planPath)) {

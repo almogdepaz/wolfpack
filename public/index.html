@@ -590,9 +590,9 @@
         transition: all 0.15s ease;
       }
       .ralph-card.running { border-left: 3px solid #00ff41; }
+      .ralph-card.cleanup { border-left: 3px solid #3498db; }
       .ralph-card.done { border-left: 3px solid #00ff41; }
       .ralph-card.limit { border-left: 3px solid #ff6600; }
-      .ralph-card.numbering { border-left: 3px solid #f1c40f; }
       .ralph-card.idle { border-left: 3px solid #333; }
       .ralph-card:active {
         background: #1a1a1a;
@@ -633,9 +633,9 @@
         transition: width 0.3s ease;
       }
       .ralph-bar-fill.running { background: #00ff41; }
+      .ralph-bar-fill.cleanup { background: #3498db; }
       .ralph-bar-fill.done { background: #00ff41; }
       .ralph-bar-fill.limit { background: #ff6600; }
-      .ralph-bar-fill.numbering { background: #f1c40f; }
       .ralph-bar-fill.idle { background: #333; }
       .ralph-iter {
         font-size: 11px;
@@ -651,10 +651,10 @@
         border-radius: 2px;
       }
       .ralph-status.running { color: #00ff41; background: #00ff4115; }
+      .ralph-status.cleanup { color: #3498db; background: #3498db15; }
       .ralph-status.done { color: #00ff41; background: #00ff4115; }
       .ralph-status.idle { color: #555; background: #55555515; }
       .ralph-status.limit { color: #ff6600; background: #ff660015; }
-      .ralph-status.numbering { color: #f1c40f; background: #f1c40f15; }
       .ralph-status.failed { color: #cc3333; }
       .dot.purple {
         background: #9b59b6;
@@ -1000,6 +1000,11 @@
       async function api(path, opts, machineUrl) {
         const base = machineUrl ? machineUrl + "/api" : "/api";
         const res = await fetch(base + path, opts);
+        if (!res.ok) {
+          const body = await res.text();
+          try { return JSON.parse(body); } catch {}
+          throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+        }
         return res.json();
       }
 
@@ -1153,32 +1158,24 @@
           });
           el.innerHTML = loops.map(loop => {
             const hitLimit = !loop.active && !loop.completed && loop.finished;
-            const status = loop.numbering ? "numbering" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-            const statusLabel = loop.numbering ? "NUMBERING TASKS" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
-            const dotClass = loop.numbering ? "yellow" : loop.active ? "purple" : "gray";
-            // running: show iteration progress. numbering: show spinner. not running: show task progress
-            let pct, progressLabel;
-            if (loop.numbering) {
-              pct = 0;
-              progressLabel = '0/? tasks';
-            } else if (loop.active) {
-              pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-              progressLabel = loop.iteration + '/' + loop.totalIterations + ' iter';
-            } else {
-              pct = loop.tasksTotal > 0 ? Math.round((loop.tasksDone / loop.tasksTotal) * 100) : 0;
-              progressLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
-            }
+            const status = loop.cleanup ? "cleanup" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
+            const statusLabel = loop.cleanup ? "CLEANUP" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+            const dotClass = loop.active ? "purple" : "gray";
+            const taskPct = loop.tasksTotal > 0 ? Math.round((loop.tasksDone / loop.tasksTotal) * 100) : 0;
+            const taskLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
+            const iterLabel = loop.totalIterations > 0 ? loop.iteration + '/' + loop.totalIterations + ' iter' : '';
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
-            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + esc(loop.project) + '\')">' +
+            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + escAttr(loop.project) + '\')">' +
               '<div class="ralph-card-header">' +
                 '<span class="ralph-card-name"><span class="dot ' + dotClass + '"></span>' + esc(loop.project) + '</span>' +
                 '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
-                '<button class="kill-btn" onclick="dismissRalph(\'' + esc(loop.project) + '\', event)">&times;</button>' +
+                '<button class="kill-btn" onclick="dismissRalph(\'' + escAttr(loop.project) + '\', event)">&times;</button>' +
               '</div>' +
               '<div class="ralph-progress">' +
-                '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + pct + '%"></div></div>' +
-                '<span class="ralph-iter">' + progressLabel + '</span>' +
+                '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + taskPct + '%"></div></div>' +
+                '<span class="ralph-iter">' + taskLabel + '</span>' +
               '</div>' +
+              (iterLabel ? '<div class="ralph-iter" style="text-align:right;margin-top:2px">' + iterLabel + '</div>' : '') +
               lastOut +
             '</div>';
           }).join("");
@@ -1207,42 +1204,35 @@
             return;
           }
           const hitLimit = !loop.active && !loop.completed && loop.finished;
-          const status = loop.numbering ? "numbering" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
-          const statusLabel = loop.numbering ? "NUMBERING TASKS" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
-          let pct, progressLabel;
-          if (loop.numbering) {
-            pct = 0;
-            progressLabel = '0/? tasks';
-          } else if (loop.active) {
-            pct = loop.totalIterations > 0 ? Math.round((loop.iteration / loop.totalIterations) * 100) : 0;
-            progressLabel = loop.iteration + '/' + loop.totalIterations + ' iter';
-          } else {
-            pct = loop.tasksTotal > 0 ? Math.round((loop.tasksDone / loop.tasksTotal) * 100) : 0;
-            progressLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
-          }
+          const status = loop.cleanup ? "cleanup" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle";
+          const statusLabel = loop.cleanup ? "CLEANUP" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE";
+          const taskPct = loop.tasksTotal > 0 ? Math.round((loop.tasksDone / loop.tasksTotal) * 100) : 0;
+          const taskLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
+          const iterLabel = loop.totalIterations > 0 ? loop.iteration + '/' + loop.totalIterations + ' iter' : '';
           header.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
               '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
-              '<span class="ralph-iter">' + progressLabel + '</span>' +
+              '<div style="display:flex;gap:12px">' +
+                '<span class="ralph-iter">' + taskLabel + '</span>' +
+                (iterLabel ? '<span class="ralph-iter">' + iterLabel + '</span>' : '') +
+              '</div>' +
             '</div>' +
             '<div class="ralph-progress">' +
-              '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + pct + '%"></div></div>' +
+              '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + taskPct + '%"></div></div>' +
             '</div>' +
             (loop.planFile ? '<div style="color:#888;font-size:12px;margin-top:4px">plan: ' + esc(loop.planFile) + '</div>' : '') +
             (loop.started ? '<div style="color:#888;font-size:12px">started: ' + esc(loop.started) + '</div>' : '') +
             (loop.finished ? '<div style="color:#888;font-size:12px">finished: ' + esc(loop.finished) + '</div>' : '');
 
           // actions
-          if (loop.numbering) {
-            actions.innerHTML = '<button class="ralph-launch-btn" style="background:#f1c40f;color:#000" disabled>Numbering tasks...</button>';
-          } else if (loop.active) {
+          if (loop.active) {
             actions.innerHTML = '<button class="ralph-launch-btn" style="background:#e74c3c" onclick="cancelRalph()">Cancel</button>';
           } else {
-            actions.innerHTML = '<button class="ralph-launch-btn" onclick="restartRalph(\'' + esc(loop.planFile || '') + '\')">Restart</button>';
+            actions.innerHTML = '<button class="ralph-launch-btn" onclick="restartRalph(\'' + escAttr(loop.planFile || '') + '\')">Restart</button>';
           }
 
-          // stop polling if loop finished (but keep polling during numbering)
-          if (!loop.active && !loop.numbering && ralphLogPollTimer) {
+          // stop polling if loop finished
+          if (!loop.active && ralphLogPollTimer) {
             clearInterval(ralphLogPollTimer);
             ralphLogPollTimer = null;
           }
@@ -1356,7 +1346,17 @@
         if (!project) { alert("select a project"); return; }
         if (!planFile) { alert("select a plan file"); return; }
 
-        const body = { project, iterations, planFile, agent };
+        // Warn if plan has no numbered tasks — worker will auto-number
+        let format = false;
+        try {
+          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile));
+          if (tc.total === 0) {
+            if (!confirm("No numbered tasks in " + planFile + ". Ralph will number them automatically. Continue?")) return;
+            format = true;
+          }
+        } catch {}
+
+        const body = { project, iterations, planFile, agent, format };
         const branchToggle = document.getElementById("ralph-branch-toggle").checked;
         if (branchToggle) {
           const newBranch = document.getElementById("ralph-branch-name").value.trim();
@@ -1364,31 +1364,6 @@
           if (!newBranch) { alert("enter a branch name"); return; }
           body.newBranch = newBranch;
           body.sourceBranch = sourceBranch;
-        }
-
-        // Check if plan has numbered tasks via task-count endpoint
-        try {
-          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile));
-          if (tc.total === 0) {
-            if (!confirm("No numbered tasks found in " + planFile + ". Number them with " + agent + "?")) return;
-            // Fire-and-forget: number in background, then auto-start
-            try {
-              const data = await api("/ralph/number-and-start", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-              });
-              if (data.error) { alert(data.error); return; }
-            } catch (e) {
-              alert("Failed: " + e.message);
-              return;
-            }
-            currentRalphProject = project;
-            showView("ralph");
-            return;
-          }
-        } catch (e) {
-          // task-count failed — proceed with start anyway
         }
 
         try {
@@ -1432,11 +1407,12 @@
 
       function renderGroupHtml(g) {
         const mUrl = esc(g.machine.url);
+        const mUrlAttr = escAttr(g.machine.url);
         const mName = esc(g.machine.name);
         const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
-        const versionWarning = g.outdated ? `<span style="color:#ff6600;margin-left:6px;font-size:11px;padding:3px 8px;border:1px solid #00ff41;border-radius:2px;cursor:pointer;-webkit-tap-highlight-color:transparent;letter-spacing:1px" onclick="event.stopPropagation();alert('Running v${esc(g.machine.version || "?")} — newer version available on another machine')">⚠ UPDATE</span>` : "";
+        const versionWarning = g.outdated ? `<span style="color:#ff6600;margin-left:6px;font-size:11px;padding:3px 8px;border:1px solid #00ff41;border-radius:2px;cursor:pointer;-webkit-tap-highlight-color:transparent;letter-spacing:1px" onclick="event.stopPropagation();alert('Running v${escAttr(g.machine.version || "?")} — newer version available on another machine')">⚠ UPDATE</span>` : "";
         let html = `<div class="machine-group" data-machine="${mUrl}">`;
-        html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}${versionWarning}<button class="machine-add-btn" onclick="showProjectPicker('${mUrl}')">+</button></div>`;
+        html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}${versionWarning}<button class="machine-add-btn" onclick="showProjectPicker('${mUrlAttr}')">+</button></div>`;
         if (g.pending) {
           html += `<div style="padding:4px 4px;color:#555;font-size:11px">Connecting...</div>`;
         } else if (g.online && g.sessions.length) {
@@ -1444,14 +1420,14 @@
             const lastLine = s.lastLine || "";
             const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
             const dotClass = needsAttention ? "yellow" : "green";
-            return `<div class="card" onclick="openSession('${esc(s.name)}', '${mUrl}')">
+            return `<div class="card" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
               <div class="dot ${dotClass}"></div>
               <div class="card-info">
                 <div class="card-machine">${mName}</div>
                 <div class="card-name">${esc(s.name)}</div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
-              <button class="kill-btn" onclick="killSession('${esc(s.name)}', event, '${mUrl}')">&times;</button>
+              <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event, '${mUrlAttr}')">&times;</button>
             </div>`;
           }).join("");
         } else if (!g.online) {
@@ -1468,13 +1444,13 @@
             const lastLine = s.lastLine || "";
             const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
             const dotClass = needsAttention ? "yellow" : "green";
-            return `<div class="card" onclick="openSession('${esc(s.name)}')">
+            return `<div class="card" onclick="openSession('${escAttr(s.name)}')">
               <div class="dot ${dotClass}"></div>
               <div class="card-info">
                 <div class="card-name">${esc(s.name)}</div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
-              <button class="kill-btn" onclick="killSession('${esc(s.name)}', event)">&times;</button>
+              <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event)">&times;</button>
             </div>`;
           }).join("");
         }
@@ -1621,7 +1597,7 @@
           el.innerHTML = data.projects
             .map(
               (p) => `
-      <div class="card" onclick="selectProject('${esc(p)}')">
+      <div class="card" onclick="selectProject('${escAttr(p)}')">
         <div class="dot blue"></div>
         <div class="card-name">${esc(p)}</div>
       </div>
@@ -1666,13 +1642,13 @@
           const presets = Object.entries(data.presets || {});
           const customCmds = data.settings?.customCmds || [];
           let html = presets.map(([label, cmd]) => `
-            <div class="card" onclick="createSessionWithAgent('${esc(cmd)}')">
+            <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
               <div class="dot blue"></div>
               <div class="card-name">${esc(label)}</div>
             </div>
           `).join("");
           html += customCmds.map(cmd => `
-            <div class="card" onclick="createSessionWithAgent('${esc(cmd)}')">
+            <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
               <div class="dot green"></div>
               <div class="card-name">${esc(cmd)}</div>
             </div>
@@ -1810,9 +1786,14 @@
 
           // Enter retry: if pane hasn't changed within 800ms, Enter may have been dropped.
           // Timer is cleared on any pane change (in poll()), so this only fires if truly stuck.
+          // Scope to the session that was active at send time to prevent phantom Enter on other sessions.
           if (enterRetryTimer) clearTimeout(enterRetryTimer);
+          const retrySession = currentSession;
+          const retryMachine = currentMachine;
           enterRetryTimer = setTimeout(() => {
-            if (currentSession) sendKey("Enter");
+            if (currentSession === retrySession && currentMachine === retryMachine) {
+              sendKey("Enter");
+            }
             enterRetryTimer = null;
           }, 800);
         } catch {
@@ -2111,7 +2092,7 @@
           return `<div class="machine-item">
             <div class="dot ${dot}"></div>
             <span class="machine-item-name">${esc(m.name)}<span class="machine-item-url">${esc(m.url)}</span></span>
-            <button class="machine-remove-btn" onclick="removeMachineUI('${esc(m.url)}')">&times;</button>
+            <button class="machine-remove-btn" onclick="removeMachineUI('${escAttr(m.url)}')">&times;</button>
           </div>`;
         }).join("");
       }
@@ -2272,9 +2253,19 @@
       });
 
       function esc(s) {
+        if (s == null) return "";
         const d = document.createElement("div");
-        d.textContent = s;
+        d.textContent = String(s);
         return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+      }
+
+      // JS-safe escaper for use inside onclick="func('...')" attribute contexts.
+      // Backslash-escapes characters that could break out of a JS string literal
+      // AFTER HTML attribute decoding.
+      function escAttr(s) {
+        if (s == null) return "";
+        return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
+          .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26");
       }
 
       showView("sessions");

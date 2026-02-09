@@ -8,17 +8,18 @@ import {
   openSync,
   readFileSync,
   readSync,
+  rmSync,
   writeFileSync,
   unlinkSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { platform } from "node:os";
+import { platform, homedir } from "node:os";
 import { printQR } from "./qr.js";
 
 const IS_MACOS = platform() === "darwin";
 const IS_LINUX = platform() === "linux";
 
-const WOLFPACK_DIR = join(process.env.HOME ?? "~", ".wolfpack");
+const WOLFPACK_DIR = join(homedir(), ".wolfpack");
 const CONFIG_PATH = join(WOLFPACK_DIR, "config.json");
 
 interface Config {
@@ -263,7 +264,7 @@ async function setup() {
   }
 
   // Dev directory
-  const defaultDev = join(process.env.HOME ?? "~", "Dev");
+  const defaultDev = join(homedir(), "Dev");
   const devDir =
     (ask(`  Projects directory [${defaultDev}]: `)) || defaultDev;
 
@@ -413,11 +414,15 @@ async function setup() {
 }
 
 async function start() {
-  const config = loadConfig();
+  let config = loadConfig();
   if (!config) {
     print("  No config found. Running setup first...\n");
     await setup();
-    return start();
+    config = loadConfig();
+    if (!config) {
+      print(red("  Setup completed but config is still missing."));
+      process.exit(1);
+    }
   }
 
   // Inject config into env for serve.ts
@@ -446,14 +451,14 @@ async function start() {
 
 const PLIST_LABEL = "com.wolfpack.server";
 const PLIST_PATH = join(
-  process.env.HOME ?? "~",
+  homedir(),
   "Library",
   "LaunchAgents",
   `${PLIST_LABEL}.plist`,
 );
 const SYSTEMD_SERVICE = "wolfpack";
 const SYSTEMD_PATH = join(
-  process.env.HOME ?? "~",
+  homedir(),
   ".config",
   "systemd",
   "user",
@@ -461,7 +466,8 @@ const SYSTEMD_PATH = join(
 );
 
 function xmlEsc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
 function programArgs(): string[] {
@@ -486,7 +492,7 @@ function generatePlist(): string {
     .map(([k, v]) => `      <key>${xmlEsc(k)}</key>\n      <string>${xmlEsc(v)}</string>`)
     .join("\n");
 
-  const logPath = xmlEsc(join(process.env.HOME ?? "~", ".wolfpack", "wolfpack.log"));
+  const logPath = xmlEsc(join(homedir(), ".wolfpack", "wolfpack.log"));
 
   const argsXml = args.map(a => `    <string>${xmlEsc(a)}</string>`).join("\n");
 
@@ -503,7 +509,7 @@ ${argsXml}
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin</string>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
 ${envEntries}
   </dict>
   <key>RunAtLoad</key>
@@ -518,22 +524,28 @@ ${envEntries}
 </plist>`;
 }
 
+function systemdEsc(s: string): string {
+  // escape for systemd Environment double-quoted values
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "");
+}
+
 function generateSystemdUnit(): string {
   const args = programArgs();
   const config = loadConfig();
   const envLines: string[] = [
     `Environment=PATH=/usr/local/bin:/usr/bin:/bin`,
   ];
-  if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${config.devDir}"`);
+  if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${systemdEsc(config.devDir)}"`);
   if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);
 
+  const quotedArgs = args.map(a => `"${systemdEsc(a)}"`).join(" ");
   return `[Unit]
 Description=Wolfpack AI Agent Bridge
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${args.join(" ")}
+ExecStart=${quotedArgs}
 Restart=always
 RestartSec=5
 ${envLines.join("\n")}
@@ -552,7 +564,7 @@ function serviceInstall() {
 
   if (IS_MACOS) {
     const plist = generatePlist();
-    mkdirSync(join(process.env.HOME ?? "~", "Library", "LaunchAgents"), {
+    mkdirSync(join(homedir(), "Library", "LaunchAgents"), {
       recursive: true,
     });
     writeFileSync(PLIST_PATH, plist);
@@ -568,7 +580,7 @@ function serviceInstall() {
     print(dim(`  Plist: ${PLIST_PATH}`));
   } else if (IS_LINUX) {
     const unit = generateSystemdUnit();
-    mkdirSync(join(process.env.HOME ?? "~", ".config", "systemd", "user"), {
+    mkdirSync(join(homedir(), ".config", "systemd", "user"), {
       recursive: true,
     });
     writeFileSync(SYSTEMD_PATH, unit);
@@ -627,29 +639,29 @@ function serviceUninstall() {
 }
 
 function serviceStop() {
-  if (IS_MACOS) {
-    try {
+  try {
+    if (IS_MACOS) {
       execSync(`launchctl unload "${PLIST_PATH}"`);
-    } catch {}
-  } else if (IS_LINUX) {
-    try {
+    } else if (IS_LINUX) {
       execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
-    } catch {}
+    }
+    print(green("  Wolfpack service stopped."));
+  } catch {
+    print(red("  Failed to stop service."));
   }
-  print(green("  Wolfpack service stopped."));
 }
 
 function serviceStart() {
-  if (IS_MACOS) {
-    try {
+  try {
+    if (IS_MACOS) {
       execSync(`launchctl load "${PLIST_PATH}"`);
-    } catch {}
-  } else if (IS_LINUX) {
-    try {
+    } else if (IS_LINUX) {
       execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
-    } catch {}
+    }
+    print(green("  Wolfpack service started."));
+  } catch {
+    print(red("  Failed to start service."));
   }
-  print(green("  Wolfpack service started."));
 }
 
 function serviceStatus() {
@@ -708,7 +720,7 @@ function uninstall() {
   // Remove config dir
   const rmDir = WOLFPACK_DIR;
   try {
-    execSync(`rm -rf ${JSON.stringify(rmDir)}`);
+    rmSync(rmDir, { recursive: true, force: true });
   } catch {}
 
   print("");
@@ -725,19 +737,26 @@ function uninstall() {
 const cmd = process.argv[2];
 const subcmd = process.argv[3];
 
-if (cmd === "setup") {
-  setup();
-} else if (cmd === "service") {
-  if (subcmd === "install") serviceInstall();
-  else if (subcmd === "uninstall") serviceUninstall();
-  else if (subcmd === "stop") serviceStop();
-  else if (subcmd === "start") serviceStart();
-  else if (subcmd === "status") serviceStatus();
-  else {
-    print("  Usage: wolfpack service [install|uninstall|start|stop|status]");
+async function main() {
+  if (cmd === "setup") {
+    await setup();
+  } else if (cmd === "service") {
+    if (subcmd === "install") serviceInstall();
+    else if (subcmd === "uninstall") serviceUninstall();
+    else if (subcmd === "stop") serviceStop();
+    else if (subcmd === "start") serviceStart();
+    else if (subcmd === "status") serviceStatus();
+    else {
+      print("  Usage: wolfpack service [install|uninstall|start|stop|status]");
+    }
+  } else if (cmd === "uninstall") {
+    uninstall();
+  } else {
+    await start();
   }
-} else if (cmd === "uninstall") {
-  uninstall();
-} else {
-  start();
 }
+
+main().catch((e) => {
+  print(red(`  Fatal error: ${e.message || e}`));
+  process.exit(1);
+});
