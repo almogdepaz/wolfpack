@@ -465,7 +465,7 @@ const SYSTEMD_PATH = join(
   `${SYSTEMD_SERVICE}.service`,
 );
 
-function xmlEsc(s: string): string {
+export function xmlEsc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
@@ -524,7 +524,7 @@ ${envEntries}
 </plist>`;
 }
 
-function systemdEsc(s: string): string {
+export function systemdEsc(s: string): string {
   // escape for systemd Environment double-quoted values
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "");
 }
