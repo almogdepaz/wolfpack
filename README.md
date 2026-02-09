@@ -36,9 +36,14 @@ Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monito
 install it on your phone's home screen for a native app experience. After setup, scan the QR code with your phone and tap **"Add to Home Screen"** .
 
 <p align="center">
-  <img src="docs/menu.jpeg" width="300" alt="Session list" />
+  <img src="docs/main_menu.jpeg" width="300" alt="Session list" />
   &nbsp;&nbsp;
-  <img src="docs/session.jpeg" width="300" alt="Terminal view" />
+  <img src="docs/terminal.jpeg" width="300" alt="Terminal view" />
+</p>
+<p align="center">
+  <img src="docs/ralph_menu.jpeg" width="300" alt="Ralph loop panel" />
+  &nbsp;&nbsp;
+  <img src="docs/ralph_log.jpeg" width="300" alt="Ralph log view" />
 </p>
 
 
