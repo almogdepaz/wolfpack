@@ -163,6 +163,85 @@ You can connect one phone to multiple computers running Wolfpack. Sessions from 
 
 Each machine runs its own independent Wolfpack server with its own projects directory and config. Your phone fetches sessions from all registered machines in parallel and routes commands to the correct server.
 
+## Ralph Loop (Automated Task Runner)
+
+Ralph is Wolfpack's built-in autonomous task runner. Give it a plan file and it will iterate through tasks using your AI agent — no babysitting required. Named after Ralph Macchio: wax on, wax off, ship code.
+
+**How it works:**
+
+1. You write a plan file (markdown with tasks as `### N. Title` sections or `- [ ] Task` checkboxes)
+2. Ralph picks the first incomplete task, sends it to your agent (Claude, Codex, or Gemini)
+3. The agent implements the task, runs tests, and commits
+4. Ralph marks the task done and moves to the next one
+5. When all tasks are done (or iterations run out), it stops
+
+**Starting a loop from your phone:**
+
+1. Open Wolfpack and tap a project
+2. Tap the Ralph icon to open the loop panel
+3. Select a plan file (any `.md` in the project), set iterations, pick a branch
+4. Hit Start — Ralph runs in the background as a detached process
+
+**Plan file formats:**
+
+Section mode (recommended for complex plans):
+```markdown
+### 1. Add user authentication
+- JWT tokens, bcrypt password hashing
+- Login/signup endpoints
+
+### 2. Add rate limiting
+- 100 req/min per IP
+```
+
+Checkbox mode (simpler, flat task lists):
+```markdown
+- [ ] Add input validation to /api/create
+- [ ] Fix CSS overflow on mobile
+- [x] Update README  ← already done, skipped
+```
+
+**Key behaviors:**
+
+- **One task per iteration** — each iteration picks the next incomplete task, implements it, and commits
+- **Subtask expansion** — if a task is too large, the agent can output a `<subtasks>` block to break it down. Ralph appends these as checkboxes and extends the iteration count
+- **Cleanup pass** — when all tasks are done, Ralph runs a final "Wax Off" pass to remove dead code, unused imports, and stale TODOs
+- **30min timeout** — per iteration, to prevent stuck agents
+- **Progress tracking** — appends to `progress.txt` each iteration
+- **Run summary** — end-of-run report in `.ralph.log` with duration, tasks completed, plan progress, files changed, and uncommitted files
+
+**Files Ralph creates:**
+
+| File | Purpose |
+|------|---------|
+| `.ralph.log` | Full session log — agent output, iteration markers, summary |
+| `.ralph_iter.tmp` | Current iteration output (deleted after each iteration) |
+| `progress.txt` | Cumulative progress log (agent appends to this) |
+
+**Monitoring:**
+
+- The Wolfpack UI shows live ralph status per project (running, completed, stopped, cleanup)
+- Tap the log icon to view `.ralph.log` contents
+- Task count badge shows `done/total` from the plan file
+
+**Cancelling:**
+
+Tap Cancel in the UI. Ralph receives SIGTERM, kills the active agent subprocess, and exits cleanly.
+
+**Supported agents:**
+
+| Agent | Command | Mode |
+|-------|---------|------|
+| Claude | `claude --print --dangerously-skip-permissions` | `--allowedTools` whitelist |
+| Codex | `codex exec` | `--yolo` |
+| Gemini | `gemini -p` | `--yolo` |
+
+**Limits:**
+
+- 1–50 iterations per run (default: 5)
+- Max 5 subtask expansions per run
+- Iteration ceiling: `max(iterations * 2, 100)` when subtasks extend the run
+
 ## Config
 
 Stored in `~/.wolfpack/config.json`:
