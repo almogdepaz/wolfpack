@@ -767,7 +767,21 @@
         transition: all 0.15s ease;
       }
       .ralph-nav-btn:active { background: #1a1a1a; }
+      /* xterm.js desktop terminal */
+      #xterm-container {
+        display: none;
+        flex: 1;
+        min-height: 0;
+        background: #0a0a0a;
+      }
+      #xterm-container .xterm {
+        height: 100%;
+      }
     </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search@0/lib/addon-search.min.js"></script>
   </head>
   <body>
     <header>
@@ -860,6 +874,7 @@
         Reconnecting...
       </div>
       <div id="terminal"></div>
+      <div id="xterm-container"></div>
       <div id="action-bar" class="visible">
         <button class="action-btn" onclick="sendKey('Enter')">Enter</button>
         <button class="action-btn" onclick="sendKey('Escape')">Esc</button>
