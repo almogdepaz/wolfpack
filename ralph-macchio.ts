@@ -10,7 +10,7 @@
  *   --agent NAME      agent to use: claude|codex|gemini (default claude)
  *   --format          number plan tasks before starting
  */
-import { execFileSync, spawn as nodeSpawn } from "node:child_process";
+import { execFileSync, execSync, spawn as nodeSpawn } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -236,6 +236,10 @@ appendFileSync(LOG_FILE, `pid: ${process.pid}\n`);
 appendFileSync(LOG_FILE, `bin: ${agent.bin}\n`);
 appendFileSync(LOG_FILE, `started: ${new Date().toString()}\n\n`);
 
+// capture starting commit for summary diff
+let START_COMMIT = "";
+try { START_COMMIT = execSync("git rev-parse HEAD", { cwd: PROJECT_DIR, encoding: "utf-8" }).trim(); } catch {}
+
 function parseSubtasks(output: string): string[] {
   const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
   if (!match) return [];
@@ -304,6 +308,64 @@ process.on("SIGTERM", () => {
   setTimeout(() => process.exit(0), 3500);
 });
 
+function logSummary(tasksCompleted: number, subtasksAdded: number): void {
+  const startMatch = readFileSync(LOG_FILE, "utf-8").match(/^started: (.+)$/m);
+  const started = startMatch ? new Date(startMatch[1]) : null;
+  const elapsed = started ? Math.round((Date.now() - started.getTime()) / 1000) : 0;
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+
+  // task counts from plan file
+  const plan = readPlan();
+  const isCheckbox = contentUsesCheckboxes(plan);
+  let done = 0, total = 0;
+  if (isCheckbox) {
+    done = (plan.match(/^- \[x\] /gm) || []).length;
+    total = done + (plan.match(/^- \[ \] /gm) || []).length;
+  } else {
+    const TASK_HEADER = /^#{2,3} (?:~~)?\d+[a-z]?[\.\)]\s+/;
+    for (const line of plan.split("\n")) {
+      if (TASK_HEADER.test(line)) {
+        total++;
+        if (line.includes("~~")) done++;
+      }
+    }
+  }
+
+  // files changed via git (committed since start + uncommitted)
+  let filesChanged: string[] = [];
+  let uncommitted: string[] = [];
+  try {
+    const ref = START_COMMIT || "HEAD";
+    const diff = execSync(`git diff --name-only ${ref} HEAD`, { cwd: PROJECT_DIR, encoding: "utf-8" });
+    filesChanged = diff.trim().split("\n").filter(Boolean);
+  } catch {}
+  try {
+    const wt = execSync("git diff --name-only HEAD", { cwd: PROJECT_DIR, encoding: "utf-8" });
+    const untracked = execSync("git ls-files --others --exclude-standard", { cwd: PROJECT_DIR, encoding: "utf-8" });
+    uncommitted = [...wt.trim().split("\n"), ...untracked.trim().split("\n")].filter(Boolean);
+  } catch {}
+
+  appendFileSync(LOG_FILE, `\n=== 📊 Summary ===\n`);
+  appendFileSync(LOG_FILE, `duration: ${mins}m ${secs}s\n`);
+  appendFileSync(LOG_FILE, `tasks completed this run: ${tasksCompleted}\n`);
+  appendFileSync(LOG_FILE, `plan progress: ${done}/${total} done\n`);
+  if (subtasksAdded > 0) {
+    appendFileSync(LOG_FILE, `subtasks added: ${subtasksAdded}\n`);
+  }
+  if (filesChanged.length > 0) {
+    appendFileSync(LOG_FILE, `files changed (${filesChanged.length}):\n`);
+    for (const f of filesChanged) appendFileSync(LOG_FILE, `  ${f}\n`);
+  } else {
+    appendFileSync(LOG_FILE, `files changed: none\n`);
+  }
+  if (uncommitted.length > 0) {
+    appendFileSync(LOG_FILE, `uncommitted (${uncommitted.length}):\n`);
+    for (const f of uncommitted) appendFileSync(LOG_FILE, `  ${f}\n`);
+  }
+  appendFileSync(LOG_FILE, `==================\n`);
+}
+
 async function main() {
   let maxIterations = ITERATIONS;
 
@@ -319,6 +381,8 @@ async function main() {
   }
 
   let subtaskExpansions = 0;
+  let tasksCompleted = 0;
+  let subtasksAdded = 0;
   const MAX_SUBTASK_EXPANSIONS = 5;
 
   for (let i = 1; i <= maxIterations; i++) {
@@ -328,6 +392,7 @@ async function main() {
       const msg = "No unchecked tasks remain";
       appendFileSync(LOG_FILE, `\n=== 🥋 ${msg} — ${new Date().toString()} ===\n`);
       if (i > 1) await runCleanup();
+      logSummary(tasksCompleted, subtasksAdded);
       appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
       process.exit(0);
     }
@@ -353,6 +418,7 @@ async function main() {
     const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
     if (subtasks.length > 0 && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
       subtaskExpansions++;
+      subtasksAdded += subtasks.length;
       appendSubtasksToPlan(subtasks);
       if (maxIterations < MAX_CEILING) maxIterations++;
       appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${subtasks.length}) — extended to ${maxIterations} iterations (ceiling ${MAX_CEILING}, expansions ${subtaskExpansions}/${MAX_SUBTASK_EXPANSIONS}) ===\n`);
@@ -362,6 +428,7 @@ async function main() {
     }
 
     appendFileSync(LOG_FILE, `\n=== ✅ Iteration ${i} complete — ${new Date().toString()} ===\n`);
+    tasksCompleted++;
 
     // mark task done in plan file
     if (checkbox) {
@@ -374,7 +441,13 @@ async function main() {
   }
 
   appendFileSync(LOG_FILE, `=== Completed ${maxIterations} iterations ===\n`);
-  await runCleanup();
+  const remaining = extractCurrentTask();
+  if (!remaining) {
+    await runCleanup();
+  } else {
+    appendFileSync(LOG_FILE, `=== ⏭️  Skipping cleanup — tasks still remain ===\n`);
+  }
+  logSummary(tasksCompleted, subtasksAdded);
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
 }
 

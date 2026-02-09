@@ -349,7 +349,8 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
         status.active = true;
         status.completed = false; // still running
         // detect cleanup phase: "Wax Off" started but not completed
-        if (content.includes("Wax Off") && !content.includes("Wax Off complete")) {
+        // match the actual log marker, not task descriptions that mention "Wax Off"
+        if (content.includes("🥋 Wax Off") && !content.includes("Wax Off complete") && !content.includes("Wax Off FAILED")) {
           status.cleanup = true;
         }
       } catch {
@@ -790,7 +791,7 @@ const routes: Record<
     const projectDir = join(DEV_DIR, project);
     try {
       const files = readdirSync(projectDir)
-        .filter((f) => f.endsWith(".md") && !f.startsWith("."))
+        .filter((f) => f.endsWith(".md") && !f.startsWith(".") && !/^(readme|doc|changelog|contributing|license|code.of.conduct)\.md$/i.test(f))
         .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { return false; } })
         .sort();
       json(res, { plans: files });
