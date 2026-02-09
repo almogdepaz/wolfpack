@@ -1,0 +1,129 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`generatePlist snapshot matches snapshot with default config 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wolfpack.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>/Users/home/Dev/wolfpack/cli.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>WOLFPACK_DEV_DIR</key>
+      <string>/Users/home/Dev</string>
+      <key>WOLFPACK_PORT</key>
+      <string>18790</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+</dict>
+</plist>"
+`;
+
+exports[`generatePlist snapshot matches snapshot with null config 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wolfpack.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>/Users/home/Dev/wolfpack/cli.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+</dict>
+</plist>"
+`;
+
+exports[`generatePlist snapshot matches snapshot with tailscale config 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wolfpack.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>/Users/home/Dev/wolfpack/cli.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>WOLFPACK_DEV_DIR</key>
+      <string>/Users/home/Dev</string>
+      <key>WOLFPACK_PORT</key>
+      <string>18790</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+</dict>
+</plist>"
+`;
+
+exports[`generatePlist snapshot matches snapshot with single arg (compiled binary) 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wolfpack.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/wolfpack</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>WOLFPACK_DEV_DIR</key>
+      <string>/Users/home/Dev</string>
+      <key>WOLFPACK_PORT</key>
+      <string>18790</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/home/.wolfpack/wolfpack.log</string>
+</dict>
+</plist>"
+`;
