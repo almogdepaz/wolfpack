@@ -1,0 +1,75 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`generateSystemdUnit snapshot matches snapshot with default config 1`] = `
+"[Unit]
+Description=Wolfpack AI Agent Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart="/usr/bin/bun" "/home/user/Dev/wolfpack/cli.ts"
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment="WOLFPACK_DEV_DIR=/home/user/Dev"
+Environment="WOLFPACK_PORT=18790"
+
+[Install]
+WantedBy=default.target
+"
+`;
+
+exports[`generateSystemdUnit snapshot matches snapshot with null config 1`] = `
+"[Unit]
+Description=Wolfpack AI Agent Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart="/usr/bin/bun" "/home/user/Dev/wolfpack/cli.ts"
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+"
+`;
+
+exports[`generateSystemdUnit snapshot matches snapshot with single arg (compiled binary) 1`] = `
+"[Unit]
+Description=Wolfpack AI Agent Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart="/usr/local/bin/wolfpack"
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment="WOLFPACK_DEV_DIR=/home/user/Dev"
+Environment="WOLFPACK_PORT=18790"
+
+[Install]
+WantedBy=default.target
+"
+`;
+
+exports[`generateSystemdUnit snapshot matches snapshot with tailscale config 1`] = `
+"[Unit]
+Description=Wolfpack AI Agent Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart="/usr/bin/bun" "/home/user/Dev/wolfpack/cli.ts"
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment="WOLFPACK_DEV_DIR=/home/user/Dev"
+Environment="WOLFPACK_PORT=18790"
+
+[Install]
+WantedBy=default.target
+"
+`;
