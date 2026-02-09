@@ -66,26 +66,6 @@ Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 
 No Node.js or npm required — wolfpack ships as a standalone binary.
 
-## Workflow
-
-Wolfpack is opinionated. It assumes you keep your projects in a single directory (`~/Dev` by default) and that each AI agent session maps to one project folder.
-
-**The loop:**
-
-1. Open Wolfpack on your phone
-2. Tap **+ New Session** — pick an existing project or create a new one
-3. Wolfpack starts a tmux session in that project's directory and launches your configured agent (Claude, Codex, etc.)
-4. You interact with the agent from your phone — send prompts, approve actions, answer questions
-5. When done, kill the session or leave it running for later
-
-**Key assumptions:**
-
-- Sessions are scoped to project directories, but you can have multiple sessions per project
-- Sessions live in tmux — they persist if you close the app or lose connection
-- The projects directory is the source of truth for what you can launch sessions against
-- You pick the agent command once in settings, and every new session uses it
-- This is a control surface, not a full terminal emulator — it's built for the back-and-forth of AI coding, not for running vim
-
 ## How It Works
 
 ```
@@ -157,6 +137,26 @@ You can connect one phone to multiple computers running Wolfpack. Sessions from 
 5. The new machine's sessions appear in the session list, grouped by machine name
 
 Each machine runs its own independent Wolfpack server with its own projects directory and config. Your phone fetches sessions from all registered machines in parallel and routes commands to the correct server.
+
+## Workflow
+
+Wolfpack is opinionated. It assumes you keep your projects in a single directory (`~/Dev` by default) and that each AI agent session maps to one project folder.
+
+**The loop:**
+
+1. Open Wolfpack on your phone
+2. Tap **+ New Session** — pick an existing project or create a new one
+3. Wolfpack starts a tmux session in that project's directory and launches your configured agent (Claude, Codex, etc.)
+4. You interact with the agent from your phone — send prompts, approve actions, answer questions
+5. When done, kill the session or leave it running for later
+
+**Key assumptions:**
+
+- Sessions are scoped to project directories, but you can have multiple sessions per project
+- Sessions live in tmux — they persist if you close the app or lose connection
+- The projects directory is the source of truth for what you can launch sessions against
+- You pick the agent command once in settings, and every new session uses it
+- This is a control surface, not a full terminal emulator — it's built for the back-and-forth of AI coding, not for running vim
 
 ## Ralph Loop (Automated Task Runner)
 
