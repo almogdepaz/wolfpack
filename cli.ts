@@ -756,7 +756,10 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  print(red(`  Fatal error: ${e.message || e}`));
-  process.exit(1);
-});
+// only run when executed directly, not when imported for tests
+if (import.meta.main) {
+  main().catch((e) => {
+    print(red(`  Fatal error: ${e.message || e}`));
+    process.exit(1);
+  });
+}
