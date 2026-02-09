@@ -20,4 +20,4 @@ jobs:
         run: bun install
 
       - name: Run tests
-        run: bun test tests/unit/validation.test.ts tests/unit/plan-parsing.test.ts tests/unit/plan-mutation.test.ts tests/unit/ralph-log.test.ts tests/unit/config.test.ts tests/snapshot/ tests/integration/
+        run: bun test
