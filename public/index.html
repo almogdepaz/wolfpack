@@ -1829,6 +1829,7 @@
 
         term.open(container);
         fitAddon.fit();
+        term.focus();
 
         // Pipe keyboard input to WS as raw bytes
         term.onData((data) => {

@@ -154,7 +154,8 @@ async function tmuxList(): Promise<string[]> {
         const idx = line.indexOf(SEP);
         return idx !== -1 && line.substring(idx + SEP.length).startsWith(DEV_DIR);
       })
-      .map((line) => line.substring(0, line.indexOf(SEP)));
+      .map((line) => line.substring(0, line.indexOf(SEP)))
+      .filter((name) => !name.startsWith("wp_"));
   } catch {
     return [];
   }
@@ -257,24 +258,14 @@ function listDevProjects(): string[] {
 
 // ── Ralph loop helpers ──
 
-// In compiled binaries, process.execPath is the binary itself (not bun) and
-// import.meta.dir is a virtual path. Detect this and resolve the real bun + worker.
-const IS_COMPILED = import.meta.dir.startsWith("/$bunfs");
-const BUN_BIN = IS_COMPILED
-  ? (() => {
-      // Check common bun locations — launchd PATH is minimal and may not include ~/.bun/bin
-      const candidates = [
-        join(homedir(), ".bun", "bin", "bun"),
-        "/opt/homebrew/bin/bun",
-        "/usr/local/bin/bun",
-      ];
-      for (const c of candidates) { if (existsSync(c)) return c; }
-      try { return execFileSync("which", ["bun"], { encoding: "utf-8", timeout: 5000 }).trim(); } catch { return process.execPath; }
-    })()
-  : process.execPath;
-const RALPH_WORKER = IS_COMPILED
-  ? join(DEV_DIR, "wolfpack", "ralph-macchio.ts")
-  : join(import.meta.dir, "ralph-macchio.ts");
+// Ralph worker is invoked as a subcommand: `wolfpack worker --plan ...`
+// Works in both compiled binary and `bun cli.ts` modes.
+const RALPH_BIN_ARGS = (() => {
+  const exe = process.execPath;
+  const isBunRuntime = exe.endsWith("/bun") || exe.endsWith("/bun.exe");
+  if (isBunRuntime) return [exe, join(import.meta.dir, "cli.ts")];
+  return [exe];
+})();
 const RALPH_AGENTS = new Set(["claude", "codex", "gemini"]);
 
 interface RalphStatus {
@@ -714,11 +705,14 @@ const routes: Record<
       return json(res, { error: "missing params" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    await tmuxResize(
-      session,
-      Math.max(20, Math.min(cols, 300)),
-      Math.max(5, Math.min(rows, 100)),
-    );
+    // Skip resize if desktop PTY is active (avoid shrinking shared window)
+    if (!activePtySessions.has(session)) {
+      await tmuxResize(
+        session,
+        Math.max(20, Math.min(cols, 300)),
+        Math.max(5, Math.min(rows, 100)),
+      );
+    }
     json(res, { ok: true });
   },
 
@@ -797,7 +791,7 @@ const routes: Record<
     }
     const projectDir = join(DEV_DIR, project);
     try {
-      if (!statSync(projectDir).isDirectory()) {
+      if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory()) {
         return json(res, { error: "not a directory" }, 400);
       }
     } catch {
@@ -979,14 +973,15 @@ const routes: Record<
     }
 
     const workerArgs = [
-      RALPH_WORKER,
+      ...RALPH_BIN_ARGS.slice(1),
+      "worker",
       "--plan", resolvedPlan,
       "--iterations", String(iters),
       "--agent", RALPH_AGENTS.has(agent || "claude") ? (agent || "claude") : "claude",
       "--progress", "progress.txt",
       ...(format ? ["--format"] : []),
     ];
-    const child = spawn(BUN_BIN, workerArgs, {
+    const child = spawn(RALPH_BIN_ARGS[0], workerArgs, {
       cwd: projectDir,
       detached: true,
       stdio: "ignore",
@@ -1031,7 +1026,7 @@ const routes: Record<
     // verify PID is actually a ralph-macchio process before killing
     try {
       const { stdout: cmdline } = await exec("ps", ["-p", String(status.pid), "-o", "command="]);
-      if (!cmdline.includes("ralph-macchio")) {
+      if (!cmdline.includes("ralph-macchio") && !cmdline.includes("worker")) {
         return json(res, { error: "PID does not belong to a ralph process" }, 400);
       }
     } catch {
@@ -1133,9 +1128,22 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
   // kick off the initial poll immediately
   schedulePoll();
 
+  // Rate limit: 60 msg/s token bucket
+  let rlTokens = 60;
+  let rlLast = Date.now();
+
   ws.on("message", async (raw) => {
+    // Rate limit check
+    const now = Date.now();
+    rlTokens = Math.min(60, rlTokens + ((now - rlLast) / 1000) * 60);
+    rlLast = now;
+    if (rlTokens < 1) return; // drop silently
+    rlTokens--;
+
     try {
-      const msg = JSON.parse(String(raw));
+      const str = String(raw);
+      if (str.length > 65536) return; // 64KB message size cap
+      const msg = JSON.parse(str);
       if (msg.type === "input" && typeof msg.data === "string") {
         await tmuxSend(session, msg.data, true);
         // immediate update after input for snappy feedback
@@ -1152,11 +1160,14 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
         typeof msg.rows === "number"
       ) {
         // SE-04: clamp bounds matching HTTP /api/resize
-        await tmuxResize(
-          session,
-          Math.max(20, Math.min(msg.cols, 300)),
-          Math.max(5, Math.min(msg.rows, 100)),
-        );
+        // Skip resize if a desktop PTY session is active (avoid shrinking shared window)
+        if (!activePtySessions.has(session)) {
+          await tmuxResize(
+            session,
+            Math.max(20, Math.min(msg.cols, 300)),
+            Math.max(5, Math.min(msg.rows, 100)),
+          );
+        }
         if (!sized) {
           sized = true;
           setTimeout(sendUpdate, 50);
@@ -1182,11 +1193,9 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
 
 // ── PTY WebSocket handler (xterm.js direct) ──
 
-// Track active PTY connections per session to prevent duplicates
 const activePtySessions = new Map<string, { ws: WebSocket; proc: ReturnType<typeof Bun.spawn> }>();
 
 function handlePtyWs(ws: WebSocket, session: string): void {
-  // Tear down any existing PTY for this session (stale reconnect)
   const existing = activePtySessions.get(session);
   if (existing) {
     try { existing.ws.close(1000, "replaced"); } catch {}
@@ -1195,33 +1204,47 @@ function handlePtyWs(ws: WebSocket, session: string): void {
   }
 
   let alive = true;
+  let proc: ReturnType<typeof Bun.spawn> | null = null;
+  const ptySession = `wp_${session}`;
 
-  const proc = Bun.spawn([TMUX, "attach-session", "-t", session], {
-    terminal: {
-      cols: 80,
-      rows: 24,
-      data(_terminal: unknown, data: Buffer) {
-        if (alive && ws.readyState === 1 /* OPEN */) {
-          ws.send(data);
-        }
-      },
-      exit(_terminal: unknown, _code: number, _signal?: number) {
-        if (alive) {
-          alive = false;
-          activePtySessions.delete(session);
-          try { ws.close(1000, "pty exited"); } catch {}
-        }
-      },
-    },
-  });
+  // Defer PTY spawn until we know the client's real terminal size
+  function spawnPty(cols: number, rows: number) {
+    if (proc) return;
 
-  activePtySessions.set(session, { ws, proc });
+    // Create a grouped session — shares windows but has independent sizing
+    try { execFileSync(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000, stdio: "ignore" }); } catch {}
+    try { execFileSync(TMUX, ["new-session", "-d", "-t", session, "-s", ptySession], { timeout: 3000, stdio: "ignore" }); } catch {}
+    try { execFileSync(TMUX, ["set-option", "-t", ptySession, "status", "off"], { timeout: 2000, stdio: "ignore" }); } catch {}
+    try { execFileSync(TMUX, ["set-option", "-t", ptySession, "mouse", "on"], { timeout: 2000, stdio: "ignore" }); } catch {}
+    try { execFileSync(TMUX, ["set-option", "-t", ptySession, "window-size", "largest"], { timeout: 2000, stdio: "ignore" }); } catch {}
+
+    // Attach to the grouped session (not the original)
+    proc = Bun.spawn([TMUX, "attach-session", "-t", ptySession], {
+      env: { ...process.env, TERM: "xterm-256color" },
+      terminal: {
+        cols,
+        rows,
+        data(_terminal: unknown, data: Buffer) {
+          if (alive && ws.readyState === 1) {
+            ws.send(data);
+          }
+        },
+        exit(_terminal: unknown, _code: number, _signal?: number) {
+          if (alive) {
+            alive = false;
+            activePtySessions.delete(session);
+            try { ws.close(1000, "pty exited"); } catch {}
+          }
+        },
+      },
+    });
+    activePtySessions.set(session, { ws, proc });
+  }
 
   ws.on("message", (raw: Buffer | string) => {
     if (!alive) return;
     try {
-      if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b /* '{' */)) {
-        // JSON text message — only resize commands
+      if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b)) {
         const msg = JSON.parse(String(raw));
         if (
           msg.type === "resize" &&
@@ -1230,10 +1253,13 @@ function handlePtyWs(ws: WebSocket, session: string): void {
         ) {
           const cols = Math.max(20, Math.min(msg.cols, 300));
           const rows = Math.max(5, Math.min(msg.rows, 100));
-          proc.terminal!.resize(cols, rows);
+          if (!proc) {
+            spawnPty(cols, rows);
+          } else {
+            proc.terminal!.resize(cols, rows);
+          }
         }
-      } else {
-        // Binary frame — raw keyboard input from xterm.js
+      } else if (proc) {
         proc.terminal!.write(raw as Buffer);
       }
     } catch (err: any) {
@@ -1242,21 +1268,19 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     }
   });
 
-  ws.on("close", () => {
+  function cleanup() {
     if (!alive) return;
     alive = false;
     activePtySessions.delete(session);
-    try { proc.terminal!.close(); } catch {}
-    try { proc.kill(); } catch {}
-  });
+    if (proc) {
+      try { proc.terminal!.close(); } catch {}
+      try { proc.kill(); } catch {}
+    }
+    try { execFileSync(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000, stdio: "ignore" }); } catch {}
+  }
 
-  ws.on("error", () => {
-    if (!alive) return;
-    alive = false;
-    activePtySessions.delete(session);
-    try { proc.terminal!.close(); } catch {}
-    try { proc.kill(); } catch {}
-  });
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
 }
 
 // ── Server ──

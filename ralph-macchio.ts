@@ -119,22 +119,16 @@ function readPlan(): string {
   return readFileSync(PLAN_PATH, "utf-8");
 }
 
-function contentUsesCheckboxes(plan: string): boolean {
-  return /^- \[[ x]\] /m.test(plan);
-}
 
 function extractCurrentTask(): { task: string; checkbox: boolean } | null {
   try {
     const plan = readPlan();
-    const isCheckbox = contentUsesCheckboxes(plan);
 
-    // checkbox mode: return first unchecked item
-    if (isCheckbox) {
-      const match = plan.match(/^- \[ \] (.+)$/m);
-      return match ? { task: match[1], checkbox: true } : null;
-    }
+    // try checkboxes first (subtasks appended at bottom)
+    const cbMatch = plan.match(/^- \[ \] (.+)$/m);
+    if (cbMatch) return { task: cbMatch[1], checkbox: true };
 
-    // section mode: find first ## or ### numbered header not struck through
+    // then section headers: find first ## or ### numbered header not struck through
     const lines = plan.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -311,6 +305,9 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
   });
 }
 
+// last-resort lock cleanup on any exit (covers unhandled exceptions, SIGINT, etc.)
+process.on("exit", removeLock);
+
 // clean up child process and lock on SIGTERM
 process.on("SIGTERM", () => {
   appendFileSync(LOG_FILE, `\n=== 🛑 Received SIGTERM — cleaning up ===\n`);
@@ -330,19 +327,16 @@ function logSummary(tasksCompleted: number, subtasksAdded: number): void {
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
 
-  // task counts from plan file
+  // task counts from plan file (count both formats — plans can mix headers + checkboxes)
   const plan = readPlan();
-  const isCheckbox = contentUsesCheckboxes(plan);
   let done = 0, total = 0;
-  if (isCheckbox) {
-    done = (plan.match(/^- \[x\] /gm) || []).length;
-    total = done + (plan.match(/^- \[ \] /gm) || []).length;
-  } else {
-    for (const line of plan.split("\n")) {
-      if (TASK_HEADER.test(line)) {
-        total++;
-        if (line.includes("~~")) done++;
-      }
+  const cbDone = (plan.match(/^- \[x\] /gm) || []).length;
+  const cbOpen = (plan.match(/^- \[ \] /gm) || []).length;
+  done += cbDone; total += cbDone + cbOpen;
+  for (const line of plan.split("\n")) {
+    if (TASK_HEADER.test(line)) {
+      total++;
+      if (line.includes("~~")) done++;
     }
   }
 

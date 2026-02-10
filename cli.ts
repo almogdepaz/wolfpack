@@ -767,6 +767,10 @@ async function main() {
     }
   } else if (cmd === "uninstall") {
     uninstall();
+  } else if (cmd === "worker") {
+    // Ralph worker subcommand — shift argv so ralph-macchio sees correct args
+    process.argv = [process.argv[0], process.argv[1], ...process.argv.slice(3)];
+    await import("./ralph-macchio.js");
   } else {
     await start();
   }
