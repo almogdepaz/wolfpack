@@ -548,3 +548,15 @@
 - Added xterm find result decoration CSS, removed old `#desktop-terminal mark` rules
 - Regenerated `public-assets.ts` (12 files embedded)
 - All 410 tests pass
+
+## Task 5b: Remove dead desktop code — ALREADY DONE (no-op)
+- All items listed in task 5b were already removed during task 5a (commit 25bf626):
+  - `onKeyDown` keyboard handler (old manual key-mapping) → removed; current `onKeyDown` is the Ctrl+F/Escape interceptor for xterm search bar (LIVE)
+  - `onPaste` handler → already gone (xterm.js handles paste natively)
+  - `AnsiUp` desktop instantiation (`desktopAnsiUp`) → already gone; `ansi_up.min.js` script tag remains (used by MOBILE)
+  - `desktopRawAnsi` → already gone
+  - `calcTermDimensions()` → already gone (xterm.js FitAddon handles sizing)
+  - `applyDesktopSearchHighlights()` → already gone; `applySearchHighlights()` remains (used by MOBILE search)
+  - Desktop mark CSS (`#terminal mark`) → still present, used by MOBILE search (writes `<mark>` into `#terminal`)
+  - Search function branching → still present, NEEDED (desktop=xterm-addon-search, mobile=DOM-based search)
+- No code changes needed — task is a no-op

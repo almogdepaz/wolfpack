@@ -138,4 +138,4 @@ launchctl kickstart -k gui/$(id -u)/com.wolfpack.server  # restart
 ```
 
 - [x] 5a. Core xterm.js wiring — replace initDesktopTerminal/connectDesktopWs/destroyDesktopTerminal with xterm.js Terminal + FitAddon over /ws/pty binary WS, replace `<pre id="desktop-terminal">` with `<div id="desktop-terminal-container">`, add xterm-addon-search as embedded asset, update CSS
-- [ ] 5b. Remove dead desktop code — remove onKeyDown handler, onPaste handler, AnsiUp desktop instantiation, desktopRawAnsi, calcTermDimensions (desktop usage), applyDesktopSearchHighlights, desktop mark CSS, clean up search function branching
+- [x] 5b. Remove dead desktop code — remove onKeyDown handler, onPaste handler, AnsiUp desktop instantiation, desktopRawAnsi, calcTermDimensions (desktop usage), applyDesktopSearchHighlights, desktop mark CSS, clean up search function branching
