@@ -1098,14 +1098,13 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
     try {
       const pane = await capturePaneAnsi(session);
       const msg: Record<string, unknown> = { type: "output", data: pane };
-      // Query cursor position (best-effort — some sessions may not report it)
-      // cursor_y is relative to visible pane, so offset by scrollback lines
+      // Query cursor position — only for plain shells (TUI programs draw their own)
       let cursorKey = "";
       try {
-        const { stdout } = await exec(TMUX, ["display-message", "-t", session, "-p", "#{cursor_x},#{cursor_y},#{pane_height},#{alternate_on}"]);
-        const parts = stdout.trim().split(",");
-        if (parts.length === 4 && parts[3] !== "1") {
-          // Skip cursor when alternate screen is active (TUI programs manage their own)
+        const SHELLS = new Set(["bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"]);
+        const { stdout } = await exec(TMUX, ["display-message", "-t", session, "-p", "#{cursor_x}|#{cursor_y}|#{pane_height}|#{pane_current_command}"]);
+        const parts = stdout.trim().split("|");
+        if (parts.length >= 4 && SHELLS.has(parts[3])) {
           const x = Number(parts[0]);
           const rawY = Number(parts[1]);
           const paneHeight = Number(parts[2]);
