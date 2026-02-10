@@ -1128,6 +1128,15 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
   // kick off the initial poll immediately
   schedulePoll();
 
+  // Heartbeat ping every 25s to keep WS alive through reverse proxies
+  const pingTimer = setInterval(() => {
+    if (alive && ws.readyState === 1) {
+      try { ws.ping(); } catch {}
+    } else {
+      clearInterval(pingTimer);
+    }
+  }, 25000);
+
   // Rate limit: 60 msg/s token bucket
   let rlTokens = 60;
   let rlLast = Date.now();
@@ -1182,11 +1191,13 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
 
   ws.on("close", () => {
     alive = false;
+    clearInterval(pingTimer);
     if (pollTimer) clearTimeout(pollTimer);
   });
 
   ws.on("error", () => {
     alive = false;
+    clearInterval(pingTimer);
     if (pollTimer) clearTimeout(pollTimer);
   });
 }
@@ -1241,8 +1252,17 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     activePtySessions.set(session, { ws, proc });
   }
 
+  // Rate limit: 60 msg/s token bucket (matches /ws/terminal)
+  let rlTokens = 60;
+  let rlLast = Date.now();
+
   ws.on("message", (raw: Buffer | string) => {
     if (!alive) return;
+    const now = Date.now();
+    rlTokens = Math.min(60, rlTokens + ((now - rlLast) / 1000) * 60);
+    rlLast = now;
+    if (rlTokens < 1) return;
+    rlTokens--;
     try {
       if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b)) {
         const msg = JSON.parse(String(raw));
@@ -1260,6 +1280,7 @@ function handlePtyWs(ws: WebSocket, session: string): void {
           }
         }
       } else if (proc) {
+        if (Buffer.isBuffer(raw) && raw.length > 16384) return; // 16KB binary cap
         proc.terminal!.write(raw as Buffer);
       }
     } catch (err: any) {
@@ -1268,9 +1289,19 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     }
   });
 
+  // Heartbeat ping every 25s to keep WS alive through reverse proxies
+  const pingTimer = setInterval(() => {
+    if (alive && ws.readyState === 1) {
+      try { ws.ping(); } catch {}
+    } else {
+      clearInterval(pingTimer);
+    }
+  }, 25000);
+
   function cleanup() {
     if (!alive) return;
     alive = false;
+    clearInterval(pingTimer);
     activePtySessions.delete(session);
     if (proc) {
       try { proc.terminal!.close(); } catch {}

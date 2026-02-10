@@ -1748,6 +1748,8 @@
 
       function connectDesktopWs() {
         if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
+        // Guard against duplicate connections (visibility handler + reconnect timer race)
+        if (desktopWs && desktopWs.readyState <= WebSocket.OPEN) return;
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
         const wsUrl = proto + "//" + location.host + "/ws/pty?session=" + encodeURIComponent(currentSession);
         const ws = new WebSocket(wsUrl);
@@ -1770,7 +1772,8 @@
         };
 
         ws.onclose = () => {
-          desktopWs = null;
+          // Only clobber ref if this is still the current WS (prevents stale close race)
+          if (desktopWs === ws) desktopWs = null;
           const statusEl = document.getElementById("conn-status");
           if (statusEl && currentView === "terminal" && useDesktopTerminal) statusEl.style.display = "block";
           scheduleDesktopReconnect();
@@ -2228,17 +2231,18 @@
             sessionRefreshTimer = setInterval(loadSessions, 5000);
           }
           if (currentSession && currentView === "terminal") {
-            // Desktop terminal: immediate reconnect if WS is dead
-            if (useDesktopTerminal && (!desktopWs || desktopWs.readyState !== WebSocket.OPEN)) {
+            if (useDesktopTerminal) {
+              // Desktop: reconnect if WS is dead (connectDesktopWs guards against duplicates)
               if (desktopTerm) {
-                if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
                 desktopReconnectDelay = 1000;
                 connectDesktopWs();
               }
+            } else {
+              // Mobile: resume polling
+              poll();
+              enterFastPoll();
+              schedulePoll();
             }
-            poll();
-            enterFastPoll();
-            schedulePoll();
           }
         } else {
           // Stop session refresh when backgrounded — bgAttention covers notifications
