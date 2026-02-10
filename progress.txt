@@ -560,3 +560,10 @@
   - Desktop mark CSS (`#terminal mark`) → still present, used by MOBILE search (writes `<mark>` into `#terminal`)
   - Search function branching → still present, NEEDED (desktop=xterm-addon-search, mobile=DOM-based search)
 - No code changes needed — task is a no-op
+
+## Task 5 (final cleanup): Remove dead ansi_up.min.js script tag — DONE
+- Removed `<script src="/ansi_up.min.js"></script>` from `public/index.html` (line 784)
+- Library was loaded but never instantiated or referenced in any JS code
+- Was left over from pre-xterm.js era; desktop uses xterm.js natively, mobile uses plain textContent
+- Regenerated `public-assets.ts` (12 files embedded, unchanged count)
+- All 410 tests pass
