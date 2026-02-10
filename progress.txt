@@ -490,3 +490,21 @@
   - Trimmed redundancy: merged "Workflow" section into Features/Usage, condensed "Remote Access" and "Multi-Machine" into subsections, removed duplicate intro paragraphs
 - All 410 tests pass
 - No other files modified
+
+## Task 2: CSS facelift — visual density pass — DONE
+- Tightened spacing across all UI components in `public/index.html` CSS section:
+  - **Header**: min-height 40→32px, padding 4px 10px → 3px 8px
+  - **Session cards** (.card): padding 8px 10px → 6px 8px, margin-bottom 4→3px
+  - **New session button** (.new-btn): padding 18px → 10px 14px, font-size 16→13px
+  - **Action buttons** (.action-btn): padding 10px 16px → 6px 12px, min-height/width 44→36px
+  - **Input bar**: textarea padding 6px 10px → 5px 8px, send button 44→36px
+  - **Ralph cards** (.ralph-card): padding 8px 10px → 6px 8px, margin-bottom 4→3px
+  - **List padding**: 8→6px
+  - **Settings section**: padding 8→6px
+  - **Settings gear**: min-width/height 40→36px
+  - **Ralph nav button**: width/height 40→36px
+  - **Machine items**: padding 6px 8px → 5px 8px
+- All touch targets remain ≥36px (above 32px minimum)
+- Search bar left as-is (already compact)
+- Regenerated `public-assets.ts` (8 files embedded)
+- All 410 tests pass
