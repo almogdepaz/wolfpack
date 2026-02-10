@@ -77,7 +77,7 @@ Add a new WS endpoint `/ws/pty?session=X` alongside existing `/ws/terminal`:
 
 ---
 
-## 5. Frontend xterm.js integration (`public/index.html`)
+## ~~5. Frontend xterm.js integration (`public/index.html`)~~
 
 Replace `initDesktopTerminal()` / `connectDesktopWs()` / `destroyDesktopTerminal()`:
 
@@ -96,7 +96,7 @@ HTML change: replace `<pre id="desktop-terminal">` with `<div id="desktop-termin
 
 ---
 
-## 6. Cleanup
+## ~~6. Cleanup~~
 
 - Remove AnsiUp library if only used by desktop (check if mobile still uses it — yes, mobile uses HTTP polling + AnsiUp, so keep it)
 - Remove dead desktop-specific code paths (manual search highlighting on desktop `<pre>`, etc.)

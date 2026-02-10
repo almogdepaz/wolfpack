@@ -257,8 +257,24 @@ function listDevProjects(): string[] {
 
 // ── Ralph loop helpers ──
 
-const BUN_BIN = process.execPath;
-const RALPH_WORKER = join(import.meta.dir, "ralph-macchio.ts");
+// In compiled binaries, process.execPath is the binary itself (not bun) and
+// import.meta.dir is a virtual path. Detect this and resolve the real bun + worker.
+const IS_COMPILED = import.meta.dir.startsWith("/$bunfs");
+const BUN_BIN = IS_COMPILED
+  ? (() => {
+      // Check common bun locations — launchd PATH is minimal and may not include ~/.bun/bin
+      const candidates = [
+        join(homedir(), ".bun", "bin", "bun"),
+        "/opt/homebrew/bin/bun",
+        "/usr/local/bin/bun",
+      ];
+      for (const c of candidates) { if (existsSync(c)) return c; }
+      try { return execFileSync("which", ["bun"], { encoding: "utf-8", timeout: 5000 }).trim(); } catch { return process.execPath; }
+    })()
+  : process.execPath;
+const RALPH_WORKER = IS_COMPILED
+  ? join(DEV_DIR, "wolfpack", "ralph-macchio.ts")
+  : join(import.meta.dir, "ralph-macchio.ts");
 const RALPH_AGENTS = new Set(["claude", "codex", "gemini"]);
 
 interface RalphStatus {
@@ -376,6 +392,9 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
         }
       } catch {
         status.active = false;
+        // auto-heal stale lock file if PID is dead
+        const lockPath = join(projectDir, ".ralph.lock");
+        try { if (existsSync(lockPath)) unlinkSync(lockPath); } catch {}
       }
     }
 
@@ -1075,7 +1094,7 @@ const wss = new WebSocketServer({ noServer: true });
 
 async function capturePaneAnsi(session: string): Promise<string> {
   try {
-    // -e: include ANSI escapes for color rendering via ansi_up
+    // -e: include ANSI escapes for color rendering
     // -S -2000: capture scrollback history so desktop terminal can scroll back
     const { stdout } = await exec(TMUX, ["capture-pane", "-t", session, "-p", "-e", "-S", "-2000"]);
     return stdout;

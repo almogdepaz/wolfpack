@@ -567,3 +567,20 @@
 - Was left over from pre-xterm.js era; desktop uses xterm.js natively, mobile uses plain textContent
 - Regenerated `public-assets.ts` (12 files embedded, unchanged count)
 - All 410 tests pass
+
+## Task 6: Cleanup — DONE
+- Deleted `public/ansi_up.min.js` — dead asset file (script tag was removed in previous commit, library never referenced in JS code)
+- Regenerated `public-assets.ts` (11 files embedded, down from 12 — ansi_up removed from embedded asset map)
+- Updated stale comment in `serve.ts:1097` — removed "via ansi_up" suffix (the `-e` flag is still needed for ANSI escapes in capture-pane, but ansi_up library is no longer involved)
+- Verified NO dead desktop code remains in `public/index.html`:
+  - No `<pre id="desktop-terminal">` element or CSS
+  - No `desktopRawAnsi`, `desktopAnsiUp`, `calcTermDimensions()`, `applyDesktopSearchHighlights()`
+  - No old keyboard/paste handlers for desktop `<pre>`
+  - No AnsiUp references anywhere in codebase
+- Verified LIVE code preserved:
+  - `#terminal mark` CSS — used by mobile search highlighting (`applySearchHighlights()`)
+  - `#desktop-terminal-container` CSS — used by xterm.js container
+  - `.xterm-find-result-decoration` CSS — used by xterm-addon-search
+  - `applySearchHighlights()` — mobile-only (guards with `if (useDesktopTerminal) return`)
+  - `onKeyDown` in `initDesktopTerminal()` — Ctrl+F/Escape interceptor for xterm search bar (LIVE)
+- All 410 tests pass
