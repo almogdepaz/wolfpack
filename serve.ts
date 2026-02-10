@@ -1086,7 +1086,6 @@ async function capturePaneAnsi(session: string): Promise<string> {
 
 function handleTerminalWs(ws: WebSocket, session: string): void {
   let prev = "";
-  let prevCursor = "";
   let alive = true;
   let sized = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1097,30 +1096,9 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
     updating = true;
     try {
       const pane = await capturePaneAnsi(session);
-      const msg: Record<string, unknown> = { type: "output", data: pane };
-      // Query cursor position — only for plain shells (TUI programs draw their own)
-      let cursorKey = "";
-      try {
-        const SHELLS = new Set(["bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"]);
-        const { stdout } = await exec(TMUX, ["display-message", "-t", session, "-p", "#{cursor_x}|#{cursor_y}|#{pane_height}|#{pane_current_command}"]);
-        const parts = stdout.trim().split("|");
-        if (parts.length >= 4 && SHELLS.has(parts[3])) {
-          const x = Number(parts[0]);
-          const rawY = Number(parts[1]);
-          const paneHeight = Number(parts[2]);
-          if (Number.isFinite(x) && Number.isFinite(rawY) && Number.isFinite(paneHeight)) {
-            const totalLines = pane.split("\n").length;
-            const y = totalLines - paneHeight + rawY;
-            msg.cursor = { x, y };
-            cursorKey = `${x},${y}`;
-          }
-        }
-      } catch {}
-      // Send if pane content or cursor position changed
-      if (pane !== prev || cursorKey !== prevCursor) {
+      if (pane !== prev) {
         prev = pane;
-        prevCursor = cursorKey;
-        ws.send(JSON.stringify(msg));
+        ws.send(JSON.stringify({ type: "output", data: pane }));
       }
     } catch {}
     updating = false;

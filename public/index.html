@@ -777,22 +777,6 @@
         user-select: text;
         -webkit-user-select: text;
       }
-      .dt-cursor {
-        position: relative;
-      }
-      .dt-cursor::after {
-        content: '\00a0';
-        position: absolute;
-        left: 0;
-        top: 0;
-        background: #e0e0e0;
-        color: #0a0a0a;
-        pointer-events: none;
-        animation: dt-blink 1s step-end infinite;
-      }
-      @keyframes dt-blink {
-        50% { opacity: 0; }
-      }
     </style>
     <script src="/ansi_up.min.js"></script>
   </head>
@@ -1768,7 +1752,7 @@
 
       let desktopReconnectTimer = null;
       let desktopReconnectDelay = 1000;
-      let desktopLastCursor = null;
+
 
       function connectDesktopWs(pre, ansi) {
         if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
@@ -1792,12 +1776,11 @@
             const msg = JSON.parse(ev.data);
             if (msg.type === "output") {
               desktopRawAnsi = msg.data;
-              desktopLastCursor = msg.cursor || null;
               const wasAtBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
               if (searchActive && searchTerm) {
                 applySearchHighlights();
               } else {
-                renderDesktopOutput(pre, ansi, msg.data, msg.cursor);
+                pre.innerHTML = ansi.ansi_to_html(msg.data);
               }
               if (wasAtBottom) pre.scrollTop = pre.scrollHeight;
             }
@@ -1824,49 +1807,6 @@
           }
         }, desktopReconnectDelay);
         desktopReconnectDelay = Math.min(desktopReconnectDelay * 2, 5000);
-      }
-
-      function renderDesktopOutput(pre, ansi, data, cursor) {
-        let html = ansi.ansi_to_html(data);
-        if (cursor && typeof cursor.x === "number" && typeof cursor.y === "number") {
-          html = injectCursor(html, cursor.x, cursor.y);
-        }
-        pre.innerHTML = html;
-      }
-
-      function injectCursor(html, cx, cy) {
-        const lines = html.split("\n");
-        if (cy < 0 || cy >= lines.length) return html;
-        const line = lines[cy];
-        // Walk the line counting only visible text chars (skip HTML tags)
-        let textPos = 0;
-        let insertIdx = -1;
-        let inTag = false;
-        for (let i = 0; i < line.length; i++) {
-          if (line[i] === "<") { inTag = true; continue; }
-          if (line[i] === ">") { inTag = false; continue; }
-          if (inTag) continue;
-          // Handle HTML entities as single chars
-          if (line[i] === "&") {
-            const semi = line.indexOf(";", i);
-            if (semi !== -1 && semi - i < 10) {
-              if (textPos === cx) { insertIdx = i; break; }
-              textPos++;
-              i = semi;
-              continue;
-            }
-          }
-          if (textPos === cx) { insertIdx = i; break; }
-          textPos++;
-        }
-        const cursorSpan = '<span class="dt-cursor"></span>';
-        if (insertIdx === -1) {
-          // cursor beyond line end — append
-          lines[cy] = line + cursorSpan;
-        } else {
-          lines[cy] = line.slice(0, insertIdx) + cursorSpan + line.slice(insertIdx);
-        }
-        return lines.join("\n");
       }
 
       function initDesktopTerminal() {
