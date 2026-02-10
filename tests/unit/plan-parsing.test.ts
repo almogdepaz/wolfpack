@@ -3,25 +3,16 @@ import { describe, expect, test } from "bun:test";
 // ── Plan-parsing functions from ralph-macchio.ts and serve.ts ──
 // These are module-private, replicated here as pure functions for testing.
 
-/** Mirrors ralph-macchio.ts contentUsesCheckboxes() */
-function contentUsesCheckboxes(plan: string): boolean {
-  return /^- \[[ x]\] /m.test(plan);
-}
-
 /**
  * Mirrors ralph-macchio.ts extractCurrentTask() logic, but takes plan content
  * directly instead of reading from disk.
  */
 function extractCurrentTask(plan: string): { task: string; checkbox: boolean } | null {
-  const isCheckbox = contentUsesCheckboxes(plan);
+  // try checkboxes first (subtasks appended at bottom)
+  const cbMatch = plan.match(/^- \[ \] (.+)$/m);
+  if (cbMatch) return { task: cbMatch[1], checkbox: true };
 
-  // checkbox mode: return first unchecked item
-  if (isCheckbox) {
-    const match = plan.match(/^- \[ \] (.+)$/m);
-    return match ? { task: match[1], checkbox: true } : null;
-  }
-
-  // section mode: find first ## or ### numbered header not struck through
+  // then section headers: find first ## or ### numbered header not struck through
   const lines = plan.split("\n");
   const TASK_HEADER = /^(#{2,3}) \d+[a-z]?[\.\)]\s+/;
   for (let i = 0; i < lines.length; i++) {
@@ -67,52 +58,6 @@ function countPlanTasks(plan: string): { done: number; total: number } {
   }
   return { done, total };
 }
-
-// ── contentUsesCheckboxes tests ──
-
-describe("contentUsesCheckboxes", () => {
-  test("detects unchecked checkbox format", () => {
-    expect(contentUsesCheckboxes("- [ ] do something")).toBe(true);
-  });
-
-  test("detects checked checkbox format", () => {
-    expect(contentUsesCheckboxes("- [x] done thing")).toBe(true);
-  });
-
-  test("detects checkbox in multiline plan", () => {
-    const plan = "# My Plan\n\nSome intro text\n\n- [ ] task one\n- [x] task two";
-    expect(contentUsesCheckboxes(plan)).toBe(true);
-  });
-
-  test("returns false for section-based plan", () => {
-    const plan = "## 1. First task\ndo stuff\n\n## 2. Second task\nmore stuff";
-    expect(contentUsesCheckboxes(plan)).toBe(false);
-  });
-
-  test("returns false for empty string", () => {
-    expect(contentUsesCheckboxes("")).toBe(false);
-  });
-
-  test("returns false for plain text", () => {
-    expect(contentUsesCheckboxes("just some notes\nno checkboxes here")).toBe(false);
-  });
-
-  test("does not match bullet without checkbox syntax", () => {
-    expect(contentUsesCheckboxes("- regular bullet\n- another one")).toBe(false);
-  });
-
-  test("does not match indented checkbox (not at line start)", () => {
-    expect(contentUsesCheckboxes("  - [ ] indented")).toBe(false);
-  });
-
-  test("does not match partial checkbox (missing space)", () => {
-    expect(contentUsesCheckboxes("-[ ] no space")).toBe(false);
-  });
-
-  test("does not match bracket without dash", () => {
-    expect(contentUsesCheckboxes("[ ] missing dash prefix")).toBe(false);
-  });
-});
 
 // ── extractCurrentTask tests — checkbox mode ──
 

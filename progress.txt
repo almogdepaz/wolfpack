@@ -584,3 +584,17 @@
   - `applySearchHighlights()` — mobile-only (guards with `if (useDesktopTerminal) return`)
   - `onKeyDown` in `initDesktopTerminal()` — Ctrl+F/Escape interceptor for xterm search bar (LIVE)
 - All 410 tests pass
+
+## Cleanup Pass (post xterm.js integration) — DONE
+- Audited all files changed in last 10 commits: serve.ts, public/index.html, ralph-macchio.ts, wolfpack-context.ts, public-assets.ts, README.md
+- Checked cross-file exports/imports: all exports (xmlEsc, systemdEsc from cli.ts; WOLFPACK_CONTEXT, TASK_HEADER from wolfpack-context.ts; assets from public-assets.ts; printQR from qr.ts) have active consumers
+- **Dead code found**: `contentUsesCheckboxes()` function + 10 tests in `tests/unit/plan-parsing.test.ts` — function was removed from ralph-macchio.ts (replaced by direct checkbox-first try approach) but test still had a local replica and test block
+  - Removed `contentUsesCheckboxes()` local replica from test file
+  - Removed 10 associated test cases
+  - Updated test's `extractCurrentTask()` to mirror current source (try checkboxes first, then sections — no exclusive mode gate)
+- **No other dead code found**:
+  - serve.ts: all imports, functions, routes, WS handlers actively used
+  - public/index.html: all CSS rules, HTML elements, JS functions reachable (desktop xterm.js + mobile polling both active)
+  - ralph-macchio.ts: all functions reachable in main loop
+  - wolfpack-context.ts: both exports consumed by serve.ts and ralph-macchio.ts
+- All 400 tests pass (down from 410 — removed 10 dead `contentUsesCheckboxes` tests)
