@@ -19,6 +19,10 @@ Task sections MUST use this exact header format:
 
 Do NOT use other header styles like \`## Phase 1:\`, \`## Step 1 -\`, \`### Task: Foo\`, etc. The automated task extractor only recognizes the \`## N. Title\` pattern.
 
+### Task Granularity (CRITICAL)
+
+Each task should be a meaningful deliverable — a unit of work a senior dev would recognize, NOT individual lines of code, imports, or type fields. Aim for 3-5 tasks per feature/phase. If a task can be described in fewer than 10 words of code, it's too granular — combine it with related work. Bad: "Add agent_pubkey field to interface". Good: "Add per-agent policy scoping to types and evaluation logic". When breaking tasks into subtasks, the same rule applies: 3-5 subtasks max, each a coherent unit touching multiple lines/files. Never produce line-by-line checkbox plans.
+
 ### Progress File
 
 Append-only log file (default: progress.txt). Each iteration appends what was done. Never overwrite previous entries.
