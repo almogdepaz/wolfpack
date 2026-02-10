@@ -519,3 +519,17 @@
 - UMD bundles expose `Terminal` and `FitAddon.FitAddon` as globals in browser
 - Serving handled automatically by existing generic asset serving in serve.ts
 - All 410 tests pass
+
+## Phase 4: PTY streaming backend — DONE
+- Added `/ws/pty?session=X` WebSocket endpoint to `serve.ts` alongside existing `/ws/terminal`
+- Uses Bun's native PTY support (`Bun.spawn({ terminal })`) — no `node-pty` dependency needed (Bun 1.3.8 has native PTY since 1.3.5)
+- On connect: spawns `tmux attach-session -t <session>` with PTY (80x24 default)
+- PTY stdout → binary WS frames (raw bytes, no JSON wrapping) — xterm.js can consume directly
+- Binary WS frames → PTY stdin (raw keyboard input from xterm.js, no key mapping)
+- JSON resize messages (`{type:"resize",cols,rows}`) → `proc.terminal.resize()` with same clamping as existing endpoint (20-300 cols, 5-100 rows)
+- On WS close: kills PTY child process + cleans up
+- On PTY exit: closes WS with code 1000
+- Active PTY session tracking via `activePtySessions` Map — prevents duplicate PTY connections per session, tears down stale on reconnect
+- Same origin check and session validation as existing `/ws/terminal`
+- Existing `/ws/terminal` endpoint untouched — still works for mobile capture-pane polling
+- All 410 tests pass

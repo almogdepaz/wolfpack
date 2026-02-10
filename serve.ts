@@ -1161,6 +1161,85 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
   });
 }
 
+// ── PTY WebSocket handler (xterm.js direct) ──
+
+// Track active PTY connections per session to prevent duplicates
+const activePtySessions = new Map<string, { ws: WebSocket; proc: ReturnType<typeof Bun.spawn> }>();
+
+function handlePtyWs(ws: WebSocket, session: string): void {
+  // Tear down any existing PTY for this session (stale reconnect)
+  const existing = activePtySessions.get(session);
+  if (existing) {
+    try { existing.ws.close(1000, "replaced"); } catch {}
+    try { existing.proc.kill(); } catch {}
+    activePtySessions.delete(session);
+  }
+
+  let alive = true;
+
+  const proc = Bun.spawn([TMUX, "attach-session", "-t", session], {
+    terminal: {
+      cols: 80,
+      rows: 24,
+      data(_terminal: unknown, data: Buffer) {
+        if (alive && ws.readyState === 1 /* OPEN */) {
+          ws.send(data);
+        }
+      },
+      exit(_terminal: unknown, _code: number, _signal?: number) {
+        if (alive) {
+          alive = false;
+          activePtySessions.delete(session);
+          try { ws.close(1000, "pty exited"); } catch {}
+        }
+      },
+    },
+  });
+
+  activePtySessions.set(session, { ws, proc });
+
+  ws.on("message", (raw: Buffer | string) => {
+    if (!alive) return;
+    try {
+      if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b /* '{' */)) {
+        // JSON text message — only resize commands
+        const msg = JSON.parse(String(raw));
+        if (
+          msg.type === "resize" &&
+          typeof msg.cols === "number" &&
+          typeof msg.rows === "number"
+        ) {
+          const cols = Math.max(20, Math.min(msg.cols, 300));
+          const rows = Math.max(5, Math.min(msg.rows, 100));
+          proc.terminal!.resize(cols, rows);
+        }
+      } else {
+        // Binary frame — raw keyboard input from xterm.js
+        proc.terminal!.write(raw as Buffer);
+      }
+    } catch (err: any) {
+      if (err instanceof SyntaxError) return;
+      console.error(`PTY WS error [${session}]:`, err?.message || err);
+    }
+  });
+
+  ws.on("close", () => {
+    if (!alive) return;
+    alive = false;
+    activePtySessions.delete(session);
+    try { proc.terminal!.close(); } catch {}
+    try { proc.kill(); } catch {}
+  });
+
+  ws.on("error", () => {
+    if (!alive) return;
+    alive = false;
+    activePtySessions.delete(session);
+    try { proc.terminal!.close(); } catch {}
+    try { proc.kill(); } catch {}
+  });
+}
+
 // ── Server ──
 
 const server = createServer(async (req, res) => {
@@ -1232,6 +1311,16 @@ server.on("upgrade", async (req, socket, head) => {
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleTerminalWs(ws, session);
+    });
+  } else if (url.pathname === "/ws/pty") {
+    const session = url.searchParams.get("session");
+    if (!session || !(await isAllowedSession(session))) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      handlePtyWs(ws, session);
     });
   } else {
     socket.write("HTTP/1.1 404 Not Found\r\n\r\n");

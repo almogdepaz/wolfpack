@@ -58,7 +58,7 @@ Key changes:
 
 ---
 
-## 4. PTY streaming backend (`serve.ts`)
+## ~~4. PTY streaming backend (`serve.ts`)~~
 
 Add a new WS endpoint `/ws/pty?session=X` alongside existing `/ws/terminal`:
 
