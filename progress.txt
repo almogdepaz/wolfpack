@@ -478,3 +478,15 @@
 - Only cleanup: updated 2 stale comments in `serve.ts` (lines 1004, 1006) that still referenced "xterm.js" → now say "ansi_up" and "terminal display"
 - `desktop_terminal_plan.md` has historical xterm references (expected — it's the plan doc)
 - All 410 tests pass
+
+## Iteration: README overhaul (Task 1)
+- Overhauled README.md with:
+  - Shields.io badges (CI, license, platform, version)
+  - ASCII architecture diagram with component labels (PWA, HTTP/WS, Ralph, Agents)
+  - Feature comparison table (wolfpack vs webmux vs tmux-web vs raw SSH)
+  - Expanded Ralph section: example plan file, task header rules, iteration mechanics, link to wolfpack-context.ts
+  - Screenshot captions added to all images
+  - New Contributing section: dev setup, test commands, asset pipeline, building binaries, PR conventions
+  - Trimmed redundancy: merged "Workflow" section into Features/Usage, condensed "Remote Access" and "Multi-Machine" into subsections, removed duplicate intro paragraphs
+- All 410 tests pass
+- No other files modified

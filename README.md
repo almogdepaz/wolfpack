@@ -1,5 +1,10 @@
 # Wolfpack
 
+[![CI](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml/badge.svg)](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
+[![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://github.com/almogdepaz/wolfpack/releases)
+
 ```
         ...:.
            :=+=:
@@ -29,27 +34,60 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile & desktop command center for your AI coding agents. Control tmux-based agent sessions (Claude, Codex, Gemini, etc.) across multiple machines from your phone or browser via a Web App.
+Mobile & desktop command center for AI coding agents. Control tmux-based sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser.
 
-Agent-agnostic — run Claude, Codex, Gemini, or any custom command. Manage your AI wolfpack from anywhere — spin up sessions, send prompts, monitor output, and wrangle multiple agents all from one screen across multiple machines.
-
-install it on your phone's home screen for a native app experience. After setup, scan the QR code with your phone and tap **"Add to Home Screen"** .
+Install on your phone's home screen for a native app experience — scan the QR code after setup and tap **"Add to Home Screen"**.
 
 <p align="center">
-  <img src="docs/main_menu.jpeg" width="300" alt="Session list" />
+  <img src="docs/main_menu.jpeg" width="300" alt="Session list — color-coded status dots show which agents need input" />
   &nbsp;&nbsp;
-  <img src="docs/terminal.jpeg" width="300" alt="Terminal view" />
+  <img src="docs/terminal.jpeg" width="300" alt="Mobile terminal — touch-friendly controls for agent interaction" />
 </p>
 <p align="center">
-  <img src="docs/ralph_menu.jpeg" width="300" alt="Ralph loop panel" />
+  <img src="docs/ralph_menu.jpeg" width="300" alt="Ralph loop panel — configure agent, iterations, and plan file" />
   &nbsp;&nbsp;
-  <img src="docs/ralph_log.jpeg" width="300" alt="Ralph log view" />
+  <img src="docs/ralph_log.jpeg" width="300" alt="Ralph log — live progress of autonomous task execution" />
 </p>
-
 <p align="center">
-  <img src="docs/desktop.png" width="700" alt="Desktop terminal view" />
+  <img src="docs/desktop.png" width="700" alt="Desktop terminal — full ANSI rendering with search" />
 </p>
 
+## Architecture
+
+```
+┌─────────────┐         ┌──────────────────────────────────────────────┐
+│   Phone /   │  HTTPS  │              Your Machine                    │
+│   Browser   │◄───────►│                                              │
+│   (PWA)     │  (via   │  ┌──────────┐    ┌──────────┐   ┌────────┐  │
+└─────────────┘  Tail-  │  │ wolfpack │    │  tmux    │   │ Agent  │  │
+                 scale) │  │  server  │◄──►│ sessions │◄──│ (any)  │  │
+                        │  │ HTTP/WS  │    │          │   │        │  │
+                        │  └────┬─────┘    └──────────┘   └────────┘  │
+                        │       │                                      │
+                        │  ┌────┴─────┐                                │
+                        │  │  Ralph   │  autonomous iteration loop     │
+                        │  │  (CLI)   │  plan → execute → commit       │
+                        │  └──────────┘                                │
+                        └──────────────────────────────────────────────┘
+```
+
+**Components:**
+- **PWA** — single-file vanilla JS app (~90KB), no framework. Mobile-optimized touch UI + desktop ANSI terminal
+- **Server** — Bun HTTP + WebSocket. Serves embedded assets, proxies tmux via `capture-pane`/`send-keys`
+- **Ralph** — detached subprocess that iterates through a markdown plan file, invoking agents per-task
+- **Agents** — Claude, Codex, Gemini, or any shell command. Agent-agnostic by design
+
+## Comparison
+
+| Feature | Wolfpack | webmux | tmux-web | Raw SSH |
+|---------|----------|--------|----------|---------|
+| Mobile PWA (home screen install) | ✅ | ❌ | ❌ | ❌ |
+| Multi-machine (one phone, N servers) | ✅ | ❌ | ❌ | Manual |
+| Multi-agent (Claude/Codex/Gemini/custom) | ✅ | ❌ | ❌ | Manual |
+| Autonomous loop (Ralph) | ✅ | ❌ | ❌ | ❌ |
+| Zero auth setup (Tailscale handles it) | ✅ | ❌ | ❌ | Keys/passwords |
+| Session notifications | ✅ | ❌ | ❌ | ❌ |
+| No dependencies (standalone binary) | ✅ | Node.js | Node.js | OpenSSH |
 
 ## Quick Install
 
@@ -62,25 +100,15 @@ The install script will:
 1. Check prerequisites (tmux, Tailscale)
 2. Download a pre-built binary for your platform from GitHub releases
 3. Install to `~/.wolfpack/bin/` and symlink to `/usr/local/bin/`
-4. On macOS: strip quarantine flags and ad-hoc codesign (requires Xcode CLI tools)
-5. Replace any stale `wolfpack` binary already on PATH
-6. Run the interactive setup wizard
+4. On macOS: strip quarantine flags and ad-hoc codesign
+5. Run the interactive setup wizard
 
-Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
+Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64). No Node.js or npm required.
 
-## Prerequisites
+### Prerequisites
 
 - **tmux**
-- **Tailscale** (required) — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
-
-No Node.js or npm required — wolfpack ships as a standalone binary.
-
-## How It Works
-
-```
-Phone (Web App) ←→ Tailscale HTTPS ←→ wolfpack server (HTTP) ←→ tmux sessions
-```
-
+- **Tailscale** — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
 
 ## Usage
 
@@ -95,7 +123,7 @@ wolfpack service uninstall  # Remove the launch agent
 wolfpack uninstall          # Remove everything (service, config, global command)
 ```
 
-## Setup Wizard
+### Setup Wizard
 
 On first run, `wolfpack` walks you through:
 
@@ -108,68 +136,79 @@ On first run, `wolfpack` walks you through:
 
 ## Features
 
-- **Session management** — View, create, and kill tmux agent sessions
-- **Live terminal** — Capture-pane polling gives you a real-time terminal view
-- **Project picker** — Start new sessions from any folder in your projects directory
-- **Agent picker** — Choose agent per session (Claude, Codex, Gemini, or custom commands)
-- **Terminal controls** — Enter, Escape, arrow keys, kill session button for TUI interaction
-- **Search** — Find text in terminal output with match navigation
-- **Notifications** — Browser notifications and vibration when a session needs attention (prompts, errors)
-- **Session status** — Color-coded dots show which sessions need input
-- **Auto-resize** — Tmux pane resizes to match your phone screen
-- **Multi-machine** — Connect one phone to multiple Wolfpack servers across different computers
-- **Web App** — Install as a standalone app on your phone's home screen (PWA)
-- **Reconnect handling** — Shows status when connection drops, auto-recovers
+- **Session management** — create, view, and kill tmux agent sessions
+- **Live terminal** — capture-pane polling for real-time terminal view (mobile), ANSI-rendered `<pre>` for desktop
+- **Agent picker** — choose Claude, Codex, Gemini, or custom commands per session
+- **Multi-machine** — one phone connects to multiple Wolfpack servers; sessions grouped by machine
+- **Notifications** — browser notifications + vibration when sessions need attention
+- **Search** — find text in terminal output with match navigation
+- **PWA** — install as a standalone app on your phone's home screen
+- **Reconnect handling** — auto-recovers on connection drop with status indicator
+- **Auto-resize** — tmux pane resizes to match your screen
 
-## Remote Access
-
-To control your agents from your phone:
+### Remote Access
 
 1. Install [Tailscale](https://tailscale.com/download) on both your computer and phone
 2. Sign in to the same Tailscale account on both devices
 3. Run `wolfpack setup` and say **y** to "Enable Tailscale HTTPS access?"
-4. Wolfpack displays a QR code — scan it with your phone's camera
-5. Tap **"Add to Home Screen"** to install the app (see [Install as App](#install-as-app))
+4. Scan the QR code with your phone
+5. Tap **"Add to Home Screen"** for the native app experience
 
-Your phone connects over Tailscale's encrypted network. No ports to open, no DNS to configure — it just works anywhere both devices have internet.
+Tailscale's encrypted mesh network handles auth and routing — no ports to open, no DNS to configure.
 
-## Multi-Machine Support
+### Multi-Machine
 
-You can connect one phone to multiple computers running Wolfpack. Sessions from all machines appear in a single grouped view with online/offline status indicators.
-
-**Setup:**
-
-1. Install and run Wolfpack on each machine (`curl` install + `wolfpack setup`)
-2. Make sure all machines and your phone are on the same Tailscale network
-3. On your phone, open Wolfpack and go to **Settings**
-4. Tap **Add Machine** and either scan the QR code from the other machine's setup or paste its URL (e.g. `https://other-machine.tailnet-name.ts.net`)
-5. The new machine's sessions appear in the session list, grouped by machine name
-
-Each machine runs its own independent Wolfpack server with its own projects directory and config. Your phone fetches sessions from all registered machines in parallel and routes commands to the correct server.
-
-## Workflow
-
-Wolfpack is opinionated. It assumes you keep your projects in a single directory (`~/Dev` by default) and that each AI agent session maps to one project folder.
-
-**The loop:**
-
-1. Open Wolfpack on your phone
-2. Tap **+ New Session** — pick an existing project or create a new one
-3. Wolfpack starts a tmux session in that project's directory and launches your configured agent (Claude, Codex, etc.)
-4. You interact with the agent from your phone — send prompts, approve actions, answer questions
-5. When done, kill the session or leave it running for later
-
-**Key assumptions:**
-
-- Sessions are scoped to project directories, but you can have multiple sessions per project
-- Sessions live in tmux — they persist if you close the app or lose connection
-- The projects directory is the source of truth for what you can launch sessions against
-- You pick the agent command once in settings, and every new session uses it
-- This is a control surface, not a full terminal emulator — it's built for the back-and-forth of AI coding, not for running vim
+1. Install Wolfpack on each machine (`curl` install + `wolfpack setup`)
+2. Ensure all machines and your phone share a Tailscale network
+3. On your phone: **Settings → Add Machine** → scan QR or paste URL
+4. Sessions from all machines appear in a single grouped view
 
 ## Ralph Loop
 
-Autonomous task runner. Write a markdown plan file with numbered sections or checkboxes, pick an agent (Claude, Codex, or Gemini), set the number of iterations, and let it rip. Ralph iterates through tasks one by one — implementing, testing, committing, and marking done — until the plan is complete or iterations run out. Start, monitor, and cancel loops from your phone.
+Autonomous task runner. Write a markdown plan file, pick an agent, set iterations, and let it rip. Ralph reads the plan, extracts the first incomplete task, hands it to the agent, marks it done, and moves on — implementing, testing, and committing along the way.
+
+### Plan File Format
+
+Tasks use numbered markdown headers. Ralph recognizes this pattern and nothing else:
+
+```markdown
+# Plan: My Feature
+
+## Context
+Background info, goals, constraints — Ralph skips this.
+
+## 1. Add auth middleware
+Implement JWT validation middleware for all API routes.
+**Files:** `server.ts`, `auth.ts`
+
+## 2. Write integration tests
+Cover login, token refresh, and expired token flows.
+**Files:** `tests/auth.test.ts`
+
+## 3. Update API docs
+Add auth headers to all endpoint examples.
+**Files:** `README.md`
+```
+
+**Task header rules:**
+- Top-level: `## N. Title` (e.g. `## 1. Add auth middleware`)
+- Subtasks: `## Na. Title` (e.g. `## 1a. Write unit tests`)
+- Completed: wrap in `~~` (e.g. `## ~~1. Add auth middleware~~`)
+
+### Iteration Mechanics
+
+Each Ralph iteration:
+
+1. **Read** the plan file
+2. **Extract** the first task not wrapped in `~~`
+3. **Execute** — invoke the configured agent with task context (see [`wolfpack-context.ts`](wolfpack-context.ts))
+4. **Mark done** — wrap the task header in `~~`
+5. **Append** to the progress file (default: `progress.txt`)
+6. **Repeat** until all tasks are done or iterations run out
+
+A final cleanup pass identifies and removes dead code after all tasks complete.
+
+Start, monitor, and cancel loops from your phone via the Ralph panel, or from the CLI.
 
 ## Config
 
@@ -185,7 +224,9 @@ Stored in `~/.wolfpack/config.json`:
 
 Agent command and settings stored in `~/.wolfpack/bridge-settings.json`.
 
-## Building from Source
+## Contributing
+
+### Dev Setup
 
 Requires [Bun](https://bun.sh/) (v1.2+).
 
@@ -193,18 +234,44 @@ Requires [Bun](https://bun.sh/) (v1.2+).
 git clone https://github.com/almogdepaz/wolfpack.git
 cd wolfpack
 bun install
-bun run scripts/build.ts
+bun run scripts/gen-assets.ts   # generate embedded assets (required once)
+bun run cli.ts                  # start the server locally
 ```
 
-This generates the embedded asset bundle (`public-assets.ts`) and compiles binaries for all supported platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64) into `dist/`.
-
-For local development without compiling:
+### Testing
 
 ```bash
-bun install
-bun run scripts/gen-assets.ts   # generate embedded assets (required once)
-bun run cli.ts                  # start the server
+bun test                             # all tests
+bun test tests/unit/                 # unit tests only
+bun test tests/unit/plan-parsing.test.ts  # single file
 ```
+
+Tests use Bun's built-in runner. Three categories:
+- `tests/unit/` — plan parsing, ralph log parsing, escaping, validation
+- `tests/snapshot/` — launchd plist and systemd unit generation
+- `tests/integration/` — API routes, ralph loop endpoints
+
+### Asset Pipeline
+
+Frontend files live in `public/`. The server doesn't serve from disk — everything is embedded:
+
+1. Edit files in `public/` (HTML, PNG, manifest, etc.)
+2. Run `bun run scripts/gen-assets.ts` — embeds them into `public-assets.ts` (binary→base64, text→string)
+3. **Do NOT edit `public-assets.ts` manually** — it's auto-generated
+
+### Building Binaries
+
+```bash
+bun run scripts/build.ts    # assets + 4 platform binaries in dist/
+```
+
+Compiles for: linux-x64, linux-arm64, darwin-x64, darwin-arm64.
+
+### PR Conventions
+
+- Branch off `main`
+- Tests must pass (`bun test`)
+- Keep PRs focused — one feature or fix per PR
 
 ## License
 
