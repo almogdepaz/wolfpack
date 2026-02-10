@@ -26,7 +26,7 @@ Update `README.md` with:
 
 ---
 
-## 2. CSS facelift (`public/index.html`)
+## ~~2. CSS facelift (`public/index.html`)~~
 
 Visual density pass — tighter spacing, leaner controls, no functionality changes.
 
@@ -46,7 +46,7 @@ Key changes:
 
 ---
 
-## 3. Add xterm.js + xterm-addon-fit as embedded assets
+## ~~3. Add xterm.js + xterm-addon-fit as embedded assets~~
 
 - Download xterm.js v6 ESM bundle (`xterm.min.js`, `xterm.css`) and `xterm-addon-fit.min.js`
 - Place in `public/` directory

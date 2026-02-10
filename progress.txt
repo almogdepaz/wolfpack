@@ -508,3 +508,14 @@
 - Search bar left as-is (already compact)
 - Regenerated `public-assets.ts` (8 files embedded)
 - All 410 tests pass
+
+## Task 3: Add xterm.js + xterm-addon-fit as embedded assets — DONE
+- Downloaded @xterm/xterm@6.0.0 UMD bundle (`lib/xterm.js` → `public/xterm.min.js`, 489KB)
+- Downloaded @xterm/xterm@6.0.0 CSS (`css/xterm.css` → `public/xterm.css`, 7KB)
+- Downloaded @xterm/addon-fit@0.11.0 UMD bundle (`lib/addon-fit.js` → `public/xterm-addon-fit.min.js`, 1.5KB)
+- Added `<link rel="stylesheet" href="/xterm.css" />` to `<head>` in index.html
+- Added `<script src="/xterm.min.js">` and `<script src="/xterm-addon-fit.min.js">` to `<head>`
+- Regenerated `public-assets.ts` (11 files embedded, was 8)
+- UMD bundles expose `Terminal` and `FitAddon.FitAddon` as globals in browser
+- Serving handled automatically by existing generic asset serving in serve.ts
+- All 410 tests pass
