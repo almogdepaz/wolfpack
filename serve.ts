@@ -1102,9 +1102,10 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
       // cursor_y is relative to visible pane, so offset by scrollback lines
       let cursorKey = "";
       try {
-        const { stdout } = await exec(TMUX, ["display-message", "-t", session, "-p", "#{cursor_x},#{cursor_y},#{pane_height}"]);
+        const { stdout } = await exec(TMUX, ["display-message", "-t", session, "-p", "#{cursor_x},#{cursor_y},#{pane_height},#{alternate_on}"]);
         const parts = stdout.trim().split(",");
-        if (parts.length === 3) {
+        if (parts.length === 4 && parts[3] !== "1") {
+          // Skip cursor when alternate screen is active (TUI programs manage their own)
           const x = Number(parts[0]);
           const rawY = Number(parts[1]);
           const paneHeight = Number(parts[2]);
