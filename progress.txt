@@ -533,3 +533,18 @@
 - Same origin check and session validation as existing `/ws/terminal`
 - Existing `/ws/terminal` endpoint untouched — still works for mobile capture-pane polling
 - All 410 tests pass
+
+## Task 5a: Core xterm.js wiring — DONE
+- Replaced `<pre id="desktop-terminal">` with `<div id="desktop-terminal-container">` in HTML
+- Replaced `#desktop-terminal` CSS with `#desktop-terminal-container` styling (flexbox container for xterm.js)
+- Added `<script src="/xterm-addon-search.min.js">` to `<head>` (from @xterm/addon-search@0.16.0, 79KB UMD)
+- Rewrote state vars: removed `desktopAnsiUp`/`desktopRawAnsi`; added `desktopTerm`/`desktopFitAddon`/`desktopSearchAddon`
+- Rewrote `initDesktopTerminal()`: creates xterm.js Terminal + FitAddon + SearchAddon, pipes keyboard via `term.onData`/`term.onBinary` as raw bytes, `fitAddon.fit()` on resize, Ctrl+F/Cmd+F intercepted for search bar
+- Rewrote `connectDesktopWs()`: connects to `/ws/pty` (binary WS), pipes `term.write(new Uint8Array(data))`, sends resize on open
+- Rewrote `destroyDesktopTerminal()`: disposes addons + terminal, clears container
+- Removed dead code: `calcTermDimensions()`, `applyDesktopSearchHighlights()`, old keyboard/paste handlers, AnsiUp desktop instantiation
+- Updated search functions to use `desktopSearchAddon.findNext/findPrevious/clearDecorations`
+- Updated visibility change handler to reference `desktopTerm` and call `connectDesktopWs()` without args
+- Added xterm find result decoration CSS, removed old `#desktop-terminal mark` rules
+- Regenerated `public-assets.ts` (12 files embedded)
+- All 410 tests pass
