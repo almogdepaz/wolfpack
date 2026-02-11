@@ -218,53 +218,62 @@
 
       #action-bar {
         display: none;
-        gap: 4px;
-        padding: 6px 8px;
-        background: #111;
-        border-top: 1px solid #1a1a1a;
-        flex-wrap: wrap;
+        gap: 6px;
+        padding: 8px 10px;
+        padding-bottom: max(8px, env(safe-area-inset-bottom));
+        background: rgba(17, 17, 17, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
       }
       #action-bar.visible {
         display: flex;
       }
       .action-btn {
-        background: none;
-        border: 1px solid #282828;
-        border-radius: 3px;
-        padding: 6px 12px;
-        min-height: 36px;
-        min-width: 36px;
-        color: #888;
-        font-size: 12px;
+        flex: 1;
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 10px;
+        padding: 10px 14px;
+        min-height: 48px;
+        color: #999;
+        font-size: 13px;
         font-family: inherit;
         text-transform: uppercase;
-        letter-spacing: 1px;
+        letter-spacing: 0.5px;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
         display: flex;
         align-items: center;
         justify-content: center;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       .action-btn:active {
+        transform: scale(0.95);
         background: #b0b0b0;
         color: #0a0a0a;
       }
       .action-btn.primary {
-        border-color: #00ff41;
+        border-color: rgba(0, 255, 65, 0.4);
         color: #00ff41;
       }
       .action-btn.primary:active {
         background: #00ff41;
         color: #0a0a0a;
+        box-shadow: 0 0 12px rgba(0, 255, 65, 0.3);
       }
       .action-btn.danger {
-        border-color: #cc3333;
+        border-color: rgba(204, 51, 51, 0.4);
         color: #cc3333;
       }
       .action-btn.danger:active {
         background: #cc3333;
         color: #0a0a0a;
+        box-shadow: 0 0 12px rgba(204, 51, 51, 0.3);
+      }
+      .action-btn .arrow {
+        font-size: 16px;
       }
 
       #input-bar {
@@ -905,11 +914,11 @@
       <div id="terminal"></div>
       <div id="desktop-terminal-container"></div>
       <div id="action-bar" class="visible">
-        <button class="action-btn" onclick="sendKey('Enter')">Enter</button>
+        <button class="action-btn primary" onclick="sendKey('Enter')">Enter</button>
         <button class="action-btn" onclick="sendKey('Escape')">Esc</button>
-        <button class="action-btn" onclick="sendKey('Up')" style="font-size:16px">&#9650;</button>
-        <button class="action-btn" onclick="sendKey('Down')" style="font-size:16px">&#9660;</button>
-        <button class="action-btn danger" onclick="confirmKillSession()">^C</button>
+        <button class="action-btn" onclick="sendKey('Up')"><span class="arrow">&#9650;</span></button>
+        <button class="action-btn" onclick="sendKey('Down')"><span class="arrow">&#9660;</span></button>
+        <button class="action-btn danger" onclick="sendKey('C-c')">Ctrl+C</button>
       </div>
       <div id="input-bar">
         <textarea
