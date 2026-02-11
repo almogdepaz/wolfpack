@@ -1204,7 +1204,21 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
 
 // ── PTY WebSocket handler (xterm.js direct) ──
 
-const activePtySessions = new Map<string, { ws: WebSocket; proc: ReturnType<typeof Bun.spawn> }>();
+// Track ownership with a generation counter to prevent cross-connection cleanup races
+const activePtySessions = new Map<string, { ws: WebSocket; proc: ReturnType<typeof Bun.spawn>; gen: number }>();
+let ptyGenCounter = 0;
+
+// Kill all orphaned wp_* sessions on startup (survives server crashes)
+(async () => {
+  try {
+    const { stdout } = await exec(TMUX, ["list-sessions", "-F", "#{session_name}"], { timeout: 3000 });
+    for (const name of stdout.split("\n")) {
+      if (name.startsWith("wp_")) {
+        await exec(TMUX, ["kill-session", "-t", name], { timeout: 2000 }).catch(() => {});
+      }
+    }
+  } catch {}
+})();
 
 function handlePtyWs(ws: WebSocket, session: string): void {
   const existing = activePtySessions.get(session);
@@ -1217,17 +1231,20 @@ function handlePtyWs(ws: WebSocket, session: string): void {
   let alive = true;
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   const ptySession = `wp_${session}`;
+  const gen = ++ptyGenCounter;
 
   // Defer PTY spawn until we know the client's real terminal size
-  function spawnPty(cols: number, rows: number) {
+  async function spawnPty(cols: number, rows: number) {
     if (proc) return;
 
-    // Create a grouped session — shares windows but has independent sizing
-    try { execFileSync(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000, stdio: "ignore" }); } catch {}
-    try { execFileSync(TMUX, ["new-session", "-d", "-t", session, "-s", ptySession], { timeout: 3000, stdio: "ignore" }); } catch {}
-    try { execFileSync(TMUX, ["set-option", "-t", ptySession, "status", "off"], { timeout: 2000, stdio: "ignore" }); } catch {}
-    try { execFileSync(TMUX, ["set-option", "-t", ptySession, "mouse", "on"], { timeout: 2000, stdio: "ignore" }); } catch {}
-    try { execFileSync(TMUX, ["set-option", "-t", ptySession, "window-size", "largest"], { timeout: 2000, stdio: "ignore" }); } catch {}
+    // Create a grouped session — shares windows but has independent sizing (async to avoid blocking event loop)
+    await exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
+    await exec(TMUX, ["new-session", "-d", "-t", session, "-s", ptySession], { timeout: 3000 }).catch(() => {});
+    await exec(TMUX, ["set-option", "-t", ptySession, "status", "off"], { timeout: 2000 }).catch(() => {});
+    await exec(TMUX, ["set-option", "-t", ptySession, "mouse", "on"], { timeout: 2000 }).catch(() => {});
+    await exec(TMUX, ["set-option", "-t", ptySession, "window-size", "largest"], { timeout: 2000 }).catch(() => {});
+
+    if (!alive) return; // connection may have closed while awaiting
 
     // Attach to the grouped session (not the original)
     proc = Bun.spawn([TMUX, "attach-session", "-t", ptySession], {
@@ -1243,13 +1260,18 @@ function handlePtyWs(ws: WebSocket, session: string): void {
         exit(_terminal: unknown, _code: number, _signal?: number) {
           if (alive) {
             alive = false;
-            activePtySessions.delete(session);
+            clearInterval(pingTimer);
+            // Only remove from map if we're still the owner (prevents race with replacement)
+            const current = activePtySessions.get(session);
+            if (current && current.gen === gen) activePtySessions.delete(session);
             try { ws.close(1000, "pty exited"); } catch {}
+            // Kill grouped session here (cleanup won't run — alive is already false)
+            exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
           }
         },
       },
     });
-    activePtySessions.set(session, { ws, proc });
+    activePtySessions.set(session, { ws, proc, gen });
   }
 
   // Rate limit: 60 msg/s token bucket (matches /ws/terminal)
@@ -1302,12 +1324,14 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     if (!alive) return;
     alive = false;
     clearInterval(pingTimer);
-    activePtySessions.delete(session);
+    // Only remove from map if we're still the owner
+    const current = activePtySessions.get(session);
+    if (current && current.gen === gen) activePtySessions.delete(session);
     if (proc) {
       try { proc.terminal!.close(); } catch {}
       try { proc.kill(); } catch {}
     }
-    try { execFileSync(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000, stdio: "ignore" }); } catch {}
+    exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
   }
 
   ws.on("close", cleanup);
