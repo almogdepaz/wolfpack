@@ -1799,7 +1799,6 @@
 
       function connectDesktopWs() {
         if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
-        // Guard against duplicate connections (visibility handler + reconnect timer race)
         if (desktopWs && desktopWs.readyState <= WebSocket.OPEN) return;
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
         const wsUrl = proto + "//" + location.host + "/ws/pty?session=" + encodeURIComponent(currentSession);
@@ -1811,9 +1810,8 @@
           desktopReconnectDelay = 1000;
           const statusEl = document.getElementById("conn-status");
           if (statusEl) statusEl.style.display = "none";
-          // Send initial size
           if (desktopFitAddon && desktopTerm) {
-            desktopFitAddon.fit();
+            try { desktopFitAddon.fit(); } catch {}
             ws.send(JSON.stringify({ type: "resize", cols: desktopTerm.cols, rows: desktopTerm.rows }));
           }
         };
@@ -1823,11 +1821,13 @@
         };
 
         ws.onclose = () => {
-          // Only clobber ref if this is still the current WS (prevents stale close race)
-          if (desktopWs === ws) desktopWs = null;
-          const statusEl = document.getElementById("conn-status");
-          if (statusEl && currentView === "terminal" && useDesktopTerminal) statusEl.style.display = "block";
-          scheduleDesktopReconnect();
+          const isCurrent = desktopWs === ws;
+          if (isCurrent) desktopWs = null;
+          if (isCurrent) {
+            const statusEl = document.getElementById("conn-status");
+            if (statusEl && currentView === "terminal" && useDesktopTerminal) statusEl.style.display = "block";
+            scheduleDesktopReconnect();
+          }
         };
 
         ws.onerror = () => {};
@@ -1855,7 +1855,6 @@
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
 
-        // Create xterm.js Terminal
         const term = new Terminal({
           cursorBlink: true,
           fontSize: 13,
@@ -1871,12 +1870,10 @@
         });
         desktopTerm = term;
 
-        // FitAddon — auto-sizes terminal to container
         const fitAddon = new FitAddon.FitAddon();
         desktopFitAddon = fitAddon;
         term.loadAddon(fitAddon);
 
-        // SearchAddon — xterm native search
         const searchAddon = new SearchAddon.SearchAddon();
         desktopSearchAddon = searchAddon;
         term.loadAddon(searchAddon);
@@ -1885,14 +1882,12 @@
         fitAddon.fit();
         term.focus();
 
-        // Pipe keyboard input to WS as raw bytes
         term.onData((data) => {
           if (desktopWs && desktopWs.readyState === WebSocket.OPEN) {
             desktopWs.send(new TextEncoder().encode(data));
           }
         });
 
-        // Pipe binary data (e.g. from mouse events) to WS
         term.onBinary((data) => {
           if (desktopWs && desktopWs.readyState === WebSocket.OPEN) {
             const buf = new Uint8Array(data.length);
@@ -1901,21 +1896,18 @@
           }
         });
 
-        // Window resize → fit + notify server
         const onResize = () => {
           if (desktopFitAddon) desktopFitAddon.fit();
         };
         window.addEventListener("resize", onResize);
         desktopResizeHandler = onResize;
 
-        // Terminal resize events → send to server
         term.onResize(({ cols, rows }) => {
           if (desktopWs && desktopWs.readyState === WebSocket.OPEN) {
             desktopWs.send(JSON.stringify({ type: "resize", cols, rows }));
           }
         });
 
-        // Ctrl+F / Cmd+F → xterm search (intercept before xterm gets it)
         const onKeyDown = (e) => {
           if (e.key.toLowerCase() === "f" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
             e.preventDefault();
@@ -1963,7 +1955,6 @@
         desktopFitAddon = null;
         container.style.display = "none";
         container.innerHTML = "";
-        // Restore mobile element defaults
         document.getElementById("terminal").style.display = "";
         document.getElementById("action-bar").style.display = "";
         document.getElementById("input-bar").style.display = "";
@@ -2141,7 +2132,7 @@
           name = val;
         }
         if (name === currentSession && machineUrl === currentMachine) return;
-        // Tear down current mode
+        // Suspend current mode (cache terminal state)
         if (useDesktopTerminal) {
           destroyDesktopTerminal();
         } else {
@@ -2149,6 +2140,7 @@
         }
         currentSession = name;
         currentMachine = machineUrl;
+        lastRawPane = null;
         loadSessionSwitcher();
         useDesktopTerminal = isDesktop() && !machineUrl;
         if (useDesktopTerminal) {

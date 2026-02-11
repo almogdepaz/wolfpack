@@ -1252,6 +1252,10 @@ function handlePtyWs(ws: WebSocket, session: string): void {
           if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
             const cols = Math.max(20, Math.min(msg.cols, 300));
             const rows = Math.max(5, Math.min(msg.rows, 100));
+            // Force SIGWINCH even if size matches — new viewer needs full redraw
+            try {
+              existing.proc.terminal!.resize(Math.max(20, cols - 1), rows);
+            } catch {}
             existing.proc.terminal!.resize(cols, rows);
           }
         } else if (existing.proc) {
@@ -1319,8 +1323,16 @@ function handlePtyWs(ws: WebSocket, session: string): void {
         },
       },
     });
-    // Update map with proc now set
     activePtySessions.set(session, entry as any);
+    // Force tmux redraw via SIGWINCH — must change size to actually trigger signal
+    setTimeout(() => {
+      if (entry.alive && entry.proc) {
+        try {
+          entry.proc.terminal!.resize(Math.max(20, cols - 1), rows);
+          entry.proc.terminal!.resize(cols, rows);
+        } catch {}
+      }
+    }, 100);
   }
 
   // Rate limit per viewer
