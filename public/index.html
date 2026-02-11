@@ -91,21 +91,23 @@
       }
       .back-btn {
         display: none;
-        background: none;
-        border: 1px solid #333;
-        color: #888;
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        color: #999;
         font-size: 10px;
         font-family: inherit;
         text-transform: uppercase;
         letter-spacing: 1px;
         cursor: pointer;
-        padding: 6px 10px;
-        border-radius: 2px;
-        transition: all 0.15s ease;
+        padding: 6px 12px;
+        border-radius: 10px;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
         min-height: 34px;
         -webkit-tap-highlight-color: transparent;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       .back-btn:active {
+        transform: scale(0.95);
         background: #00ff41;
         color: #0a0a0a;
       }
@@ -179,9 +181,9 @@
         min-width: 0;
       }
       .new-btn {
-        background: none;
-        border: 1px solid #00ff41;
-        border-radius: 3px;
+        background: #1a1a1a;
+        border: 1px solid rgba(0, 255, 65, 0.4);
+        border-radius: 10px;
         padding: 10px 14px;
         margin-bottom: 4px;
         display: flex;
@@ -195,11 +197,14 @@
         text-transform: uppercase;
         letter-spacing: 1px;
         -webkit-tap-highlight-color: transparent;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       .new-btn:active {
+        transform: scale(0.97);
         background: #00ff41;
         color: #0a0a0a;
+        box-shadow: 0 0 12px rgba(0, 255, 65, 0.3);
       }
 
       #terminal {
@@ -289,7 +294,7 @@
         flex: 1;
         background: #0a0a0a;
         border: 1px solid #1e1e1e;
-        border-radius: 3px;
+        border-radius: 10px;
         padding: 5px 8px;
         color: #e0e0e0;
         font-size: 15px;
@@ -324,21 +329,24 @@
         z-index: 10;
       }
       #input-bar button {
-        background: none;
-        border: 1px solid #00ff41;
-        border-radius: 3px;
-        width: 36px;
-        height: 36px;
+        background: #1a1a1a;
+        border: 1px solid rgba(0, 255, 65, 0.4);
+        border-radius: 10px;
+        width: 40px;
+        height: 40px;
         color: #00ff41;
         font-size: 18px;
         cursor: pointer;
         flex-shrink: 0;
         align-self: flex-end;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       #input-bar button:active {
+        transform: scale(0.95);
         background: #00ff41;
         color: #0a0a0a;
+        box-shadow: 0 0 12px rgba(0, 255, 65, 0.3);
       }
 
       .new-project-row {
@@ -450,10 +458,10 @@
         animation: send-flash 0.3s ease-out;
       }
       .settings-gear {
-        background: none;
-        border: 1px solid #333;
-        border-radius: 3px;
-        color: #666;
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 10px;
+        color: #777;
         font-size: 18px;
         cursor: pointer;
         padding: 6px;
@@ -462,10 +470,12 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
         -webkit-tap-highlight-color: transparent;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       .settings-gear:active {
+        transform: scale(0.95);
         background: #00ff41;
         color: #0a0a0a;
       }
@@ -501,7 +511,7 @@
         flex: 1;
         background: #0a0a0a;
         border: 1px solid #1e1e1e;
-        border-radius: 3px;
+        border-radius: 10px;
         padding: 4px 8px;
         color: #e0e0e0;
         font-size: 12px;
@@ -514,16 +524,19 @@
         box-shadow: 0 0 4px #00ff4140;
       }
       #search-bar button {
-        background: none;
-        border: 1px solid #282828;
-        border-radius: 3px;
-        color: #888;
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 10px;
+        color: #999;
         font-size: 12px;
-        padding: 3px 8px;
+        padding: 4px 10px;
+        min-height: 32px;
         cursor: pointer;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       #search-bar button:active {
+        transform: scale(0.95);
         background: #b0b0b0;
         color: #0a0a0a;
       }
@@ -571,9 +584,9 @@
       .machine-header .dot { width: 6px; height: 6px; }
       .machine-add-btn {
         margin-left: auto;
-        background: none;
-        border: 1px solid #333;
-        border-radius: 3px;
+        background: #1a1a1a;
+        border: 1px solid rgba(0, 255, 65, 0.4);
+        border-radius: 10px;
         color: #00ff41;
         font-size: 18px;
         font-weight: 700;
@@ -584,9 +597,10 @@
         align-items: center;
         justify-content: center;
         -webkit-tap-highlight-color: transparent;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
-      .machine-add-btn:active { background: #00ff41; color: #0a0a0a; }
+      .machine-add-btn:active { transform: scale(0.95); background: #00ff41; color: #0a0a0a; box-shadow: 0 0 12px rgba(0, 255, 65, 0.3); }
       .machine-item {
         display: flex;
         align-items: center;
@@ -766,17 +780,19 @@
         outline: none;
       }
       .ralph-launch-btn {
-        padding: 8px;
+        padding: 10px;
         background: #9b59b6;
         border: none;
-        border-radius: 3px;
+        border-radius: 10px;
         color: #fff;
         font-size: 12px;
         font-weight: bold;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
       }
-      .ralph-launch-btn:active { background: #8e44ad; }
+      .ralph-launch-btn:active { transform: scale(0.97); background: #8e44ad; box-shadow: 0 0 12px rgba(155, 89, 182, 0.3); }
       .ralph-empty {
         text-align: center;
         color: #444;
@@ -784,9 +800,9 @@
         font-size: 12px;
       }
       .ralph-nav-btn {
-        background: none;
-        border: 1px solid #9b59b6;
-        border-radius: 3px;
+        background: #1a1a1a;
+        border: 1px solid rgba(155, 89, 182, 0.4);
+        border-radius: 10px;
         color: #b0b0b0;
         font-size: 16px;
         cursor: pointer;
@@ -797,9 +813,10 @@
         align-items: center;
         justify-content: center;
         -webkit-tap-highlight-color: transparent;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
-      .ralph-nav-btn:active { background: #1a1a1a; }
+      .ralph-nav-btn:active { transform: scale(0.95); background: #2a2a2a; box-shadow: 0 0 12px rgba(155, 89, 182, 0.3); }
       #desktop-terminal-container {
         display: none;
         flex: 1;
@@ -821,7 +838,7 @@
   <body>
     <header>
       <div class="header-left">
-        <button class="back-btn" id="back-btn">&lt; BACK</button>
+        <button class="back-btn" id="back-btn">BACK</button>
       </div>
       <div class="header-center" id="header-center">
         <div style="display:flex;align-items:center;gap:8px">
@@ -875,7 +892,7 @@
         <div class="settings-section">
           <div class="settings-label">Machines</div>
           <div id="machines-list"></div>
-          <button onclick="discoverMachines()" style="margin-top:8px;background:none;border:1px solid #333;border-radius:3px;padding:6px 14px;color:#00ff41;font-size:11px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:all 0.15s ease;width:100%">Discover Tailnet</button>
+          <button onclick="discoverMachines()" style="margin-top:8px;background:#1a1a1a;border:1px solid rgba(0,255,65,0.4);border-radius:10px;padding:8px 14px;color:#00ff41;font-size:11px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:transform 0.1s ease;width:100%;box-shadow:0 2px 4px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.04)">Discover Tailnet</button>
           <div id="discover-status" style="margin-top:4px;font-size:10px;color:#555"></div>
         </div>
         <div class="settings-section">

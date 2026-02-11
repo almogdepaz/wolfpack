@@ -1205,8 +1205,12 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
 // ── PTY WebSocket handler (xterm.js direct) ──
 
 // Track ownership with a generation counter to prevent cross-connection cleanup races
-const activePtySessions = new Map<string, { ws: WebSocket; proc: ReturnType<typeof Bun.spawn>; gen: number }>();
-let ptyGenCounter = 0;
+const activePtySessions = new Map<string, {
+  viewers: Set<WebSocket>;
+  proc: ReturnType<typeof Bun.spawn>;
+  ptySession: string;
+  alive: boolean;
+}>();
 
 // Kill all orphaned wp_* sessions on startup (survives server crashes)
 (async () => {
@@ -1221,65 +1225,110 @@ let ptyGenCounter = 0;
 })();
 
 function handlePtyWs(ws: WebSocket, session: string): void {
+  const ptySession = `wp_${session}`;
   const existing = activePtySessions.get(session);
-  if (existing) {
-    try { existing.ws.close(1000, "replaced"); } catch {}
-    try { existing.proc.kill(); } catch {}
-    activePtySessions.delete(session);
+
+  // If a PTY proc already exists for this session, just add this viewer
+  if (existing && existing.alive && existing.proc) {
+    existing.viewers.add(ws);
+    const pingTimer = setInterval(() => {
+      if (ws.readyState === 1) { try { ws.ping(); } catch {} }
+      else clearInterval(pingTimer);
+    }, 25000);
+
+    // Rate limit per viewer
+    let rlTokens = 60;
+    let rlLast = Date.now();
+    ws.on("message", (raw: Buffer | string) => {
+      if (!existing.alive) return;
+      const now = Date.now();
+      rlTokens = Math.min(60, rlTokens + ((now - rlLast) / 1000) * 60);
+      rlLast = now;
+      if (rlTokens < 1) return;
+      rlTokens--;
+      try {
+        if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b)) {
+          const msg = JSON.parse(String(raw));
+          if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+            const cols = Math.max(20, Math.min(msg.cols, 300));
+            const rows = Math.max(5, Math.min(msg.rows, 100));
+            existing.proc.terminal!.resize(cols, rows);
+          }
+        } else if (existing.proc) {
+          if (Buffer.isBuffer(raw) && raw.length > 16384) return;
+          existing.proc.terminal!.write(raw as Buffer);
+        }
+      } catch (err: any) {
+        if (err instanceof SyntaxError) return;
+        console.error(`PTY WS error [${session}]:`, err?.message || err);
+      }
+    });
+
+    function detach() {
+      clearInterval(pingTimer);
+      existing.viewers.delete(ws);
+      if (existing.viewers.size === 0) teardownPty(session);
+    }
+    ws.on("close", detach);
+    ws.on("error", detach);
+    return;
   }
 
-  let alive = true;
-  let proc: ReturnType<typeof Bun.spawn> | null = null;
-  const ptySession = `wp_${session}`;
-  const gen = ++ptyGenCounter;
+  // First viewer — create new PTY entry
+  const entry = {
+    viewers: new Set<WebSocket>([ws]),
+    proc: null as ReturnType<typeof Bun.spawn> | null,
+    ptySession,
+    alive: true,
+  };
+  activePtySessions.set(session, entry as any);
 
-  // Defer PTY spawn until we know the client's real terminal size
   async function spawnPty(cols: number, rows: number) {
-    if (proc) return;
+    if (entry.proc) return;
 
-    // Create a grouped session — shares windows but has independent sizing (async to avoid blocking event loop)
     await exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
     await exec(TMUX, ["new-session", "-d", "-t", session, "-s", ptySession], { timeout: 3000 }).catch(() => {});
     await exec(TMUX, ["set-option", "-t", ptySession, "status", "off"], { timeout: 2000 }).catch(() => {});
     await exec(TMUX, ["set-option", "-t", ptySession, "mouse", "on"], { timeout: 2000 }).catch(() => {});
     await exec(TMUX, ["set-option", "-t", ptySession, "window-size", "largest"], { timeout: 2000 }).catch(() => {});
 
-    if (!alive) return; // connection may have closed while awaiting
+    if (!entry.alive) return;
 
-    // Attach to the grouped session (not the original)
-    proc = Bun.spawn([TMUX, "attach-session", "-t", ptySession], {
+    entry.proc = Bun.spawn([TMUX, "attach-session", "-t", ptySession], {
       env: { ...process.env, TERM: "xterm-256color" },
       terminal: {
         cols,
         rows,
         data(_terminal: unknown, data: Buffer) {
-          if (alive && ws.readyState === 1) {
-            ws.send(data);
+          if (!entry.alive) return;
+          for (const viewer of entry.viewers) {
+            if (viewer.readyState === 1) {
+              try { viewer.send(data); } catch {}
+            }
           }
         },
         exit(_terminal: unknown, _code: number, _signal?: number) {
-          if (alive) {
-            alive = false;
-            clearInterval(pingTimer);
-            // Only remove from map if we're still the owner (prevents race with replacement)
-            const current = activePtySessions.get(session);
-            if (current && current.gen === gen) activePtySessions.delete(session);
-            try { ws.close(1000, "pty exited"); } catch {}
-            // Kill grouped session here (cleanup won't run — alive is already false)
-            exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
+          if (!entry.alive) return;
+          entry.alive = false;
+          activePtySessions.delete(session);
+          for (const viewer of entry.viewers) {
+            try { viewer.close(1000, "pty exited"); } catch {}
           }
+          entry.viewers.clear();
+          exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
         },
       },
     });
-    activePtySessions.set(session, { ws, proc, gen });
+    // Update map with proc now set
+    activePtySessions.set(session, entry as any);
   }
 
-  // Rate limit: 60 msg/s token bucket (matches /ws/terminal)
+  // Rate limit per viewer
   let rlTokens = 60;
   let rlLast = Date.now();
 
   ws.on("message", (raw: Buffer | string) => {
-    if (!alive) return;
+    if (!entry.alive) return;
     const now = Date.now();
     rlTokens = Math.min(60, rlTokens + ((now - rlLast) / 1000) * 60);
     rlLast = now;
@@ -1288,22 +1337,18 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     try {
       if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b)) {
         const msg = JSON.parse(String(raw));
-        if (
-          msg.type === "resize" &&
-          typeof msg.cols === "number" &&
-          typeof msg.rows === "number"
-        ) {
+        if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const cols = Math.max(20, Math.min(msg.cols, 300));
           const rows = Math.max(5, Math.min(msg.rows, 100));
-          if (!proc) {
+          if (!entry.proc) {
             spawnPty(cols, rows);
           } else {
-            proc.terminal!.resize(cols, rows);
+            entry.proc.terminal!.resize(cols, rows);
           }
         }
-      } else if (proc) {
-        if (Buffer.isBuffer(raw) && raw.length > 16384) return; // 16KB binary cap
-        proc.terminal!.write(raw as Buffer);
+      } else if (entry.proc) {
+        if (Buffer.isBuffer(raw) && raw.length > 16384) return;
+        entry.proc.terminal!.write(raw as Buffer);
       }
     } catch (err: any) {
       if (err instanceof SyntaxError) return;
@@ -1311,31 +1356,30 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     }
   });
 
-  // Heartbeat ping every 25s to keep WS alive through reverse proxies
   const pingTimer = setInterval(() => {
-    if (alive && ws.readyState === 1) {
-      try { ws.ping(); } catch {}
-    } else {
-      clearInterval(pingTimer);
-    }
+    if (ws.readyState === 1) { try { ws.ping(); } catch {} }
+    else clearInterval(pingTimer);
   }, 25000);
 
-  function cleanup() {
-    if (!alive) return;
-    alive = false;
+  function detach() {
     clearInterval(pingTimer);
-    // Only remove from map if we're still the owner
-    const current = activePtySessions.get(session);
-    if (current && current.gen === gen) activePtySessions.delete(session);
-    if (proc) {
-      try { proc.terminal!.close(); } catch {}
-      try { proc.kill(); } catch {}
-    }
-    exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
+    entry.viewers.delete(ws);
+    if (entry.viewers.size === 0) teardownPty(session);
   }
+  ws.on("close", detach);
+  ws.on("error", detach);
+}
 
-  ws.on("close", cleanup);
-  ws.on("error", cleanup);
+function teardownPty(session: string): void {
+  const entry = activePtySessions.get(session);
+  if (!entry) return;
+  entry.alive = false;
+  activePtySessions.delete(session);
+  if (entry.proc) {
+    try { entry.proc.terminal!.close(); } catch {}
+    try { entry.proc.kill(); } catch {}
+  }
+  exec(TMUX, ["kill-session", "-t", entry.ptySession], { timeout: 2000 }).catch(() => {});
 }
 
 // ── Server ──
