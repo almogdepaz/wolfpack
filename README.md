@@ -34,7 +34,7 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile & desktop command center for AI coding agents. Control tmux-based sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser.
+Mobile & desktop command center for AI coding agents. Control tmux-based sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
 
 Install on your phone's home screen for a native app experience — scan the QR code after setup and tap **"Add to Home Screen"**.
 
@@ -55,20 +55,20 @@ Install on your phone's home screen for a native app experience — scan the QR 
 ## Architecture
 
 ```
-┌─────────────┐         ┌──────────────────────────────────────────────┐
-│   Phone /   │  HTTPS  │              Your Machine                    │
-│   Browser   │◄───────►│                                              │
-│   (PWA)     │  (via   │  ┌──────────┐    ┌──────────┐   ┌────────┐  │
-└─────────────┘  Tail-  │  │ wolfpack │    │  tmux    │   │ Agent  │  │
-                 scale) │  │  server  │◄──►│ sessions │◄──│ (any)  │  │
-                        │  │ HTTP/WS  │    │          │   │        │  │
-                        │  └────┬─────┘    └──────────┘   └────────┘  │
-                        │       │                                      │
-                        │  ┌────┴─────┐                                │
-                        │  │  Ralph   │  autonomous iteration loop     │
-                        │  │  (CLI)   │  plan → execute → commit       │
-                        │  └──────────┘                                │
-                        └──────────────────────────────────────────────┘
+┌─────────────┐      ┌───────────┐      ┌─────────────────────────────────────┐
+│   Phone /   │      │ Tailscale │      │           Your Machine              │
+│   Browser   │◄────►│  (HTTPS)  │◄────►│                                     │
+│   (PWA)     │      │  mesh VPN │      │  ┌──────────┐  ┌──────┐ ┌───────┐  │
+└─────────────┘      └───────────┘      │  │ wolfpack │  │ tmux │ │ Agent │  │
+                                        │  │  server  │◄►│      │◄│ (any) │  │
+                                        │  │ HTTP/WS  │  │      │ │       │  │
+                                        │  └────┬─────┘  └──────┘ └───────┘  │
+                                        │       │                             │
+                                        │  ┌────┴─────┐                       │
+                                        │  │  Ralph   │ autonomous loop       │
+                                        │  │  (CLI)   │ plan → exec → commit  │
+                                        │  └──────────┘                       │
+                                        └─────────────────────────────────────┘
 ```
 
 **Components:**
@@ -76,18 +76,6 @@ Install on your phone's home screen for a native app experience — scan the QR 
 - **Server** — Bun HTTP + WebSocket. Serves embedded assets, proxies tmux via `capture-pane`/`send-keys`
 - **Ralph** — detached subprocess that iterates through a markdown plan file, invoking agents per-task
 - **Agents** — Claude, Codex, Gemini, or any shell command. Agent-agnostic by design
-
-## Comparison
-
-| Feature | Wolfpack | webmux | tmux-web | Raw SSH |
-|---------|----------|--------|----------|---------|
-| Mobile PWA (home screen install) | ✅ | ❌ | ❌ | ❌ |
-| Multi-machine (one phone, N servers) | ✅ | ❌ | ❌ | Manual |
-| Multi-agent (Claude/Codex/Gemini/custom) | ✅ | ❌ | ❌ | Manual |
-| Autonomous loop (Ralph) | ✅ | ❌ | ❌ | ❌ |
-| Zero auth setup (Tailscale handles it) | ✅ | ❌ | ❌ | Keys/passwords |
-| Session notifications | ✅ | ❌ | ❌ | ❌ |
-| No dependencies (standalone binary) | ✅ | Node.js | Node.js | OpenSSH |
 
 ## Quick Install
 
