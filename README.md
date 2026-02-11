@@ -55,20 +55,15 @@ Install on your phone's home screen for a native app experience — scan the QR 
 ## Architecture
 
 ```
-┌─────────────┐      ┌───────────┐      ┌─────────────────────────────────────┐
-│   Phone /   │      │ Tailscale │      │           Your Machine              │
-│   Browser   │◄────►│  (HTTPS)  │◄────►│                                     │
-│   (PWA)     │      │  mesh VPN │      │  ┌──────────┐  ┌──────┐ ┌───────┐  │
-└─────────────┘      └───────────┘      │  │ wolfpack │  │ tmux │ │ Agent │  │
-                                        │  │  server  │◄►│      │◄│ (any) │  │
-                                        │  │ HTTP/WS  │  │      │ │       │  │
-                                        │  └────┬─────┘  └──────┘ └───────┘  │
-                                        │       │                             │
-                                        │  ┌────┴─────┐                       │
-                                        │  │  Ralph   │ autonomous loop       │
-                                        │  │  (CLI)   │ plan → exec → commit  │
-                                        │  └──────────┘                       │
-                                        └─────────────────────────────────────┘
+┌─────────────┐      ┌───────────┐      ┌──────────────────────────────────┐
+│   Phone /   │      │ Tailscale │      │          Your Machine            │
+│   Browser   │◄────►│  (HTTPS)  │◄────►│                                  │
+│   (PWA)     │      │  mesh VPN │      │  ┌──────────┐ ┌──────┐ ┌─────┐  │
+└─────────────┘      └───────────┘      │  │ wolfpack │ │ tmux │ │Agent│  │
+                                        │  │  server  │◄│      │◄│(any)│  │
+                                        │  │ HTTP/WS  │ │      │ │     │  │
+                                        │  └──────────┘ └──────┘ └─────┘  │
+                                        └──────────────────────────────────┘
 ```
 
 **Components:**
