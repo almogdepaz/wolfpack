@@ -36,10 +36,12 @@
         display: grid;
         grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        min-height: 32px;
+        min-height: 42px;
         flex-shrink: 0;
         border-bottom: 1px solid #1a1a1a;
+        transition: opacity 0.15s ease;
       }
+      header.fading { opacity: 0; }
       .header-left {
         display: flex;
         align-items: center;
@@ -58,6 +60,7 @@
         text-transform: uppercase;
         letter-spacing: 2px;
         color: #00ff41;
+        text-shadow: 0 0 8px rgba(0,255,65,0.3);
         white-space: nowrap;
       }
       .session-select.chip {
@@ -112,15 +115,52 @@
         color: #0a0a0a;
       }
 
+      #view-container {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+        touch-action: pan-y; /* let browser handle vertical scroll, we handle horizontal */
+      }
       .view {
-        display: none;
+        display: flex;
         flex-direction: column;
         flex: 1;
         min-height: 0;
         overflow: hidden;
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        transform: translate3d(100%, 0, 0);
+        pointer-events: none;
+        will-change: transform;
+        backface-visibility: hidden;
+        -webkit-backface-visibility: hidden;
       }
       .view.visible {
-        display: flex;
+        transform: translate3d(0, 0, 0);
+        pointer-events: auto;
+      }
+      .view.animating {
+        transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+      }
+      /* edge shadow on the foreground view during swipe (iOS-style) */
+      .view::before {
+        content: "";
+        position: absolute;
+        top: 0; bottom: 0; left: -20px;
+        width: 20px;
+        background: linear-gradient(to right, transparent, rgba(0,0,0,0.15));
+        opacity: 0;
+        pointer-events: none;
+        z-index: 999;
+      }
+      .view.swiping::before {
+        opacity: 1;
+      }
+      /* desktop: subtle fade */
+      @media (min-width: 769px) {
+        .view.animating {
+          transition: opacity 0.15s ease;
+        }
       }
 
       .list {
@@ -131,29 +171,58 @@
       .card {
         background: #111;
         border: 1px solid #1a1a1a;
-        border-radius: 3px;
-        padding: 6px 8px;
-        margin-bottom: 3px;
+        border-left: 3px solid #333;
+        border-radius: 4px;
+        padding: 12px 10px;
+        margin-bottom: 4px;
+        min-height: 56px;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
-        transition: all 0.15s ease;
+        transition: transform 0.1s ease, background 0.1s ease;
       }
       .card:active {
         background: #161616;
-        border-color: #00ff41;
+        transform: scale(0.98);
       }
+      .card.attention { border-left-color: #ffcc00; }
+      .card.active-session { border-left-color: #00ff41; }
+      .card.idle-session { border-left-color: #333; }
       .dot {
-        width: 7px;
-        height: 7px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
         flex-shrink: 0;
       }
       .dot.green {
         background: #00ff41;
-        box-shadow: 0 0 4px #00ff4160;
+        box-shadow: 0 0 6px #00ff4160;
+        animation: dot-glow 2s ease-in-out infinite;
+      }
+      @keyframes dot-glow {
+        0%, 100% { box-shadow: 0 0 4px #00ff4140; }
+        50% { box-shadow: 0 0 8px #00ff4180; }
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      .card-stagger { animation: fadeIn 0.2s ease both; }
+      /* scanlines overlay — toggled via .scanlines on body */
+      body.scanlines::after {
+        content: "";
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 3px);
+        pointer-events: none;
+        z-index: 9999;
+      }
+      /* master animation kill switch */
+      body.no-animations, body.no-animations * {
+        transition: none !important;
+        animation: none !important;
       }
       .dot.blue {
         background: #00ff41;
@@ -162,23 +231,38 @@
         background: #333;
       }
       .card-name {
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 700;
         color: #00ff41;
         text-transform: uppercase;
-        letter-spacing: 1.5px;
+        letter-spacing: 1.2px;
+        text-shadow: 0 0 6px rgba(0,255,65,0.25);
       }
       .card-preview {
         font-size: 11px;
-        color: #4a4a4a;
+        color: #555;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        line-height: 1.4;
         max-width: 100%;
+        white-space: pre-line;
       }
       .card-info {
         flex: 1;
         min-width: 0;
+      }
+      @media (min-width: 769px) {
+        .card {
+          padding: 6px 8px;
+          min-height: 0;
+          border-left-width: 2px;
+          margin-bottom: 3px;
+        }
+        .card-name { font-size: 12px; letter-spacing: 1.5px; }
+        .card-preview { -webkit-line-clamp: 1; }
+        .dot { width: 7px; height: 7px; }
       }
       .new-btn {
         background: #1a1a1a;
@@ -689,6 +773,14 @@
         color: #555;
         white-space: nowrap;
       }
+      .ralph-machine-label {
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #666;
+        margin-top: 4px;
+        text-align: right;
+      }
       .ralph-status {
         font-size: 9px;
         text-transform: uppercase;
@@ -730,6 +822,64 @@
         white-space: pre-wrap;
         word-break: break-all;
         -webkit-overflow-scrolling: touch;
+      }
+      .ralph-iter-card {
+        margin: 4px 10px;
+        border: 1px solid #1a1a1a;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .ralph-iter-card.active { border-left: 3px solid #00ff41; }
+      .ralph-iter-card.done { border-left: 3px solid #555; }
+      .ralph-iter-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        background: #111;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .ralph-iter-header:active { background: #161616; }
+      .ralph-iter-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #00ff41;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+      .ralph-iter-task {
+        font-size: 11px;
+        color: #888;
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 80vw;
+      }
+      .ralph-iter-chevron {
+        color: #555;
+        font-size: 12px;
+        transition: transform 0.2s ease;
+      }
+      .ralph-iter-card.expanded .ralph-iter-chevron { transform: rotate(90deg); }
+      .ralph-iter-body {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+      }
+      .ralph-iter-card.expanded .ralph-iter-body {
+        max-height: 5000px;
+      }
+      .ralph-iter-body pre {
+        margin: 0;
+        padding: 8px 12px;
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+        font-size: 10px;
+        color: #666;
+        white-space: pre-wrap;
+        word-break: break-all;
+        border-top: 1px solid #1a1a1a;
       }
       .ralph-actions {
         display: flex;
@@ -860,6 +1010,7 @@
       </div>
     </header>
 
+    <div id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible">
       <div id="session-list" class="list"></div>
@@ -894,6 +1045,18 @@
           <div id="machines-list"></div>
           <button onclick="discoverMachines()" style="margin-top:8px;background:#1a1a1a;border:1px solid rgba(0,255,65,0.4);border-radius:10px;padding:8px 14px;color:#00ff41;font-size:11px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:transform 0.1s ease;width:100%;box-shadow:0 2px 4px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.04)">Discover Tailnet</button>
           <div id="discover-status" style="margin-top:4px;font-size:10px;color:#555"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Effects</div>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-animations" checked onchange="toggleSetting('animations', this.checked)"> Animations
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-haptics" checked onchange="toggleSetting('haptics', this.checked)"> Haptic feedback
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-scanlines" onchange="toggleSetting('scanlines', this.checked)"> Scanlines
+          </label>
         </div>
         <div class="settings-section">
           <div class="settings-label">About</div>
@@ -961,13 +1124,24 @@
     <!-- Ralph detail view -->
     <div id="ralph-detail-view" class="view">
       <div id="ralph-detail-header" class="ralph-detail-header"></div>
-      <pre id="ralph-log" class="ralph-log"></pre>
+      <div id="ralph-log-container" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch">
+        <div id="ralph-iterations"></div>
+        <pre id="ralph-log" class="ralph-log" style="display:none"></pre>
+        <div style="padding:4px 10px 8px">
+          <span id="ralph-log-toggle" style="font-size:11px;color:#555;cursor:pointer;text-transform:uppercase;letter-spacing:1px" onclick="toggleRawLog()">view raw log</span>
+        </div>
+      </div>
       <div id="ralph-actions" class="ralph-actions"></div>
     </div>
 
     <!-- Ralph start form view -->
     <div id="ralph-start-view" class="view">
       <div class="ralph-start-form">
+        <div id="ralph-machine-picker" style="display:none">
+          <label for="ralph-machine-select">Machine</label>
+          <select id="ralph-machine-select"></select>
+        </div>
+
         <label for="ralph-project-select">Project</label>
         <select id="ralph-project-select"></select>
 
@@ -1005,8 +1179,31 @@
         <button class="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
       </div>
     </div>
+    </div><!-- /view-container -->
 
     <script>
+      // ── Settings (persisted to localStorage) ──
+      const wpSettings = JSON.parse(localStorage.getItem("wp-effects") || '{"animations":true,"haptics":true,"scanlines":false}');
+      function toggleSetting(key, val) {
+        wpSettings[key] = val;
+        localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
+        applySetting(key, val);
+      }
+      function applySetting(key, val) {
+        if (key === "animations") document.body.classList.toggle("no-animations", !val);
+        if (key === "scanlines") document.body.classList.toggle("scanlines", val);
+      }
+      function initSettings() {
+        Object.entries(wpSettings).forEach(([k, v]) => {
+          applySetting(k, v);
+          const el = document.getElementById("setting-" + k);
+          if (el) el.checked = v;
+        });
+      }
+      function haptic(pattern) {
+        if (wpSettings.haptics && navigator.vibrate) navigator.vibrate(pattern);
+      }
+
       let currentSession = null;
       let currentMachine = ""; // "" = self, URL string = remote
       let currentView = "sessions";
@@ -1016,6 +1213,7 @@
       let sessionRefreshTimer = null;
       let ralphRefreshTimer = null;
       let currentRalphProject = null;
+      let currentRalphMachine = ""; // "" = self, URL string = remote
       let ralphLogPollTimer = null;
       let currentRalphPlanFile = "";
       let desktopTerm = null;       // xterm.js Terminal instance
@@ -1088,12 +1286,83 @@
         return res.json();
       }
 
-      function showView(name) {
+      // set by swipe engine so showView() skips animation after gesture already handled it
+      let swipeNavigated = false;
+
+      // navigation hierarchy — higher depth = "deeper" (forward = left, back = right)
+      const VIEW_DEPTH = {
+        sessions: 0,
+        projects: 1,
+        agent: 2,
+        settings: 1,
+        terminal: 1,
+        ralph: 1,
+        "ralph-detail": 2,
+        "ralph-start": 2,
+      };
+
+      function showView(name, skipAnimation) {
+        const prevView = currentView;
+        const prevEl = document.getElementById(prevView + "-view");
+        const nextEl = document.getElementById(name + "-view");
+        const isMobile = !isDesktop();
+        const wasSwipe = swipeNavigated;
+        if (swipeNavigated) { skipAnimation = true; swipeNavigated = false; }
+        const animate = isMobile && !skipAnimation && prevView !== name && prevEl && nextEl;
+        const animateHeader = isMobile && prevView !== name && !skipAnimation || wasSwipe;
+        const goingForward = (VIEW_DEPTH[name] || 0) > (VIEW_DEPTH[prevView] || 0);
+
         currentView = name;
-        document
-          .querySelectorAll(".view")
-          .forEach((v) => v.classList.remove("visible"));
-        document.getElementById(name + "-view").classList.add("visible");
+
+        if (animate) {
+          const fg = goingForward ? nextEl : prevEl;
+          const bg = goingForward ? prevEl : nextEl;
+
+          bg.style.transition = "none";
+          bg.style.transform = goingForward ? "translate3d(0,0,0)" : "translate3d(-30%,0,0)";
+          bg.classList.add("visible");
+          bg.style.zIndex = "0";
+
+          fg.style.transition = "none";
+          fg.style.transform = goingForward ? "translate3d(100%,0,0)" : "translate3d(0,0,0)";
+          fg.classList.add("visible", "swiping");
+          fg.style.zIndex = "2";
+
+          fg.offsetHeight;
+
+          const dur = "0.3s";
+          const ease = "cubic-bezier(0.2, 0.9, 0.3, 1)";
+          fg.style.transition = `transform ${dur} ${ease}`;
+          bg.style.transition = `transform ${dur} ${ease}`;
+
+          fg.style.transform = goingForward ? "translate3d(0,0,0)" : "translate3d(100%,0,0)";
+          bg.style.transform = goingForward ? "translate3d(-30%,0,0)" : "translate3d(0,0,0)";
+
+          let cleaned = false;
+          const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            [fg, bg].forEach(el => {
+              el.style.transition = "";
+              el.style.zIndex = "";
+              el.style.transform = "";
+              el.classList.remove("swiping");
+            });
+            document.querySelectorAll(".view").forEach(v => {
+              if (v !== nextEl) v.classList.remove("visible");
+            });
+            nextEl.classList.add("visible");
+          };
+          fg.addEventListener("transitionend", cleanup, { once: true });
+          setTimeout(cleanup, 350);
+        } else {
+          // never remove .visible from target — prevents black flash
+          document.querySelectorAll(".view").forEach(v => {
+            if (v !== nextEl) v.classList.remove("visible", "animating", "swiping");
+          });
+          nextEl.classList.add("visible");
+          nextEl.style.transform = "";
+        }
 
         const back = document.getElementById("back-btn");
         const title = document.getElementById("header-title");
@@ -1105,129 +1374,115 @@
         const wolfIcon = document.getElementById("wolf-icon");
         const headerCenter = document.getElementById("header-center");
 
-        switcher.style.display = "none";
-        switcher.classList.remove("chip");
-        title.style.display = "";
-        title.style.cursor = "";
-        title.onclick = null;
-        document.getElementById("search-btn").style.display = "none";
-        document.getElementById("header-machine-label").style.display = "none";
-        headerCenter.style.transform = "";
-        ralphBtn.style.display = "none";
+        // Stop timers immediately (don't defer these)
+        if (sessionRefreshTimer) { clearInterval(sessionRefreshTimer); sessionRefreshTimer = null; }
+        if (ralphRefreshTimer) { clearInterval(ralphRefreshTimer); ralphRefreshTimer = null; }
+        if (ralphLogPollTimer) { clearInterval(ralphLogPollTimer); ralphLogPollTimer = null; }
 
-        // Stop session auto-refresh when leaving sessions view
-        if (sessionRefreshTimer) {
-          clearInterval(sessionRefreshTimer);
-          sessionRefreshTimer = null;
-        }
-        // Stop ralph timers when leaving ralph views
-        if (ralphRefreshTimer) {
-          clearInterval(ralphRefreshTimer);
-          ralphRefreshTimer = null;
-        }
-        if (ralphLogPollTimer) {
-          clearInterval(ralphLogPollTimer);
-          ralphLogPollTimer = null;
-        }
-
-        if (name === "sessions") {
-          back.style.display = "none";
-          back.onclick = null;
-          gear.style.display = "";
-          ralphBtn.style.display = "";
-          title.textContent = "wolfpack";
-          wolfIcon.style.display = "";
-          // Auto-refresh session list every 5s
-          sessionRefreshTimer = setInterval(loadSessions, 5000);
-        } else if (name === "projects") {
-          back.style.display = "block";
-          back.onclick = () => {
-            stopPolling();
-            showView("sessions");
-            loadSessions();
-          };
-          gear.style.display = "none";
-          title.textContent = "select project";
-          wolfIcon.style.display = "none";
-        } else if (name === "agent") {
-          back.style.display = "block";
-          back.onclick = () => {
-            showView("projects");
-          };
-          gear.style.display = "none";
-          title.textContent = "select agent";
-          wolfIcon.style.display = "none";
-        } else if (name === "settings") {
-          back.style.display = "block";
-          back.onclick = () => {
-            showView("sessions");
-            loadSessions();
-          };
-          gear.style.display = "none";
-          title.textContent = "settings";
-          wolfIcon.style.display = "none";
-        } else if (name === "terminal") {
-          back.style.display = "block";
-          back.onclick = () => {
-            if (useDesktopTerminal) {
-              destroyDesktopTerminal();
-            } else {
-              stopPolling();
-            }
-            closeSearch();
-            useDesktopTerminal = false;
-            currentSession = null;
-            currentMachine = "";
-            showView("sessions");
-            loadSessions();
-          };
-          gear.style.display = "none";
-          title.style.display = "none";
-          wolfIcon.style.display = "";
-          loadSessionSwitcher();
-          switcher.classList.add("chip");
-          switcher.style.display = "";
+        const applyHeader = () => {
+          switcher.style.display = "none";
+          switcher.classList.remove("chip");
+          title.style.display = "";
+          title.style.cursor = "";
+          title.onclick = null;
+          document.getElementById("search-btn").style.display = "none";
+          document.getElementById("header-machine-label").style.display = "none";
           headerCenter.style.transform = "";
-          document.getElementById("search-btn").style.display = "";
-          const hml = document.getElementById("header-machine-label");
-          if (getMachines().length > 0) {
-            const mName = currentMachine
-              ? (getMachines().find(m => m.url === currentMachine)?.name || "remote")
-              : (selfName || "local");
-            hml.textContent = mName;
-            hml.style.display = "";
+          ralphBtn.style.display = "none";
+
+          if (name === "sessions") {
+            back.style.display = "none";
+            back.onclick = null;
+            gear.style.display = "";
+            ralphBtn.style.display = "";
+            title.textContent = "wolfpack";
+            wolfIcon.style.display = "";
+            sessionRefreshTimer = setInterval(loadSessions, 5000);
+          } else if (name === "projects") {
+            back.style.display = "block";
+            back.onclick = () => { stopPolling(); showView("sessions"); loadSessions(); };
+            gear.style.display = "none";
+            title.textContent = "select project";
+            wolfIcon.style.display = "none";
+          } else if (name === "agent") {
+            back.style.display = "block";
+            back.onclick = () => { showView("projects"); };
+            gear.style.display = "none";
+            title.textContent = "select agent";
+            wolfIcon.style.display = "none";
+          } else if (name === "settings") {
+            back.style.display = "block";
+            back.onclick = () => { showView("sessions"); loadSessions(); };
+            gear.style.display = "none";
+            title.textContent = "settings";
+            wolfIcon.style.display = "none";
+          } else if (name === "terminal") {
+            back.style.display = "block";
+            back.onclick = () => {
+              if (useDesktopTerminal) { destroyDesktopTerminal(); } else { stopPolling(); }
+              closeSearch();
+              useDesktopTerminal = false;
+              currentSession = null;
+              currentMachine = "";
+              showView("sessions");
+              loadSessions();
+            };
+            gear.style.display = "none";
+            title.style.display = "none";
+            wolfIcon.style.display = "";
+            loadSessionSwitcher();
+            switcher.classList.add("chip");
+            switcher.style.display = "";
+            headerCenter.style.transform = "";
+            document.getElementById("search-btn").style.display = "";
+            const hml = document.getElementById("header-machine-label");
+            if (getMachines().length > 0) {
+              const mName = currentMachine
+                ? (getMachines().find(m => m.url === currentMachine)?.name || "remote")
+                : (selfName || "local");
+              hml.textContent = mName;
+              hml.style.display = "";
+            }
+            loadSessionSwitcher();
+          } else if (name === "ralph") {
+            back.style.display = "block";
+            back.onclick = () => { showView("sessions"); loadSessions(); };
+            gear.style.display = "none";
+            title.textContent = "ralph loops";
+            wolfIcon.style.display = "none";
+            loadRalphLoops();
+            ralphRefreshTimer = setInterval(loadRalphLoops, 3000);
+          } else if (name === "ralph-detail") {
+            back.style.display = "block";
+            back.onclick = () => { showView("ralph"); };
+            gear.style.display = "none";
+            const ralphMachineSuffix = currentRalphMachine
+              ? " @ " + (getMachines().find(m => m.url === currentRalphMachine)?.name || "remote")
+              : "";
+            title.textContent = (currentRalphProject || "ralph") + ralphMachineSuffix;
+            wolfIcon.style.display = "none";
+            refreshRalphDetail();
+            ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
+          } else if (name === "ralph-start") {
+            back.style.display = "block";
+            back.onclick = () => { showView("ralph"); };
+            gear.style.display = "none";
+            title.textContent = "start ralph";
+            wolfIcon.style.display = "none";
+            loadRalphStartForm();
           }
-          loadSessionSwitcher();
-        } else if (name === "ralph") {
-          back.style.display = "block";
-          back.onclick = () => {
-            showView("sessions");
-            loadSessions();
-          };
-          gear.style.display = "none";
-          title.textContent = "ralph loops";
-          wolfIcon.style.display = "none";
-          loadRalphLoops();
-          ralphRefreshTimer = setInterval(loadRalphLoops, 3000);
-        } else if (name === "ralph-detail") {
-          back.style.display = "block";
-          back.onclick = () => {
-            showView("ralph");
-          };
-          gear.style.display = "none";
-          title.textContent = currentRalphProject || "ralph";
-          wolfIcon.style.display = "none";
-          refreshRalphDetail();
-          ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
-        } else if (name === "ralph-start") {
-          back.style.display = "block";
-          back.onclick = () => {
-            showView("ralph");
-          };
-          gear.style.display = "none";
-          title.textContent = "start ralph";
-          wolfIcon.style.display = "none";
-          loadRalphStartForm();
+        };
+
+        if (animateHeader) {
+          // crossfade entire header as one unit
+          const hdr = document.querySelector("header");
+          hdr.classList.add("fading");
+          setTimeout(() => {
+            applyHeader();
+            hdr.classList.remove("fading");
+          }, 150);
+        } else {
+          applyHeader();
         }
       }
 
@@ -1235,9 +1490,21 @@
 
       async function loadRalphLoops() {
         const el = document.getElementById("ralph-list");
+        const machines = getMachines();
+        const multiMachine = machines.length > 0;
+        const targets = [
+          { url: "", name: selfName || "this machine" },
+          ...machines.map(m => ({ url: m.url, name: m.name })),
+        ];
         try {
-          const data = await api("/ralph");
-          const loops = data.loops || [];
+          const results = await Promise.all(
+            targets.map(t =>
+              api("/ralph", undefined, t.url || undefined)
+                .then(data => (data.loops || []).map(loop => ({ ...loop, machineUrl: t.url, machineName: t.name })))
+                .catch(() => [])
+            )
+          );
+          const loops = results.flat();
           if (loops.length === 0) {
             el.innerHTML = '<div class="ralph-empty">no ralph loops detected</div>';
             return;
@@ -1256,17 +1523,19 @@
             const taskLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
             const iterLabel = loop.totalIterations > 0 ? loop.iteration + '/' + loop.totalIterations + ' iter' : '';
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
-            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + escAttr(loop.project) + '\')">' +
+            const machineLabel = multiMachine ? '<div class="ralph-machine-label">' + esc(loop.machineName) + '</div>' : '';
+            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + escAttr(loop.project) + '\', \'' + escAttr(loop.machineUrl) + '\')">' +
               '<div class="ralph-card-header">' +
                 '<span class="ralph-card-name"><span class="dot ' + dotClass + '"></span>' + esc(loop.project) + '</span>' +
                 '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
-                '<button class="kill-btn" onclick="dismissRalph(\'' + escAttr(loop.project) + '\', event)">&times;</button>' +
+                '<button class="kill-btn" onclick="dismissRalph(\'' + escAttr(loop.project) + '\', event, \'' + escAttr(loop.machineUrl) + '\')">&times;</button>' +
               '</div>' +
               '<div class="ralph-progress">' +
                 '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + taskPct + '%"></div></div>' +
                 '<span class="ralph-iter">' + taskLabel + '</span>' +
               '</div>' +
               (iterLabel ? '<div class="ralph-iter" style="text-align:right;margin-top:2px">' + iterLabel + '</div>' : '') +
+              machineLabel +
               lastOut +
             '</div>';
           }).join("");
@@ -1275,8 +1544,9 @@
         }
       }
 
-      function openRalphDetail(project) {
+      function openRalphDetail(project, machineUrl) {
         currentRalphProject = project;
+        currentRalphMachine = machineUrl || "";
         showView("ralph-detail");
       }
 
@@ -1286,7 +1556,7 @@
         const logEl = document.getElementById("ralph-log");
         const actions = document.getElementById("ralph-actions");
         try {
-          const data = await api("/ralph");
+          const data = await api("/ralph", undefined, currentRalphMachine);
           const loop = (data.loops || []).find(l => l.project === currentRalphProject);
           if (!loop) {
             header.innerHTML = '<span class="ralph-status failed">NOT FOUND</span>';
@@ -1331,15 +1601,75 @@
           header.innerHTML = '<span class="ralph-status failed">ERROR</span>';
         }
 
-        // fetch log
+        // fetch log and render iteration cards
         try {
-          const logData = await api("/ralph/log?project=" + encodeURIComponent(currentRalphProject));
+          const logData = await api("/ralph/log?project=" + encodeURIComponent(currentRalphProject), undefined, currentRalphMachine);
           if (logData.log != null) {
-            const wasScrolled = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+            const container = document.getElementById("ralph-log-container");
+            const wasScrolled = container.scrollTop + container.clientHeight >= container.scrollHeight - 30;
             logEl.textContent = logData.log;
-            if (wasScrolled) logEl.scrollTop = logEl.scrollHeight;
+            renderIterationCards(logData.log);
+            if (wasScrolled) container.scrollTop = container.scrollHeight;
           }
         } catch {}
+      }
+
+      function parseIterations(log) {
+        const sections = [];
+        const marker = /^=== 🥋 (.+?) ===$/gm;
+        let match, lastIdx = 0, lastTitle = null;
+        while ((match = marker.exec(log)) !== null) {
+          if (lastTitle !== null) {
+            sections.push({ title: lastTitle, body: log.slice(lastIdx, match.index).trim() });
+          }
+          lastTitle = match[1];
+          lastIdx = match.index + match[0].length;
+        }
+        if (lastTitle !== null) {
+          sections.push({ title: lastTitle, body: log.slice(lastIdx).trim() });
+        }
+        return sections;
+      }
+
+      function renderIterationCards(log) {
+        const el = document.getElementById("ralph-iterations");
+        const iterations = parseIterations(log);
+        if (!iterations.length) {
+          el.innerHTML = '<div style="padding:10px;color:#555;font-size:11px">no iterations yet</div>';
+          return;
+        }
+
+        // preserve expanded state
+        const expanded = new Set();
+        el.querySelectorAll(".ralph-iter-card.expanded").forEach(c => expanded.add(c.dataset.idx));
+
+        el.innerHTML = iterations.map((iter, i) => {
+          const isLast = i === iterations.length - 1;
+          const isOpen = expanded.has(String(i)) || (isLast && !expanded.size);
+          const taskLine = iter.body.match(/^task:\s*(.+)$/m);
+          const task = taskLine ? taskLine[1].replace(/^#+\s*/, "").replace(/^~~|~~$/g, "").replace(/^\d+[a-z]?\.\s*/, "") : "";
+          const cardClass = isLast ? "active" : "done";
+          return '<div class="ralph-iter-card ' + cardClass + (isOpen ? " expanded" : "") + '" data-idx="' + i + '">' +
+            '<div class="ralph-iter-header" onclick="this.parentElement.classList.toggle(\'expanded\')">' +
+              '<div>' +
+                '<div class="ralph-iter-title">' + esc(iter.title.replace(/ — .+$/, "")) + '</div>' +
+                (task ? '<div class="ralph-iter-task">' + esc(task) + '</div>' : '') +
+              '</div>' +
+              '<span class="ralph-iter-chevron">&#9656;</span>' +
+            '</div>' +
+            '<div class="ralph-iter-body"><pre>' + esc(iter.body) + '</pre></div>' +
+          '</div>';
+        }).join("");
+      }
+
+      function toggleRawLog() {
+        const logEl = document.getElementById("ralph-log");
+        const iterEl = document.getElementById("ralph-iterations");
+        const toggle = document.getElementById("ralph-log-toggle");
+        const showing = logEl.style.display !== "none";
+        logEl.style.display = showing ? "none" : "block";
+        iterEl.style.display = showing ? "" : "none";
+        toggle.textContent = showing ? "view raw log" : "view iterations";
       }
 
       async function cancelRalph() {
@@ -1350,17 +1680,50 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ project: currentRalphProject }),
-          });
+          }, currentRalphMachine);
           refreshRalphDetail();
         } catch (e) {
           alert("failed to cancel: " + e.message);
         }
       }
 
+      function getStartMachine() {
+        const sel = document.getElementById("ralph-machine-select");
+        return sel && sel.value ? sel.value : undefined;
+      }
+
       async function loadRalphStartForm() {
+        // Populate machine picker
+        const machines = getMachines();
+        const picker = document.getElementById("ralph-machine-picker");
+        const machineSel = document.getElementById("ralph-machine-select");
+        if (machines.length > 0) {
+          picker.style.display = "";
+          const opts = [
+            { url: "", name: selfName || "this machine" },
+            ...machines,
+          ];
+          machineSel.innerHTML = opts.map(m =>
+            '<option value="' + esc(m.url) + '">' + esc(m.name) + '</option>'
+          ).join("");
+          // Pre-select currentRalphMachine for restart flow
+          if (currentRalphMachine) {
+            machineSel.value = currentRalphMachine;
+          }
+          machineSel.onchange = () => loadStartFormData();
+        } else {
+          picker.style.display = "none";
+          machineSel.innerHTML = "";
+        }
+
+        await loadStartFormData();
+      }
+
+      async function loadStartFormData() {
+        const machine = getStartMachine();
         const sel = document.getElementById("ralph-project-select");
         try {
-          const data = await api("/projects");
+          const data = await api("/projects", undefined, machine);
           const projects = data.projects || [];
           sel.innerHTML = projects.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
           if (currentRalphProject && projects.includes(currentRalphProject)) {
@@ -1389,7 +1752,7 @@
         const planSel = document.getElementById("ralph-plan-select");
         if (!project) { planSel.innerHTML = '<option value="">select a project first</option>'; return; }
         try {
-          const data = await api("/ralph/plans?project=" + encodeURIComponent(project));
+          const data = await api("/ralph/plans?project=" + encodeURIComponent(project), undefined, getStartMachine());
           const plans = data.plans || [];
           if (plans.length === 0) {
             planSel.innerHTML = '<option value="">no .md files found</option>';
@@ -1414,7 +1777,7 @@
         const sel = document.getElementById("ralph-source-branch");
         if (!project) { sel.innerHTML = '<option value="">select a project first</option>'; return; }
         try {
-          const data = await api("/ralph/branches?project=" + encodeURIComponent(project));
+          const data = await api("/ralph/branches?project=" + encodeURIComponent(project), undefined, getStartMachine());
           const branches = data.branches || [];
           if (branches.length === 0) {
             sel.innerHTML = '<option value="">no branches found</option>';
@@ -1430,6 +1793,7 @@
       }
 
       async function startRalph() {
+        const machine = getStartMachine();
         const project = document.getElementById("ralph-project-select").value;
         const iterations = parseInt(document.getElementById("ralph-iterations-input").value) || 5;
         const planFile = document.getElementById("ralph-plan-select").value || undefined;
@@ -1440,7 +1804,7 @@
         // Warn if plan has no numbered tasks — worker will auto-number
         let format = false;
         try {
-          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile));
+          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile), undefined, machine);
           if (tc.total === 0) {
             if (!confirm("No numbered tasks in " + planFile + ". Ralph will number them automatically. Continue?")) return;
             format = true;
@@ -1462,7 +1826,7 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
-          });
+          }, machine);
           if (data.error) { alert(data.error); return; }
           currentRalphProject = project;
           showView("ralph");
@@ -1476,15 +1840,16 @@
         showView("ralph-start");
       }
 
-      async function dismissRalph(project, event) {
+      async function dismissRalph(project, event, machineUrl) {
         event.stopPropagation();
-        if (!confirm("delete plan file for " + project + "?")) return;
+        if (!confirm("dismiss ralph loop for " + project + "?")) return;
+        const deletePlan = confirm("also delete the plan file?");
         try {
           await api("/ralph/dismiss", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project }),
-          });
+            body: JSON.stringify({ project, deletePlan }),
+          }, machineUrl);
           loadRalphLoops();
         } catch (e) {
           alert("failed to dismiss: " + e.message);
@@ -1507,11 +1872,12 @@
         if (g.pending) {
           html += `<div style="padding:4px 4px;color:#555;font-size:11px">Connecting...</div>`;
         } else if (g.online && g.sessions.length) {
-          html += g.sessions.map(s => {
+          html += g.sessions.map((s, i) => {
             const lastLine = s.lastLine || "";
             const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
             const dotClass = needsAttention ? "yellow" : "green";
-            return `<div class="card" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
+            const cardClass = needsAttention ? "attention" : "active-session";
+            return `<div class="card card-stagger ${cardClass}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
               <div class="dot ${dotClass}"></div>
               <div class="card-info">
                 <div class="card-name">${esc(s.name)}</div>
@@ -1530,11 +1896,12 @@
       function renderSingleMachineHtml(g) {
         let html = '<div class="new-btn" onclick="showProjectPicker()">+ New Session</div>';
         if (g.online && g.sessions.length) {
-          html += g.sessions.map(s => {
+          html += g.sessions.map((s, i) => {
             const lastLine = s.lastLine || "";
             const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
             const dotClass = needsAttention ? "yellow" : "green";
-            return `<div class="card" onclick="openSession('${escAttr(s.name)}')">
+            const cardClass = needsAttention ? "attention" : "active-session";
+            return `<div class="card card-stagger ${cardClass}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}')">
               <div class="dot ${dotClass}"></div>
               <div class="card-info">
                 <div class="card-name">${esc(s.name)}</div>
@@ -2591,7 +2958,181 @@
           .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26");
       }
 
-      showView("sessions");
+      // ── Swipe Gesture Engine (mobile only) ──
+      if ("ontouchstart" in window) {
+        const vc = document.getElementById("view-container");
+        let sx = 0, sy = 0, st = 0, dx = 0;
+        let locked = false, scrolling = false, rafId = 0;
+        let isBack = false;
+        let fgEl = null, bgEl = null;
+        let swipeCard = null;
+        const W = () => window.innerWidth;
+
+        const BACK_TARGET = {
+          terminal: "sessions", ralph: "sessions", "ralph-detail": "ralph",
+          projects: "sessions", agent: "projects", settings: "sessions",
+          "ralph-start": "ralph",
+        };
+
+        function applySwipe() {
+          if (!fgEl) return;
+          const progress = Math.min(Math.abs(dx) / W(), 1);
+          if (isBack) {
+            fgEl.style.transform = `translate3d(${Math.max(0, dx)}px, 0, 0)`;
+            bgEl.style.transform = `translate3d(${-30 + progress * 30}%, 0, 0)`;
+          } else {
+            // card follows finger, terminal peeks in from right
+            if (swipeCard) swipeCard.style.transform = `translate3d(${Math.min(0, dx)}px, 0, 0)`;
+            bgEl.style.transform = `translate3d(${100 - progress * 100}%, 0, 0)`;
+          }
+        }
+
+        vc.addEventListener("touchstart", (e) => {
+          if (e.touches.length !== 1) return;
+          sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+          st = Date.now(); dx = 0;
+          locked = false; scrolling = false;
+          fgEl = null; bgEl = null; swipeCard = null;
+        }, { passive: true });
+
+        vc.addEventListener("touchmove", (e) => {
+          if (e.touches.length !== 1 || scrolling) return;
+          const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
+          dx = cx - sx;
+          const dy = cy - sy;
+
+          if (!locked) {
+            if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+            if (Math.abs(dy) > Math.abs(dx) * 0.7) { scrolling = true; return; }
+            locked = true;
+
+            const backTarget = BACK_TARGET[currentView];
+            if (dx > 0 && backTarget) {
+              isBack = true;
+              fgEl = document.getElementById(currentView + "-view");
+              bgEl = document.getElementById(backTarget + "-view");
+            } else if (dx < 0) {
+              const card = e.target.closest(".card, .ralph-card");
+              if (!card) { scrolling = true; return; }
+              swipeCard = card;
+              isBack = false;
+              fgEl = document.getElementById(currentView + "-view");
+              const targetView = currentView === "sessions" ? "terminal" : currentView === "ralph" ? "ralph-detail" : null;
+              if (!targetView) { scrolling = true; return; }
+              bgEl = document.getElementById(targetView + "-view");
+            } else { scrolling = true; return; }
+
+            if (isBack) {
+              fgEl.style.transition = "none";
+              fgEl.style.zIndex = "2";
+              fgEl.classList.add("swiping");
+              bgEl.style.transition = "none";
+              bgEl.style.transform = "translate3d(-30%, 0, 0)";
+              bgEl.classList.add("visible");
+              bgEl.style.zIndex = "0";
+            } else {
+              // forward: card drags independently, terminal peeks behind
+              if (swipeCard) swipeCard.style.transition = "none";
+              bgEl.style.transition = "none";
+              bgEl.style.transform = "translate3d(100%, 0, 0)";
+              bgEl.classList.add("visible");
+              bgEl.style.zIndex = "2";
+              fgEl.style.zIndex = "1";
+            }
+          }
+
+          if (locked) e.preventDefault();
+
+          cancelAnimationFrame(rafId);
+          rafId = requestAnimationFrame(applySwipe);
+        }, { passive: false });
+
+        vc.addEventListener("touchend", () => {
+          cancelAnimationFrame(rafId);
+          if (!fgEl || !locked) return;
+
+          const elapsed = Date.now() - st;
+          const velocity = Math.abs(dx) / Math.max(elapsed, 1) * 1000;
+          const committed = Math.abs(dx) > 60 || (velocity > 250 && Math.abs(dx) > 15);
+          const shouldComplete = isBack ? (committed && dx > 0) : (committed && dx < 0);
+
+          // velocity-adaptive duration: fast flick = short animation, slow drag = longer
+          const baseDur = shouldComplete ? 0.22 : 0.3;
+          const speedFactor = Math.min(velocity / 1500, 1);
+          const dur = Math.max(0.12, baseDur * (1 - speedFactor * 0.6)).toFixed(2) + "s";
+          const ease = "cubic-bezier(0.2, 0.9, 0.3, 1)";
+          const trans = `transform ${dur} ${ease}`;
+
+          if (isBack) {
+            fgEl.style.transition = trans;
+            bgEl.style.transition = trans;
+            if (shouldComplete) {
+              fgEl.style.transform = "translate3d(100%, 0, 0)";
+              bgEl.style.transform = "translate3d(0, 0, 0)";
+            } else {
+              fgEl.style.transform = "translate3d(0, 0, 0)";
+              bgEl.style.transform = "translate3d(-30%, 0, 0)";
+            }
+          } else {
+            // forward: animate the card + terminal independently
+            if (swipeCard) swipeCard.style.transition = trans;
+            bgEl.style.transition = trans;
+            if (shouldComplete) {
+              if (swipeCard) swipeCard.style.transform = `translate3d(-${W()}px, 0, 0)`;
+              bgEl.style.transform = "translate3d(0, 0, 0)";
+            } else {
+              if (swipeCard) swipeCard.style.transform = "translate3d(0, 0, 0)";
+              bgEl.style.transform = "translate3d(100%, 0, 0)";
+            }
+          }
+
+          const fg = fgEl, bg = bgEl, card = swipeCard, back = isBack;
+          const durMs = parseFloat(dur) * 1000 + 50;
+          let finalized = false;
+          const finalize = () => {
+            if (finalized) return;
+            finalized = true;
+            if (card) { card.style.transition = ""; card.style.transform = ""; }
+
+            if (!shouldComplete) {
+              // cancelled — departing view (bg) snaps away, reset both
+              bg.classList.remove("visible");
+              [fg, bg].forEach(el => {
+                el.style.transition = ""; el.style.zIndex = ""; el.style.transform = ""; el.classList.remove("swiping");
+              });
+              return;
+            }
+
+            // remove .visible from departing view BEFORE clearing transforms to prevent flash
+            fg.classList.remove("visible");
+            [fg, bg].forEach(el => {
+              el.style.transition = ""; el.style.zIndex = ""; el.style.transform = ""; el.classList.remove("swiping");
+            });
+
+            haptic(10);
+            swipeNavigated = true;
+
+            if (back) {
+              const backView = BACK_TARGET[currentView];
+              if (backView === "sessions") {
+                const backBtn = document.getElementById("back-btn");
+                if (backBtn && backBtn.onclick) backBtn.onclick();
+              } else {
+                showView(backView, true);
+              }
+            } else if (card) {
+              card.click();
+            }
+          };
+          fg.addEventListener("transitionend", finalize, { once: true });
+          setTimeout(finalize, durMs);
+
+          fgEl = null; bgEl = null; swipeCard = null;
+        }, { passive: true });
+      }
+
+      initSettings();
+      showView("sessions", true);
       loadSessions();
 
       // Unregister any stale service workers (no longer used)

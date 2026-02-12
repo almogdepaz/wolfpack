@@ -1,11 +1,25 @@
 {
-  "name": "wolfpack",
-  "version": "0.1.0",
+  "name": "wolfpack-bridge",
+  "version": "1.2.0",
   "type": "module",
-  "description": "Mobile bridge to your AI coding agents via tmux",
-  "scripts": {
-    "test": "bun test"
+  "description": "Mobile command center for tmux-based AI agent sessions",
+  "bin": {
+    "wolfpack": "./bin/run.cjs"
   },
+  "files": [
+    "bin/",
+    "dist/"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "postinstall": "node bin/install.cjs"
+  },
+  "keywords": ["tmux", "ai", "agents", "mobile", "pwa", "terminal", "claude", "codex"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Vibe-Company/wolfpack"
+  },
+  "license": "MIT",
   "dependencies": {
     "@xterm/addon-search": "^0.16.0",
     "qrcode-terminal": "^0.12.0",

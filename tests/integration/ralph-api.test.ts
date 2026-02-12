@@ -360,9 +360,9 @@ const routes: Record<
   },
 
   "POST /api/ralph/dismiss": async (req, res) => {
-    const body = await parseBody<{ project?: string }>(req, res);
+    const body = await parseBody<{ project?: string; deletePlan?: boolean }>(req, res);
     if (!body) return;
-    const { project } = body;
+    const { project, deletePlan } = body;
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
@@ -371,23 +371,41 @@ const routes: Record<
     if (status?.active) {
       return json(res, { error: "cannot dismiss active loop — cancel it first" }, 409);
     }
-    if (!status?.planFile) {
-      return json(res, { error: "no plan file found" }, 404);
+    if (!status) {
+      return json(res, { error: "no ralph log found" }, 404);
     }
-    // validate plan file name from log to prevent path traversal
-    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(status.planFile) || status.planFile.includes("..")) {
-      return json(res, { error: "invalid plan file name in log" }, 400);
+
+    const SAFE_FILENAME = /^[a-zA-Z0-9._\- ]+$/;
+    const deleted: string[] = [];
+    const failed: string[] = [];
+
+    const tryDelete = (path: string, label: string) => {
+      try {
+        if (existsSync(path)) { unlinkSync(path); deleted.push(label); }
+      } catch { failed.push(label); }
+    };
+
+    // always delete .ralph.log (hides the card)
+    tryDelete(join(projectDir, ".ralph.log"), ".ralph.log");
+
+    // always clean up stale .ralph.lock
+    tryDelete(join(projectDir, ".ralph.lock"), ".ralph.lock");
+
+    // always delete progress file if valid
+    if (status.progressFile && SAFE_FILENAME.test(status.progressFile) && !status.progressFile.includes("..")) {
+      tryDelete(join(projectDir, status.progressFile), status.progressFile);
     }
-    const planPath = join(projectDir, status.planFile);
-    if (!existsSync(planPath)) {
-      return json(res, { error: "plan file already deleted" }, 404);
+
+    // conditionally delete plan file
+    if (deletePlan && status.planFile) {
+      if (SAFE_FILENAME.test(status.planFile) && !status.planFile.includes("..")) {
+        tryDelete(join(projectDir, status.planFile), status.planFile);
+      } else {
+        failed.push(status.planFile);
+      }
     }
-    try {
-      unlinkSync(planPath);
-      json(res, { ok: true, deleted: status.planFile });
-    } catch {
-      json(res, { error: "failed to delete plan file" }, 500);
-    }
+
+    json(res, { ok: true, deleted, failed });
   },
 };
 
@@ -749,33 +767,54 @@ describe("POST /api/ralph/dismiss", () => {
     cleanupProject("dismiss-traversal");
   });
 
-  test("plan deleted successfully", async () => {
-    setupProject("dismiss-test", {
+  test("dismiss deletes log, lock, and progress — keeps plan by default", async () => {
+    const dir = setupProject("dismiss-test", {
       plan: { name: "MY-PLAN.md", content: "- [x] done\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: MY-PLAN.md\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: MY-PLAN.md\nprogress: progress.txt\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
     });
+    writeFileSync(join(dir, ".ralph.lock"), "2");
+    writeFileSync(join(dir, "progress.txt"), "iteration 1 done");
 
     const res = await post("/api/ralph/dismiss", { project: "dismiss-test" });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
-    expect(data.deleted).toBe("MY-PLAN.md");
+    expect(data.deleted).toContain(".ralph.log");
+    expect(data.deleted).toContain(".ralph.lock");
+    expect(data.deleted).toContain("progress.txt");
+    expect(data.deleted).not.toContain("MY-PLAN.md");
 
-    // verify file was actually deleted
-    expect(existsSync(join(TEST_DEV_DIR, "dismiss-test", "MY-PLAN.md"))).toBe(false);
+    expect(existsSync(join(dir, "MY-PLAN.md"))).toBe(true);
+    expect(existsSync(join(dir, ".ralph.log"))).toBe(false);
+    expect(existsSync(join(dir, ".ralph.lock"))).toBe(false);
+    expect(existsSync(join(dir, "progress.txt"))).toBe(false);
   });
 
-  test("path traversal in log planFile → blocked", async () => {
+  test("dismiss with deletePlan deletes plan file too", async () => {
+    const dir = setupProject("dismiss-test", {
+      plan: { name: "MY-PLAN.md", content: "- [x] done\n" },
+      log: `ralph — 5 iterations\nagent: claude\nplan: MY-PLAN.md\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
+    });
+
+    const res = await post("/api/ralph/dismiss", { project: "dismiss-test", deletePlan: true });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.deleted).toContain("MY-PLAN.md");
+    expect(existsSync(join(dir, "MY-PLAN.md"))).toBe(false);
+  });
+
+  test("path traversal in plan file name → reported in failed", async () => {
     const dir = setupProject("dismiss-traversal");
-    // Manually write a .ralph.log with a path-traversal planFile
     writeFileSync(join(dir, ".ralph.log"),
       `ralph — 5 iterations\nagent: claude\nplan: ../../etc/passwd\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
     );
 
-    const res = await post("/api/ralph/dismiss", { project: "dismiss-traversal" });
-    expect(res.status).toBe(400);
+    const res = await post("/api/ralph/dismiss", { project: "dismiss-traversal", deletePlan: true });
+    expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.error).toBe("invalid plan file name in log");
+    expect(data.ok).toBe(true);
+    expect(data.failed).toContain("../../etc/passwd");
   });
 
   test("active loop → rejected with 409", async () => {
@@ -790,29 +829,13 @@ describe("POST /api/ralph/dismiss", () => {
     expect(data.error).toBe("cannot dismiss active loop — cancel it first");
   });
 
-  test("no plan file in log → 404", async () => {
-    const dir = setupProject("dismiss-noplan");
-    // Log with no plan: line
-    writeFileSync(join(dir, ".ralph.log"),
-      `ralph — 5 iterations\nagent: claude\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
-    );
-
-    const res = await post("/api/ralph/dismiss", { project: "dismiss-noplan" });
-    expect(res.status).toBe(404);
-    const data = await res.json();
-    expect(data.error).toBe("no plan file found");
-  });
-
-  test("plan file already deleted → 404", async () => {
-    const dir = setupProject("dismiss-test", {
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
-    });
-    // No plan file on disk
+  test("no ralph log → 404", async () => {
+    setupProject("dismiss-test");
 
     const res = await post("/api/ralph/dismiss", { project: "dismiss-test" });
     expect(res.status).toBe(404);
     const data = await res.json();
-    expect(data.error).toBe("plan file already deleted");
+    expect(data.error).toBe("no ralph log found");
   });
 
   test("invalid project name → 400", async () => {
@@ -820,16 +843,6 @@ describe("POST /api/ralph/dismiss", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe("invalid project name");
-  });
-
-  test("no ralph log at all → 404", async () => {
-    setupProject("dismiss-test"); // dir exists but no .ralph.log
-
-    const res = await post("/api/ralph/dismiss", { project: "dismiss-test" });
-    expect(res.status).toBe(404);
-    // status is null → !status?.planFile → 404
-    const data = await res.json();
-    expect(data.error).toBe("no plan file found");
   });
 });
 

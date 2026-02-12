@@ -546,7 +546,7 @@ const routes: Record<
       sessions.map(async (name) => {
         const pane = await capturePane(name);
         const lines = pane.trimEnd().split("\n");
-        const lastLine = lines[lines.length - 1]?.trim() || "";
+        const lastLine = lines.filter(l => l.trim()).slice(-2).map(l => l.trim()).join("\n") || "";
         return { name, lastLine };
       }),
     );
@@ -1043,9 +1043,9 @@ const routes: Record<
   },
 
   "POST /api/ralph/dismiss": async (req, res) => {
-    const body = await parseBody<{ project?: string }>(req, res);
+    const body = await parseBody<{ project?: string; deletePlan?: boolean }>(req, res);
     if (!body) return;
-    const { project } = body;
+    const { project, deletePlan } = body;
     if (!project || !isValidProjectName(project)) {
       return json(res, { error: "invalid project name" }, 400);
     }
@@ -1054,23 +1054,41 @@ const routes: Record<
     if (status?.active) {
       return json(res, { error: "cannot dismiss active loop — cancel it first" }, 409);
     }
-    if (!status?.planFile) {
-      return json(res, { error: "no plan file found" }, 404);
+    if (!status) {
+      return json(res, { error: "no ralph log found" }, 404);
     }
-    // validate plan file name from log to prevent path traversal
-    if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(status.planFile) || status.planFile.includes("..")) {
-      return json(res, { error: "invalid plan file name in log" }, 400);
+
+    const SAFE_FILENAME = /^[a-zA-Z0-9._\- ]+$/;
+    const deleted: string[] = [];
+    const failed: string[] = [];
+
+    const tryDelete = (path: string, label: string) => {
+      try {
+        if (existsSync(path)) { unlinkSync(path); deleted.push(label); }
+      } catch { failed.push(label); }
+    };
+
+    // always delete .ralph.log (hides the card)
+    tryDelete(join(projectDir, ".ralph.log"), ".ralph.log");
+
+    // always clean up stale .ralph.lock
+    tryDelete(join(projectDir, ".ralph.lock"), ".ralph.lock");
+
+    // always delete progress file if valid
+    if (status.progressFile && SAFE_FILENAME.test(status.progressFile) && !status.progressFile.includes("..")) {
+      tryDelete(join(projectDir, status.progressFile), status.progressFile);
     }
-    const planPath = join(projectDir, status.planFile);
-    if (!existsSync(planPath)) {
-      return json(res, { error: "plan file already deleted" }, 404);
+
+    // conditionally delete plan file
+    if (deletePlan && status.planFile) {
+      if (SAFE_FILENAME.test(status.planFile) && !status.planFile.includes("..")) {
+        tryDelete(join(projectDir, status.planFile), status.planFile);
+      } else {
+        failed.push(status.planFile);
+      }
     }
-    try {
-      unlinkSync(planPath);
-      json(res, { ok: true, deleted: status.planFile });
-    } catch {
-      json(res, { error: "failed to delete plan file" }, 500);
-    }
+
+    json(res, { ok: true, deleted, failed });
   },
 };
 
