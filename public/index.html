@@ -1706,9 +1706,12 @@
           machineSel.innerHTML = opts.map(m =>
             '<option value="' + esc(m.url) + '">' + esc(m.name) + '</option>'
           ).join("");
-          // Pre-select currentRalphMachine for restart flow
-          if (currentRalphMachine) {
+          if (restartingRalph && currentRalphMachine !== undefined) {
             machineSel.value = currentRalphMachine;
+            machineSel.disabled = true;
+          } else {
+            machineSel.disabled = false;
+            restartingRalph = false;
           }
           machineSel.onchange = () => loadStartFormData();
         } else {
@@ -1829,14 +1832,17 @@
           }, machine);
           if (data.error) { alert(data.error); return; }
           currentRalphProject = project;
+          restartingRalph = false;
           showView("ralph");
         } catch (e) {
           alert("failed to start: " + e.message);
         }
       }
 
+      let restartingRalph = false;
       function restartRalph(planFile) {
         currentRalphPlanFile = planFile || "";
+        restartingRalph = true;
         showView("ralph-start");
       }
 
@@ -2010,7 +2016,7 @@
         if (useDesktopTerminal) {
           initDesktopTerminal();
         } else {
-          document.getElementById("terminal").textContent = "";
+          // don't clear terminal — let first poll replace content seamlessly
           resizePane();
           startPolling();
         }
