@@ -40,6 +40,8 @@
         flex-shrink: 0;
         border-bottom: 1px solid #1a1a1a;
         transition: opacity 0.15s ease;
+        position: relative;
+        z-index: 100;
       }
       header.fading { opacity: 0; }
       .header-left {
@@ -979,6 +981,139 @@
         height: 100%;
         padding: 4px;
       }
+
+      /* ── Session drawer ── */
+      #session-chip {
+        display: none;
+        align-items: center;
+        gap: 5px;
+        border: 1px solid #282828;
+        border-radius: 10px;
+        padding: 6px 10px;
+        background: #1a1a1a;
+        color: #00ff41;
+        font-size: 11px;
+        font-family: inherit;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+        min-height: 34px;
+        max-width: 160px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        position: relative;
+      }
+      #session-chip:active {
+        transform: scale(0.95);
+        border-color: #00ff41;
+        background: #222;
+      }
+      #session-chip .chip-chevron {
+        font-size: 7px;
+        opacity: 0.4;
+        transition: transform 0.2s ease;
+        flex-shrink: 0;
+      }
+      #session-chip.open .chip-chevron {
+        transform: rotate(180deg);
+      }
+      #session-chip .chip-handle {
+        position: absolute;
+        bottom: 2px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 18px;
+        height: 2px;
+        border-radius: 1px;
+        background: rgba(0, 255, 65, 0.25);
+      }
+      #drawer-backdrop {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 90;
+        opacity: 0;
+      }
+      #drawer-backdrop.visible {
+        display: block;
+      }
+      #session-drawer {
+        position: fixed;
+        left: 0; right: 0;
+        top: 42px;
+        max-height: 50vh;
+        background: #111;
+        border-bottom: 1px solid #1a1a1a;
+        z-index: 95;
+        transform: translate3d(0, -100%, 0);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        will-change: transform;
+        pointer-events: none;
+      }
+      #session-drawer.animating {
+        transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1);
+      }
+      #session-drawer.open {
+        transform: translate3d(0, 0, 0);
+        pointer-events: auto;
+      }
+      .drawer-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: background 0.1s ease;
+        border-bottom: 1px solid #1a1a1a;
+      }
+      .drawer-item:last-child { border-bottom: none; }
+      .drawer-item:active {
+        background: #1a1a1a;
+      }
+      .drawer-item.current {
+        background: #0a0a0a;
+      }
+      .drawer-item .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .drawer-item .dot.active {
+        background: #00ff41;
+        box-shadow: 0 0 6px #00ff4160;
+      }
+      .drawer-item .dot.inactive {
+        background: #333;
+      }
+      .drawer-item-name {
+        font-size: 13px;
+        font-weight: 600;
+        color: #b0b0b0;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .drawer-item.current .drawer-item-name {
+        color: #00ff41;
+      }
+      .drawer-item-machine {
+        font-size: 9px;
+        color: #444;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
     </style>
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.min.js"></script>
@@ -989,17 +1124,12 @@
     <header>
       <div class="header-left">
         <button class="back-btn" id="back-btn">BACK</button>
+        <div id="session-chip" onclick="toggleDrawer()"><span id="chip-label"></span><span class="chip-chevron">&#9660;</span><span class="chip-handle"></span></div>
       </div>
       <div class="header-center" id="header-center">
         <div style="display:flex;align-items:center;gap:8px">
           <img id="wolf-icon" src="/wolf-face.png" width="42" height="42" alt="wolfpack" style="object-fit:contain;filter:invert(1) brightness(0.55);margin:-8px -2px -8px -4px" />
           <h1 id="header-title">wolfpack</h1>
-          <select
-            id="session-switcher"
-            class="session-select"
-            style="display: none"
-            onchange="switchSession(this.value)"
-          ></select>
         </div>
       </div>
       <div class="header-right">
@@ -1009,6 +1139,8 @@
         <button class="settings-gear" id="gear-btn" onclick="showSettings()">&#9881;</button>
       </div>
     </header>
+    <div id="drawer-backdrop" onclick="closeDrawer()"></div>
+    <div id="session-drawer"><div id="drawer-list"></div></div>
 
     <div id="view-container">
     <!-- Sessions view -->
@@ -1370,7 +1502,7 @@
         const gear = document.getElementById("gear-btn");
         const ralphBtn = document.getElementById("ralph-btn");
 
-        const switcher = document.getElementById("session-switcher");
+        const chip = document.getElementById("session-chip");
         const wolfIcon = document.getElementById("wolf-icon");
         const headerCenter = document.getElementById("header-center");
 
@@ -1380,8 +1512,8 @@
         if (ralphLogPollTimer) { clearInterval(ralphLogPollTimer); ralphLogPollTimer = null; }
 
         const applyHeader = () => {
-          switcher.style.display = "none";
-          switcher.classList.remove("chip");
+          chip.style.display = "none";
+          closeDrawer(true);
           title.style.display = "";
           title.style.cursor = "";
           title.onclick = null;
@@ -1428,11 +1560,9 @@
               loadSessions();
             };
             gear.style.display = "none";
-            title.style.display = "none";
             wolfIcon.style.display = "";
             loadSessionSwitcher();
-            switcher.classList.add("chip");
-            switcher.style.display = "";
+            chip.style.display = "flex";
             headerCenter.style.transform = "";
             document.getElementById("search-btn").style.display = "";
             const hml = document.getElementById("header-machine-label");
@@ -1443,7 +1573,6 @@
               hml.textContent = mName;
               hml.style.display = "";
             }
-            loadSessionSwitcher();
           } else if (name === "ralph") {
             back.style.display = "block";
             back.onclick = () => { showView("sessions"); loadSessions(); };
@@ -1473,17 +1602,7 @@
           }
         };
 
-        if (animateHeader) {
-          // crossfade entire header as one unit
-          const hdr = document.querySelector("header");
-          hdr.classList.add("fading");
-          setTimeout(() => {
-            applyHeader();
-            hdr.classList.remove("fading");
-          }, 150);
-        } else {
-          applyHeader();
-        }
+        applyHeader();
       }
 
       // ── Ralph Loop Functions ──
@@ -2475,23 +2594,201 @@
         loadSessions();
       }
 
+      // ── Session drawer ──
+      let drawerOpen = false;
+      let drawerDragY = 0;
+      let drawerDragStartY = 0;
+      let drawerDragging = false;
+
       function loadSessionSwitcher() {
-        const machines = getMachines();
         const groups = lastSessionGroups;
-        const sel = document.getElementById("session-switcher");
-        let opts = "";
+        const list = document.getElementById("drawer-list");
+        const multiMachine = getMachines().length > 0;
+        let html = "";
         for (const g of groups) {
           for (const s of g.sessions) {
             const val = g.machine.url ? g.machine.url + "|" + s.name : s.name;
-            const label = s.name;
-            const selected = s.name === currentSession && g.machine.url === currentMachine ? "selected" : "";
-            opts += `<option value="${esc(val)}" ${selected}>${esc(label)}</option>`;
+            const isCurrent = s.name === currentSession && g.machine.url === currentMachine;
+            const machineLbl = multiMachine ? `<span class="drawer-item-machine">${esc(g.machine.name)}</span>` : "";
+            html += `<div class="drawer-item${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
+              <div class="dot ${isCurrent ? "active" : "inactive"}"></div>
+              <span class="drawer-item-name">${esc(s.name)}</span>
+              ${machineLbl}
+            </div>`;
           }
         }
-        sel.innerHTML = opts;
-        // Set value programmatically — webkit ignores selected attr via innerHTML
-        sel.value = currentMachine ? currentMachine + "|" + currentSession : currentSession;
+        list.innerHTML = html;
+        // bind clicks
+        list.querySelectorAll(".drawer-item").forEach(el => {
+          el.onclick = () => { switchSession(el.dataset.val); closeDrawer(); };
+        });
+        // update chip label
+        const chipLabel = document.getElementById("chip-label");
+        if (chipLabel) chipLabel.textContent = currentSession || "";
       }
+
+      function toggleDrawer() {
+        if (drawerOpen) closeDrawer();
+        else openDrawer();
+      }
+
+      function openDrawer() {
+        if (drawerOpen) return;
+        drawerOpen = true;
+        const drawer = document.getElementById("session-drawer");
+        const backdrop = document.getElementById("drawer-backdrop");
+        const chip = document.getElementById("session-chip");
+        // remove transition for instant position, then add for animation
+        drawer.classList.remove("animating");
+        drawer.style.transform = "translate3d(0, -100%, 0)";
+        backdrop.classList.add("visible");
+        backdrop.style.opacity = "0";
+        drawer.offsetHeight; // force reflow
+        drawer.classList.add("animating");
+        drawer.classList.add("open");
+        drawer.style.transform = "";
+        backdrop.style.transition = "opacity 0.25s ease";
+        backdrop.style.opacity = "1";
+        chip.classList.add("open");
+        haptic(5);
+      }
+
+      function closeDrawer(instant) {
+        if (!drawerOpen) return;
+        drawerOpen = false;
+        const drawer = document.getElementById("session-drawer");
+        const backdrop = document.getElementById("drawer-backdrop");
+        const chip = document.getElementById("session-chip");
+        chip.classList.remove("open");
+        if (instant) {
+          drawer.classList.remove("animating", "open");
+          drawer.style.transform = "";
+          backdrop.classList.remove("visible");
+          backdrop.style.opacity = "";
+          backdrop.style.transition = "";
+          return;
+        }
+        drawer.classList.add("animating");
+        drawer.classList.remove("open");
+        drawer.style.transform = "translate3d(0, -100%, 0)";
+        backdrop.style.transition = "opacity 0.25s ease";
+        backdrop.style.opacity = "0";
+        const cleanup = () => {
+          backdrop.classList.remove("visible");
+          backdrop.style.opacity = "";
+          backdrop.style.transition = "";
+          drawer.style.transform = "";
+          drawer.classList.remove("animating");
+        };
+        drawer.addEventListener("transitionend", cleanup, { once: true });
+        setTimeout(cleanup, 300);
+      }
+
+      // Drag gesture for drawer — header (open) + drawer itself (close)
+      (function initDrawerDrag() {
+        const hdr = document.querySelector("header");
+        const drawer = document.getElementById("session-drawer");
+        const backdrop = document.getElementById("drawer-backdrop");
+        let startY = 0, startTime = 0, dragging = false, maxDrag = 0;
+
+        function onStart(e) {
+          if (currentView !== "terminal") return;
+          startY = e.touches[0].clientY;
+          startTime = Date.now();
+          dragging = false;
+          maxDrag = Math.min(drawer.scrollHeight, window.innerHeight * 0.5);
+        }
+
+        function onMove(e) {
+          if (currentView !== "terminal") return;
+          const dy = e.touches[0].clientY - startY;
+          // opening: drag down when closed (header only)
+          if (!drawerOpen && dy > 5) {
+            if (!dragging) {
+              dragging = true;
+              drawer.classList.remove("animating", "open");
+              drawer.style.pointerEvents = "none";
+              backdrop.classList.add("visible");
+            }
+            const progress = Math.min(dy / maxDrag, 1);
+            drawer.style.transform = `translate3d(0, ${-100 + progress * 100}%, 0)`;
+            backdrop.style.opacity = String(progress);
+            backdrop.style.transition = "none";
+          }
+          // closing: drag up when open (header or drawer)
+          if (drawerOpen && dy < -5) {
+            if (!dragging) {
+              dragging = true;
+              drawer.classList.remove("animating");
+            }
+            const progress = Math.min(Math.abs(dy) / maxDrag, 1);
+            drawer.style.transform = `translate3d(0, ${-progress * 100}%, 0)`;
+            backdrop.style.opacity = String(1 - progress);
+            backdrop.style.transition = "none";
+          }
+        }
+
+        function onEnd(e) {
+          if (!dragging) return;
+          dragging = false;
+          const dy = e.changedTouches[0].clientY - startY;
+          const elapsed = Date.now() - startTime;
+          const velocity = Math.abs(dy) / Math.max(elapsed, 1) * 1000;
+          const threshold = maxDrag * 0.25;
+
+          if (!drawerOpen) {
+            // was dragging to open
+            if (dy > threshold || (velocity > 300 && dy > 10)) {
+              const baseDur = 0.22;
+              const speedFactor = Math.min(velocity / 1500, 1);
+              const dur = Math.max(0.1, baseDur * (1 - speedFactor * 0.6));
+              drawer.style.transition = `transform ${dur.toFixed(2)}s cubic-bezier(0.2, 0.9, 0.3, 1)`;
+              drawer.style.transform = "translate3d(0, 0, 0)";
+              backdrop.style.transition = `opacity ${dur.toFixed(2)}s ease`;
+              backdrop.style.opacity = "1";
+              drawerOpen = true;
+              document.getElementById("session-chip").classList.add("open");
+              haptic(5);
+              drawer.addEventListener("transitionend", () => {
+                drawer.style.transition = "";
+                drawer.style.pointerEvents = "";
+                drawer.classList.add("open");
+              }, { once: true });
+            } else {
+              drawer.style.transition = "transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1)";
+              drawer.style.transform = "translate3d(0, -100%, 0)";
+              backdrop.style.transition = "opacity 0.2s ease";
+              backdrop.style.opacity = "0";
+              drawer.addEventListener("transitionend", () => {
+                drawer.style.transition = ""; drawer.style.transform = ""; drawer.style.pointerEvents = "";
+                backdrop.classList.remove("visible"); backdrop.style.opacity = ""; backdrop.style.transition = "";
+              }, { once: true });
+            }
+          } else {
+            // was dragging to close
+            if (Math.abs(dy) > threshold || (velocity > 300 && dy < -10)) {
+              closeDrawer();
+            } else {
+              drawer.style.transition = "transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1)";
+              drawer.style.transform = "translate3d(0, 0, 0)";
+              backdrop.style.transition = "opacity 0.2s ease";
+              backdrop.style.opacity = "1";
+              drawer.addEventListener("transitionend", () => {
+                drawer.style.transition = ""; drawer.classList.add("open");
+              }, { once: true });
+            }
+          }
+        }
+
+        // Header: drag down to open, drag up to close
+        hdr.addEventListener("touchstart", onStart, { passive: true });
+        hdr.addEventListener("touchmove", onMove, { passive: true });
+        hdr.addEventListener("touchend", onEnd, { passive: true });
+        // Drawer: drag up to close
+        drawer.addEventListener("touchstart", onStart, { passive: true });
+        drawer.addEventListener("touchmove", onMove, { passive: true });
+        drawer.addEventListener("touchend", onEnd, { passive: true });
+      })();
 
       function switchSession(val) {
         let name, machineUrl;
@@ -2505,6 +2802,7 @@
           name = val;
         }
         if (name === currentSession && machineUrl === currentMachine) return;
+        closeDrawer(true);
         // Suspend current mode (cache terminal state)
         if (useDesktopTerminal) {
           destroyDesktopTerminal();
@@ -3013,7 +3311,9 @@
             locked = true;
 
             const backTarget = BACK_TARGET[currentView];
-            if (dx > 0 && backTarget) {
+            // terminal view: only allow back swipe from left edge (40px) to avoid stealing terminal interaction
+            const edgeOnly = currentView === "terminal";
+            if (dx > 0 && backTarget && (!edgeOnly || sx < 40)) {
               isBack = true;
               fgEl = document.getElementById(currentView + "-view");
               bgEl = document.getElementById(backTarget + "-view");
