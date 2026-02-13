@@ -28,6 +28,7 @@ interface Config {
   tailscaleHostname?: string;
 }
 
+let hasTTY = true;
 function ask(question: string): string {
   process.stdout.write(question);
   const buf = Buffer.alloc(1024);
@@ -35,9 +36,9 @@ function ask(question: string): string {
   try {
     fd = openSync("/dev/tty", "r");
   } catch {
-    // No tty (piped context) — read from stdin
-    const n = readSync(0, buf, 0, buf.length, null);
-    return buf.subarray(0, n).toString("utf-8").split("\n")[0].trim();
+    hasTTY = false;
+    // No tty — return empty so callers use defaults
+    return "";
   }
   const n = readSync(fd, buf, 0, buf.length, null);
   closeSync(fd);
@@ -187,10 +188,12 @@ async function setup() {
     }
 
     print(`  Will install: ${bold(missing.join(", "))}`);
-    const proceed = ask("  Proceed? (y/n) ");
-    if (proceed.toLowerCase() !== "y") {
-      print(red("  Aborted."));
-      process.exit(1);
+    if (hasTTY) {
+      const proceed = ask("  Proceed? (y/n) ");
+      if (proceed.toLowerCase() !== "y") {
+        print(red("  Aborted."));
+        process.exit(1);
+      }
     }
 
     if (IS_MACOS) {
@@ -400,10 +403,11 @@ async function setup() {
   print(green("  Setup complete!"));
   print(`  Config saved to ${dim(CONFIG_PATH)}`);
   print("");
-  // Offer launchd service
-  const installService = ask(
-    "  Start wolfpack automatically on login? (y/n) ",
-  );
+  // Offer launchd service (auto-yes in non-interactive mode)
+  const installService = hasTTY
+    ? ask("  Start wolfpack automatically on login? (y/n) ")
+    : "y";
+  if (!hasTTY) print("  Installing as background service (non-interactive mode)...");
   let serviceInstalled = false;
   if (installService.toLowerCase() === "y") {
     try {
