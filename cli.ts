@@ -404,9 +404,11 @@ async function setup() {
   const installService = ask(
     "  Start wolfpack automatically on login? (y/n) ",
   );
+  let serviceInstalled = false;
   if (installService.toLowerCase() === "y") {
     try {
       serviceInstall();
+      serviceInstalled = true;
     } catch (e) {
       print(red(`  Service install failed: ${e}`));
     }
@@ -422,6 +424,13 @@ async function setup() {
   print("");
   printQR(url);
   print("");
+
+  if (serviceInstalled) {
+    print(green("  Wolfpack is running as a background service."));
+    print(dim("  Use 'wolfpack service stop' to stop, 'wolfpack service status' to check."));
+    print("");
+    process.exit(0);
+  }
 }
 
 async function start() {
@@ -434,6 +443,26 @@ async function start() {
       print(red("  Setup completed but config is still missing."));
       process.exit(1);
     }
+    // setup may have installed the service and exited — if we're still here, fall through to foreground
+  }
+
+  // If the service is already running, don't start a second instance
+  if (isServiceRunning()) {
+    print(dim(WOLF));
+    print(bold("  WOLFPACK"));
+    print(green("  Already running as a background service."));
+    print("");
+    print(`  Local:    ${dim(`http://localhost:${config.port}/`)}`);
+    const url = remoteUrl(config);
+    if (url) print(`  Remote:   ${dim(url)}`);
+    print("");
+    print(dim("  Scan to open on your phone:"));
+    print("");
+    printQR(url ?? `http://localhost:${config.port}/`);
+    print("");
+    print(dim("  Use 'wolfpack service stop' to stop, 'wolfpack service status' to check."));
+    print("");
+    return;
   }
 
   // Inject config into env for serve.ts
@@ -475,6 +504,20 @@ const SYSTEMD_PATH = join(
   "user",
   `${SYSTEMD_SERVICE}.service`,
 );
+
+function isServiceRunning(): boolean {
+  if (IS_MACOS) {
+    try {
+      const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, { encoding: "utf-8" });
+      return out.includes("PID");
+    } catch { return false; }
+  } else if (IS_LINUX) {
+    try {
+      return execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim() === "active";
+    } catch { return false; }
+  }
+  return false;
+}
 
 export function xmlEsc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
