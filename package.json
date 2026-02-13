@@ -17,7 +17,7 @@
   "keywords": ["tmux", "ai", "agents", "mobile", "pwa", "terminal", "claude", "codex"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/The-Vibe-Company/wolfpack"
+    "url": "https://github.com/almogdepaz/wolfpack"
   },
   "license": "MIT",
   "dependencies": {

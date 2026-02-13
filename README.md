@@ -75,18 +75,24 @@ Install on your phone's home screen for a native app experience — scan the QR 
 ## Quick Install
 
 ```bash
+bunx wolfpack-bridge
+```
+
+Or with npx:
+
+```bash
+npx wolfpack-bridge
+```
+
+Or via shell script (no Node/Bun required):
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
 ```
 
-The install script will:
+This will download the pre-built binary for your platform, run the setup wizard, and optionally install as a login service.
 
-1. Check prerequisites (tmux, Tailscale)
-2. Download a pre-built binary for your platform from GitHub releases
-3. Install to `~/.wolfpack/bin/` and symlink to `/usr/local/bin/`
-4. On macOS: strip quarantine flags and ad-hoc codesign
-5. Run the interactive setup wizard
-
-Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64). No Node.js or npm required.
+Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 
 ### Prerequisites
 
@@ -120,7 +126,7 @@ On first run, `wolfpack` walks you through:
 ## Features
 
 - **Session management** — create, view, and kill tmux agent sessions
-- **Live terminal** — capture-pane polling for real-time terminal view (mobile), ANSI-rendered `<pre>` for desktop
+- **Live terminal** — capture-pane polling for real-time terminal view (mobile), xterm.js PTY for desktop
 - **Agent picker** — choose Claude, Codex, Gemini, or custom commands per session
 - **Multi-machine** — one phone connects to multiple Wolfpack servers; sessions grouped by machine
 - **Notifications** — browser notifications + vibration when sessions need attention
@@ -141,7 +147,7 @@ Tailscale's encrypted mesh network handles auth and routing — no ports to open
 
 ### Multi-Machine
 
-1. Install Wolfpack on each machine (`curl` install + `wolfpack setup`)
+1. Install Wolfpack on each machine (`bunx wolfpack-bridge` or `curl` install)
 2. Ensure all machines and your phone share a Tailscale network
 3. On your phone: **Settings → Add Machine** → scan QR or paste URL
 4. Sessions from all machines appear in a single grouped view
