@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 import { execSync, execFileSync } from "node:child_process";
 import {
+  chmodSync,
   closeSync,
   constants as fsConstants,
+  copyFileSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -403,13 +405,13 @@ async function setup() {
   print(green("  Setup complete!"));
   print(`  Config saved to ${dim(CONFIG_PATH)}`);
   print("");
-  // Offer launchd service (auto-yes in non-interactive mode)
+  // Offer launchd service — default yes
   const installService = hasTTY
-    ? ask("  Start wolfpack automatically on login? (y/n) ")
+    ? ask("  Start wolfpack automatically on login? [Y/n] ")
     : "y";
   if (!hasTTY) print("  Installing as background service (non-interactive mode)...");
   let serviceInstalled = false;
-  if (installService.toLowerCase() === "y") {
+  if (installService.toLowerCase() !== "n") {
     try {
       serviceInstall();
       serviceInstalled = true;
@@ -535,6 +537,16 @@ function programArgs(): string[] {
   const isBunRuntime = exe.endsWith("/bun") || exe.endsWith("/bun.exe");
   if (isBunRuntime && process.argv[1]) {
     return [exe, resolve(process.argv[1])];
+  }
+  // Copy binary to stable path so service survives cache clearing
+  const stableBin = join(WOLFPACK_DIR, "bin", "wolfpack");
+  if (exe !== stableBin && existsSync(exe)) {
+    try {
+      mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
+      copyFileSync(exe, stableBin);
+      chmodSync(stableBin, 0o755);
+      return [stableBin];
+    } catch {}
   }
   return [exe];
 }
