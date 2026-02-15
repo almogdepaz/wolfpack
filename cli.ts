@@ -125,7 +125,6 @@ function check(name: string, cmd: string): boolean {
   }
 }
 
-
 function remoteUrl(config: Config): string | null {
   if (!config.tailscaleHostname) return null;
   return `https://${config.tailscaleHostname}`;
@@ -444,53 +443,38 @@ async function start() {
   if (!config) {
     print("  No config found. Running setup first...\n");
     await setup();
-    config = loadConfig();
-    if (!config) {
-      print(red("  Setup completed but config is still missing."));
-      process.exit(1);
-    }
-    // setup may have installed the service and exited — if we're still here, fall through to foreground
+    // setup calls process.exit(0) on successful service install.
+    // if we're still here, service install failed or was declined — exit cleanly.
+    process.exit(0);
   }
 
-  // If the service is already running, don't start a second instance
-  if (isServiceRunning()) {
-    print(dim(WOLF));
-    print(bold("  WOLFPACK"));
-    print(green("  Already running as a background service."));
-    print("");
-    print(`  Local:    ${dim(`http://localhost:${config.port}/`)}`);
-    const url = remoteUrl(config);
-    if (url) print(`  Remote:   ${dim(url)}`);
-    print("");
-    print(dim("  Scan to open on your phone:"));
-    print("");
-    printQR(url ?? `http://localhost:${config.port}/`);
-    print("");
-    print(dim("  Use 'wolfpack service stop' to stop, 'wolfpack service status' to check."));
-    print("");
+  // Service daemon mode — just start the server
+  if (process.env.WOLFPACK_SERVICE === "1") {
+    process.env.WOLFPACK_DEV_DIR = config.devDir;
+    process.env.WOLFPACK_PORT = String(config.port);
+    await import("./serve.js");
     return;
   }
 
-  // Inject config into env for serve.ts
-  process.env.WOLFPACK_DEV_DIR = config.devDir;
-  process.env.WOLFPACK_PORT = String(config.port);
+  // CLI invocation — ensure service is running, never start foreground
+  const url = remoteUrl(config);
+  try {
+    serviceInstall();
+  } catch (e) {
+    print(red(`  Service install failed: ${e}`));
+    print(dim("  Run 'wolfpack service install' to retry."));
+  }
 
   print(dim(WOLF));
   print(bold("  WOLFPACK"));
-  print(dim("  The pack is online."));
   print("");
-  print(`  Projects: ${dim(config.devDir)}`);
   print(`  Local:    ${dim(`http://localhost:${config.port}/`)}`);
-  const url = remoteUrl(config);
   if (url) print(`  Remote:   ${dim(url)}`);
   print("");
   print(dim("  Scan to open on your phone:"));
   print("");
   printQR(url ?? `http://localhost:${config.port}/`);
   print("");
-
-  // Import and run serve
-  await import("./serve.js");
 }
 
 // ── Service management (launchd on macOS, systemd on Linux) ──
@@ -510,20 +494,6 @@ const SYSTEMD_PATH = join(
   "user",
   `${SYSTEMD_SERVICE}.service`,
 );
-
-function isServiceRunning(): boolean {
-  if (IS_MACOS) {
-    try {
-      const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, { encoding: "utf-8" });
-      return out.includes("PID");
-    } catch { return false; }
-  } else if (IS_LINUX) {
-    try {
-      return execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim() === "active";
-    } catch { return false; }
-  }
-  return false;
-}
 
 export function xmlEsc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -554,7 +524,7 @@ function programArgs(): string[] {
 function generatePlist(): string {
   const args = programArgs();
   const config = loadConfig();
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = { WOLFPACK_SERVICE: "1" };
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
 
@@ -604,6 +574,7 @@ function generateSystemdUnit(): string {
   const config = loadConfig();
   const envLines: string[] = [
     `Environment=PATH=/usr/local/bin:/usr/bin:/bin`,
+    `Environment=WOLFPACK_SERVICE=1`,
   ];
   if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${systemdEsc(config.devDir)}"`);
   if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);

@@ -7,8 +7,9 @@
  * Output: dist/wolfpack-{platform} binaries
  */
 import { execSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { arch, platform } from "node:os";
 
 const ROOT = join(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -40,6 +41,12 @@ for (const target of TARGETS) {
   const outfile = join(DIST, name);
   run(`bun build --compile --target=${target} ${ENTRY} --outfile ${outfile}`);
 }
+
+// step 4: copy current platform binary to bin/ for npm publish
+const currentBin = join(DIST, `wolfpack-${platform()}-${arch()}`);
+const binTarget = join(ROOT, "bin", "wolfpack");
+copyFileSync(currentBin, binTarget);
+console.log(`\ncopied ${currentBin} → bin/wolfpack`);
 
 console.log("\n=== build complete ===");
 console.log(`binaries in ${DIST}/`);
