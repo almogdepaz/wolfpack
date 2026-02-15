@@ -1,36 +1,35 @@
 #!/usr/bin/env node
 /**
- * postinstall — copies the correct platform binary from dist/ to bin/wolfpack
- * This runs after `npm install` or `bunx wolfpack-bridge`.
+ * postinstall — copies platform binary from the optional dependency to bin/wolfpack.
+ *
+ * This is an optimization so run.cjs can use the fast path. If the platform
+ * package isn't installed (e.g. bunx skips optionalDependencies), this exits
+ * cleanly — run.cjs handles resolution at runtime.
  */
 const { platform, arch } = require("node:os");
 const { copyFileSync, chmodSync, existsSync } = require("node:fs");
-const { join } = require("node:path");
-
-const PLATFORM_MAP = {
-  "darwin-arm64": "wolfpack-darwin-arm64",
-  "darwin-x64": "wolfpack-darwin-x64",
-  "linux-arm64": "wolfpack-linux-arm64",
-  "linux-x64": "wolfpack-linux-x64",
-};
+const { join, dirname } = require("node:path");
 
 const key = `${platform()}-${arch()}`;
-const binary = PLATFORM_MAP[key];
-
-if (!binary) {
-  console.error(`wolfpack: unsupported platform ${key}`);
-  process.exit(1);
-}
-
-const src = join(__dirname, "..", "dist", binary);
+const pkg = `wolfpack-bridge-${key}`;
 const dest = join(__dirname, "wolfpack");
 
+// resolve binary from platform-specific optional package
+let src;
+try {
+  const pkgJson = require.resolve(`${pkg}/package.json`);
+  src = join(dirname(pkgJson), "wolfpack");
+} catch {
+  console.log(`wolfpack: platform package ${pkg} not found, skipping postinstall`);
+  console.log("wolfpack: binary will be resolved at runtime");
+  process.exit(0);
+}
+
 if (!existsSync(src)) {
-  console.error(`wolfpack: binary not found at ${src}`);
-  console.error("Run `bun run scripts/build.ts` first to compile platform binaries.");
-  process.exit(1);
+  console.log(`wolfpack: binary not found in ${pkg}, skipping postinstall`);
+  process.exit(0);
 }
 
 copyFileSync(src, dest);
 chmodSync(dest, 0o755);
-console.log(`wolfpack: installed ${binary} for ${key}`);
+console.log(`wolfpack: installed ${key} binary`);
