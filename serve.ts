@@ -30,6 +30,7 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { WOLFPACK_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
+import pkg from "./package.json";
 
 const exec = promisify(execFile);
 
@@ -69,7 +70,7 @@ const PORT =
 const DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(homedir(), "Dev");
 const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
-const VERSION = "1.2.0";
+const VERSION: string = pkg.version;
 
 // CORS origin allowlist — replaces wildcard "*"
 const ALLOWED_ORIGINS = new Set<string>([
@@ -197,10 +198,9 @@ async function tmuxResize(
 
 async function capturePane(session: string): Promise<string> {
   try {
-    const args = ["capture-pane", "-t", session, "-p", "-J"];
-    // Always capture some scrollback so the PWA terminal can scroll
-    args.push("-S", "-2000");
-    const { stdout } = await exec(TMUX, args);
+    const { stdout } = await exec(TMUX, [
+      "capture-pane", "-t", session, "-p", "-J", "-S", "-2000",
+    ]);
     return stdout;
   } catch {
     return "";
@@ -418,7 +418,6 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
 function isValidProjectName(name: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
-
 
 function scanRalphLoops(): RalphStatus[] {
   const projects = listDevProjects();
@@ -1451,17 +1450,11 @@ const server = createServer(async (req, res) => {
     // Static file fallback from embedded assets
     const safePath = url.pathname.replace(/^\/+/, "");
     if (safePath && !safePath.includes("\0") && !safePath.includes("/")) {
-      const asset = assets.get(safePath);
-      if (asset) {
-        const hdrs: Record<string, string> = { "Content-Type": asset.mime };
-        if (asset.mime === "text/html") hdrs["Content-Security-Policy"] = CSP;
-        res.writeHead(200, hdrs);
-        res.end(asset.content);
-        return;
-      }
+      serveFile(res, safePath);
+    } else {
+      res.writeHead(404);
+      res.end("Not Found");
     }
-    res.writeHead(404);
-    res.end("Not Found");
   }
 });
 

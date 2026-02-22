@@ -286,9 +286,7 @@ async function setup() {
           verifyFail = true;
         }
       } else {
-        if (check(pkg, `${pkg} --version`)) {
-          // check() already prints ✓
-        } else {
+        if (!check(pkg, `${pkg} --version`)) {
           verifyFail = true;
         }
       }
@@ -304,8 +302,7 @@ async function setup() {
 
   // Dev directory
   const defaultDev = join(homedir(), "Dev");
-  const rawDevDir =
-    (ask(`  Projects directory [${defaultDev}]: `)) || defaultDev;
+  const rawDevDir = ask(`  Projects directory [${defaultDev}]: `) || defaultDev;
   const devDir = resolve(rawDevDir);
 
   // Validate devDir
@@ -837,18 +834,15 @@ function serviceStatus() {
 }
 
 function uninstall() {
-  // Stop and remove launchd service
   serviceUninstall();
 
-  // Remove config dir
-  const rmDir = WOLFPACK_DIR;
   try {
-    rmSync(rmDir, { recursive: true, force: true });
+    rmSync(WOLFPACK_DIR, { recursive: true, force: true });
   } catch {}
 
   print("");
   print(green("  Wolfpack uninstalled."));
-  print(dim(`  Removed ${rmDir}`));
+  print(dim(`  Removed ${WOLFPACK_DIR}`));
   print("");
   print(dim("  The wolfpack binary remains at: " + process.execPath));
   print(dim("  Delete it manually if you want a full removal."));

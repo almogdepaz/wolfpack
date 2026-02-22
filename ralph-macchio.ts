@@ -110,7 +110,6 @@ const PLAN_PATH = join(PROJECT_DIR, PLAN_FILE);
 const PROGRESS_PATH = join(PROJECT_DIR, PROGRESS_FILE);
 const LOCK_FILE = join(PROJECT_DIR, ".ralph.lock");
 
-
 function removeLock(): void {
   try { unlinkSync(LOCK_FILE); } catch {}
 }
@@ -118,7 +117,6 @@ function removeLock(): void {
 function readPlan(): string {
   return readFileSync(PLAN_PATH, "utf-8");
 }
-
 
 function extractCurrentTask(): { task: string; checkbox: boolean } | null {
   try {
