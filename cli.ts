@@ -21,6 +21,10 @@ import { printQR } from "./qr.js";
 const IS_MACOS = platform() === "darwin";
 const IS_LINUX = platform() === "linux";
 
+// read from package.json at compile time via bun's import
+import pkg from "./package.json";
+const VERSION: string = pkg.version;
+
 const WOLFPACK_DIR = join(homedir(), ".wolfpack");
 const CONFIG_PATH = join(WOLFPACK_DIR, "config.json");
 
@@ -97,6 +101,29 @@ function yellow(s: string) {
 
 function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isPortInUse(port: number): boolean {
+  try {
+    // works on both macOS (lsof) and Linux (ss)
+    const cmd = IS_MACOS
+      ? `lsof -i :${port} -t`
+      : `ss -tlnp sport = :${port}`;
+    const out = execSync(cmd, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    // ss always outputs a header line, so >1 line means a listener exists
+    return IS_MACOS ? out.length > 0 : out.split("\n").length > 1;
+  } catch {
+    return false;
+  }
+}
+
+function waitForPortFree(port: number, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isPortInUse(port)) return;
+    sleepSync(500);
+  }
+  print(yellow(`  Warning: port ${port} still in use after ${timeoutMs / 1000}s`));
 }
 
 const TAILSCALE_MAC_CLI =
@@ -458,11 +485,16 @@ async function start() {
 
   // CLI invocation — ensure service is running, never start foreground
   const url = remoteUrl(config);
+  const wasRunning = isServiceRunning();
   try {
     serviceInstall();
   } catch (e) {
     print(red(`  Service install failed: ${e}`));
     print(dim("  Run 'wolfpack service install' to retry."));
+  }
+  if (wasRunning && !isServiceRunning()) {
+    print(yellow("  Service was running but didn't restart."));
+    print(yellow(`  Run ${bold("wolfpack service start")} to restart it.`));
   }
 
   print(dim(WOLF));
@@ -618,6 +650,16 @@ function serviceInstall() {
     process.exit(1);
   }
 
+  // stop gracefully first (handles both macOS and Linux)
+  if (isServiceRunning()) {
+    serviceStop();
+  }
+  // always wait for port — service may appear "stopped" to launchctl/systemd
+  // while the process is still dying and holding the port
+  if (isPortInUse(config.port)) {
+    waitForPortFree(config.port);
+  }
+
   if (IS_MACOS) {
     const plist = generatePlist();
     mkdirSync(join(homedir(), "Library", "LaunchAgents"), {
@@ -721,19 +763,33 @@ function serviceStart() {
   }
 }
 
-function serviceStatus() {
-  if (IS_MACOS) {
-    try {
-      const out = execSync(`launchctl list ${PLIST_LABEL} 2>&1`, {
+function isServiceRunning(): boolean {
+  try {
+    if (IS_MACOS) {
+      const out = execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, {
         encoding: "utf-8",
       });
-      if (out.includes("PID")) {
-        const pidMatch = out.match(/"PID"\s*=\s*(\d+)/);
-        print(
-          green(
-            `  Wolfpack is running${pidMatch ? ` (PID ${pidMatch[1]})` : ""}`,
-          ),
-        );
+      return /pid\s*=\s*\d+/i.test(out);
+    } else if (IS_LINUX) {
+      const out = execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, {
+        encoding: "utf-8",
+      }).trim();
+      return out === "active";
+    }
+  } catch {}
+  return false;
+}
+
+function serviceStatus() {
+  print(dim(`  Version: ${VERSION}`));
+  if (IS_MACOS) {
+    try {
+      const out = execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, {
+        encoding: "utf-8",
+      });
+      const pidMatch = out.match(/pid\s*=\s*(\d+)/i);
+      if (pidMatch) {
+        print(green(`  Wolfpack is running (PID ${pidMatch[1]})`));
       } else {
         print(dim("  Wolfpack service is loaded but not running."));
       }

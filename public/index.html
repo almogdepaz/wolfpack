@@ -7,6 +7,7 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
     <meta name="theme-color" content="#0a0a0a" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta
       name="apple-mobile-web-app-status-bar-style"
@@ -1356,7 +1357,7 @@
       let useDesktopTerminal = false;
 
       function isDesktop() {
-        return !('ontouchstart' in window) && window.innerWidth > 768;
+        return window.innerWidth > 768;
       }
 
       // ── Machine registry ──
@@ -2131,7 +2132,7 @@
         currentSession = name;
         currentMachine = machineUrl || "";
         lastRawPane = null;
-        useDesktopTerminal = isDesktop() && !machineUrl;
+        useDesktopTerminal = isDesktop();
         showView("terminal");
         if (useDesktopTerminal) {
           initDesktopTerminal();
@@ -2262,7 +2263,7 @@
           if (data.session) {
             currentSession = data.session;
             currentMachine = machine;
-            useDesktopTerminal = isDesktop() && !machine;
+            useDesktopTerminal = isDesktop();
             // Refresh session list so switcher has the new session
             await loadSessions();
             loadSessionSwitcher();
@@ -2293,8 +2294,15 @@
       function connectDesktopWs() {
         if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
         if (desktopWs && desktopWs.readyState <= WebSocket.OPEN) return;
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = proto + "//" + location.host + "/ws/pty?session=" + encodeURIComponent(currentSession);
+        let wsUrl;
+        if (currentMachine) {
+          const remote = new URL(currentMachine);
+          const proto = remote.protocol === "https:" ? "wss:" : "ws:";
+          wsUrl = proto + "//" + remote.host + "/ws/pty?session=" + encodeURIComponent(currentSession);
+        } else {
+          const proto = location.protocol === "https:" ? "wss:" : "ws:";
+          wsUrl = proto + "//" + location.host + "/ws/pty?session=" + encodeURIComponent(currentSession);
+        }
         const ws = new WebSocket(wsUrl);
         ws.binaryType = "arraybuffer";
         desktopWs = ws;
@@ -2814,7 +2822,7 @@
         currentMachine = machineUrl;
         lastRawPane = null;
         loadSessionSwitcher();
-        useDesktopTerminal = isDesktop() && !machineUrl;
+        useDesktopTerminal = isDesktop();
         if (useDesktopTerminal) {
           initDesktopTerminal();
         } else {
@@ -2985,7 +2993,7 @@
       });
       // Mobile: Enter adds newline, Shift+Enter submits
       // Desktop: Enter submits, Shift+Enter adds newline
-      const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+      const isMobile = !isDesktop();
 
       msgInput.addEventListener("keydown", (e) => {
         if (currentView !== "terminal") return;
@@ -3264,7 +3272,7 @@
       }
 
       // ── Swipe Gesture Engine (mobile only) ──
-      if ("ontouchstart" in window) {
+      if (!isDesktop()) {
         const vc = document.getElementById("view-container");
         let sx = 0, sy = 0, st = 0, dx = 0;
         let locked = false, scrolling = false, rafId = 0;

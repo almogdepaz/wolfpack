@@ -46,8 +46,10 @@ for (const pkg of PLATFORM_PACKAGES) {
   try {
     execSync(`npm publish ${publishArgs}`, { cwd: pkgDir, stdio: "inherit" });
   } catch (e: any) {
-    // 409 = version already exists, not fatal
-    if (e.status !== 0) {
+    const stderr = e.stderr?.toString() || "";
+    if (stderr.includes("EPUBLISHCONFLICT") || stderr.includes("cannot publish over")) {
+      console.log(`  already published, skipping`);
+    } else {
       console.error(`  failed to publish ${pkg}`);
       process.exit(1);
     }

@@ -1501,6 +1501,16 @@ server.on("upgrade", async (req, socket, head) => {
 });
 
 // SE-18: bind to localhost only — Tailscale proxy handles external access
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`wolfpack: port ${PORT} is already in use.`);
+    console.error("Run 'wolfpack service stop' first, or choose a different port.");
+    process.exit(1);
+  }
+  console.error(`wolfpack: server error — ${err.message}`);
+  process.exit(1);
+});
+
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`Wolfpack PWA: http://localhost:${PORT}/`);
 });
