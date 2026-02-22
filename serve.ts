@@ -241,7 +241,7 @@ async function tmuxNewSession(
     const withContext = agentCmd + " --append-system-prompt " + shellEscape(WOLFPACK_CONTEXT);
     fullCmd = withContext + " || " + agentCmd;
   }
-  const shellCmd = `${SHELL} -lic ${shellEscape(fullCmd + "; exec " + SHELL)}`;
+  const shellCmd = `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT ${SHELL} -lic ${shellEscape(fullCmd + "; exec " + SHELL)}`;
   await exec(TMUX, [
     "new-session",
     "-d",

@@ -1125,6 +1125,8 @@
     <script src="/xterm.min.js"></script>
     <script src="/xterm-addon-fit.min.js"></script>
     <script src="/xterm-addon-search.min.js"></script>
+    <script src="/xterm-addon-unicode11.min.js"></script>
+    <script src="/xterm-addon-webgl.min.js"></script>
   </head>
   <body>
     <header>
@@ -2403,7 +2405,7 @@
         const term = new Terminal({
           cursorBlink: true,
           fontSize: 13,
-          fontFamily: '"SF Mono", "Menlo", "Consolas", "Liberation Mono", monospace',
+          fontFamily: '"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono", monospace',
           theme: {
             background: "#0a0a0a",
             foreground: "#e0e0e0",
@@ -2423,7 +2425,12 @@
         desktopSearchAddon = searchAddon;
         term.loadAddon(searchAddon);
 
+        const unicodeAddon = new Unicode11Addon.Unicode11Addon();
+        term.loadAddon(unicodeAddon);
+        term.unicode.activeVersion = '11';
+
         term.open(container);
+        try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { console.warn('WebGL addon failed, using canvas fallback', e); }
         fitAddon.fit();
         term.focus();
 
