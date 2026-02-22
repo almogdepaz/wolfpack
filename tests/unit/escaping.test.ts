@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { xmlEsc, systemdEsc } from "../../cli.ts";
+import { xmlEsc, systemdEsc } from "../../validation.ts";
 
 // ── esc and escAttr from index.html (browser functions) ──
 // These are inline in index.html and use document.createElement for esc().

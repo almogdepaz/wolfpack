@@ -30,6 +30,14 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { WOLFPACK_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
+import {
+  WS_ALLOWED_KEYS,
+  CMD_REGEX,
+  isValidProjectName,
+  shellEscape,
+  clampCols,
+  clampRows,
+} from "./validation.js";
 import pkg from "./package.json";
 
 const exec = promisify(execFile);
@@ -120,8 +128,6 @@ const AGENT_PRESETS: Record<string, string> = {
   gemini: "gemini",
 };
 
-const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
-
 function loadSettings(): Settings {
   try {
     const s = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
@@ -139,7 +145,19 @@ function saveSettings(s: Settings): void {
 
 // ── tmux helpers ──
 
+// Default tmuxList — overridable via __setTmuxList for testing
+let _tmuxListFn: () => Promise<string[]> = _realTmuxList;
+
+/** Test hook: override tmuxList to avoid requiring real tmux */
+export function __setTmuxList(fn: () => Promise<string[]>): void {
+  _tmuxListFn = fn;
+}
+
 async function tmuxList(): Promise<string[]> {
+  return _tmuxListFn();
+}
+
+async function _realTmuxList(): Promise<string[]> {
   try {
     const { stdout } = await exec(TMUX, [
       "list-sessions",
@@ -205,10 +223,6 @@ async function capturePane(session: string): Promise<string> {
   } catch {
     return "";
   }
-}
-
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 async function tmuxNewSession(
@@ -413,10 +427,6 @@ function parseRalphLog(projectDir: string): RalphStatus | null {
   } catch {
     return null;
   }
-}
-
-function isValidProjectName(name: string): boolean {
-  return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
 
 function scanRalphLoops(): RalphStatus[] {
@@ -708,8 +718,8 @@ const routes: Record<
     if (!activePtySessions.has(session)) {
       await tmuxResize(
         session,
-        Math.max(20, Math.min(cols, 300)),
-        Math.max(5, Math.min(rows, 100)),
+        clampCols(cols),
+        clampRows(rows),
       );
     }
     json(res, { ok: true });
@@ -1093,15 +1103,6 @@ const routes: Record<
 
 // ── WebSocket ──
 
-// SE-03: key allowlist for WS — superset of HTTP /api/key + desktop terminal keys
-const WS_ALLOWED_KEYS = new Set([
-  "Enter", "Tab", "Escape", "Up", "Down", "Left", "Right",
-  "BTab", "BSpace", "DC", "Home", "End", "PPage", "NPage",
-  "y", "n",
-  "C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-g", "C-h",
-  "C-k", "C-l", "C-n", "C-p", "C-r", "C-u", "C-w", "C-z",
-]);
-
 const wss = new WebSocketServer({ noServer: true });
 
 async function capturePaneAnsi(session: string): Promise<string> {
@@ -1190,8 +1191,8 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
         if (!activePtySessions.has(session)) {
           await tmuxResize(
             session,
-            Math.max(20, Math.min(msg.cols, 300)),
-            Math.max(5, Math.min(msg.rows, 100)),
+            clampCols(msg.cols),
+            clampRows(msg.rows),
           );
         }
         if (!sized) {
@@ -1229,8 +1230,7 @@ const activePtySessions = new Map<string, {
   alive: boolean;
 }>();
 
-// Kill all orphaned wp_* sessions on startup (survives server crashes)
-(async () => {
+async function cleanupOrphanPtySessions() {
   try {
     const { stdout } = await exec(TMUX, ["list-sessions", "-F", "#{session_name}"], { timeout: 3000 });
     for (const name of stdout.split("\n")) {
@@ -1239,7 +1239,7 @@ const activePtySessions = new Map<string, {
       }
     }
   } catch {}
-})();
+}
 
 function handlePtyWs(ws: WebSocket, session: string): void {
   const ptySession = `wp_${session}`;
@@ -1267,8 +1267,8 @@ function handlePtyWs(ws: WebSocket, session: string): void {
         if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b)) {
           const msg = JSON.parse(String(raw));
           if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-            const cols = Math.max(20, Math.min(msg.cols, 300));
-            const rows = Math.max(5, Math.min(msg.rows, 100));
+            const cols = clampCols(msg.cols);
+            const rows = clampRows(msg.rows);
             // Force SIGWINCH even if size matches — new viewer needs full redraw
             try {
               existing.proc.terminal!.resize(Math.max(20, cols - 1), rows);
@@ -1367,8 +1367,8 @@ function handlePtyWs(ws: WebSocket, session: string): void {
       if (typeof raw === "string" || (Buffer.isBuffer(raw) && raw[0] === 0x7b)) {
         const msg = JSON.parse(String(raw));
         if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          const cols = Math.max(20, Math.min(msg.cols, 300));
-          const rows = Math.max(5, Math.min(msg.rows, 100));
+          const cols = clampCols(msg.cols);
+          const rows = clampRows(msg.rows);
           if (!entry.proc) {
             spawnPty(cols, rows);
           } else {
@@ -1494,16 +1494,28 @@ server.on("upgrade", async (req, socket, head) => {
 });
 
 // SE-18: bind to localhost only — Tailscale proxy handles external access
-server.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`wolfpack: port ${PORT} is already in use.`);
-    console.error("Run 'wolfpack service stop' first, or choose a different port.");
-    process.exit(1);
-  }
-  console.error(`wolfpack: server error — ${err.message}`);
-  process.exit(1);
-});
+export function startServer(port = PORT, host = "127.0.0.1"): void {
+  // Kill orphaned PTY sessions from previous crashes
+  cleanupOrphanPtySessions();
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Wolfpack PWA: http://localhost:${PORT}/`);
-});
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`wolfpack: port ${port} is already in use.`);
+      console.error("Run 'wolfpack service stop' first, or choose a different port.");
+      process.exit(1);
+    }
+    console.error(`wolfpack: server error — ${err.message}`);
+    process.exit(1);
+  });
+
+  server.listen(port, host, () => {
+    console.log(`Wolfpack PWA: http://localhost:${port}/`);
+  });
+}
+
+export { server, wss };
+
+// Auto-start unless in test mode
+if (!process.env.WOLFPACK_TEST) {
+  startServer();
+}

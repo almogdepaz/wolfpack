@@ -17,6 +17,7 @@ import {
 import { join, resolve } from "node:path";
 import { platform, homedir } from "node:os";
 import { printQR } from "./qr.js";
+import { xmlEsc, systemdEsc, isValidPort } from "./validation.js";
 
 const IS_MACOS = platform() === "darwin";
 const IS_LINUX = platform() === "linux";
@@ -28,7 +29,7 @@ const VERSION: string = pkg.version;
 const WOLFPACK_DIR = join(homedir(), ".wolfpack");
 const CONFIG_PATH = join(WOLFPACK_DIR, "config.json");
 
-interface Config {
+export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
@@ -103,10 +104,10 @@ function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function isPortInUse(port: number): boolean {
+export function isPortInUse(port: number): boolean {
   try {
     const p = Math.floor(Number(port));
-    if (!Number.isFinite(p) || p < 1 || p > 65535) return false;
+    if (!isValidPort(p)) return false;
     // execFileSync with array args — no shell interpolation
     if (IS_MACOS) {
       const out = execFileSync("lsof", ["-i", `:${p}`, "-t"], {
@@ -165,7 +166,7 @@ function remoteUrl(config: Config): string | null {
   return `https://${config.tailscaleHostname}`;
 }
 
-function loadConfig(): Config | null {
+export function loadConfig(): Config | null {
   try {
     return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
   } catch {
@@ -173,7 +174,7 @@ function loadConfig(): Config | null {
   }
 }
 
-function saveConfig(c: Config) {
+export function saveConfig(c: Config) {
   mkdirSync(WOLFPACK_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
 }
@@ -534,11 +535,6 @@ const SYSTEMD_PATH = join(
   `${SYSTEMD_SERVICE}.service`,
 );
 
-export function xmlEsc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-}
-
 function programArgs(): string[] {
   const exe = process.execPath;
   // When running via `bun run cli.ts`, execPath is the bun binary —
@@ -601,11 +597,6 @@ ${envEntries}
   <string>${logPath}</string>
 </dict>
 </plist>`;
-}
-
-export function systemdEsc(s: string): string {
-  // escape for systemd Environment double-quoted values
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "");
 }
 
 function generateSystemdUnit(): string {
