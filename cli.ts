@@ -105,13 +105,21 @@ function sleepSync(ms: number) {
 
 function isPortInUse(port: number): boolean {
   try {
-    // works on both macOS (lsof) and Linux (ss)
-    const cmd = IS_MACOS
-      ? `lsof -i :${port} -t`
-      : `ss -tlnp sport = :${port}`;
-    const out = execSync(cmd, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    // ss always outputs a header line, so >1 line means a listener exists
-    return IS_MACOS ? out.length > 0 : out.split("\n").length > 1;
+    const p = Math.floor(Number(port));
+    if (!Number.isFinite(p) || p < 1 || p > 65535) return false;
+    // execFileSync with array args — no shell interpolation
+    if (IS_MACOS) {
+      const out = execFileSync("lsof", ["-i", `:${p}`, "-t"], {
+        encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return out.length > 0;
+    } else {
+      const out = execFileSync("ss", ["-tlnp", "sport", "=", `:${p}`], {
+        encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      // ss always outputs a header line, so >1 line means a listener exists
+      return out.split("\n").length > 1;
+    }
   } catch {
     return false;
   }
@@ -431,13 +439,15 @@ async function setup() {
   print(green("  Setup complete!"));
   print(`  Config saved to ${dim(CONFIG_PATH)}`);
   print("");
-  // Offer launchd service — default yes
+  // Offer launchd service — default yes (interactive), skip (non-interactive)
   const installService = hasTTY
     ? ask("  Start wolfpack automatically on login? [Y/n] ")
-    : "y";
-  if (!hasTTY) print("  Installing as background service (non-interactive mode)...");
+    : "n";
   let serviceInstalled = false;
-  if (installService.toLowerCase() !== "n") {
+  if (!hasTTY) {
+    print(dim("  Non-interactive mode — skipping service install."));
+    print(dim("  Run 'wolfpack service install' to start automatically on login."));
+  } else if (installService.toLowerCase() !== "n") {
     try {
       serviceInstall();
       serviceInstalled = true;
