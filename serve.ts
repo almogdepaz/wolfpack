@@ -125,7 +125,6 @@ const AGENT_PRESETS: Record<string, string> = {
     "claude --dangerously-skip-permissions",
   codex: "codex",
   agent: "agent",
-  gemini: "gemini",
 };
 
 function loadSettings(): Settings {

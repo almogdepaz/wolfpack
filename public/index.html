@@ -186,7 +186,7 @@
         -webkit-tap-highlight-color: transparent;
         transition: transform 0.1s ease, background 0.1s ease;
       }
-      .card:active {
+      .card:active:not(:has(.kill-btn:active)) {
         background: #161616;
         transform: scale(0.98);
       }
@@ -516,13 +516,18 @@
         color: #cc3333;
         font-size: 20px;
         cursor: pointer;
-        padding: 4px 8px;
+        padding: 8px 12px;
         margin-left: auto;
         -webkit-tap-highlight-color: transparent;
         transition: color 0.15s ease;
+        position: relative;
+        z-index: 2;
+      }
+      .kill-btn:hover {
+        color: #ff4444;
       }
       .kill-btn:active {
-        color: #ff4444;
+        color: #ff6666;
       }
       .loading-text {
         display: flex;
@@ -1168,6 +1173,13 @@
     <!-- Agent picker view -->
     <div id="agent-view" class="view">
       <div id="agent-list" class="list"></div>
+      <div style="padding:6px;display:flex;gap:6px">
+        <input id="custom-cmd-input" type="text" placeholder="custom command…"
+          style="flex:1;background:#111;border:1px solid #333;border-radius:4px;padding:8px 10px;color:#00ff41;font-family:inherit;font-size:12px;outline:none"
+          onkeydown="if(event.key==='Enter')addCustomCmd()">
+        <button onclick="addCustomCmd()"
+          style="background:#1a1a1a;border:1px solid rgba(0,255,65,0.4);border-radius:4px;padding:8px 12px;color:#00ff41;font-size:11px;font-family:inherit;cursor:pointer;white-space:nowrap">+ Add</button>
+      </div>
     </div>
 
     <!-- Settings view -->
@@ -2240,11 +2252,43 @@
             <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
               <div class="dot green"></div>
               <div class="card-name">${esc(cmd)}</div>
+              <button class="kill-btn" onclick="deleteCustomCmd('${escAttr(cmd)}', event)" title="Remove command">&times;</button>
             </div>
           `).join("");
           el.innerHTML = html;
         } catch {
           el.innerHTML = '<div class="empty">Failed to load agents</div>';
+        }
+      }
+
+      async function addCustomCmd() {
+        const input = document.getElementById("custom-cmd-input");
+        const cmd = (input.value || "").trim();
+        if (!cmd) return;
+        try {
+          await api("/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ addCustomCmd: cmd }),
+          }, projectMachine);
+          input.value = "";
+          showAgentPicker();
+        } catch (e) {
+          alert("Failed to add command: " + (e.message || "error"));
+        }
+      }
+
+      async function deleteCustomCmd(cmd, e) {
+        e.stopPropagation();
+        try {
+          await api("/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ deleteCustomCmd: cmd }),
+          }, projectMachine);
+          showAgentPicker();
+        } catch (e) {
+          alert("Failed to delete command: " + (e.message || "error"));
         }
       }
 
