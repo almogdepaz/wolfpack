@@ -596,6 +596,21 @@ WantedBy=default.target
 `;
 }
 
+// launchd domain target for the current user (e.g. "gui/501")
+const LAUNCHD_DOMAIN = `gui/${process.getuid()}`;
+const LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/${PLIST_LABEL}`;
+
+function launchdBootout() {
+  try {
+    execSync(`launchctl bootout ${LAUNCHD_TARGET} 2>/dev/null`);
+  } catch {}
+}
+
+function launchdBootstrap() {
+  execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${PLIST_PATH}"`);
+  execSync(`launchctl kickstart ${LAUNCHD_TARGET}`);
+}
+
 function serviceInstall() {
   const config = loadConfig();
   if (!config) {
@@ -610,11 +625,9 @@ function serviceInstall() {
     });
     writeFileSync(PLIST_PATH, plist);
 
-    // Unload first if already loaded
-    try {
-      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
-    } catch {}
-    execSync(`launchctl load "${PLIST_PATH}"`);
+    // Stop existing service, then register and start fresh
+    launchdBootout();
+    launchdBootstrap();
 
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -661,9 +674,7 @@ function serviceInstall() {
 
 function serviceUninstall() {
   if (IS_MACOS) {
-    try {
-      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
-    } catch {}
+    launchdBootout();
     try {
       unlinkSync(PLIST_PATH);
     } catch {}
@@ -687,7 +698,7 @@ function serviceUninstall() {
 function serviceStop() {
   try {
     if (IS_MACOS) {
-      execSync(`launchctl unload "${PLIST_PATH}"`);
+      launchdBootout();
     } else if (IS_LINUX) {
       execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
     }
@@ -700,7 +711,7 @@ function serviceStop() {
 function serviceStart() {
   try {
     if (IS_MACOS) {
-      execSync(`launchctl load "${PLIST_PATH}"`);
+      launchdBootstrap();
     } else if (IS_LINUX) {
       execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
     }
