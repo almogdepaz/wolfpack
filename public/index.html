@@ -1120,6 +1120,635 @@
         text-transform: uppercase;
         letter-spacing: 1px;
       }
+
+      /* ══════════════════════════════════════════════════════════
+         WOLFPACK COMMAND CENTER — VISUAL OVERHAUL
+         ══════════════════════════════════════════════════════════ */
+
+      /* ── Foundation ── */
+      body {
+        font-family: "SF Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+        background-image:
+          radial-gradient(circle at 1px 1px, rgba(0,255,65,0.025) 1px, transparent 0);
+        background-size: 20px 20px;
+      }
+
+      /* ── Custom scrollbar ── */
+      * { scrollbar-width: thin; scrollbar-color: #1e1e1e transparent; }
+      ::-webkit-scrollbar { width: 5px; height: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #1e1e1e; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: #00ff4140; }
+
+      /* ── Header enhancement ── */
+      header {
+        border-bottom: 1px solid rgba(0,255,65,0.12) !important;
+        box-shadow: 0 1px 20px rgba(0,255,65,0.04), 0 1px 0 rgba(0,255,65,0.06);
+      }
+      header h1 {
+        font-weight: 800 !important;
+        letter-spacing: 3px !important;
+        text-shadow: 0 0 12px rgba(0,255,65,0.4), 0 0 40px rgba(0,255,65,0.08) !important;
+      }
+
+      /* ── Card overhaul ── */
+      .card {
+        background: linear-gradient(145deg, #111 0%, #0c0c0c 100%) !important;
+        border: 1px solid #1a1a1a !important;
+        border-radius: 3px !important;
+        position: relative;
+      }
+      .card.active-session {
+        border-left: 3px solid #00ff41 !important;
+        box-shadow: inset 4px 0 16px -8px rgba(0,255,65,0.12);
+      }
+      .card.attention {
+        border-left: 3px solid #ffcc00 !important;
+        box-shadow: inset 4px 0 16px -8px rgba(255,204,0,0.12);
+      }
+      .card.idle-session {
+        border-left: 3px solid #1e1e1e !important;
+      }
+      .card:active:not(:has(.kill-btn:active)) {
+        background: linear-gradient(145deg, #151515 0%, #111 100%) !important;
+      }
+
+      /* ── Card stagger — fade+slide instead of just fade ── */
+      @keyframes fadeSlideIn {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .card-stagger { animation: fadeSlideIn 0.2s ease backwards !important; }
+
+      .card-name {
+        font-weight: 700 !important;
+        letter-spacing: 1.8px !important;
+        text-shadow: 0 0 10px rgba(0,255,65,0.3) !important;
+      }
+      .card-preview {
+        color: #444 !important;
+        margin-top: 2px;
+      }
+
+      /* ── Status dots — enhanced glow ── */
+      .dot {
+        width: 9px !important;
+        height: 9px !important;
+      }
+      .dot.green {
+        box-shadow: 0 0 6px #00ff4160, 0 0 14px #00ff4120 !important;
+        animation: dot-breathe 2.5s ease-in-out infinite !important;
+      }
+      @keyframes dot-breathe {
+        0%, 100% { box-shadow: 0 0 4px #00ff4140, 0 0 10px #00ff4115; }
+        50% { box-shadow: 0 0 8px #00ff4180, 0 0 18px #00ff4130; }
+      }
+      .dot.yellow {
+        box-shadow: 0 0 6px #ff660060 !important;
+        animation: dot-alert 1s ease-in-out infinite !important;
+      }
+      @keyframes dot-alert {
+        0%, 100% { opacity: 1; box-shadow: 0 0 6px #ff660060; }
+        50% { opacity: 0.35; box-shadow: 0 0 2px #ff660030; }
+      }
+      .dot.purple {
+        box-shadow: 0 0 6px #9b59b680, 0 0 14px #9b59b620 !important;
+      }
+
+      /* ── Button refinement — consistent radius, better tactile feel ── */
+      .new-btn,
+      .action-btn,
+      .back-btn,
+      .settings-gear,
+      .ralph-nav-btn,
+      .machine-add-btn,
+      #input-bar button,
+      #search-bar button,
+      #session-chip,
+      .ralph-launch-btn {
+        border-radius: 6px !important;
+      }
+      .new-btn {
+        font-weight: 600 !important;
+        letter-spacing: 1.5px !important;
+        background: linear-gradient(145deg, #1a1a1a 0%, #151515 100%) !important;
+        border-color: rgba(0,255,65,0.3) !important;
+      }
+      .new-btn:active {
+        box-shadow: 0 0 16px rgba(0,255,65,0.3) !important;
+      }
+      .action-btn {
+        font-weight: 600 !important;
+        letter-spacing: 1px !important;
+      }
+      .action-btn:active {
+        transform: scale(0.93) !important;
+      }
+      .action-btn.primary:active {
+        box-shadow: 0 0 20px rgba(0,255,65,0.35) !important;
+      }
+      .action-btn.danger:active {
+        box-shadow: 0 0 20px rgba(204,51,51,0.35) !important;
+      }
+
+      /* ── Input fields — green caret, better focus ── */
+      #input-bar textarea,
+      .new-project-row input,
+      .ralph-start-form input,
+      .ralph-start-form select,
+      #search-bar input,
+      #custom-cmd-input {
+        caret-color: #00ff41;
+        border-radius: 6px !important;
+      }
+      #input-bar textarea:focus,
+      .new-project-row input:focus,
+      #search-bar input:focus {
+        border-color: #00ff41 !important;
+        box-shadow: 0 0 0 2px rgba(0,255,65,0.08), 0 0 12px rgba(0,255,65,0.06) !important;
+      }
+      .ralph-start-form select:focus,
+      .ralph-start-form input:focus {
+        border-color: #9b59b6 !important;
+        box-shadow: 0 0 0 2px rgba(155,89,182,0.08), 0 0 12px rgba(155,89,182,0.06) !important;
+      }
+
+      /* ── Settings — custom toggle switches ── */
+      .settings-section input[type="checkbox"] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 34px;
+        height: 18px;
+        background: #1a1a1a;
+        border-radius: 9px;
+        position: relative;
+        cursor: pointer;
+        transition: background 0.2s ease;
+        border: 1px solid #2a2a2a;
+        flex-shrink: 0;
+        vertical-align: middle;
+      }
+      .settings-section input[type="checkbox"]::after {
+        content: '';
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #444;
+        top: 2px;
+        left: 2px;
+        transition: transform 0.2s ease, background 0.2s ease;
+      }
+      .settings-section input[type="checkbox"]:checked {
+        background: rgba(0,255,65,0.15);
+        border-color: rgba(0,255,65,0.3);
+      }
+      .settings-section input[type="checkbox"]:checked::after {
+        transform: translateX(16px);
+        background: #00ff41;
+        box-shadow: 0 0 6px rgba(0,255,65,0.4);
+      }
+
+      /* ── Loading state — terminal cursor blink ── */
+      .loading-text {
+        font-size: 12px !important;
+        letter-spacing: 1px;
+      }
+      .loading-text::after {
+        content: '█';
+        animation: terminal-blink 0.7s step-end infinite;
+        color: #00ff41;
+        margin-left: 3px;
+      }
+      @keyframes terminal-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+      }
+
+      /* ── Empty states ── */
+      .empty {
+        letter-spacing: 2px !important;
+        text-transform: uppercase;
+        font-size: 11px !important;
+      }
+
+      /* ── Machine groups ── */
+      .machine-header {
+        font-weight: 600 !important;
+        border-bottom: 1px solid #151515;
+        padding-bottom: 5px !important;
+      }
+
+      /* ── Session drawer ── */
+      #session-drawer {
+        background: linear-gradient(180deg, #111 0%, #0c0c0c 100%) !important;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+      }
+      .drawer-item.current {
+        background: linear-gradient(90deg, rgba(0,255,65,0.04) 0%, transparent 60%) !important;
+      }
+      .drawer-item-name {
+        font-weight: 700 !important;
+      }
+
+      /* ── Ralph cards ── */
+      .ralph-card {
+        border-radius: 4px !important;
+        background: linear-gradient(145deg, #111 0%, #0c0c0c 100%) !important;
+      }
+      .ralph-iter-card {
+        border-radius: 4px !important;
+      }
+      .ralph-launch-btn {
+        letter-spacing: 1.5px !important;
+      }
+
+      /* ── Kill button ── */
+      .kill-btn {
+        transition: color 0.15s ease, transform 0.1s ease !important;
+      }
+      .kill-btn:active {
+        transform: scale(1.15);
+      }
+
+      /* ── Session chip ── */
+      #session-chip {
+        font-weight: 700 !important;
+        letter-spacing: 2px !important;
+      }
+
+      /* ── Vignette — subtle depth at edges ── */
+      #view-container::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.25) 100%);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      /* ── Focus visible — accessibility ring ── */
+      :focus-visible {
+        outline: 1px solid rgba(0,255,65,0.4);
+        outline-offset: 2px;
+      }
+
+      /* ── Selection color ── */
+      ::selection {
+        background: rgba(0,255,65,0.2);
+        color: #e0e0e0;
+      }
+
+      /* ── Subtle hover states for desktop ── */
+      @media (hover: hover) {
+        .card:hover {
+          background: linear-gradient(145deg, #141414 0%, #0f0f0f 100%) !important;
+          border-color: #222 !important;
+        }
+        .card.active-session:hover {
+          border-left-color: #00ff41 !important;
+          box-shadow: inset 4px 0 20px -8px rgba(0,255,65,0.18);
+        }
+        .ralph-card:hover {
+          background: linear-gradient(145deg, #141414 0%, #0f0f0f 100%) !important;
+        }
+        .drawer-item:hover {
+          background: #141414 !important;
+        }
+        .new-btn:hover {
+          border-color: rgba(0,255,65,0.6) !important;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.4), 0 0 8px rgba(0,255,65,0.1), inset 0 1px 0 rgba(255,255,255,0.04) !important;
+        }
+        .settings-gear:hover,
+        .ralph-nav-btn:hover,
+        .back-btn:hover {
+          border-color: #3a3a3a !important;
+          color: #aaa !important;
+        }
+      }
+
+      /* ── Desktop card density ── */
+      @media (min-width: 769px) {
+        .card-name { letter-spacing: 2px !important; }
+        .dot { width: 7px !important; height: 7px !important; }
+      }
+
+      /* ══════════════════════════════════════════════════════════
+         MOBILE-SPECIFIC PASS
+         ══════════════════════════════════════════════════════════ */
+      @media (max-width: 768px) {
+
+        /* ── Cards — larger touch targets, better spacing ── */
+        .card {
+          padding: 14px 12px !important;
+          margin-bottom: 6px !important;
+          min-height: 60px !important;
+          gap: 12px !important;
+        }
+        .card-name {
+          font-size: 14px !important;
+        }
+        .card-preview {
+          font-size: 12px !important;
+          line-height: 1.45 !important;
+          -webkit-line-clamp: 2 !important;
+        }
+        .dot {
+          width: 10px !important;
+          height: 10px !important;
+        }
+
+        /* ── Kill button — larger hit area on mobile ── */
+        .kill-btn {
+          font-size: 22px !important;
+          padding: 10px 14px !important;
+          min-width: 44px;
+          min-height: 44px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        /* ── New session button — prominent CTA ── */
+        .new-btn {
+          padding: 14px 16px !important;
+          margin-bottom: 8px !important;
+          font-size: 14px !important;
+          min-height: 52px !important;
+          justify-content: center;
+        }
+
+        /* ── Machine headers — more breathing room ── */
+        .machine-header {
+          padding: 8px 6px 6px !important;
+          font-size: 12px !important;
+          gap: 6px !important;
+        }
+        .machine-add-btn {
+          width: 40px !important;
+          height: 40px !important;
+          font-size: 22px !important;
+        }
+
+        /* ── Action bar — larger buttons, better thumb reach ── */
+        #action-bar {
+          gap: 5px !important;
+          padding: 6px 8px !important;
+          padding-bottom: max(6px, env(safe-area-inset-bottom)) !important;
+        }
+        .action-btn {
+          min-height: 52px !important;
+          font-size: 14px !important;
+          border-radius: 8px !important;
+          font-weight: 700 !important;
+        }
+        .action-btn .arrow {
+          font-size: 18px !important;
+        }
+
+        /* ── Input bar — thumb-friendly ── */
+        #input-bar {
+          gap: 8px !important;
+          padding: 8px 10px !important;
+          padding-bottom: max(8px, env(safe-area-inset-bottom)) !important;
+        }
+        #input-bar textarea {
+          font-size: 16px !important;
+          padding: 10px 12px !important;
+          border-radius: 12px !important;
+          min-height: 44px !important;
+        }
+        #input-bar button {
+          width: 44px !important;
+          height: 44px !important;
+          font-size: 20px !important;
+          border-radius: 12px !important;
+        }
+
+        /* ── Header buttons — 44px min touch targets ── */
+        .back-btn {
+          min-height: 38px !important;
+          min-width: 60px !important;
+          padding: 8px 14px !important;
+          font-size: 11px !important;
+        }
+        .settings-gear,
+        .ralph-nav-btn {
+          min-width: 40px !important;
+          min-height: 40px !important;
+          font-size: 20px !important;
+        }
+
+        /* ── Session chip — easier to tap ── */
+        #session-chip {
+          min-height: 38px !important;
+          padding: 8px 12px !important;
+          font-size: 12px !important;
+        }
+
+        /* ── Session drawer — bottom-sheet feel ── */
+        #session-drawer {
+          border-bottom-left-radius: 12px !important;
+          border-bottom-right-radius: 12px !important;
+          max-height: 55vh !important;
+        }
+        .drawer-item {
+          padding: 14px 16px !important;
+          min-height: 50px;
+          gap: 12px !important;
+        }
+        .drawer-item .dot {
+          width: 10px !important;
+          height: 10px !important;
+        }
+        .drawer-item-name {
+          font-size: 14px !important;
+        }
+
+        /* ── Search bar — better mobile sizing ── */
+        #search-bar {
+          padding: 8px 10px !important;
+          gap: 6px !important;
+        }
+        #search-bar input {
+          font-size: 16px !important;
+          padding: 8px 10px !important;
+          min-height: 40px;
+        }
+        #search-bar button {
+          min-width: 40px;
+          min-height: 40px !important;
+          font-size: 14px !important;
+        }
+
+        /* ── Settings — more spacious on mobile ── */
+        .settings-section {
+          padding: 10px 8px !important;
+        }
+        .settings-label {
+          font-size: 11px !important;
+          margin-bottom: 10px !important;
+          letter-spacing: 2px !important;
+        }
+        .settings-section label {
+          padding: 8px 0 !important;
+          font-size: 14px !important;
+          min-height: 44px;
+          display: flex !important;
+          align-items: center !important;
+        }
+        .settings-section input[type="checkbox"] {
+          width: 40px !important;
+          height: 22px !important;
+          border-radius: 11px !important;
+        }
+        .settings-section input[type="checkbox"]::after {
+          width: 16px !important;
+          height: 16px !important;
+          top: 2px !important;
+          left: 2px !important;
+        }
+        .settings-section input[type="checkbox"]:checked::after {
+          transform: translateX(18px) !important;
+        }
+
+        /* ── Ralph cards — mobile touch targets ── */
+        .ralph-card {
+          padding: 10px 12px !important;
+          margin-bottom: 6px !important;
+        }
+        .ralph-card-name {
+          font-size: 13px !important;
+        }
+        .ralph-launch-btn {
+          padding: 14px !important;
+          font-size: 14px !important;
+          margin: 8px !important;
+          border-radius: 12px !important;
+        }
+
+        /* ── Ralph start form — better spacing ── */
+        .ralph-start-form {
+          padding: 14px !important;
+          gap: 12px !important;
+        }
+        .ralph-start-form label {
+          font-size: 12px !important;
+          margin-bottom: 2px !important;
+        }
+        .ralph-start-form select,
+        .ralph-start-form input {
+          padding: 10px !important;
+          font-size: 15px !important;
+          min-height: 44px;
+          border-radius: 8px !important;
+        }
+
+        /* ── New project row ── */
+        .new-project-row {
+          padding: 10px !important;
+          gap: 8px !important;
+        }
+        .new-project-row input {
+          padding: 10px 12px !important;
+          font-size: 15px !important;
+          min-height: 44px;
+          border-radius: 8px !important;
+        }
+        .new-project-row button {
+          padding: 10px 16px !important;
+          font-size: 12px !important;
+          min-height: 44px;
+          border-radius: 8px !important;
+        }
+
+        /* ── Custom cmd input in agent view ── */
+        #custom-cmd-input {
+          padding: 10px 12px !important;
+          font-size: 14px !important;
+          min-height: 44px;
+          border-radius: 8px !important;
+        }
+
+        /* ── Ralph iteration cards ── */
+        .ralph-iter-header {
+          padding: 12px 14px !important;
+          min-height: 50px;
+        }
+        .ralph-iter-title {
+          font-size: 14px !important;
+        }
+        .ralph-iter-task {
+          font-size: 12px !important;
+        }
+
+        /* ── Ralph actions bar ── */
+        .ralph-actions {
+          padding: 8px 12px !important;
+          gap: 8px !important;
+        }
+        .ralph-actions button {
+          padding: 10px !important;
+          font-size: 13px !important;
+          min-height: 44px;
+          border-radius: 8px !important;
+        }
+
+        /* ── Swipe edge indicator — subtle green glow on left edge ── */
+        .view.swiping::before {
+          width: 24px !important;
+          left: -24px !important;
+          background: linear-gradient(to right, transparent, rgba(0,255,65,0.08)) !important;
+        }
+
+        /* ── Terminal mobile — better readability ── */
+        #terminal {
+          font-size: 11px !important;
+          line-height: 1.4 !important;
+          padding: 6px 10px !important;
+        }
+
+        /* ── Connection status bar ── */
+        #conn-status {
+          padding: 6px !important;
+          font-size: 11px !important;
+        }
+
+        /* ── Discover button ── */
+        .settings-section button[onclick="discoverMachines()"] {
+          min-height: 44px !important;
+          font-size: 13px !important;
+          border-radius: 8px !important;
+        }
+
+        /* ── Machine items ── */
+        .machine-item {
+          padding: 8px 10px !important;
+          min-height: 44px;
+          gap: 8px !important;
+          border-radius: 6px !important;
+        }
+        .machine-item-name {
+          font-size: 14px !important;
+        }
+        .machine-remove-btn {
+          font-size: 20px !important;
+          padding: 4px 8px !important;
+          min-width: 36px;
+          min-height: 36px;
+        }
+
+        /* ── Message preview — better positioning ── */
+        #msg-preview {
+          left: 10px !important;
+          right: 10px !important;
+          bottom: 60px !important;
+          border-radius: 8px !important;
+          padding: 12px !important;
+          font-size: 14px !important;
+        }
+      }
+
     </style>
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.min.js"></script>
@@ -1625,21 +2254,11 @@
 
       async function loadRalphLoops() {
         const el = document.getElementById("ralph-list");
-        const machines = getMachines();
-        const multiMachine = machines.length > 0;
-        const targets = [
-          { url: "", name: selfName || "this machine" },
-          ...machines.map(m => ({ url: m.url, name: m.name })),
-        ];
         try {
-          const results = await Promise.all(
-            targets.map(t =>
-              api("/ralph", undefined, t.url || undefined)
-                .then(data => (data.loops || []).map(loop => ({ ...loop, machineUrl: t.url, machineName: t.name })))
-                .catch(() => [])
-            )
-          );
-          const loops = results.flat();
+          // Server aggregates loops from all peers — single request
+          const data = await api("/ralph");
+          const loops = data.loops || [];
+          const multiMachine = loops.some(l => l.machineUrl);
           if (loops.length === 0) {
             el.innerHTML = '<div class="ralph-empty">no ralph loops detected</div>';
             return;
@@ -1658,12 +2277,12 @@
             const taskLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
             const iterLabel = loop.totalIterations > 0 ? loop.iteration + '/' + loop.totalIterations + ' iter' : '';
             const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
-            const machineLabel = multiMachine ? '<div class="ralph-machine-label">' + esc(loop.machineName) + '</div>' : '';
-            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + escAttr(loop.project) + '\', \'' + escAttr(loop.machineUrl) + '\')">' +
+            const machineLabel = multiMachine ? '<div class="ralph-machine-label">' + esc(loop.machineName || "local") + '</div>' : '';
+            return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + escAttr(loop.project) + '\', \'' + escAttr(loop.machineUrl || '') + '\')">' +
               '<div class="ralph-card-header">' +
                 '<span class="ralph-card-name"><span class="dot ' + dotClass + '"></span>' + esc(loop.project) + '</span>' +
                 '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
-                '<button class="kill-btn" onclick="dismissRalph(\'' + escAttr(loop.project) + '\', event, \'' + escAttr(loop.machineUrl) + '\')">&times;</button>' +
+                '<button class="kill-btn" onclick="dismissRalph(\'' + escAttr(loop.project) + '\', event, \'' + escAttr(loop.machineUrl || '') + '\')">&times;</button>' +
               '</div>' +
               '<div class="ralph-progress">' +
                 '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + taskPct + '%"></div></div>' +
@@ -3398,6 +4017,19 @@
               bgEl.style.zIndex = "0";
             } else {
               // forward: card drags independently, terminal peeks behind
+              // eager pre-load: fetch the swiped session's content into terminal
+              if (swipeCard && targetView === "terminal") {
+                const onclick = swipeCard.getAttribute("onclick") || "";
+                const m = onclick.match(/openSession\('([^']+)'(?:,\s*'([^']*)')?\)/);
+                if (m) {
+                  const sName = m[1], sMachine = m[2] || "";
+                  const base = sMachine ? sMachine + "/api" : "/api";
+                  fetch(base + "/poll?session=" + encodeURIComponent(sName))
+                    .then(r => r.ok ? r.json() : null)
+                    .then(d => { if (d && d.pane != null) document.getElementById("terminal").textContent = d.pane; })
+                    .catch(() => {});
+                }
+              }
               if (swipeCard) swipeCard.style.transition = "none";
               bgEl.style.transition = "none";
               bgEl.style.transform = "translate3d(100%, 0, 0)";

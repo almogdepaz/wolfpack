@@ -101,6 +101,9 @@ if (!TAILNET_SUFFIX) {
   console.warn("⚠ No tailscaleHostname in config — remote browser access will be blocked by CORS. Run 'wolfpack setup' to fix.");
 }
 
+// Cached peer list for server-side aggregation (populated by /api/discover)
+let cachedPeers: { url: string; name: string }[] = [];
+
 function isAllowedOrigin(origin: string): boolean {
   if (ALLOWED_ORIGINS.has(origin)) return true;
   // Allow devices on the same tailnet only
@@ -508,6 +511,55 @@ function serveFile(res: ServerResponse, filename: string): void {
   res.end(asset.content);
 }
 
+// ── Peer discovery (shared by /api/discover endpoint and startup) ──
+
+async function discoverPeers(): Promise<{ peers: any[]; error?: string }> {
+  const tsBin = [
+    "/usr/local/bin/tailscale",
+    "/usr/bin/tailscale",
+    "/opt/homebrew/bin/tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+  ].find((p) => { try { execFileSync("test", ["-x", p]); return true; } catch { return false; } });
+  if (!tsBin) return { peers: [], error: "tailscale not found" };
+
+  try {
+    const { stdout } = await exec(
+      "/bin/sh", ["-l", "-c", `"${tsBin}" status --json`],
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    const status = JSON.parse(stdout);
+    const self = status.Self?.DNSName?.replace(/\.$/, "");
+    const peers: { hostname: string; url: string }[] = [];
+    for (const [, peer] of Object.entries(status.Peer || {}) as [string, any][]) {
+      if (!peer.Online) continue;
+      const dns = peer.DNSName?.replace(/\.$/, "");
+      if (!dns || dns === self) continue;
+      peers.push({ hostname: dns, url: `https://${dns}` });
+    }
+
+    const results = await Promise.all(
+      peers.map(async (p) => {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 3000);
+          const r = await fetch(p.url + "/api/info", { signal: ctrl.signal });
+          clearTimeout(timer);
+          const info = await r.json();
+          return { ...p, name: info.name || p.hostname, version: info.version, wolfpack: true };
+        } catch {
+          return { ...p, wolfpack: false };
+        }
+      }),
+    );
+    const wolfpackPeers = results.filter((r) => r.wolfpack);
+    cachedPeers = wolfpackPeers.map(p => ({ url: p.url, name: p.name }));
+    return { peers: wolfpackPeers };
+  } catch (e: any) {
+    console.error("discover error:", e?.message || e);
+    return { peers: [], error: "failed to query tailscale" };
+  }
+}
+
 // ── Routes ──
 
 const routes: Record<
@@ -725,53 +777,9 @@ const routes: Record<
   },
 
   "GET /api/discover": async (_req, res) => {
-    // Find wolfpack instances on the tailnet
-    // System binary first — macOS GUI CLI fails without GUI context
-    const tsBin = [
-      "/usr/local/bin/tailscale",
-      "/usr/bin/tailscale",
-      "/opt/homebrew/bin/tailscale",
-      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-    ].find((p) => { try { execFileSync("test", ["-x", p]); return true; } catch { return false; } });
-    if (!tsBin) return json(res, { peers: [], error: "tailscale not found" });
-
-    try {
-      // Use login shell so macOS Tailscale GUI CLI gets the Aqua session context
-      // (direct execFile fails from launchd services — no Mach bootstrap namespace)
-      const { stdout } = await exec(
-        "/bin/sh", ["-l", "-c", `"${tsBin}" status --json`],
-        { maxBuffer: 10 * 1024 * 1024 },
-      );
-      const status = JSON.parse(stdout);
-      const self = status.Self?.DNSName?.replace(/\.$/, "");
-      const peers: { hostname: string; url: string }[] = [];
-      for (const [, peer] of Object.entries(status.Peer || {}) as [string, any][]) {
-        if (!peer.Online) continue;
-        const dns = peer.DNSName?.replace(/\.$/, "");
-        if (!dns || dns === self) continue;
-        peers.push({ hostname: dns, url: `https://${dns}` });
-      }
-
-      // Probe each peer for wolfpack (parallel, 3s timeout)
-      const results = await Promise.all(
-        peers.map(async (p) => {
-          try {
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 3000);
-            const r = await fetch(p.url + "/api/info", { signal: ctrl.signal });
-            clearTimeout(timer);
-            const info = await r.json();
-            return { ...p, name: info.name || p.hostname, version: info.version, wolfpack: true };
-          } catch {
-            return { ...p, wolfpack: false };
-          }
-        }),
-      );
-      json(res, { peers: results.filter((r) => r.wolfpack) });
-    } catch (e: any) {
-      console.error("discover error:", e?.message || e);
-      json(res, { peers: [], error: "failed to query tailscale" });
-    }
+    const result = await discoverPeers();
+    if (result.error) return json(res, { peers: [], error: result.error });
+    json(res, { peers: result.peers });
   },
 
   "GET /api/poll": async (req, res) => {
@@ -786,9 +794,33 @@ const routes: Record<
 
   // ── Ralph loop API ──
 
-  "GET /api/ralph": async (_req, res) => {
-    const loops = scanRalphLoops();
-    json(res, { loops });
+  "GET /api/ralph": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const local = url.searchParams.get("local") === "true";
+    const selfHost = hostname().replace(/\.local$/, "").replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
+    const localLoops = scanRalphLoops().map(l => ({ ...l, machineName: selfHost, machineUrl: "" }));
+
+    if (local || cachedPeers.length === 0) {
+      return json(res, { loops: localLoops });
+    }
+
+    // Aggregate from all peers (with ?local=true to prevent recursion)
+    const peerResults = await Promise.all(
+      cachedPeers.map(async (peer) => {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 3000);
+          const r = await fetch(peer.url + "/api/ralph?local=true", { signal: ctrl.signal });
+          clearTimeout(timer);
+          const data = await r.json() as { loops: any[] };
+          return (data.loops || []).map((l: any) => ({ ...l, machineName: peer.name, machineUrl: peer.url }));
+        } catch {
+          return [];
+        }
+      })
+    );
+
+    json(res, { loops: [...localLoops, ...peerResults.flat()] });
   },
 
   "GET /api/ralph/branches": async (req, res) => {
@@ -1509,6 +1541,10 @@ export function startServer(port = PORT, host = "127.0.0.1"): void {
 
   server.listen(port, host, () => {
     console.log(`Wolfpack PWA: http://localhost:${port}/`);
+    // Warm peer cache in background so /api/ralph aggregation works immediately
+    discoverPeers().then(() => {
+      if (cachedPeers.length) console.log(`Discovered ${cachedPeers.length} peer(s): ${cachedPeers.map(p => p.name).join(", ")}`);
+    }).catch(() => {});
   });
 }
 
