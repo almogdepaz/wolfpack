@@ -126,7 +126,7 @@ export function isPortInUse(port: number): boolean {
   }
 }
 
-function killPortHolder(port: number): boolean {
+export function killPortHolder(port: number): boolean {
   try {
     const p = Math.floor(Number(port));
     if (!isValidPort(p)) return false;
