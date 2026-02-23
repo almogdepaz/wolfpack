@@ -29,7 +29,7 @@ import { assets } from "./public-assets.js";
 import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { INTERACTIVE_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
+import { INTERACTIVE_CONTEXT, TASK_HEADER, validatePlanFormat } from "./wolfpack-context.js";
 import {
   WS_ALLOWED_KEYS,
   CMD_REGEX,
@@ -243,14 +243,9 @@ async function tmuxNewSession(
     await exec(TMUX, ["new-session", "-d", "-s", name, "-c", cwd, SHELL]);
     return;
   }
-  // Inject shared wolfpack conventions into claude sessions so every interactive
+  // Inject shared wolfpack conventions into agent sessions so every interactive
   // session knows plan format, task granularity rules, etc. (see wolfpack-context.ts)
-  // Falls back to plain command if --append-system-prompt is unsupported.
-  let fullCmd = agentCmd;
-  if (/^claude\b/.test(agentCmd)) {
-    const withContext = agentCmd + " --append-system-prompt " + shellEscape(INTERACTIVE_CONTEXT);
-    fullCmd = withContext + " || " + agentCmd;
-  }
+  const fullCmd = injectAgentContext(agentCmd);
   const shellCmd = `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT ${SHELL} -lic ${shellEscape(fullCmd + "; exec " + SHELL)}`;
   await exec(TMUX, [
     "new-session",
@@ -291,6 +286,38 @@ const RALPH_BIN_ARGS = (() => {
 })();
 const RALPH_AGENTS = new Set(["claude", "codex", "gemini"]);
 
+/** Detect which agent an agentCmd refers to. Returns the agent name or null. */
+function detectAgent(agentCmd: string): "claude" | "gemini" | "codex" | null {
+  for (const agent of RALPH_AGENTS) {
+    if (new RegExp(`^${agent}\\b`).test(agentCmd)) return agent as "claude" | "gemini" | "codex";
+  }
+  return null;
+}
+
+/**
+ * Build the full command with context injection for the detected agent.
+ * - claude: --append-system-prompt (goes into system prompt)
+ * - gemini: -i flag (injected as first interactive message)
+ * - codex: no injection flag available (known limitation)
+ */
+function injectAgentContext(agentCmd: string): string {
+  const agent = detectAgent(agentCmd);
+  switch (agent) {
+    case "claude": {
+      // Fall back to plain command if --append-system-prompt unsupported
+      const withCtx = agentCmd + " --append-system-prompt " + shellEscape(INTERACTIVE_CONTEXT);
+      return withCtx + " || " + agentCmd;
+    }
+    case "gemini": {
+      // -i / --prompt-interactive injects as first message in interactive mode
+      return agentCmd + " -i " + shellEscape(INTERACTIVE_CONTEXT);
+    }
+    // codex: no CLI flag for context injection today — skip
+    default:
+      return agentCmd;
+  }
+}
+
 interface RalphStatus {
   project: string;
   active: boolean;
@@ -309,14 +336,16 @@ interface RalphStatus {
   tasksTotal: number;
 }
 
-function countPlanTasks(planPath: string): { done: number; total: number } {
+function countPlanTasks(planPath: string): { done: number; total: number; issues: string[] } {
   try {
     const plan = readFileSync(planPath, "utf-8");
+    const { issues } = validatePlanFormat(plan);
+
     // checkbox mode
     if (/^- \[[ x]\] /m.test(plan)) {
       const done = (plan.match(/^- \[x\] /gm) || []).length;
       const pending = (plan.match(/^- \[ \] /gm) || []).length;
-      return { done, total: done + pending };
+      return { done, total: done + pending, issues };
     }
     // section mode: ## or ### numbered headers (with optional ~~ strikethrough)
     let total = 0;
@@ -327,9 +356,9 @@ function countPlanTasks(planPath: string): { done: number; total: number } {
         if (line.includes("~~")) done++;
       }
     }
-    return { done, total };
+    return { done, total, issues };
   } catch {
-    return { done: 0, total: 0 };
+    return { done: 0, total: 0, issues: [] };
   }
 }
 

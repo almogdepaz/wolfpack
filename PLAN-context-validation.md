@@ -43,7 +43,7 @@ Three problems with the current wolfpack context/plan system:
 **Mid-loop resilience:**
 - after `extractCurrentTask()` returns null (line 399): check if plan still has unparseable content (not just empty). if so, log warning "plan has content but no parseable tasks — format may be corrupted" instead of silent "no unchecked tasks remain"
 
-## 3. serve.ts — multi-agent injection + validation endpoint
+## ~~3. serve.ts — multi-agent injection + validation endpoint~~
 
 **Multi-agent interactive injection:**
 - claude: keep `--append-system-prompt` (cleanest, goes into system prompt)
