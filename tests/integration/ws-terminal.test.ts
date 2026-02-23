@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 // Set WOLFPACK_TEST before importing serve.ts to prevent auto-listen
 process.env.WOLFPACK_TEST = "1";
 
-import { server, wss, __setTmuxList } from "../../serve.ts";
+import { server, wss, __setTmuxList, __getActivePtySessions } from "../../serve.ts";
 
 // ── Test setup ──
 
@@ -192,5 +192,112 @@ describe("WS /ws/terminal message handling", () => {
     await wait(200);
     expect(ws!.readyState).toBe(WebSocket.OPEN);
     await closeWs(ws!);
+  });
+});
+
+// ── /ws/pty spawn failure + reconnect loop prevention ──
+
+describe("WS /ws/pty spawn failure handling", () => {
+  test("closes with 4001 when pty spawn fails (no real tmux session)", async () => {
+    const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=test-session`);
+    ws.binaryType = "arraybuffer";
+
+    // Set up close listener before anything else to avoid race
+    const closePromise = new Promise<CloseEvent>((resolve) => {
+      ws.addEventListener("close", (ev) => resolve(ev));
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve());
+      ws.addEventListener("error", () => reject(new Error("ws/pty connect failed")));
+    });
+
+    // Trigger spawnPty — will fail because "test-session" has no real tmux session
+    ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
+
+    const closeEvent = await Promise.race([
+      closePromise,
+      wait(5000).then(() => { throw new Error("timed out waiting for WS close"); }),
+    ]) as CloseEvent;
+
+    // Must close with 4001 (session unavailable), NOT 1000 (normal close).
+    // Code 1000 tells the client "safe to reconnect" → infinite reconnect loop.
+    expect(closeEvent.code).toBe(4001);
+  });
+
+  test("rapid reconnects after spawn failure all get 4001", async () => {
+    const closeCodes: number[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=test-session`);
+      ws.binaryType = "arraybuffer";
+
+      const closePromise = new Promise<CloseEvent>((resolve) => {
+        ws.addEventListener("close", (ev) => resolve(ev));
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve());
+        ws.addEventListener("error", () => reject(new Error("ws/pty connect failed")));
+      });
+
+      ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
+
+      const ev = await Promise.race([
+        closePromise,
+        wait(5000).then(() => { throw new Error("timed out waiting for WS close"); }),
+      ]) as CloseEvent;
+      closeCodes.push(ev.code);
+    }
+
+    // Every reconnect should get 4001, not 1000
+    expect(closeCodes).toEqual([4001, 4001, 4001]);
+  });
+});
+
+describe("WS /ws/pty teardown grace period", () => {
+  test("PTY entry survives brief viewer disconnect (not torn down immediately)", async () => {
+    // Connect viewer to /ws/pty
+    const ws1 = new WebSocket(`${baseWsUrl}/ws/pty?session=test-session`);
+    ws1.binaryType = "arraybuffer";
+
+    await new Promise<void>((resolve, reject) => {
+      ws1.addEventListener("open", () => resolve());
+      ws1.addEventListener("error", () => reject(new Error("ws/pty connect failed")));
+    });
+
+    // PTY entry should exist now
+    const ptySessions = __getActivePtySessions();
+    expect(ptySessions.has("test-session")).toBe(true);
+    const entryBefore = ptySessions.get("test-session")!;
+    expect(entryBefore.alive).toBe(true);
+
+    // Disconnect the only viewer
+    ws1.close();
+    await wait(100);
+
+    // The PTY entry should STILL be alive during the grace period.
+    // Currently fails: teardownPty is called immediately when viewers.size === 0.
+    expect(ptySessions.has("test-session")).toBe(true);
+    expect(ptySessions.get("test-session")!.alive).toBe(true);
+
+    // Reconnect within grace period — should reuse same entry
+    const ws2 = new WebSocket(`${baseWsUrl}/ws/pty?session=test-session`);
+    ws2.binaryType = "arraybuffer";
+
+    await new Promise<void>((resolve, reject) => {
+      ws2.addEventListener("open", () => resolve());
+      ws2.addEventListener("error", () => reject(new Error("ws/pty reconnect failed")));
+    });
+
+    // Should be the same PTY entry, not a new one
+    const entryAfter = ptySessions.get("test-session");
+    expect(entryAfter).toBe(entryBefore);
+
+    ws2.close();
+    await wait(100);
+
+    // Cleanup: wait for grace period to expire so teardown happens
+    // (once we implement the grace period, we'd wait for it here)
   });
 });

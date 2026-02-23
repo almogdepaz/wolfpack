@@ -155,6 +155,11 @@ export function __setTmuxList(fn: () => Promise<string[]>): void {
   _tmuxListFn = fn;
 }
 
+/** Test hook: expose activePtySessions for assertions */
+export function __getActivePtySessions(): Map<string, { viewers: Set<any>; alive: boolean }> {
+  return activePtySessions as any;
+}
+
 async function tmuxList(): Promise<string[]> {
   return _tmuxListFn();
 }
@@ -1254,11 +1259,14 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
 // ── PTY WebSocket handler (xterm.js direct) ──
 
 // Track ownership with a generation counter to prevent cross-connection cleanup races
+const PTY_TEARDOWN_GRACE_MS = 10_000; // keep PTY alive 10s after last viewer disconnects
+
 const activePtySessions = new Map<string, {
   viewers: Set<WebSocket>;
   proc: ReturnType<typeof Bun.spawn>;
   ptySession: string;
   alive: boolean;
+  teardownTimer?: ReturnType<typeof setTimeout> | null;
 }>();
 
 async function cleanupOrphanPtySessions() {
@@ -1276,8 +1284,30 @@ function handlePtyWs(ws: WebSocket, session: string): void {
   const ptySession = `wp_${session}`;
   const existing = activePtySessions.get(session);
 
-  // If a PTY proc already exists for this session, just add this viewer
-  if (existing && existing.alive && existing.proc) {
+  // If a PTY entry already exists for this session, just add this viewer
+  if (existing && existing.alive) {
+    // Cancel pending teardown — a viewer reconnected in time
+    if (existing.teardownTimer) {
+      clearTimeout(existing.teardownTimer);
+      existing.teardownTimer = null;
+    }
+    if (!existing.proc) {
+      // Entry exists but proc not spawned yet — just add as viewer
+      existing.viewers.add(ws);
+      // Still need detach handler
+      const pingTimer = setInterval(() => {
+        if (ws.readyState === 1) { try { ws.ping(); } catch {} }
+        else clearInterval(pingTimer);
+      }, 25000);
+      function detach() {
+        clearInterval(pingTimer);
+        existing.viewers.delete(ws);
+        if (existing.viewers.size === 0) schedulePtyTeardown(session);
+      }
+      ws.on("close", detach);
+      ws.on("error", detach);
+      return;
+    }
     existing.viewers.add(ws);
     const pingTimer = setInterval(() => {
       if (ws.readyState === 1) { try { ws.ping(); } catch {} }
@@ -1319,7 +1349,7 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     function detach() {
       clearInterval(pingTimer);
       existing.viewers.delete(ws);
-      if (existing.viewers.size === 0) teardownPty(session);
+      if (existing.viewers.size === 0) schedulePtyTeardown(session);
     }
     ws.on("close", detach);
     ws.on("error", detach);
@@ -1338,6 +1368,21 @@ function handlePtyWs(ws: WebSocket, session: string): void {
   async function spawnPty(cols: number, rows: number) {
     if (entry.proc) return;
 
+    // Verify target session actually exists before creating grouped PTY session.
+    // Without this check, tmux new-session -t creates an orphan standalone session
+    // when the target is dead, leading to infinite reconnect loops showing "(exited)".
+    try {
+      await exec(TMUX, ["has-session", "-t", session], { timeout: 2000 });
+    } catch {
+      entry.alive = false;
+      activePtySessions.delete(session);
+      for (const viewer of entry.viewers) {
+        try { viewer.close(4001, "session unavailable"); } catch {}
+      }
+      entry.viewers.clear();
+      return;
+    }
+
     await exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
     await exec(TMUX, ["new-session", "-d", "-t", session, "-s", ptySession], { timeout: 3000 }).catch(() => {});
     await exec(TMUX, ["set-option", "-t", ptySession, "status", "off"], { timeout: 2000 }).catch(() => {});
@@ -1346,6 +1391,7 @@ function handlePtyWs(ws: WebSocket, session: string): void {
 
     if (!entry.alive) return;
 
+    const spawnedAt = Date.now();
     entry.proc = Bun.spawn([TMUX, "attach-session", "-t", ptySession], {
       env: { ...process.env, TERM: "xterm-256color" },
       terminal: {
@@ -1363,8 +1409,13 @@ function handlePtyWs(ws: WebSocket, session: string): void {
           if (!entry.alive) return;
           entry.alive = false;
           activePtySessions.delete(session);
+          // If PTY died within 3s of spawn, the session/pane is dead —
+          // use 4001 so the client won't reconnect in an infinite loop.
+          const rapid = Date.now() - spawnedAt < 3000;
+          const code = rapid ? 4001 : 1000;
+          const reason = rapid ? "session unavailable" : "pty exited";
           for (const viewer of entry.viewers) {
-            try { viewer.close(1000, "pty exited"); } catch {}
+            try { viewer.close(code, reason); } catch {}
           }
           entry.viewers.clear();
           exec(TMUX, ["kill-session", "-t", ptySession], { timeout: 2000 }).catch(() => {});
@@ -1424,15 +1475,31 @@ function handlePtyWs(ws: WebSocket, session: string): void {
   function detach() {
     clearInterval(pingTimer);
     entry.viewers.delete(ws);
-    if (entry.viewers.size === 0) teardownPty(session);
+    if (entry.viewers.size === 0) schedulePtyTeardown(session);
   }
   ws.on("close", detach);
   ws.on("error", detach);
 }
 
+/** Schedule PTY teardown after grace period — allows viewer to reconnect without destroying the PTY */
+function schedulePtyTeardown(session: string): void {
+  const entry = activePtySessions.get(session);
+  if (!entry || !entry.alive) return;
+  if (entry.teardownTimer) return; // already scheduled
+  entry.teardownTimer = setTimeout(() => {
+    entry.teardownTimer = null;
+    // Only tear down if still no viewers
+    if (entry.viewers.size === 0) teardownPty(session);
+  }, PTY_TEARDOWN_GRACE_MS);
+}
+
 function teardownPty(session: string): void {
   const entry = activePtySessions.get(session);
   if (!entry) return;
+  if (entry.teardownTimer) {
+    clearTimeout(entry.teardownTimer);
+    entry.teardownTimer = null;
+  }
   entry.alive = false;
   activePtySessions.delete(session);
   if (entry.proc) {

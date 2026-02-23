@@ -2975,7 +2975,7 @@
         ws.onopen = () => {
           desktopReconnectDelay = 1000;
           const statusEl = document.getElementById("conn-status");
-          if (statusEl) statusEl.style.display = "none";
+          if (statusEl) { statusEl.textContent = "reconnecting\u2026"; statusEl.style.display = "none"; }
           if (desktopFitAddon && desktopTerm) {
             try { desktopFitAddon.fit(); } catch {}
             ws.send(JSON.stringify({ type: "resize", cols: desktopTerm.cols, rows: desktopTerm.rows }));
@@ -2986,12 +2986,33 @@
           if (desktopTerm) desktopTerm.write(new Uint8Array(ev.data));
         };
 
-        ws.onclose = () => {
+        ws.onclose = (ev) => {
           const isCurrent = desktopWs === ws;
           if (isCurrent) desktopWs = null;
           if (isCurrent) {
+            // 4001 = session unavailable/dead — show error, don't reconnect
+            if (ev.code === 4001) {
+              const statusEl = document.getElementById("conn-status");
+              if (statusEl) {
+                statusEl.textContent = "session unavailable — use ← to go back";
+                statusEl.style.display = "block";
+              }
+              return;
+            }
+            // 1000 with "pty exited" = session ended normally
+            if (ev.code === 1000 && ev.reason === "pty exited") {
+              const statusEl = document.getElementById("conn-status");
+              if (statusEl) {
+                statusEl.textContent = "session ended — use ← to go back";
+                statusEl.style.display = "block";
+              }
+              return;
+            }
             const statusEl = document.getElementById("conn-status");
-            if (statusEl && currentView === "terminal" && useDesktopTerminal) statusEl.style.display = "block";
+            if (statusEl && currentView === "terminal" && useDesktopTerminal) {
+              statusEl.textContent = "reconnecting\u2026";
+              statusEl.style.display = "block";
+            }
             scheduleDesktopReconnect();
           }
         };
@@ -3049,7 +3070,11 @@
         term.unicode.activeVersion = '11';
 
         term.open(container);
-        try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { console.warn('WebGL addon failed, using canvas fallback', e); }
+        try {
+          const webgl = new WebglAddon.WebglAddon();
+          webgl.onContextLoss(() => { webgl.dispose(); });
+          term.loadAddon(webgl);
+        } catch (e) { console.warn('WebGL addon failed, using canvas fallback', e); }
         fitAddon.fit();
         term.focus();
 
@@ -3164,10 +3189,16 @@
             "/poll?session=" + encodeURIComponent(currentSession),
             undefined, currentMachine,
           );
+          if (data.error === "session not found") {
+            stopPolling();
+            const statusEl = document.getElementById("conn-status");
+            if (statusEl) { statusEl.textContent = "session ended — use ← to go back"; statusEl.style.display = "block"; }
+            return;
+          }
           pollFails = 0;
           const term = document.getElementById("terminal");
           const statusEl = document.getElementById("conn-status");
-          if (statusEl) statusEl.style.display = "none";
+          if (statusEl) { statusEl.textContent = "reconnecting\u2026"; statusEl.style.display = "none"; }
           if (data.pane != null) {
             const changed = data.pane !== lastRawPane;
             lastRawPane = data.pane;

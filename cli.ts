@@ -126,6 +126,33 @@ export function isPortInUse(port: number): boolean {
   }
 }
 
+function killPortHolder(port: number): boolean {
+  try {
+    const p = Math.floor(Number(port));
+    if (!isValidPort(p)) return false;
+    let pid: number | null = null;
+    if (IS_MACOS) {
+      const out = execFileSync("lsof", ["-i", `:${p}`, "-t"], {
+        encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      pid = out ? Number(out.split("\n")[0]) : null;
+    } else {
+      const out = execFileSync("ss", ["-tlnp", "sport", "=", `:${p}`], {
+        encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      // parse pid from ss output like: pid=12345
+      const m = out.match(/pid=(\d+)/);
+      pid = m ? Number(m[1]) : null;
+    }
+    if (pid && pid > 1) {
+      process.kill(pid, "SIGTERM");
+      print(dim(`  Killed stale process (PID ${pid}) on port ${p}`));
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 function waitForPortFree(port: number, timeoutMs = 10000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -746,9 +773,21 @@ function serviceStop() {
   } catch {
     print(red("  Failed to stop service."));
   }
+  // Kill any stale process still holding the port (e.g. orphaned dev server)
+  const config = loadConfig();
+  if (config && isPortInUse(config.port)) {
+    killPortHolder(config.port);
+    waitForPortFree(config.port, 5000);
+  }
 }
 
 function serviceStart() {
+  // Kill stale process if port is occupied (prevents crash loop)
+  const config = loadConfig();
+  if (config && isPortInUse(config.port)) {
+    killPortHolder(config.port);
+    waitForPortFree(config.port, 5000);
+  }
   try {
     if (IS_MACOS) {
       launchdBootstrap();
