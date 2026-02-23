@@ -55,7 +55,7 @@ Three problems with the current wolfpack context/plan system:
 - add `issues: string[]` to the response from `countPlanTasks`
 - frontend can show specific format issues before starting ralph
 
-## 4. public/index.html — better format warnings
+## ~~4. public/index.html — better format warnings~~
 
 - when task-count returns issues, show them in the confirm dialog (not just "no numbered tasks")
 - e.g. "Plan has 3 headers but none match the expected format. Found: '## Phase 1:', '## Step 2 -'. Ralph can auto-number them. Continue?"

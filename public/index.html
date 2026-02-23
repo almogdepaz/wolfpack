@@ -2558,12 +2558,18 @@
         if (!project) { alert("select a project"); return; }
         if (!planFile) { alert("select a plan file"); return; }
 
-        // Warn if plan has no numbered tasks — worker will auto-number
+        // Warn if plan has format issues — worker will auto-number
         let format = false;
         try {
           const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile), undefined, machine);
-          if (tc.total === 0) {
-            if (!confirm("No numbered tasks in " + planFile + ". Ralph will number them automatically. Continue?")) return;
+          if (tc.issues && tc.issues.length > 0) {
+            const msg = "Plan format issues in " + planFile + ":\n\n" +
+              tc.issues.map(i => "• " + i).join("\n") +
+              "\n\nRalph can auto-number them. Continue?";
+            if (!confirm(msg)) return;
+            format = true;
+          } else if (tc.total === 0) {
+            if (!confirm("No tasks found in " + planFile + ". Ralph will number them automatically. Continue?")) return;
             format = true;
           }
         } catch {}
@@ -3523,6 +3529,15 @@
         currentMachine = machineUrl;
         lastRawPane = null;
         loadSessionSwitcher();
+        // Update machine label in header (showView sets it, but drawer bypasses showView)
+        const hml = document.getElementById("header-machine-label");
+        if (getMachines().length > 0) {
+          const mName = machineUrl
+            ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
+            : (selfName || "local");
+          hml.textContent = mName;
+          hml.style.display = "";
+        }
         useDesktopTerminal = isDesktop();
         if (useDesktopTerminal) {
           initDesktopTerminal();

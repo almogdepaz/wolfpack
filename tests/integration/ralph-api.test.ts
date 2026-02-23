@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { TASK_HEADER, validatePlanFormat } from "../../wolfpack-context.js";
 
 // ─── Temp directory for fake DEV_DIR ─────────────────────────────────────────
 
@@ -55,15 +56,15 @@ interface RalphStatus {
   tasksTotal: number;
 }
 
-function countPlanTasks(planPath: string): { done: number; total: number } {
+function countPlanTasks(planPath: string): { done: number; total: number; issues: string[] } {
   try {
     const plan = readFileSync(planPath, "utf-8");
+    const { issues } = validatePlanFormat(plan);
     if (/^- \[[ x]\] /m.test(plan)) {
       const done = (plan.match(/^- \[x\] /gm) || []).length;
       const pending = (plan.match(/^- \[ \] /gm) || []).length;
-      return { done, total: done + pending };
+      return { done, total: done + pending, issues };
     }
-    const TASK_HEADER = /^#{2,3} (?:~~)?\d+[a-z]?[\.\)]\s+/;
     let total = 0;
     let done = 0;
     for (const line of plan.split("\n")) {
@@ -72,9 +73,9 @@ function countPlanTasks(planPath: string): { done: number; total: number } {
         if (line.includes("~~")) done++;
       }
     }
-    return { done, total };
+    return { done, total, issues };
   } catch {
-    return { done: 0, total: 0 };
+    return { done: 0, total: 0, issues: [] };
   }
 }
 
@@ -303,6 +304,33 @@ const routes: Record<
       return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
     }
 
+    // Acquire lock file atomically to prevent TOCTOU race
+    const lockPath = join(projectDir, ".ralph.lock");
+    try {
+      // check for stale lock — if PID is dead or unparseable, remove it
+      if (existsSync(lockPath)) {
+        const lockPid = Number(readFileSync(lockPath, "utf-8").trim());
+        if (!lockPid || lockPid <= 1) {
+          // empty, NaN, 0, or nonsense — stale lock, remove it
+          try { unlinkSync(lockPath); } catch {}
+        } else {
+          try {
+            process.kill(lockPid, 0); // throws if dead
+            return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
+          } catch {
+            // PID is dead — stale lock, remove it
+            try { unlinkSync(lockPath); } catch {}
+          }
+        }
+      }
+      writeFileSync(lockPath, "", { flag: "wx" }); // create-exclusive
+    } catch (e: any) {
+      if (e?.code === "EEXIST") {
+        return json(res, { error: "ralph loop already starting (lock contention)" }, 409);
+      }
+      return json(res, { error: "failed to acquire lock" }, 500);
+    }
+
     const iters = Math.max(1, Math.min(50, iterations ?? 5));
     const resolvedPlan = planFile || "PLAN.md";
     if (!/^[a-zA-Z0-9._\- ]+\.md$/.test(resolvedPlan) || resolvedPlan === ".." || resolvedPlan === ".") {
@@ -504,6 +532,7 @@ describe("POST /api/ralph/start", () => {
   afterEach(() => {
     cleanupProject("start-test");
     cleanupProject("start-active");
+    cleanupProject("start-lock");
   });
 
   test("valid params — spawns ralph worker", async () => {
@@ -647,6 +676,44 @@ describe("POST /api/ralph/start", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe("invalid plan file name");
+  });
+
+  test("stale empty lock file is cleaned up and start succeeds", async () => {
+    const dir = setupProject("start-lock", {
+      plan: { name: "PLAN.md", content: "- [ ] task\n" },
+    });
+    // simulate the bug: empty lock file left behind (PID 0 / NaN)
+    writeFileSync(join(dir, ".ralph.lock"), "");
+
+    const res = await post("/api/ralph/start", { project: "start-lock" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+  });
+
+  test("stale lock with dead PID is cleaned up and start succeeds", async () => {
+    const dir = setupProject("start-lock", {
+      plan: { name: "PLAN.md", content: "- [ ] task\n" },
+    });
+    // PID 99998 should not be alive
+    writeFileSync(join(dir, ".ralph.lock"), "99998");
+
+    const res = await post("/api/ralph/start", { project: "start-lock" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+  });
+
+  test("stale lock with non-numeric content is cleaned up", async () => {
+    const dir = setupProject("start-lock", {
+      plan: { name: "PLAN.md", content: "- [ ] task\n" },
+    });
+    writeFileSync(join(dir, ".ralph.lock"), "garbage-text");
+
+    const res = await post("/api/ralph/start", { project: "start-lock" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
   });
 
   test("active loop conflict → 409", async () => {
@@ -1033,5 +1100,53 @@ describe("GET /api/ralph/task-count", () => {
     const data = await res.json();
     expect(data.done).toBe(2);
     expect(data.total).toBe(3);
+  });
+
+  test("returns issues for ambiguous headers", async () => {
+    setupProject("tc-proj", {
+      plan: {
+        name: "PLAN.md",
+        content: "# Plan\n## Step 1 - Setup\ndo stuff\n## Step 2 - Build\nmore stuff\n",
+      },
+    });
+
+    const res = await get("/api/ralph/task-count?project=tc-proj&plan=PLAN.md");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.total).toBe(0);
+    expect(data.issues).toBeInstanceOf(Array);
+    expect(data.issues.length).toBeGreaterThan(0);
+    expect(data.issues.some((i: string) => i.includes("Step 1 -"))).toBe(true);
+    expect(data.issues.some((i: string) => i.includes("Step 2 -"))).toBe(true);
+  });
+
+  test("no issues for well-formatted plan", async () => {
+    setupProject("tc-proj", {
+      plan: {
+        name: "PLAN.md",
+        content: "# Plan\n## 1. Setup\ndo stuff\n## 2. Build\nmore stuff\n",
+      },
+    });
+
+    const res = await get("/api/ralph/task-count?project=tc-proj&plan=PLAN.md");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.total).toBe(2);
+    expect(data.issues).toEqual([]);
+  });
+
+  test("issues include no-tasks warning for empty plan", async () => {
+    setupProject("tc-proj", {
+      plan: {
+        name: "PLAN.md",
+        content: "# Just a title\nNo tasks here.\n",
+      },
+    });
+
+    const res = await get("/api/ralph/task-count?project=tc-proj&plan=PLAN.md");
+    const data = await res.json();
+    expect(data.total).toBe(0);
+    expect(data.issues.length).toBeGreaterThan(0);
+    expect(data.issues[0]).toMatch(/No parseable tasks/);
   });
 });
