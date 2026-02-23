@@ -14,7 +14,7 @@ import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { RALPH_AGENT_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
+import { RALPH_AGENT_CONTEXT, TASK_HEADER, validatePlanFormat } from "./wolfpack-context.js";
 
 const { values: args } = parseArgs({
   args: process.argv.slice(2),
@@ -172,9 +172,7 @@ function markCheckboxDone(taskText: string): void {
 }
 
 function numberPlanTasks(): Promise<{ exitCode: number; output: string }> {
-  const prompt = `${RALPH_AGENT_CONTEXT}
-
-You are reformatting a plan file for an automated task runner.
+  const prompt = `You are reformatting a plan file for an automated task runner.
 
 Read @${PLAN_FILE} — convert ALL task/implementation section headers to the canonical format: \`## N. Title\`.
 
@@ -388,6 +386,17 @@ async function main() {
     }
   }
 
+  // Validate plan format before entering iteration loop
+  const planValidation = validatePlanFormat(readPlan());
+  if (!planValidation.valid) {
+    const issueList = planValidation.issues.map(i => `  - ${i}`).join("\n");
+    const msg = `Plan validation failed:\n${issueList}`;
+    appendFileSync(LOG_FILE, `\n=== ❌ ${msg} ===\n`);
+    console.error(msg);
+    removeLock();
+    process.exit(1);
+  }
+
   let subtaskExpansions = 0;
   let tasksCompleted = 0;
   let subtasksAdded = 0;
@@ -397,8 +406,13 @@ async function main() {
     // extract current task from plan
     const result = extractCurrentTask();
     if (!result) {
-      const msg = "No unchecked tasks remain";
-      appendFileSync(LOG_FILE, `\n=== 🥋 ${msg} — ${new Date().toString()} ===\n`);
+      // Check if plan has content but nothing parseable — possible format corruption
+      const planContent = readPlan().trim();
+      const hasSubstantiveContent = planContent.split("\n").some(l => /^#{2,3} /.test(l) || /^- /.test(l));
+      const msg = hasSubstantiveContent
+        ? "Plan has content but no parseable tasks — format may be corrupted"
+        : "No unchecked tasks remain";
+      appendFileSync(LOG_FILE, `\n=== ${hasSubstantiveContent ? "⚠️" : "🥋"} ${msg} — ${new Date().toString()} ===\n`);
       if (i > 1) await runCleanup();
       logSummary(tasksCompleted, subtasksAdded);
       appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
@@ -459,9 +473,7 @@ async function main() {
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
 }
 
-const CLEANUP_PROMPT = `${RALPH_AGENT_CONTEXT}
-
-You may ONLY create/edit/delete files under ${PROJECT_DIR}. Do NOT touch files outside this directory.
+const CLEANUP_PROMPT = `You may ONLY create/edit/delete files under ${PROJECT_DIR}. Do NOT touch files outside this directory.
 
 @${PLAN_FILE} @${PROGRESS_FILE}
 
