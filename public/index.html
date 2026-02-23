@@ -2255,8 +2255,8 @@
       async function loadRalphLoops() {
         const el = document.getElementById("ralph-list");
         try {
-          // Server aggregates loops from all peers — single request
-          const data = await api("/ralph");
+          // Server aggregates loops from all peers when ?aggregate=true
+          const data = await api("/ralph?aggregate=true");
           const loops = data.loops || [];
           const multiMachine = loops.some(l => l.machineUrl);
           if (loops.length === 0) {

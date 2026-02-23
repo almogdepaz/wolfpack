@@ -801,21 +801,22 @@ const routes: Record<
 
   "GET /api/ralph": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const local = url.searchParams.get("local") === "true";
+    const aggregate = url.searchParams.get("aggregate") === "true";
     const selfHost = hostname().replace(/\.local$/, "").replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
     const localLoops = scanRalphLoops().map(l => ({ ...l, machineName: selfHost, machineUrl: "" }));
 
-    if (local || cachedPeers.length === 0) {
+    if (!aggregate || cachedPeers.length === 0) {
       return json(res, { loops: localLoops });
     }
 
-    // Aggregate from all peers (with ?local=true to prevent recursion)
+    // Aggregate from all peers (without ?aggregate to get local-only from each)
+    const remotePeers = cachedPeers.filter(p => p.name !== selfHost);
     const peerResults = await Promise.all(
-      cachedPeers.map(async (peer) => {
+      remotePeers.map(async (peer) => {
         try {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), 3000);
-          const r = await fetch(peer.url + "/api/ralph?local=true", { signal: ctrl.signal });
+          const r = await fetch(peer.url + "/api/ralph", { signal: ctrl.signal });
           clearTimeout(timer);
           const data = await r.json() as { loops: any[] };
           return (data.loops || []).map((l: any) => ({ ...l, machineName: peer.name, machineUrl: peer.url }));
