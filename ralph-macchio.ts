@@ -14,7 +14,7 @@ import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { WOLFPACK_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
+import { RALPH_AGENT_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
 
 const { values: args } = parseArgs({
   args: process.argv.slice(2),
@@ -172,7 +172,7 @@ function markCheckboxDone(taskText: string): void {
 }
 
 function numberPlanTasks(): Promise<{ exitCode: number; output: string }> {
-  const prompt = `${WOLFPACK_CONTEXT}
+  const prompt = `${RALPH_AGENT_CONTEXT}
 
 You are reformatting a plan file for an automated task runner.
 
@@ -193,8 +193,10 @@ Rules:
   return runIteration(prompt);
 }
 
+/** Build the per-iteration prompt. RALPH_AGENT_CONTEXT is prepended so the agent
+ *  knows subtask protocol and task conventions (see wolfpack-context.ts). */
 function buildPrompt(taskDesc: string): string {
-  return `${WOLFPACK_CONTEXT}
+  return `${RALPH_AGENT_CONTEXT}
 
 You may ONLY create/edit/delete files under ${PROJECT_DIR}. Do NOT touch files outside this directory.
 
@@ -457,7 +459,7 @@ async function main() {
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
 }
 
-const CLEANUP_PROMPT = `${WOLFPACK_CONTEXT}
+const CLEANUP_PROMPT = `${RALPH_AGENT_CONTEXT}
 
 You may ONLY create/edit/delete files under ${PROJECT_DIR}. Do NOT touch files outside this directory.
 

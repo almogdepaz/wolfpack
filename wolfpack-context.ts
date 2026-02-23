@@ -1,33 +1,69 @@
 /**
- * Shared context string injected into agent sessions and ralph prompts.
- * Teaches agents about wolfpack conventions so they produce compatible output.
+ * Shared context injected into AI agent sessions spawned by wolfpack.
+ *
+ * Two focused contexts replace the old monolithic WOLFPACK_CONTEXT:
+ *  - RALPH_AGENT_CONTEXT:  ralph-macchio.ts prepends to the `-p` prompt
+ *  - INTERACTIVE_CONTEXT:  serve.ts appends via `claude --append-system-prompt`
+ *
+ * Plus a validatePlanFormat() helper for checking plan file structure.
  */
 
 /** Matches plan task headers: ## 1. Title, ### 2a. Title, ## ~~3. Title~~, ## Phase 1. Title */
 export const TASK_HEADER = /^#{2,3} (?:~~)?(?:\w+ )?\d+[a-z]?[\.\):]\s+/;
 
-export const WOLFPACK_CONTEXT = `## Wolfpack / Ralph Context
+/** Checkbox task pattern: - [ ] or - [x] */
+const CHECKBOX = /^- \[[ x]\] /;
 
-You are running inside a wolfpack-managed session. Wolfpack is a mobile & desktop command center for tmux-based AI agent sessions across multiple machines. It is agent-agnostic — supports Claude, Codex, Gemini, and custom commands. "Ralph" is the automated iteration loop that works through plan files.
+/** Context for ralph iterations — subtask output protocol + granularity only. */
+export const RALPH_AGENT_CONTEXT = `## Ralph Agent Context
 
-### Plan File Format (CRITICAL)
+When a task is too large to implement directly, output a <subtasks> block instead of making changes:
+\`\`\`
+<subtasks>
+Implement auth middleware with JWT validation
+Add integration tests for auth endpoints
+</subtasks>
+\`\`\`
+Each subtask = a meaningful deliverable (3-5 per breakdown). NOT single lines of code or imports — a unit of work a senior dev would recognize as coherent.`;
 
-Task sections MUST use this exact header format:
-- Top-level tasks: \`## N. Title\` (e.g. \`## 1. Add auth middleware\`)
-- Subtasks: \`## Na. Title\` (e.g. \`## 1a. Write unit tests\`)
-- Completed tasks: wrap title in \`~~\` (e.g. \`## ~~1. Add auth middleware~~\`)
+/** Context for interactive claude sessions — plan format + granularity. */
+export const INTERACTIVE_CONTEXT = `## Wolfpack Plan Conventions
 
-Do NOT use other header styles like \`## Phase 1:\`, \`## Step 1 -\`, \`### Task: Foo\`, etc. The automated task extractor only recognizes the \`## N. Title\` pattern.
+Plan task headers MUST use: \`## N. Title\` (e.g. \`## 1. Add auth\`), subtasks: \`## Na. Title\` (e.g. \`## 1a. Tests\`). Completed: wrap in \`~~\` (e.g. \`## ~~1. Done~~\`). No other header styles — the task extractor only recognizes this pattern.
 
-### Task Granularity (CRITICAL)
+Each task = a meaningful deliverable (3-5 per feature). NOT individual lines of code — a unit of work a senior dev would recognize. Subtask breakdowns follow the same rule: 3-5 max, each coherent.`;
 
-Each task should be a meaningful deliverable — a unit of work a senior dev would recognize, NOT individual lines of code, imports, or type fields. Aim for 3-5 tasks per feature/phase. If a task can be described in fewer than 10 words of code, it's too granular — combine it with related work. Bad: "Add agent_pubkey field to interface". Good: "Add per-agent policy scoping to types and evaluation logic". When breaking tasks into subtasks, the same rule applies: 3-5 subtasks max, each a coherent unit touching multiple lines/files. Never produce line-by-line checkbox plans.
+/** Ambiguous header patterns that look like tasks but don't match TASK_HEADER */
+const AMBIGUOUS_HEADERS = [
+  /^#{2,3} (?:Phase|Step|Task|Stage|Part)\s+\d/i,
+  /^#{2,3} \d+[\s]*[-–—]/,
+];
 
-### Progress File
+/**
+ * Validate plan file structure — checks for parseable tasks and ambiguous headers.
+ * Reuses TASK_HEADER regex and checkbox pattern from countPlanTasks logic.
+ */
+export function validatePlanFormat(planContent: string): { valid: boolean; issues: string[] } {
+  const issues: string[] = [];
+  const lines = planContent.split("\n");
 
-Append-only log file (default: progress.txt). Each iteration appends what was done. Never overwrite previous entries.
+  let hasTaskHeaders = false;
+  let hasCheckboxes = false;
 
-### Ralph Loop Mechanics
+  for (const line of lines) {
+    if (TASK_HEADER.test(line)) hasTaskHeaders = true;
+    if (CHECKBOX.test(line)) hasCheckboxes = true;
 
-Each iteration: read plan → extract first non-done task → execute → mark done with ~~ → next iteration. A final cleanup pass removes dead code after all tasks complete.
-`;
+    for (const pattern of AMBIGUOUS_HEADERS) {
+      if (pattern.test(line) && !TASK_HEADER.test(line)) {
+        issues.push(`Ambiguous header: "${line.trim()}" — use \`## N. Title\` format`);
+      }
+    }
+  }
+
+  if (!hasTaskHeaders && !hasCheckboxes) {
+    issues.push("No parseable tasks found — need `## N. Title` headers or `- [ ] task` checkboxes");
+  }
+
+  return { valid: issues.length === 0, issues };
+}

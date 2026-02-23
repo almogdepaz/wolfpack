@@ -29,7 +29,7 @@ import { assets } from "./public-assets.js";
 import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { WOLFPACK_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
+import { INTERACTIVE_CONTEXT, TASK_HEADER } from "./wolfpack-context.js";
 import {
   WS_ALLOWED_KEYS,
   CMD_REGEX,
@@ -243,10 +243,12 @@ async function tmuxNewSession(
     await exec(TMUX, ["new-session", "-d", "-s", name, "-c", cwd, SHELL]);
     return;
   }
-  // Inject wolfpack context into claude sessions (try with flag, fall back without)
+  // Inject shared wolfpack conventions into claude sessions so every interactive
+  // session knows plan format, task granularity rules, etc. (see wolfpack-context.ts)
+  // Falls back to plain command if --append-system-prompt is unsupported.
   let fullCmd = agentCmd;
   if (/^claude\b/.test(agentCmd)) {
-    const withContext = agentCmd + " --append-system-prompt " + shellEscape(WOLFPACK_CONTEXT);
+    const withContext = agentCmd + " --append-system-prompt " + shellEscape(INTERACTIVE_CONTEXT);
     fullCmd = withContext + " || " + agentCmd;
   }
   const shellCmd = `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT ${SHELL} -lic ${shellEscape(fullCmd + "; exec " + SHELL)}`;
@@ -951,17 +953,20 @@ const routes: Record<
     // Acquire lock file atomically to prevent TOCTOU race
     const lockPath = join(projectDir, ".ralph.lock");
     try {
-      // check for stale lock — if PID is dead, remove it
+      // check for stale lock — if PID is dead or unparseable, remove it
       if (existsSync(lockPath)) {
-        try {
-          const lockPid = Number(readFileSync(lockPath, "utf-8").trim());
-          if (lockPid > 1) {
+        const lockPid = Number(readFileSync(lockPath, "utf-8").trim());
+        if (!lockPid || lockPid <= 1) {
+          // empty, NaN, 0, or nonsense — stale lock, remove it
+          try { unlinkSync(lockPath); } catch {}
+        } else {
+          try {
             process.kill(lockPid, 0); // throws if dead
             return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
+          } catch {
+            // PID is dead — stale lock, remove it
+            try { unlinkSync(lockPath); } catch {}
           }
-        } catch {
-          // PID is dead — stale lock, remove it
-          try { unlinkSync(lockPath); } catch {}
         }
       }
       writeFileSync(lockPath, "", { flag: "wx" }); // create-exclusive
