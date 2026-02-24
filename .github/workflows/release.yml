@@ -38,3 +38,9 @@ jobs:
             dist/wolfpack-darwin-x64
             dist/wolfpack-darwin-arm64
             dist/checksums-sha256.txt
+
+      - name: Configure npm auth
+        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+      - name: Publish to npm
+        run: bun run scripts/publish.ts
