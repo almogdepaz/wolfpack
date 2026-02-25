@@ -68,7 +68,7 @@ Priority definitions:
 - P1: meaningful gains after P0.
 - P2: polish and optional improvements.
 
-## 1. P0: Core Terminal UX
+## ~~1. P0: Core Terminal UX~~
 
 ## ~~1a. UX-01 Mobile terminal WebSocket stream (replace poll loop)~~
 
@@ -141,7 +141,7 @@ Risk:
 
 ---
 
-## 1c. UX-03 Per-session draft persistence
+## ~~1c. UX-03 Per-session draft persistence~~
 
 Goal:
 - Never lose in-progress input when switching sessions or backgrounding app.
@@ -168,7 +168,7 @@ Risk:
 
 ---
 
-## 1d. UX-04 Terminal follow mode + scroll lock
+## ~~1d. UX-04 Terminal follow mode + scroll lock~~
 
 Goal:
 - Improve readability when user scrolls up through output.

@@ -308,6 +308,35 @@
         -webkit-overflow-scrolling: touch;
       }
 
+      #jump-to-live {
+        display: none;
+        position: absolute;
+        bottom: 120px;
+        right: 12px;
+        z-index: 10;
+        background: rgba(0, 255, 65, 0.15);
+        border: 1px solid rgba(0, 255, 65, 0.5);
+        color: #00ff41;
+        font-size: 10px;
+        font-family: inherit;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        padding: 6px 12px;
+        border-radius: 16px;
+        cursor: pointer;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+        transition: opacity 0.15s ease, transform 0.15s ease;
+      }
+      #jump-to-live:active {
+        transform: scale(0.95);
+        background: rgba(0, 255, 65, 0.3);
+      }
+      #jump-to-live.visible {
+        display: block;
+      }
+
       #action-bar {
         display: none;
         gap: 6px;
@@ -1947,6 +1976,7 @@
         Reconnecting...
       </div>
       <div id="terminal"></div>
+      <button id="jump-to-live" onclick="jumpToLive()">&#9660; Live</button>
       <div id="desktop-terminal-container"></div>
       <div id="action-bar" class="visible">
         <button class="action-btn primary" onclick="sendKey('Enter')">Enter</button>
@@ -2077,6 +2107,7 @@
       let mobileReconnectStartedAt = 0;
       let mobileRetryBlocked = false;
       let mobileStreamingActive = false;
+      let termFollowMode = true;
       let allSessions = [];
       let sessionRefreshTimer = null;
       let ralphRefreshTimer = null;
@@ -2893,6 +2924,7 @@
         currentMachine = machineUrl || "";
         lastRawPane = null;
         useDesktopTerminal = isDesktop();
+        setFollowMode(true);
         restoreDraft();
         showView("terminal");
         if (useDesktopTerminal) {
@@ -3329,18 +3361,63 @@
             clearTimeout(enterRetryTimer);
             enterRetryTimer = null;
           }
-          const wasAtBottom =
-            term.scrollHeight - term.scrollTop - term.clientHeight < 40;
           if (searchActive && searchTerm) {
             applySearchHighlights();
           } else {
             term.textContent = pane;
           }
-          if (wasAtBottom) term.scrollTop = term.scrollHeight;
+          if (termFollowMode) term.scrollTop = term.scrollHeight;
         }
         if (pane.trim()) checkForAttention(pane);
         if (changed && !useDesktopTerminal) updateQuickActions(pane);
       }
+
+      function setFollowMode(on) {
+        termFollowMode = on;
+        const btn = document.getElementById("jump-to-live");
+        if (btn) {
+          if (on) {
+            btn.classList.remove("visible");
+          } else {
+            btn.classList.add("visible");
+          }
+        }
+      }
+
+      function jumpToLive() {
+        const term = document.getElementById("terminal");
+        term.scrollTop = term.scrollHeight;
+        setFollowMode(true);
+        haptic([10]);
+      }
+
+      // Detect user scroll-up to pause follow mode
+      (function() {
+        const term = document.getElementById("terminal");
+        let programmaticScroll = false;
+
+        // Patch scrollTop setter to distinguish programmatic scrolls
+        const origDesc = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+        Object.defineProperty(term, "scrollTop", {
+          get() { return origDesc.get.call(this); },
+          set(v) {
+            programmaticScroll = true;
+            origDesc.set.call(this, v);
+            // Reset after microtask so the scroll event handler can read it
+            Promise.resolve().then(() => { programmaticScroll = false; });
+          }
+        });
+
+        term.addEventListener("scroll", () => {
+          if (programmaticScroll) return;
+          const atBottom = term.scrollHeight - origDesc.get.call(term) - term.clientHeight < 40;
+          if (atBottom) {
+            setFollowMode(true);
+          } else if (termFollowMode) {
+            setFollowMode(false);
+          }
+        }, { passive: true });
+      })();
 
       function mobileTerminalWsUrl() {
         if (currentMachine) {
