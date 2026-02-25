@@ -39,6 +39,7 @@ import {
   clampRows,
 } from "./validation.js";
 import { validateRequestJwt } from "./auth.js";
+import { classifySession, TRIAGE_ORDER, type TriageStatus } from "./triage.js";
 import pkg from "./package.json";
 
 const exec = promisify(execFile);
@@ -150,10 +151,16 @@ function saveSettings(s: Settings): void {
 
 // Default tmuxList — overridable via __setTmuxList for testing
 let _tmuxListFn: () => Promise<string[]> = _realTmuxList;
+let _tmuxListWithActivityFn: () => Promise<{ name: string; activity: number }[]> = _realTmuxListWithActivity;
 
 /** Test hook: override tmuxList to avoid requiring real tmux */
 export function __setTmuxList(fn: () => Promise<string[]>): void {
   _tmuxListFn = fn;
+}
+
+/** Test hook: override tmuxListWithActivity */
+export function __setTmuxListWithActivity(fn: () => Promise<{ name: string; activity: number }[]>): void {
+  _tmuxListWithActivityFn = fn;
 }
 
 /** Test hook: expose activePtySessions for assertions */
@@ -163,6 +170,10 @@ export function __getActivePtySessions(): Map<string, { viewers: Set<any>; alive
 
 async function tmuxList(): Promise<string[]> {
   return _tmuxListFn();
+}
+
+async function tmuxListWithActivity(): Promise<{ name: string; activity: number }[]> {
+  return _tmuxListWithActivityFn();
 }
 
 async function _realTmuxList(): Promise<string[]> {
@@ -187,6 +198,33 @@ async function _realTmuxList(): Promise<string[]> {
     return [];
   }
 }
+
+async function _realTmuxListWithActivity(): Promise<{ name: string; activity: number }[]> {
+  try {
+    const { stdout } = await exec(TMUX, [
+      "list-sessions",
+      "-F",
+      "#{session_name}|||#{pane_current_path}|||#{session_activity}",
+    ]);
+    const SEP = "|||";
+    return stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .filter((line) => {
+        const parts = line.split(SEP);
+        return parts.length >= 3 && parts[1].startsWith(DEV_DIR);
+      })
+      .filter((line) => !line.split(SEP)[0].startsWith("wp_"))
+      .map((line) => {
+        const parts = line.split(SEP);
+        return { name: parts[0], activity: parseInt(parts[2], 10) || 0 };
+      });
+  } catch {
+    return [];
+  }
+}
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -652,15 +690,19 @@ const routes: Record<
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const sessions = await tmuxList();
+    const sessionsWithActivity = await tmuxListWithActivity();
+    const now = Math.floor(Date.now() / 1000);
     const results = await Promise.all(
-      sessions.map(async (name) => {
+      sessionsWithActivity.map(async ({ name, activity }) => {
         const pane = await capturePane(name);
         const lines = pane.trimEnd().split("\n");
         const lastLine = lines.filter(l => l.trim()).slice(-2).map(l => l.trim()).join("\n") || "";
-        return { name, lastLine };
+        const activityAge = now - activity;
+        const triage = classifySession(lastLine, activityAge);
+        return { name, lastLine, triage };
       }),
     );
+    results.sort((a, b) => TRIAGE_ORDER[a.triage] - TRIAGE_ORDER[b.triage]);
     json(res, { sessions: results });
   },
 

@@ -191,8 +191,23 @@
         transform: scale(0.98);
       }
       .card.attention { border-left-color: #ffcc00; }
+      .card.error-session { border-left-color: #cc3333; }
       .card.active-session { border-left-color: #00ff41; }
       .card.idle-session { border-left-color: #333; }
+      .triage-badge {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        padding: 1px 5px;
+        border-radius: 2px;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .triage-badge.needs-input { color: #ffcc00; background: #ffcc0015; }
+      .triage-badge.error { color: #cc3333; background: #cc333315; }
+      .triage-badge.running { color: #00ff41; background: #00ff4115; }
+      .triage-badge.idle { color: #555; background: #55555515; }
       .dot {
         width: 9px;
         height: 9px;
@@ -240,6 +255,9 @@
         text-transform: uppercase;
         letter-spacing: 1.2px;
         text-shadow: 0 0 6px rgba(0,255,65,0.25);
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
       .card-preview {
         font-size: 11px;
@@ -1263,6 +1281,10 @@
         border-left: 3px solid #ffcc00 !important;
         box-shadow: inset 4px 0 16px -8px rgba(255,204,0,0.12);
       }
+      .card.error-session {
+        border-left: 3px solid #cc3333 !important;
+        box-shadow: inset 4px 0 16px -8px rgba(204,51,51,0.12);
+      }
       .card.idle-session {
         border-left: 3px solid #1e1e1e !important;
       }
@@ -1310,6 +1332,11 @@
       }
       .dot.purple {
         box-shadow: 0 0 6px #9b59b680, 0 0 14px #9b59b620 !important;
+      }
+      .dot.red {
+        background: #cc3333 !important;
+        box-shadow: 0 0 6px #cc333360 !important;
+        animation: dot-alert 1s ease-in-out infinite !important;
       }
 
       /* ── Button refinement — consistent radius, better tactile feel ── */
@@ -2776,6 +2803,17 @@
 
       // ── Sessions ──
 
+      const TRIAGE_MAP = {
+        "needs-input": { dot: "yellow", card: "attention", label: "input" },
+        "error":       { dot: "red",    card: "error-session", label: "error" },
+        "running":     { dot: "green",  card: "active-session", label: "running" },
+        "idle":        { dot: "gray",   card: "idle-session", label: "idle" },
+      };
+
+      function triageUi(triage) {
+        return TRIAGE_MAP[triage] || TRIAGE_MAP["idle"];
+      }
+
       // Shared session groups cache for switcher reuse
       let lastSessionGroups = [];
 
@@ -2792,13 +2830,11 @@
         } else if (g.online && g.sessions.length) {
           html += g.sessions.map((s, i) => {
             const lastLine = s.lastLine || "";
-            const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
-            const dotClass = needsAttention ? "yellow" : "green";
-            const cardClass = needsAttention ? "attention" : "active-session";
-            return `<div class="card card-stagger ${cardClass}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
-              <div class="dot ${dotClass}"></div>
+            const ui = triageUi(s.triage);
+            return `<div class="card card-stagger ${ui.card}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
+              <div class="dot ${ui.dot}"></div>
               <div class="card-info">
-                <div class="card-name">${esc(s.name)}</div>
+                <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
               <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event, '${mUrlAttr}')">&times;</button>
@@ -2816,13 +2852,11 @@
         if (g.online && g.sessions.length) {
           html += g.sessions.map((s, i) => {
             const lastLine = s.lastLine || "";
-            const needsAttention = ATTENTION_PATTERNS.some(p => p.test(lastLine));
-            const dotClass = needsAttention ? "yellow" : "green";
-            const cardClass = needsAttention ? "attention" : "active-session";
-            return `<div class="card card-stagger ${cardClass}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}')">
-              <div class="dot ${dotClass}"></div>
+            const ui = triageUi(s.triage);
+            return `<div class="card card-stagger ${ui.card}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}')">
+              <div class="dot ${ui.dot}"></div>
               <div class="card-info">
-                <div class="card-name">${esc(s.name)}</div>
+                <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
               <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event)">&times;</button>
