@@ -1350,7 +1350,7 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
           return;
         }
       }
-      const pane = await capturePaneAnsi(session);
+      const pane = await capturePane(session);
       if (pane !== prev) {
         prev = pane;
         ws.send(JSON.stringify({ type: "output", data: pane }));
