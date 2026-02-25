@@ -40,6 +40,7 @@ import {
 } from "./validation.js";
 import { validateRequestJwt } from "./auth.js";
 import { classifySession, TRIAGE_ORDER, type TriageStatus } from "./triage.js";
+import { recordEvent, getTimeline, getRecentEvents, clearTimeline, detectTriageTransition, pruneTimelines } from "./timeline.js";
 import pkg from "./package.json";
 
 const exec = promisify(execFile);
@@ -228,7 +229,7 @@ async function _realTmuxListWithActivity(): Promise<{ name: string; activity: nu
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function tmuxSend(
+async function _realTmuxSend(
   session: string,
   text: string,
   noEnter = false,
@@ -240,8 +241,29 @@ async function tmuxSend(
   }
 }
 
-async function tmuxSendKey(session: string, key: string): Promise<void> {
+async function _realTmuxSendKey(session: string, key: string): Promise<void> {
   await exec(TMUX, ["send-keys", "-t", session, key]);
+}
+
+let _tmuxSendFn: (session: string, text: string, noEnter?: boolean) => Promise<void> = _realTmuxSend;
+let _tmuxSendKeyFn: (session: string, key: string) => Promise<void> = _realTmuxSendKey;
+
+/** Test hook: override tmuxSend to avoid requiring real tmux */
+export function __setTmuxSend(fn: (session: string, text: string, noEnter?: boolean) => Promise<void>): void {
+  _tmuxSendFn = fn;
+}
+
+/** Test hook: override tmuxSendKey to avoid requiring real tmux */
+export function __setTmuxSendKey(fn: (session: string, key: string) => Promise<void>): void {
+  _tmuxSendKeyFn = fn;
+}
+
+async function tmuxSend(session: string, text: string, noEnter = false): Promise<void> {
+  return _tmuxSendFn(session, text, noEnter);
+}
+
+async function tmuxSendKey(session: string, key: string): Promise<void> {
+  return _tmuxSendKeyFn(session, key);
 }
 
 async function tmuxResize(
@@ -692,18 +714,27 @@ const routes: Record<
   "GET /api/sessions": async (_req, res) => {
     const sessionsWithActivity = await tmuxListWithActivity();
     const now = Math.floor(Date.now() / 1000);
+    const activeNames = new Set<string>();
     const results = await Promise.all(
       sessionsWithActivity.map(async ({ name, activity }) => {
+        activeNames.add(name);
         const pane = await capturePane(name);
         const lines = pane.trimEnd().split("\n");
         const lastLine = lines.filter(l => l.trim()).slice(-2).map(l => l.trim()).join("\n") || "";
         const activityAge = now - activity;
         const triage = classifySession(lastLine, activityAge);
+        detectTriageTransition(name, triage);
         return { name, lastLine, triage };
       }),
     );
-    results.sort((a, b) => TRIAGE_ORDER[a.triage] - TRIAGE_ORDER[b.triage]);
-    json(res, { sessions: results });
+    pruneTimelines(activeNames);
+    const recentEvents = getRecentEvents(5);
+    const enriched = results.map(r => ({
+      ...r,
+      events: recentEvents.get(r.name) || [],
+    }));
+    enriched.sort((a, b) => TRIAGE_ORDER[a.triage] - TRIAGE_ORDER[b.triage]);
+    json(res, { sessions: enriched });
   },
 
   "POST /api/send": async (req, res) => {
@@ -715,6 +746,7 @@ const routes: Record<
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     await tmuxSend(session, text, !!noEnter);
+    recordEvent(session, "command", text.length > 80 ? text.slice(0, 80) + "..." : text);
     json(res, { ok: true });
   },
 
@@ -760,6 +792,7 @@ const routes: Record<
 
     const sessionName = await uniqueSessionName(folderName);
     await tmuxNewSession(sessionName, projectDir, cmd);
+    recordEvent(sessionName, "opened");
     json(res, { ok: true, session: sessionName });
   },
 
@@ -843,7 +876,19 @@ const routes: Record<
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     await exec(TMUX, ["kill-session", "-t", session]);
+    clearTimeline(session);
     json(res, { ok: true });
+  },
+
+  "GET /api/timeline": async (req, res) => {
+    const url = new URL(req.url!, `http://${req.headers.host}`);
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const events = getTimeline(session, Math.min(Math.max(limit, 1), 100));
+    json(res, { session, events });
   },
 
   "POST /api/resize": async (req, res) => {
@@ -1319,6 +1364,7 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
       const msg = JSON.parse(str);
       if (msg.type === "input" && typeof msg.data === "string") {
         await tmuxSend(session, msg.data, true);
+        recordEvent(session, "command", msg.data.length > 80 ? msg.data.slice(0, 80) + "..." : msg.data);
         // immediate update after input for snappy feedback
         setTimeout(sendUpdate, 15);
       } else if (msg.type === "key" && typeof msg.key === "string") {
