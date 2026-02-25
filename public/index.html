@@ -2125,12 +2125,12 @@
       let currentSession = null;
       let currentMachine = ""; // "" = self, URL string = remote
       let currentView = "sessions";
-      const MOBILE_RECONNECT_BUDGET_MS = 2 * 60 * 1000;
-      const MOBILE_RECONNECT_BASE_DELAY_MS = 500;
-      const MOBILE_RECONNECT_MAX_DELAY_MS = 5000;
+      const RECONNECT_BUDGET_MS = 2 * 60 * 1000;
+      const RECONNECT_BASE_DELAY_MS = 500;
+      const RECONNECT_MAX_DELAY_MS = 5000;
       let mobileWs = null;
       let mobileReconnectTimer = null;
-      let mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+      let mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
       let mobileReconnectStartedAt = 0;
       let mobileRetryBlocked = false;
       let mobileStreamingActive = false;
@@ -3148,10 +3148,13 @@
       // ── Desktop Terminal (xterm.js + /ws/pty binary WS) ──
 
       let desktopReconnectTimer = null;
-      let desktopReconnectDelay = 1000;
+      let desktopReconnectDelay = RECONNECT_BASE_DELAY_MS;
+      let desktopReconnectStartedAt = 0;
+      let desktopRetryBlocked = false;
 
       function connectDesktopWs() {
         if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
+        if (desktopRetryBlocked) return;
         if (desktopWs && desktopWs.readyState <= WebSocket.OPEN) return;
         let wsUrl;
         if (currentMachine) {
@@ -3167,9 +3170,10 @@
         desktopWs = ws;
 
         ws.onopen = () => {
-          desktopReconnectDelay = 1000;
-          const statusEl = document.getElementById("conn-status");
-          if (statusEl) { statusEl.textContent = "reconnecting\u2026"; statusEl.style.display = "none"; }
+          desktopReconnectDelay = RECONNECT_BASE_DELAY_MS;
+          desktopReconnectStartedAt = 0;
+          desktopRetryBlocked = false;
+          setConnState("live");
           if (desktopFitAddon && desktopTerm) {
             try { desktopFitAddon.fit(); } catch {}
             ws.send(JSON.stringify({ type: "resize", cols: desktopTerm.cols, rows: desktopTerm.rows }));
@@ -3184,28 +3188,15 @@
           const isCurrent = desktopWs === ws;
           if (isCurrent) desktopWs = null;
           if (isCurrent) {
-            // 4001 = session unavailable/dead — show error, don't reconnect
             if (ev.code === 4001) {
+              setConnState("session-ended");
               const statusEl = document.getElementById("conn-status");
-              if (statusEl) {
-                statusEl.textContent = "session unavailable — use ← to go back";
-                statusEl.style.display = "block";
-              }
+              if (statusEl) statusEl.textContent = "session unavailable \u2014 use \u2190 to go back";
               return;
             }
-            // 1000 with "pty exited" = session ended normally
             if (ev.code === 1000 && ev.reason === "pty exited") {
-              const statusEl = document.getElementById("conn-status");
-              if (statusEl) {
-                statusEl.textContent = "session ended — use ← to go back";
-                statusEl.style.display = "block";
-              }
+              setConnState("session-ended");
               return;
-            }
-            const statusEl = document.getElementById("conn-status");
-            if (statusEl && currentView === "terminal" && useDesktopTerminal) {
-              statusEl.textContent = "reconnecting\u2026";
-              statusEl.style.display = "block";
             }
             scheduleDesktopReconnect();
           }
@@ -3216,14 +3207,27 @@
 
       function scheduleDesktopReconnect() {
         if (desktopReconnectTimer) return;
-        if (!useDesktopTerminal) return;
+        if (!useDesktopTerminal || !desktopTerm) return;
+        if (desktopRetryBlocked) return;
+        const now = Date.now();
+        if (!desktopReconnectStartedAt) desktopReconnectStartedAt = now;
+        const elapsed = now - desktopReconnectStartedAt;
+        const remaining = RECONNECT_BUDGET_MS - elapsed;
+        if (remaining <= 0) {
+          desktopRetryBlocked = true;
+          setConnState("offline");
+          return;
+        }
+        setConnState("reconnecting");
+        const jitterMs = Math.floor(Math.random() * 200);
+        const delayMs = Math.min(desktopReconnectDelay + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
         desktopReconnectTimer = setTimeout(() => {
           desktopReconnectTimer = null;
           if (useDesktopTerminal && (!desktopWs || desktopWs.readyState === WebSocket.CLOSED)) {
             connectDesktopWs();
           }
-        }, desktopReconnectDelay);
-        desktopReconnectDelay = Math.min(desktopReconnectDelay * 2, 5000);
+        }, delayMs);
+        desktopReconnectDelay = Math.min(Math.floor(desktopReconnectDelay * 1.8), RECONNECT_MAX_DELAY_MS);
       }
 
       function initDesktopTerminal() {
@@ -3322,7 +3326,9 @@
           clearTimeout(desktopReconnectTimer);
           desktopReconnectTimer = null;
         }
-        desktopReconnectDelay = 1000;
+        desktopReconnectDelay = RECONNECT_BASE_DELAY_MS;
+        desktopReconnectStartedAt = 0;
+        desktopRetryBlocked = false;
         if (desktopWs) {
           desktopWs.close();
           desktopWs = null;
@@ -3358,10 +3364,11 @@
         return (currentMachine || "") + "|" + (currentSession || "");
       }
 
-      function setMobileConnState(state) {
+      function setConnState(state) {
         const statusEl = document.getElementById("conn-status");
         if (!statusEl) return;
-        if (useDesktopTerminal || currentView !== "terminal" || !mobileStreamingActive || state === "live") {
+        const active = useDesktopTerminal ? !!desktopTerm : mobileStreamingActive;
+        if (currentView !== "terminal" || !active || state === "live") {
           statusEl.style.display = "none";
           statusEl.style.background = "#cc3333";
           return;
@@ -3375,9 +3382,9 @@
         if (state === "offline") {
           statusEl.style.display = "block";
           statusEl.style.background = "#cc3333";
-          statusEl.innerHTML = 'offline \u2014 <button type="button" id="conn-retry-btn" style="margin-left:6px;padding:2px 6px;border:1px solid #fff;border-radius:3px;background:transparent;color:#fff;font:inherit;text-transform:uppercase;letter-spacing:0.5px;cursor:pointer">Retry now</button>';
+          statusEl.innerHTML = 'connection lost \u2014 <button type="button" id="conn-retry-btn" style="margin-left:6px;padding:2px 6px;border:1px solid #fff;border-radius:3px;background:transparent;color:#fff;font:inherit;text-transform:uppercase;letter-spacing:0.5px;cursor:pointer">Reconnect</button>';
           const retryBtn = document.getElementById("conn-retry-btn");
-          if (retryBtn) retryBtn.onclick = retryTerminalConnection;
+          if (retryBtn) retryBtn.onclick = retryConnection;
           return;
         }
         statusEl.style.display = "block";
@@ -3477,10 +3484,10 @@
             ws.close();
             return;
           }
-          mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+          mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
           mobileReconnectStartedAt = 0;
           mobileRetryBlocked = false;
-          setMobileConnState("live");
+          setConnState("live");
           resizePane();
         };
 
@@ -3489,7 +3496,7 @@
           let msg = null;
           try { msg = JSON.parse(ev.data); } catch { return; }
           if (msg?.type === "output" && typeof msg.data === "string") {
-            setMobileConnState("live");
+            setConnState("live");
             applyTerminalPane(msg.data);
           }
         };
@@ -3498,7 +3505,7 @@
           if (mobileWs === ws) mobileWs = null;
           if (!mobileStreamingActive || useDesktopTerminal || connectKey !== terminalSessionKey()) return;
           if (ev.code === 4001 || (ev.code === 1000 && ev.reason === "session ended")) {
-            setMobileConnState("session-ended");
+            setConnState("session-ended");
             return;
           }
           scheduleMobileReconnect();
@@ -3513,31 +3520,31 @@
         const now = Date.now();
         if (!mobileReconnectStartedAt) mobileReconnectStartedAt = now;
         const elapsed = now - mobileReconnectStartedAt;
-        const remaining = MOBILE_RECONNECT_BUDGET_MS - elapsed;
+        const remaining = RECONNECT_BUDGET_MS - elapsed;
         if (remaining <= 0) {
           mobileRetryBlocked = true;
-          setMobileConnState("offline");
+          setConnState("offline");
           return;
         }
-        setMobileConnState("reconnecting");
+        setConnState("reconnecting");
         const jitterMs = Math.floor(Math.random() * 200);
-        const delayMs = Math.min(mobileReconnectDelayMs + jitterMs, MOBILE_RECONNECT_MAX_DELAY_MS, remaining);
+        const delayMs = Math.min(mobileReconnectDelayMs + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
         mobileReconnectTimer = setTimeout(() => {
           mobileReconnectTimer = null;
           connectMobileTerminalWs();
         }, delayMs);
-        mobileReconnectDelayMs = Math.min(Math.floor(mobileReconnectDelayMs * 1.8), MOBILE_RECONNECT_MAX_DELAY_MS);
+        mobileReconnectDelayMs = Math.min(Math.floor(mobileReconnectDelayMs * 1.8), RECONNECT_MAX_DELAY_MS);
       }
 
       function startPolling(resetBudget = true) {
         mobileStreamingActive = true;
         if (resetBudget) {
           mobileReconnectStartedAt = 0;
-          mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+          mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
           mobileRetryBlocked = false;
         }
         if (mobileRetryBlocked && !resetBudget) {
-          setMobileConnState("offline");
+          setConnState("offline");
           return;
         }
         if (mobileReconnectTimer) {
@@ -3545,7 +3552,7 @@
           mobileReconnectTimer = null;
         }
         if (!mobileWs || mobileWs.readyState === WebSocket.CLOSED) {
-          setMobileConnState("reconnecting");
+          setConnState("reconnecting");
         }
         connectMobileTerminalWs();
       }
@@ -3561,7 +3568,7 @@
       function stopPolling() {
         mobileStreamingActive = false;
         mobileReconnectStartedAt = 0;
-        mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+        mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
         mobileRetryBlocked = false;
         if (mobileReconnectTimer) {
           clearTimeout(mobileReconnectTimer);
@@ -3592,6 +3599,22 @@
           try { ws.close(1000, "manual retry"); } catch {}
         }
         startPolling(true);
+      }
+
+      function retryDesktopConnection() {
+        if (!useDesktopTerminal || !desktopTerm) return;
+        desktopRetryBlocked = false;
+        desktopReconnectStartedAt = 0;
+        desktopReconnectDelay = RECONNECT_BASE_DELAY_MS;
+        if (desktopReconnectTimer) { clearTimeout(desktopReconnectTimer); desktopReconnectTimer = null; }
+        if (desktopWs) { desktopWs.close(); desktopWs = null; }
+        setConnState("reconnecting");
+        connectDesktopWs();
+      }
+
+      function retryConnection() {
+        if (useDesktopTerminal) retryDesktopConnection();
+        else retryTerminalConnection();
       }
 
       async function poll() {
@@ -4108,9 +4131,11 @@
           }
           if (currentSession && currentView === "terminal") {
             if (useDesktopTerminal) {
-              // Desktop: reconnect if WS is dead (connectDesktopWs guards against duplicates)
+              // Desktop: reset budget and reconnect if WS is dead
               if (desktopTerm) {
-                desktopReconnectDelay = 1000;
+                desktopRetryBlocked = false;
+                desktopReconnectStartedAt = 0;
+                desktopReconnectDelay = RECONNECT_BASE_DELAY_MS;
                 connectDesktopWs();
               }
             } else {
