@@ -5276,7 +5276,7 @@
         if (!acc) return;
         kbAccessoryOpen = !kbAccessoryOpen;
         localStorage.setItem("wp_kb_open", kbAccessoryOpen ? "1" : "0");
-        acc.classList.toggle("visible", kbAccessoryOpen && !quickActionsVisible);
+        acc.classList.toggle("visible", kbAccessoryOpen);
         if (tog) tog.classList.toggle("active", kbAccessoryOpen);
         haptic([10]);
       }
@@ -5285,7 +5285,7 @@
       function syncKbAccessory() {
         const acc = document.getElementById("kb-accessory");
         if (!acc) return;
-        acc.classList.toggle("visible", kbAccessoryOpen && !quickActionsVisible);
+        acc.classList.toggle("visible", kbAccessoryOpen);
       }
 
       (function setupKbAccessory() {
