@@ -18,3 +18,5 @@ public-assets.ts
 dist/
 .ralph_iter.tmp
 progress.txt
+tests/e2e/test-results/
+playwright-report/
