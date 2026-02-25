@@ -345,9 +345,9 @@ Acceptance criteria:
 
 ---
 
-## 3. P2: Advanced Solo Experience and Polish
+## ~~3. P2: Advanced Solo Experience and Polish~~
 
-## 3a. UX-11 Inline command snippets from terminal context
+## ~~3a. UX-11 Inline command snippets from terminal context~~
 
 Goal:
 - Surface likely next actions based on current terminal context.
@@ -361,7 +361,7 @@ Risk:
 
 ---
 
-## 3b. UX-12 Better terminal rendering controls
+## ~~3b. UX-12 Better terminal rendering controls~~
 
 Goal:
 - Improve readability across different phone screens.
@@ -392,7 +392,7 @@ Implementation:
 
 ---
 
-## 3d. UX-14 Recovery snapshots
+## ~~3d. UX-14 Recovery snapshots~~
 
 Goal:
 - Handle app crashes/reloads without losing context.

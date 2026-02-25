@@ -2430,6 +2430,26 @@
           <button onclick="resetQuickCmds()" style="margin-top:4px;background:transparent;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:6px 14px;color:#555;font-size:10px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;width:100%">Reset to Defaults</button>
         </div>
         <div class="settings-section">
+          <div class="settings-label">Debug</div>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-debugPanel" onchange="toggleSetting('debugPanel', this.checked); toggleDebugPanel()"> Performance metrics
+          </label>
+          <div id="debug-panel" style="display:none;padding:8px;background:#0d0d0d;border:1px solid #1a1a1a;border-radius:6px;margin-top:6px;font-size:11px;font-family:inherit;color:#666">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px">
+              <span>Render p50</span><span id="dbg-p50" style="color:#00ff41;text-align:right">—</span>
+              <span>Render p95</span><span id="dbg-p95" style="color:#00ff41;text-align:right">—</span>
+              <span>Render avg</span><span id="dbg-avg" style="color:#00ff41;text-align:right">—</span>
+              <span>Samples</span><span id="dbg-samples" style="color:#00ff41;text-align:right">0</span>
+              <span>WS messages</span><span id="dbg-ws-msgs" style="color:#00ff41;text-align:right">0</span>
+              <span>Reconnects</span><span id="dbg-reconnects" style="color:#00ff41;text-align:right">0</span>
+              <span>Sends</span><span id="dbg-sends" style="color:#00ff41;text-align:right">0</span>
+              <span>Send failures</span><span id="dbg-send-fails" style="color:#ff4444;text-align:right">0</span>
+              <span>Session uptime</span><span id="dbg-uptime" style="color:#00ff41;text-align:right">—</span>
+            </div>
+            <button onclick="wpMetrics.reset(); renderDebugPanel()" style="margin-top:8px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:4px 10px;color:#666;font-size:10px;font-family:inherit;cursor:pointer;width:100%">Reset</button>
+          </div>
+        </div>
+        <div class="settings-section">
           <div class="settings-label">About</div>
           <div id="settings-version" style="font-size:10px;color:#555;padding:2px 0"></div>
         </div>
@@ -2578,7 +2598,7 @@
 
     <script>
       // ── Settings (persisted to localStorage) ──
-      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:"", termFontSize:"medium", termWrap:false, termFont:"default", reducedEffects:false, snapshotTtl:300};
+      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:"", termFontSize:"medium", termWrap:false, termFont:"default", reducedEffects:false, snapshotTtl:300, debugPanel:false};
       const wpSettings = Object.assign({}, wpDefaults, JSON.parse(localStorage.getItem("wp-effects") || "{}"));
       function toggleSetting(key, val) {
         wpSettings[key] = val;
@@ -2636,6 +2656,85 @@
       }
       function haptic(pattern) {
         if (wpSettings.haptics && navigator.vibrate) navigator.vibrate(pattern);
+      }
+
+      // ── Performance Metrics (UX-16) ──
+
+      const wpMetrics = {
+        latencySamples: [],     // rolling window of render times (ms)
+        maxLatencySamples: 200,
+        reconnectCount: 0,
+        sendFailCount: 0,
+        sendCount: 0,
+        wsMessagesReceived: 0,
+        sessionOpenedAt: 0,
+        lastUpdateAt: 0,
+        recordLatency(ms) {
+          this.latencySamples.push(ms);
+          if (this.latencySamples.length > this.maxLatencySamples) this.latencySamples.shift();
+          this.lastUpdateAt = Date.now();
+        },
+        percentile(p) {
+          const s = this.latencySamples.slice().sort((a, b) => a - b);
+          if (!s.length) return 0;
+          const i = Math.ceil(s.length * p / 100) - 1;
+          return s[Math.max(0, i)];
+        },
+        avg() {
+          if (!this.latencySamples.length) return 0;
+          return this.latencySamples.reduce((a, b) => a + b, 0) / this.latencySamples.length;
+        },
+        reset() {
+          this.latencySamples = [];
+          this.reconnectCount = 0;
+          this.sendFailCount = 0;
+          this.sendCount = 0;
+          this.wsMessagesReceived = 0;
+          this.sessionOpenedAt = Date.now();
+          this.lastUpdateAt = 0;
+        }
+      };
+
+      let debugPanelTimer = null;
+
+      function toggleDebugPanel() {
+        const panel = document.getElementById("debug-panel");
+        if (!panel) return;
+        if (wpSettings.debugPanel) {
+          panel.style.display = "block";
+          renderDebugPanel();
+          if (!debugPanelTimer) debugPanelTimer = setInterval(renderDebugPanel, 1000);
+        } else {
+          panel.style.display = "none";
+          if (debugPanelTimer) { clearInterval(debugPanelTimer); debugPanelTimer = null; }
+        }
+      }
+
+      function renderDebugPanel() {
+        if (!wpSettings.debugPanel) return;
+        const fmt = (v) => v > 0 ? v.toFixed(2) + "ms" : "—";
+        const el = (id) => document.getElementById(id);
+        const p50 = el("dbg-p50"); if (p50) p50.textContent = fmt(wpMetrics.percentile(50));
+        const p95 = el("dbg-p95"); if (p95) p95.textContent = fmt(wpMetrics.percentile(95));
+        const avg = el("dbg-avg"); if (avg) avg.textContent = fmt(wpMetrics.avg());
+        const samples = el("dbg-samples"); if (samples) samples.textContent = wpMetrics.latencySamples.length;
+        const wsMsgs = el("dbg-ws-msgs"); if (wsMsgs) wsMsgs.textContent = wpMetrics.wsMessagesReceived;
+        const reconnects = el("dbg-reconnects"); if (reconnects) reconnects.textContent = wpMetrics.reconnectCount;
+        const sends = el("dbg-sends"); if (sends) sends.textContent = wpMetrics.sendCount;
+        const fails = el("dbg-send-fails"); if (fails) {
+          fails.textContent = wpMetrics.sendFailCount;
+          fails.style.color = wpMetrics.sendFailCount > 0 ? "#ff4444" : "#00ff41";
+        }
+        const uptime = el("dbg-uptime");
+        if (uptime) {
+          if (wpMetrics.sessionOpenedAt > 0) {
+            const sec = Math.floor((Date.now() - wpMetrics.sessionOpenedAt) / 1000);
+            const m = Math.floor(sec / 60), s = sec % 60;
+            uptime.textContent = m > 0 ? m + "m " + s + "s" : s + "s";
+          } else {
+            uptime.textContent = "—";
+          }
+        }
       }
 
       // ── Quick Commands (UX-08) ──
@@ -3033,6 +3132,11 @@
         const animate = isMobile && !skipAnimation && prevView !== name && prevEl && nextEl;
         const animateHeader = isMobile && prevView !== name && !skipAnimation || wasSwipe;
         const goingForward = (VIEW_DEPTH[name] || 0) > (VIEW_DEPTH[prevView] || 0);
+
+        // Stop debug panel refresh when leaving settings
+        if (prevView === "settings" && name !== "settings" && debugPanelTimer) {
+          clearInterval(debugPanelTimer); debugPanelTimer = null;
+        }
 
         currentView = name;
 
@@ -3789,6 +3893,7 @@
         recordRecent(currentMachine, name);
         lastRawPane = null;
         useDesktopTerminal = isDesktop();
+        wpMetrics.reset();
         setFollowMode(true);
         restoreDraft();
         const cached = loadSnapshot(currentMachine, name);
@@ -4005,6 +4110,7 @@
         desktopWs = ws;
 
         ws.onopen = () => {
+          if (desktopReconnectStartedAt > 0) wpMetrics.reconnectCount++;
           desktopReconnectDelay = RECONNECT_BASE_DELAY_MS;
           desktopReconnectStartedAt = 0;
           desktopRetryBlocked = false;
@@ -4016,8 +4122,11 @@
         };
 
         ws.onmessage = (ev) => {
+          wpMetrics.wsMessagesReceived++;
           if (desktopTerm) {
+            const t0 = performance.now();
             desktopTerm.write(new Uint8Array(ev.data));
+            wpMetrics.recordLatency(performance.now() - t0);
             scheduleSnapshotSave(null);
           }
         };
@@ -4239,6 +4348,7 @@
       }
 
       function applyTerminalPane(pane) {
+        const renderStart = performance.now();
         const term = document.getElementById("terminal");
         const changed = pane !== lastRawPane;
         lastRawPane = pane;
@@ -4253,6 +4363,7 @@
           } else {
             term.textContent = pane;
           }
+          wpMetrics.recordLatency(performance.now() - renderStart);
           if (termFollowMode) term.scrollTop = term.scrollHeight;
         }
         if (pane.trim()) checkForAttention(pane);
@@ -4333,6 +4444,7 @@
             ws.close();
             return;
           }
+          if (mobileReconnectStartedAt > 0) wpMetrics.reconnectCount++;
           mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
           mobileReconnectStartedAt = 0;
           mobileRetryBlocked = false;
@@ -4342,6 +4454,7 @@
 
         ws.onmessage = (ev) => {
           if (mobileWs !== ws) return;
+          wpMetrics.wsMessagesReceived++;
           let msg = null;
           try { msg = JSON.parse(ev.data); } catch { return; }
           if (msg?.type === "output" && typeof msg.data === "string") {
@@ -4490,6 +4603,7 @@
         btn.classList.add("send-flash");
 
         try {
+          wpMetrics.sendCount++;
           await api("/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -4510,6 +4624,7 @@
             enterRetryTimer = null;
           }, 800);
         } catch {
+          wpMetrics.sendFailCount++;
           input.value = saved;
           autoResizeInput();
         }
@@ -4528,12 +4643,17 @@
 
       async function sendKey(key) {
         if (!currentSession) return;
-        await api("/key", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session: currentSession, key }),
-        }, currentMachine);
-        enterFastPoll();
+        try {
+          wpMetrics.sendCount++;
+          await api("/key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session: currentSession, key }),
+          }, currentMachine);
+          enterFastPoll();
+        } catch {
+          wpMetrics.sendFailCount++;
+        }
       }
 
       async function killSession(name, e, machineUrl) {
@@ -5397,6 +5517,7 @@
       async function showSettings() {
         showView("settings");
         renderMachinesList();
+        toggleDebugPanel();
       }
 
       async function renderMachinesList() {
