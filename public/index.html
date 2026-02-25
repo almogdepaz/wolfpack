@@ -1301,6 +1301,72 @@
         letter-spacing: 1px;
       }
 
+      /* ── Pin button ── */
+      .pin-btn {
+        background: none;
+        border: none;
+        color: #333;
+        font-size: 14px;
+        cursor: pointer;
+        padding: 4px 6px;
+        -webkit-tap-highlight-color: transparent;
+        transition: color 0.15s ease;
+        flex-shrink: 0;
+        line-height: 1;
+      }
+      .pin-btn:active { color: #00ff41; }
+      .pin-btn.pinned { color: #00ff41; }
+
+      /* ── Drawer tabs ── */
+      .drawer-tabs {
+        display: flex;
+        border-bottom: 1px solid #1a1a1a;
+        padding: 0 8px;
+        gap: 0;
+      }
+      .drawer-tab {
+        flex: 1;
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: #555;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        padding: 10px 0 8px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: color 0.15s ease, border-color 0.15s ease;
+      }
+      .drawer-tab:active { color: #999; }
+      .drawer-tab.active {
+        color: #00ff41;
+        border-bottom-color: #00ff41;
+      }
+
+      .drawer-section-label {
+        font-size: 9px;
+        color: #333;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        padding: 8px 14px 4px;
+      }
+
+      .drawer-item .pin-btn {
+        font-size: 12px;
+        padding: 2px 4px;
+        color: #222;
+      }
+      .drawer-item .pin-btn.pinned { color: #00ff41; }
+
+      .drawer-recent-time {
+        font-size: 9px;
+        color: #333;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
       /* ══════════════════════════════════════════════════════════
          WOLFPACK COMMAND CENTER — VISUAL OVERHAUL
          ══════════════════════════════════════════════════════════ */
@@ -1989,7 +2055,13 @@
       </div>
     </header>
     <div id="drawer-backdrop" onclick="closeDrawer()"></div>
-    <div id="session-drawer"><div id="drawer-list"></div></div>
+    <div id="session-drawer">
+      <div class="drawer-tabs">
+        <button class="drawer-tab active" data-tab="pinned" onclick="setDrawerTab('pinned')">Pinned</button>
+        <button class="drawer-tab" data-tab="all" onclick="setDrawerTab('all')">All</button>
+      </div>
+      <div id="drawer-list"></div>
+    </div>
 
     <div id="view-container">
     <!-- Sessions view -->
@@ -2331,6 +2403,67 @@
         saveQuickCmds();
         renderQuickCmdSettings();
         renderCmdPalette();
+      }
+
+      // ── Session Pinning & Recents (UX-09) ──
+
+      const PIN_STORAGE_KEY = "wp-pinned";
+      const RECENTS_STORAGE_KEY = "wp-recents";
+      const MAX_RECENTS = 20;
+
+      function sessionKey(machine, name) {
+        return (machine || "") + "|" + name;
+      }
+
+      function loadPinned() {
+        try {
+          const raw = localStorage.getItem(PIN_STORAGE_KEY);
+          if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return new Set(p); }
+        } catch {}
+        return new Set();
+      }
+
+      let pinnedSessions = loadPinned();
+
+      function savePinned() {
+        localStorage.setItem(PIN_STORAGE_KEY, JSON.stringify([...pinnedSessions]));
+      }
+
+      function togglePin(machine, name, e) {
+        if (e) e.stopPropagation();
+        const key = sessionKey(machine, name);
+        if (pinnedSessions.has(key)) pinnedSessions.delete(key);
+        else pinnedSessions.add(key);
+        savePinned();
+        haptic(5);
+        loadSessions();
+        if (drawerOpen) loadSessionSwitcher();
+      }
+
+      function isPinned(machine, name) {
+        return pinnedSessions.has(sessionKey(machine, name));
+      }
+
+      function loadRecents() {
+        try {
+          const raw = localStorage.getItem(RECENTS_STORAGE_KEY);
+          if (raw) { const r = JSON.parse(raw); if (Array.isArray(r)) return r; }
+        } catch {}
+        return [];
+      }
+
+      let sessionRecents = loadRecents();
+
+      function saveRecents() {
+        localStorage.setItem(RECENTS_STORAGE_KEY, JSON.stringify(sessionRecents));
+      }
+
+      function recordRecent(machine, name) {
+        const key = sessionKey(machine, name);
+        sessionRecents = sessionRecents.filter(r => r.key !== key);
+        sessionRecents.unshift({ key, name, machine: machine || "", ts: Date.now() });
+        if (sessionRecents.length > MAX_RECENTS) sessionRecents.length = MAX_RECENTS;
+        saveRecents();
       }
 
       let currentSession = null;
@@ -3029,6 +3162,22 @@
       // Shared session groups cache for switcher reuse
       let lastSessionGroups = [];
 
+      function pinBtnHtml(machine, name) {
+        const pinned = isPinned(machine, name);
+        const mAttr = escAttr(machine || "");
+        const nAttr = escAttr(name);
+        return `<button class="pin-btn${pinned ? " pinned" : ""}" onclick="togglePin('${mAttr}', '${nAttr}', event)" title="${pinned ? "Unpin" : "Pin"}">&#128204;</button>`;
+      }
+
+      function sortSessionsWithPins(sessions, machineUrl) {
+        return [...sessions].sort((a, b) => {
+          const ap = isPinned(machineUrl, a.name) ? 0 : 1;
+          const bp = isPinned(machineUrl, b.name) ? 0 : 1;
+          if (ap !== bp) return ap - bp;
+          return 0; // preserve triage order from server
+        });
+      }
+
       function renderGroupHtml(g) {
         const mUrl = esc(g.machine.url);
         const mUrlAttr = escAttr(g.machine.url);
@@ -3040,7 +3189,8 @@
         if (g.pending) {
           html += `<div style="padding:4px 4px;color:#555;font-size:11px">Connecting...</div>`;
         } else if (g.online && g.sessions.length) {
-          html += g.sessions.map((s, i) => {
+          const sorted = sortSessionsWithPins(g.sessions, g.machine.url);
+          html += sorted.map((s, i) => {
             const lastLine = s.lastLine || "";
             const ui = triageUi(s.triage);
             return `<div class="card card-stagger ${ui.card}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
@@ -3049,6 +3199,7 @@
                 <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
+              ${pinBtnHtml(g.machine.url, s.name)}
               <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event, '${mUrlAttr}')">&times;</button>
             </div>`;
           }).join("");
@@ -3062,7 +3213,8 @@
       function renderSingleMachineHtml(g) {
         let html = '<div class="new-btn" onclick="showProjectPicker()">+ New Session</div>';
         if (g.online && g.sessions.length) {
-          html += g.sessions.map((s, i) => {
+          const sorted = sortSessionsWithPins(g.sessions, "");
+          html += sorted.map((s, i) => {
             const lastLine = s.lastLine || "";
             const ui = triageUi(s.triage);
             return `<div class="card card-stagger ${ui.card}" style="animation-delay:${i * 30}ms" onclick="openSession('${escAttr(s.name)}')">
@@ -3071,6 +3223,7 @@
                 <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
+              ${pinBtnHtml("", s.name)}
               <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event)">&times;</button>
             </div>`;
           }).join("");
@@ -3168,6 +3321,7 @@
       function openSession(name, machineUrl) {
         currentSession = name;
         currentMachine = machineUrl || "";
+        recordRecent(currentMachine, name);
         lastRawPane = null;
         useDesktopTerminal = isDesktop();
         setFollowMode(true);
@@ -3915,31 +4069,97 @@
       let drawerDragStartY = 0;
       let drawerDragging = false;
 
-      function loadSessionSwitcher() {
+      let drawerTab = "pinned";
+
+      function setDrawerTab(tab) {
+        drawerTab = tab;
+        document.querySelectorAll(".drawer-tab").forEach(t => t.classList.toggle("active", t.dataset.tab === tab));
+        renderDrawerList();
+      }
+
+      function recentTimeAgo(ts) {
+        const diff = Date.now() - ts;
+        const mins = Math.floor(diff / 60000);
+        if (mins < 1) return "just now";
+        if (mins < 60) return mins + "m ago";
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return hrs + "h ago";
+        return Math.floor(hrs / 24) + "d ago";
+      }
+
+      function renderDrawerList() {
         const groups = lastSessionGroups;
         const list = document.getElementById("drawer-list");
         const multiMachine = getMachines().length > 0;
-        let html = "";
+
+        // Build flat session list
+        const all = [];
         for (const g of groups) {
           for (const s of g.sessions) {
-            const val = g.machine.url ? g.machine.url + "|" + s.name : s.name;
-            const isCurrent = s.name === currentSession && g.machine.url === currentMachine;
-            const machineLbl = multiMachine ? `<span class="drawer-item-machine">${esc(g.machine.name)}</span>` : "";
-            html += `<div class="drawer-item${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
-              <div class="dot ${isCurrent ? "active" : "inactive"}"></div>
-              <span class="drawer-item-name">${esc(s.name)}</span>
-              ${machineLbl}
-            </div>`;
+            all.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
           }
         }
+
+        let html = "";
+        if (drawerTab === "pinned") {
+          // Pinned section
+          const pinned = all.filter(s => isPinned(s.machineUrl, s.name));
+          // Recents section (not pinned, sorted by last opened)
+          const recentKeys = new Set(sessionRecents.map(r => r.key));
+          const pinnedKeys = new Set(pinned.map(s => sessionKey(s.machineUrl, s.name)));
+          const recents = sessionRecents
+            .filter(r => !pinnedKeys.has(r.key) && all.some(s => sessionKey(s.machineUrl, s.name) === r.key))
+            .slice(0, 8);
+
+          if (pinned.length) {
+            html += `<div class="drawer-section-label">Pinned</div>`;
+            html += pinned.map(s => drawerItemHtml(s, multiMachine, true)).join("");
+          }
+          if (recents.length) {
+            html += `<div class="drawer-section-label">Recent</div>`;
+            html += recents.map(r => {
+              const s = all.find(a => sessionKey(a.machineUrl, a.name) === r.key);
+              return s ? drawerItemHtml(s, multiMachine, false, r.ts) : "";
+            }).join("");
+          }
+          if (!pinned.length && !recents.length) {
+            html += `<div style="padding:16px 14px;color:#333;font-size:11px;text-align:center">No pinned or recent sessions</div>`;
+          }
+        } else {
+          // All sessions
+          html += all.map(s => drawerItemHtml(s, multiMachine, false)).join("");
+          if (!all.length) {
+            html += `<div style="padding:16px 14px;color:#333;font-size:11px;text-align:center">No active sessions</div>`;
+          }
+        }
+
         list.innerHTML = html;
-        // bind clicks
         list.querySelectorAll(".drawer-item").forEach(el => {
-          el.onclick = () => { switchSession(el.dataset.val); closeDrawer(); };
+          el.onclick = (e) => {
+            if (e.target.closest(".pin-btn")) return;
+            switchSession(el.dataset.val); closeDrawer();
+          };
         });
-        // update chip label
         const chipLabel = document.getElementById("chip-label");
         if (chipLabel) chipLabel.textContent = currentSession || "";
+      }
+
+      function drawerItemHtml(s, multiMachine, showPin, recentTs) {
+        const val = s.machineUrl ? s.machineUrl + "|" + s.name : s.name;
+        const isCurrent = s.name === currentSession && s.machineUrl === currentMachine;
+        const machineLbl = multiMachine ? `<span class="drawer-item-machine">${esc(s.machineName)}</span>` : "";
+        const pinned = isPinned(s.machineUrl, s.name);
+        const pinHtml = `<button class="pin-btn${pinned ? " pinned" : ""}" onclick="togglePin('${escAttr(s.machineUrl || "")}', '${escAttr(s.name)}', event); renderDrawerList();" title="${pinned ? "Unpin" : "Pin"}">&#128204;</button>`;
+        const recentHtml = recentTs ? `<span class="drawer-recent-time">${recentTimeAgo(recentTs)}</span>` : "";
+        return `<div class="drawer-item${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
+          <div class="dot ${isCurrent ? "active" : "inactive"}"></div>
+          <span class="drawer-item-name">${esc(s.name)}</span>
+          ${machineLbl}${recentHtml}${pinHtml}
+        </div>`;
+      }
+
+      function loadSessionSwitcher() {
+        renderDrawerList();
       }
 
       function toggleDrawer() {
@@ -4126,6 +4346,7 @@
         }
         currentSession = name;
         currentMachine = machineUrl;
+        recordRecent(machineUrl, name);
         lastRawPane = null;
         restoreDraft();
         loadSessionSwitcher();
