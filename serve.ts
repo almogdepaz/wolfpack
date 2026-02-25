@@ -108,6 +108,8 @@ if (!TAILNET_SUFFIX) {
 let cachedPeers: { url: string; name: string }[] = [];
 
 function isAllowedOrigin(origin: string): boolean {
+  // In test mode, allow any localhost origin (random port)
+  if (process.env.WOLFPACK_TEST && origin.startsWith("http://127.0.0.1:")) return true;
   if (ALLOWED_ORIGINS.has(origin)) return true;
   // Allow devices on the same tailnet only
   if (TAILNET_SUFFIX) {
@@ -266,7 +268,20 @@ async function tmuxSendKey(session: string, key: string): Promise<void> {
   return _tmuxSendKeyFn(session, key);
 }
 
-async function tmuxResize(
+let _tmuxResizeFn: (session: string, cols: number, rows: number) => Promise<void> = _realTmuxResize;
+let _capturePaneAnsiFn: (session: string) => Promise<string> = _realCapturePaneAnsi;
+
+/** Test hook: override tmuxResize to avoid requiring real tmux */
+export function __setTmuxResize(fn: (session: string, cols: number, rows: number) => Promise<void>): void {
+  _tmuxResizeFn = fn;
+}
+
+/** Test hook: override capturePaneAnsi to return mock terminal output */
+export function __setCapturePaneAnsi(fn: (session: string) => Promise<string>): void {
+  _capturePaneAnsiFn = fn;
+}
+
+async function _realTmuxResize(
   session: string,
   cols: number,
   rows: number,
@@ -280,6 +295,10 @@ async function tmuxResize(
     "-y",
     String(rows),
   ]);
+}
+
+async function tmuxResize(session: string, cols: number, rows: number): Promise<void> {
+  return _tmuxResizeFn(session, cols, rows);
 }
 
 async function capturePane(session: string): Promise<string> {
@@ -1285,7 +1304,7 @@ const routes: Record<
 
 const wss = new WebSocketServer({ noServer: true });
 
-async function capturePaneAnsi(session: string): Promise<string> {
+async function _realCapturePaneAnsi(session: string): Promise<string> {
   try {
     // -e: include ANSI escapes for color rendering
     // -S -2000: capture scrollback history so desktop terminal can scroll back
@@ -1294,6 +1313,10 @@ async function capturePaneAnsi(session: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+async function capturePaneAnsi(session: string): Promise<string> {
+  return _capturePaneAnsiFn(session);
 }
 
 function handleTerminalWs(ws: WebSocket, session: string): void {

@@ -5169,7 +5169,7 @@
         }
       }
 
-      const PROMPT_PATTERNS = [
+      const NOTIF_PROMPT_PATTERNS = [
         /\? \(y\/n\)/i,
         /\[Y\/n\]/i,
         /\[yes\/no\]/i,
@@ -5223,7 +5223,7 @@
         // Match against enabled pattern categories
         let matchedType = null;
         if (wpSettings.notifyPrompts) {
-          for (const pat of PROMPT_PATTERNS) {
+          for (const pat of NOTIF_PROMPT_PATTERNS) {
             if (pat.test(lastLines)) { matchedType = "prompt"; break; }
           }
         }

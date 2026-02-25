@@ -16,6 +16,8 @@ import {
   __setTmuxListWithActivity,
   __setTmuxSend,
   __setTmuxSendKey,
+  __setTmuxResize,
+  __setCapturePaneAnsi,
 } from "../../serve.ts";
 
 // ── Mock tmux ──
@@ -25,10 +27,21 @@ const fakeSessions = [
   { name: "another-project", activity: Math.floor(Date.now() / 1000) - 30 },
 ];
 
+// Stateful pane content — updates when tmuxSend is called
+const paneContent: Record<string, string> = {
+  "test-project": "$ mock-terminal-ready\n",
+  "another-project": "$ idle\n",
+};
+
 __setTmuxList(async () => fakeSessions.map((s) => s.name));
 __setTmuxListWithActivity(async () => [...fakeSessions]);
-__setTmuxSend(async () => {});
+__setTmuxSend(async (session, text) => {
+  // Simulate command echo + output
+  paneContent[session] = (paneContent[session] || "") + `$ ${text}\ncommand-output\n`;
+});
 __setTmuxSendKey(async () => {});
+__setTmuxResize(async () => {});
+__setCapturePaneAnsi(async (session) => paneContent[session] || "");
 
 // Suppress expected tmux noise
 const origError = console.error;
