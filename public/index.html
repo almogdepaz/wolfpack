@@ -2281,6 +2281,14 @@
           <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
             <input type="checkbox" id="setting-termWrap" onchange="toggleSetting('termWrap', this.checked)"> Wrap long lines
           </label>
+          <div style="padding:4px 0;font-size:12px;color:#888">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>Recovery snapshot TTL</span><span id="snapshot-ttl-val" style="color:#00ff41;font-size:11px">5m</span>
+            </div>
+            <input type="range" id="setting-snapshotTtl" min="60" max="1800" step="60" value="300"
+              style="width:100%;accent-color:#00ff41;margin-top:4px"
+              oninput="toggleSetting('snapshotTtl', +this.value); document.getElementById('snapshot-ttl-val').textContent=formatSnapshotTtl(this.value)">
+          </div>
         </div>
         <div class="settings-section">
           <div class="settings-label">Notifications</div>
@@ -2460,7 +2468,7 @@
 
     <script>
       // ── Settings (persisted to localStorage) ──
-      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:"", termFontSize:"medium", termWrap:false, termFont:"default", reducedEffects:false};
+      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:"", termFontSize:"medium", termWrap:false, termFont:"default", reducedEffects:false, snapshotTtl:300};
       const wpSettings = Object.assign({}, wpDefaults, JSON.parse(localStorage.getItem("wp-effects") || "{}"));
       function toggleSetting(key, val) {
         wpSettings[key] = val;
@@ -2513,6 +2521,8 @@
         });
         const cdLabel = document.getElementById("cooldown-val");
         if (cdLabel) cdLabel.textContent = wpSettings.notifyCooldown + "s";
+        const ttlLabel = document.getElementById("snapshot-ttl-val");
+        if (ttlLabel) ttlLabel.textContent = formatSnapshotTtl(wpSettings.snapshotTtl);
       }
       function haptic(pattern) {
         if (wpSettings.haptics && navigator.vibrate) navigator.vibrate(pattern);
@@ -2698,6 +2708,9 @@
       const RECONNECT_BUDGET_MS = 2 * 60 * 1000;
       const RECONNECT_BASE_DELAY_MS = 500;
       const RECONNECT_MAX_DELAY_MS = 5000;
+      const SNAPSHOT_KEY_PREFIX = "wp-snap|";
+      const SNAPSHOT_MAX_BYTES = 8192;
+      const SNAPSHOT_SAVE_INTERVAL = 2000;
       let mobileWs = null;
       let mobileReconnectTimer = null;
       let mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
@@ -2746,6 +2759,84 @@
       function clearDraft() {
         if (!currentSession) return;
         localStorage.removeItem(draftKey(currentMachine, currentSession));
+      }
+
+      // ── Recovery snapshots (UX-14) ──
+
+      let snapshotTimer = null;
+      let snapshotPending = null;
+
+      function snapshotKey(machine, session) {
+        return SNAPSHOT_KEY_PREFIX + (machine || "") + "|" + session;
+      }
+      function saveSnapshot(machine, session, text) {
+        if (!session || !text) return;
+        const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
+        try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch {}
+      }
+      function loadSnapshot(machine, session) {
+        if (!session) return null;
+        try {
+          const raw = localStorage.getItem(snapshotKey(machine, session));
+          if (!raw) return null;
+          const snap = JSON.parse(raw);
+          const age = (Date.now() - snap.ts) / 1000;
+          if (age > (wpSettings.snapshotTtl || 300)) {
+            localStorage.removeItem(snapshotKey(machine, session));
+            return null;
+          }
+          return snap.d;
+        } catch { return null; }
+      }
+      function clearSnapshot(machine, session) {
+        if (!session) return;
+        localStorage.removeItem(snapshotKey(machine, session));
+      }
+      function cleanStaleSnapshots() {
+        const ttl = (wpSettings.snapshotTtl || 300) * 1000;
+        const now = Date.now();
+        const toRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key || !key.startsWith(SNAPSHOT_KEY_PREFIX)) continue;
+          try {
+            const snap = JSON.parse(localStorage.getItem(key));
+            if (now - snap.ts > ttl) toRemove.push(key);
+          } catch { toRemove.push(key); }
+        }
+        toRemove.forEach(k => localStorage.removeItem(k));
+      }
+      function scheduleSnapshotSave(text) {
+        snapshotPending = text;
+        if (snapshotTimer) return;
+        snapshotTimer = setTimeout(flushSnapshot, SNAPSHOT_SAVE_INTERVAL);
+      }
+      function flushSnapshot() {
+        snapshotTimer = null;
+        if (!currentSession) { snapshotPending = null; return; }
+        let text;
+        if (useDesktopTerminal && desktopTerm) {
+          text = serializeXtermTail(desktopTerm, 100);
+        } else {
+          text = snapshotPending;
+        }
+        snapshotPending = null;
+        if (text) saveSnapshot(currentMachine, currentSession, text);
+      }
+      function serializeXtermTail(term, maxLines) {
+        const buf = term.buffer.active;
+        const start = Math.max(0, buf.length - maxLines);
+        const lines = [];
+        for (let i = start; i < buf.length; i++) {
+          const line = buf.getLine(i);
+          if (line) lines.push(line.translateToString(true));
+        }
+        return lines.join('\n');
+      }
+      function formatSnapshotTtl(seconds) {
+        seconds = +seconds;
+        if (seconds < 60) return seconds + 's';
+        return Math.floor(seconds / 60) + 'm';
       }
 
       // ── Machine registry ──
@@ -3589,11 +3680,14 @@
         useDesktopTerminal = isDesktop();
         setFollowMode(true);
         restoreDraft();
+        const cached = loadSnapshot(currentMachine, name);
         showView("terminal");
         if (useDesktopTerminal) {
-          initDesktopTerminal();
+          initDesktopTerminal(cached);
         } else {
-          document.getElementById("terminal").textContent = "";
+          const term = document.getElementById("terminal");
+          term.textContent = cached || "";
+          if (cached) term.scrollTop = term.scrollHeight;
           resizePane();
           startPolling();
         }
@@ -3811,7 +3905,10 @@
         };
 
         ws.onmessage = (ev) => {
-          if (desktopTerm) desktopTerm.write(new Uint8Array(ev.data));
+          if (desktopTerm) {
+            desktopTerm.write(new Uint8Array(ev.data));
+            scheduleSnapshotSave(null);
+          }
         };
 
         ws.onclose = (ev) => {
@@ -3860,7 +3957,7 @@
         desktopReconnectDelay = Math.min(Math.floor(desktopReconnectDelay * 1.8), RECONNECT_MAX_DELAY_MS);
       }
 
-      function initDesktopTerminal() {
+      function initDesktopTerminal(cached) {
         if (desktopTerm) return;
         const container = document.getElementById("desktop-terminal-container");
         container.style.display = "block";
@@ -3911,6 +4008,7 @@
           term.loadAddon(webgl);
         } catch (e) { console.warn('WebGL addon failed, using canvas fallback', e); }
         fitAddon.fit();
+        if (cached) term.write(cached);
         term.focus();
 
         term.onData((data) => {
@@ -3957,6 +4055,7 @@
       }
 
       function destroyDesktopTerminal() {
+        if (snapshotTimer) { clearTimeout(snapshotTimer); flushSnapshot(); }
         if (desktopReconnectTimer) {
           clearTimeout(desktopReconnectTimer);
           desktopReconnectTimer = null;
@@ -4045,7 +4144,10 @@
           if (termFollowMode) term.scrollTop = term.scrollHeight;
         }
         if (pane.trim()) checkForAttention(pane);
-        if (changed && !useDesktopTerminal) updateQuickActions(pane);
+        if (changed && !useDesktopTerminal) {
+          updateQuickActions(pane);
+          scheduleSnapshotSave(pane);
+        }
       }
 
       function setFollowMode(on) {
@@ -4201,6 +4303,7 @@
       }
 
       function stopPolling() {
+        if (snapshotTimer) { clearTimeout(snapshotTimer); flushSnapshot(); }
         mobileStreamingActive = false;
         mobileReconnectStartedAt = 0;
         mobileReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
@@ -5534,6 +5637,7 @@
       }
 
       initSettings();
+      cleanStaleSnapshots();
       renderCmdPalette();
       renderQuickCmdSettings();
       showView("sessions", true);
