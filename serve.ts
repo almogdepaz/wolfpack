@@ -642,7 +642,10 @@ function serveFile(res: ServerResponse, filename: string): void {
     res.end("Not Found");
     return;
   }
-  const headers: Record<string, string> = { "Content-Type": asset.mime };
+  const headers: Record<string, string> = {
+    "Content-Type": asset.mime,
+    "Cache-Control": "no-cache",
+  };
   if (asset.mime === "text/html") {
     headers["Content-Security-Policy"] = CSP;
   }
@@ -1633,14 +1636,18 @@ function handlePtyWs(ws: WebSocket, session: string): void {
       },
     });
     activePtySessions.set(session, entry as any);
-    // Force tmux redraw via SIGWINCH — must change size to actually trigger signal
-    setTimeout(() => {
-      if (entry.alive && entry.proc) {
-        try {
-          entry.proc.terminal!.resize(Math.max(20, cols - 1), rows);
-          entry.proc.terminal!.resize(cols, rows);
-        } catch {}
-      }
+    // Resize the original session to match the desktop client — undoes any
+    // mobile resize that may have shrunk the pane before the PTY connected.
+    // Then force SIGWINCH on the PTY terminal to trigger a full redraw.
+    setTimeout(async () => {
+      if (!entry.alive || !entry.proc) return;
+      try {
+        await exec(TMUX, ["resize-window", "-t", session, "-x", String(cols), "-y", String(rows)], { timeout: 2000 });
+      } catch {}
+      try {
+        entry.proc.terminal!.resize(Math.max(20, cols - 1), rows);
+        entry.proc.terminal!.resize(cols, rows);
+      } catch {}
     }, 100);
   }
 

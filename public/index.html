@@ -2159,7 +2159,6 @@
     <script src="/xterm-addon-fit.min.js"></script>
     <script src="/xterm-addon-search.min.js"></script>
     <script src="/xterm-addon-unicode11.min.js"></script>
-    <script src="/xterm-addon-webgl.min.js"></script>
   </head>
   <body>
     <header>
@@ -4049,6 +4048,7 @@
         quickActionsVisible = false;
         document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("input-bar").style.display = "none";
+        document.getElementById("cmd-palette").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
 
         const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
@@ -4084,11 +4084,6 @@
         term.unicode.activeVersion = '11';
 
         term.open(container);
-        try {
-          const webgl = new WebglAddon.WebglAddon();
-          webgl.onContextLoss(() => { webgl.dispose(); });
-          term.loadAddon(webgl);
-        } catch (e) { console.warn('WebGL addon failed, using canvas fallback', e); }
         fitAddon.fit();
         if (cached) term.write(cached);
         term.focus();
@@ -4171,6 +4166,7 @@
         container.innerHTML = "";
         document.getElementById("terminal").style.display = "";
         document.getElementById("input-bar").style.display = "";
+        document.getElementById("cmd-palette").style.display = "";
       }
 
       // ── Terminal ──
