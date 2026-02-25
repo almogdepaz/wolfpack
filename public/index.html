@@ -347,27 +347,6 @@
         width: 5px;
         height: 5px;
       }
-      .tl-legend {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        font-size: 9px;
-        color: #444;
-        letter-spacing: 0.3px;
-        margin-top: 2px;
-        justify-content: center;
-      }
-      .tl-legend-item {
-        display: flex;
-        align-items: center;
-        gap: 3px;
-      }
-      .tl-legend-dot {
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        flex-shrink: 0;
-      }
       @media (min-width: 769px) {
         .card {
           padding: 6px 8px;
@@ -449,63 +428,6 @@
         display: block;
       }
 
-      #snippet-suggestions {
-        display: none;
-        gap: 5px;
-        padding: 5px 10px 3px;
-        background: #111;
-        border-top: 1px solid #1a1a1a;
-        flex-shrink: 0;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        align-items: center;
-      }
-      #snippet-suggestions::-webkit-scrollbar { display: none; }
-      #snippet-suggestions.visible {
-        display: flex;
-      }
-      .snippet-chip {
-        flex-shrink: 0;
-        background: linear-gradient(145deg, #1a1a1a 0%, #151515 100%);
-        border: 1px solid rgba(255, 100, 50, 0.35);
-        border-radius: 8px;
-        padding: 6px 12px;
-        min-height: 32px;
-        color: #ff8844;
-        font-size: 11px;
-        font-family: inherit;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        transition: transform 0.1s ease, box-shadow 0.1s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        white-space: nowrap;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      }
-      .snippet-chip:active {
-        transform: scale(0.93);
-        background: #ff8844;
-        color: #0a0a0a;
-        box-shadow: 0 0 12px rgba(255, 100, 50, 0.3);
-      }
-      .snippet-dismiss {
-        flex-shrink: 0;
-        background: none;
-        border: none;
-        color: #555;
-        font-size: 16px;
-        cursor: pointer;
-        padding: 4px 2px 4px 6px;
-        line-height: 1;
-        -webkit-tap-highlight-color: transparent;
-      }
-      .snippet-dismiss:active {
-        color: #999;
-      }
 
       #cmd-palette {
         display: none;
@@ -1830,18 +1752,6 @@
           font-size: 22px !important;
         }
 
-        /* ── Snippet suggestions — larger on mobile ── */
-        #snippet-suggestions {
-          gap: 6px !important;
-          padding: 6px 10px 4px !important;
-        }
-        .snippet-chip {
-          min-height: 36px !important;
-          font-size: 12px !important;
-          padding: 6px 14px !important;
-          border-radius: 10px !important;
-        }
-
         /* ── Command palette — larger on mobile ── */
         #cmd-palette { gap: 6px !important; padding: 6px 10px 4px !important; }
         .cmd-chip { min-height: 36px !important; font-size: 12px !important; padding: 6px 14px !important; border-radius: 10px !important; }
@@ -2328,7 +2238,6 @@
       <div id="terminal"></div>
       <button id="jump-to-live" onclick="jumpToLive()">&#9660; Live</button>
       <div id="desktop-terminal-container"></div>
-      <div id="snippet-suggestions"></div>
       <div id="cmd-palette"></div>
       <div id="kb-accessory">
         <button class="kb-key kb-special" data-key="Enter">Enter</button>
@@ -3512,21 +3421,12 @@
         return TRIAGE_MAP[triage] || TRIAGE_MAP["idle"];
       }
 
-      const TL_LEGEND_HTML = '<div class="tl-legend">' +
-        '<span class="tl-legend-item"><span class="tl-legend-dot" style="background:#00ff41"></span>opened</span>' +
-        '<span class="tl-legend-item"><span class="tl-legend-dot" style="background:#ffcc00"></span>prompt</span>' +
-        '<span class="tl-legend-item"><span class="tl-legend-dot" style="background:#4488ff"></span>command</span>' +
-        '<span class="tl-legend-item"><span class="tl-legend-dot" style="background:#ff4444"></span>error</span>' +
-        '</div>';
-
-      function timelineStripHtml(events, cssClass, showLegend) {
+      function timelineStripHtml(events, cssClass) {
         if (!events || !events.length) return "";
         const cls = cssClass || "timeline-strip";
-        let html = '<div class="' + cls + '">' + events.map(function(e) {
+        return '<div class="' + cls + '">' + events.map(function(e) {
           return '<div class="tl-dot tl-' + esc(e.type) + '" title="' + escAttr(e.type + " " + timeAgo(e.ts)) + '"></div>';
         }).join("") + '</div>';
-        if (showLegend) html += TL_LEGEND_HTML;
-        return html;
       }
 
       function timeAgo(ts) {
@@ -3545,7 +3445,7 @@
         api("/timeline?session=" + encodeURIComponent(currentSession) + "&limit=8", undefined, currentMachine || undefined)
           .then(function(d) {
             if (!d.events || !d.events.length) { el.style.display = "none"; return; }
-            el.innerHTML = timelineStripHtml(d.events, undefined, true);
+            el.innerHTML = timelineStripHtml(d.events);
             el.style.display = "";
           })
           .catch(function() { el.style.display = "none"; });
@@ -4168,8 +4068,6 @@
         }
         if (pane.trim()) checkForAttention(pane);
         if (changed && !useDesktopTerminal) {
-          updateSnippetSuggestions(pane);
-          syncKbAutoToggle(pane);
           scheduleSnapshotSave(pane);
         }
       }
@@ -4746,106 +4644,6 @@
         }
       }
 
-      // ── Inline command snippet suggestions (UX-11) ──
-
-      const SNIPPET_RULES = [
-        { p: /npm ERR!/, s: [{ l: "npm ci", c: "npm ci" }, { l: "npm install", c: "npm install" }] },
-        { p: /npm warn|ERESOLVE/, s: [{ l: "npm install --force", c: "npm install --force" }] },
-        { p: /Cannot find module/, s: [{ l: "npm install", c: "npm install" }, { l: "bun install", c: "bun install" }] },
-        { p: /bun (?:install|add|run).*error|error:.*bun|ModuleNotFound/i, s: [{ l: "bun install", c: "bun install" }] },
-        { p: /bunfig\.toml|bun\.lockb/i, s: [{ l: "bun install", c: "bun install" }] },
-        { p: /CONFLICT \(|Merge conflict|both modified:|Unmerged paths/i, s: [{ l: "git status", c: "git status" }, { l: "git diff", c: "git diff" }] },
-        { p: /You have unmerged paths|fix conflicts and run/i, s: [{ l: "git status", c: "git status" }, { l: "git diff", c: "git diff" }, { l: "git merge --abort", c: "git merge --abort" }] },
-        { p: /rebase in progress|interactive rebase in progress/i, s: [{ l: "git rebase --continue", c: "git rebase --continue" }, { l: "git rebase --abort", c: "git rebase --abort" }] },
-        { p: /Updates were rejected|failed to push some refs/i, s: [{ l: "git pull", c: "git pull" }, { l: "git pull --rebase", c: "git pull --rebase" }] },
-        { p: /Your branch is behind/i, s: [{ l: "git pull", c: "git pull" }] },
-        { p: /not a git repository/i, s: [{ l: "git init", c: "git init" }] },
-        { p: /ModuleNotFoundError: No module named/, s: [{ l: "pip install", c: "pip install" }] },
-        { p: /ImportError:|ModuleNotFoundError/, s: [{ l: "pip install -r requirements.txt", c: "pip install -r requirements.txt" }] },
-        { p: /No such file.*venv|virtualenv/i, s: [{ l: "python -m venv venv", c: "python -m venv venv" }] },
-        { p: /Permission denied/i, s: [{ l: "sudo !!", c: "sudo !!" }, { l: "chmod +x", c: "chmod +x " }] },
-        { p: /EACCES/, s: [{ l: "sudo !!", c: "sudo !!" }] },
-        { p: /Cannot connect to the Docker daemon/i, s: [{ l: "docker info", c: "docker info" }] },
-        { p: /No such container/i, s: [{ l: "docker ps -a", c: "docker ps -a" }] },
-        { p: /error\[E\d+\]|cargo build.*failed/i, s: [{ l: "cargo check", c: "cargo check" }, { l: "cargo build", c: "cargo build" }] },
-        { p: /TS\d{4}:|error TS/, s: [{ l: "npx tsc --noEmit", c: "npx tsc --noEmit" }] },
-        { p: /EADDRINUSE|address already in use/i, s: [{ l: "lsof -i :PORT", c: "lsof -i :" }] },
-        { p: /No space left on device|ENOSPC/i, s: [{ l: "df -h", c: "df -h" }] },
-        { p: /ENOMEM|out of memory|JavaScript heap/i, s: [{ l: "free -h", c: "free -h" }] },
-        { p: /(\d+) (?:tests?|specs?) failed|FAIL(?:ED)?.*test/i, s: [{ l: "rerun tests", c: "bun test" }] },
-      ];
-
-      let snippetsDismissed = false;
-      let lastSnippetKey = "";
-
-      function classifySnippetsUI(pane) {
-        if (!pane) return [];
-        const lines = pane.trimEnd().split("\n").slice(-20);
-        const tail = lines.join("\n");
-        const seen = new Set();
-        const result = [];
-        for (const rule of SNIPPET_RULES) {
-          if (result.length >= 4) break;
-          if (rule.p.test(tail)) {
-            for (const s of rule.s) {
-              if (result.length >= 4) break;
-              if (!seen.has(s.c)) {
-                seen.add(s.c);
-                result.push(s);
-              }
-            }
-          }
-        }
-        return result;
-      }
-
-      function updateSnippetSuggestions(pane) {
-        const el = document.getElementById("snippet-suggestions");
-        if (!el) return;
-        const snippets = classifySnippetsUI(pane);
-        const key = snippets.map(s => s.c).join("|");
-
-        // Reset dismiss if suggestions changed
-        if (key !== lastSnippetKey) {
-          snippetsDismissed = false;
-          lastSnippetKey = key;
-        }
-
-        if (snippets.length === 0 || snippetsDismissed) {
-          el.classList.remove("visible");
-          el.innerHTML = "";
-          return;
-        }
-
-        el.innerHTML = snippets.map((s, i) =>
-          `<button class="snippet-chip" onclick="sendSnippet(${i})" title="${escAttr(s.c)}">${esc(s.l)}</button>`
-        ).join("") + `<button class="snippet-dismiss" onclick="dismissSnippets()" title="Dismiss">\u00d7</button>`;
-        el.classList.add("visible");
-      }
-
-      function sendSnippet(idx) {
-        if (!currentSession) return;
-        const snippets = classifySnippetsUI(lastRawPane || "");
-        const s = snippets[idx];
-        if (!s) return;
-        haptic([30]);
-        api("/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session: currentSession, text: s.c }),
-        }, currentMachine);
-        enterFastPoll();
-      }
-
-      function dismissSnippets() {
-        snippetsDismissed = true;
-        const el = document.getElementById("snippet-suggestions");
-        if (el) {
-          el.classList.remove("visible");
-          el.innerHTML = "";
-        }
-        haptic([10]);
-      }
 
       // ── Notifications ──
 
@@ -5132,54 +4930,15 @@
       // Persists collapsed state in localStorage.
       let kbAccessoryOpen = localStorage.getItem("wp_kb_open") === "1";
 
-      let kbAutoOpened = false; // true when auto-opened by prompt detection
-      let kbManualDismissed = false; // true when user manually closed during a prompt
-
       function toggleKbAccessory() {
         const acc = document.getElementById("kb-accessory");
         const tog = document.getElementById("kb-toggle");
         if (!acc) return;
         kbAccessoryOpen = !kbAccessoryOpen;
-        // If closing while auto-opened, suppress re-open until prompt changes
-        if (!kbAccessoryOpen && kbAutoOpened) kbManualDismissed = true;
-        kbAutoOpened = false;
         localStorage.setItem("wp_kb_open", kbAccessoryOpen ? "1" : "0");
         acc.classList.toggle("visible", kbAccessoryOpen);
         if (tog) tog.classList.toggle("active", kbAccessoryOpen);
         haptic([10]);
-      }
-
-      const KB_PROMPT_PATTERNS = [
-        /\? \(y\/n\)/i, /\[Y\/n\]/i, /\[yes\/no\]/i,
-        /Do you want to/i, /Continue\?/i, /Proceed\?/i, /confirm/i,
-        /Press Enter/i, /press any key/i, /\[Enter\]/i,
-        /permission/i, /approve/i, /waiting for/i,
-        /accept edits/i, /shift\+tab/i,
-      ];
-
-      function syncKbAutoToggle(pane) {
-        if (useDesktopTerminal) return;
-        const tail = pane.trimEnd().split("\n").slice(-5).join("\n");
-        const hasPrompt = KB_PROMPT_PATTERNS.some(p => p.test(tail));
-        const acc = document.getElementById("kb-accessory");
-        const tog = document.getElementById("kb-toggle");
-        if (!acc) return;
-        if (!hasPrompt) {
-          // Prompt cleared — reset suppression, auto-close if we auto-opened
-          kbManualDismissed = false;
-          if (kbAutoOpened && kbAccessoryOpen) {
-            kbAccessoryOpen = false;
-            kbAutoOpened = false;
-            acc.classList.remove("visible");
-            if (tog) tog.classList.remove("active");
-          }
-        } else if (hasPrompt && !kbAccessoryOpen && !kbManualDismissed) {
-          // Prompt detected, not open, user hasn't dismissed — auto-open
-          kbAccessoryOpen = true;
-          kbAutoOpened = true;
-          acc.classList.add("visible");
-          if (tog) tog.classList.add("active");
-        }
       }
 
       (function setupKbAccessory() {
