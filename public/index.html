@@ -4175,11 +4175,11 @@
           container._onKeyDown = null;
         }
         if (desktopSearchAddon) {
-          desktopSearchAddon.dispose();
+          try { desktopSearchAddon.dispose(); } catch {}
           desktopSearchAddon = null;
         }
         if (desktopTerm) {
-          desktopTerm.dispose();
+          try { desktopTerm.dispose(); } catch {}
           desktopTerm = null;
         }
         desktopFitAddon = null;
@@ -5314,6 +5314,8 @@
         acc.querySelectorAll(".kb-key").forEach((btn) => {
           const key = btn.dataset.key;
           const insert = btn.dataset.insert;
+          // Skip buttons with their own onclick (e.g. git button)
+          if (!key && !insert) return;
           let touchFired = false;
 
           function fire() {
