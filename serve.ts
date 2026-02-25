@@ -1193,11 +1193,22 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
   let sized = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let updating = false;
+  let nextSessionCheckAt = 0;
 
   async function sendUpdate() {
     if (!alive || updating) return;
     updating = true;
     try {
+      const now = Date.now();
+      if (now >= nextSessionCheckAt) {
+        nextSessionCheckAt = now + 1000;
+        if (!(await isAllowedSession(session))) {
+          alive = false;
+          updating = false;
+          try { ws.close(4001, "session ended"); } catch {}
+          return;
+        }
+      }
       const pane = await capturePaneAnsi(session);
       if (pane !== prev) {
         prev = pane;
@@ -1600,7 +1611,7 @@ server.on("upgrade", async (req, socket, head) => {
     return;
   }
   const url = new URL(req.url ?? "/", "http://localhost");
-  if (url.pathname === "/ws/terminal") {
+  if (url.pathname === "/ws/terminal" || url.pathname === "/ws/mobile") {
     const session = url.searchParams.get("session");
     if (!session || !(await isAllowedSession(session))) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");

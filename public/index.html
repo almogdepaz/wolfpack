@@ -1983,8 +1983,15 @@
       let currentSession = null;
       let currentMachine = ""; // "" = self, URL string = remote
       let currentView = "sessions";
-      let pollTimer = null;
-      let fastPoll = false;
+      const MOBILE_RECONNECT_BUDGET_MS = 2 * 60 * 1000;
+      const MOBILE_RECONNECT_BASE_DELAY_MS = 500;
+      const MOBILE_RECONNECT_MAX_DELAY_MS = 5000;
+      let mobileWs = null;
+      let mobileReconnectTimer = null;
+      let mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+      let mobileReconnectStartedAt = 0;
+      let mobileRetryBlocked = false;
+      let mobileStreamingActive = false;
       let allSessions = [];
       let sessionRefreshTimer = null;
       let ralphRefreshTimer = null;
@@ -2776,7 +2783,7 @@
         if (useDesktopTerminal) {
           initDesktopTerminal();
         } else {
-          // don't clear terminal — let first poll replace content seamlessly
+          document.getElementById("terminal").textContent = "";
           resizePane();
           startPolling();
         }
@@ -3164,75 +3171,202 @@
 
       // ── Terminal ──
 
-      function startPolling() {
-        poll();
-        schedulePoll();
+      function terminalSessionKey() {
+        return (currentMachine || "") + "|" + (currentSession || "");
+      }
+
+      function setMobileConnState(state) {
+        const statusEl = document.getElementById("conn-status");
+        if (!statusEl) return;
+        if (useDesktopTerminal || currentView !== "terminal" || !mobileStreamingActive || state === "live") {
+          statusEl.style.display = "none";
+          statusEl.style.background = "#cc3333";
+          return;
+        }
+        if (state === "reconnecting") {
+          statusEl.style.display = "block";
+          statusEl.style.background = "#8a5a00";
+          statusEl.textContent = "reconnecting\u2026";
+          return;
+        }
+        if (state === "offline") {
+          statusEl.style.display = "block";
+          statusEl.style.background = "#cc3333";
+          statusEl.innerHTML = 'offline \u2014 <button type="button" id="conn-retry-btn" style="margin-left:6px;padding:2px 6px;border:1px solid #fff;border-radius:3px;background:transparent;color:#fff;font:inherit;text-transform:uppercase;letter-spacing:0.5px;cursor:pointer">Retry now</button>';
+          const retryBtn = document.getElementById("conn-retry-btn");
+          if (retryBtn) retryBtn.onclick = retryTerminalConnection;
+          return;
+        }
+        statusEl.style.display = "block";
+        statusEl.style.background = "#cc3333";
+        statusEl.textContent = "session ended \u2014 use \u2190 to go back";
+      }
+
+      function applyTerminalPane(pane) {
+        const term = document.getElementById("terminal");
+        const changed = pane !== lastRawPane;
+        lastRawPane = pane;
+        if (changed) {
+          // Clear Enter retry once output has advanced.
+          if (enterRetryTimer) {
+            clearTimeout(enterRetryTimer);
+            enterRetryTimer = null;
+          }
+          const wasAtBottom =
+            term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+          if (searchActive && searchTerm) {
+            applySearchHighlights();
+          } else {
+            term.textContent = pane;
+          }
+          if (wasAtBottom) term.scrollTop = term.scrollHeight;
+        }
+        if (pane.trim()) checkForAttention(pane);
+      }
+
+      function mobileTerminalWsUrl() {
+        if (currentMachine) {
+          const remote = new URL(currentMachine);
+          const proto = remote.protocol === "https:" ? "wss:" : "ws:";
+          return proto + "//" + remote.host + "/ws/terminal?session=" + encodeURIComponent(currentSession);
+        }
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        return proto + "//" + location.host + "/ws/terminal?session=" + encodeURIComponent(currentSession);
+      }
+
+      function connectMobileTerminalWs() {
+        if (!mobileStreamingActive || useDesktopTerminal || !currentSession || currentView !== "terminal") return;
+        if (mobileRetryBlocked) return;
+        if (mobileWs && mobileWs.readyState <= WebSocket.OPEN) return;
+        const connectKey = terminalSessionKey();
+        const ws = new WebSocket(mobileTerminalWsUrl());
+        mobileWs = ws;
+
+        ws.onopen = () => {
+          if (mobileWs !== ws) return;
+          if (!mobileStreamingActive || useDesktopTerminal || connectKey !== terminalSessionKey()) {
+            ws.close();
+            return;
+          }
+          mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+          mobileReconnectStartedAt = 0;
+          mobileRetryBlocked = false;
+          setMobileConnState("live");
+          resizePane();
+        };
+
+        ws.onmessage = (ev) => {
+          if (mobileWs !== ws) return;
+          let msg = null;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg?.type === "output" && typeof msg.data === "string") {
+            setMobileConnState("live");
+            applyTerminalPane(msg.data);
+          }
+        };
+
+        ws.onclose = (ev) => {
+          if (mobileWs === ws) mobileWs = null;
+          if (!mobileStreamingActive || useDesktopTerminal || connectKey !== terminalSessionKey()) return;
+          if (ev.code === 4001 || (ev.code === 1000 && ev.reason === "session ended")) {
+            setMobileConnState("session-ended");
+            return;
+          }
+          scheduleMobileReconnect();
+        };
+
+        ws.onerror = () => {};
+      }
+
+      function scheduleMobileReconnect() {
+        if (!mobileStreamingActive || useDesktopTerminal || !currentSession || currentView !== "terminal") return;
+        if (mobileReconnectTimer) return;
+        const now = Date.now();
+        if (!mobileReconnectStartedAt) mobileReconnectStartedAt = now;
+        const elapsed = now - mobileReconnectStartedAt;
+        const remaining = MOBILE_RECONNECT_BUDGET_MS - elapsed;
+        if (remaining <= 0) {
+          mobileRetryBlocked = true;
+          setMobileConnState("offline");
+          return;
+        }
+        setMobileConnState("reconnecting");
+        const jitterMs = Math.floor(Math.random() * 200);
+        const delayMs = Math.min(mobileReconnectDelayMs + jitterMs, MOBILE_RECONNECT_MAX_DELAY_MS, remaining);
+        mobileReconnectTimer = setTimeout(() => {
+          mobileReconnectTimer = null;
+          connectMobileTerminalWs();
+        }, delayMs);
+        mobileReconnectDelayMs = Math.min(Math.floor(mobileReconnectDelayMs * 1.8), MOBILE_RECONNECT_MAX_DELAY_MS);
+      }
+
+      function startPolling(resetBudget = true) {
+        mobileStreamingActive = true;
+        if (resetBudget) {
+          mobileReconnectStartedAt = 0;
+          mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+          mobileRetryBlocked = false;
+        }
+        if (mobileRetryBlocked && !resetBudget) {
+          setMobileConnState("offline");
+          return;
+        }
+        if (mobileReconnectTimer) {
+          clearTimeout(mobileReconnectTimer);
+          mobileReconnectTimer = null;
+        }
+        if (!mobileWs || mobileWs.readyState === WebSocket.CLOSED) {
+          setMobileConnState("reconnecting");
+        }
+        connectMobileTerminalWs();
       }
 
       function schedulePoll() {
-        if (pollTimer) clearTimeout(pollTimer);
-        const interval = fastPoll ? 100 : 500;
-        pollTimer = setTimeout(() => { poll().then(schedulePoll); }, interval);
+        startPolling(false);
       }
 
       function enterFastPoll() {
-        fastPoll = true;
+        connectMobileTerminalWs();
       }
 
       function stopPolling() {
-        if (pollTimer) {
-          clearTimeout(pollTimer);
-          pollTimer = null;
+        mobileStreamingActive = false;
+        mobileReconnectStartedAt = 0;
+        mobileReconnectDelayMs = MOBILE_RECONNECT_BASE_DELAY_MS;
+        mobileRetryBlocked = false;
+        if (mobileReconnectTimer) {
+          clearTimeout(mobileReconnectTimer);
+          mobileReconnectTimer = null;
+        }
+        if (enterRetryTimer) {
+          clearTimeout(enterRetryTimer);
+          enterRetryTimer = null;
+        }
+        if (mobileWs) {
+          const ws = mobileWs;
+          mobileWs = null;
+          try { ws.close(1000, "viewer changed"); } catch {}
+        }
+        const statusEl = document.getElementById("conn-status");
+        if (statusEl) {
+          statusEl.style.display = "none";
+          statusEl.style.background = "#cc3333";
         }
       }
 
-      let pollFails = 0;
+      function retryTerminalConnection() {
+        if (useDesktopTerminal || !currentSession) return;
+        mobileRetryBlocked = false;
+        if (mobileWs) {
+          const ws = mobileWs;
+          mobileWs = null;
+          try { ws.close(1000, "manual retry"); } catch {}
+        }
+        startPolling(true);
+      }
 
       async function poll() {
-        if (!currentSession) return;
-        try {
-          const data = await api(
-            "/poll?session=" + encodeURIComponent(currentSession),
-            undefined, currentMachine,
-          );
-          if (data.error === "session not found") {
-            stopPolling();
-            const statusEl = document.getElementById("conn-status");
-            if (statusEl) { statusEl.textContent = "session ended — use ← to go back"; statusEl.style.display = "block"; }
-            return;
-          }
-          pollFails = 0;
-          const term = document.getElementById("terminal");
-          const statusEl = document.getElementById("conn-status");
-          if (statusEl) { statusEl.textContent = "reconnecting\u2026"; statusEl.style.display = "none"; }
-          if (data.pane != null) {
-            const changed = data.pane !== lastRawPane;
-            lastRawPane = data.pane;
-            if (changed) {
-              fastPoll = false;
-              // Clear Enter retry if pane changed
-              if (enterRetryTimer) {
-                clearTimeout(enterRetryTimer);
-                enterRetryTimer = null;
-              }
-              const wasAtBottom =
-                term.scrollHeight - term.scrollTop - term.clientHeight < 40;
-              if (searchActive && searchTerm) {
-                applySearchHighlights();
-              } else {
-                term.textContent = data.pane;
-              }
-              if (wasAtBottom) term.scrollTop = term.scrollHeight;
-            }
-            if (data.pane.trim()) checkForAttention(data.pane);
-          }
-        } catch {
-          pollFails++;
-          if (pollFails >= 3) {
-            const statusEl = document.getElementById("conn-status");
-            if (statusEl) statusEl.style.display = "block";
-          }
-        }
+        startPolling(false);
       }
 
       let enterRetryTimer = null;
@@ -3260,8 +3394,8 @@
           }, currentMachine);
           enterFastPoll();
 
-          // Enter retry: if pane hasn't changed within 800ms, Enter may have been dropped.
-          // Timer is cleared on any pane change (in poll()), so this only fires if truly stuck.
+          // Enter retry: if output hasn't changed within 800ms, Enter may have been dropped.
+          // Timer is cleared on any pane change, so this only fires if truly stuck.
           // Scope to the session that was active at send time to prevent phantom Enter on other sessions.
           if (enterRetryTimer) clearTimeout(enterRetryTimer);
           const retrySession = currentSession;
@@ -3637,7 +3771,7 @@
           for (const r of results) {
             if (!r) continue;
             for (const s of r.sessions) {
-              // Skip current session — poll() already handles it
+              // Skip current session — active terminal stream handles it
               if (s.name === currentSession && r.machineUrl === currentMachine) continue;
               if (s.lastLine) checkSessionAttention(s.name, r.machineUrl, s.lastLine);
             }
@@ -3657,7 +3791,7 @@
       requestNotifications();
       startBgAttention();
 
-      // Pause bg attention when visible, resume when hidden; re-poll terminal on foreground
+      // Pause bg attention when visible, resume when hidden; recover terminal stream on foreground
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
           stopBgAttention();
@@ -3674,10 +3808,8 @@
                 connectDesktopWs();
               }
             } else {
-              // Mobile: resume polling
-              poll();
-              enterFastPoll();
-              schedulePoll();
+              // Mobile: resume WS stream
+              startPolling(false);
             }
           }
         } else {

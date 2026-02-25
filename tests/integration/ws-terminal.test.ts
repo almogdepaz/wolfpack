@@ -80,6 +80,14 @@ describe("WS /ws/terminal connection", () => {
     if (ws) await closeWs(ws);
   });
 
+  test("connects via /ws/mobile alias for valid session", async () => {
+    const { status, ws } = await rawUpgrade("/ws/mobile?session=test-session");
+    expect(status).toBe(101);
+    expect(ws).toBeDefined();
+    expect(ws!.readyState).toBe(WebSocket.OPEN);
+    await closeWs(ws!);
+  });
+
   test("rejects missing session param (connection fails)", async () => {
     const { status, ws } = await rawUpgrade("/ws/terminal");
     expect(status).not.toBe(101);
@@ -90,6 +98,35 @@ describe("WS /ws/terminal connection", () => {
     const { status, ws } = await rawUpgrade("/ws/unknown?session=test-session");
     expect(status).not.toBe(101);
     if (ws) await closeWs(ws);
+  });
+});
+
+describe("WS /ws/terminal session lifecycle", () => {
+  test("closes with 4001 when session disappears after connect", async () => {
+    const ws = new WebSocket(`${baseWsUrl}/ws/terminal?session=test-session`);
+    const closePromise = new Promise<CloseEvent>((resolve) => {
+      ws.addEventListener("close", (ev) => resolve(ev));
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve());
+      ws.addEventListener("error", () => reject(new Error("ws/terminal connect failed")));
+    });
+
+    const idx = FAKE_SESSIONS.indexOf("test-session");
+    expect(idx).toBeGreaterThan(-1);
+    if (idx !== -1) FAKE_SESSIONS.splice(idx, 1);
+
+    try {
+      const closeEvent = await Promise.race([
+        closePromise,
+        wait(6000).then(() => { throw new Error("timed out waiting for session-ended close"); }),
+      ]) as CloseEvent;
+      expect(closeEvent.code).toBe(4001);
+    } finally {
+      if (!FAKE_SESSIONS.includes("test-session")) FAKE_SESSIONS.push("test-session");
+      await wait(50);
+    }
   });
 });
 
