@@ -2997,10 +2997,6 @@
           return snap.d;
         } catch { return null; }
       }
-      function clearSnapshot(machine, session) {
-        if (!session) return;
-        localStorage.removeItem(snapshotKey(machine, session));
-      }
       function cleanStaleSnapshots() {
         const ttl = (wpSettings.snapshotTtl || 300) * 1000;
         const now = Date.now();
@@ -4519,10 +4515,6 @@
         connectMobileTerminalWs();
       }
 
-      function schedulePoll() {
-        startPolling(false);
-      }
-
       function enterFastPoll() {
         connectMobileTerminalWs();
       }
@@ -5712,12 +5704,6 @@
           }, machine);
         }
         loadSessions();
-      }
-
-      function confirmKillSession() {
-        if (confirm(`Kill session "${currentSession}"?`)) {
-          closeSession();
-        }
       }
 
       document.getElementById("search-input").addEventListener("input", doSearch);

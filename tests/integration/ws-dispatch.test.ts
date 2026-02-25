@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 // Set WOLFPACK_TEST before importing serve.ts to prevent auto-listen
 process.env.WOLFPACK_TEST = "1";
 
-import { server, wss, __setTmuxList, __getActivePtySessions } from "../../serve.ts";
+import { server, __setTmuxList, __getActivePtySessions } from "../../serve.ts";
 
 // ── Test setup ──
 
@@ -303,7 +303,6 @@ describe("WS terminal state machine transitions", () => {
 
     // Before resize, the poll runs but the handler should work
     await wait(150);
-    const preResizeCount = msgs.length;
 
     // Send resize → sized=true, triggers update after 50ms
     ws!.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
