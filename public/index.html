@@ -3555,6 +3555,8 @@
         const promises = allMachines.map((m, i) =>
           fetchMachine(m.url, m.meta).then(g => {
             groups[i] = g;
+            // Update lastSessionGroups incrementally so drawer is never stale
+            lastSessionGroups = groups.filter(Boolean);
             if (firstLoad) {
               const placeholder = el.querySelector(`[data-machine="${esc(m.url)}"]`);
               if (placeholder) {

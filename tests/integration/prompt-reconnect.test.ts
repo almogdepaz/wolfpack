@@ -405,8 +405,8 @@ describe("Reconnect — PTY grace period state transitions", () => {
     // Grace period active — still alive
     expect(entry.alive).toBe(true);
 
-    // Wait past 10s grace
-    await wait(11_000);
+    // Wait past 15s grace
+    await wait(16_000);
 
     const afterEntry = ptySessions.get("reconnect-sess");
     if (afterEntry) {
@@ -414,7 +414,7 @@ describe("Reconnect — PTY grace period state transitions", () => {
     } else {
       expect(ptySessions.has("reconnect-sess")).toBe(false);
     }
-  }, 15_000);
+  }, 20_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -429,11 +429,11 @@ describe("Triage state machine — classifySession", () => {
       "Continue? [yes/no]",
       "Do you want to proceed?",
       "Press Enter to continue",
-      "Requires permission to access",
-      "Waiting for approval",
-      "approve this change?",
+      "Need permission to access /etc/hosts",
+      "Waiting for input",
+      "Approve this deployment?",
       "Type (yes/no) to confirm",
-      "Are you sure? ",
+      "Continue? [y/N]",
     ];
     for (const prompt of prompts) {
       expect(classifySession(prompt, 0)).toBe("needs-input");
@@ -444,11 +444,11 @@ describe("Triage state machine — classifySession", () => {
     const errors = [
       "Error: something failed",
       "error[E0001]: type mismatch",
-      "Build failed with 3 errors",
+      "build failed with 3 errors",
       "❌ Tests failed",
       "panic: runtime error",
       "FATAL: out of memory",
-      "unhandled promise rejection",
+      "unhandled rejection at Promise",
       "segfault at 0x0000",
     ];
     for (const err of errors) {

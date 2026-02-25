@@ -156,18 +156,25 @@ function saveSettings(s: Settings): void {
 let _tmuxListFn: () => Promise<string[]> = _realTmuxList;
 let _tmuxListWithActivityFn: () => Promise<{ name: string; activity: number }[]> = _realTmuxListWithActivity;
 
+function assertTestMode(hook: string): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error(`${hook}() is only available in test mode (WOLFPACK_TEST=1)`);
+}
+
 /** Test hook: override tmuxList to avoid requiring real tmux */
 export function __setTmuxList(fn: () => Promise<string[]>): void {
+  assertTestMode("__setTmuxList");
   _tmuxListFn = fn;
 }
 
 /** Test hook: override tmuxListWithActivity */
 export function __setTmuxListWithActivity(fn: () => Promise<{ name: string; activity: number }[]>): void {
+  assertTestMode("__setTmuxListWithActivity");
   _tmuxListWithActivityFn = fn;
 }
 
 /** Test hook: expose activePtySessions for assertions */
 export function __getActivePtySessions(): Map<string, { viewers: Set<any>; alive: boolean }> {
+  assertTestMode("__getActivePtySessions");
   return activePtySessions as any;
 }
 
@@ -252,11 +259,13 @@ let _tmuxSendKeyFn: (session: string, key: string) => Promise<void> = _realTmuxS
 
 /** Test hook: override tmuxSend to avoid requiring real tmux */
 export function __setTmuxSend(fn: (session: string, text: string, noEnter?: boolean) => Promise<void>): void {
+  assertTestMode("__setTmuxSend");
   _tmuxSendFn = fn;
 }
 
 /** Test hook: override tmuxSendKey to avoid requiring real tmux */
 export function __setTmuxSendKey(fn: (session: string, key: string) => Promise<void>): void {
+  assertTestMode("__setTmuxSendKey");
   _tmuxSendKeyFn = fn;
 }
 
@@ -271,6 +280,7 @@ async function tmuxSendKey(session: string, key: string): Promise<void> {
 let _tmuxResizeFn: (session: string, cols: number, rows: number) => Promise<void> = _realTmuxResize;
 /** Test hook: override tmuxResize to avoid requiring real tmux */
 export function __setTmuxResize(fn: (session: string, cols: number, rows: number) => Promise<void>): void {
+  assertTestMode("__setTmuxResize");
   _tmuxResizeFn = fn;
 }
 
@@ -309,8 +319,22 @@ async function capturePane(session: string): Promise<string> {
   return _capturePane(session);
 }
 
+// Separate cache for /api/sessions triage — avoids O(n) tmux execs on rapid polling
+// Not used by terminal WS handler which needs real-time pane content
+const _triageCacheMap = new Map<string, { content: string; ts: number }>();
+const TRIAGE_CACHE_TTL_MS = 500;
+
+async function capturePaneForTriage(session: string): Promise<string> {
+  const cached = _triageCacheMap.get(session);
+  if (cached && Date.now() - cached.ts < TRIAGE_CACHE_TTL_MS) return cached.content;
+  const content = await _capturePane(session);
+  _triageCacheMap.set(session, { content, ts: Date.now() });
+  return content;
+}
+
 /** Test hook: override capturePane (used by /api/sessions triage classification) */
 export function __setCapturePane(fn: (session: string) => Promise<string>): void {
+  assertTestMode("__setCapturePane");
   _capturePane = fn;
 }
 
@@ -742,7 +766,7 @@ const routes: Record<
     const results = await Promise.all(
       sessionsWithActivity.map(async ({ name, activity }) => {
         activeNames.add(name);
-        const pane = await capturePane(name);
+        const pane = await capturePaneForTriage(name);
         const lines = pane.trimEnd().split("\n");
         const lastLine = lines.filter(l => l.trim()).slice(-2).map(l => l.trim()).join("\n") || "";
         const activityAge = now - activity;
@@ -958,6 +982,8 @@ const routes: Record<
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
     if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!isValidProjectName(session))
+      return json(res, { error: "invalid session name" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     const projectDir = join(DEV_DIR, session);
@@ -1450,7 +1476,7 @@ function handleTerminalWs(ws: WebSocket, session: string): void {
 // ── PTY WebSocket handler (xterm.js direct) ──
 
 // Track ownership with a generation counter to prevent cross-connection cleanup races
-const PTY_TEARDOWN_GRACE_MS = 10_000; // keep PTY alive 10s after last viewer disconnects
+const PTY_TEARDOWN_GRACE_MS = 15_000; // keep PTY alive 15s after last viewer disconnects
 
 const activePtySessions = new Map<string, {
   viewers: Set<WebSocket>;

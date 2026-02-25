@@ -24,12 +24,13 @@ describe("classifySession", () => {
     expect(classifySession("Press Enter to continue", 999)).toBe("needs-input");
   });
 
-  test("detects permission keyword", () => {
-    expect(classifySession("Grant permission to access", 999)).toBe("needs-input");
+  test("detects permission request", () => {
+    expect(classifySession("Need permission to write /etc/hosts", 999)).toBe("needs-input");
   });
 
-  test("detects approve keyword", () => {
-    expect(classifySession("Type approve to continue", 999)).toBe("needs-input");
+  test("detects approve prompt", () => {
+    expect(classifySession("Approve this deployment?", 999)).toBe("needs-input");
+    expect(classifySession("Please approve the changes", 999)).toBe("needs-input");
   });
 
   test("detects waiting for", () => {
@@ -40,8 +41,8 @@ describe("classifySession", () => {
     expect(classifySession("Remove entry (yes/no)", 999)).toBe("needs-input");
   });
 
-  test("detects trailing ? $", () => {
-    expect(classifySession("Continue? ", 999)).toBe("needs-input");
+  test("detects trailing ? with bracket choices", () => {
+    expect(classifySession("Continue? [y/N]", 999)).toBe("needs-input");
   });
 
   // ── error ──
@@ -54,8 +55,10 @@ describe("classifySession", () => {
     expect(classifySession("error[E0001]: type mismatch", 999)).toBe("error");
   });
 
-  test("detects failed keyword", () => {
-    expect(classifySession("Build failed with 3 errors", 999)).toBe("error");
+  test("detects build/test/compile failed", () => {
+    expect(classifySession("build failed with 3 errors", 999)).toBe("error");
+    expect(classifySession("test failed — 2 assertions", 999)).toBe("error");
+    expect(classifySession("compile failed", 999)).toBe("error");
   });
 
   test("detects ❌ emoji", () => {
@@ -70,8 +73,9 @@ describe("classifySession", () => {
     expect(classifySession("FATAL exception in main", 999)).toBe("error");
   });
 
-  test("detects unhandled", () => {
-    expect(classifySession("unhandled promise rejection", 999)).toBe("error");
+  test("detects unhandled exception/rejection", () => {
+    expect(classifySession("unhandled rejection at Promise", 999)).toBe("error");
+    expect(classifySession("unhandled exception in worker", 999)).toBe("error");
   });
 
   test("detects segfault", () => {
@@ -101,8 +105,8 @@ describe("classifySession", () => {
   // ── priority: input > error > running > idle ──
 
   test("input takes priority over error patterns", () => {
-    // "failed" is error pattern, but "Do you want to" is input
-    expect(classifySession("Task failed. Do you want to retry?", 5)).toBe("needs-input");
+    // "build failed" is error pattern, but "Do you want to continue" is input
+    expect(classifySession("Build failed. Do you want to continue?", 5)).toBe("needs-input");
   });
 
   test("error takes priority over running (even if recent activity)", () => {

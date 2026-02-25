@@ -3,27 +3,27 @@
 export type TriageStatus = "needs-input" | "error" | "running" | "idle";
 
 export const INPUT_PATTERNS = [
-  /\? \(y\/n\)/i,
+  /\? ?\(y\/n\)/i,
   /\[Y\/n\]/i,
   /\[yes\/no\]/i,
-  /Do you want to/i,
-  /Press Enter/i,
-  /permission/i,
-  /approve/i,
-  /waiting for/i,
-  /\(yes\/no\)/i,
-  /\? $/,
+  /Do you want to (?:continue|proceed|install|update|overwrite|replace|delete|remove|retry|upgrade|deploy)/i,
+  /Press (?:Enter|ENTER|any key)/i,
+  /(?:grant|request|need).*permission/i,
+  /(?:approve|confirm) (?:this|the)/i,
+  /waiting for (?:input|response|confirmation|approval)/i,
+  /\(yes\/no(?:\/\w+)?\)/i,
+  /\?\s*\[.*\]\s*$/,
 ];
 
 export const ERROR_PATTERNS = [
-  /Error:/i,
-  /error\[/i,
-  /\bfailed\b/i,
+  /(?:^|:\s*)Error:/,
+  /error\[E?\d+\]/i,
+  /(?:build|test|compile|deploy|install|command) failed/i,
   /❌/,
   /panic:/i,
   /FATAL/,
-  /unhandled/i,
-  /segfault/i,
+  /unhandled (?:exception|rejection|error)/i,
+  /segfault|segmentation fault/i,
 ];
 
 export const RUNNING_THRESHOLD_S = 20;

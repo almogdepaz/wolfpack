@@ -382,7 +382,7 @@ describe("WS /ws/pty teardown grace period", () => {
     ws1.close();
     await wait(200);
 
-    // Entry should still be alive during 10s grace period
+    // Entry should still be alive during 15s grace period
     expect(ptySessions.has("test-session")).toBe(true);
     expect(ptySessions.get("test-session")!.alive).toBe(true);
 
@@ -426,8 +426,8 @@ describe("WS /ws/pty teardown grace period", () => {
     expect(ptySessions.has(session)).toBe(true);
     expect(ptySessions.get(session)!.alive).toBe(true);
 
-    // Wait past the 10s grace period (plus buffer)
-    await wait(11_000);
+    // Wait past the 15s grace period (plus buffer)
+    await wait(16_000);
 
     // Now the entry should be torn down
     const entry = ptySessions.get(session);
@@ -438,7 +438,7 @@ describe("WS /ws/pty teardown grace period", () => {
       // Or removed entirely — also valid
       expect(ptySessions.has(session)).toBe(false);
     }
-  }, 15_000); // 15s timeout for this test
+  }, 20_000); // 20s timeout for this test
 });
 
 // ── PTY: multi-viewer lifecycle ──

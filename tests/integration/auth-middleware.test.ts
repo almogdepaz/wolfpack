@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 
 process.env.WOLFPACK_TEST = "1";
-process.env.WOLFPACK_JWT_SECRET = "wolfpack-test-secret";
+process.env.WOLFPACK_JWT_SECRET = "wolfpack-test-secret-long-enough-for-validation";
 process.env.WOLFPACK_JWT_AUDIENCE = "wolfpack-client";
 
 // Dynamic import so env vars are set before serve.ts module-level code runs
@@ -13,7 +13,7 @@ const { __setTmuxList, server } = await import("../../serve.ts") as {
   server: Server;
 };
 
-const AUTH_SECRET = "wolfpack-test-secret";
+const AUTH_SECRET = "wolfpack-test-secret-long-enough-for-validation";
 const AUTH_AUDIENCE = "wolfpack-client";
 
 let port = 0;

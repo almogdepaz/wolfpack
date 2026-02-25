@@ -22,6 +22,7 @@ export interface JwtAuthConfig {
   issuer?: string;
   audience?: string;
   clockToleranceSec: number;
+  warning?: string;
 }
 
 const BASE64URL_SEGMENT = /^[A-Za-z0-9\-_]+$/;
@@ -72,6 +73,8 @@ export function extractBearerToken(authorization: string | string[] | undefined)
   return match ? match[1] : null;
 }
 
+const MIN_SECRET_LENGTH = 32;
+
 export function getJwtAuthConfig(env: NodeJS.ProcessEnv = process.env): JwtAuthConfig {
   const secret = (env.WOLFPACK_JWT_SECRET ?? "").trim();
   const issuer = (env.WOLFPACK_JWT_ISSUER ?? "").trim() || undefined;
@@ -82,12 +85,19 @@ export function getJwtAuthConfig(env: NodeJS.ProcessEnv = process.env): JwtAuthC
       ? parsedTolerance
       : DEFAULT_CLOCK_TOLERANCE_SEC;
 
+  const enabled = secret.length > 0;
+  let warning: string | undefined;
+  if (enabled && secret.length < MIN_SECRET_LENGTH) {
+    warning = `WOLFPACK_JWT_SECRET is too short (${secret.length} chars, minimum ${MIN_SECRET_LENGTH}). JWT auth disabled.`;
+  }
+
   return {
-    enabled: secret.length > 0,
+    enabled: enabled && secret.length >= MIN_SECRET_LENGTH,
     secret,
     issuer,
     audience,
     clockToleranceSec,
+    warning,
   };
 }
 
@@ -165,12 +175,30 @@ export function validateJwtHs256(
   }
 }
 
+/** Cached config — read once at import time. Restart server to pick up env changes. */
+let _cachedConfig: JwtAuthConfig | null = null;
+
+export function getCachedJwtAuthConfig(): JwtAuthConfig {
+  if (!_cachedConfig) {
+    _cachedConfig = getJwtAuthConfig();
+    if (_cachedConfig.warning) {
+      console.warn(`⚠ ${_cachedConfig.warning}`);
+    }
+  }
+  return _cachedConfig;
+}
+
+/** Reset cached config (for testing). */
+export function __resetJwtConfigCache(): void {
+  _cachedConfig = null;
+}
+
 export function validateRequestJwt(
   headers: IncomingHttpHeaders,
   url: URL,
   allowQueryToken: boolean,
 ): JwtValidationResult {
-  const cfg = getJwtAuthConfig();
+  const cfg = getCachedJwtAuthConfig();
   if (!cfg.enabled) return { ok: true, payload: {} };
 
   const token = getRequestToken(headers, url, allowQueryToken);
