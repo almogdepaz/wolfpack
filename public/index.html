@@ -664,6 +664,31 @@
       .send-flash {
         animation: send-flash 0.3s ease-out;
       }
+      /* Hold-to-send progress ring (UX-07) */
+      #send-btn {
+        position: relative;
+      }
+      #send-btn .hold-ring {
+        position: absolute;
+        inset: -2px;
+        border-radius: 12px;
+        border: 2px solid transparent;
+        pointer-events: none;
+        transition: none;
+      }
+      #send-btn.holding .hold-ring {
+        border-color: #00ff41;
+        animation: hold-fill var(--hold-duration, 400ms) linear forwards;
+      }
+      @keyframes hold-fill {
+        0% { clip-path: inset(0 100% 0 0); }
+        100% { clip-path: inset(0 0 0 0); }
+      }
+      #send-btn.hold-complete {
+        background: #00ff41;
+        color: #0a0a0a;
+        box-shadow: 0 0 16px rgba(0, 255, 65, 0.5);
+      }
       .settings-gear {
         background: #1a1a1a;
         border: 1px solid #2a2a2a;
@@ -1970,6 +1995,15 @@
           </label>
         </div>
         <div class="settings-section">
+          <div class="settings-label">Input</div>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-enterSends" onchange="toggleSetting('enterSends', this.checked)"> Enter sends (off = newline)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-holdToSend" onchange="toggleSetting('holdToSend', this.checked)"> Hold-to-send (large msgs)
+          </label>
+        </div>
+        <div class="settings-section">
           <div class="settings-label">About</div>
           <div id="settings-version" style="font-size:10px;color:#555;padding:2px 0"></div>
         </div>
@@ -2028,7 +2062,7 @@
           autocapitalize="off"
           spellcheck="false"
         ></textarea>
-        <button id="send-btn" onclick="sendMsg()">&#9889;</button>
+        <button id="send-btn">&#9889;<span class="hold-ring"></span></button>
       </div>
       <div id="msg-preview"></div>
     </div>
@@ -2101,7 +2135,8 @@
 
     <script>
       // ── Settings (persisted to localStorage) ──
-      const wpSettings = JSON.parse(localStorage.getItem("wp-effects") || '{"animations":true,"haptics":true,"scanlines":false}');
+      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false};
+      const wpSettings = Object.assign({}, wpDefaults, JSON.parse(localStorage.getItem("wp-effects") || "{}"));
       function toggleSetting(key, val) {
         wpSettings[key] = val;
         localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
@@ -2110,6 +2145,10 @@
       function applySetting(key, val) {
         if (key === "animations") document.body.classList.toggle("no-animations", !val);
         if (key === "scanlines") document.body.classList.toggle("scanlines", val);
+        if (key === "enterSends") {
+          const el = document.getElementById("msg-input");
+          if (el) el.placeholder = val ? "$ " : "$ (⇧Enter to send)";
+        }
       }
       function initSettings() {
         Object.entries(wpSettings).forEach(([k, v]) => {
@@ -4171,24 +4210,23 @@
         updatePreview();
         saveDraft();
       });
-      // Mobile: Enter adds newline, Shift+Enter submits
-      // Desktop: Enter submits, Shift+Enter adds newline
-      const isMobile = !isDesktop();
+      // Enter behavior driven by wpSettings.enterSends (UX-07)
+      // enterSends=true: Enter submits, Shift+Enter newline
+      // enterSends=false: Enter newline, Shift+Enter submits
 
       msgInput.addEventListener("keydown", (e) => {
         if (currentView !== "terminal") return;
         const empty = !msgInput.value.trim();
         if (e.key === "Enter") {
-          if (isMobile) {
-            // Mobile: Enter adds newline, Shift+Enter submits
-            if (e.shiftKey) {
+          if (wpSettings.enterSends) {
+            // Enter sends, Shift+Enter adds newline
+            if (!e.shiftKey) {
               e.preventDefault();
               if (empty) sendKey("Enter"); else sendMsg();
             }
-            // else: let Enter add newline naturally
           } else {
-            // Desktop: Enter submits, Shift+Enter adds newline
-            if (!e.shiftKey) {
+            // Enter adds newline, Shift+Enter sends
+            if (e.shiftKey) {
               e.preventDefault();
               if (empty) sendKey("Enter"); else sendMsg();
             }
@@ -4201,6 +4239,58 @@
           sendKey("Down");
         }
       });
+
+      // ── Hold-to-send on send button (UX-07) ──
+      // When holdToSend enabled and message is large (>50 chars), require 400ms hold.
+      // Short messages or holdToSend disabled → instant send on tap.
+      (function setupSendButton() {
+        const btn = document.getElementById("send-btn");
+        const HOLD_MS = 400;
+        const LARGE_THRESHOLD = 50;
+        let holdTimer = null;
+        let holdStarted = false;
+
+        function needsHold() {
+          if (!wpSettings.holdToSend) return false;
+          const text = document.getElementById("msg-input").value.trim();
+          return text.length > LARGE_THRESHOLD;
+        }
+
+        function startHold(e) {
+          if (!needsHold()) { sendMsg(); return; }
+          e.preventDefault();
+          holdStarted = true;
+          btn.classList.add("holding");
+          btn.style.setProperty("--hold-duration", HOLD_MS + "ms");
+          holdTimer = setTimeout(() => {
+            btn.classList.remove("holding");
+            btn.classList.add("hold-complete");
+            haptic([10, 30, 10]);
+            sendMsg();
+            setTimeout(() => btn.classList.remove("hold-complete"), 300);
+            holdStarted = false;
+          }, HOLD_MS);
+        }
+
+        function cancelHold() {
+          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+          btn.classList.remove("holding", "hold-complete");
+          holdStarted = false;
+        }
+
+        // Touch events for mobile
+        btn.addEventListener("touchstart", (e) => { startHold(e); }, {passive: false});
+        btn.addEventListener("touchend", cancelHold);
+        btn.addEventListener("touchcancel", cancelHold);
+
+        // Mouse events for desktop
+        btn.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          startHold(e);
+        });
+        btn.addEventListener("mouseup", cancelHold);
+        btn.addEventListener("mouseleave", cancelHold);
+      })();
 
       // Global arrow keys → tmux when in terminal and textarea not focused
       document.addEventListener("keydown", (e) => {

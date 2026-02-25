@@ -193,7 +193,7 @@ Risk:
 
 ---
 
-## 1e. UX-05 Session triage signals in list
+## ~~1e. UX-05 Session triage signals in list~~
 
 Goal:
 - Help solo builders decide where to look first.
@@ -233,7 +233,7 @@ Risk:
 
 ## 2. P1: Reliability and Flow Improvements
 
-## 2a. UX-06 Smarter reconnect model
+## ~~2a. UX-06 Smarter reconnect model~~
 
 Goal:
 - Make interruptions predictable and less disruptive.
@@ -546,3 +546,9 @@ The implementation spec is ready when:
 Status:
 - Spec is code-ready for Phase A implementation.
 
+
+- [x] Implement UX-06 smarter reconnect model: unified state machine (live/reconnecting/offline/session-ended), exponential backoff with jitter, 2-minute retry budget, manual "reconnect now" action from blocking offline state, state-specific banner copy
+- [x] Implement UX-07 input safety for accidental sends: configurable Enter behavior (Enter=newline vs Enter=send), sticky per-device setting in localStorage, settings UI toggle, hold-to-send option for large messages
+- [ ] Implement UX-08 quick command palette: user-defined quick command chips in terminal view, default set (status/tests/build/continue), add/edit/delete/reorder in settings, one-tap dispatch sends text + Enter
+- [ ] Implement UX-09 session pinning and recents: pin/unpin sessions via UI, pinned sessions sorted to top, recents queue with last-opened timestamp, session drawer Pinned/All tabs
+- [ ] Implement UX-10 notification controls by severity: separate toggles for prompts/errors/all-off, cooldown/dedupe window per session+signal, quiet hours by local device time, single global haptic pattern
