@@ -958,6 +958,28 @@ const routes: Record<
     json(res, { pane });
   },
 
+  "GET /api/git-status": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const projectDir = join(DEV_DIR, session);
+    if (!existsSync(projectDir))
+      return json(res, { error: "project directory not found" }, 404);
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        execFile("git", ["status", "--short", "--branch"], { cwd: projectDir }, (err, stdout, stderr) => {
+          if (err) return reject(new Error(stderr || err.message));
+          resolve(stdout);
+        });
+      });
+      json(res, { status: output });
+    } catch (e: any) {
+      json(res, { error: e.message || "git status failed" }, 500);
+    }
+  },
+
   // ── Ralph loop API ──
 
   "GET /api/ralph": async (req, res) => {
