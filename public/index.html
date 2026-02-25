@@ -449,74 +449,6 @@
         display: block;
       }
 
-      #quick-actions {
-        display: none;
-        gap: 6px;
-        padding: 6px 10px 2px;
-        background: #111;
-        border-top: 1px solid #1a1a1a;
-        flex-shrink: 0;
-      }
-      #quick-actions.visible {
-        display: flex;
-      }
-      .quick-chip {
-        flex: 1;
-        background: linear-gradient(145deg, #1a1a1a 0%, #151515 100%);
-        border: 1px solid #2a2a2a;
-        border-radius: 8px;
-        padding: 8px 10px;
-        min-height: 38px;
-        color: #e0e0e0;
-        font-size: 13px;
-        font-family: inherit;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        transition: transform 0.1s ease, box-shadow 0.1s ease, opacity 0.15s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      }
-      .quick-chip:active {
-        transform: scale(0.93);
-        box-shadow: 0 0 12px rgba(0, 255, 65, 0.2);
-      }
-      .quick-chip.yes {
-        border-color: rgba(0, 255, 65, 0.4);
-        color: #00ff41;
-      }
-      .quick-chip.yes:active {
-        background: #00ff41;
-        color: #0a0a0a;
-      }
-      .quick-chip.no {
-        border-color: rgba(255, 170, 0, 0.35);
-        color: #ffaa00;
-      }
-      .quick-chip.no:active {
-        background: #ffaa00;
-        color: #0a0a0a;
-      }
-      .quick-chip.enter {
-        border-color: rgba(0, 255, 65, 0.25);
-        color: #00ff41;
-      }
-      .quick-chip.enter:active {
-        background: #00ff41;
-        color: #0a0a0a;
-      }
-      .quick-chip.interrupt {
-        border-color: rgba(204, 51, 51, 0.4);
-        color: #cc3333;
-      }
-      .quick-chip.interrupt:active {
-        background: #cc3333;
-        color: #0a0a0a;
-      }
-
       #snippet-suggestions {
         display: none;
         gap: 5px;
@@ -1898,17 +1830,6 @@
           font-size: 22px !important;
         }
 
-        /* ── Quick action chips — larger on mobile ── */
-        #quick-actions {
-          gap: 5px !important;
-          padding: 8px 10px 4px !important;
-        }
-        .quick-chip {
-          min-height: 42px !important;
-          font-size: 14px !important;
-          border-radius: 10px !important;
-        }
-
         /* ── Snippet suggestions — larger on mobile ── */
         #snippet-suggestions {
           gap: 6px !important;
@@ -2407,7 +2328,6 @@
       <div id="terminal"></div>
       <button id="jump-to-live" onclick="jumpToLive()">&#9660; Live</button>
       <div id="desktop-terminal-container"></div>
-      <div id="quick-actions"></div>
       <div id="snippet-suggestions"></div>
       <div id="cmd-palette"></div>
       <div id="kb-accessory">
@@ -3093,12 +3013,8 @@
         document.getElementById("header-timeline").style.display = "none";
 
         const applyHeader = () => {
-          // Reset quick-actions and kb-accessory visibility on view change
+          // Reset kb-accessory visibility on view change
           if (name !== "terminal") {
-            document.getElementById("quick-actions").classList.remove("visible");
-            quickActionsVisible = false;
-            lastQuickActionsKey = "";
-            currentQuickButtons = [];
             document.getElementById("kb-accessory").classList.remove("visible");
           }
           chip.style.display = "none";
@@ -4073,10 +3989,6 @@
         container.style.display = "block";
         container.innerHTML = "";
         document.getElementById("terminal").style.display = "none";
-        document.getElementById("quick-actions").classList.remove("visible");
-        quickActionsVisible = false;
-        lastQuickActionsKey = "";
-        currentQuickButtons = [];
         document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("cmd-palette").style.display = "none";
@@ -4256,7 +4168,8 @@
         }
         if (pane.trim()) checkForAttention(pane);
         if (changed && !useDesktopTerminal) {
-          updateQuickActions(pane);
+          updateSnippetSuggestions(pane);
+          syncKbAutoToggle(pane);
           scheduleSnapshotSave(pane);
         }
       }
@@ -4673,13 +4586,16 @@
         const hdr = document.querySelector("header");
         const drawer = document.getElementById("session-drawer");
         const backdrop = document.getElementById("drawer-backdrop");
-        let startY = 0, startTime = 0, dragging = false, maxDrag = 0;
+        let startY = 0, startX = 0, startTime = 0, dragging = false, maxDrag = 0;
+        let touchTarget = null;
 
         function onStart(e) {
           if (currentView !== "terminal") return;
+          startX = e.touches[0].clientX;
           startY = e.touches[0].clientY;
           startTime = Date.now();
           dragging = false;
+          touchTarget = e.target;
           maxDrag = Math.min(drawer.scrollHeight, window.innerHeight * 0.5);
         }
 
@@ -4713,7 +4629,19 @@
         }
 
         function onEnd(e) {
-          if (!dragging) return;
+          if (!dragging) {
+            // Tap detection: if touch was short + small movement, fire tap on chip/drawer items
+            const dt = Date.now() - startTime;
+            const ex = e.changedTouches[0].clientX, ey = e.changedTouches[0].clientY;
+            const dist = Math.abs(ex - startX) + Math.abs(ey - startY);
+            if (dt < 300 && dist < 15 && touchTarget) {
+              const chip = document.getElementById("session-chip");
+              if (chip && chip.contains(touchTarget)) { toggleDrawer(); return; }
+              const item = touchTarget.closest(".drawer-item");
+              if (item && drawerOpen) { item.click(); return; }
+            }
+            return;
+          }
           dragging = false;
           const dy = e.changedTouches[0].clientY - startY;
           const elapsed = Date.now() - startTime;
@@ -4818,114 +4746,6 @@
         }
       }
 
-      // ── Prompt-aware quick actions (UX-02) ──
-
-      // Patterns that indicate an interactive prompt expecting user input.
-      // Intentionally narrower than ATTENTION_PATTERNS — excludes error/failure lines.
-      // Button presets: {label, cssClass, send}
-      // cssClass maps to .quick-chip.yes/.no/.enter/.interrupt CSS classes
-      const QB = {
-        yes:    { label: "Yes",    cssClass: "yes",       send: { type: "text", value: "yes" } },
-        no:     { label: "No",     cssClass: "no",        send: { type: "text", value: "no" } },
-        enter:  { label: "Enter",  cssClass: "enter",     send: { type: "key",  value: "Enter" } },
-        esc:    { label: "Esc",    cssClass: "no",        send: { type: "key",  value: "Escape" } },
-        ctrlc:  { label: "^C",     cssClass: "interrupt", send: { type: "key",  value: "C-c" } },
-        accept: { label: "Accept", cssClass: "yes",       send: { type: "key",  value: "Enter" } },
-        stab:   { label: "\u21E7Tab",  cssClass: "enter", send: { type: "key",  value: "BTab" } },
-        tab:    { label: "Tab",    cssClass: "enter",     send: { type: "key",  value: "Tab" } },
-      };
-      function numBtn(n) { return { label: String(n), cssClass: "enter", send: { type: "text", value: String(n) } }; }
-
-      // Prompt classifier: returns array of button configs or null
-      const PROMPT_CLASSES = [
-        { // Claude Code edit review
-          test: /accept edits|shift\+tab to cycle/i,
-          buttons: [QB.accept, QB.stab, QB.esc, QB.ctrlc],
-        },
-        { // y/n confirmation
-          test: /\? ?\(y\/n\)|\[Y\/n\]|\[y\/N\]|\[yes\/no\]|\(yes\/no\)|\(Y\)es.*\(N\)o/i,
-          buttons: [QB.yes, QB.no, QB.ctrlc],
-        },
-        { // Do you want / Continue / Proceed / confirm
-          test: /Do you want|Would you like|Continue\?|Proceed\?|\bconfirm\b.*\?/i,
-          buttons: [QB.yes, QB.no, QB.ctrlc],
-        },
-        { // Press Enter / any key
-          test: /Press Enter|press any key|\[Enter\]/i,
-          buttons: [QB.enter, QB.ctrlc],
-        },
-        { // Approve / permission / waiting
-          test: /\bapprove\b|\bpermission\b|waiting for (?:input|response|approval|confirmation)/i,
-          buttons: [QB.yes, QB.no, QB.ctrlc],
-        },
-        { // Accept prompt (generic)
-          test: /\bAccept\b.*\?/,
-          buttons: [QB.yes, QB.no, QB.ctrlc],
-        },
-      ];
-
-      // Detect numbered options like "1)" "2)" etc in last lines
-      const NUMBERED_OPT_RE = /^\s*(\d+)\)/m;
-
-      function classifyPrompt(text) {
-        if (!text) return null;
-        const lines = text.trimEnd().split("\n").slice(-8);
-        const tail = lines.join("\n");
-
-        // Check typed prompt classes first
-        for (const cls of PROMPT_CLASSES) {
-          if (cls.test.test(tail)) return cls.buttons;
-        }
-
-        // Numbered options detection
-        const nums = [];
-        const seen = new Set();
-        for (const line of lines) {
-          const m = line.match(NUMBERED_OPT_RE);
-          if (m && !seen.has(m[1])) {
-            seen.add(m[1]);
-            nums.push(parseInt(m[1], 10));
-          }
-        }
-        if (nums.length >= 2) {
-          nums.sort((a, b) => a - b);
-          const btns = nums.slice(0, 5).map(numBtn);
-          btns.push(QB.ctrlc);
-          return btns;
-        }
-
-        return null;
-      }
-
-      let quickActionsVisible = false;
-      let lastQuickActionsKey = "";
-      let currentQuickButtons = [];
-
-      function renderQuickActions(el, buttons) {
-        currentQuickButtons = buttons;
-        el.innerHTML = buttons
-          .map((b, i) => `<button class="quick-chip ${b.cssClass}" onclick="quickAction(${i})">${esc(b.label)}</button>`)
-          .join("");
-      }
-
-      function updateQuickActions(pane) {
-        const el = document.getElementById("quick-actions");
-        if (!el) return;
-        const buttons = classifyPrompt(pane);
-        const key = buttons ? buttons.map(b => b.label + b.send.value).join(",") : "";
-        if (key !== lastQuickActionsKey) {
-          lastQuickActionsKey = key;
-          const shouldShow = !!buttons;
-          if (shouldShow) renderQuickActions(el, buttons);
-          if (shouldShow !== quickActionsVisible) {
-            quickActionsVisible = shouldShow;
-            el.classList.toggle("visible", shouldShow);
-            syncKbAccessory();
-          }
-        }
-        updateSnippetSuggestions(pane);
-      }
-
       // ── Inline command snippet suggestions (UX-11) ──
 
       const SNIPPET_RULES = [
@@ -5025,23 +4845,6 @@
           el.innerHTML = "";
         }
         haptic([10]);
-      }
-
-      async function quickAction(idx) {
-        if (!currentSession) return;
-        const btn = currentQuickButtons[idx];
-        if (!btn) return;
-        haptic([30]);
-        if (btn.send.type === "key") {
-          await sendKey(btn.send.value);
-        } else {
-          await api("/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: currentSession, text: btn.send.value }),
-          }, currentMachine);
-        }
-        enterFastPoll();
       }
 
       // ── Notifications ──
@@ -5329,22 +5132,54 @@
       // Persists collapsed state in localStorage.
       let kbAccessoryOpen = localStorage.getItem("wp_kb_open") === "1";
 
+      let kbAutoOpened = false; // true when auto-opened by prompt detection
+      let kbManualDismissed = false; // true when user manually closed during a prompt
+
       function toggleKbAccessory() {
         const acc = document.getElementById("kb-accessory");
         const tog = document.getElementById("kb-toggle");
         if (!acc) return;
         kbAccessoryOpen = !kbAccessoryOpen;
+        // If closing while auto-opened, suppress re-open until prompt changes
+        if (!kbAccessoryOpen && kbAutoOpened) kbManualDismissed = true;
+        kbAutoOpened = false;
         localStorage.setItem("wp_kb_open", kbAccessoryOpen ? "1" : "0");
         acc.classList.toggle("visible", kbAccessoryOpen);
         if (tog) tog.classList.toggle("active", kbAccessoryOpen);
         haptic([10]);
       }
 
-      // Sync kb-accessory visibility when quick-actions change
-      function syncKbAccessory() {
+      const KB_PROMPT_PATTERNS = [
+        /\? \(y\/n\)/i, /\[Y\/n\]/i, /\[yes\/no\]/i,
+        /Do you want to/i, /Continue\?/i, /Proceed\?/i, /confirm/i,
+        /Press Enter/i, /press any key/i, /\[Enter\]/i,
+        /permission/i, /approve/i, /waiting for/i,
+        /accept edits/i, /shift\+tab/i,
+      ];
+
+      function syncKbAutoToggle(pane) {
+        if (useDesktopTerminal) return;
+        const tail = pane.trimEnd().split("\n").slice(-5).join("\n");
+        const hasPrompt = KB_PROMPT_PATTERNS.some(p => p.test(tail));
         const acc = document.getElementById("kb-accessory");
+        const tog = document.getElementById("kb-toggle");
         if (!acc) return;
-        acc.classList.toggle("visible", kbAccessoryOpen);
+        if (!hasPrompt) {
+          // Prompt cleared — reset suppression, auto-close if we auto-opened
+          kbManualDismissed = false;
+          if (kbAutoOpened && kbAccessoryOpen) {
+            kbAccessoryOpen = false;
+            kbAutoOpened = false;
+            acc.classList.remove("visible");
+            if (tog) tog.classList.remove("active");
+          }
+        } else if (hasPrompt && !kbAccessoryOpen && !kbManualDismissed) {
+          // Prompt detected, not open, user hasn't dismissed — auto-open
+          kbAccessoryOpen = true;
+          kbAutoOpened = true;
+          acc.classList.add("visible");
+          if (tog) tog.classList.add("active");
+        }
       }
 
       (function setupKbAccessory() {
