@@ -39,7 +39,7 @@ import {
   clampRows,
 } from "./validation.js";
 import { validateRequestJwt } from "./auth.js";
-import { classifySession, TRIAGE_ORDER, type TriageStatus } from "./triage.js";
+import { classifySession, TRIAGE_ORDER } from "./triage.js";
 import { recordEvent, getTimeline, getRecentEvents, clearTimeline, detectTriageTransition, pruneTimelines } from "./timeline.js";
 import pkg from "./package.json";
 
@@ -269,16 +269,9 @@ async function tmuxSendKey(session: string, key: string): Promise<void> {
 }
 
 let _tmuxResizeFn: (session: string, cols: number, rows: number) => Promise<void> = _realTmuxResize;
-let _capturePaneAnsiFn: (session: string) => Promise<string> = _realCapturePaneAnsi;
-
 /** Test hook: override tmuxResize to avoid requiring real tmux */
 export function __setTmuxResize(fn: (session: string, cols: number, rows: number) => Promise<void>): void {
   _tmuxResizeFn = fn;
-}
-
-/** Test hook: override capturePaneAnsi to return mock terminal output */
-export function __setCapturePaneAnsi(fn: (session: string) => Promise<string>): void {
-  _capturePaneAnsiFn = fn;
 }
 
 async function _realTmuxResize(
@@ -1337,21 +1330,6 @@ const routes: Record<
 // ── WebSocket ──
 
 const wss = new WebSocketServer({ noServer: true });
-
-async function _realCapturePaneAnsi(session: string): Promise<string> {
-  try {
-    // -e: include ANSI escapes for color rendering
-    // -S -2000: capture scrollback history so desktop terminal can scroll back
-    const { stdout } = await exec(TMUX, ["capture-pane", "-t", session, "-p", "-e", "-S", "-2000"]);
-    return stdout;
-  } catch {
-    return "";
-  }
-}
-
-async function capturePaneAnsi(session: string): Promise<string> {
-  return _capturePaneAnsiFn(session);
-}
 
 function handleTerminalWs(ws: WebSocket, session: string): void {
   let prev = "";

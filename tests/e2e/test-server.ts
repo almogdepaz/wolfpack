@@ -17,7 +17,6 @@ import {
   __setTmuxSend,
   __setTmuxSendKey,
   __setTmuxResize,
-  __setCapturePaneAnsi,
   __setCapturePane,
 } from "../../serve.ts";
 
@@ -47,7 +46,6 @@ __setTmuxSend(async (session, text) => {
 });
 __setTmuxSendKey(async () => {});
 __setTmuxResize(async () => {});
-__setCapturePaneAnsi(async (session) => paneContent[session] || "");
 __setCapturePane(async (session) => paneContent[session] || "");
 
 // Suppress expected tmux noise

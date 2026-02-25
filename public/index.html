@@ -4822,8 +4822,8 @@
 
       // Patterns that indicate an interactive prompt expecting user input.
       // Intentionally narrower than ATTENTION_PATTERNS — excludes error/failure lines.
-      // Button presets: {label, action, cls}
-      // cls maps to .quick-chip.yes/.no/.enter/.interrupt CSS classes
+      // Button presets: {label, cssClass, send}
+      // cssClass maps to .quick-chip.yes/.no/.enter/.interrupt CSS classes
       const QB = {
         yes:    { label: "Yes",    cssClass: "yes",       send: { type: "text", value: "yes" } },
         no:     { label: "No",     cssClass: "no",        send: { type: "text", value: "no" } },
