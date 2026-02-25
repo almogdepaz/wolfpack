@@ -62,6 +62,99 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
+/** Mirrors ralph-macchio.ts dedupCheckboxes() — operates on a configurable path */
+function dedupCheckboxes(planPath: string): void {
+  try {
+    const plan = readFileSync(planPath, "utf-8");
+    const lines = plan.split("\n");
+    const seen = new Set<string>();
+    const checkedTexts = new Set<string>();
+
+    for (const line of lines) {
+      const m = line.match(/^- \[x\] (.+)$/);
+      if (m) checkedTexts.add(m[1]);
+    }
+
+    const out: string[] = [];
+    for (const line of lines) {
+      const m = line.match(/^- \[ \] (.+)$/);
+      if (m) {
+        const text = m[1];
+        if (checkedTexts.has(text) || seen.has(text)) continue;
+        seen.add(text);
+      }
+      out.push(line);
+    }
+
+    if (out.length !== lines.length) {
+      writeFileSync(planPath, out.join("\n"));
+    }
+  } catch {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dedupCheckboxes
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("dedupCheckboxes", () => {
+  test("removes exact duplicate - [ ] entries", () => {
+    writePlan("- [ ] Write tests\n- [ ] Deploy\n- [ ] Write tests\n");
+    dedupCheckboxes(planPath);
+    const result = readPlan();
+    const matches = result.match(/- \[ \] Write tests/g);
+    expect(matches?.length).toBe(1);
+    expect(result).toContain("- [ ] Deploy");
+  });
+
+  test("removes - [ ] when - [x] exists for same text", () => {
+    writePlan("- [x] Write tests\n- [ ] Write tests\n- [ ] Deploy\n");
+    dedupCheckboxes(planPath);
+    const result = readPlan();
+    expect(result).toContain("- [x] Write tests");
+    expect(result).not.toContain("- [ ] Write tests");
+    expect(result).toContain("- [ ] Deploy");
+  });
+
+  test("preserves non-duplicate entries", () => {
+    const plan = "- [ ] Task A\n- [x] Task B\n- [ ] Task C\n";
+    writePlan(plan);
+    dedupCheckboxes(planPath);
+    expect(readPlan()).toBe(plan);
+  });
+
+  test("handles multiple duplicates", () => {
+    writePlan("- [ ] A\n- [ ] B\n- [ ] A\n- [ ] B\n- [ ] A\n");
+    dedupCheckboxes(planPath);
+    const result = readPlan();
+    expect((result.match(/- \[ \] A/g) || []).length).toBe(1);
+    expect((result.match(/- \[ \] B/g) || []).length).toBe(1);
+  });
+
+  test("no-op on plan with no checkboxes", () => {
+    const plan = "## 1. Section task\nSome body\n";
+    writePlan(plan);
+    dedupCheckboxes(planPath);
+    expect(readPlan()).toBe(plan);
+  });
+
+  test("keeps checked duplicates (only dedup unchecked)", () => {
+    writePlan("- [x] Done\n- [x] Done\n");
+    dedupCheckboxes(planPath);
+    const result = readPlan();
+    // checked items are not deduped — they're historical markers
+    expect((result.match(/- \[x\] Done/g) || []).length).toBe(2);
+  });
+
+  test("preserves non-checkbox lines interleaved", () => {
+    writePlan("# Plan\n\n- [ ] Task A\nsome notes\n- [ ] Task A\n");
+    dedupCheckboxes(planPath);
+    const result = readPlan();
+    expect((result.match(/- \[ \] Task A/g) || []).length).toBe(1);
+    expect(result).toContain("some notes");
+    expect(result).toContain("# Plan");
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // markSectionDone
 // ═══════════════════════════════════════════════════════════════════════════
@@ -303,5 +396,43 @@ describe("appendSubtasksToPlan", () => {
     // appendSubtasksToPlan doesn't need to escape — it just concatenates
     expect(result).toContain("- [ ] Fix (bug) in [module]");
     expect(result).toContain("- [ ] Handle $var + *.log");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// mark parent done on subtask emission (integration-style)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("mark parent done on subtask emission", () => {
+  test("checkbox parent marked done after subtask append", () => {
+    writePlan("- [ ] Big task\n- [x] Already done\n");
+    appendSubtasksToPlan(planPath, ["Sub A", "Sub B"]);
+    markCheckboxDone(planPath, "Big task");
+    const result = readPlan();
+    expect(result).toContain("- [x] Big task");
+    expect(result).toContain("- [ ] Sub A");
+    expect(result).toContain("- [ ] Sub B");
+  });
+
+  test("section parent marked done after subtask append", () => {
+    writePlan("## 1. Big task\nSome details\n\n## 2. Other task\nMore details\n");
+    appendSubtasksToPlan(planPath, ["Sub A", "Sub B"]);
+    markSectionDone(planPath, "## 1. Big task\nSome details");
+    const result = readPlan();
+    expect(result).toContain("## ~~1. Big task~~");
+    expect(result).toContain("## 2. Other task");
+    expect(result).toContain("- [ ] Sub A");
+    expect(result).toContain("- [ ] Sub B");
+  });
+
+  test("next extractCurrentTask picks subtask, not parent", () => {
+    writePlan("- [ ] Big task\n");
+    appendSubtasksToPlan(planPath, ["Sub A", "Sub B"]);
+    markCheckboxDone(planPath, "Big task");
+    const plan = readPlan();
+    // simulate extractCurrentTask: first unchecked checkbox
+    const match = plan.match(/^- \[ \] (.+)$/m);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("Sub A");
   });
 });

@@ -259,6 +259,38 @@ function appendSubtasksToPlan(subtasks: string[]): void {
   appendFileSync(PLAN_PATH, "\n" + lines + "\n");
 }
 
+function dedupCheckboxes(): void {
+  try {
+    const plan = readPlan();
+    const lines = plan.split("\n");
+    const seen = new Set<string>();
+    const checkedTexts = new Set<string>();
+
+    // first pass: collect all checked checkbox texts
+    for (const line of lines) {
+      const m = line.match(/^- \[x\] (.+)$/);
+      if (m) checkedTexts.add(m[1]);
+    }
+
+    // second pass: filter duplicates
+    const out: string[] = [];
+    for (const line of lines) {
+      const m = line.match(/^- \[ \] (.+)$/);
+      if (m) {
+        const text = m[1];
+        // drop if already checked elsewhere or if duplicate unchecked
+        if (checkedTexts.has(text) || seen.has(text)) continue;
+        seen.add(text);
+      }
+      out.push(line);
+    }
+
+    if (out.length !== lines.length) {
+      writeFileSync(PLAN_PATH, out.join("\n"));
+    }
+  } catch {}
+}
+
 const ITERATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes per iteration
 
 // track active child for signal handling
@@ -386,6 +418,9 @@ async function main() {
     }
   }
 
+  // Clean up duplicate checkboxes from prior crashed/interrupted runs
+  dedupCheckboxes();
+
   // Validate plan format before entering iteration loop
   const planValidation = validatePlanFormat(readPlan());
   if (!planValidation.valid) {
@@ -401,6 +436,8 @@ async function main() {
   let tasksCompleted = 0;
   let subtasksAdded = 0;
   const MAX_SUBTASK_EXPANSIONS = 5;
+  let lastTask: string | null = null;
+  let lastWasSubtaskEmission = false;
 
   for (let i = 1; i <= maxIterations; i++) {
     // extract current task from plan
@@ -420,6 +457,18 @@ async function main() {
     }
 
     const { task, checkbox } = result;
+
+    // same-task-twice guard: if we picked the same task after a subtask emission,
+    // the parent wasn't marked done — force it now
+    if (task === lastTask && lastWasSubtaskEmission) {
+      appendFileSync(LOG_FILE, `\n=== ⚠️ Same task picked twice after subtask emission — force-marking parent done ===\n`);
+      if (checkbox) markCheckboxDone(task);
+      else markSectionDone(task);
+      lastTask = null;
+      lastWasSubtaskEmission = false;
+      continue;
+    }
+
     const prompt = buildPrompt(task);
     appendFileSync(LOG_FILE, `\n=== 🥋 Wax On ${i}/${maxIterations} — ${new Date().toString()} ===\n`);
     appendFileSync(LOG_FILE, `task: ${task}\n\n`);
@@ -442,12 +491,23 @@ async function main() {
       subtaskExpansions++;
       subtasksAdded += subtasks.length;
       appendSubtasksToPlan(subtasks);
+      // mark parent done so it's never re-picked
+      if (checkbox) {
+        markCheckboxDone(task);
+      } else {
+        markSectionDone(task);
+      }
       if (maxIterations < MAX_CEILING) maxIterations++;
       appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${subtasks.length}) — extended to ${maxIterations} iterations (ceiling ${MAX_CEILING}, expansions ${subtaskExpansions}/${MAX_SUBTASK_EXPANSIONS}) ===\n`);
       for (const st of subtasks) appendFileSync(LOG_FILE, `  + ${st}\n`);
+      lastTask = task;
+      lastWasSubtaskEmission = true;
       try { unlinkSync(ITER_FILE); } catch {}
       continue;
     }
+
+    lastTask = task;
+    lastWasSubtaskEmission = false;
 
     appendFileSync(LOG_FILE, `\n=== ✅ Iteration ${i} complete — ${new Date().toString()} ===\n`);
     tasksCompleted++;

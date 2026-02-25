@@ -214,6 +214,41 @@ describe("extractCurrentTask (edge cases)", () => {
   });
 });
 
+// ── same-task-twice detection scenario ──
+
+describe("same-task-twice detection", () => {
+  test("extractCurrentTask returns same section task when parent not marked done", () => {
+    const plan = "## 1. Big task\ndetails\n\n## 2. Other task\nmore";
+    // simulate: first call returns "Big task", subtasks emitted but parent NOT marked done
+    const first = extractCurrentTask(plan);
+    expect(first).not.toBeNull();
+    // plan unchanged → same task picked again
+    const second = extractCurrentTask(plan);
+    expect(second).not.toBeNull();
+    expect(second!.task).toBe(first!.task);
+  });
+
+  test("extractCurrentTask returns different task after parent marked done (checkbox)", () => {
+    const planBefore = "- [ ] Big task\n- [ ] Sub A\n- [ ] Sub B\n";
+    const first = extractCurrentTask(planBefore);
+    expect(first).toEqual({ task: "Big task", checkbox: true });
+    // simulate marking parent done
+    const planAfter = planBefore.replace("- [ ] Big task", "- [x] Big task");
+    const second = extractCurrentTask(planAfter);
+    expect(second).toEqual({ task: "Sub A", checkbox: true });
+  });
+
+  test("extractCurrentTask returns different task after parent marked done (section)", () => {
+    const planBefore = "## 1. Big task\ndetails\n\n## 2. Other task\nmore";
+    const first = extractCurrentTask(planBefore);
+    expect(first!.task).toContain("## 1. Big task");
+    // simulate marking parent done
+    const planAfter = planBefore.replace("## 1. Big task", "## ~~1. Big task~~");
+    const second = extractCurrentTask(planAfter);
+    expect(second!.task).toContain("## 2. Other task");
+  });
+});
+
 // ── parseSubtasks tests ──
 
 describe("parseSubtasks", () => {
