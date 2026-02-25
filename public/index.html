@@ -3098,6 +3098,7 @@
             document.getElementById("quick-actions").classList.remove("visible");
             quickActionsVisible = false;
             lastQuickActionsKey = "";
+            currentQuickButtons = [];
             document.getElementById("kb-accessory").classList.remove("visible");
           }
           chip.style.display = "none";
@@ -4075,6 +4076,7 @@
         document.getElementById("quick-actions").classList.remove("visible");
         quickActionsVisible = false;
         lastQuickActionsKey = "";
+        currentQuickButtons = [];
         document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("cmd-palette").style.display = "none";
@@ -4823,16 +4825,16 @@
       // Button presets: {label, action, cls}
       // cls maps to .quick-chip.yes/.no/.enter/.interrupt CSS classes
       const QB = {
-        yes:    { label: "Yes",    action: "yes",    cls: "yes" },
-        no:     { label: "No",     action: "no",     cls: "no" },
-        enter:  { label: "Enter",  action: "enter",  cls: "enter" },
-        esc:    { label: "Esc",    action: "esc",    cls: "no" },
-        ctrlc:  { label: "^C",     action: "ctrl-c", cls: "interrupt" },
-        accept: { label: "Accept", action: "enter",  cls: "yes" },
-        stab:   { label: "\u21E7Tab",  action: "s-tab",  cls: "enter" },
-        tab:    { label: "Tab",    action: "tab",    cls: "enter" },
+        yes:    { label: "Yes",    cssClass: "yes",       send: { type: "text", value: "yes" } },
+        no:     { label: "No",     cssClass: "no",        send: { type: "text", value: "no" } },
+        enter:  { label: "Enter",  cssClass: "enter",     send: { type: "key",  value: "Enter" } },
+        esc:    { label: "Esc",    cssClass: "no",        send: { type: "key",  value: "Escape" } },
+        ctrlc:  { label: "^C",     cssClass: "interrupt", send: { type: "key",  value: "C-c" } },
+        accept: { label: "Accept", cssClass: "yes",       send: { type: "key",  value: "Enter" } },
+        stab:   { label: "\u21E7Tab",  cssClass: "enter", send: { type: "key",  value: "BTab" } },
+        tab:    { label: "Tab",    cssClass: "enter",     send: { type: "key",  value: "Tab" } },
       };
-      function numBtn(n) { return { label: String(n), action: "num-" + n, cls: "enter" }; }
+      function numBtn(n) { return { label: String(n), cssClass: "enter", send: { type: "text", value: String(n) } }; }
 
       // Prompt classifier: returns array of button configs or null
       const PROMPT_CLASSES = [
@@ -4897,10 +4899,12 @@
 
       let quickActionsVisible = false;
       let lastQuickActionsKey = "";
+      let currentQuickButtons = [];
 
       function renderQuickActions(el, buttons) {
+        currentQuickButtons = buttons;
         el.innerHTML = buttons
-          .map(b => `<button class="quick-chip ${b.cls}" onclick="quickAction('${b.action}')">${esc(b.label)}</button>`)
+          .map((b, i) => `<button class="quick-chip ${b.cssClass}" onclick="quickAction(${i})">${esc(b.label)}</button>`)
           .join("");
       }
 
@@ -4908,7 +4912,7 @@
         const el = document.getElementById("quick-actions");
         if (!el) return;
         const buttons = classifyPrompt(pane);
-        const key = buttons ? buttons.map(b => b.action).join(",") : "";
+        const key = buttons ? buttons.map(b => b.label + b.send.value).join(",") : "";
         if (key !== lastQuickActionsKey) {
           lastQuickActionsKey = key;
           const shouldShow = !!buttons;
@@ -5023,53 +5027,19 @@
         haptic([10]);
       }
 
-      async function quickAction(action) {
+      async function quickAction(idx) {
         if (!currentSession) return;
-        // Haptic feedback
-        if (localStorage.getItem("wp_haptics") !== "off") {
-          navigator.vibrate?.([30]);
-        }
-        // Handle numbered option actions (num-1, num-2, ...)
-        const numMatch = action.match(/^num-(\d+)$/);
-        if (numMatch) {
+        const btn = currentQuickButtons[idx];
+        if (!btn) return;
+        haptic([30]);
+        if (btn.send.type === "key") {
+          await sendKey(btn.send.value);
+        } else {
           await api("/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: currentSession, text: numMatch[1] }),
+            body: JSON.stringify({ session: currentSession, text: btn.send.value }),
           }, currentMachine);
-          enterFastPoll();
-          return;
-        }
-        switch (action) {
-          case "yes":
-            await api("/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ session: currentSession, text: "yes" }),
-            }, currentMachine);
-            break;
-          case "no":
-            await api("/send", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ session: currentSession, text: "no" }),
-            }, currentMachine);
-            break;
-          case "enter":
-            await sendKey("Enter");
-            return;
-          case "ctrl-c":
-            await sendKey("C-c");
-            return;
-          case "esc":
-            await sendKey("Escape");
-            return;
-          case "s-tab":
-            await sendKey("BTab");
-            return;
-          case "tab":
-            await sendKey("Tab");
-            return;
         }
         enterFastPoll();
       }
