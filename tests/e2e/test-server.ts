@@ -18,19 +18,25 @@ import {
   __setTmuxSendKey,
   __setTmuxResize,
   __setCapturePaneAnsi,
+  __setCapturePane,
 } from "../../serve.ts";
 
 // ── Mock tmux ──
 
+const now = Math.floor(Date.now() / 1000);
 const fakeSessions = [
-  { name: "test-project", activity: Math.floor(Date.now() / 1000) },
-  { name: "another-project", activity: Math.floor(Date.now() / 1000) - 30 },
+  { name: "test-project", activity: now },
+  { name: "another-project", activity: now - 30 },
+  { name: "prompt-project", activity: now },
+  { name: "error-project", activity: now - 5 },
 ];
 
 // Stateful pane content — updates when tmuxSend is called
 const paneContent: Record<string, string> = {
   "test-project": "$ mock-terminal-ready\n",
   "another-project": "$ idle\n",
+  "prompt-project": "Building project...\nDo you want to continue? (y/n)\n",
+  "error-project": "$ bun test\nError: 3 tests failed\n",
 };
 
 __setTmuxList(async () => fakeSessions.map((s) => s.name));
@@ -42,6 +48,7 @@ __setTmuxSend(async (session, text) => {
 __setTmuxSendKey(async () => {});
 __setTmuxResize(async () => {});
 __setCapturePaneAnsi(async (session) => paneContent[session] || "");
+__setCapturePane(async (session) => paneContent[session] || "");
 
 // Suppress expected tmux noise
 const origError = console.error;

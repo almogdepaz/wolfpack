@@ -301,7 +301,7 @@ async function tmuxResize(session: string, cols: number, rows: number): Promise<
   return _tmuxResizeFn(session, cols, rows);
 }
 
-async function capturePane(session: string): Promise<string> {
+let _capturePane: (session: string) => Promise<string> = async (session) => {
   try {
     const { stdout } = await exec(TMUX, [
       "capture-pane", "-t", session, "-p", "-J", "-S", "-2000",
@@ -310,6 +310,15 @@ async function capturePane(session: string): Promise<string> {
   } catch {
     return "";
   }
+};
+
+async function capturePane(session: string): Promise<string> {
+  return _capturePane(session);
+}
+
+/** Test hook: override capturePane (used by /api/sessions triage classification) */
+export function __setCapturePane(fn: (session: string) => Promise<string>): void {
+  _capturePane = fn;
 }
 
 async function tmuxNewSession(

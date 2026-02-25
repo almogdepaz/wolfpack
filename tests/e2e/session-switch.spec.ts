@@ -53,11 +53,13 @@ test("drawer lists all available sessions", async ({ page }, testInfo) => {
 
   await page.locator('.drawer-tab[data-tab="all"]').click();
 
-  // Both mock sessions should appear
+  // All mock sessions should appear
   const items = page.locator(".drawer-item");
-  await expect(items).toHaveCount(2);
+  await expect(items).toHaveCount(4);
   await expect(items.filter({ hasText: "test-project" })).toHaveCount(1);
   await expect(items.filter({ hasText: "another-project" })).toHaveCount(1);
+  await expect(items.filter({ hasText: "prompt-project" })).toHaveCount(1);
+  await expect(items.filter({ hasText: "error-project" })).toHaveCount(1);
 });
 
 test("current session is highlighted in drawer", async ({ page }, testInfo) => {
