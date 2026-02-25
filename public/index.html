@@ -165,6 +165,7 @@
           transition: opacity 0.15s ease;
         }
         #kb-accessory { display: none !important; }
+        #kb-toggle { display: none !important; }
       }
 
       .list {
@@ -576,11 +577,12 @@
 
       #kb-accessory {
         display: none;
-        gap: 4px;
+        gap: 6px;
         padding: 5px 8px 3px;
         background: #111;
         border-top: 1px solid #1a1a1a;
         flex-shrink: 0;
+        justify-content: flex-start;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
         scrollbar-width: none;
@@ -628,6 +630,11 @@
       .kb-key.kb-danger {
         color: #cc3333;
         border-color: rgba(204, 51, 51, 0.3);
+        min-width: 58px;
+        min-height: 38px;
+        font-size: 15px;
+        font-weight: 700;
+        padding: 8px 16px;
       }
       .kb-key.kb-danger:active {
         background: #cc3333;
@@ -679,6 +686,24 @@
       #input-bar textarea:focus {
         border-color: #00ff41;
         box-shadow: 0 0 4px #00ff4140;
+      }
+      #kb-toggle {
+        display: none;
+        background: transparent;
+        border: 1px solid #333;
+        border-radius: 8px;
+        color: #666;
+        font-size: 18px;
+        padding: 4px 8px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        align-self: center;
+        flex-shrink: 0;
+        transition: color 0.15s ease, border-color 0.15s ease;
+      }
+      #kb-toggle.active {
+        color: #00ff41;
+        border-color: rgba(0, 255, 65, 0.3);
       }
       #msg-preview {
         display: none;
@@ -1856,9 +1881,14 @@
           padding: 6px 12px !important;
           border-radius: 8px !important;
         }
-        .kb-key.kb-insert {
-          font-size: 15px !important;
+        .kb-key.kb-danger {
+          min-width: 72px !important;
+          min-height: 42px !important;
+          font-size: 16px !important;
+          padding: 10px 20px !important;
         }
+
+        #kb-toggle { display: flex !important; }
 
         /* ── Input bar — thumb-friendly ── */
         #input-bar {
@@ -2107,6 +2137,7 @@
     <script src="/xterm-addon-fit.min.js"></script>
     <script src="/xterm-addon-search.min.js"></script>
     <script src="/xterm-addon-unicode11.min.js"></script>
+    <script src="/xterm-addon-canvas.min.js"></script>
   </head>
   <body>
     <header>
@@ -2325,9 +2356,12 @@
       <div id="kb-accessory">
         <button class="kb-key kb-special" data-key="Enter">Enter</button>
         <button class="kb-key" data-key="Escape">Esc</button>
+        <button class="kb-key" data-key="Up">&#9650;</button>
+        <button class="kb-key" data-key="Down">&#9660;</button>
         <button class="kb-key kb-danger" data-key="C-c">^C</button>
       </div>
       <div id="input-bar">
+        <button id="kb-toggle" onclick="toggleKbAccessory()" title="Toggle keys">&#9000;</button>
         <textarea
           id="msg-input"
           rows="1"
@@ -3899,6 +3933,7 @@
         term.unicode.activeVersion = '11';
 
         term.open(container);
+        try { term.loadAddon(new CanvasAddon.CanvasAddon()); } catch(e) { console.warn("canvas addon failed:", e); }
         fitAddon.fit();
         if (cached) term.write(cached);
         term.focus();
@@ -4641,6 +4676,7 @@
         if (shouldShow !== quickActionsVisible) {
           quickActionsVisible = shouldShow;
           el.classList.toggle("visible", shouldShow);
+          syncKbAccessory();
         }
         updateSnippetSuggestions(pane);
       }
@@ -5058,26 +5094,39 @@
       })();
 
       // ── Keyboard accessory row (UX-15) ──
-      // Shows above mobile keyboard when textarea is focused.
-      // Special keys → sendKey(), insert keys → insert at cursor in textarea.
+      // Toggle-based: user taps ⌨ button in input bar to show/hide.
+      // Persists collapsed state in localStorage.
+      let kbAccessoryOpen = localStorage.getItem("wp_kb_open") === "1";
+
+      function toggleKbAccessory() {
+        const acc = document.getElementById("kb-accessory");
+        const tog = document.getElementById("kb-toggle");
+        if (!acc) return;
+        kbAccessoryOpen = !kbAccessoryOpen;
+        localStorage.setItem("wp_kb_open", kbAccessoryOpen ? "1" : "0");
+        acc.classList.toggle("visible", kbAccessoryOpen && !quickActionsVisible);
+        if (tog) tog.classList.toggle("active", kbAccessoryOpen);
+        haptic([10]);
+      }
+
+      // Sync kb-accessory visibility when quick-actions change
+      function syncKbAccessory() {
+        const acc = document.getElementById("kb-accessory");
+        if (!acc) return;
+        acc.classList.toggle("visible", kbAccessoryOpen && !quickActionsVisible);
+      }
+
       (function setupKbAccessory() {
         const acc = document.getElementById("kb-accessory");
         const ta = document.getElementById("msg-input");
+        const tog = document.getElementById("kb-toggle");
         if (!acc || !ta) return;
 
-        // Show/hide on focus/blur (mobile only)
-        ta.addEventListener("focus", () => {
-          if (isDesktop() || useDesktopTerminal) return;
+        // Restore persisted state
+        if (kbAccessoryOpen) {
           acc.classList.add("visible");
-        });
-        ta.addEventListener("blur", () => {
-          // Small delay so taps on accessory keys register before hiding
-          setTimeout(() => {
-            if (document.activeElement !== ta) {
-              acc.classList.remove("visible");
-            }
-          }, 150);
-        });
+          if (tog) tog.classList.add("active");
+        }
 
         // Insert text at cursor position in textarea
         function insertAtCursor(char) {
