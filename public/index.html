@@ -2119,6 +2119,35 @@
           </label>
         </div>
         <div class="settings-section">
+          <div class="settings-label">Notifications</div>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-notifyPrompts" checked onchange="toggleSetting('notifyPrompts', this.checked)"> Prompt alerts (y/n, approve, etc.)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-notifyErrors" checked onchange="toggleSetting('notifyErrors', this.checked)"> Error alerts (failed, error, etc.)
+          </label>
+          <div style="padding:4px 0;font-size:12px;color:#888">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>Cooldown</span><span id="cooldown-val" style="color:#00ff41;font-size:11px">30s</span>
+            </div>
+            <input type="range" id="setting-notifyCooldown" min="10" max="120" step="10" value="30"
+              style="width:100%;accent-color:#00ff41;margin-top:4px"
+              oninput="toggleSetting('notifyCooldown', +this.value); document.getElementById('cooldown-val').textContent=this.value+'s'">
+          </div>
+          <div style="padding:4px 0;font-size:12px;color:#888">
+            <div>Quiet hours</div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+              <input type="time" id="setting-quietStart"
+                style="background:#111;border:1px solid #333;border-radius:4px;padding:4px 6px;color:#00ff41;font-family:inherit;font-size:11px"
+                onchange="toggleSetting('quietStart', this.value)">
+              <span style="color:#555">to</span>
+              <input type="time" id="setting-quietEnd"
+                style="background:#111;border:1px solid #333;border-radius:4px;padding:4px 6px;color:#00ff41;font-family:inherit;font-size:11px"
+                onchange="toggleSetting('quietEnd', this.value)">
+            </div>
+          </div>
+        </div>
+        <div class="settings-section">
           <div class="settings-label">Input</div>
           <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
             <input type="checkbox" id="setting-enterSends" onchange="toggleSetting('enterSends', this.checked)"> Enter sends (off = newline)
@@ -2266,7 +2295,7 @@
 
     <script>
       // ── Settings (persisted to localStorage) ──
-      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false};
+      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:""};
       const wpSettings = Object.assign({}, wpDefaults, JSON.parse(localStorage.getItem("wp-effects") || "{}"));
       function toggleSetting(key, val) {
         wpSettings[key] = val;
@@ -2285,8 +2314,12 @@
         Object.entries(wpSettings).forEach(([k, v]) => {
           applySetting(k, v);
           const el = document.getElementById("setting-" + k);
-          if (el) el.checked = v;
+          if (!el) return;
+          if (el.type === "checkbox") el.checked = v;
+          else el.value = v;
         });
+        const cdLabel = document.getElementById("cooldown-val");
+        if (cdLabel) cdLabel.textContent = wpSettings.notifyCooldown + "s";
       }
       function haptic(pattern) {
         if (wpSettings.haptics && navigator.vibrate) navigator.vibrate(pattern);
@@ -4462,7 +4495,7 @@
         }
       }
 
-      const ATTENTION_PATTERNS = [
+      const PROMPT_PATTERNS = [
         /\? \(y\/n\)/i,
         /\[Y\/n\]/i,
         /\[yes\/no\]/i,
@@ -4471,6 +4504,8 @@
         /permission/i,
         /approve/i,
         /waiting for/i,
+      ];
+      const ERROR_PATTERNS = [
         /Error:/i,
         /error\[/i,
         /failed/i,
@@ -4479,6 +4514,21 @@
 
       // Per-session notification tracking: { "machineUrl|sessionName": "lastNotifiedText" }
       const notifiedSessions = {};
+      // Cooldown timestamps: { "machineUrl|sessionName|type": timestamp }
+      const notifyCooldowns = {};
+
+      function isQuietHours() {
+        const { quietStart, quietEnd } = wpSettings;
+        if (!quietStart || !quietEnd) return false;
+        const now = new Date();
+        const mins = now.getHours() * 60 + now.getMinutes();
+        const [sh, sm] = quietStart.split(":").map(Number);
+        const [eh, em] = quietEnd.split(":").map(Number);
+        const start = sh * 60 + sm;
+        const end = eh * 60 + em;
+        if (start <= end) return mins >= start && mins < end;
+        return mins >= start || mins < end; // wraps midnight
+      }
 
       function checkForAttention(paneText) {
         if (!notificationsEnabled || !currentSession) return;
@@ -4489,30 +4539,51 @@
       function checkSessionAttention(sessionName, machineUrl, paneText) {
         if (!notificationsEnabled) return;
         if (document.visibilityState === "visible") return;
+        if (!wpSettings.notifyPrompts && !wpSettings.notifyErrors) return;
+        if (isQuietHours()) return;
 
         const lastLines = paneText.trimEnd().split("\n").slice(-5).join("\n");
         const key = (machineUrl || "") + "|" + sessionName;
         if (notifiedSessions[key] === lastLines) return;
 
-        for (const pat of ATTENTION_PATTERNS) {
-          if (pat.test(lastLines)) {
-            notifiedSessions[key] = lastLines;
-            const machineName = machineUrl
-              ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
-              : (selfName || "local");
-            const title = getMachines().length > 0
-              ? `${machineName}: ${sessionName}`
-              : `Wolfpack: ${sessionName}`;
-            new Notification(title, {
-              body: lastLines.slice(-120),
-              tag: "wolfpack-" + key,
-            });
-            navigator.vibrate?.([200, 100, 200]);
-            return;
+        // Match against enabled pattern categories
+        let matchedType = null;
+        if (wpSettings.notifyPrompts) {
+          for (const pat of PROMPT_PATTERNS) {
+            if (pat.test(lastLines)) { matchedType = "prompt"; break; }
           }
         }
-        // No pattern matched — clear so we can re-notify if it matches again later
-        delete notifiedSessions[key];
+        if (!matchedType && wpSettings.notifyErrors) {
+          for (const pat of ERROR_PATTERNS) {
+            if (pat.test(lastLines)) { matchedType = "error"; break; }
+          }
+        }
+
+        if (!matchedType) {
+          delete notifiedSessions[key];
+          return;
+        }
+
+        // Cooldown: dedupe window per session + signal type
+        const cooldownKey = key + "|" + matchedType;
+        const now = Date.now();
+        const cooldownMs = (wpSettings.notifyCooldown || 30) * 1000;
+        if (notifyCooldowns[cooldownKey] && (now - notifyCooldowns[cooldownKey]) < cooldownMs) return;
+
+        notifiedSessions[key] = lastLines;
+        notifyCooldowns[cooldownKey] = now;
+
+        const machineName = machineUrl
+          ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
+          : (selfName || "local");
+        const title = getMachines().length > 0
+          ? `${machineName}: ${sessionName}`
+          : `Wolfpack: ${sessionName}`;
+        new Notification(title, {
+          body: lastLines.slice(-120),
+          tag: "wolfpack-" + key,
+        });
+        haptic([200, 100, 200]);
       }
 
       // Background attention check for ALL sessions (runs regardless of current view)
