@@ -242,6 +242,28 @@
         transition: none !important;
         animation: none !important;
       }
+      /* reduced effects — suppress all glows/shadows */
+      body.reduced-effects * {
+        text-shadow: none !important;
+      }
+      body.reduced-effects *:not(header):not(.nav-icon):not(.session-card):not(.session-card *):not(button) {
+        box-shadow: none !important;
+      }
+      body.reduced-effects .scanlines::after { display: none !important; }
+      /* terminal font size presets */
+      body.term-size-small #terminal { font-size: 12px !important; line-height: 1.35 !important; }
+      body.term-size-medium #terminal { font-size: 13px !important; line-height: 1.45 !important; }
+      body.term-size-large #terminal { font-size: 14px !important; line-height: 1.55 !important; }
+      /* terminal wrap toggle */
+      body.term-wrap #terminal { white-space: pre-wrap !important; word-break: break-all !important; }
+      /* alternate font stack */
+      body.term-font-alt #terminal { font-family: "JetBrains Mono", "Fira Code", "Source Code Pro", "Cascadia Code", monospace !important; }
+      /* terminal preset button active state */
+      .term-size-btn.active, .term-font-btn.active {
+        border-color: rgba(0,255,65,0.5) !important;
+        color: #00ff41 !important;
+        background: rgba(0,255,65,0.05) !important;
+      }
       .dot.blue {
         background: #00ff41;
       }
@@ -2049,10 +2071,8 @@
           background: linear-gradient(to right, transparent, rgba(0,255,65,0.08)) !important;
         }
 
-        /* ── Terminal mobile — better readability ── */
+        /* ── Terminal mobile — padding only; font size controlled by term-size-* preset ── */
         #terminal {
-          font-size: 11px !important;
-          line-height: 1.4 !important;
           padding: 6px 10px !important;
         }
 
@@ -2186,6 +2206,30 @@
           </label>
           <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
             <input type="checkbox" id="setting-scanlines" onchange="toggleSetting('scanlines', this.checked)"> Scanlines
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-reducedEffects" onchange="toggleSetting('reducedEffects', this.checked)"> Reduced effects (no glows)
+          </label>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Terminal</div>
+          <div style="padding:4px 0;font-size:12px;color:#888">
+            <div style="margin-bottom:6px">Font size</div>
+            <div style="display:flex;gap:6px">
+              <button class="term-size-btn" data-size="small" onclick="toggleSetting('termFontSize','small')" style="flex:1;padding:8px 0;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;color:#888;font-size:11px;font-family:inherit;cursor:pointer;transition:border-color 0.15s,color 0.15s">Small<br><span style="font-size:10px;opacity:0.6">12px</span></button>
+              <button class="term-size-btn" data-size="medium" onclick="toggleSetting('termFontSize','medium')" style="flex:1;padding:8px 0;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;color:#888;font-size:11px;font-family:inherit;cursor:pointer;transition:border-color 0.15s,color 0.15s">Medium<br><span style="font-size:10px;opacity:0.6">13px</span></button>
+              <button class="term-size-btn" data-size="large" onclick="toggleSetting('termFontSize','large')" style="flex:1;padding:8px 0;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;color:#888;font-size:11px;font-family:inherit;cursor:pointer;transition:border-color 0.15s,color 0.15s">Large<br><span style="font-size:10px;opacity:0.6">14px</span></button>
+            </div>
+          </div>
+          <div style="padding:4px 0;font-size:12px;color:#888">
+            <div style="margin-bottom:6px">Font family</div>
+            <div style="display:flex;gap:6px">
+              <button class="term-font-btn" data-font="default" onclick="toggleSetting('termFont','default')" style="flex:1;padding:8px 0;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;color:#888;font-size:11px;font-family:inherit;cursor:pointer;transition:border-color 0.15s,color 0.15s">System Mono</button>
+              <button class="term-font-btn" data-font="alt" onclick="toggleSetting('termFont','alt')" style="flex:1;padding:8px 0;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:6px;color:#888;font-size:11px;font-family:'JetBrains Mono','Fira Code','Source Code Pro',monospace;cursor:pointer;transition:border-color 0.15s,color 0.15s">Alt Mono</button>
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
+            <input type="checkbox" id="setting-termWrap" onchange="toggleSetting('termWrap', this.checked)"> Wrap long lines
           </label>
         </div>
         <div class="settings-section">
@@ -2366,7 +2410,7 @@
 
     <script>
       // ── Settings (persisted to localStorage) ──
-      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:""};
+      const wpDefaults = {animations:true, haptics:true, scanlines:false, enterSends: window.innerWidth > 768, holdToSend:false, notifyPrompts:true, notifyErrors:true, notifyCooldown:30, quietStart:"", quietEnd:"", termFontSize:"medium", termWrap:false, termFont:"default", reducedEffects:false};
       const wpSettings = Object.assign({}, wpDefaults, JSON.parse(localStorage.getItem("wp-effects") || "{}"));
       function toggleSetting(key, val) {
         wpSettings[key] = val;
@@ -2376,10 +2420,38 @@
       function applySetting(key, val) {
         if (key === "animations") document.body.classList.toggle("no-animations", !val);
         if (key === "scanlines") document.body.classList.toggle("scanlines", val);
+        if (key === "reducedEffects") document.body.classList.toggle("reduced-effects", val);
         if (key === "enterSends") {
           const el = document.getElementById("msg-input");
           if (el) el.placeholder = val ? "$ " : "$ (⇧Enter to send)";
         }
+        if (key === "termFontSize") {
+          document.body.classList.remove("term-size-small", "term-size-medium", "term-size-large");
+          document.body.classList.add("term-size-" + val);
+          document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", b.dataset.size === val));
+          applyTermToXterm();
+        }
+        if (key === "termWrap") {
+          document.body.classList.toggle("term-wrap", val);
+        }
+        if (key === "termFont") {
+          document.body.classList.toggle("term-font-alt", val === "alt");
+          document.querySelectorAll(".term-font-btn").forEach(b => b.classList.toggle("active", b.dataset.font === val));
+          applyTermToXterm();
+        }
+      }
+      const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
+      function applyTermToXterm() {
+        if (!desktopTerm) return;
+        const p = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
+        desktopTerm.options.fontSize = p.fontSize;
+        desktopTerm.options.lineHeight = p.lineHeight;
+        if (wpSettings.termFont === "alt") {
+          desktopTerm.options.fontFamily = '"JetBrains Mono", "Fira Code", "Source Code Pro", "Cascadia Code", monospace';
+        } else {
+          desktopTerm.options.fontFamily = '"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono", monospace';
+        }
+        if (desktopFitAddon) desktopFitAddon.fit();
       }
       function initSettings() {
         Object.entries(wpSettings).forEach(([k, v]) => {
@@ -3444,8 +3516,9 @@
         if (!currentSession) return;
         const term = document.getElementById("terminal");
         const probe = document.createElement("span");
+        const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
         probe.style.cssText =
-          'position:absolute;visibility:hidden;white-space:pre;font-size:12px;line-height:1.4;font-family:inherit';
+          'position:absolute;visibility:hidden;white-space:pre;font-size:' + tp.fontSize + 'px;line-height:' + tp.lineHeight + ';font-family:inherit';
         probe.textContent = "X";
         document.body.appendChild(probe);
         const charW = probe.offsetWidth;
@@ -3712,10 +3785,15 @@
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
 
+        const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
+        const termFontFamily = wpSettings.termFont === "alt"
+          ? '"JetBrains Mono", "Fira Code", "Source Code Pro", "Cascadia Code", monospace'
+          : '"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono", monospace';
         const term = new Terminal({
           cursorBlink: true,
-          fontSize: 13,
-          fontFamily: '"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono", monospace',
+          fontSize: tp.fontSize,
+          lineHeight: tp.lineHeight,
+          fontFamily: termFontFamily,
           theme: {
             background: "#0a0a0a",
             foreground: "#e0e0e0",
