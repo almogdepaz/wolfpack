@@ -1600,7 +1600,7 @@ function handlePtyWs(ws: WebSocket, session: string): void {
     await exec(TMUX, ["new-session", "-d", "-t", session, "-s", ptySession], { timeout: 3000 }).catch(() => {});
     await exec(TMUX, ["set-option", "-t", ptySession, "status", "off"], { timeout: 2000 }).catch(() => {});
     await exec(TMUX, ["set-option", "-t", ptySession, "mouse", "on"], { timeout: 2000 }).catch(() => {});
-    await exec(TMUX, ["set-option", "-t", ptySession, "window-size", "largest"], { timeout: 2000 }).catch(() => {});
+    await exec(TMUX, ["set-option", "-t", ptySession, "window-size", "latest"], { timeout: 2000 }).catch(() => {});
 
     if (!entry.alive) return;
 
