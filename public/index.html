@@ -2407,12 +2407,7 @@
       <div id="terminal"></div>
       <button id="jump-to-live" onclick="jumpToLive()">&#9660; Live</button>
       <div id="desktop-terminal-container"></div>
-      <div id="quick-actions">
-        <button class="quick-chip yes" onclick="quickAction('yes')">Yes</button>
-        <button class="quick-chip no" onclick="quickAction('no')">No</button>
-        <button class="quick-chip enter" onclick="quickAction('enter')">Enter</button>
-        <button class="quick-chip interrupt" onclick="quickAction('ctrl-c')">Ctrl+C</button>
-      </div>
+      <div id="quick-actions"></div>
       <div id="snippet-suggestions"></div>
       <div id="cmd-palette"></div>
       <div id="kb-accessory">
@@ -3102,6 +3097,7 @@
           if (name !== "terminal") {
             document.getElementById("quick-actions").classList.remove("visible");
             quickActionsVisible = false;
+            lastQuickActionsKey = "";
             document.getElementById("kb-accessory").classList.remove("visible");
           }
           chip.style.display = "none";
@@ -3471,6 +3467,18 @@
         } catch {
           planSel.innerHTML = '<option value="">failed to load plans</option>';
         }
+        planSel.onchange = () => syncIterationsFromPlan(project, planSel.value);
+        syncIterationsFromPlan(project, planSel.value);
+      }
+
+      async function syncIterationsFromPlan(project, planFile) {
+        if (!project || !planFile) return;
+        try {
+          const tc = await api("/ralph/task-count?project=" + encodeURIComponent(project) + "&plan=" + encodeURIComponent(planFile), undefined, getStartMachine());
+          if (tc.total > 0) {
+            document.getElementById("ralph-iterations-input").value = tc.total - tc.done;
+          }
+        } catch {}
       }
 
       function toggleBranchFields() {
@@ -4066,6 +4074,7 @@
         document.getElementById("terminal").style.display = "none";
         document.getElementById("quick-actions").classList.remove("visible");
         quickActionsVisible = false;
+        lastQuickActionsKey = "";
         document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("cmd-palette").style.display = "none";
@@ -4811,44 +4820,104 @@
 
       // Patterns that indicate an interactive prompt expecting user input.
       // Intentionally narrower than ATTENTION_PATTERNS — excludes error/failure lines.
-      const PROMPT_PATTERNS = [
-        /\? ?\(y\/n\)/i,
-        /\[Y\/n\]/i,
-        /\[y\/N\]/i,
-        /\[yes\/no\]/i,
-        /\(yes\/no\)/i,
-        /Do you want to /i,
-        /Would you like to /i,
-        /Press Enter/i,
-        /press any key/i,
-        /Continue\?/i,
-        /Proceed\?/i,
-        /\bconfirm\b.*\?/i,
-        /\bapprove\b/i,
-        /\bpermission\b/i,
-        /waiting for (?:input|response|approval|confirmation)/i,
-        /\bAccept\b.*\?/,
-        /\(Y\)es.*\(N\)o/i,
-        /\[Enter\]/i,
+      // Button presets: {label, action, cls}
+      // cls maps to .quick-chip.yes/.no/.enter/.interrupt CSS classes
+      const QB = {
+        yes:    { label: "Yes",    action: "yes",    cls: "yes" },
+        no:     { label: "No",     action: "no",     cls: "no" },
+        enter:  { label: "Enter",  action: "enter",  cls: "enter" },
+        esc:    { label: "Esc",    action: "esc",    cls: "no" },
+        ctrlc:  { label: "^C",     action: "ctrl-c", cls: "interrupt" },
+        accept: { label: "Accept", action: "enter",  cls: "yes" },
+        stab:   { label: "\u21E7Tab",  action: "s-tab",  cls: "enter" },
+        tab:    { label: "Tab",    action: "tab",    cls: "enter" },
+      };
+      function numBtn(n) { return { label: String(n), action: "num-" + n, cls: "enter" }; }
+
+      // Prompt classifier: returns array of button configs or null
+      const PROMPT_CLASSES = [
+        { // Claude Code edit review
+          test: /accept edits|shift\+tab to cycle/i,
+          buttons: [QB.accept, QB.stab, QB.esc, QB.ctrlc],
+        },
+        { // y/n confirmation
+          test: /\? ?\(y\/n\)|\[Y\/n\]|\[y\/N\]|\[yes\/no\]|\(yes\/no\)|\(Y\)es.*\(N\)o/i,
+          buttons: [QB.yes, QB.no, QB.ctrlc],
+        },
+        { // Do you want / Continue / Proceed / confirm
+          test: /Do you want|Would you like|Continue\?|Proceed\?|\bconfirm\b.*\?/i,
+          buttons: [QB.yes, QB.no, QB.ctrlc],
+        },
+        { // Press Enter / any key
+          test: /Press Enter|press any key|\[Enter\]/i,
+          buttons: [QB.enter, QB.ctrlc],
+        },
+        { // Approve / permission / waiting
+          test: /\bapprove\b|\bpermission\b|waiting for (?:input|response|approval|confirmation)/i,
+          buttons: [QB.yes, QB.no, QB.ctrlc],
+        },
+        { // Accept prompt (generic)
+          test: /\bAccept\b.*\?/,
+          buttons: [QB.yes, QB.no, QB.ctrlc],
+        },
       ];
 
-      let quickActionsVisible = false;
+      // Detect numbered options like "1)" "2)" etc in last lines
+      const NUMBERED_OPT_RE = /^\s*(\d+)\)/m;
 
-      function detectPrompt(text) {
-        if (!text) return false;
-        const lines = text.trimEnd().split("\n").slice(-5);
+      function classifyPrompt(text) {
+        if (!text) return null;
+        const lines = text.trimEnd().split("\n").slice(-8);
         const tail = lines.join("\n");
-        return PROMPT_PATTERNS.some(p => p.test(tail));
+
+        // Check typed prompt classes first
+        for (const cls of PROMPT_CLASSES) {
+          if (cls.test.test(tail)) return cls.buttons;
+        }
+
+        // Numbered options detection
+        const nums = [];
+        const seen = new Set();
+        for (const line of lines) {
+          const m = line.match(NUMBERED_OPT_RE);
+          if (m && !seen.has(m[1])) {
+            seen.add(m[1]);
+            nums.push(parseInt(m[1], 10));
+          }
+        }
+        if (nums.length >= 2) {
+          nums.sort((a, b) => a - b);
+          const btns = nums.slice(0, 5).map(numBtn);
+          btns.push(QB.ctrlc);
+          return btns;
+        }
+
+        return null;
+      }
+
+      let quickActionsVisible = false;
+      let lastQuickActionsKey = "";
+
+      function renderQuickActions(el, buttons) {
+        el.innerHTML = buttons
+          .map(b => `<button class="quick-chip ${b.cls}" onclick="quickAction('${b.action}')">${esc(b.label)}</button>`)
+          .join("");
       }
 
       function updateQuickActions(pane) {
         const el = document.getElementById("quick-actions");
         if (!el) return;
-        const shouldShow = detectPrompt(pane);
-        if (shouldShow !== quickActionsVisible) {
-          quickActionsVisible = shouldShow;
-          el.classList.toggle("visible", shouldShow);
-          syncKbAccessory();
+        const buttons = classifyPrompt(pane);
+        const key = buttons ? buttons.map(b => b.action).join(",") : "";
+        if (key !== lastQuickActionsKey) {
+          lastQuickActionsKey = key;
+          const shouldShow = !!buttons;
+          if (shouldShow) renderQuickActions(el, buttons);
+          if (shouldShow !== quickActionsVisible) {
+            quickActionsVisible = shouldShow;
+            el.classList.toggle("visible", shouldShow);
+            syncKbAccessory();
+          }
         }
         updateSnippetSuggestions(pane);
       }
@@ -4960,6 +5029,17 @@
         if (localStorage.getItem("wp_haptics") !== "off") {
           navigator.vibrate?.([30]);
         }
+        // Handle numbered option actions (num-1, num-2, ...)
+        const numMatch = action.match(/^num-(\d+)$/);
+        if (numMatch) {
+          await api("/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session: currentSession, text: numMatch[1] }),
+          }, currentMachine);
+          enterFastPoll();
+          return;
+        }
         switch (action) {
           case "yes":
             await api("/send", {
@@ -4977,9 +5057,18 @@
             break;
           case "enter":
             await sendKey("Enter");
-            return; // sendKey handles enterFastPoll
+            return;
           case "ctrl-c":
             await sendKey("C-c");
+            return;
+          case "esc":
+            await sendKey("Escape");
+            return;
+          case "s-tab":
+            await sendKey("BTab");
+            return;
+          case "tab":
+            await sendKey("Tab");
             return;
         }
         enterFastPoll();
