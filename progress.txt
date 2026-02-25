@@ -1,0 +1,4 @@
+# Progress Log
+
+- 2026-02-25: Completed P0 UX-01 (mobile terminal WS stream). Replaced mobile fixed-interval /api/poll runtime path with WS streaming + reconnect states (live/reconnecting/offline/session-ended), added 2-minute retry budget with Retry now action, and added session-ended WS close handling/server alias coverage + integration tests.
+- 2026-02-25: Implemented JWT auth middleware for protected HTTP `/api/*` routes and WebSocket upgrades (`/ws/*`) with HS256 validation, claim checks (`exp`/`nbf`/`iat` plus optional issuer/audience via env), and Authorization passthrough for Ralph peer aggregation; added integration coverage in `tests/integration/auth-middleware.test.ts` and verified existing WS/Ralph integration suites still pass.

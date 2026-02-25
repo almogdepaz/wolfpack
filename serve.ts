@@ -38,6 +38,7 @@ import {
   clampCols,
   clampRows,
 } from "./validation.js";
+import { validateRequestJwt } from "./auth.js";
 import pkg from "./package.json";
 
 const exec = promisify(execFile);
@@ -501,6 +502,20 @@ function json(res: ServerResponse, data: unknown, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
+const PUBLIC_API_PATHS = new Set(["/api/info"]);
+
+function shouldAuthenticateApiPath(pathname: string): boolean {
+  return pathname.startsWith("/api/") && !PUBLIC_API_PATHS.has(pathname);
+}
+
+function writeUnauthorized(res: ServerResponse): void {
+  res.writeHead(401, {
+    "Content-Type": "application/json",
+    "WWW-Authenticate": 'Bearer realm="wolfpack"',
+  });
+  res.end(JSON.stringify({ error: "unauthorized" }));
+}
+
 const MAX_BODY = 64 * 1024; // 64KB
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -847,7 +862,14 @@ const routes: Record<
         try {
           const ctrl = new AbortController();
           const timer = setTimeout(() => ctrl.abort(), 3000);
-          const r = await fetch(peer.url + "/api/ralph", { signal: ctrl.signal });
+          const authHeader = Array.isArray(req.headers.authorization)
+            ? req.headers.authorization[0]
+            : req.headers.authorization;
+          const headers = authHeader ? { Authorization: authHeader } : undefined;
+          const r = await fetch(peer.url + "/api/ralph", {
+            signal: ctrl.signal,
+            headers,
+          });
           clearTimeout(timer);
           const data = await r.json() as { loops: any[] };
           return (data.loops || []).map((l: any) => ({ ...l, machineName: peer.name, machineUrl: peer.url }));
@@ -1564,7 +1586,7 @@ const server = createServer(async (req, res) => {
     if (isAllowedOrigin(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
       res.setHeader("Vary", "Origin");
     } else {
       res.writeHead(403, { "Content-Type": "application/json" });
@@ -1581,6 +1603,14 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url ?? "/", "http://localhost");
+  if (shouldAuthenticateApiPath(url.pathname)) {
+    const auth = validateRequestJwt(req.headers, url, false);
+    if (!auth.ok) {
+      writeUnauthorized(res);
+      return;
+    }
+  }
+
   const key = `${req.method ?? "GET"} ${url.pathname}`;
   const handler = routes[key];
   if (handler) {
@@ -1611,6 +1641,19 @@ server.on("upgrade", async (req, socket, head) => {
     return;
   }
   const url = new URL(req.url ?? "/", "http://localhost");
+  const isWsRoute =
+    url.pathname === "/ws/terminal" ||
+    url.pathname === "/ws/mobile" ||
+    url.pathname === "/ws/pty";
+  if (isWsRoute) {
+    const auth = validateRequestJwt(req.headers, url, true);
+    if (!auth.ok) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+  }
+
   if (url.pathname === "/ws/terminal" || url.pathname === "/ws/mobile") {
     const session = url.searchParams.get("session");
     if (!session || !(await isAllowedSession(session))) {
