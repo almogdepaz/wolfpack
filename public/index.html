@@ -2095,6 +2095,30 @@
         return window.innerWidth > 768;
       }
 
+      // ── Per-session draft persistence (UX-03) ──
+
+      function draftKey(machine, session) {
+        return "wp-draft|" + (machine || "") + "|" + session;
+      }
+      function saveDraft() {
+        if (!currentSession) return;
+        const val = document.getElementById("msg-input").value;
+        const key = draftKey(currentMachine, currentSession);
+        if (val) localStorage.setItem(key, val);
+        else localStorage.removeItem(key);
+      }
+      function restoreDraft() {
+        if (!currentSession) return;
+        const val = localStorage.getItem(draftKey(currentMachine, currentSession)) || "";
+        const input = document.getElementById("msg-input");
+        input.value = val;
+        autoResizeInput();
+      }
+      function clearDraft() {
+        if (!currentSession) return;
+        localStorage.removeItem(draftKey(currentMachine, currentSession));
+      }
+
       // ── Machine registry ──
 
       function getMachines() {
@@ -2869,6 +2893,7 @@
         currentMachine = machineUrl || "";
         lastRawPane = null;
         useDesktopTerminal = isDesktop();
+        restoreDraft();
         showView("terminal");
         if (useDesktopTerminal) {
           initDesktopTerminal();
@@ -3470,6 +3495,7 @@
         if (!text || !currentSession) return;
         const saved = text;
         input.value = "";
+        clearDraft();
         autoResizeInput();
         document.getElementById("msg-preview").style.display = "none";
 
@@ -3755,6 +3781,7 @@
         currentSession = name;
         currentMachine = machineUrl;
         lastRawPane = null;
+        restoreDraft();
         loadSessionSwitcher();
         // Update machine label in header (showView sets it, but drawer bypasses showView)
         const hml = document.getElementById("header-machine-label");
@@ -4006,6 +4033,7 @@
       msgInput.addEventListener("input", () => {
         autoResizeInput();
         updatePreview();
+        saveDraft();
       });
       // Mobile: Enter adds newline, Shift+Enter submits
       // Desktop: Enter submits, Shift+Enter adds newline
