@@ -103,7 +103,7 @@ Risk:
 
 ---
 
-## 1b. UX-02 Prompt-aware quick action bar
+## ~~1b. UX-02 Prompt-aware quick action bar~~
 
 Goal:
 - Reduce typing friction on phone during agent prompts.

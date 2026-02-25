@@ -368,6 +368,74 @@
         font-size: 16px;
       }
 
+      #quick-actions {
+        display: none;
+        gap: 6px;
+        padding: 6px 10px 2px;
+        background: #111;
+        border-top: 1px solid #1a1a1a;
+        flex-shrink: 0;
+      }
+      #quick-actions.visible {
+        display: flex;
+      }
+      .quick-chip {
+        flex: 1;
+        background: linear-gradient(145deg, #1a1a1a 0%, #151515 100%);
+        border: 1px solid #2a2a2a;
+        border-radius: 8px;
+        padding: 8px 10px;
+        min-height: 38px;
+        color: #e0e0e0;
+        font-size: 13px;
+        font-family: inherit;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform 0.1s ease, box-shadow 0.1s ease, opacity 0.15s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+      .quick-chip:active {
+        transform: scale(0.93);
+        box-shadow: 0 0 12px rgba(0, 255, 65, 0.2);
+      }
+      .quick-chip.yes {
+        border-color: rgba(0, 255, 65, 0.4);
+        color: #00ff41;
+      }
+      .quick-chip.yes:active {
+        background: #00ff41;
+        color: #0a0a0a;
+      }
+      .quick-chip.no {
+        border-color: rgba(255, 170, 0, 0.35);
+        color: #ffaa00;
+      }
+      .quick-chip.no:active {
+        background: #ffaa00;
+        color: #0a0a0a;
+      }
+      .quick-chip.enter {
+        border-color: rgba(0, 255, 65, 0.25);
+        color: #00ff41;
+      }
+      .quick-chip.enter:active {
+        background: #00ff41;
+        color: #0a0a0a;
+      }
+      .quick-chip.interrupt {
+        border-color: rgba(204, 51, 51, 0.4);
+        color: #cc3333;
+      }
+      .quick-chip.interrupt:active {
+        background: #cc3333;
+        color: #0a0a0a;
+      }
+
       #input-bar {
         display: flex;
         gap: 6px;
@@ -1490,6 +1558,17 @@
           font-size: 22px !important;
         }
 
+        /* ── Quick action chips — larger on mobile ── */
+        #quick-actions {
+          gap: 5px !important;
+          padding: 8px 10px 4px !important;
+        }
+        .quick-chip {
+          min-height: 42px !important;
+          font-size: 14px !important;
+          border-radius: 10px !important;
+        }
+
         /* ── Action bar — larger buttons, better thumb reach ── */
         #action-bar {
           gap: 5px !important;
@@ -1876,6 +1955,12 @@
         <button class="action-btn" onclick="sendKey('Down')"><span class="arrow">&#9660;</span></button>
         <button class="action-btn danger" onclick="sendKey('C-c')">Ctrl+C</button>
       </div>
+      <div id="quick-actions">
+        <button class="quick-chip yes" onclick="quickAction('yes')">Yes</button>
+        <button class="quick-chip no" onclick="quickAction('no')">No</button>
+        <button class="quick-chip enter" onclick="quickAction('enter')">Enter</button>
+        <button class="quick-chip interrupt" onclick="quickAction('ctrl-c')">Ctrl+C</button>
+      </div>
       <div id="input-bar">
         <textarea
           id="msg-input"
@@ -2163,6 +2248,11 @@
         if (ralphLogPollTimer) { clearInterval(ralphLogPollTimer); ralphLogPollTimer = null; }
 
         const applyHeader = () => {
+          // Reset quick-actions visibility on view change
+          if (name !== "terminal") {
+            document.getElementById("quick-actions").classList.remove("visible");
+            quickActionsVisible = false;
+          }
           chip.style.display = "none";
           closeDrawer(true);
           title.style.display = "";
@@ -3052,6 +3142,8 @@
         container.innerHTML = "";
         document.getElementById("terminal").style.display = "none";
         document.getElementById("action-bar").style.display = "none";
+        document.getElementById("quick-actions").classList.remove("visible");
+        quickActionsVisible = false;
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
 
@@ -3222,6 +3314,7 @@
           if (wasAtBottom) term.scrollTop = term.scrollHeight;
         }
         if (pane.trim()) checkForAttention(pane);
+        if (changed && !useDesktopTerminal) updateQuickActions(pane);
       }
 
       function mobileTerminalWsUrl() {
@@ -3680,6 +3773,81 @@
           resizePane();
           startPolling();
         }
+      }
+
+      // ── Prompt-aware quick actions (UX-02) ──
+
+      // Patterns that indicate an interactive prompt expecting user input.
+      // Intentionally narrower than ATTENTION_PATTERNS — excludes error/failure lines.
+      const PROMPT_PATTERNS = [
+        /\? ?\(y\/n\)/i,
+        /\[Y\/n\]/i,
+        /\[y\/N\]/i,
+        /\[yes\/no\]/i,
+        /\(yes\/no\)/i,
+        /Do you want to /i,
+        /Would you like to /i,
+        /Press Enter/i,
+        /press any key/i,
+        /Continue\?/i,
+        /Proceed\?/i,
+        /\bconfirm\b.*\?/i,
+        /\bapprove\b/i,
+        /\bpermission\b/i,
+        /waiting for (?:input|response|approval|confirmation)/i,
+        /\bAccept\b.*\?/,
+        /\(Y\)es.*\(N\)o/i,
+        /\[Enter\]/i,
+      ];
+
+      let quickActionsVisible = false;
+
+      function detectPrompt(text) {
+        if (!text) return false;
+        const lines = text.trimEnd().split("\n").slice(-5);
+        const tail = lines.join("\n");
+        return PROMPT_PATTERNS.some(p => p.test(tail));
+      }
+
+      function updateQuickActions(pane) {
+        const el = document.getElementById("quick-actions");
+        if (!el) return;
+        const shouldShow = detectPrompt(pane);
+        if (shouldShow !== quickActionsVisible) {
+          quickActionsVisible = shouldShow;
+          el.classList.toggle("visible", shouldShow);
+        }
+      }
+
+      async function quickAction(action) {
+        if (!currentSession) return;
+        // Haptic feedback
+        if (localStorage.getItem("wp_haptics") !== "off") {
+          navigator.vibrate?.([30]);
+        }
+        switch (action) {
+          case "yes":
+            await api("/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session: currentSession, text: "yes" }),
+            }, currentMachine);
+            break;
+          case "no":
+            await api("/send", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ session: currentSession, text: "no" }),
+            }, currentMachine);
+            break;
+          case "enter":
+            await sendKey("Enter");
+            return; // sendKey handles enterFastPoll
+          case "ctrl-c":
+            await sendKey("C-c");
+            return;
+        }
+        enterFastPoll();
       }
 
       // ── Notifications ──
