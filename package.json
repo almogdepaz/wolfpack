@@ -12,6 +12,8 @@
   ],
   "scripts": {
     "test": "bun test",
+    "test:e2e": "bunx playwright test",
+    "test:e2e:headed": "bunx playwright test --headed",
     "postinstall": "node bin/install.cjs"
   },
   "optionalDependencies": {
