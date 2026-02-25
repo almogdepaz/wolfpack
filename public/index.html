@@ -574,46 +574,6 @@
         color: #999;
       }
 
-      #cmd-palette {
-        display: flex;
-        gap: 5px;
-        padding: 5px 10px 3px;
-        background: #111;
-        border-top: 1px solid #1a1a1a;
-        flex-shrink: 0;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-      }
-      #cmd-palette::-webkit-scrollbar { display: none; }
-      .cmd-chip {
-        flex-shrink: 0;
-        background: linear-gradient(145deg, #1a1a1a 0%, #151515 100%);
-        border: 1px solid rgba(0, 170, 255, 0.3);
-        border-radius: 8px;
-        padding: 6px 12px;
-        min-height: 32px;
-        color: #66ccff;
-        font-size: 11px;
-        font-family: inherit;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        transition: transform 0.1s ease, box-shadow 0.1s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        white-space: nowrap;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      }
-      .cmd-chip:active {
-        transform: scale(0.93);
-        background: #66ccff;
-        color: #0a0a0a;
-        box-shadow: 0 0 12px rgba(0, 170, 255, 0.3);
-      }
-
       #kb-accessory {
         display: none;
         gap: 4px;
@@ -1884,18 +1844,6 @@
           border-radius: 10px !important;
         }
 
-        /* ── Command palette — larger on mobile ── */
-        #cmd-palette {
-          gap: 6px !important;
-          padding: 6px 10px 4px !important;
-        }
-        .cmd-chip {
-          min-height: 36px !important;
-          font-size: 12px !important;
-          padding: 6px 14px !important;
-          border-radius: 10px !important;
-        }
-
         /* ── Keyboard accessory row — larger keys on mobile ── */
         #kb-accessory {
           gap: 5px !important;
@@ -2312,12 +2260,6 @@
           </label>
         </div>
         <div class="settings-section">
-          <div class="settings-label">Quick Commands</div>
-          <div id="quick-cmds-list" style="display:flex;flex-direction:column;gap:4px"></div>
-          <button id="add-quick-cmd-btn" onclick="addQuickCmd()" style="margin-top:8px;background:#1a1a1a;border:1px solid rgba(0,170,255,0.4);border-radius:10px;padding:8px 14px;color:#66ccff;font-size:11px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;transition:transform 0.1s ease;width:100%;box-shadow:0 2px 4px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.04)">+ Add Command</button>
-          <button onclick="resetQuickCmds()" style="margin-top:4px;background:transparent;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:6px 14px;color:#555;font-size:10px;font-family:inherit;text-transform:uppercase;letter-spacing:1px;cursor:pointer;width:100%">Reset to Defaults</button>
-        </div>
-        <div class="settings-section">
           <div class="settings-label">Debug</div>
           <label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px;color:#888">
             <input type="checkbox" id="setting-debugPanel" onchange="toggleSetting('debugPanel', this.checked); toggleDebugPanel()"> Performance metrics
@@ -2380,18 +2322,11 @@
         <button class="quick-chip interrupt" onclick="quickAction('ctrl-c')">Ctrl+C</button>
       </div>
       <div id="snippet-suggestions"></div>
-      <div id="cmd-palette"></div>
       <div id="kb-accessory">
-        <button class="kb-key kb-special" data-key="Tab">Tab</button>
+        <button class="kb-key kb-special" data-key="Enter">Enter</button>
         <button class="kb-key" data-key="Escape">Esc</button>
         <button class="kb-key kb-danger" data-key="C-c">^C</button>
         <div class="kb-sep"></div>
-        <button class="kb-key" data-key="Up">&#9650;</button>
-        <button class="kb-key" data-key="Down">&#9660;</button>
-        <button class="kb-key" data-key="Left">&#9664;</button>
-        <button class="kb-key" data-key="Right">&#9654;</button>
-        <div class="kb-sep"></div>
-        <button class="kb-key kb-insert" data-insert="|">|</button>
         <button class="kb-key kb-insert" data-insert="/">/</button>
         <button class="kb-key kb-insert" data-insert="~">~</button>
         <button class="kb-key kb-insert" data-insert="-">-</button>
@@ -2618,56 +2553,6 @@
         }
       }
 
-      // ── Quick Commands (UX-08) ──
-
-      const QUICK_CMD_DEFAULTS = [
-        { label: "status", cmd: "git status" },
-        { label: "tests", cmd: "bun test" },
-        { label: "build", cmd: "bun run build" },
-        { label: "continue", cmd: "/continue" },
-      ];
-      const QC_STORAGE_KEY = "wp-quick-cmds";
-
-      function loadQuickCmds() {
-        try {
-          const raw = localStorage.getItem(QC_STORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-          }
-        } catch {}
-        return QUICK_CMD_DEFAULTS.map(c => ({...c}));
-      }
-
-      let quickCmds = loadQuickCmds();
-
-      function saveQuickCmds() {
-        localStorage.setItem(QC_STORAGE_KEY, JSON.stringify(quickCmds));
-      }
-
-      function renderCmdPalette() {
-        const el = document.getElementById("cmd-palette");
-        if (!el) return;
-        el.innerHTML = quickCmds.map((c, i) =>
-          `<button class="cmd-chip" onclick="sendQuickCmd(${i})">${esc(c.label)}</button>`
-        ).join("");
-      }
-
-      async function sendQuickCmd(index) {
-        const cmd = quickCmds[index];
-        if (!cmd || !currentSession) return;
-        if (cmd.cmd === "git status") return showGitStatus();
-        haptic([30]);
-        try {
-          await api("/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: currentSession, text: cmd.cmd }),
-          }, currentMachine);
-          enterFastPoll();
-        } catch {}
-      }
-
       async function showGitStatus() {
         if (!currentSession) return;
         haptic([30]);
@@ -2688,70 +2573,6 @@
 
       function dismissGitStatus() {
         document.getElementById("git-status-overlay").classList.remove("visible");
-      }
-
-      function renderQuickCmdSettings() {
-        const list = document.getElementById("quick-cmds-list");
-        if (!list) return;
-        list.innerHTML = quickCmds.map((c, i) => `
-          <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:#0a0a0a;border:1px solid #1e1e1e;border-radius:8px">
-            <span style="color:#66ccff;font-size:12px;font-weight:600;min-width:60px">${esc(c.label)}</span>
-            <span style="flex:1;color:#555;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.cmd)}</span>
-            ${i > 0 ? `<button onclick="moveQuickCmd(${i},-1)" style="background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:2px 4px" title="Move up">&#9650;</button>` : '<span style="width:24px"></span>'}
-            ${i < quickCmds.length - 1 ? `<button onclick="moveQuickCmd(${i},1)" style="background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:2px 4px" title="Move down">&#9660;</button>` : '<span style="width:24px"></span>'}
-            <button onclick="editQuickCmd(${i})" style="background:none;border:none;color:#888;font-size:12px;cursor:pointer;padding:2px 4px" title="Edit">&#9998;</button>
-            <button onclick="deleteQuickCmd(${i})" style="background:none;border:none;color:#cc3333;font-size:14px;cursor:pointer;padding:2px 4px" title="Delete">&#10005;</button>
-          </div>
-        `).join("");
-      }
-
-      function addQuickCmd() {
-        const label = prompt("Label (shown on chip):");
-        if (!label || !label.trim()) return;
-        const cmd = prompt("Command (sent to terminal):");
-        if (!cmd || !cmd.trim()) return;
-        quickCmds.push({ label: label.trim(), cmd: cmd.trim() });
-        saveQuickCmds();
-        renderQuickCmdSettings();
-        renderCmdPalette();
-      }
-
-      function editQuickCmd(index) {
-        const c = quickCmds[index];
-        if (!c) return;
-        const label = prompt("Label:", c.label);
-        if (!label || !label.trim()) return;
-        const cmd = prompt("Command:", c.cmd);
-        if (!cmd || !cmd.trim()) return;
-        quickCmds[index] = { label: label.trim(), cmd: cmd.trim() };
-        saveQuickCmds();
-        renderQuickCmdSettings();
-        renderCmdPalette();
-      }
-
-      function deleteQuickCmd(index) {
-        quickCmds.splice(index, 1);
-        saveQuickCmds();
-        renderQuickCmdSettings();
-        renderCmdPalette();
-      }
-
-      function moveQuickCmd(index, direction) {
-        const target = index + direction;
-        if (target < 0 || target >= quickCmds.length) return;
-        const tmp = quickCmds[index];
-        quickCmds[index] = quickCmds[target];
-        quickCmds[target] = tmp;
-        saveQuickCmds();
-        renderQuickCmdSettings();
-        renderCmdPalette();
-      }
-
-      function resetQuickCmds() {
-        quickCmds = QUICK_CMD_DEFAULTS.map(c => ({...c}));
-        saveQuickCmds();
-        renderQuickCmdSettings();
-        renderCmdPalette();
       }
 
       // ── Session Recents ──
@@ -3120,7 +2941,6 @@
             gear.style.display = "none";
             title.textContent = "settings";
             wolfIcon.style.display = "none";
-            renderQuickCmdSettings();
           } else if (name === "terminal") {
             back.style.display = "block";
             back.onclick = () => {
@@ -4048,7 +3868,6 @@
         quickActionsVisible = false;
         document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("input-bar").style.display = "none";
-        document.getElementById("cmd-palette").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
 
         const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
@@ -4166,7 +3985,6 @@
         container.innerHTML = "";
         document.getElementById("terminal").style.display = "";
         document.getElementById("input-bar").style.display = "";
-        document.getElementById("cmd-palette").style.display = "";
       }
 
       // ── Terminal ──
@@ -5742,8 +5560,6 @@
 
       initSettings();
       cleanStaleSnapshots();
-      renderCmdPalette();
-      renderQuickCmdSettings();
       showView("sessions", true);
       loadSessions();
 
