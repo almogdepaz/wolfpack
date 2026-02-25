@@ -419,9 +419,9 @@ Implementation:
 
 ---
 
-## 4. Cross-Cutting Work
+## ~~4. Cross-Cutting Work~~
 
-## 4a. UX-16 Performance budget and telemetry
+## ~~4a. UX-16 Performance budget and telemetry~~
 
 Goal:
 - Measure if UX changes are actually better.
@@ -558,3 +558,19 @@ Status:
 - [x] Implement UX-13 session timeline markers — track key events (opened, prompt detected, error detected, command sent) with timestamps, store in-memory per session, render compact timeline in terminal header or session drawer detail view
 - [x] Implement UX-14 recovery snapshots — persist minimal per-session terminal tail snapshot to localStorage on each update, on reopen show cached tail immediately while live stream reconnects, clear stale snapshots after configurable TTL
 - [x] Implement UX-15 mobile keyboard accessory row — sticky accessory keys (Tab, Esc, Ctrl+C, arrows, pipe/slash quick inserts) above mobile keyboard, must not hide primary input field, responsive layout for different screen sizes
+
+- [x] Expand WS integration tests: mobile terminal lifecycle (session disappear/reconnect, grace period teardown, multi-viewer PTY cleanup, rapid spawn failure detection)
+- [x] Add integration tests for prompt action dispatch and reconnect state transitions (y/n key dispatch, keyboard accessory input coordination, backoff timing, state machine transitions)
+- [x] Set up Playwright with mobile viewport config and add e2e scripts for critical flows (terminal connect, session switch, reconnect visual feedback, keyboard accessory row)
+
+- [x] Install Playwright and create config with mobile viewport presets (iPhone SE, iPhone 14) and test helpers (server start/stop, mock tmux)
+- [x] Add e2e test: terminal connect flow — navigate to session, verify WS connection, send input, receive output
+- [x] Add e2e test: session switch — open session drawer, switch between sessions, verify terminal updates
+- [x] Add e2e test: reconnect visual feedback — simulate WS disconnect, verify reconnecting UI state, verify recovery
+- [x] Add e2e test: keyboard accessory row — verify sticky row renders, tap keys (Tab, Esc, ^C, arrows), verify input dispatched
+
+- [x] Install Playwright and configure with mobile viewport presets, base URL, and project structure (playwright.config.ts + package.json scripts)
+- [x] Add e2e test for terminal connect flow — navigate to session, verify WebSocket upgrade and terminal output rendering
+- [x] Add e2e test for session switch flow — switch between sessions and verify correct pane content loads
+- [x] Add e2e test for reconnect visual feedback — simulate disconnect, verify reconnecting UI state and recovery
+- [x] Add e2e test for keyboard accessory row — verify sticky key row renders on mobile viewport and sends correct key inputs
