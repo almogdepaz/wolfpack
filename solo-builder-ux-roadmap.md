@@ -231,7 +231,7 @@ Risk:
 
 ---
 
-## 2. P1: Reliability and Flow Improvements
+## ~~2. P1: Reliability and Flow Improvements~~
 
 ## ~~2a. UX-06 Smarter reconnect model~~
 
@@ -254,7 +254,7 @@ Acceptance criteria:
 
 ---
 
-## 2b. UX-07 Input safety for accidental sends
+## ~~2b. UX-07 Input safety for accidental sends~~
 
 Goal:
 - Reduce accidental command submission from mobile keyboard behavior.
@@ -279,7 +279,7 @@ Risk:
 
 ---
 
-## 2c. UX-08 Quick command palette (solo macros)
+## ~~2c. UX-08 Quick command palette (solo macros)~~
 
 Goal:
 - Speed repetitive actions for a single user.
@@ -303,7 +303,7 @@ Acceptance criteria:
 
 ---
 
-## 2d. UX-09 Session pinning and recents
+## ~~2d. UX-09 Session pinning and recents~~
 
 Goal:
 - Faster navigation between primary work sessions.
@@ -322,7 +322,7 @@ Acceptance criteria:
 
 ---
 
-## 2e. UX-10 Notification controls by severity
+## ~~2e. UX-10 Notification controls by severity~~
 
 Goal:
 - Keep attention alerts useful, not noisy.
@@ -551,4 +551,4 @@ Status:
 - [x] Implement UX-07 input safety for accidental sends: configurable Enter behavior (Enter=newline vs Enter=send), sticky per-device setting in localStorage, settings UI toggle, hold-to-send option for large messages
 - [x] Implement UX-08 quick command palette: user-defined quick command chips in terminal view, default set (status/tests/build/continue), add/edit/delete/reorder in settings, one-tap dispatch sends text + Enter
 - [x] Implement UX-09 session pinning and recents: pin/unpin sessions via UI, pinned sessions sorted to top, recents queue with last-opened timestamp, session drawer Pinned/All tabs
-- [ ] Implement UX-10 notification controls by severity: separate toggles for prompts/errors/all-off, cooldown/dedupe window per session+signal, quiet hours by local device time, single global haptic pattern
+- [x] Implement UX-10 notification controls by severity: separate toggles for prompts/errors/all-off, cooldown/dedupe window per session+signal, quiet hours by local device time, single global haptic pattern
