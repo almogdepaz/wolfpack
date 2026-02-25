@@ -403,7 +403,7 @@ Implementation:
 
 ---
 
-## 3e. UX-15 Mobile keyboard accessory row
+## ~~3e. UX-15 Mobile keyboard accessory row~~
 
 Goal:
 - Faster special-key entry on iOS/Android.
@@ -556,5 +556,5 @@ Status:
 - [x] Implement UX-11 inline command snippets from terminal context — lightweight heuristics to suggest next commands based on error patterns (npm ERR → npm ci/npm test, git conflict → git status/git diff, bun errors → bun install, python errors → pip install, permission denied → sudo/chmod), dismissible chip UI, unit tests for snippet classifier
 - [x] Implement UX-12 better terminal rendering controls — font size presets (small 12px/1.35, medium 13px/1.45, large 14px/1.55), line height, wrap behavior toggle, optional alternate monospace font stack, reduced effects mode, settings UI with preset buttons
 - [x] Implement UX-13 session timeline markers — track key events (opened, prompt detected, error detected, command sent) with timestamps, store in-memory per session, render compact timeline in terminal header or session drawer detail view
-- [ ] Implement UX-14 recovery snapshots — persist minimal per-session terminal tail snapshot to localStorage on each update, on reopen show cached tail immediately while live stream reconnects, clear stale snapshots after configurable TTL
-- [ ] Implement UX-15 mobile keyboard accessory row — sticky accessory keys (Tab, Esc, Ctrl+C, arrows, pipe/slash quick inserts) above mobile keyboard, must not hide primary input field, responsive layout for different screen sizes
+- [x] Implement UX-14 recovery snapshots — persist minimal per-session terminal tail snapshot to localStorage on each update, on reopen show cached tail immediately while live stream reconnects, clear stale snapshots after configurable TTL
+- [x] Implement UX-15 mobile keyboard accessory row — sticky accessory keys (Tab, Esc, Ctrl+C, arrows, pipe/slash quick inserts) above mobile keyboard, must not hide primary input field, responsive layout for different screen sizes

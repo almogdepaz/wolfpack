@@ -164,6 +164,7 @@
         .view.animating {
           transition: opacity 0.15s ease;
         }
+        #kb-accessory { display: none !important; }
       }
 
       .list {
@@ -650,6 +651,83 @@
         background: #66ccff;
         color: #0a0a0a;
         box-shadow: 0 0 12px rgba(0, 170, 255, 0.3);
+      }
+
+      #kb-accessory {
+        display: none;
+        gap: 4px;
+        padding: 5px 8px 3px;
+        background: #111;
+        border-top: 1px solid #1a1a1a;
+        flex-shrink: 0;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      #kb-accessory::-webkit-scrollbar { display: none; }
+      #kb-accessory.visible {
+        display: flex;
+      }
+      .kb-key {
+        flex-shrink: 0;
+        background: linear-gradient(145deg, #222 0%, #1a1a1a 100%);
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 6px 10px;
+        min-width: 36px;
+        min-height: 32px;
+        color: #ccc;
+        font-size: 12px;
+        font-family: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: transform 0.08s ease, background 0.08s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+        box-shadow: 0 2px 3px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .kb-key:active {
+        transform: scale(0.9);
+        background: #444;
+        color: #fff;
+      }
+      .kb-key.kb-special {
+        color: #00ff41;
+        border-color: rgba(0, 255, 65, 0.3);
+      }
+      .kb-key.kb-special:active {
+        background: #00ff41;
+        color: #0a0a0a;
+      }
+      .kb-key.kb-danger {
+        color: #cc3333;
+        border-color: rgba(204, 51, 51, 0.3);
+      }
+      .kb-key.kb-danger:active {
+        background: #cc3333;
+        color: #0a0a0a;
+      }
+      .kb-key.kb-insert {
+        color: #ff9900;
+        border-color: rgba(255, 153, 0, 0.3);
+        font-weight: 700;
+        font-size: 14px;
+      }
+      .kb-key.kb-insert:active {
+        background: #ff9900;
+        color: #0a0a0a;
+      }
+      .kb-sep {
+        width: 1px;
+        background: #2a2a2a;
+        flex-shrink: 0;
+        align-self: stretch;
+        margin: 2px 2px;
       }
 
       #input-bar {
@@ -1606,6 +1684,7 @@
       .settings-gear,
       .ralph-nav-btn,
       .machine-add-btn,
+      .kb-key,
       #input-bar button,
       #search-bar button,
       #session-chip,
@@ -1907,6 +1986,22 @@
           font-size: 12px !important;
           padding: 6px 14px !important;
           border-radius: 10px !important;
+        }
+
+        /* ── Keyboard accessory row — larger keys on mobile ── */
+        #kb-accessory {
+          gap: 5px !important;
+          padding: 6px 10px 4px !important;
+        }
+        .kb-key {
+          min-height: 36px !important;
+          min-width: 40px !important;
+          font-size: 13px !important;
+          padding: 6px 12px !important;
+          border-radius: 8px !important;
+        }
+        .kb-key.kb-insert {
+          font-size: 15px !important;
         }
 
         /* ── Action bar — larger buttons, better thumb reach ── */
@@ -2385,6 +2480,21 @@
       </div>
       <div id="snippet-suggestions"></div>
       <div id="cmd-palette"></div>
+      <div id="kb-accessory">
+        <button class="kb-key kb-special" data-key="Tab">Tab</button>
+        <button class="kb-key" data-key="Escape">Esc</button>
+        <button class="kb-key kb-danger" data-key="C-c">^C</button>
+        <div class="kb-sep"></div>
+        <button class="kb-key" data-key="Up">&#9650;</button>
+        <button class="kb-key" data-key="Down">&#9660;</button>
+        <button class="kb-key" data-key="Left">&#9664;</button>
+        <button class="kb-key" data-key="Right">&#9654;</button>
+        <div class="kb-sep"></div>
+        <button class="kb-key kb-insert" data-insert="|">|</button>
+        <button class="kb-key kb-insert" data-insert="/">/</button>
+        <button class="kb-key kb-insert" data-insert="~">~</button>
+        <button class="kb-key kb-insert" data-insert="-">-</button>
+      </div>
       <div id="input-bar">
         <textarea
           id="msg-input"
@@ -2994,10 +3104,11 @@
         document.getElementById("header-timeline").style.display = "none";
 
         const applyHeader = () => {
-          // Reset quick-actions visibility on view change
+          // Reset quick-actions and kb-accessory visibility on view change
           if (name !== "terminal") {
             document.getElementById("quick-actions").classList.remove("visible");
             quickActionsVisible = false;
+            document.getElementById("kb-accessory").classList.remove("visible");
           }
           chip.style.display = "none";
           closeDrawer(true);
@@ -3966,6 +4077,7 @@
         document.getElementById("action-bar").style.display = "none";
         document.getElementById("quick-actions").classList.remove("visible");
         quickActionsVisible = false;
+        document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
 
@@ -5197,6 +5309,70 @@
         });
         btn.addEventListener("mouseup", cancelHold);
         btn.addEventListener("mouseleave", cancelHold);
+      })();
+
+      // ── Keyboard accessory row (UX-15) ──
+      // Shows above mobile keyboard when textarea is focused.
+      // Special keys → sendKey(), insert keys → insert at cursor in textarea.
+      (function setupKbAccessory() {
+        const acc = document.getElementById("kb-accessory");
+        const ta = document.getElementById("msg-input");
+        if (!acc || !ta) return;
+
+        // Show/hide on focus/blur (mobile only)
+        ta.addEventListener("focus", () => {
+          if (isDesktop() || useDesktopTerminal) return;
+          acc.classList.add("visible");
+        });
+        ta.addEventListener("blur", () => {
+          // Small delay so taps on accessory keys register before hiding
+          setTimeout(() => {
+            if (document.activeElement !== ta) {
+              acc.classList.remove("visible");
+            }
+          }, 150);
+        });
+
+        // Insert text at cursor position in textarea
+        function insertAtCursor(char) {
+          const start = ta.selectionStart;
+          const end = ta.selectionEnd;
+          ta.value = ta.value.substring(0, start) + char + ta.value.substring(end);
+          ta.selectionStart = ta.selectionEnd = start + char.length;
+          ta.dispatchEvent(new Event("input"));
+          ta.focus();
+        }
+
+        // Wire up all keys — prevent blur with mousedown/touchstart preventDefault
+        acc.querySelectorAll(".kb-key").forEach((btn) => {
+          const key = btn.dataset.key;
+          const insert = btn.dataset.insert;
+          let touchFired = false;
+
+          function fire() {
+            if (key) {
+              haptic([15]);
+              sendKey(key);
+            } else if (insert) {
+              haptic([10]);
+              insertAtCursor(insert);
+            }
+          }
+
+          // Prevent focus steal (keeps keyboard open)
+          btn.addEventListener("mousedown", (e) => e.preventDefault());
+          btn.addEventListener("touchstart", (e) => {
+            e.preventDefault();
+            touchFired = true;
+            fire();
+          }, { passive: false });
+
+          // Click handler for non-touch devices only
+          btn.addEventListener("click", () => {
+            if (touchFired) { touchFired = false; return; }
+            fire();
+          });
+        });
       })();
 
       // Global arrow keys → tmux when in terminal and textarea not focused
