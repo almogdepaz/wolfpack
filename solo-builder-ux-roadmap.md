@@ -377,7 +377,7 @@ Implementation:
 
 ---
 
-## 3c. UX-13 Session timeline markers
+## ~~3c. UX-13 Session timeline markers~~
 
 Goal:
 - Faster "what changed since last check?" scan.
@@ -552,3 +552,9 @@ Status:
 - [x] Implement UX-08 quick command palette: user-defined quick command chips in terminal view, default set (status/tests/build/continue), add/edit/delete/reorder in settings, one-tap dispatch sends text + Enter
 - [x] Implement UX-09 session pinning and recents: pin/unpin sessions via UI, pinned sessions sorted to top, recents queue with last-opened timestamp, session drawer Pinned/All tabs
 - [x] Implement UX-10 notification controls by severity: separate toggles for prompts/errors/all-off, cooldown/dedupe window per session+signal, quiet hours by local device time, single global haptic pattern
+
+- [x] Implement UX-11 inline command snippets from terminal context — lightweight heuristics to suggest next commands based on error patterns (npm ERR → npm ci/npm test, git conflict → git status/git diff, bun errors → bun install, python errors → pip install, permission denied → sudo/chmod), dismissible chip UI, unit tests for snippet classifier
+- [x] Implement UX-12 better terminal rendering controls — font size presets (small 12px/1.35, medium 13px/1.45, large 14px/1.55), line height, wrap behavior toggle, optional alternate monospace font stack, reduced effects mode, settings UI with preset buttons
+- [x] Implement UX-13 session timeline markers — track key events (opened, prompt detected, error detected, command sent) with timestamps, store in-memory per session, render compact timeline in terminal header or session drawer detail view
+- [ ] Implement UX-14 recovery snapshots — persist minimal per-session terminal tail snapshot to localStorage on each update, on reopen show cached tail immediately while live stream reconnects, clear stale snapshots after configurable TTL
+- [ ] Implement UX-15 mobile keyboard accessory row — sticky accessory keys (Tab, Esc, Ctrl+C, arrows, pipe/slash quick inserts) above mobile keyboard, must not hide primary input field, responsive layout for different screen sizes
