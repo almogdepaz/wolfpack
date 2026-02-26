@@ -2,9 +2,8 @@ name: Tests
 
 on:
   pull_request:
-    branches: [main]
   push:
-    branches: [main]
+    branches: [master, main]
 
 jobs:
   test:
@@ -20,4 +19,4 @@ jobs:
         run: bun install
 
       - name: Run tests
-        run: bun test
+        run: bun test tests/unit/ tests/integration/ tests/snapshot/
