@@ -188,6 +188,11 @@ export function getCachedJwtAuthConfig(): JwtAuthConfig {
   return _cachedConfig;
 }
 
+/** Reset cached config — only for tests that need to override env vars. */
+export function __resetJwtAuthConfig(): void {
+  _cachedConfig = null;
+}
+
 export function validateRequestJwt(
   headers: IncomingHttpHeaders,
   url: URL,

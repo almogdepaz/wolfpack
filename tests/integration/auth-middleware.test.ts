@@ -7,7 +7,10 @@ process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_JWT_SECRET = "wolfpack-test-secret-long-enough-for-validation";
 process.env.WOLFPACK_JWT_AUDIENCE = "wolfpack-client";
 
-// Dynamic import so env vars are set before serve.ts module-level code runs
+// Reset cached auth config + dynamic import so env vars take effect
+const { __resetJwtAuthConfig } = await import("../../auth.ts");
+__resetJwtAuthConfig();
+
 const { __setTmuxList, server } = await import("../../serve.ts") as {
   __setTmuxList: (fn: () => Promise<string[]>) => void;
   server: Server;
