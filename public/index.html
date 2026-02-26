@@ -2870,10 +2870,10 @@
         document.getElementById("header-timeline").style.display = "none";
 
         const applyHeader = () => {
-          // Reset kb-accessory visibility on view change
-          if (name !== "terminal") {
-            document.getElementById("kb-accessory").classList.remove("visible");
-          }
+          // Always start with kb-accessory closed on view change
+          document.getElementById("kb-accessory").classList.remove("visible");
+          document.getElementById("kb-toggle")?.classList.remove("active");
+          kbAccessoryOpen = false;
           chip.style.display = "none";
           closeDrawer(true);
           title.style.display = "";
@@ -3840,6 +3840,8 @@
         container.innerHTML = "";
         document.getElementById("terminal").style.display = "none";
         document.getElementById("kb-accessory").classList.remove("visible");
+        document.getElementById("kb-toggle")?.classList.remove("active");
+        kbAccessoryOpen = false;
         document.getElementById("input-bar").style.display = "none";
         document.getElementById("cmd-palette").style.display = "none";
         document.getElementById("msg-preview").style.display = "none";
@@ -4877,15 +4879,14 @@
 
       // ── Keyboard accessory row (UX-15) ──
       // Toggle-based: user taps ⌨ button in input bar to show/hide.
-      // Persists collapsed state in localStorage.
-      let kbAccessoryOpen = localStorage.getItem("wp_kb_open") === "1";
+      // Always starts closed on session entry.
+      let kbAccessoryOpen = false;
 
       function toggleKbAccessory() {
         const acc = document.getElementById("kb-accessory");
         const tog = document.getElementById("kb-toggle");
         if (!acc) return;
         kbAccessoryOpen = !kbAccessoryOpen;
-        localStorage.setItem("wp_kb_open", kbAccessoryOpen ? "1" : "0");
         acc.classList.toggle("visible", kbAccessoryOpen);
         if (tog) tog.classList.toggle("active", kbAccessoryOpen);
         haptic([10]);
@@ -4896,12 +4897,6 @@
         const ta = document.getElementById("msg-input");
         const tog = document.getElementById("kb-toggle");
         if (!acc || !ta) return;
-
-        // Restore persisted state
-        if (kbAccessoryOpen) {
-          acc.classList.add("visible");
-          if (tog) tog.classList.add("active");
-        }
 
         // Insert text at cursor position in textarea
         function insertAtCursor(char) {
