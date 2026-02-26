@@ -66,29 +66,6 @@
         text-shadow: 0 0 8px rgba(0,255,65,0.3);
         white-space: nowrap;
       }
-      .session-select.chip {
-        border: 1px solid #282828;
-        border-radius: 2px;
-        padding: 5px 24px 5px 10px;
-        -webkit-appearance: none;
-        appearance: none;
-        background:
-          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 0l3 4 3-4z' fill='%2300ff41' fill-opacity='0.4'/%3E%3C/svg%3E")
-          no-repeat right 9px center #0a0a0a;
-        cursor: pointer;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-        -webkit-tap-highlight-color: transparent;
-        min-height: 28px;
-      }
-      .session-select.chip:focus {
-        outline: none;
-        border-color: #00ff41;
-        box-shadow: 0 0 0 1px #00ff4130;
-      }
-      .session-select.chip:active {
-        border-color: #00ff41;
-        background-color: #111;
-      }
       .header-right {
         display: flex;
         align-items: center;
@@ -318,12 +295,6 @@
       .tl-dot.tl-command { background: #4488ff; }
       .tl-dot.tl-idle { background: #555; }
       .tl-dot.tl-running { background: #00ff41; opacity: 0.5; }
-      .tl-time {
-        font-size: 9px;
-        color: #444;
-        letter-spacing: 0.5px;
-        white-space: nowrap;
-      }
       .drawer-timeline {
         display: flex;
         gap: 2px;
@@ -556,14 +527,6 @@
         background: #ff9900;
         color: #0a0a0a;
       }
-      .kb-sep {
-        width: 1px;
-        background: #2a2a2a;
-        flex-shrink: 0;
-        align-self: stretch;
-        margin: 2px 2px;
-      }
-
       #input-bar {
         display: flex;
         gap: 6px;
@@ -708,21 +671,6 @@
         margin-bottom: 6px;
         text-transform: uppercase;
         letter-spacing: 1.5px;
-      }
-      .session-select {
-        background: transparent;
-        border: none;
-        color: #00ff41;
-        font-size: 12px;
-        font-family: inherit;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        padding: 0;
-        outline: none;
-        max-width: 200px;
-        -webkit-appearance: none;
-        appearance: none;
       }
       .kill-btn {
         background: none;
@@ -5194,29 +5142,6 @@
         if (searchMatches.length === 0) return;
         searchIndex = (searchIndex - 1 + searchMatches.length) % searchMatches.length;
         applySearchHighlights();
-      }
-
-      async function closeSession() {
-        const session = currentSession;
-        const machine = currentMachine;
-        if (useDesktopTerminal) {
-          destroyDesktopTerminal();
-        } else {
-          stopPolling();
-        }
-        useDesktopTerminal = false;
-        closeSearch();
-        currentSession = null;
-        currentMachine = "";
-        showView("sessions");
-        if (session) {
-          await api("/kill", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session }),
-          }, machine);
-        }
-        loadSessions();
       }
 
       document.getElementById("search-input").addEventListener("input", doSearch);

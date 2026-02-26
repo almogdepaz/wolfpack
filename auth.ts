@@ -188,11 +188,6 @@ export function getCachedJwtAuthConfig(): JwtAuthConfig {
   return _cachedConfig;
 }
 
-/** Reset cached config (for testing). */
-export function __resetJwtConfigCache(): void {
-  _cachedConfig = null;
-}
-
 export function validateRequestJwt(
   headers: IncomingHttpHeaders,
   url: URL,
