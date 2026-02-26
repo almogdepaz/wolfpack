@@ -1,0 +1,2 @@
+[test]
+testMatch = ["tests/unit/**/*", "tests/integration/**/*", "tests/snapshot/**/*"]
