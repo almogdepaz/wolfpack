@@ -102,6 +102,8 @@ afterAll(() => {
   server.close();
   delete process.env.WOLFPACK_JWT_SECRET;
   delete process.env.WOLFPACK_JWT_AUDIENCE;
+  // Reset cached auth config so other test files sharing the module aren't affected
+  __resetJwtAuthConfig();
 });
 
 describe("JWT auth middleware", () => {
