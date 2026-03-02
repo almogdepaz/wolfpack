@@ -153,3 +153,10 @@
   - Note: `public-assets.ts` is a gitignored generated file from `bun run scripts/gen-assets.ts` — pre-existing requirement
 - kobra-kai API routes respond correctly (23 integration tests cover all 6 endpoints)
 - Existing ralph functionality unaffected — all ralph tests pass identically
+
+## Cleanup: Dead code removal
+- `src/kobra-kai/orchestrate.ts`: removed unused `resolve` import from `node:path`
+- `tests/unit/kobra-kai/orchestrate.test.ts`: removed unused `readFileSync`, `writeFileSync` imports from `node:fs`
+- `tests/unit/kobra-kai/task-runner.test.ts`: removed unused `mock` import from `bun:test`, unused `readFile` import from `node:fs/promises`, removed unused `makeMockAgent` helper function
+- `tests/unit/kobra-kai/planner.test.ts`: removed unused `mock` import from `bun:test`
+- All 835 non-e2e tests still pass after cleanup

@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type {
   AdvanceResult,
   OrchestrationStatus,

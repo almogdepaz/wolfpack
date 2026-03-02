@@ -6,7 +6,7 @@ import {
   test,
 } from "bun:test";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type {

@@ -1,5 +1,5 @@
-import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,21 +59,6 @@ describe("runTaskLoop", () => {
     await rm(dir, { recursive: true });
   });
 
-  function makeMockAgent(responses: Array<{ exitCode: number; output: string }>): AgentSpawnConfig {
-    let callIdx = 0;
-    return {
-      bin: "echo",
-      args: (prompt) => {
-        const resp = responses[callIdx] || { exitCode: 0, output: "" };
-        callIdx++;
-        // We use a script that outputs the predetermined response
-        return [resp.output];
-      },
-    };
-  }
-
-  // For integration tests, we need to mock runAgentIteration since it spawns real processes.
-  // Instead, we test the flow using real plan files and a real agent that just echos output.
 
   test("exits when plan has no tasks", async () => {
     writeFileSync(join(dir, "PLAN.md"), "# Plan\nNothing to do here\n");
