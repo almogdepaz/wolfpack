@@ -34,3 +34,20 @@
   - decompose: mocked LLM → DAG structure, prompt includes context, DAG saved to disk
   - schedule: mocked LLM → DAG structure, wave assignment, prompt includes plan content
 - All 27 tests pass, type-checks clean (only pre-existing bun-types issue)
+
+## Task 4: Create worktree manager
+- Created `src/kobra-kai/worktree.ts` with 5 exported functions:
+  - `createTaskWorktree(projectDir, taskId, baseBranch)` — creates git worktree + branch `wt/{project}/{taskId}`
+  - `removeTaskWorktree(projectDir, worktreePath, branch)` — removes worktree + branch, ignores errors
+  - `createWaveWorktrees(projectDir, wave, dag)` — batch create for all tasks in a wave, sets task.worktree_path and task.branch
+  - `cleanupWaveWorktrees(projectDir, wave, dag)` — batch remove for all tasks in a wave
+  - `listProjectWorktrees(projectDir)` — parses `git worktree list --porcelain`, filters for `-wt-` paths
+- Internal `git()` helper: spawns git via `Bun.spawn` with cwd, collects stdout, throws on non-zero exit
+- Base branch logic: wave 0 → `main`, wave N → `integrate/{project}/wave-{N-1}`
+- Created `tests/unit/kobra-kai/worktree.test.ts` — 13 tests, all passing
+  - createTaskWorktree: dir created, branch based on base, branch naming convention
+  - removeTaskWorktree: dir + branch removed, no throw if already gone
+  - createWaveWorktrees: batch creation + task fields updated, wave 0 uses main, wave N uses integration branch
+  - cleanupWaveWorktrees: all cleaned, skips tasks without worktree_path
+  - listProjectWorktrees: returns -wt- paths only, excludes main worktree, filters non-wt worktrees
+- All 40 tests pass (27 planner + 13 worktree), type-checks clean (only pre-existing bun-types issue)
