@@ -141,3 +141,15 @@
   - Called `startOrchestrationPoller()` inside server.listen callback (after peer discovery)
   - Added `shutdown` handler on SIGTERM/SIGINT that calls `stopOrchestrationPoller()` + `server.close()`
 - All 23 kobra-kai integration tests still pass
+
+## Task 11: Full test suite verification — no regressions
+- Ran `bun test` (full suite): **835 pass, 0 real failures**
+  - 5 errors are pre-existing Playwright e2e files loaded by bun test (not runnable outside `bunx playwright test`)
+  - Confirmed identical failure set with `git stash` (clean state): same 5 e2e errors exist before kobra-kai
+- Ran kobra-kai tests specifically: `bun test tests/unit/kobra-kai/ tests/integration/kobra-kai-api.test.ts` → **116 pass, 0 fail**
+- Ran ralph-specific tests: `bun test tests/unit/ralph-log.test.ts tests/unit/plan-*.test.ts tests/unit/shared/task-iteration.test.ts tests/integration/ralph-api.test.ts tests/integration/ralph-aggregation.test.ts` → **231 pass, 0 fail**
+- Ran all non-e2e tests: `bun test tests/unit/ tests/integration/ tests/snapshot/` → **835 pass, 0 fail**
+- Server starts cleanly with `WOLFPACK_TEST=1 bun src/server/index.ts` (after generating public-assets.ts)
+  - Note: `public-assets.ts` is a gitignored generated file from `bun run scripts/gen-assets.ts` — pre-existing requirement
+- kobra-kai API routes respond correctly (23 integration tests cover all 6 endpoints)
+- Existing ralph functionality unaffected — all ralph tests pass identically
