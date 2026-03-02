@@ -57,6 +57,15 @@ import {
   discoverPeers,
 } from "./http.js";
 import { activePtySessions, teardownPty } from "./websocket.js";
+import { decompose, schedule, loadDAG } from "../kobra-kai/planner.js";
+import {
+  launchOrchestration,
+  advanceOrchestration,
+  getOrchestrationStatus,
+  cancelOrchestration,
+  startOrchestrationPoller,
+  _getActiveOrchestrations,
+} from "../kobra-kai/orchestrate.js";
 
 const VERSION: string = pkg.version;
 const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
@@ -694,5 +703,120 @@ export const routes: Record<
     }
 
     json(res, { ok: true, deleted, failed });
+  },
+
+  // ── Kobra Kai API ──
+
+  "POST /api/kobra-kai/plan": async (req, res) => {
+    const body = await parseBody<{
+      mode?: string;
+      goal?: string;
+      planFile?: string;
+      project?: string;
+    }>(req, res);
+    if (!body) return;
+    const { mode, goal, planFile, project } = body;
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid or missing project" }, 400);
+    }
+    if (mode !== "decompose" && mode !== "schedule") {
+      return json(res, { error: "mode must be 'decompose' or 'schedule'" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    if (!existsSync(projectDir) || !statSync(projectDir).isDirectory()) {
+      return json(res, { error: "project not found" }, 404);
+    }
+    if (mode === "decompose") {
+      if (!goal) return json(res, { error: "missing goal for decompose mode" }, 400);
+      const dag = await decompose(goal, projectDir);
+      return json(res, dag);
+    }
+    // mode === "schedule"
+    if (!planFile) return json(res, { error: "missing planFile for schedule mode" }, 400);
+    const planPath = join(projectDir, planFile);
+    if (!existsSync(planPath)) {
+      return json(res, { error: `plan file '${planFile}' not found` }, 404);
+    }
+    const content = readFileSync(planPath, "utf-8");
+    const dag = await schedule(content, projectDir);
+    return json(res, dag);
+  },
+
+  "POST /api/kobra-kai/launch": async (req, res) => {
+    const body = await parseBody<{
+      project?: string;
+      maxConcurrent?: number;
+    }>(req, res);
+    if (!body) return;
+    const { project, maxConcurrent: mc } = body;
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid or missing project" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    if (!existsSync(projectDir) || !statSync(projectDir).isDirectory()) {
+      return json(res, { error: "project not found" }, 404);
+    }
+    const dag = await loadDAG(projectDir);
+    if (!dag) {
+      return json(res, { error: "no task-dag.json found in project" }, 400);
+    }
+    if (_getActiveOrchestrations().has(projectDir)) {
+      return json(res, { error: "orchestration already running for this project" }, 409);
+    }
+    const maxConcurrent = mc ?? 3;
+    await launchOrchestration(projectDir, dag, maxConcurrent);
+    startOrchestrationPoller();
+    json(res, { ok: true, waves: dag.waves.length, tasks: dag.tasks.length });
+  },
+
+  "GET /api/kobra-kai/status": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid or missing project" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    const dag = await loadDAG(projectDir);
+    if (!dag) {
+      return json(res, { error: "no DAG found" }, 404);
+    }
+    const status = await getOrchestrationStatus(projectDir);
+    json(res, status);
+  },
+
+  "POST /api/kobra-kai/advance": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid or missing project" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    const result = await advanceOrchestration(projectDir);
+    json(res, { result });
+  },
+
+  "GET /api/kobra-kai/dag": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid or missing project" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    const dag = await loadDAG(projectDir);
+    if (!dag) {
+      return json(res, { error: "no DAG found" }, 404);
+    }
+    json(res, dag);
+  },
+
+  "POST /api/kobra-kai/cancel": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid or missing project" }, 400);
+    }
+    const projectDir = join(DEV_DIR, project);
+    await cancelOrchestration(projectDir);
+    json(res, { ok: true });
   },
 };

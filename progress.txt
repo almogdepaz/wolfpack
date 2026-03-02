@@ -116,3 +116,21 @@
   - concurrency: 5 tasks maxConcurrent=2 → only 2 spawn initially
   - getOrchestrationStatus: idle (no DAG), active with counts, completed when all merged
 - All 93 kobra-kai tests pass (27 planner + 13 worktree + 17 merge + 14 task-runner + 22 orchestrate), type-checks clean (pre-existing bun-types issue only)
+
+## Task 9: Add API routes
+- Added 6 Kobra Kai routes to `src/server/routes.ts`:
+  - `POST /api/kobra-kai/plan` — decompose (goal → DAG) or schedule (planFile → DAG), validates project dir
+  - `POST /api/kobra-kai/launch` — loads DAG from project, checks no active orchestration (409), launches with configurable maxConcurrent (default 3), starts poller
+  - `GET /api/kobra-kai/status` — returns OrchestrationStatus for project, 404 if no DAG
+  - `POST /api/kobra-kai/advance` — manual trigger for advanceOrchestration, returns AdvanceResult
+  - `GET /api/kobra-kai/dag` — returns raw DAG JSON, 404 if missing
+  - `POST /api/kobra-kai/cancel` — cancels orchestration for project
+- Imports from `../kobra-kai/planner.js` (decompose, schedule, loadDAG) and `../kobra-kai/orchestrate.js` (launchOrchestration, advanceOrchestration, getOrchestrationStatus, cancelOrchestration, startOrchestrationPoller, _getActiveOrchestrations)
+- Created `tests/integration/kobra-kai-api.test.ts` — 23 tests, all passing:
+  - Plan: decompose valid, schedule valid, missing project 400, invalid mode 400, nonexistent project 404, decompose without goal 400, schedule without planFile 400, schedule missing plan file 404
+  - Launch: valid launch with counts, defaults maxConcurrent to 3, no DAG 400, already running 409, missing project 400
+  - Status: returns orchestration status, no DAG 404, missing project 400
+  - Advance: returns advance result, missing project 400
+  - DAG: returns raw DAG, no DAG 404, missing project 400
+  - Cancel: cancels orchestration, missing project 400
+- All 23 integration tests pass, type-checks clean (pre-existing bun-types issue only)
