@@ -1,14 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskDAG, TaskNode } from "../../../src/kobra-kai/types.ts";
 import {
   computeWaves,
+  decompose,
   detectFileOverlaps,
   loadDAG,
+  parseJSONResponse,
   resolveOverlaps,
   saveDAG,
+  schedule,
+  spawnLLM,
 } from "../../../src/kobra-kai/planner.ts";
 
 // ---------------------------------------------------------------------------
@@ -286,6 +290,370 @@ describe("loadDAG / saveDAG", () => {
       const result = await loadDAG(dir);
       expect(result).toBeNull();
     } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseJSONResponse
+// ---------------------------------------------------------------------------
+
+describe("parseJSONResponse", () => {
+  test("parses plain JSON", () => {
+    const result = parseJSONResponse('{"tasks": []}');
+    expect(result).toEqual({ tasks: [] });
+  });
+
+  test("parses JSON wrapped in ```json fences", () => {
+    const raw = '```json\n{"tasks": [{"id": "1"}]}\n```';
+    const result = parseJSONResponse(raw);
+    expect(result).toEqual({ tasks: [{ id: "1" }] });
+  });
+
+  test("parses JSON wrapped in plain ``` fences", () => {
+    const raw = '```\n{"key": "value"}\n```';
+    const result = parseJSONResponse(raw);
+    expect(result).toEqual({ key: "value" });
+  });
+
+  test("handles whitespace around fences", () => {
+    const raw = '  ```json\n  {"ok": true}  \n```  ';
+    const result = parseJSONResponse(raw);
+    expect(result).toEqual({ ok: true });
+  });
+
+  test("throws on invalid JSON", () => {
+    expect(() => parseJSONResponse("not json at all")).toThrow(
+      /Failed to parse JSON/,
+    );
+  });
+
+  test("throws with descriptive error including raw preview", () => {
+    try {
+      parseJSONResponse("{broken");
+      expect(true).toBe(false); // should not reach
+    } catch (e: any) {
+      expect(e.message).toContain("Failed to parse JSON");
+      expect(e.message).toContain("{broken");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawnLLM
+// ---------------------------------------------------------------------------
+
+describe("spawnLLM", () => {
+  test("calls Bun.spawn with correct args", async () => {
+    const originalSpawn = Bun.spawn;
+    let capturedArgs: any[] = [];
+
+    // Mock Bun.spawn
+    (Bun as any).spawn = (...args: any[]) => {
+      capturedArgs = args;
+      // Return a mock process
+      const stdout = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"tasks": []}'));
+          controller.close();
+        },
+      });
+      const stderr = new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      });
+      return {
+        stdout,
+        stderr,
+        exited: Promise.resolve(0),
+        kill: () => {},
+      };
+    };
+
+    try {
+      const result = await spawnLLM("test prompt");
+      expect(result).toBe('{"tasks": []}');
+      expect(capturedArgs[0]).toEqual(["claude", "--print", "-p", "test prompt"]);
+      expect(capturedArgs[1]).toHaveProperty("stdout", "pipe");
+      expect(capturedArgs[1]).toHaveProperty("stderr", "pipe");
+    } finally {
+      (Bun as any).spawn = originalSpawn;
+    }
+  });
+
+  test("throws on non-zero exit code", async () => {
+    const originalSpawn = Bun.spawn;
+
+    (Bun as any).spawn = () => {
+      const stdout = new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      });
+      const stderr = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("something went wrong"));
+          controller.close();
+        },
+      });
+      return {
+        stdout,
+        stderr,
+        exited: Promise.resolve(1),
+        kill: () => {},
+      };
+    };
+
+    try {
+      await expect(spawnLLM("bad prompt")).rejects.toThrow(
+        /claude exited with code 1/,
+      );
+    } finally {
+      (Bun as any).spawn = originalSpawn;
+    }
+  });
+
+  test("kills process on timeout", async () => {
+    const originalSpawn = Bun.spawn;
+    let killed = false;
+
+    (Bun as any).spawn = () => {
+      const stdout = new ReadableStream({
+        start() {
+          // Never close — simulates a hanging process
+        },
+      });
+      const stderr = new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      });
+      return {
+        stdout,
+        stderr,
+        exited: new Promise(() => {}), // never resolves
+        kill: () => {
+          killed = true;
+        },
+      };
+    };
+
+    try {
+      // Very short timeout to trigger quickly
+      const promise = spawnLLM("slow prompt", 50);
+      // The ReadableStream will hang, but timeout fires kill()
+      // This should eventually reject or hang — we just verify kill was called
+      await new Promise((r) => setTimeout(r, 100));
+      expect(killed).toBe(true);
+    } finally {
+      (Bun as any).spawn = originalSpawn;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decompose
+// ---------------------------------------------------------------------------
+
+describe("decompose", () => {
+  test("builds DAG from LLM response", async () => {
+    const originalSpawn = Bun.spawn;
+    let capturedPrompt = "";
+
+    const mockResponse = JSON.stringify({
+      tasks: [
+        {
+          id: "1",
+          title: "Add auth module",
+          description: "Create authentication middleware",
+          depends_on: [],
+          estimated_files: ["src/auth.ts"],
+        },
+        {
+          id: "2",
+          title: "Add tests",
+          description: "Create test suite for auth",
+          depends_on: ["1"],
+          estimated_files: ["tests/auth.test.ts"],
+        },
+      ],
+    });
+
+    (Bun as any).spawn = (cmd: string[], opts: any) => {
+      // Capture the prompt from the command args
+      if (cmd[0] === "claude") {
+        capturedPrompt = cmd[3]; // -p <prompt>
+      }
+      const stdout = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(mockResponse));
+          controller.close();
+        },
+      });
+      const stderr = new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      });
+      return {
+        stdout,
+        stderr,
+        exited: Promise.resolve(0),
+        kill: () => {},
+      };
+    };
+
+    const dir = await mkdtemp(join(tmpdir(), "decompose-test-"));
+
+    try {
+      // Initialize a git repo so context gathering works
+      await Bun.spawn(["git", "init"], { cwd: dir }).exited;
+      await Bun.spawn(["git", "checkout", "-b", "main"], { cwd: dir }).exited;
+
+      // Restore real spawn for git commands, mock only for claude
+      (Bun as any).spawn = (cmd: string[], opts: any) => {
+        if (cmd[0] === "claude") {
+          capturedPrompt = cmd[3];
+          const stdout = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(mockResponse));
+              controller.close();
+            },
+          });
+          const stderr = new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          });
+          return {
+            stdout,
+            stderr,
+            exited: Promise.resolve(0),
+            kill: () => {},
+          };
+        }
+        return originalSpawn(cmd, opts);
+      };
+
+      const dag = await decompose("Add user authentication", dir);
+
+      // Verify DAG structure
+      expect(dag.tasks).toHaveLength(2);
+      expect(dag.tasks[0].id).toBe("1");
+      expect(dag.tasks[1].id).toBe("2");
+      expect(dag.tasks[1].depends_on).toContain("1");
+      expect(dag.metadata.source).toBe("decomposed");
+      expect(dag.waves.length).toBeGreaterThan(0);
+
+      // Verify prompt includes project context markers
+      expect(capturedPrompt).toContain("Add user authentication");
+      expect(capturedPrompt).toContain("Branch:");
+
+      // Verify DAG was saved
+      const saved = await loadDAG(dir);
+      expect(saved).not.toBeNull();
+      expect(saved!.tasks).toHaveLength(2);
+    } finally {
+      (Bun as any).spawn = originalSpawn;
+      await rm(dir, { recursive: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// schedule
+// ---------------------------------------------------------------------------
+
+describe("schedule", () => {
+  test("builds DAG from existing plan content", async () => {
+    const originalSpawn = Bun.spawn;
+    let capturedPrompt = "";
+
+    const mockResponse = JSON.stringify({
+      tasks: [
+        {
+          id: "1",
+          title: "Setup database",
+          description: "Initialize DB schema",
+          depends_on: [],
+          estimated_files: ["src/db.ts"],
+        },
+        {
+          id: "2",
+          title: "Create API routes",
+          description: "Add REST endpoints",
+          depends_on: ["1"],
+          estimated_files: ["src/routes.ts"],
+        },
+        {
+          id: "3",
+          title: "Add frontend",
+          description: "Build UI components",
+          depends_on: [],
+          estimated_files: ["src/ui.tsx"],
+        },
+      ],
+    });
+
+    const dir = await mkdtemp(join(tmpdir(), "schedule-test-"));
+
+    try {
+      // Init git repo with real spawn
+      await Bun.spawn(["git", "init"], { cwd: dir }).exited;
+      await Bun.spawn(["git", "checkout", "-b", "main"], { cwd: dir }).exited;
+
+      // Now mock spawn for claude calls only
+      (Bun as any).spawn = (cmd: string[], opts: any) => {
+        if (cmd[0] === "claude") {
+          capturedPrompt = cmd[3];
+          const stdout = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(mockResponse));
+              controller.close();
+            },
+          });
+          const stderr = new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          });
+          return {
+            stdout,
+            stderr,
+            exited: Promise.resolve(0),
+            kill: () => {},
+          };
+        }
+        return originalSpawn(cmd, opts);
+      };
+
+      const planContent = "1. Setup database\n2. Create API routes\n3. Add frontend";
+      const dag = await schedule(planContent, dir);
+
+      // Verify DAG structure
+      expect(dag.tasks).toHaveLength(3);
+      expect(dag.metadata.source).toBe("scheduled");
+      expect(dag.waves.length).toBeGreaterThan(0);
+
+      // Tasks 1 and 3 should be in wave 0 (parallel), task 2 in wave 1
+      const task1 = dag.tasks.find((t) => t.id === "1")!;
+      const task2 = dag.tasks.find((t) => t.id === "2")!;
+      const task3 = dag.tasks.find((t) => t.id === "3")!;
+      expect(task1.wave).toBe(0);
+      expect(task3.wave).toBe(0);
+      expect(task2.wave).toBe(1);
+
+      // Verify prompt includes plan content and context
+      expect(capturedPrompt).toContain("Setup database");
+      expect(capturedPrompt).toContain("Branch:");
+
+      // Verify DAG was saved
+      const saved = await loadDAG(dir);
+      expect(saved).not.toBeNull();
+    } finally {
+      (Bun as any).spawn = originalSpawn;
       await rm(dir, { recursive: true });
     }
   });

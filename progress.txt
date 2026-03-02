@@ -1,0 +1,36 @@
+# Progress Log
+
+## Task 1: Create types module
+- Created `src/kobra-kai/types.ts` with all Kobra Kai types
+- Exports: TaskNode, TaskRequirements, Wave, TaskDAG, MergeResult, OrchestrationStatus, AdvanceResult
+- Pure type definitions, no runtime code
+- Type-checks clean (only pre-existing bun-types issue in project)
+
+## Task 2: Create planner — pure functions
+- Created `src/kobra-kai/planner.ts` with 5 functions:
+  - `computeWaves(dag)` — topological sort via DFS, assigns wave numbers, returns Wave[]
+  - `detectFileOverlaps(dag)` — finds task pairs sharing estimated_files in same wave
+  - `resolveOverlaps(dag)` — adds dependency edges for overlaps, recomputes waves
+  - `loadDAG(projectDir)` — reads task-dag.json, returns null if missing
+  - `saveDAG(projectDir, dag)` — writes task-dag.json
+- Created `tests/unit/kobra-kai/planner.test.ts` — 16 tests, all passing
+  - computeWaves: linear chain, diamond, wide, single task, cycle detection, dag.waves mutation
+  - detectFileOverlaps: overlapping pair, no overlaps, different waves, multiple overlaps, multiple shared files
+  - resolveOverlaps: edge added + waves recomputed, no-op, no duplicate edges
+  - loadDAG/saveDAG: roundtrip, missing file returns null
+- Type-checks clean
+
+## Task 3: Add LLM-powered planning (decompose + schedule)
+- Added to `src/kobra-kai/planner.ts`:
+  - `spawnLLM(prompt, timeoutMs?)` — spawns `claude --print -p`, collects stdout, handles timeout + exit code
+  - `parseJSONResponse(raw)` — strips markdown fences, JSON.parse with descriptive errors
+  - `gatherProjectContext(projectDir)` — collects git log, branch, file tree (2 levels)
+  - `decompose(goal, projectDir)` — LLM decomposes goal → TaskDAG, resolves overlaps, saves
+  - `schedule(planContent, projectDir)` — LLM schedules existing plan → TaskDAG, resolves overlaps, saves
+  - `buildDAGFromParsed()` — internal helper to construct TaskDAG from LLM JSON
+- Added 11 new tests in `tests/unit/kobra-kai/planner.test.ts` (27 total now):
+  - parseJSONResponse: plain JSON, ```json fences, plain ``` fences, whitespace handling, invalid JSON, descriptive error
+  - spawnLLM: correct args, non-zero exit, timeout kill
+  - decompose: mocked LLM → DAG structure, prompt includes context, DAG saved to disk
+  - schedule: mocked LLM → DAG structure, wave assignment, prompt includes plan content
+- All 27 tests pass, type-checks clean (only pre-existing bun-types issue)

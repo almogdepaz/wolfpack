@@ -2,6 +2,207 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TaskDAG, TaskNode, Wave } from "./types.ts";
 
+// ---------------------------------------------------------------------------
+// LLM helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn `claude --print` with the given prompt, collect stdout.
+ * Throws on non-zero exit or timeout.
+ */
+export async function spawnLLM(
+  prompt: string,
+  timeoutMs = 120_000,
+): Promise<string> {
+  const proc = Bun.spawn(["claude", "--print", "-p", prompt], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const timeout = setTimeout(() => {
+    proc.kill();
+  }, timeoutMs);
+
+  try {
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(
+        `claude exited with code ${exitCode}: ${stderr.slice(0, 500)}`,
+      );
+    }
+
+    return stdout;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Strip markdown fences if present and JSON.parse the result.
+ */
+export function parseJSONResponse(raw: string): any {
+  let trimmed = raw.trim();
+
+  // Strip ```json ... ``` or ``` ... ```
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/);
+  if (fenceMatch) {
+    trimmed = fenceMatch[1].trim();
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (e) {
+    throw new Error(
+      `Failed to parse JSON from LLM response: ${(e as Error).message}\nRaw (first 300 chars): ${raw.slice(0, 300)}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Project context gathering
+// ---------------------------------------------------------------------------
+
+async function gatherProjectContext(projectDir: string): Promise<string> {
+  const run = async (cmd: string[]): Promise<string> => {
+    const proc = Bun.spawn(cmd, {
+      cwd: projectDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    return out.trim();
+  };
+
+  const [gitLog, branch, fileTree] = await Promise.all([
+    run(["git", "log", "--oneline", "-10"]),
+    run(["git", "branch", "--show-current"]),
+    run([
+      "find",
+      ".",
+      "-maxdepth",
+      "2",
+      "-not",
+      "-path",
+      "*/node_modules/*",
+      "-not",
+      "-path",
+      "*/.git/*",
+    ]),
+  ]);
+
+  return [
+    `Branch: ${branch}`,
+    "",
+    "Recent commits:",
+    gitLog,
+    "",
+    "File tree (2 levels):",
+    fileTree,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Decompose & Schedule
+// ---------------------------------------------------------------------------
+
+const DECOMPOSE_PROMPT = `You are a technical project planner. Given a goal and project context,
+decompose it into 3-8 parallel-safe tasks.
+
+Output ONLY valid JSON matching this schema:
+{ "tasks": [{ "id": "1", "title": "...", "description": "...",
+  "depends_on": [], "estimated_files": ["..."] }, ...] }
+
+Rules:
+- Each task description must be self-contained (an agent will implement it with no other context beyond the project itself)
+- estimated_files should list files the task will create or modify
+- Use depends_on to express ordering constraints
+- Tasks that can run in parallel should have no dependency between them
+- IDs are simple strings: "1", "2", "3" etc.`;
+
+const SCHEDULE_PROMPT = `You are a technical project planner. Given an existing plan and project context,
+infer dependency edges between the tasks and produce a structured task DAG.
+
+Output ONLY valid JSON matching this schema:
+{ "tasks": [{ "id": "1", "title": "...", "description": "...",
+  "depends_on": [], "estimated_files": ["..."] }, ...] }
+
+Rules:
+- Each task description must be self-contained (an agent will implement it with no other context beyond the project itself)
+- estimated_files should list files the task will create or modify
+- Use depends_on to express ordering constraints
+- Tasks that can run in parallel should have no dependency between them
+- IDs are simple strings: "1", "2", "3" etc.`;
+
+function buildDAGFromParsed(
+  parsed: { tasks: Array<{ id: string; title: string; description: string; depends_on: string[]; estimated_files: string[] }> },
+  source: "decomposed" | "scheduled",
+  project: string,
+): TaskDAG {
+  const dag: TaskDAG = {
+    tasks: parsed.tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      depends_on: t.depends_on ?? [],
+      estimated_files: t.estimated_files ?? [],
+      wave: -1,
+      status: "pending" as const,
+    })),
+    waves: [],
+    metadata: {
+      project,
+      created_at: new Date().toISOString(),
+      source,
+    },
+  };
+
+  computeWaves(dag);
+  resolveOverlaps(dag);
+  return dag;
+}
+
+/**
+ * Use LLM to decompose a goal into a TaskDAG.
+ */
+export async function decompose(
+  goal: string,
+  projectDir: string,
+): Promise<TaskDAG> {
+  const context = await gatherProjectContext(projectDir);
+  const prompt = `${DECOMPOSE_PROMPT}\n\nProject context:\n${context}\n\nGoal: ${goal}`;
+
+  const raw = await spawnLLM(prompt);
+  const parsed = parseJSONResponse(raw);
+  const project = projectDir.split("/").pop() ?? "unknown";
+  const dag = buildDAGFromParsed(parsed, "decomposed", project);
+
+  await saveDAG(projectDir, dag);
+  return dag;
+}
+
+/**
+ * Use LLM to schedule an existing plan into a TaskDAG.
+ */
+export async function schedule(
+  planContent: string,
+  projectDir: string,
+): Promise<TaskDAG> {
+  const context = await gatherProjectContext(projectDir);
+  const prompt = `${SCHEDULE_PROMPT}\n\nProject context:\n${context}\n\nExisting plan:\n${planContent}`;
+
+  const raw = await spawnLLM(prompt);
+  const parsed = parseJSONResponse(raw);
+  const project = projectDir.split("/").pop() ?? "unknown";
+  const dag = buildDAGFromParsed(parsed, "scheduled", project);
+
+  await saveDAG(projectDir, dag);
+  return dag;
+}
+
 const DAG_FILE = "task-dag.json";
 
 /**
