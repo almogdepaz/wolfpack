@@ -94,3 +94,25 @@
   - appendSubtasksToPlan: basic append (1), strip headers (1), strip strikethrough (1), filter empty (1), preserve content (1)
   - parseSubtasks: valid block (1), null for no block (1), empty block (1), trim (1), filter empty lines (1), single subtask (1), multiple blocks (1), null for empty string (1), malformed blocks (2)
 - All 513 unit tests pass (including 41 new + 472 existing), type-checks clean
+
+## Task 8: Create orchestration loop
+- Created `src/kobra-kai/orchestrate.ts` with 9 exports:
+  - `countTasksInContent(content)` — counts total/completed tasks in PLAN.md content (checkboxes + section headers)
+  - `gatherProjectContext(projectDir)` — collects file tree (maxdepth 3, excluding node_modules/.git/*-wt-*), package.json summary, recent git log
+  - `launchOrchestration(projectDir, dag, maxConcurrent)` — saves DAG + config, creates wave 0 worktrees, spawns task runners, registers in active set
+  - `spawnWaveTasks(projectDir, wave, dag, maxConcurrent)` — gathers context, writes PLAN.md + .project-context in each worktree, spawns detached `bun task-runner.ts` (up to maxConcurrent), sets pid/status
+  - `advanceOrchestration(projectDir)` — loads DAG + config, checks PIDs (process.kill signal 0), marks dead PIDs completed/failed based on PLAN.md status, spawns queued tasks when slots open, merges wave when all done, advances to next wave
+  - `getOrchestrationStatus(projectDir)` — returns structured OrchestrationStatus from DAG state
+  - `cancelOrchestration(projectDir)` — SIGTERM all in-progress PIDs, cleanup worktrees for non-merged waves, remove from active set
+  - `startOrchestrationPoller(intervalMs)` / `stopOrchestrationPoller()` — setInterval-based polling of advanceOrchestration for all active orchestrations
+  - `_getActiveOrchestrations()` — exposed for testing
+- Module-level state: `activeOrchestrations: Set<string>`, `pollInterval: Timer | null`
+- Created `tests/unit/kobra-kai/orchestrate.test.ts` — 22 tests, all passing:
+  - countTasksInContent: unchecked, checked, mixed checkboxes, section headers, empty, all done
+  - gatherProjectContext: file tree + git log, package.json summary, excludes -wt- paths
+  - launchOrchestration: saves DAG + config, creates worktrees, spawns runners, sets PIDs + status, registers in active set
+  - advanceOrchestration: dead PIDs → completed when plan done, dead PIDs → failed when plan incomplete, spawns queued tasks when slots open, returns "waiting" when agents alive, triggers merge when wave done (single wave → completed), advances to next wave after merge, returns "completed" when all waves merged
+  - cancelOrchestration: kills PIDs, cleans worktrees, marks failed, removes from active set
+  - concurrency: 5 tasks maxConcurrent=2 → only 2 spawn initially
+  - getOrchestrationStatus: idle (no DAG), active with counts, completed when all merged
+- All 93 kobra-kai tests pass (27 planner + 13 worktree + 17 merge + 14 task-runner + 22 orchestrate), type-checks clean (pre-existing bun-types issue only)
