@@ -69,3 +69,28 @@
   - jsonMerge: objects (union+recurse), arrays (concat+dedup), objects in arrays kept, scalars (theirs wins), nested objects, type mismatch, array vs object mismatch, null values
   - mergeWave: clean merge (different files), JSON conflict resolution (verified merged content), non-JSON conflict (abort+report), unexpected files flagged, integration branch naming, wave state mutation, return to base branch, wave N uses prev integration as base, skips tasks without branch
 - All 57 tests pass (27 planner + 13 worktree + 17 merge), type-checks clean (only pre-existing bun-types issue)
+
+## Task 6: Extract shared iteration logic from ralph-macchio
+- Created `src/shared/task-iteration.ts` with 6 exported functions:
+  - `extractCurrentTask(planPath)` — reads plan file, returns next unchecked task (checkbox or section header)
+  - `markSectionDone(planPath, taskText)` — wraps section header in ~~strikethrough~~
+  - `markCheckboxDone(planPath, taskText)` — replaces `- [ ]` with `- [x]`
+  - `appendSubtasksToPlan(planPath, subtasks)` — appends sanitized checkboxes to plan file
+  - `parseSubtasks(output)` — parses `<subtasks>` block from agent output, returns `string[] | null`
+  - `runAgentIteration(prompt, cwd, agent, timeoutMs?, logFile?)` — spawns agent process, captures output
+  - Also exports `AgentSpawnConfig` interface
+- Updated `src/ralph-macchio.ts`:
+  - Imports all 6 functions + AgentSpawnConfig from shared module
+  - Removed private copies of extractCurrentTask, markSectionDone, markCheckboxDone, parseSubtasks, appendSubtasksToPlan
+  - `runIteration()` now delegates to shared `runAgentIteration()`
+  - Removed `activeChild` tracking (simplified SIGTERM handler)
+  - Removed unused imports: `spawn as nodeSpawn`, `TASK_HEADER`, `AgentConfig` interface
+  - All call sites updated to pass `PLAN_PATH` as first argument
+  - `parseSubtasks` call uses `?? []` for null coalescing (shared version returns null vs empty array)
+- Created `tests/unit/shared/task-iteration.test.ts` — 41 tests:
+  - extractCurrentTask: checkbox mode (5), section headers (6), edge cases (3)
+  - markSectionDone: strikethrough (3), no-op cases (2), regex-special chars (1)
+  - markCheckboxDone: check (1), no-recheck (1), exact match (1), regex-special (1), no-op (1), multi-item (1)
+  - appendSubtasksToPlan: basic append (1), strip headers (1), strip strikethrough (1), filter empty (1), preserve content (1)
+  - parseSubtasks: valid block (1), null for no block (1), empty block (1), trim (1), filter empty lines (1), single subtask (1), multiple blocks (1), null for empty string (1), malformed blocks (2)
+- All 513 unit tests pass (including 41 new + 472 existing), type-checks clean

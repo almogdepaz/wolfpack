@@ -10,11 +10,20 @@
  *   --agent NAME      agent to use: claude|cursor|codex|gemini (default claude)
  *   --format          number plan tasks before starting
  */
-import { execFileSync, spawn as nodeSpawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { RALPH_AGENT_CONTEXT, TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
+import { RALPH_AGENT_CONTEXT, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
+import {
+  extractCurrentTask,
+  markSectionDone,
+  markCheckboxDone,
+  appendSubtasksToPlan,
+  parseSubtasks,
+  runAgentIteration,
+  type AgentSpawnConfig,
+} from "./shared/task-iteration.js";
 
 const { values: args } = parseArgs({
   args: process.argv.slice(2),
@@ -80,12 +89,8 @@ function resolveBin(name: string): string {
   } catch { return name; }
 }
 
-interface AgentConfig {
-  bin: string;
-  args: (prompt: string) => string[];
-}
 
-const AGENTS: Record<string, AgentConfig> = {
+const AGENTS: Record<string, AgentSpawnConfig> = {
   claude: {
     bin: resolveBin("claude"),
     args: (prompt) => ["--print", "--dangerously-skip-permissions", "--allowedTools", ALLOWED_TOOLS, "-p", prompt],
@@ -122,58 +127,7 @@ function readPlan(): string {
   return readFileSync(PLAN_PATH, "utf-8");
 }
 
-function extractCurrentTask(): { task: string; checkbox: boolean } | null {
-  try {
-    const plan = readPlan();
 
-    // try checkboxes first (subtasks appended at bottom)
-    const cbMatch = plan.match(/^- \[ \] (.+)$/m);
-    if (cbMatch) return { task: cbMatch[1], checkbox: true };
-
-    // then section headers: find first ## or ### numbered header not struck through
-    const lines = plan.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (TASK_HEADER.test(line) && !line.includes("~~")) {
-        const level = line.match(/^(#{2,3})/)?.[1] || "##";
-        // collect the full section until the next header at same or higher level
-        const sectionLines = [line];
-        for (let j = i + 1; j < lines.length; j++) {
-          const nextMatch = lines[j].match(/^(#{1,3}) /);
-          if (nextMatch && nextMatch[1].length <= level.length) break;
-          sectionLines.push(lines[j]);
-        }
-        return { task: sectionLines.join("\n").trim(), checkbox: false };
-      }
-    }
-    return null;
-  } catch { return null; }
-}
-
-function markSectionDone(taskText: string): void {
-  try {
-    const plan = readPlan();
-    const headerLine = taskText.split("\n")[0];
-    if (!headerLine || !plan.includes(headerLine)) return;
-    const prefix = headerLine.match(/^(#{2,3} )/)?.[1] || "### ";
-    const rest = headerLine.slice(prefix.length);
-    // use line-start anchor to avoid replacing text that appears elsewhere
-    const escaped = headerLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const lineRegex = new RegExp("^" + escaped + "$", "m");
-    const updated = plan.replace(lineRegex, `${prefix}~~${rest}~~`);
-    writeFileSync(PLAN_PATH, updated);
-  } catch {}
-}
-
-function markCheckboxDone(taskText: string): void {
-  try {
-    const plan = readPlan();
-    const escaped = taskText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp("^- \\[ \\] " + escaped + "$", "m");
-    const updated = plan.replace(re, `- [x] ${taskText}`);
-    writeFileSync(PLAN_PATH, updated);
-  } catch {}
-}
 
 function numberPlanTasks(): Promise<{ exitCode: number; output: string }> {
   const prompt = `You are reformatting a plan file for an automated task runner.
@@ -192,7 +146,7 @@ Rules:
 - Already-completed tasks (with ~~) should keep their ~~ markers
 - Write the result back to @${PLAN_FILE} using the Write tool — do not output the file content`;
 
-  return runIteration(prompt);
+  return runAgentIteration(prompt, PROJECT_DIR, agent, ITERATION_TIMEOUT_MS, LOG_FILE);
 }
 
 /** Build a recovery prompt when the plan file gets corrupted (task count shrinks). */
@@ -278,18 +232,6 @@ appendFileSync(LOG_FILE, `started: ${new Date().toString()}\n\n`);
 let START_COMMIT = "";
 try { START_COMMIT = execFileSync("git", ["rev-parse", "HEAD"], { cwd: PROJECT_DIR, encoding: "utf-8" }).trim(); } catch {}
 
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
-}
-
-function appendSubtasksToPlan(subtasks: string[]): void {
-  // sanitize: strip markdown headers and strikethrough markers
-  const safe = subtasks.map(t => t.replace(/^#+\s*/, "").replace(/~~/g, "").trim()).filter(Boolean);
-  const lines = safe.map(t => `- [ ] ${t}`).join("\n");
-  appendFileSync(PLAN_PATH, "\n" + lines + "\n");
-}
 
 function dedupCheckboxes(): void {
   try {
@@ -325,61 +267,19 @@ function dedupCheckboxes(): void {
 
 const ITERATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes per iteration
 
-// track active child for signal handling
-let activeChild: ReturnType<typeof nodeSpawn> | null = null;
-
 function runIteration(prompt: string): Promise<{ exitCode: number; output: string }> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    const child = nodeSpawn(agent.bin, agent.args(prompt), {
-      cwd: PROJECT_DIR,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    activeChild = child;
-
-    const timeout = setTimeout(() => {
-      appendFileSync(LOG_FILE, `\n=== ⚠️  Iteration timed out after ${ITERATION_TIMEOUT_MS / 60000}min — killing agent ===\n`);
-      child.kill("SIGTERM");
-      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 5000);
-    }, ITERATION_TIMEOUT_MS);
-
-    child.stdout?.on("data", (d: Buffer) => {
-      chunks.push(d);
-      appendFileSync(LOG_FILE, d.toString("utf-8"));
-    });
-    child.stderr?.on("data", (d: Buffer) => {
-      chunks.push(d);
-      appendFileSync(LOG_FILE, d.toString("utf-8"));
-    });
-
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      activeChild = null;
-      resolve({ exitCode: code ?? 1, output: Buffer.concat(chunks).toString("utf-8") });
-    });
-
-    child.on("error", (err) => {
-      clearTimeout(timeout);
-      activeChild = null;
-      appendFileSync(LOG_FILE, `spawn error: ${err.message}\n`);
-      resolve({ exitCode: 1, output: `spawn error: ${err.message}\n` });
-    });
-  });
+  return runAgentIteration(prompt, PROJECT_DIR, agent, ITERATION_TIMEOUT_MS, LOG_FILE);
 }
 
 // last-resort lock cleanup on any exit (covers unhandled exceptions, SIGINT, etc.)
 process.on("exit", removeLock);
 
-// clean up child process and lock on SIGTERM
+// clean up lock on SIGTERM
 process.on("SIGTERM", () => {
   appendFileSync(LOG_FILE, `\n=== 🛑 Received SIGTERM — cleaning up ===\n`);
-  if (activeChild) {
-    activeChild.kill("SIGTERM");
-    setTimeout(() => { try { activeChild?.kill("SIGKILL"); } catch {} }, 3000);
-  }
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
   removeLock();
-  setTimeout(() => process.exit(0), 3500);
+  setTimeout(() => process.exit(0), 500);
 });
 
 function logSummary(tasksCompleted: number, subtasksAdded: number): void {
@@ -464,7 +364,7 @@ async function main() {
 
   for (let i = 1; i <= maxIterations; i++) {
     // extract current task from plan
-    const result = extractCurrentTask();
+    const result = extractCurrentTask(PLAN_PATH);
     if (!result) {
       // Check if plan has content but nothing parseable — possible format corruption
       const planContent = readPlan().trim();
@@ -485,8 +385,8 @@ async function main() {
     // the parent wasn't marked done — force it now
     if (task === lastTask && lastWasSubtaskEmission) {
       appendFileSync(LOG_FILE, `\n=== ⚠️ Same task picked twice after subtask emission — force-marking parent done ===\n`);
-      if (checkbox) markCheckboxDone(task);
-      else markSectionDone(task);
+      if (checkbox) markCheckboxDone(PLAN_PATH, task);
+      else markSectionDone(PLAN_PATH, task);
       lastTask = null;
       lastWasSubtaskEmission = false;
       continue;
@@ -534,17 +434,17 @@ async function main() {
     }
 
     // check for subtask breakdown (capped to prevent unbounded expansion)
-    const subtasks = parseSubtasks(output);
+    const subtasks = parseSubtasks(output) ?? [];
     const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
     if (subtasks.length > 0 && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
       subtaskExpansions++;
       subtasksAdded += subtasks.length;
-      appendSubtasksToPlan(subtasks);
+      appendSubtasksToPlan(PLAN_PATH, subtasks);
       // mark parent done so it's never re-picked
       if (checkbox) {
-        markCheckboxDone(task);
+        markCheckboxDone(PLAN_PATH, task);
       } else {
-        markSectionDone(task);
+        markSectionDone(PLAN_PATH, task);
       }
       if (maxIterations < MAX_CEILING) maxIterations++;
       appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${subtasks.length}) — extended to ${maxIterations} iterations (ceiling ${MAX_CEILING}, expansions ${subtaskExpansions}/${MAX_SUBTASK_EXPANSIONS}) ===\n`);
@@ -563,16 +463,16 @@ async function main() {
 
     // mark task done in plan file
     if (checkbox) {
-      markCheckboxDone(task);
+      markCheckboxDone(PLAN_PATH, task);
     } else {
-      markSectionDone(task);
+      markSectionDone(PLAN_PATH, task);
     }
 
     try { unlinkSync(ITER_FILE); } catch {}
   }
 
   appendFileSync(LOG_FILE, `=== Completed ${maxIterations} iterations ===\n`);
-  const remaining = extractCurrentTask();
+  const remaining = extractCurrentTask(PLAN_PATH);
   if (!remaining) {
     await runCleanup();
   } else {
