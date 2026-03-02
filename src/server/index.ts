@@ -25,6 +25,7 @@ import {
   cachedPeers,
 } from "./http.js";
 import { handleTerminalWs, handlePtyWs } from "./websocket.js";
+import { startOrchestrationPoller, stopOrchestrationPoller } from "../kobra-kai/orchestrate.js";
 
 // Re-export everything tests need from a single entry point
 export {
@@ -208,7 +209,15 @@ export function startServer(port = PORT, host = "127.0.0.1"): void {
     discoverPeers().then(() => {
       if (cachedPeers.length) console.log(`Discovered ${cachedPeers.length} peer(s): ${cachedPeers.map(p => p.name).join(", ")}`);
     }).catch(() => {});
+    startOrchestrationPoller();
   });
+
+  const shutdown = () => {
+    stopOrchestrationPoller();
+    server.close();
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
 export { server, wss };

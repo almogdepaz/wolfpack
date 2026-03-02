@@ -134,3 +134,10 @@
   - DAG: returns raw DAG, no DAG 404, missing project 400
   - Cancel: cancels orchestration, missing project 400
 - All 23 integration tests pass, type-checks clean (pre-existing bun-types issue only)
+
+## Task 10: Start poller on server boot
+- Edited `src/server/index.ts`:
+  - Imported `startOrchestrationPoller` and `stopOrchestrationPoller` from `../kobra-kai/orchestrate.js`
+  - Called `startOrchestrationPoller()` inside server.listen callback (after peer discovery)
+  - Added `shutdown` handler on SIGTERM/SIGINT that calls `stopOrchestrationPoller()` + `server.close()`
+- All 23 kobra-kai integration tests still pass
