@@ -51,3 +51,21 @@
   - cleanupWaveWorktrees: all cleaned, skips tasks without worktree_path
   - listProjectWorktrees: returns -wt- paths only, excludes main worktree, filters non-wt worktrees
 - All 40 tests pass (27 planner + 13 worktree), type-checks clean (only pre-existing bun-types issue)
+
+## Task 5: Create merge engine
+- Extracted `git()` helper to shared `src/kobra-kai/git.ts` — used by both worktree.ts and merge.ts
+- Updated `src/kobra-kai/worktree.ts` to import `git` from `./git.ts` instead of internal function
+- Created `src/kobra-kai/merge.ts` with 2 exported functions:
+  - `jsonMerge(base, ours, theirs)` — 3-way JSON merge: recurse objects (union of keys), concatenate+dedup arrays, scalars take theirs, type mismatch takes theirs
+  - `mergeWave(projectDir, wave, dag)` — merges all task branches in a wave into an integration branch:
+    - Creates `integrate/{project}/wave-{N}` from base (main for wave 0, prev integration for wave N)
+    - Sorted deterministic merge order
+    - Validates diffs against estimated_files, flags unexpected files (non-blocking)
+    - Attempts `--no-ff` merge per task
+    - On conflict: JSON files auto-resolved via `jsonMerge` using git index stages (:1:, :2:, :3:); non-JSON → abort + record
+    - Sets wave.integration_branch and wave.status
+    - Cleans up worktrees, returns to base branch
+- Created `tests/unit/kobra-kai/merge.test.ts` — 17 tests, all passing:
+  - jsonMerge: objects (union+recurse), arrays (concat+dedup), objects in arrays kept, scalars (theirs wins), nested objects, type mismatch, array vs object mismatch, null values
+  - mergeWave: clean merge (different files), JSON conflict resolution (verified merged content), non-JSON conflict (abort+report), unexpected files flagged, integration branch naming, wave state mutation, return to base branch, wave N uses prev integration as base, skips tasks without branch
+- All 57 tests pass (27 planner + 13 worktree + 17 merge), type-checks clean (only pre-existing bun-types issue)
