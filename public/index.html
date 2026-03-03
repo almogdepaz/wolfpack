@@ -2229,6 +2229,126 @@
         }
       }
 
+      /* ── Kobra Kai ── */
+      /* kobra kai accent: orange #f39c12 */
+      .kobra-nav-btn {
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 10px;
+        color: #777;
+        font-size: 18px;
+        cursor: pointer;
+        padding: 6px;
+        min-width: 36px;
+        min-height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+        -webkit-tap-highlight-color: transparent;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+      .kobra-nav-btn:active {
+        transform: scale(0.95);
+        background: #f39c12;
+        color: #0a0a0a;
+      }
+      .kk-new-btn {
+        padding: 6px 14px;
+        background: #1a1a1a;
+        border: 1px solid rgba(243,156,18,0.4);
+        border-radius: 10px;
+        color: #f39c12;
+        font-size: 11px;
+        font-weight: bold;
+        font-family: inherit;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        cursor: pointer;
+        transition: transform 0.1s ease;
+      }
+      .kk-new-btn:active { transform: scale(0.95); }
+
+      .kk-card {
+        background: #111;
+        border: 1px solid #1a1a1a;
+        border-radius: 3px;
+        padding: 8px 10px;
+        margin-bottom: 3px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .kk-card:active { background: #161616; border-color: #f39c12; }
+      .kk-card.active { border-left: 3px solid #f39c12; }
+      .kk-card.completed { border-left: 3px solid #00ff41; }
+      .kk-card.failed { border-left: 3px solid #e74c3c; }
+
+      .kk-card-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #f39c12;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+      }
+      .kk-card-meta {
+        font-size: 11px;
+        color: #4a4a4a;
+        margin-top: 2px;
+      }
+
+      .kk-badge {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 9px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .kk-badge.running { color: #00ff41; background: #00ff4115; }
+      .kk-badge.pending { color: #888; background: #88888815; }
+      .kk-badge.completed { color: #00ff41; background: #00ff4115; }
+      .kk-badge.failed { color: #e74c3c; background: #e74c3c15; }
+      .kk-badge.merging { color: #f39c12; background: #f39c1215; }
+
+      .kk-wave-group {
+        margin: 8px 6px;
+      }
+      .kk-wave-label {
+        font-size: 10px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        padding: 4px 0;
+        border-bottom: 1px solid #1a1a1a;
+        margin-bottom: 4px;
+      }
+
+      .kk-task-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 3px;
+        transition: background 0.15s ease;
+      }
+      .kk-task-row:active { background: #1a1a1a; }
+      .kk-task-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .kk-task-dot.pending { background: #333; }
+      .kk-task-dot.in_progress { background: #f39c12; box-shadow: 0 0 4px #f39c12aa; }
+      .kk-task-dot.completed { background: #00ff41; }
+      .kk-task-dot.failed { background: #e74c3c; }
+      .kk-task-title {
+        font-size: 11px;
+        color: #b0b0b0;
+        flex: 1;
+      }
+
     </style>
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.min.js"></script>
@@ -2251,6 +2371,7 @@
       <div class="header-right">
         <div id="header-machine-label" style="display:none;font-size:9px;color:#555;text-transform:uppercase;letter-spacing:1px;line-height:1"></div>
         <button class="search-btn" id="search-btn" onclick="toggleSearch()">&#128269;</button>
+        <button class="kobra-nav-btn" id="kobra-btn" onclick="toggleKobraKaiView()" title="Kobra Kai">&#129355;</button>
         <button class="settings-gear" id="gear-btn" onclick="showSettings()">&#9881;</button>
       </div>
     </header>
@@ -2258,6 +2379,7 @@
       <div class="sidebar-header">
         <h1>WOLFPACK</h1>
         <div class="sidebar-controls">
+          <button id="sidebar-kobra-btn" title="Kobra Kai" onclick="toggleKobraKaiView()">&#129355;</button>
           <button id="sidebar-settings-btn" title="Settings">&#9881;</button>
           <button id="sidebar-expand-btn" title="Expand sessions">&#x26F6;</button>
           <button id="sidebar-collapse-btn" title="Pin sidebar"><span class="pin-icon">&#x1F4CC;</span></button>
@@ -2518,6 +2640,19 @@
         <button class="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
       </div>
     </div>
+    <!-- Kobra Kai view -->
+    <div id="kobra-kai-view" class="view">
+      <div id="kk-header" style="padding:10px;border-bottom:1px solid #1a1a1a">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:14px;font-weight:700;color:#f39c12;text-transform:uppercase;letter-spacing:2px">Kobra Kai</span>
+          <button class="kk-new-btn" onclick="showKobraKaiForm()">+ New</button>
+        </div>
+      </div>
+      <div id="kk-active-orchestration" style="display:none"></div>
+      <div id="kk-list" class="list"></div>
+      <div id="kk-form" style="display:none"></div>
+    </div>
+
     </div><!-- /view-container -->
 
     <script>

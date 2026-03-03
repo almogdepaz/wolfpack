@@ -160,3 +160,10 @@
 - `tests/unit/kobra-kai/task-runner.test.ts`: removed unused `mock` import from `bun:test`, unused `readFile` import from `node:fs/promises`, removed unused `makeMockAgent` helper function
 - `tests/unit/kobra-kai/planner.test.ts`: removed unused `mock` import from `bun:test`
 - All 835 non-e2e tests still pass after cleanup
+
+## Task: Add Kobra Kai view container and CSS to public/index.html
+- Added ~100 lines of CSS in `<style>` block: `.kobra-nav-btn`, `.kk-new-btn`, `.kk-card` (+ active/completed/failed), `.kk-card-title`, `.kk-card-meta`, `.kk-badge` (+ running/pending/completed/failed/merging), `.kk-wave-group`, `.kk-wave-label`, `.kk-task-row`, `.kk-task-dot` (+ pending/in_progress/completed/failed), `.kk-task-title`
+- Added `#kobra-kai-view` div (view container with header, active orchestration, list, form sections) before `</div><!-- /view-container -->`
+- Added 🥋 nav button in `header-right` (styled same as settings gear)
+- Added 🥋 button in desktop sidebar controls
+- Note: `toggleKobraKaiView()` and `showKobraKaiForm()` JS functions not yet defined — expected to be wired in a subsequent UI task
