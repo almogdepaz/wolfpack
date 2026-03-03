@@ -12,7 +12,6 @@ import { basename, join } from "node:path";
 import type {
   TaskDAG,
   TaskNode,
-  Wave,
 } from "../../../src/kobra-kai/types.ts";
 import {
   countTasksInContent,

@@ -252,3 +252,8 @@
   - CSS isolation: KK orange (#f39c12) doesn't bleed into session cards, accent color correct on KK elements, no layout shift when toggling views
 - Results: **29 pass, 0 fail** (16 skipped: mobile tests on desktop, desktop test on mobile)
 - Regression check: all 572 unit/integration tests pass, all existing e2e tests pass (6 pre-existing triage-badges failures unchanged)
+
+## Cleanup: Dead code removal (pass 2)
+- `tests/unit/kobra-kai/orchestrate.test.ts`: removed unused `Wave` type import (wave objects created as inline literals, type never referenced)
+- Reviewed all 8 changed files + all coupled source and test files — no other dead code found
+- All 116 kobra-kai tests pass after cleanup
