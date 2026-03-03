@@ -2348,6 +2348,44 @@
         color: #b0b0b0;
         flex: 1;
       }
+      .kk-task-row { cursor: pointer; }
+      .kk-task-row:hover { background: #151515; }
+      .kk-task-chevron {
+        color: #444;
+        font-size: 10px;
+        transition: transform 0.2s ease;
+        margin-left: auto;
+        flex-shrink: 0;
+      }
+      .kk-task-row.expanded .kk-task-chevron { transform: rotate(90deg); }
+      .kk-task-detail {
+        padding: 6px 8px 6px 24px;
+        font-size: 11px;
+        color: #666;
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+      }
+      .kk-task-row.expanded + .kk-task-detail { max-height: 200px; }
+      .kk-detail-label {
+        color: #555;
+        text-transform: uppercase;
+        font-size: 9px;
+        letter-spacing: 0.5px;
+      }
+      .kk-task-desc {
+        color: #888;
+        margin-bottom: 4px;
+        white-space: pre-wrap;
+      }
+      .kk-task-files {
+        color: #555;
+        margin-top: 2px;
+      }
+      .kk-task-deps {
+        color: #555;
+        margin-top: 2px;
+      }
 
       .kk-progress {
         height: 3px;
@@ -3955,6 +3993,10 @@
         html += '<div style="font-size:9px;color:#555;text-align:right;padding:0 10px;margin-bottom:8px">' +
           completedWaves + ' / ' + totalWaves + ' waves</div>';
 
+        // preserve expanded task state across re-renders
+        var expandedTasks = new Set();
+        el.querySelectorAll(".kk-task-row.expanded").forEach(function(r) { expandedTasks.add(r.dataset.taskId); });
+
         // wave groups
         for (var i = 0; i < waves.length; i++) {
           var wave = waves[i];
@@ -3963,10 +4005,24 @@
           html += '<div class="kk-wave-label">wave ' + wave.wave + ' <span class="kk-badge ' + esc(wave.status) + '">' + esc(wave.status) + '</span></div>';
           for (var j = 0; j < waveTasks.length; j++) {
             var t = waveTasks[j];
-            html += '<div class="kk-task-row">';
+            var taskId = esc(t.id || t.title || (wave.wave + '-' + j));
+            var isExpanded = expandedTasks.has(taskId);
+            html += '<div class="kk-task-row' + (isExpanded ? ' expanded' : '') + '" data-task-id="' + taskId + '" onclick="this.classList.toggle(\'expanded\')">';
             html += '<div class="kk-task-dot ' + esc(t.status) + '"></div>';
             html += '<div class="kk-task-title">' + esc(t.title) + '</div>';
             html += '<span class="kk-badge ' + esc(t.status) + '">' + esc(t.status) + '</span>';
+            html += '<span class="kk-task-chevron">&#9656;</span>';
+            html += '</div>';
+            html += '<div class="kk-task-detail">';
+            if (t.description) {
+              html += '<div class="kk-task-desc">' + esc(t.description) + '</div>';
+            }
+            if (t.estimated_files && t.estimated_files.length) {
+              html += '<div class="kk-task-files"><span class="kk-detail-label">files: </span>' + esc(t.estimated_files.join(', ')) + '</div>';
+            }
+            if (t.depends_on && t.depends_on.length) {
+              html += '<div class="kk-task-deps"><span class="kk-detail-label">depends on: </span>' + esc(t.depends_on.join(', ')) + '</div>';
+            }
             html += '</div>';
           }
           html += '</div>';

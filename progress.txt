@@ -208,3 +208,14 @@
   - Sets `currentKobraKaiProject` when active orchestration found
 - Added `cancelKobraKai(project)`: POSTs to `/api/kobra-kai/cancel?project={project}`, reloads status
 - All 93 kobra-kai unit tests pass, all 23 integration tests pass, build clean
+
+## Task: Add DAG detail panel (expandable tasks)
+- Added CSS for expandable task details: `.kk-task-chevron` (rotates on expand), `.kk-task-detail` (max-height transition), `.kk-detail-label`, `.kk-task-desc`, `.kk-task-files`, `.kk-task-deps`
+- Made `.kk-task-row` clickable with cursor:pointer and hover state
+- Used sibling selector `.kk-task-row.expanded + .kk-task-detail` for max-height 0→200px transition (same pattern as `.ralph-iter-card`)
+- Updated task row HTML generation in `renderKobraKaiStatus()`:
+  - Each row gets `data-task-id`, `onclick` to toggle `.expanded` class, and a chevron span (`&#9656;`)
+  - Detail div rendered after each row with: description, estimated_files, depends_on (conditionally shown)
+  - Expanded state preserved across re-renders via `expandedTasks` Set (same pattern as ralph iteration cards)
+- All strings escaped via `esc()` for XSS safety
+- Build clean, all 23 kobra-kai integration tests pass
