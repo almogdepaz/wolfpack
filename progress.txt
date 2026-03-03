@@ -235,3 +235,20 @@
 - Verified: Escape key handler already handles kobra-kai (line 5733) ✓
 - Verified: desktop sidebar kobra-kai button already exists (line 2467) ✓
 - Build clean, all 23 kobra-kai integration tests pass
+
+## Task: Mobile and desktop testing (step 7)
+- Created `tests/e2e/kobra-kai.spec.ts` — 15 tests per device profile (45 total, 29 run + 16 correctly skipped)
+- Uses Playwright route mocking (`page.route()`) to intercept kobra-kai API endpoints — no real LLM/worktree needed
+- Test coverage:
+  - Navigation: toggle view via 🥋 button, back button returns to sessions
+  - Form: open/close form, project dropdown populated, mode tabs switch decompose↔schedule, plan file dropdown populated
+  - Validation: empty goal → inline error message ("enter a goal")
+  - DAG rendering: wave groups render, task rows with status dots/badges, progress bar, cancel button present
+  - Task detail: expand/collapse with chevron, description + files + deps shown
+  - Cancel orchestration: button calls cancel API, view reverts to idle
+  - Full flow: form → fill goal → plan (mocked) → launch (mocked) → DAG displays with wave groups
+  - Existing views: sessions still render after KK visit, terminal navigation works, settings accessible
+  - Desktop: sidebar present, KK view renders via JS toggle, DAG displays
+  - CSS isolation: KK orange (#f39c12) doesn't bleed into session cards, accent color correct on KK elements, no layout shift when toggling views
+- Results: **29 pass, 0 fail** (16 skipped: mobile tests on desktop, desktop test on mobile)
+- Regression check: all 572 unit/integration tests pass, all existing e2e tests pass (6 pre-existing triage-badges failures unchanged)
