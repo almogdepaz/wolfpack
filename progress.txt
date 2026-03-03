@@ -194,3 +194,17 @@
 - Project dropdown re-populates plan files on change via `onchange` handler
 - Button shows "planning..." → "launching..." progress states, re-enables on error
 - Build passes, 23 kobra-kai integration tests pass
+
+## Task: Add DAG visualization and orchestration status display
+- Added CSS: `.kk-progress` (3px bar, #1a1a1a bg), `.kk-progress-fill` (#f39c12, animated width transition), `.kk-cancel-action` (full-width red button, #1a0a0a bg, #cc3333 border/text)
+- Replaced `renderKobraKaiStatus(data)` stub with full implementation:
+  - Idle/no-data: hides `#kk-active-orchestration`, shows `#kk-list` with "no active orchestrations" + "+ New" prompt
+  - Active: shows project name + status badge, progress bar (waves completed/total), wave groups with task rows (dot + title + badge), cancel button
+  - Wave groups rendered with `kk-wave-group` containing `kk-wave-label` + per-task `kk-task-row` items
+  - All strings escaped via `esc()` for XSS safety
+- Rewrote `loadKobraKaiStatus()`:
+  - If `currentKobraKaiProject` set, checks it first (fast path)
+  - Falls back to scanning all projects via `GET /api/projects` → checking each for `status === "active"`
+  - Sets `currentKobraKaiProject` when active orchestration found
+- Added `cancelKobraKai(project)`: POSTs to `/api/kobra-kai/cancel?project={project}`, reloads status
+- All 93 kobra-kai unit tests pass, all 23 integration tests pass, build clean

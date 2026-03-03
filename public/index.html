@@ -2349,6 +2349,27 @@
         flex: 1;
       }
 
+      .kk-progress {
+        height: 3px;
+        background: #1a1a1a;
+        border-radius: 2px;
+        margin: 8px 10px;
+        overflow: hidden;
+      }
+      .kk-progress-fill {
+        height: 100%;
+        background: #f39c12;
+        border-radius: 2px;
+        transition: width 0.3s ease;
+      }
+
+      .kk-cancel-action {
+        width: calc(100% - 20px); margin: 10px; padding: 8px;
+        background: #1a0a0a; border: 1px solid #cc3333; border-radius: 10px;
+        color: #cc3333; font-size: 11px; font-family: inherit; cursor: pointer;
+      }
+      .kk-cancel-action:active { background: #2a0a0a; }
+
       .kk-field { display: flex; flex-direction: column; gap: 4px; }
       .kk-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #666; }
       .kk-field input, .kk-field textarea, .kk-field select {
@@ -3862,22 +3883,101 @@
       }
 
       async function loadKobraKaiStatus() {
-        if (!currentKobraKaiProject) return;
         try {
-          const data = await api("/kobra-kai/status?project=" + encodeURIComponent(currentKobraKaiProject));
-          renderKobraKaiStatus(data);
+          // if we already know the project, check it directly
+          if (currentKobraKaiProject) {
+            const data = await api("/kobra-kai/status?project=" + encodeURIComponent(currentKobraKaiProject));
+            if (data && data.status === "active") {
+              renderKobraKaiStatus(data);
+              return;
+            }
+          }
+
+          // scan all projects for an active orchestration
+          const projData = await api("/projects");
+          const projects = projData.projects || [];
+          var activeStatus = null;
+
+          for (var i = 0; i < projects.length; i++) {
+            try {
+              const data = await api("/kobra-kai/status?project=" + encodeURIComponent(projects[i]));
+              if (data && data.status === "active") {
+                activeStatus = data;
+                activeStatus.project = projects[i];
+                currentKobraKaiProject = projects[i];
+                break;
+              }
+            } catch (e) { /* project may not have a DAG */ }
+          }
+
+          renderKobraKaiStatus(activeStatus);
         } catch (e) {
-          // silently ignore poll errors (project may not have a DAG yet)
+          // silently ignore poll errors
         }
       }
 
       function renderKobraKaiStatus(data) {
-        // stub — rendering logic wired in a subsequent task
         const el = document.getElementById("kk-active-orchestration");
+        const list = document.getElementById("kk-list");
         if (!el) return;
-        if (data && data.status && data.status !== "idle") {
-          el.style.display = "";
+
+        // no active orchestration — show list with idle message
+        if (!data || !data.status || data.status === "idle") {
+          el.style.display = "none";
+          if (list) {
+            list.style.display = "";
+            list.innerHTML = '<div style="padding:20px;text-align:center;color:#555;font-size:12px">' +
+              'no active orchestrations<br><br>' +
+              '<span style="color:#666;font-size:11px">tap <b>+ New</b> to start one</span></div>';
+          }
+          return;
         }
+
+        // active orchestration — render DAG
+        if (list) list.style.display = "none";
+        el.style.display = "";
+
+        var waves = data.waves || [];
+        var tasks = data.tasks || [];
+        var totalWaves = waves.length;
+        var completedWaves = waves.filter(function(w) { return w.status === "merged" || w.status === "completed"; }).length;
+        var pct = totalWaves > 0 ? Math.round((completedWaves / totalWaves) * 100) : 0;
+
+        var html = '<div style="padding:10px">';
+        // project name + status badge
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+        html += '<span style="font-size:13px;font-weight:700;color:#ccc">' + esc(data.project || currentKobraKaiProject || "—") + '</span>';
+        html += '<span class="kk-badge ' + esc(data.status) + '">' + esc(data.status) + '</span>';
+        html += '</div>';
+
+        // progress bar
+        html += '<div class="kk-progress"><div class="kk-progress-fill" style="width:' + pct + '%"></div></div>';
+        html += '<div style="font-size:9px;color:#555;text-align:right;padding:0 10px;margin-bottom:8px">' +
+          completedWaves + ' / ' + totalWaves + ' waves</div>';
+
+        // wave groups
+        for (var i = 0; i < waves.length; i++) {
+          var wave = waves[i];
+          var waveTasks = tasks.filter(function(t) { return t.wave === wave.wave; });
+          html += '<div class="kk-wave-group">';
+          html += '<div class="kk-wave-label">wave ' + wave.wave + ' <span class="kk-badge ' + esc(wave.status) + '">' + esc(wave.status) + '</span></div>';
+          for (var j = 0; j < waveTasks.length; j++) {
+            var t = waveTasks[j];
+            html += '<div class="kk-task-row">';
+            html += '<div class="kk-task-dot ' + esc(t.status) + '"></div>';
+            html += '<div class="kk-task-title">' + esc(t.title) + '</div>';
+            html += '<span class="kk-badge ' + esc(t.status) + '">' + esc(t.status) + '</span>';
+            html += '</div>';
+          }
+          html += '</div>';
+        }
+
+        // cancel button
+        var proj = esc(data.project || currentKobraKaiProject || "");
+        html += '<button class="kk-cancel-action" onclick="cancelKobraKai(\'' + proj + '\')">cancel orchestration</button>';
+
+        html += '</div>';
+        el.innerHTML = html;
       }
 
       async function showKobraKaiForm() {
@@ -3988,6 +4088,14 @@
         } finally {
           if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "plan & launch"; }
         }
+      }
+
+      async function cancelKobraKai(project) {
+        if (!project) return;
+        try {
+          await api("/kobra-kai/cancel?project=" + encodeURIComponent(project), { method: "POST" });
+        } catch (e) { /* ignore */ }
+        loadKobraKaiStatus();
       }
 
       // ── Sessions ──
