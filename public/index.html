@@ -2972,6 +2972,8 @@
       let allSessions = [];
       let sessionRefreshTimer = null;
       let currentRalphProject = null;
+      let currentKobraKaiProject = null;
+      let kkPollTimer = null;
       let currentRalphMachine = ""; // "" = self, URL string = remote
       let ralphStartMachine = ""; // machine context for ralph-start form
       let ralphLogPollTimer = null;
@@ -3167,6 +3169,7 @@
         terminal: 1,
         "ralph-detail": 1,
         "ralph-start": 1,
+        "kobra-kai": 1,
       };
 
       function showView(name, skipAnimation) {
@@ -3252,6 +3255,7 @@
         // Stop timers immediately (don't defer these)
         if (sessionRefreshTimer) { clearInterval(sessionRefreshTimer); sessionRefreshTimer = null; }
         if (ralphLogPollTimer) { clearInterval(ralphLogPollTimer); ralphLogPollTimer = null; }
+        if (kkPollTimer && effectiveName !== "kobra-kai") { clearInterval(kkPollTimer); kkPollTimer = null; }
 
         // Desktop: skip all header manipulation, handle view-specific logic only
         if (!isMobile) {
@@ -3274,6 +3278,9 @@
             ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
           } else if (effectiveName === "ralph-start") {
             loadRalphStartForm();
+          } else if (effectiveName === "kobra-kai") {
+            loadKobraKaiStatus();
+            startKobraKaiPolling();
           }
           // Update sidebar active highlight
           renderSidebar();
@@ -3363,6 +3370,14 @@
             title.textContent = "start ralph";
 
             loadRalphStartForm();
+          } else if (name === "kobra-kai") {
+            back.style.display = "block";
+            back.onclick = () => { stopKobraKaiPolling(); showView("sessions"); loadSessions(); };
+            gear.style.display = "none";
+            title.textContent = "kobra kai";
+
+            loadKobraKaiStatus();
+            startKobraKaiPolling();
           }
         };
 
@@ -3766,6 +3781,53 @@
         } catch (e) {
           alert("failed to dismiss: " + e.message);
         }
+      }
+
+      // ── Kobra Kai Functions ──
+
+      function toggleKobraKaiView() {
+        if (currentView === "kobra-kai") {
+          showView("sessions");
+          stopKobraKaiPolling();
+        } else {
+          showView("kobra-kai");
+          loadKobraKaiStatus();
+          startKobraKaiPolling();
+        }
+      }
+
+      function startKobraKaiPolling() {
+        if (kkPollTimer) return;
+        kkPollTimer = setInterval(loadKobraKaiStatus, 3000);
+      }
+
+      function stopKobraKaiPolling() {
+        if (kkPollTimer) { clearInterval(kkPollTimer); kkPollTimer = null; }
+      }
+
+      async function loadKobraKaiStatus() {
+        if (!currentKobraKaiProject) return;
+        try {
+          const data = await api("/kobra-kai/status?project=" + encodeURIComponent(currentKobraKaiProject));
+          renderKobraKaiStatus(data);
+        } catch (e) {
+          // silently ignore poll errors (project may not have a DAG yet)
+        }
+      }
+
+      function renderKobraKaiStatus(data) {
+        // stub — rendering logic wired in a subsequent task
+        const el = document.getElementById("kk-active-orchestration");
+        if (!el) return;
+        if (data && data.status && data.status !== "idle") {
+          el.style.display = "";
+        }
+      }
+
+      function showKobraKaiForm() {
+        // stub — form logic wired in a subsequent task
+        const form = document.getElementById("kk-form");
+        if (form) form.style.display = "";
       }
 
       // ── Sessions ──
@@ -5344,6 +5406,7 @@
         if (currentView === "agent") { e.preventDefault(); showView("projects"); }
         else if (currentView === "projects") { e.preventDefault(); showView(viewBeforePicker); loadSessions(); }
         else if (currentView === "ralph-start" || currentView === "ralph-detail") { e.preventDefault(); backToSessions(); }
+        else if (currentView === "kobra-kai") { e.preventDefault(); stopKobraKaiPolling(); showView("sessions"); loadSessions(); }
       });
 
       document
@@ -5581,7 +5644,7 @@
         const BACK_TARGET = {
           terminal: "sessions", "ralph-detail": "sessions",
           projects: "sessions", agent: "projects", settings: "sessions",
-          "ralph-start": "sessions",
+          "ralph-start": "sessions", "kobra-kai": "sessions",
         };
 
         function applySwipe() {

@@ -167,3 +167,18 @@
 - Added 🥋 nav button in `header-right` (styled same as settings gear)
 - Added 🥋 button in desktop sidebar controls
 - Note: `toggleKobraKaiView()` and `showKobraKaiForm()` JS functions not yet defined — expected to be wired in a subsequent UI task
+
+## Task: Add navigation and view switching logic for Kobra Kai
+- Added `currentKobraKaiProject` and `kkPollTimer` state variables
+- Added `"kobra-kai": 1` to `VIEW_DEPTH` map (same depth as terminal/settings)
+- Added `"kobra-kai": "sessions"` to `BACK_TARGET` map for swipe-back navigation
+- Added `kkPollTimer` cleanup in `showView()` timer section — clears when navigating away from kobra-kai
+- Added kobra-kai handling in desktop `showView` branch — calls `loadKobraKaiStatus()` + `startKobraKaiPolling()`
+- Added kobra-kai handling in mobile `showView` header — back button, title "kobra kai", polling start
+- Added Escape key handler for kobra-kai view — stops polling + navigates to sessions
+- Implemented `toggleKobraKaiView()` — toggles between sessions and kobra-kai, manages polling lifecycle
+- Implemented `startKobraKaiPolling()` — setInterval at 3s, idempotent (no-op if already running)
+- Implemented `stopKobraKaiPolling()` — clearInterval + null timer
+- Implemented `loadKobraKaiStatus()` — fetches `GET /api/kobra-kai/status?project={project}`, guards on `currentKobraKaiProject`
+- Stubbed `renderKobraKaiStatus(data)` and `showKobraKaiForm()` — rendering wired in subsequent tasks
+- All 93 kobra-kai unit tests pass, all 23 integration tests pass
