@@ -51,7 +51,16 @@ export interface OrchestrationStatus {
   status: "idle" | "active" | "completed" | "failed";
   currentWave: number;
   totalWaves: number;
-  tasks: { id: string; title: string; status: string; wave: number }[];
+  tasks: {
+    id: string;
+    title: string;
+    status: string;
+    wave: number;
+    description?: string;
+    estimated_files?: string[];
+    depends_on?: string[];
+  }[];
+  waves: { wave: number; status: string }[];
   activeAgents: number;
   queuedTasks: number;
   maxConcurrent: number;

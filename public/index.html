@@ -2231,43 +2231,6 @@
 
       /* ── Kobra Kai ── */
       /* kobra kai accent: orange #f39c12 */
-      .kobra-nav-btn {
-        background: #1a1a1a;
-        border: 1px solid #2a2a2a;
-        border-radius: 10px;
-        color: #777;
-        font-size: 18px;
-        cursor: pointer;
-        padding: 6px;
-        min-width: 36px;
-        min-height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: transform 0.1s ease, box-shadow 0.1s ease;
-        -webkit-tap-highlight-color: transparent;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      }
-      .kobra-nav-btn:active {
-        transform: scale(0.95);
-        background: #f39c12;
-        color: #0a0a0a;
-      }
-      .kk-new-btn {
-        padding: 6px 14px;
-        background: #1a1a1a;
-        border: 1px solid rgba(243,156,18,0.4);
-        border-radius: 10px;
-        color: #f39c12;
-        font-size: 11px;
-        font-weight: bold;
-        font-family: inherit;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        cursor: pointer;
-        transition: transform 0.1s ease;
-      }
-      .kk-new-btn:active { transform: scale(0.95); }
 
       .kk-card {
         background: #111;
@@ -2408,48 +2371,9 @@
       }
       .kk-cancel-action:active { background: #2a0a0a; }
 
-      .kk-field { display: flex; flex-direction: column; gap: 4px; }
-      .kk-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #666; }
-      .kk-field input, .kk-field textarea, .kk-field select {
-        background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px;
-        padding: 7px 8px; color: #ccc; font-family: inherit; font-size: 12px;
-      }
-      .kk-field input:focus, .kk-field textarea:focus { outline: none; border-color: #f39c12; }
-
-      .kk-mode-tab {
-        flex: 1; padding: 6px; background: #1a1a1a; border: 1px solid #2a2a2a;
-        border-radius: 4px; color: #888; font-size: 11px; font-family: inherit; cursor: pointer;
-      }
-      .kk-mode-tab.active { border-color: #f39c12; color: #f39c12; }
-
-      .kk-cancel-btn {
-        padding: 8px 14px; background: #1a1a1a; border: 1px solid #2a2a2a;
-        border-radius: 10px; color: #888; font-size: 11px; font-family: inherit; cursor: pointer;
-      }
-      .kk-launch-btn {
-        padding: 8px 14px; background: #1a1a1a; border: 1px solid rgba(243,156,18,0.4);
-        border-radius: 10px; color: #f39c12; font-size: 11px; font-weight: bold;
-        font-family: inherit; text-transform: uppercase; letter-spacing: 1px; cursor: pointer;
-        transition: transform 0.1s ease;
-      }
-      .kk-launch-btn:active { transform: scale(0.95); }
       .kk-session-badge {
         font-size: 10px; margin-left: 4px; vertical-align: middle;
         opacity: 0.8;
-      }
-      .kk-launch-btn.kk-loading {
-        pointer-events: none; opacity: 0.7;
-        color: #f39c12; text-align: center;
-        text-transform: uppercase; letter-spacing: 1px;
-      }
-      .kk-launch-btn.kk-loading::after {
-        content: '';
-        animation: kkdots 1.5s infinite;
-      }
-      @keyframes kkdots {
-        0%   { content: '.'; }
-        33%  { content: '..'; }
-        66%  { content: '...'; }
       }
 
       /* ── DAG Panel Overlay ── */
@@ -2798,6 +2722,149 @@
       .kk-dag-btn:hover { border-color: #f39c12; background: rgba(243,156,18,0.08); }
       .kk-dag-btn:active { transform: scale(0.95); }
 
+      /* DAG context detail panel — slides in from right inside #dag-panel */
+      #dag-context-panel {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 50%;
+        background: #0c0c0c;
+        border-left: 1px solid #1a1a1a;
+        z-index: 10;
+        transform: translate3d(100%, 0, 0);
+        transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #dag-context-panel.visible {
+        transform: translate3d(0, 0, 0);
+      }
+      @media (max-width: 768px) {
+        #dag-context-panel { width: 100%; }
+      }
+      .dag-ctx-header {
+        padding: 10px 14px;
+        border-bottom: 1px solid #1a1a1a;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+        background: #0e0e0e;
+      }
+      .dag-ctx-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: #ccc;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dag-ctx-id {
+        font-size: 9px;
+        font-weight: 700;
+        color: #0a0a0a;
+        background: #f39c12;
+        padding: 2px 6px;
+        border-radius: 3px;
+        letter-spacing: 0.5px;
+        flex-shrink: 0;
+      }
+      .dag-ctx-body {
+        flex: 1;
+        overflow: auto;
+        padding: 16px;
+        -webkit-overflow-scrolling: touch;
+      }
+      .dag-ctx-section {
+        margin-bottom: 14px;
+      }
+      .dag-ctx-label {
+        font-size: 9px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #444;
+        margin-bottom: 4px;
+      }
+      .dag-ctx-text {
+        font-size: 12px;
+        color: #999;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .dag-ctx-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 3px;
+      }
+
+      /* DAG preview mode buttons */
+      .dag-preview-actions {
+        display: flex;
+        gap: 8px;
+        padding: 10px 14px;
+        border-top: 1px solid #1a1a1a;
+        background: #0e0e0e;
+        flex-shrink: 0;
+      }
+      .dag-approve-btn {
+        background: #f39c12;
+        border: none;
+        border-radius: 6px;
+        color: #0a0a0a;
+        font-size: 11px;
+        font-weight: 700;
+        font-family: inherit;
+        padding: 8px 18px;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        transition: all 0.12s ease;
+        flex: 1;
+      }
+      .dag-approve-btn:hover { background: #e8920f; }
+      .dag-approve-btn:active { transform: scale(0.97); }
+      .dag-approve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .dag-cancel-btn {
+        background: none;
+        border: 1px solid #333;
+        border-radius: 6px;
+        color: #888;
+        font-size: 11px;
+        font-family: inherit;
+        padding: 8px 14px;
+        cursor: pointer;
+        transition: all 0.12s ease;
+      }
+      .dag-cancel-btn:hover { border-color: #e74c3c; color: #e74c3c; }
+      .dag-cancel-btn:active { transform: scale(0.97); }
+
+      /* DAG header refresh button */
+      .dag-refresh-btn {
+        background: none;
+        border: 1px solid #2a2a2a;
+        border-radius: 4px;
+        color: #555;
+        font-size: 10px;
+        font-family: inherit;
+        padding: 3px 8px;
+        cursor: pointer;
+        transition: all 0.12s ease;
+      }
+      .dag-refresh-btn:hover { border-color: #f39c12; color: #f39c12; }
+
+      /* Highlight selected node in DAG */
+      .dag-node.dag-node-selected {
+        border-color: #f39c12;
+        background: #131008;
+        box-shadow: 0 0 12px rgba(243,156,18,0.15);
+      }
+
     </style>
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.min.js"></script>
@@ -2820,7 +2887,6 @@
       <div class="header-right">
         <div id="header-machine-label" style="display:none;font-size:9px;color:#555;text-transform:uppercase;letter-spacing:1px;line-height:1"></div>
         <button class="search-btn" id="search-btn" onclick="toggleSearch()">&#128269;</button>
-        <button class="kobra-nav-btn" id="kobra-btn" onclick="toggleKobraKaiView()" title="Kobra Kai">&#129355;</button>
         <button class="settings-gear" id="gear-btn" onclick="showSettings()">&#9881;</button>
       </div>
     </header>
@@ -2828,7 +2894,6 @@
       <div class="sidebar-header">
         <h1>WOLFPACK</h1>
         <div class="sidebar-controls">
-          <button id="sidebar-kobra-btn" title="Kobra Kai" onclick="toggleKobraKaiView()">&#129355;</button>
           <button id="sidebar-settings-btn" title="Settings">&#9881;</button>
           <button id="sidebar-expand-btn" title="Expand sessions">&#x26F6;</button>
           <button id="sidebar-collapse-btn" title="Pin sidebar"><span class="pin-icon">&#x1F4CC;</span></button>
@@ -3086,50 +3151,30 @@
           <select id="ralph-source-branch"></select>
         </div>
 
-        <button class="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <input type="checkbox" id="ralph-kobra-toggle" onchange="toggleKobraMode()" style="width:auto;accent-color:#f39c12" />
+          <label for="ralph-kobra-toggle" style="margin:0;cursor:pointer;color:#f39c12">Kobra Kai (parallel)</label>
+        </div>
+        <div id="ralph-kobra-fields" style="display:none;flex-direction:column;gap:12px">
+          <label for="ralph-max-concurrent">Max concurrent agents</label>
+          <input id="ralph-max-concurrent" type="number" min="1" max="10" value="3" />
+        </div>
+
+        <button class="ralph-launch-btn" id="ralph-launch-btn" onclick="startRalph()">Launch Ralph</button>
       </div>
     </div>
     <!-- Kobra Kai view -->
     <div id="kobra-kai-view" class="view">
       <div id="kk-header" style="padding:10px;border-bottom:1px solid #1a1a1a">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <span style="font-size:14px;font-weight:700;color:#f39c12;text-transform:uppercase;letter-spacing:2px">Kobra Kai</span>
-          <button class="kk-new-btn" onclick="showKobraKaiForm()">+ New</button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <button class="picker-cancel-btn" onclick="backFromKobraKai()" style="position:static;margin:0">&#8592; Back</button>
+            <span style="font-size:14px;font-weight:700;color:#f39c12;text-transform:uppercase;letter-spacing:2px">Kobra Kai</span>
+          </div>
+          <button class="kk-dag-btn" onclick="openDAGForProject(currentKobraKaiProject)">View DAG</button>
         </div>
       </div>
       <div id="kk-active-orchestration" style="display:none"></div>
-      <div id="kk-list" class="list"></div>
-      <div id="kk-form" style="display:none">
-        <div style="padding:10px">
-          <div class="kk-field">
-            <label>project</label>
-            <select id="kk-project"></select>
-          </div>
-          <div class="kk-field" style="margin-top:8px">
-            <label>mode</label>
-            <div style="display:flex;gap:4px">
-              <button class="kk-mode-tab active" onclick="setKKMode('decompose',this)">decompose goal</button>
-              <button class="kk-mode-tab" onclick="setKKMode('schedule',this)">schedule plan</button>
-            </div>
-          </div>
-          <div id="kk-decompose-fields" class="kk-field" style="margin-top:8px">
-            <label>goal</label>
-            <textarea id="kk-goal" rows="3" placeholder="describe what you want to build..."></textarea>
-          </div>
-          <div id="kk-schedule-fields" class="kk-field" style="display:none;margin-top:8px">
-            <label>plan file</label>
-            <select id="kk-plan-file"></select>
-          </div>
-          <div class="kk-field" style="margin-top:8px">
-            <label>max concurrent agents</label>
-            <input type="number" id="kk-max-concurrent" value="3" min="1" max="10" />
-          </div>
-          <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
-            <button class="kk-cancel-btn" onclick="hideKobraKaiForm()">cancel</button>
-            <button class="kk-launch-btn" onclick="launchKobraKai()">plan &amp; launch</button>
-          </div>
-        </div>
-      </div>
     </div>
 
     </div><!-- /view-container -->
@@ -3141,11 +3186,24 @@
         <button class="dag-back-btn" onclick="hideDAGPanel()">&#8592; Back</button>
         <div class="dag-header-title" id="dag-panel-title">DAG</div>
         <div class="dag-header-meta" id="dag-panel-meta"></div>
+        <button class="dag-refresh-btn" id="dag-refresh-btn" onclick="refreshDAGPanel()" style="display:none">refresh</button>
       </div>
       <div class="dag-canvas-wrap">
         <div class="dag-canvas" id="dag-canvas"></div>
       </div>
       <div class="dag-summary" id="dag-summary"></div>
+      <div id="dag-preview-actions" class="dag-preview-actions" style="display:none">
+        <button class="dag-approve-btn" id="dag-approve-btn" onclick="approveAndLaunchKobraKai()">approve &amp; launch</button>
+        <button class="dag-cancel-btn" onclick="cancelDAGPreview()">cancel</button>
+      </div>
+      <div id="dag-context-panel">
+        <div class="dag-ctx-header">
+          <button class="dag-back-btn" onclick="hideDAGContext()">&#8592; Back</button>
+          <span class="dag-ctx-id" id="dag-ctx-id"></span>
+          <div class="dag-ctx-title" id="dag-ctx-title"></div>
+        </div>
+        <div class="dag-ctx-body" id="dag-ctx-body"></div>
+      </div>
     </div>
 
     <script>
@@ -3645,8 +3703,9 @@
         const res = await fetch(base + path, opts);
         if (!res.ok) {
           const body = await res.text();
-          try { return JSON.parse(body); } catch {}
-          throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+          var msg = `HTTP ${res.status}`;
+          try { var j = JSON.parse(body); if (j.error) msg = j.error; } catch {}
+          throw new Error(msg);
         }
         return res.json();
       }
@@ -3866,7 +3925,7 @@
             loadRalphStartForm();
           } else if (name === "kobra-kai") {
             back.style.display = "block";
-            back.onclick = () => { stopKobraKaiPolling(); showView("sessions"); loadSessions(); };
+            back.onclick = () => { backFromKobraKai(); };
             gear.style.display = "none";
             title.textContent = "kobra kai";
 
@@ -4146,6 +4205,22 @@
         } catch {}
       }
 
+      function toggleKobraMode() {
+        const checked = document.getElementById("ralph-kobra-toggle").checked;
+        const kobraFields = document.getElementById("ralph-kobra-fields");
+        const iterLabel = document.querySelector('label[for="ralph-iterations-input"]');
+        const iterInput = document.getElementById("ralph-iterations-input");
+        const launchBtn = document.getElementById("ralph-launch-btn");
+        kobraFields.style.display = checked ? "flex" : "none";
+        if (iterLabel) iterLabel.style.display = checked ? "none" : "";
+        if (iterInput) iterInput.style.display = checked ? "none" : "";
+        if (launchBtn) {
+          launchBtn.textContent = checked ? "Launch Kobra Kai" : "Launch Ralph";
+          launchBtn.style.background = checked ? "#f39c12" : "";
+          launchBtn.style.color = checked ? "#0a0a0a" : "";
+        }
+      }
+
       function toggleBranchFields() {
         const checked = document.getElementById("ralph-branch-toggle").checked;
         const fields = document.getElementById("ralph-branch-fields");
@@ -4174,7 +4249,42 @@
         }
       }
 
+      async function startKobraKaiFromRalph() {
+        const project = document.getElementById("ralph-project-select").value;
+        const planFile = document.getElementById("ralph-plan-select").value;
+        const maxConcurrent = parseInt(document.getElementById("ralph-max-concurrent").value) || 3;
+        if (!project) { alert("select a project"); return; }
+        if (!planFile) { alert("select a plan file"); return; }
+
+        const launchBtn = document.getElementById("ralph-launch-btn");
+        try {
+          if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = "planning..."; }
+
+          var dagResponse = await api("/kobra-kai/plan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "schedule", planFile, project }),
+          });
+
+          // store pending state for approval flow
+          pendingKobraKaiDAG = dagResponse;
+          pendingKobraKaiProject = project;
+          pendingKobraKaiMaxConcurrent = maxConcurrent;
+
+          if (launchBtn) launchBtn.textContent = "awaiting approval...";
+
+          // show DAG preview instead of immediately launching
+          showDAGPanel(dagResponse, { mode: "preview" });
+        } catch (e) {
+          alert("kobra kai planning failed: " + e.message);
+          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "Launch Kobra Kai"; }
+        }
+      }
+
       async function startRalph() {
+        if (document.getElementById("ralph-kobra-toggle").checked) {
+          return startKobraKaiFromRalph();
+        }
         const machine = getStartMachine();
         const project = document.getElementById("ralph-project-select").value;
         const iterations = parseInt(document.getElementById("ralph-iterations-input").value) || 5;
@@ -4279,15 +4389,10 @@
 
       // ── Kobra Kai Functions ──
 
-      function toggleKobraKaiView() {
-        if (currentView === "kobra-kai") {
-          showView("sessions");
-          stopKobraKaiPolling();
-        } else {
-          showView("kobra-kai");
-          loadKobraKaiStatus();
-          startKobraKaiPolling();
-        }
+      function backFromKobraKai() {
+        stopKobraKaiPolling();
+        showView("sessions");
+        loadSessions();
       }
 
       function startKobraKaiPolling() {
@@ -4358,23 +4463,16 @@
 
       function renderKobraKaiStatus(data) {
         const el = document.getElementById("kk-active-orchestration");
-        const list = document.getElementById("kk-list");
         if (!el) return;
 
-        // no active orchestration — show list with idle message
+        // no active orchestration
         if (!data || !data.status || data.status === "idle") {
-          el.style.display = "none";
-          if (list) {
-            list.style.display = "";
-            list.innerHTML = '<div style="padding:20px;text-align:center;color:#555;font-size:12px">' +
-              'no active orchestrations<br><br>' +
-              '<span style="color:#666;font-size:11px">tap <b>+ New</b> to start one</span></div>';
-          }
+          el.style.display = "";
+          el.innerHTML = '<div style="padding:20px;text-align:center;color:#555;font-size:12px">no active orchestrations</div>';
           return;
         }
 
         // active orchestration — render DAG
-        if (list) list.style.display = "none";
         el.style.display = "";
 
         var waves = data.waves || [];
@@ -4409,7 +4507,7 @@
             var t = waveTasks[j];
             var taskId = esc(t.id || t.title || (wave.wave + '-' + j));
             var isExpanded = expandedTasks.has(taskId);
-            html += '<div class="kk-task-row' + (isExpanded ? ' expanded' : '') + '" data-task-id="' + taskId + '" onclick="this.classList.toggle(\'expanded\')">';
+            html += '<div class="kk-task-row' + (isExpanded ? ' expanded' : '') + '" data-task-id="' + taskId + '" onclick="openDAGForProject(\'' + proj + '\', \'' + taskId + '\')">';
             html += '<div class="kk-task-dot ' + esc(t.status) + '"></div>';
             html += '<div class="kk-task-title">' + esc(t.title) + '</div>';
             html += '<span class="kk-badge ' + esc(t.status) + '">' + esc(t.status) + '</span>';
@@ -4439,116 +4537,6 @@
 
         html += '</div>';
         el.innerHTML = html;
-      }
-
-      async function showKobraKaiForm() {
-        const form = document.getElementById("kk-form");
-        const list = document.getElementById("kk-list");
-        if (!form) return;
-        // populate project dropdown
-        const projSel = document.getElementById("kk-project");
-        try {
-          const data = await api("/projects");
-          const projects = data.projects || [];
-          projSel.innerHTML = projects.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
-          if (currentKobraKaiProject && projects.includes(currentKobraKaiProject)) {
-            projSel.value = currentKobraKaiProject;
-          }
-        } catch {
-          projSel.innerHTML = '<option value="">failed to load projects</option>';
-        }
-        // populate plan file dropdown for currently selected project
-        await loadKKPlanFiles(projSel.value);
-        projSel.onchange = function() { loadKKPlanFiles(this.value); };
-        form.style.display = "";
-        if (list) list.style.display = "none";
-      }
-
-      function hideKobraKaiForm() {
-        const form = document.getElementById("kk-form");
-        const list = document.getElementById("kk-list");
-        if (form) form.style.display = "none";
-        if (list) list.style.display = "";
-      }
-
-      function setKKMode(mode, btn) {
-        document.querySelectorAll(".kk-mode-tab").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        document.getElementById("kk-decompose-fields").style.display = mode === "decompose" ? "" : "none";
-        document.getElementById("kk-schedule-fields").style.display = mode === "schedule" ? "" : "none";
-      }
-
-      async function loadKKPlanFiles(project) {
-        const sel = document.getElementById("kk-plan-file");
-        if (!project) { sel.innerHTML = '<option value="">select a project first</option>'; return; }
-        try {
-          const data = await api("/ralph/plans?project=" + encodeURIComponent(project));
-          const plans = data.plans || [];
-          if (plans.length === 0) {
-            sel.innerHTML = '<option value="">no .md files found</option>';
-          } else {
-            sel.innerHTML = plans.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
-          }
-        } catch {
-          sel.innerHTML = '<option value="">failed to load plans</option>';
-        }
-      }
-
-      async function launchKobraKai() {
-        const project = document.getElementById("kk-project").value;
-        if (!project) { alert("select a project"); return; }
-        const maxConcurrent = parseInt(document.getElementById("kk-max-concurrent").value) || 3;
-        const activeTab = document.querySelector(".kk-mode-tab.active");
-        const mode = activeTab && activeTab.textContent.includes("schedule") ? "schedule" : "decompose";
-        const launchBtn = document.querySelector(".kk-launch-btn");
-
-        // remove any previous inline error
-        const prevErr = document.getElementById("kk-form-error");
-        if (prevErr) prevErr.remove();
-
-        try {
-          if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = "planning"; launchBtn.classList.add("kk-loading"); }
-
-          // step 1: plan (decompose or schedule)
-          const planBody = { mode, project };
-          if (mode === "decompose") {
-            const goal = document.getElementById("kk-goal").value.trim();
-            if (!goal) { throw new Error("enter a goal"); }
-            planBody.goal = goal;
-          } else {
-            const planFile = document.getElementById("kk-plan-file").value;
-            if (!planFile) { throw new Error("select a plan file"); }
-            planBody.planFile = planFile;
-          }
-          await api("/kobra-kai/plan", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(planBody),
-          });
-
-          // step 2: launch
-          if (launchBtn) launchBtn.textContent = "launching";
-          await api("/kobra-kai/launch", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project, maxConcurrent }),
-          });
-
-          // success — switch to status view
-          currentKobraKaiProject = project;
-          hideKobraKaiForm();
-          loadKobraKaiStatus();
-          startKobraKaiPolling();
-        } catch (e) {
-          const errDiv = document.createElement("div");
-          errDiv.id = "kk-form-error";
-          errDiv.style.cssText = "color:#e74c3c;font-size:11px;margin-top:8px;padding:6px 8px;background:#1a1a1a;border:1px solid #e74c3c;border-radius:4px";
-          errDiv.textContent = e.message || "launch failed";
-          const form = document.getElementById("kk-form");
-          if (form) form.querySelector("div").appendChild(errDiv);
-        } finally {
-          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "plan & launch"; launchBtn.classList.remove("kk-loading"); }
-        }
       }
 
       async function cancelKobraKai(project) {
@@ -6137,7 +6125,7 @@
         if (currentView === "agent") { e.preventDefault(); showView("projects"); }
         else if (currentView === "projects") { e.preventDefault(); showView(viewBeforePicker); loadSessions(); }
         else if (currentView === "ralph-start" || currentView === "ralph-detail") { e.preventDefault(); backToSessions(); }
-        else if (currentView === "kobra-kai") { e.preventDefault(); stopKobraKaiPolling(); showView("sessions"); loadSessions(); }
+        else if (currentView === "kobra-kai") { e.preventDefault(); backFromKobraKai(); }
       });
 
       document
@@ -6743,19 +6731,35 @@
       (function() {
         var dagPanelOpen = false;
         var dagExpandedNodes = new Set();
+        var dagMode = "live"; // "preview" | "live"
+        var dagSelectedNode = null;
 
-        window.showDAGPanel = function(dagData) {
+        window.showDAGPanel = function(dagData, options) {
           if (!dagData || !dagData.tasks) return;
           dagPanelOpen = true;
           dagExpandedNodes.clear();
+          dagSelectedNode = null;
+          dagMode = (options && options.mode) || "live";
 
           var title = document.getElementById("dag-panel-title");
           var meta = document.getElementById("dag-panel-meta");
-          if (title) title.textContent = (dagData.metadata && dagData.metadata.project ? dagData.metadata.project : "DAG") + " — task graph";
+          var previewActions = document.getElementById("dag-preview-actions");
+          var refreshBtn = document.getElementById("dag-refresh-btn");
+
+          if (dagMode === "preview") {
+            if (title) title.textContent = "review dag";
+            if (previewActions) previewActions.style.display = "";
+            if (refreshBtn) refreshBtn.style.display = "none";
+          } else {
+            if (title) title.textContent = (dagData.metadata && dagData.metadata.project ? dagData.metadata.project : "DAG") + " — task graph";
+            if (previewActions) previewActions.style.display = "none";
+            if (refreshBtn) refreshBtn.style.display = "";
+          }
           if (meta) meta.textContent = dagData.tasks.length + " tasks · " + (dagData.waves ? dagData.waves.length : 0) + " waves";
 
           renderDAG(dagData);
           renderDAGSummary(dagData);
+          hideDAGContext();
 
           requestAnimationFrame(function() {
             document.getElementById("dag-backdrop").classList.add("visible");
@@ -6765,12 +6769,103 @@
 
         window.hideDAGPanel = function() {
           dagPanelOpen = false;
+          hideDAGContext();
           document.getElementById("dag-backdrop").classList.remove("visible");
           document.getElementById("dag-panel").classList.remove("visible");
+          // reset preview state if cancelling
+          var previewActions = document.getElementById("dag-preview-actions");
+          if (previewActions) previewActions.style.display = "none";
         };
 
+        window.showDAGContext = function(taskId) {
+          var canvas = document.getElementById("dag-canvas");
+          if (!canvas || !canvas._dagData) return;
+          var tasks = canvas._dagData.tasks || [];
+          var task = null;
+          for (var i = 0; i < tasks.length; i++) {
+            if (tasks[i].id === taskId) { task = tasks[i]; break; }
+          }
+          if (!task) return;
+
+          // highlight selected node, unhighlight previous
+          if (dagSelectedNode) {
+            var prev = document.getElementById("dag-node-" + dagSelectedNode);
+            if (prev) prev.classList.remove("dag-node-selected");
+          }
+          dagSelectedNode = taskId;
+          var nodeEl = document.getElementById("dag-node-" + taskId);
+          if (nodeEl) nodeEl.classList.add("dag-node-selected");
+
+          // populate context panel
+          var idEl = document.getElementById("dag-ctx-id");
+          var titleEl = document.getElementById("dag-ctx-title");
+          var bodyEl = document.getElementById("dag-ctx-body");
+          if (idEl) idEl.textContent = task.id;
+          if (titleEl) titleEl.textContent = task.title;
+
+          var html = "";
+
+          // status + wave
+          html += '<div class="dag-ctx-section">';
+          html += '<div class="dag-ctx-label">status</div>';
+          html += '<div class="dag-ctx-meta">';
+          html += '<span class="kk-badge ' + esc(task.status) + '">' + esc(task.status) + '</span>';
+          html += '<span class="dag-dep-tag">wave ' + task.wave + '</span>';
+          if (task.branch) html += '<span class="dag-file-tag">' + esc(task.branch) + '</span>';
+          html += '</div></div>';
+
+          // full description — no truncation
+          if (task.description) {
+            html += '<div class="dag-ctx-section">';
+            html += '<div class="dag-ctx-label">description</div>';
+            html += '<div class="dag-ctx-text">' + esc(task.description) + '</div>';
+            html += '</div>';
+          }
+
+          // estimated files
+          if (task.estimated_files && task.estimated_files.length) {
+            html += '<div class="dag-ctx-section">';
+            html += '<div class="dag-ctx-label">estimated files</div>';
+            html += '<div class="dag-ctx-meta">';
+            for (var i = 0; i < task.estimated_files.length; i++) {
+              html += '<span class="dag-file-tag">' + esc(task.estimated_files[i]) + '</span>';
+            }
+            html += '</div></div>';
+          }
+
+          // dependencies
+          if (task.depends_on && task.depends_on.length) {
+            html += '<div class="dag-ctx-section">';
+            html += '<div class="dag-ctx-label">depends on</div>';
+            html += '<div class="dag-ctx-meta">';
+            for (var i = 0; i < task.depends_on.length; i++) {
+              html += '<span class="dag-dep-tag">' + esc(task.depends_on[i]) + '</span>';
+            }
+            html += '</div></div>';
+          }
+
+          if (bodyEl) bodyEl.innerHTML = html;
+
+          // slide in context panel
+          document.getElementById("dag-context-panel").classList.add("visible");
+        };
+
+        function hideDAGContext() {
+          if (dagSelectedNode) {
+            var prev = document.getElementById("dag-node-" + dagSelectedNode);
+            if (prev) prev.classList.remove("dag-node-selected");
+            dagSelectedNode = null;
+          }
+          var ctx = document.getElementById("dag-context-panel");
+          if (ctx) ctx.classList.remove("visible");
+        }
+        window.hideDAGContext = hideDAGContext;
+
         document.addEventListener("keydown", function(e) {
-          if (e.key === "Escape" && dagPanelOpen) hideDAGPanel();
+          if (e.key === "Escape" && dagPanelOpen) {
+            if (dagSelectedNode) { hideDAGContext(); }
+            else { hideDAGPanel(); }
+          }
         });
 
         function renderDAG(dag) {
@@ -6953,13 +7048,13 @@
         }
 
         window._dagToggleNode = function(id) {
-          if (dagExpandedNodes.has(id)) {
-            dagExpandedNodes.delete(id);
-          } else {
-            dagExpandedNodes.add(id);
-          }
-          var node = document.getElementById("dag-node-" + id);
-          if (node) node.classList.toggle("expanded");
+          showDAGContext(id);
+        };
+
+        // expose for refresh from outside IIFE
+        window._dagRenderAndSummary = function(dagData) {
+          renderDAG(dagData);
+          renderDAGSummary(dagData);
         };
 
         var resizeTimer;
@@ -6973,15 +7068,83 @@
         });
       })();
 
-      window.openDAGForProject = async function(project) {
+      window.openDAGForProject = async function(project, openTaskId) {
         try {
           const data = await api("/kobra-kai/dag?project=" + encodeURIComponent(project));
           if (data && data.tasks && data.tasks.length > 0) {
-            showDAGPanel(data);
+            showDAGPanel(data, { mode: "live" });
+            if (openTaskId) {
+              requestAnimationFrame(function() { showDAGContext(openTaskId); });
+            }
           }
         } catch (e) {
           console.error("failed to load DAG:", e);
         }
+      };
+
+      // refresh DAG data while panel is open (mid-flight)
+      window.refreshDAGPanel = async function() {
+        var canvas = document.getElementById("dag-canvas");
+        if (!canvas || !canvas._dagData || !canvas._dagData.metadata) return;
+        var project = canvas._dagData.metadata.project;
+        if (!project) return;
+        try {
+          var data = await api("/kobra-kai/dag?project=" + encodeURIComponent(project));
+          if (data && data.tasks) {
+            var prevSelected = null;
+            var ctx = document.getElementById("dag-context-panel");
+            if (ctx && ctx.classList.contains("visible")) {
+              var idEl = document.getElementById("dag-ctx-id");
+              if (idEl) prevSelected = idEl.textContent;
+            }
+            // re-render in place
+            window._dagRenderAndSummary(data);
+            if (prevSelected) {
+              requestAnimationFrame(function() { showDAGContext(prevSelected); });
+            }
+          }
+        } catch (e) {
+          console.error("failed to refresh DAG:", e);
+        }
+      };
+
+      // pending preview state
+      var pendingKobraKaiDAG = null;
+      var pendingKobraKaiProject = null;
+      var pendingKobraKaiMaxConcurrent = 3;
+
+      window.approveAndLaunchKobraKai = async function() {
+        if (!pendingKobraKaiDAG || !pendingKobraKaiProject) return;
+        var btn = document.getElementById("dag-approve-btn");
+        try {
+          if (btn) { btn.disabled = true; btn.textContent = "launching..."; }
+          await api("/kobra-kai/launch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project: pendingKobraKaiProject, maxConcurrent: pendingKobraKaiMaxConcurrent }),
+          });
+
+          hideDAGPanel();
+          currentKobraKaiProject = pendingKobraKaiProject;
+          pendingKobraKaiDAG = null;
+          pendingKobraKaiProject = null;
+          showView("kobra-kai");
+          loadKobraKaiStatus();
+          startKobraKaiPolling();
+        } catch (e) {
+          alert("launch failed: " + e.message);
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = "approve & launch"; }
+        }
+      };
+
+      window.cancelDAGPreview = function() {
+        pendingKobraKaiDAG = null;
+        pendingKobraKaiProject = null;
+        hideDAGPanel();
+        // reset launch button
+        var launchBtn = document.getElementById("ralph-launch-btn");
+        if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "Launch Kobra Kai"; }
       };
     </script>
   </body>

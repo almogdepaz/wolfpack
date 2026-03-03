@@ -96,6 +96,10 @@ const mockGetOrchestrationStatus = mock(async (projectDir: string): Promise<Orch
       { id: "1", title: "Task A", status: "in_progress", wave: 0 },
       { id: "2", title: "Task B", status: "pending", wave: 1 },
     ],
+    waves: [
+      { wave: 0, status: "in_progress" },
+      { wave: 1, status: "pending" },
+    ],
     activeAgents: 1,
     queuedTasks: 0,
     maxConcurrent: 3,
