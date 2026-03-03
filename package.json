@@ -17,10 +17,10 @@
     "postinstall": "node bin/install.cjs"
   },
   "optionalDependencies": {
-    "wolfpack-bridge-darwin-arm64": "1.4.9",
-    "wolfpack-bridge-darwin-x64": "1.4.9",
-    "wolfpack-bridge-linux-arm64": "1.4.9",
-    "wolfpack-bridge-linux-x64": "1.4.9"
+    "wolfpack-bridge-darwin-arm64": "1.4.10",
+    "wolfpack-bridge-darwin-x64": "1.4.10",
+    "wolfpack-bridge-linux-arm64": "1.4.10",
+    "wolfpack-bridge-linux-x64": "1.4.10"
   },
   "keywords": [
     "tmux",

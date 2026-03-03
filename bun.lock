@@ -17,10 +17,10 @@
         "playwright": "^1.58.2",
       },
       "optionalDependencies": {
-        "wolfpack-bridge-darwin-arm64": "1.4.6",
-        "wolfpack-bridge-darwin-x64": "1.4.6",
-        "wolfpack-bridge-linux-arm64": "1.4.6",
-        "wolfpack-bridge-linux-x64": "1.4.6",
+        "wolfpack-bridge-darwin-arm64": "1.4.9",
+        "wolfpack-bridge-darwin-x64": "1.4.9",
+        "wolfpack-bridge-linux-arm64": "1.4.9",
+        "wolfpack-bridge-linux-x64": "1.4.9",
       },
     },
   },
@@ -43,13 +43,13 @@
 
     "qrcode-terminal": ["qrcode-terminal@0.12.0", "", { "bin": "bin/qrcode-terminal.js" }, "sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ=="],
 
-    "wolfpack-bridge-darwin-arm64": ["wolfpack-bridge-darwin-arm64@1.4.6", "", { "os": "darwin", "cpu": "arm64" }, "sha512-JZh80+S39HTX/jQdUv+Lc0YMg9t0MHmqFY3aHV+/kI173QM2FWAcjw/Q0B6VwgL7sNFYAg27x+8w241V3I7DJw=="],
+    "wolfpack-bridge-darwin-arm64": ["wolfpack-bridge-darwin-arm64@1.4.9", "", { "os": "darwin", "cpu": "arm64" }, "sha512-s/iFHebxnSwmDeFuktSvNvOIOxlFkWirviivF8wljpNleqbT51x2ZPh8eSTvTQisP1vWZNoXDOGDK//HL8hJyg=="],
 
-    "wolfpack-bridge-darwin-x64": ["wolfpack-bridge-darwin-x64@1.4.6", "", { "os": "darwin", "cpu": "x64" }, "sha512-wtB9+oGkYiQhjDOa5baAiakNskZmgdE1zO6+bOqjsVkXV+L2tXTtMQUcVor5TvbDB8VyICgWpgSJvDbfTaWpOQ=="],
+    "wolfpack-bridge-darwin-x64": ["wolfpack-bridge-darwin-x64@1.4.9", "", { "os": "darwin", "cpu": "x64" }, "sha512-xBXrA6pESC+eaL/Gp8AL9a17lBFHcXK4/xv4mp5T8BdmNdEpw/5qvTcD+gs/jSI95yQ+hsVKSOD2ibycRUmCGw=="],
 
-    "wolfpack-bridge-linux-arm64": ["wolfpack-bridge-linux-arm64@1.4.6", "", { "os": "linux", "cpu": "arm64" }, "sha512-cF+JZjzu4JO+2B1TCvj3XqtcSNtjvLSOE5ggqgLlkK/H8GhoWicXX6oF7mhh+eOk8RtIlFgP2JUVJhdhfIapMg=="],
+    "wolfpack-bridge-linux-arm64": ["wolfpack-bridge-linux-arm64@1.4.9", "", { "os": "linux", "cpu": "arm64" }, "sha512-5CIzbgKyLgpZ4ZiNCCuT/S+3dKbIBH2ksZIKuSu0UxJWJ/QeX9woteSomfojXW613mewhHvCFh+su37sW/LAbQ=="],
 
-    "wolfpack-bridge-linux-x64": ["wolfpack-bridge-linux-x64@1.4.6", "", { "os": "linux", "cpu": "x64" }, "sha512-9/iPXNvnCsioaV4iCFcxRrJLOaOi3LsSupX2H1smFHzOq854Q3FRw1er0wZevnfQbVgZ14/KIgkv/Woqp+Cq2g=="],
+    "wolfpack-bridge-linux-x64": ["wolfpack-bridge-linux-x64@1.4.9", "", { "os": "linux", "cpu": "x64" }, "sha512-D2YN9zDuu1JqadariqyMSBIOSdWSj8rZ1xXqQw8lgjmPey6Gcuyl2TNw6CyPY/NQpRrfOf0+/n6tjJ2eBD19Mg=="],
 
     "ws": ["ws@8.19.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="],
   }

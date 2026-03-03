@@ -4,6 +4,7 @@
  * platform targets, then generates per-platform npm package dirs.
  *
  * Run: bun run scripts/build.ts
+ *      bun run scripts/build.ts --deploy   # build + stop/swap/start local service
  * Output:
  *   dist/wolfpack-{platform} binaries
  *   dist/npm/wolfpack-bridge-{os}-{cpu}/ package dirs
@@ -11,7 +12,9 @@
 import { execSync } from "node:child_process";
 import { copyFileSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { arch, platform } from "node:os";
+import { arch, platform, homedir } from "node:os";
+
+const DEPLOY = process.argv.includes("--deploy");
 
 const ROOT = join(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -116,3 +119,19 @@ console.log(`\ncopied ${currentBin} → bin/wolfpack`);
 console.log("\n=== build complete ===");
 console.log(`binaries in ${DIST}/`);
 console.log(`platform packages in ${NPM_DIR}/`);
+
+// step 6 (optional): local deploy — stop service, swap binary, start service
+if (DEPLOY) {
+  const plist = join(homedir(), "Library/LaunchAgents/com.wolfpack.server.plist");
+  const archSuffix = arch() === "arm64" ? "darwin-arm64" : "darwin-x64";
+  const binary = join(DIST, `wolfpack-${archSuffix}`);
+  const dest = join(homedir(), ".wolfpack/bin/wolfpack");
+
+  console.log("\n=== deploying locally ===");
+  try { execSync(`launchctl unload ${plist}`, { stdio: "inherit" }); } catch {}
+  try { execSync(`kill $(lsof -ti :18790) 2>/dev/null`, { shell: "/bin/zsh", stdio: "ignore" }); } catch {}
+  copyFileSync(binary, dest);
+  console.log(`copied ${archSuffix} → ${dest}`);
+  execSync(`launchctl load ${plist}`, { stdio: "inherit" });
+  console.log("service started");
+}
