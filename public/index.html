@@ -2452,6 +2452,352 @@
         66%  { content: '...'; }
       }
 
+      /* ── DAG Panel Overlay ── */
+      #dag-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.7);
+        z-index: 900;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+        backdrop-filter: blur(2px);
+        -webkit-backdrop-filter: blur(2px);
+      }
+      #dag-backdrop.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #dag-panel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 60%;
+        min-width: 480px;
+        background: #0a0a0a;
+        border-left: 1px solid #1a1a1a;
+        z-index: 901;
+        transform: translate3d(100%, 0, 0);
+        transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #dag-panel.visible {
+        transform: translate3d(0, 0, 0);
+      }
+
+      @media (max-width: 768px) {
+        #dag-panel {
+          width: 100%;
+          min-width: 0;
+        }
+      }
+
+      .dag-header {
+        padding: 10px 14px;
+        border-bottom: 1px solid #1a1a1a;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+        background: #0e0e0e;
+      }
+      .dag-back-btn {
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 6px;
+        color: #888;
+        font-size: 12px;
+        font-family: inherit;
+        padding: 5px 10px;
+        cursor: pointer;
+        transition: all 0.12s ease;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .dag-back-btn:hover { border-color: #f39c12; color: #f39c12; }
+      .dag-back-btn:active { transform: scale(0.95); }
+
+      .dag-header-title {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        color: #f39c12;
+        flex: 1;
+      }
+      .dag-header-meta {
+        font-size: 10px;
+        color: #555;
+        letter-spacing: 0.5px;
+      }
+
+      .dag-canvas-wrap {
+        flex: 1;
+        overflow: auto;
+        position: relative;
+        -webkit-overflow-scrolling: touch;
+      }
+      .dag-canvas {
+        position: relative;
+        min-height: 100%;
+        padding: 24px;
+      }
+
+      .dag-edges {
+        position: absolute;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+        overflow: visible;
+      }
+      .dag-edge {
+        fill: none;
+        stroke: #222;
+        stroke-width: 1.5;
+        transition: stroke 0.3s ease, stroke-width 0.3s ease;
+      }
+      .dag-edge.active {
+        stroke: #f39c12;
+        stroke-width: 2;
+        filter: drop-shadow(0 0 3px rgba(243,156,18,0.3));
+      }
+      .dag-edge.completed {
+        stroke: #00ff4155;
+        stroke-width: 1.5;
+      }
+
+      .dag-waves {
+        display: flex;
+        gap: 0;
+        position: relative;
+      }
+      .dag-wave-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 200px;
+        padding: 0 20px;
+      }
+      .dag-wave-header {
+        font-size: 9px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        color: #444;
+        padding: 6px 12px;
+        margin-bottom: 16px;
+        border: 1px solid #1a1a1a;
+        border-radius: 3px;
+        background: #0e0e0e;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .dag-wave-header .kk-badge {
+        font-size: 8px;
+      }
+
+      .dag-node {
+        width: 180px;
+        background: #111;
+        border: 1px solid #1e1e1e;
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        position: relative;
+      }
+      .dag-node:hover {
+        border-color: #333;
+        background: #151515;
+      }
+      .dag-node:active {
+        transform: scale(0.97);
+      }
+      .dag-node.expanded {
+        border-color: #f39c12;
+        background: #131008;
+      }
+
+      .dag-node::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 8px;
+        bottom: 8px;
+        width: 2px;
+        border-radius: 1px;
+        background: #222;
+        transition: background 0.3s ease, box-shadow 0.3s ease;
+      }
+      .dag-node.status-in_progress::before {
+        background: #f39c12;
+        box-shadow: 0 0 6px rgba(243,156,18,0.4);
+      }
+      .dag-node.status-completed::before {
+        background: #00ff41;
+      }
+      .dag-node.status-failed::before {
+        background: #e74c3c;
+        box-shadow: 0 0 6px rgba(231,76,60,0.4);
+      }
+
+      .dag-node.status-in_progress {
+        animation: dagNodePulse 2.5s ease-in-out infinite;
+      }
+      @keyframes dagNodePulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(243,156,18,0); }
+        50% { box-shadow: 0 0 12px 2px rgba(243,156,18,0.08); }
+      }
+
+      .dag-node-top {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      .dag-node-id {
+        font-size: 9px;
+        font-weight: 700;
+        color: #0a0a0a;
+        background: #444;
+        padding: 1px 5px;
+        border-radius: 3px;
+        letter-spacing: 0.5px;
+        flex-shrink: 0;
+        transition: background 0.2s ease;
+      }
+      .dag-node.status-in_progress .dag-node-id { background: #f39c12; }
+      .dag-node.status-completed .dag-node-id { background: #00ff41; }
+      .dag-node.status-failed .dag-node-id { background: #e74c3c; }
+
+      .dag-node-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #b0b0b0;
+        line-height: 1.3;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      .dag-node-status {
+        font-size: 9px;
+        color: #555;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .dag-node.status-in_progress .dag-node-status { color: #f39c12; }
+      .dag-node.status-completed .dag-node-status { color: #00ff41; }
+      .dag-node.status-failed .dag-node-status { color: #e74c3c; }
+
+      .dag-node-detail {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.25s ease, margin-top 0.25s ease, opacity 0.2s ease;
+        opacity: 0;
+        margin-top: 0;
+      }
+      .dag-node.expanded .dag-node-detail {
+        max-height: 300px;
+        opacity: 1;
+        margin-top: 8px;
+      }
+      .dag-detail-section {
+        margin-bottom: 6px;
+      }
+      .dag-detail-label {
+        font-size: 8px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #444;
+        margin-bottom: 2px;
+      }
+      .dag-detail-text {
+        font-size: 10px;
+        color: #777;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .dag-detail-files {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px;
+        margin-top: 2px;
+      }
+      .dag-file-tag {
+        font-size: 9px;
+        color: #f39c12;
+        background: rgba(243,156,18,0.08);
+        border: 1px solid rgba(243,156,18,0.15);
+        padding: 1px 6px;
+        border-radius: 3px;
+      }
+      .dag-dep-tag {
+        font-size: 9px;
+        color: #666;
+        background: #1a1a1a;
+        border: 1px solid #222;
+        padding: 1px 6px;
+        border-radius: 3px;
+      }
+
+      .dag-summary {
+        padding: 8px 14px;
+        border-top: 1px solid #1a1a1a;
+        background: #0e0e0e;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+        font-size: 10px;
+      }
+      .dag-stat {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: #555;
+      }
+      .dag-stat-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+      }
+      .dag-stat-dot.pending { background: #333; }
+      .dag-stat-dot.in_progress { background: #f39c12; }
+      .dag-stat-dot.completed { background: #00ff41; }
+      .dag-stat-dot.failed { background: #e74c3c; }
+      .dag-stat-count {
+        font-weight: 700;
+        color: #888;
+      }
+
+      .kk-dag-btn {
+        background: none;
+        border: 1px solid #333;
+        border-radius: 4px;
+        color: #f39c12;
+        font-size: 10px;
+        font-family: inherit;
+        padding: 4px 10px;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        transition: all 0.12s ease;
+      }
+      .kk-dag-btn:hover { border-color: #f39c12; background: rgba(243,156,18,0.08); }
+      .kk-dag-btn:active { transform: scale(0.95); }
+
     </style>
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.min.js"></script>
@@ -2787,6 +3133,20 @@
     </div>
 
     </div><!-- /view-container -->
+
+    <!-- DAG Panel -->
+    <div id="dag-backdrop" onclick="hideDAGPanel()"></div>
+    <div id="dag-panel">
+      <div class="dag-header">
+        <button class="dag-back-btn" onclick="hideDAGPanel()">&#8592; Back</button>
+        <div class="dag-header-title" id="dag-panel-title">DAG</div>
+        <div class="dag-header-meta" id="dag-panel-meta"></div>
+      </div>
+      <div class="dag-canvas-wrap">
+        <div class="dag-canvas" id="dag-canvas"></div>
+      </div>
+      <div class="dag-summary" id="dag-summary"></div>
+    </div>
 
     <script>
       // ── Settings (persisted to localStorage) ──
@@ -4072,7 +4432,10 @@
 
         // cancel button
         var proj = esc(data.project || currentKobraKaiProject || "");
+        html += '<div style="display:flex;gap:8px;margin-top:4px">';
+        html += '<button class="kk-dag-btn" onclick="openDAGForProject(\'' + proj + '\')">view dag</button>';
         html += '<button class="kk-cancel-action" onclick="cancelKobraKai(\'' + proj + '\')">cancel orchestration</button>';
+        html += '</div>';
 
         html += '</div>';
         el.innerHTML = html;
@@ -6375,6 +6738,251 @@
           regs.forEach(r => r.unregister());
         });
       }
+
+      // ── DAG Panel ──
+      (function() {
+        var dagPanelOpen = false;
+        var dagExpandedNodes = new Set();
+
+        window.showDAGPanel = function(dagData) {
+          if (!dagData || !dagData.tasks) return;
+          dagPanelOpen = true;
+          dagExpandedNodes.clear();
+
+          var title = document.getElementById("dag-panel-title");
+          var meta = document.getElementById("dag-panel-meta");
+          if (title) title.textContent = (dagData.metadata && dagData.metadata.project ? dagData.metadata.project : "DAG") + " — task graph";
+          if (meta) meta.textContent = dagData.tasks.length + " tasks · " + (dagData.waves ? dagData.waves.length : 0) + " waves";
+
+          renderDAG(dagData);
+          renderDAGSummary(dagData);
+
+          requestAnimationFrame(function() {
+            document.getElementById("dag-backdrop").classList.add("visible");
+            document.getElementById("dag-panel").classList.add("visible");
+          });
+        };
+
+        window.hideDAGPanel = function() {
+          dagPanelOpen = false;
+          document.getElementById("dag-backdrop").classList.remove("visible");
+          document.getElementById("dag-panel").classList.remove("visible");
+        };
+
+        document.addEventListener("keydown", function(e) {
+          if (e.key === "Escape" && dagPanelOpen) hideDAGPanel();
+        });
+
+        function renderDAG(dag) {
+          var canvas = document.getElementById("dag-canvas");
+          if (!canvas) return;
+
+          var tasks = dag.tasks || [];
+          var waves = dag.waves || [];
+          if (waves.length === 0) {
+            canvas.innerHTML = '<div style="padding:40px;text-align:center;color:#444;font-size:12px">no waves in DAG</div>';
+            return;
+          }
+
+          var waveMap = {};
+          for (var i = 0; i < tasks.length; i++) {
+            var w = tasks[i].wave;
+            if (!waveMap[w]) waveMap[w] = [];
+            waveMap[w].push(tasks[i]);
+          }
+
+          var waveMeta = {};
+          for (var i = 0; i < waves.length; i++) {
+            waveMeta[waves[i].wave] = waves[i];
+          }
+
+          var html = '<div class="dag-waves" id="dag-waves">';
+          var sortedWaves = Object.keys(waveMap).map(Number).sort(function(a,b){ return a - b; });
+
+          for (var wi = 0; wi < sortedWaves.length; wi++) {
+            var wn = sortedWaves[wi];
+            var wm = waveMeta[wn] || { status: "pending" };
+            var wTasks = waveMap[wn] || [];
+
+            html += '<div class="dag-wave-col" data-wave="' + wn + '">';
+            html += '<div class="dag-wave-header">wave ' + wn + ' <span class="kk-badge ' + esc(wm.status) + '">' + esc(wm.status) + '</span></div>';
+
+            for (var ti = 0; ti < wTasks.length; ti++) {
+              var t = wTasks[ti];
+              var isExp = dagExpandedNodes.has(t.id);
+              html += '<div class="dag-node status-' + esc(t.status) + (isExp ? ' expanded' : '') + '" ';
+              html += 'data-task-id="' + esc(t.id) + '" ';
+              html += 'id="dag-node-' + esc(t.id) + '" ';
+              html += 'onclick="window._dagToggleNode(\'' + esc(t.id) + '\')">';
+
+              html += '<div class="dag-node-top">';
+              html += '<span class="dag-node-id">' + esc(t.id) + '</span>';
+              html += '<span class="dag-node-title">' + esc(t.title) + '</span>';
+              html += '</div>';
+              html += '<div class="dag-node-status">' + esc(t.status) + '</div>';
+
+              html += '<div class="dag-node-detail">';
+              if (t.description) {
+                html += '<div class="dag-detail-section"><div class="dag-detail-label">description</div>';
+                html += '<div class="dag-detail-text">' + esc(t.description).substring(0, 500) + '</div></div>';
+              }
+              if (t.estimated_files && t.estimated_files.length) {
+                html += '<div class="dag-detail-section"><div class="dag-detail-label">files</div>';
+                html += '<div class="dag-detail-files">';
+                for (var fi = 0; fi < t.estimated_files.length; fi++) {
+                  html += '<span class="dag-file-tag">' + esc(t.estimated_files[fi]) + '</span>';
+                }
+                html += '</div></div>';
+              }
+              if (t.depends_on && t.depends_on.length) {
+                html += '<div class="dag-detail-section"><div class="dag-detail-label">depends on</div>';
+                html += '<div class="dag-detail-files">';
+                for (var di = 0; di < t.depends_on.length; di++) {
+                  html += '<span class="dag-dep-tag">' + esc(t.depends_on[di]) + '</span>';
+                }
+                html += '</div></div>';
+              }
+              if (t.branch) {
+                html += '<div class="dag-detail-section"><div class="dag-detail-label">branch</div>';
+                html += '<div class="dag-detail-text" style="color:#f39c12">' + esc(t.branch) + '</div></div>';
+              }
+              html += '</div>';
+              html += '</div>';
+            }
+            html += '</div>';
+          }
+          html += '</div>';
+          html += '<svg class="dag-edges" id="dag-edges"></svg>';
+
+          canvas.innerHTML = html;
+          canvas._dagData = dag;
+
+          requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+              drawDAGEdges(dag);
+            });
+          });
+        }
+
+        function drawDAGEdges(dag) {
+          var svg = document.getElementById("dag-edges");
+          var canvas = document.getElementById("dag-canvas");
+          if (!svg || !canvas) return;
+
+          var tasks = dag.tasks || [];
+          var canvasRect = canvas.getBoundingClientRect();
+
+          var nodeRects = {};
+          for (var i = 0; i < tasks.length; i++) {
+            var el = document.getElementById("dag-node-" + tasks[i].id);
+            if (el) {
+              var r = el.getBoundingClientRect();
+              nodeRects[tasks[i].id] = {
+                left: r.left - canvasRect.left,
+                right: r.right - canvasRect.left,
+                top: r.top - canvasRect.top,
+                bottom: r.bottom - canvasRect.top,
+                cx: (r.left + r.right) / 2 - canvasRect.left,
+                cy: (r.top + r.bottom) / 2 - canvasRect.top
+              };
+            }
+          }
+
+          svg.style.width = canvas.scrollWidth + "px";
+          svg.style.height = canvas.scrollHeight + "px";
+
+          var paths = "";
+          for (var i = 0; i < tasks.length; i++) {
+            var t = tasks[i];
+            if (!t.depends_on) continue;
+            for (var d = 0; d < t.depends_on.length; d++) {
+              var fromId = t.depends_on[d];
+              var toId = t.id;
+              var from = nodeRects[fromId];
+              var to = nodeRects[toId];
+              if (!from || !to) continue;
+
+              var x1 = from.right + 2;
+              var y1 = from.cy;
+              var x2 = to.left - 2;
+              var y2 = to.cy;
+              var dx = (x2 - x1) * 0.45;
+
+              var fromTask = tasks.find(function(tt) { return tt.id === fromId; });
+              var edgeClass = "dag-edge";
+              if (t.status === "in_progress" || (fromTask && fromTask.status === "in_progress")) {
+                edgeClass += " active";
+              } else if (fromTask && fromTask.status === "completed" && t.status === "completed") {
+                edgeClass += " completed";
+              }
+
+              paths += '<path class="' + edgeClass + '" d="M' + x1 + ',' + y1 + ' C' + (x1 + dx) + ',' + y1 + ' ' + (x2 - dx) + ',' + y2 + ' ' + x2 + ',' + y2 + '" />';
+
+              var ax = x2 - 6;
+              var ay1a = y2 - 3;
+              var ay2a = y2 + 3;
+              paths += '<polygon class="' + edgeClass + '" points="' + x2 + ',' + y2 + ' ' + ax + ',' + ay1a + ' ' + ax + ',' + ay2a + '" style="fill:currentColor;stroke:none;color:inherit" />';
+            }
+          }
+
+          svg.innerHTML = paths;
+        }
+
+        function renderDAGSummary(dag) {
+          var el = document.getElementById("dag-summary");
+          if (!el) return;
+          var tasks = dag.tasks || [];
+          var counts = { pending: 0, in_progress: 0, completed: 0, failed: 0 };
+          for (var i = 0; i < tasks.length; i++) {
+            var s = tasks[i].status || "pending";
+            if (counts[s] !== undefined) counts[s]++;
+            else counts.pending++;
+          }
+          var html = "";
+          var statuses = ["completed", "in_progress", "pending", "failed"];
+          var labels = ["done", "active", "queued", "failed"];
+          for (var i = 0; i < statuses.length; i++) {
+            if (counts[statuses[i]] > 0 || statuses[i] === "completed" || statuses[i] === "pending") {
+              html += '<div class="dag-stat">';
+              html += '<div class="dag-stat-dot ' + statuses[i] + '"></div>';
+              html += '<span class="dag-stat-count">' + counts[statuses[i]] + '</span> ' + labels[i];
+              html += '</div>';
+            }
+          }
+          el.innerHTML = html;
+        }
+
+        window._dagToggleNode = function(id) {
+          if (dagExpandedNodes.has(id)) {
+            dagExpandedNodes.delete(id);
+          } else {
+            dagExpandedNodes.add(id);
+          }
+          var node = document.getElementById("dag-node-" + id);
+          if (node) node.classList.toggle("expanded");
+        };
+
+        var resizeTimer;
+        window.addEventListener("resize", function() {
+          if (!dagPanelOpen) return;
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(function() {
+            var canvas = document.getElementById("dag-canvas");
+            if (canvas && canvas._dagData) drawDAGEdges(canvas._dagData);
+          }, 150);
+        });
+      })();
+
+      window.openDAGForProject = async function(project) {
+        try {
+          const data = await api("/kobra-kai/dag?project=" + encodeURIComponent(project));
+          if (data && data.tasks && data.tasks.length > 0) {
+            showDAGPanel(data);
+          }
+        } catch (e) {
+          console.error("failed to load DAG:", e);
+        }
+      };
     </script>
   </body>
 </html>
