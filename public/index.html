@@ -2349,6 +2349,32 @@
         flex: 1;
       }
 
+      .kk-field { display: flex; flex-direction: column; gap: 4px; }
+      .kk-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #666; }
+      .kk-field input, .kk-field textarea, .kk-field select {
+        background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px;
+        padding: 7px 8px; color: #ccc; font-family: inherit; font-size: 12px;
+      }
+      .kk-field input:focus, .kk-field textarea:focus { outline: none; border-color: #f39c12; }
+
+      .kk-mode-tab {
+        flex: 1; padding: 6px; background: #1a1a1a; border: 1px solid #2a2a2a;
+        border-radius: 4px; color: #888; font-size: 11px; font-family: inherit; cursor: pointer;
+      }
+      .kk-mode-tab.active { border-color: #f39c12; color: #f39c12; }
+
+      .kk-cancel-btn {
+        padding: 8px 14px; background: #1a1a1a; border: 1px solid #2a2a2a;
+        border-radius: 10px; color: #888; font-size: 11px; font-family: inherit; cursor: pointer;
+      }
+      .kk-launch-btn {
+        padding: 8px 14px; background: #1a1a1a; border: 1px solid rgba(243,156,18,0.4);
+        border-radius: 10px; color: #f39c12; font-size: 11px; font-weight: bold;
+        font-family: inherit; text-transform: uppercase; letter-spacing: 1px; cursor: pointer;
+        transition: transform 0.1s ease;
+      }
+      .kk-launch-btn:active { transform: scale(0.95); }
+
     </style>
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.min.js"></script>
@@ -2650,7 +2676,37 @@
       </div>
       <div id="kk-active-orchestration" style="display:none"></div>
       <div id="kk-list" class="list"></div>
-      <div id="kk-form" style="display:none"></div>
+      <div id="kk-form" style="display:none">
+        <div style="padding:10px">
+          <div class="kk-field">
+            <label>project</label>
+            <select id="kk-project"></select>
+          </div>
+          <div class="kk-field" style="margin-top:8px">
+            <label>mode</label>
+            <div style="display:flex;gap:4px">
+              <button class="kk-mode-tab active" onclick="setKKMode('decompose',this)">decompose goal</button>
+              <button class="kk-mode-tab" onclick="setKKMode('schedule',this)">schedule plan</button>
+            </div>
+          </div>
+          <div id="kk-decompose-fields" class="kk-field" style="margin-top:8px">
+            <label>goal</label>
+            <textarea id="kk-goal" rows="3" placeholder="describe what you want to build..."></textarea>
+          </div>
+          <div id="kk-schedule-fields" class="kk-field" style="display:none;margin-top:8px">
+            <label>plan file</label>
+            <select id="kk-plan-file"></select>
+          </div>
+          <div class="kk-field" style="margin-top:8px">
+            <label>max concurrent agents</label>
+            <input type="number" id="kk-max-concurrent" value="3" min="1" max="10" />
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+            <button class="kk-cancel-btn" onclick="hideKobraKaiForm()">cancel</button>
+            <button class="kk-launch-btn" onclick="launchKobraKai()">plan &amp; launch</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     </div><!-- /view-container -->
@@ -3824,10 +3880,114 @@
         }
       }
 
-      function showKobraKaiForm() {
-        // stub — form logic wired in a subsequent task
+      async function showKobraKaiForm() {
         const form = document.getElementById("kk-form");
-        if (form) form.style.display = "";
+        const list = document.getElementById("kk-list");
+        if (!form) return;
+        // populate project dropdown
+        const projSel = document.getElementById("kk-project");
+        try {
+          const data = await api("/projects");
+          const projects = data.projects || [];
+          projSel.innerHTML = projects.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
+          if (currentKobraKaiProject && projects.includes(currentKobraKaiProject)) {
+            projSel.value = currentKobraKaiProject;
+          }
+        } catch {
+          projSel.innerHTML = '<option value="">failed to load projects</option>';
+        }
+        // populate plan file dropdown for currently selected project
+        await loadKKPlanFiles(projSel.value);
+        projSel.onchange = function() { loadKKPlanFiles(this.value); };
+        form.style.display = "";
+        if (list) list.style.display = "none";
+      }
+
+      function hideKobraKaiForm() {
+        const form = document.getElementById("kk-form");
+        const list = document.getElementById("kk-list");
+        if (form) form.style.display = "none";
+        if (list) list.style.display = "";
+      }
+
+      function setKKMode(mode, btn) {
+        document.querySelectorAll(".kk-mode-tab").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("kk-decompose-fields").style.display = mode === "decompose" ? "" : "none";
+        document.getElementById("kk-schedule-fields").style.display = mode === "schedule" ? "" : "none";
+      }
+
+      async function loadKKPlanFiles(project) {
+        const sel = document.getElementById("kk-plan-file");
+        if (!project) { sel.innerHTML = '<option value="">select a project first</option>'; return; }
+        try {
+          const data = await api("/ralph/plans?project=" + encodeURIComponent(project));
+          const plans = data.plans || [];
+          if (plans.length === 0) {
+            sel.innerHTML = '<option value="">no .md files found</option>';
+          } else {
+            sel.innerHTML = plans.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
+          }
+        } catch {
+          sel.innerHTML = '<option value="">failed to load plans</option>';
+        }
+      }
+
+      async function launchKobraKai() {
+        const project = document.getElementById("kk-project").value;
+        if (!project) { alert("select a project"); return; }
+        const maxConcurrent = parseInt(document.getElementById("kk-max-concurrent").value) || 3;
+        const activeTab = document.querySelector(".kk-mode-tab.active");
+        const mode = activeTab && activeTab.textContent.includes("schedule") ? "schedule" : "decompose";
+        const launchBtn = document.querySelector(".kk-launch-btn");
+
+        // remove any previous inline error
+        const prevErr = document.getElementById("kk-form-error");
+        if (prevErr) prevErr.remove();
+
+        try {
+          if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = "planning..."; }
+
+          // step 1: plan (decompose or schedule)
+          const planBody = { mode, project };
+          if (mode === "decompose") {
+            const goal = document.getElementById("kk-goal").value.trim();
+            if (!goal) { alert("enter a goal"); return; }
+            planBody.goal = goal;
+          } else {
+            const planFile = document.getElementById("kk-plan-file").value;
+            if (!planFile) { alert("select a plan file"); return; }
+            planBody.planFile = planFile;
+          }
+          await api("/kobra-kai/plan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(planBody),
+          });
+
+          // step 2: launch
+          if (launchBtn) launchBtn.textContent = "launching...";
+          await api("/kobra-kai/launch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project, maxConcurrent }),
+          });
+
+          // success — switch to status view
+          currentKobraKaiProject = project;
+          hideKobraKaiForm();
+          loadKobraKaiStatus();
+          startKobraKaiPolling();
+        } catch (e) {
+          const errDiv = document.createElement("div");
+          errDiv.id = "kk-form-error";
+          errDiv.style.cssText = "color:#e74c3c;font-size:11px;margin-top:8px;padding:6px 8px;background:#1a1a1a;border:1px solid #e74c3c;border-radius:4px";
+          errDiv.textContent = e.message || "launch failed";
+          const form = document.getElementById("kk-form");
+          if (form) form.querySelector("div").appendChild(errDiv);
+        } finally {
+          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "plan & launch"; }
+        }
       }
 
       // ── Sessions ──

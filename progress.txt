@@ -182,3 +182,15 @@
 - Implemented `loadKobraKaiStatus()` — fetches `GET /api/kobra-kai/status?project={project}`, guards on `currentKobraKaiProject`
 - Stubbed `renderKobraKaiStatus(data)` and `showKobraKaiForm()` — rendering wired in subsequent tasks
 - All 93 kobra-kai unit tests pass, all 23 integration tests pass
+
+## Task: Add orchestration launch form to Kobra Kai UI
+- Added CSS for form elements: `.kk-field`, `.kk-mode-tab`, `.kk-cancel-btn`, `.kk-launch-btn` (with active states, focus styles)
+- Added form HTML inside `#kk-form`: project dropdown, decompose/schedule mode tabs, goal textarea, plan file dropdown, max concurrent input, cancel/launch buttons
+- Implemented `showKobraKaiForm()`: fetches `GET /api/projects` → populates `#kk-project`, loads plan files for selected project, shows form/hides list
+- Implemented `hideKobraKaiForm()`: hides form, shows list
+- Implemented `setKKMode(mode, btn)`: toggles active class on mode tabs, shows/hides decompose vs schedule fields
+- Implemented `loadKKPlanFiles(project)`: fetches `GET /api/ralph/plans?project=` → populates `#kk-plan-file` dropdown
+- Implemented `launchKobraKai()`: reads form values, POSTs to `/api/kobra-kai/plan` then `/api/kobra-kai/launch`, shows inline error on failure, starts polling on success
+- Project dropdown re-populates plan files on change via `onchange` handler
+- Button shows "planning..." → "launching..." progress states, re-enables on error
+- Build passes, 23 kobra-kai integration tests pass
