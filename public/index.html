@@ -2433,6 +2433,24 @@
         transition: transform 0.1s ease;
       }
       .kk-launch-btn:active { transform: scale(0.95); }
+      .kk-session-badge {
+        font-size: 10px; margin-left: 4px; vertical-align: middle;
+        opacity: 0.8;
+      }
+      .kk-launch-btn.kk-loading {
+        pointer-events: none; opacity: 0.7;
+        color: #f39c12; text-align: center;
+        text-transform: uppercase; letter-spacing: 1px;
+      }
+      .kk-launch-btn.kk-loading::after {
+        content: '';
+        animation: kkdots 1.5s infinite;
+      }
+      @keyframes kkdots {
+        0%   { content: '.'; }
+        33%  { content: '..'; }
+        66%  { content: '...'; }
+      }
 
     </style>
     <link rel="stylesheet" href="/xterm.css" />
@@ -3089,6 +3107,7 @@
       let currentRalphProject = null;
       let currentKobraKaiProject = null;
       let kkPollTimer = null;
+      const kkActiveProjects = new Set();
       let currentRalphMachine = ""; // "" = self, URL string = remote
       let ralphStartMachine = ""; // machine context for ralph-start form
       let ralphLogPollTimer = null;
@@ -3920,14 +3939,34 @@
         if (kkPollTimer) { clearInterval(kkPollTimer); kkPollTimer = null; }
       }
 
+      // lightweight check — updates kkActiveProjects set without rendering KK view
+      async function refreshKKActiveProjects() {
+        try {
+          const projData = await api("/projects");
+          const projects = projData.projects || [];
+          const found = new Set();
+          for (const p of projects) {
+            try {
+              const d = await api("/kobra-kai/status?project=" + encodeURIComponent(p));
+              if (d && d.status === "active") found.add(p);
+            } catch (e) { /* ignore */ }
+          }
+          kkActiveProjects.clear();
+          found.forEach(p => kkActiveProjects.add(p));
+        } catch (e) { /* ignore */ }
+      }
+
       async function loadKobraKaiStatus() {
         try {
           // if we already know the project, check it directly
           if (currentKobraKaiProject) {
             const data = await api("/kobra-kai/status?project=" + encodeURIComponent(currentKobraKaiProject));
             if (data && data.status === "active") {
+              kkActiveProjects.add(currentKobraKaiProject);
               renderKobraKaiStatus(data);
               return;
+            } else {
+              kkActiveProjects.delete(currentKobraKaiProject);
             }
           }
 
@@ -3935,15 +3974,18 @@
           const projData = await api("/projects");
           const projects = projData.projects || [];
           var activeStatus = null;
+          kkActiveProjects.clear();
 
           for (var i = 0; i < projects.length; i++) {
             try {
               const data = await api("/kobra-kai/status?project=" + encodeURIComponent(projects[i]));
               if (data && data.status === "active") {
-                activeStatus = data;
-                activeStatus.project = projects[i];
-                currentKobraKaiProject = projects[i];
-                break;
+                kkActiveProjects.add(projects[i]);
+                if (!activeStatus) {
+                  activeStatus = data;
+                  activeStatus.project = projects[i];
+                  currentKobraKaiProject = projects[i];
+                }
               }
             } catch (e) { /* project may not have a DAG */ }
           }
@@ -4102,17 +4144,17 @@
         if (prevErr) prevErr.remove();
 
         try {
-          if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = "planning..."; }
+          if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = "planning"; launchBtn.classList.add("kk-loading"); }
 
           // step 1: plan (decompose or schedule)
           const planBody = { mode, project };
           if (mode === "decompose") {
             const goal = document.getElementById("kk-goal").value.trim();
-            if (!goal) { alert("enter a goal"); return; }
+            if (!goal) { throw new Error("enter a goal"); }
             planBody.goal = goal;
           } else {
             const planFile = document.getElementById("kk-plan-file").value;
-            if (!planFile) { alert("select a plan file"); return; }
+            if (!planFile) { throw new Error("select a plan file"); }
             planBody.planFile = planFile;
           }
           await api("/kobra-kai/plan", {
@@ -4122,7 +4164,7 @@
           });
 
           // step 2: launch
-          if (launchBtn) launchBtn.textContent = "launching...";
+          if (launchBtn) launchBtn.textContent = "launching";
           await api("/kobra-kai/launch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -4142,7 +4184,7 @@
           const form = document.getElementById("kk-form");
           if (form) form.querySelector("div").appendChild(errDiv);
         } finally {
-          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "plan & launch"; }
+          if (launchBtn) { launchBtn.disabled = false; launchBtn.textContent = "plan & launch"; launchBtn.classList.remove("kk-loading"); }
         }
       }
 
@@ -4186,10 +4228,11 @@
               const lastLine = s.lastLine || "";
               const ui = triageUi(s.triage);
               const anim = firstLoad ? "animate-in" : "";
+              const kkBadge = kkActiveProjects.has(s.name.replace(/-\d+$/, "")) ? '<span class="kk-session-badge" title="Kobra Kai active">&#129355;</span>' : "";
               return `<div class="card card-stagger ${anim} ${ui.card}" style="${firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}', '${mUrlAttr}')">
                 <div class="dot ${ui.dot}" title="${ui.title}"></div>
                 <div class="card-info">
-                  <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
+                  <div class="card-name">${esc(s.name)}${kkBadge}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
                   <div class="card-preview">${esc(lastLine)}</div>
                 </div>
                 <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event, '${mUrlAttr}')">&times;</button>
@@ -4214,10 +4257,11 @@
             const lastLine = s.lastLine || "";
             const ui = triageUi(s.triage);
             const anim = firstLoad ? "animate-in" : "";
+            const kkBadge = kkActiveProjects.has(s.name.replace(/-\d+$/, "")) ? '<span class="kk-session-badge" title="Kobra Kai active">&#129355;</span>' : "";
             return `<div class="card card-stagger ${anim} ${ui.card}" style="${firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}')">
               <div class="dot ${ui.dot}" title="${ui.title}"></div>
               <div class="card-info">
-                <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
+                <div class="card-name">${esc(s.name)}${kkBadge}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
                 <div class="card-preview">${esc(lastLine)}</div>
               </div>
               <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event)">&times;</button>
@@ -6180,13 +6224,14 @@
         const ui = triageUi(s.triage);
         const isActive = s.name === currentSession && machineUrl === currentMachine;
         const activeClass = isActive ? " sidebar-active" : "";
+        const kkBadge = kkActiveProjects.has(s.name.replace(/-\d+$/, "")) ? '<span class="kk-session-badge" title="Kobra Kai active">&#129355;</span>' : "";
         const onclick = machineUrl
           ? `openSession('${escAttr(s.name)}', '${escAttr(machineUrl)}')`
           : `openSession('${escAttr(s.name)}')`;
         return `<div class="card ${ui.card}${activeClass}" onclick="${onclick}">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
+            <div class="card-name">${esc(s.name)}${kkBadge}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + escAttr(machineUrl) + "'" : ''})">&times;</button>
@@ -6321,6 +6366,8 @@
       }
       showView("sessions", true);
       loadSessions().then(renderSidebar);
+      // background: check which projects have active KK orchestrations (for badges)
+      refreshKKActiveProjects();
 
       // Unregister any stale service workers (no longer used)
       if ("serviceWorker" in navigator) {

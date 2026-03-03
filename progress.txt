@@ -219,3 +219,19 @@
   - Expanded state preserved across re-renders via `expandedTasks` Set (same pattern as ralph iteration cards)
 - All strings escaped via `esc()` for XSS safety
 - Build clean, all 23 kobra-kai integration tests pass
+
+## Task: Wire up views and polish (step 6)
+- Added loading spinner CSS: `.kk-launch-btn.kk-loading` with `::after` animation (`kkdots` keyframes) showing animated dots
+- Applied `.kk-loading` class to launch button during planning/launching states (added in `launchKobraKai()`)
+- Removed on completion/error in `finally` block
+- Converted validation early-returns (`alert` + `return`) to `throw new Error()` so they get caught by the existing `catch` block and displayed as inline error messages (red text below form)
+- Added `kkActiveProjects` Set — tracks which projects have active kobra-kai orchestrations
+- Added `refreshKKActiveProjects()` — lightweight background scan of all projects' KK status (called at app init)
+- Updated `loadKobraKaiStatus()` to populate/clear `kkActiveProjects` set as it discovers active orchestrations
+- Added 🥋 badge on session cards: `renderGroupHtml()`, `renderSingleMachineHtml()`, and `sidebarCardHtml()` now show `.kk-session-badge` when session's project is in `kkActiveProjects`
+- Session→project derivation uses `s.name.replace(/-\d+$/, "")` (matches server-side dedup logic)
+- Verified: back button (line 3490) already stops KK polling + navigates to sessions ✓
+- Verified: `kkPollTimer` cleared on all view transitions away from kobra-kai (line 3373) ✓
+- Verified: Escape key handler already handles kobra-kai (line 5733) ✓
+- Verified: desktop sidebar kobra-kai button already exists (line 2467) ✓
+- Build clean, all 23 kobra-kai integration tests pass
