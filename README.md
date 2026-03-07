@@ -41,13 +41,13 @@ Install on your phone's home screen for a native app experience — scan the QR 
 ### Desktop
 
 <p align="center">
-  <img src="docs/desktop-sessions.png" width="700" alt="Desktop — multi-machine session overview" />
+  <img src="docs/desktop-sessions.gif" width="700" alt="Desktop — multi-machine session overview" />
 </p>
 <p align="center">
-  <img src="docs/desktop-terminal.png" width="700" alt="Desktop — terminal with collapsible sidebar" />
+  <img src="docs/desktop-terminal.gif" width="700" alt="Desktop — terminal with collapsible sidebar" />
 </p>
 <p align="center">
-  <img src="docs/desktop-grid.png" width="700" alt="Desktop — multi-terminal grid view" />
+  <img src="docs/desktop-grid.gif" width="700" alt="Desktop — multi-terminal grid view" />
 </p>
 
 ### Mobile
