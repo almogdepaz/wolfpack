@@ -6156,15 +6156,16 @@
         window.addEventListener("resize", onResize);
         state.desktopResizeHandler = onResize;
 
-        // Mobile: slide terminal up when keyboard opens so cursor stays visible.
-        // Pure CSS transform — no refit, no re-render, GPU-accelerated.
+        // Mobile: slide entire terminal view up when keyboard opens so cursor
+        // + kb-accessory stay visible. Pure CSS transform, no refit/re-render.
         if (window.visualViewport && _isMobile) {
+          const termView = document.getElementById("terminal-view");
           const vvHandler = () => {
             const kbHeight = window.innerHeight - window.visualViewport.height;
             if (kbHeight > 50) {
-              container.style.transform = "translateY(-" + kbHeight + "px)";
+              termView.style.transform = "translateY(-" + kbHeight + "px)";
             } else {
-              container.style.transform = "";
+              termView.style.transform = "";
             }
           };
           window.visualViewport.addEventListener("resize", vvHandler);
@@ -6201,8 +6202,9 @@
           window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
           state.visualViewportHandler = null;
         }
+        const termView = document.getElementById("terminal-view");
+        if (termView) termView.style.transform = "";
         const container = document.getElementById("desktop-terminal-container");
-        container.style.transform = "";
         if (container._onKeyDown) {
           document.removeEventListener("keydown", container._onKeyDown);
           container._onKeyDown = null;
