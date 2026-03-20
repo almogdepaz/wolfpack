@@ -6135,6 +6135,14 @@
           onReconnectExhausted: () => setConnState("offline"),
         });
 
+        // Mobile: prevent ghostty-web's textarea from opening the keyboard on mount.
+        // Make it unfocusable before mount, then keep it that way.
+        if (_isMobile) {
+          const style = document.createElement("style");
+          style.id = "mobile-no-ghost-focus";
+          style.textContent = "#desktop-terminal-container textarea { display: none !important; }";
+          document.head.appendChild(style);
+        }
         await state.terminalController.mount(container, { cached });
         if (!state.terminalController) return; // disposed while awaiting WASM init
 
@@ -6217,6 +6225,8 @@
         document.getElementById("cmd-palette").style.display = "";
         const kbProxy = document.getElementById("mobile-kb-proxy");
         if (kbProxy) { kbProxy.blur(); kbProxy.style.display = "none"; }
+        const noFocusStyle = document.getElementById("mobile-no-ghost-focus");
+        if (noFocusStyle) noFocusStyle.remove();
       }
 
       // ── Terminal ──
