@@ -2967,15 +2967,8 @@
         haptic([30]);
         wpMetrics.sendCount++;
 
-        // Desktop PTY WS path: encode cmd text + CR as binary
+        // PTY WS path: encode cmd text + CR as binary
         if (_sendTerminalInput(_textEncoder.encode(cmd.cmd + "\r"))) return;
-
-        // Mobile text-polling WS fallback
-        if (_sendMobileInput(cmd.cmd)) {
-          _sendMobileKey("Enter");
-          connectMobileTerminalWs();
-          return;
-        }
 
         wpMetrics.sendFailCount++;
       }
@@ -3209,9 +3202,7 @@
         sidebarTransitionIsHover: false,
         sidebarResizeDone: false,
         sessionsExpanded: true,
-        // mobile/connection state
-        mobileWs: null,
-        mobileStreamingActive: false,
+        // connection state
         termFollowMode: true,
         sessionRefreshTimer: null,
         // UI interaction state
@@ -4633,7 +4624,7 @@
         state.snapshotTimer = null;
         if (!state.currentSession) { snapshotPending = null; return; }
         let text;
-        if (state.useDesktopTerminal && state.terminalController?.term) {
+        if (state.terminalController?.term) {
           text = serializeXtermTail(state.terminalController.term, 200);
         } else {
           text = snapshotPending;
@@ -5900,24 +5891,6 @@
         await state.terminalController.mount(container, { cached });
         if (!state.terminalController) return; // disposed while awaiting WASM init
 
-        // WASM failed during mount — fall back to text polling
-        if (window.wasmFailed && !state.terminalController.term) {
-          console.warn("[wolfpack] WASM unavailable, falling back to text polling");
-          state.terminalController.dispose();
-          state.terminalController = null;
-          state.useDesktopTerminal = false;
-          container.style.display = "none";
-          container.innerHTML = "";
-          const term = document.getElementById("terminal");
-          term.style.display = "";
-          document.getElementById("input-bar").style.display = "";
-          term.textContent = cached || "";
-          if (cached) term.scrollTop = term.scrollHeight;
-          await resizePane();
-          startPolling();
-          return;
-        }
-
         const onResize = () => {
           if (state.desktopResizeTimer) clearTimeout(state.desktopResizeTimer);
           state.desktopResizeTimer = setTimeout(() => {
@@ -5965,8 +5938,6 @@
         document.getElementById("terminal").style.display = "";
         document.getElementById("input-bar").style.display = "";
         document.getElementById("cmd-palette").style.display = "";
-        // Polling/mobile WS cleanup (WASM fallback path)
-        stopPolling();
       }
 
       // ── Terminal ──
@@ -5978,7 +5949,7 @@
       function setConnState(state) {
         const statusEl = document.getElementById("conn-status");
         if (!statusEl) return;
-        const active = state.useDesktopTerminal ? !!state.terminalController?.term : state.mobileStreamingActive;
+        const active = !!state.terminalController?.term;
         if (state.currentView !== "terminal" || !active || state === "live") {
           statusEl.style.display = "none";
           statusEl.style.background = "#cc3333";
@@ -6009,30 +5980,6 @@
         statusEl.style.display = "block";
         statusEl.style.background = "#cc3333";
         statusEl.textContent = "session ended \u2014 use \u2190 to go back";
-      }
-
-      function applyTerminalPane(pane) {
-        const renderStart = performance.now();
-        const term = document.getElementById("terminal");
-        const changed = pane !== state.lastRawPane;
-        state.lastRawPane = pane;
-        if (changed) {
-          // Clear Enter retry once output has advanced.
-          if (state.enterRetryTimer) {
-            clearTimeout(state.enterRetryTimer);
-            state.enterRetryTimer = null;
-          }
-          if (state.searchActive && state.searchTerm) {
-            applySearchHighlights();
-          } else {
-            term.textContent = pane;
-          }
-          wpMetrics.recordLatency(performance.now() - renderStart);
-          if (state.termFollowMode) term.scrollTop = term.scrollHeight;
-        }
-        if (changed && !state.useDesktopTerminal) {
-          scheduleSnapshotSave(pane);
-        }
       }
 
       function setFollowMode(on) {
@@ -6082,124 +6029,10 @@
         }, { passive: true });
       })();
 
-      function mobileTerminalWsUrl() {
-        if (state.currentMachine) {
-          const remote = new URL(state.currentMachine);
-          const proto = remote.protocol === "https:" ? "wss:" : "ws:";
-          return proto + "//" + remote.host + "/ws/terminal?session=" + encodeURIComponent(state.currentSession);
-        }
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        return proto + "//" + location.host + "/ws/terminal?session=" + encodeURIComponent(state.currentSession);
-      }
-
-      // WASM fallback: text polling via /ws/terminal (capture-pane).
-      // Only active when ghostty-web WASM init fails.
-      const mobileReconnector = createReconnector({
-        shouldReconnect: () => state.mobileStreamingActive && !state.useDesktopTerminal && !!state.currentSession && state.currentView === "terminal",
-        onReconnecting: () => setConnState("reconnecting"),
-        onExhausted: () => setConnState("offline"),
-      });
-
-      function connectMobileTerminalWs() {
-        if (!state.mobileStreamingActive || state.useDesktopTerminal || !state.currentSession || state.currentView !== "terminal") return;
-        if (mobileReconnector.isBlocked) return;
-        if (state.mobileWs && state.mobileWs.readyState <= WebSocket.OPEN) return;
-        const connectKey = terminalSessionKey();
-        const ws = new WebSocket(mobileTerminalWsUrl());
-        state.mobileWs = ws;
-
-        ws.onopen = async () => {
-          if (state.mobileWs !== ws) return;
-          if (!state.mobileStreamingActive || state.useDesktopTerminal || connectKey !== terminalSessionKey()) {
-            ws.close();
-            return;
-          }
-          if (mobileReconnector.connected()) wpMetrics.reconnectCount++;
-          setConnState("live");
-          await resizePane();
-        };
-
-        ws.onmessage = (ev) => {
-          if (state.mobileWs !== ws) return;
-          wpMetrics.wsMessagesReceived++;
-          let msg = null;
-          try { msg = JSON.parse(ev.data); } catch { return; }
-          if (msg?.type === "output" && typeof msg.data === "string") {
-            setConnState("live");
-            applyTerminalPane(msg.data);
-          }
-        };
-
-        ws.onclose = (ev) => {
-          if (state.mobileWs === ws) state.mobileWs = null;
-          if (!state.mobileStreamingActive || state.useDesktopTerminal || connectKey !== terminalSessionKey()) return;
-          if (ev.code === 4001 || (ev.code === 1000 && ev.reason === "session ended")) {
-            setConnState("session-ended");
-            return;
-          }
-          mobileReconnector.schedule(connectMobileTerminalWs);
-        };
-
-        ws.onerror = () => {};
-      }
-
-      function startPolling(resetBudget = true) {
-        state.mobileStreamingActive = true;
-        if (resetBudget) {
-          mobileReconnector.reset();
-        }
-        if (mobileReconnector.isBlocked && !resetBudget) {
-          setConnState("offline");
-          return;
-        }
-        mobileReconnector.cancel();
-        if (!state.mobileWs || state.mobileWs.readyState === WebSocket.CLOSED) {
-          setConnState("reconnecting");
-        }
-        connectMobileTerminalWs();
-      }
-
-      function stopPolling() {
-        if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); flushSnapshot(); }
-        state.mobileStreamingActive = false;
-        mobileReconnector.reset();
-        mobileReconnector.cancel();
-        if (state.enterRetryTimer) {
-          clearTimeout(state.enterRetryTimer);
-          state.enterRetryTimer = null;
-        }
-        if (state.mobileWs) {
-          const ws = state.mobileWs;
-          state.mobileWs = null;
-          try { ws.close(1000, "viewer changed"); } catch {}
-        }
-        const statusEl = document.getElementById("conn-status");
-        if (statusEl) {
-          statusEl.style.display = "none";
-          statusEl.style.background = "#cc3333";
-        }
-      }
-
-      function retryTerminalConnection() {
-        if (state.useDesktopTerminal || !state.currentSession) return;
-        mobileReconnector.reset();
-        if (state.mobileWs) {
-          const ws = state.mobileWs;
-          state.mobileWs = null;
-          try { ws.close(1000, "manual retry"); } catch {}
-        }
-        startPolling(true);
-      }
-
-      function retryDesktopConnection() {
-        if (!state.useDesktopTerminal || !state.terminalController?.term) return;
+      function retryConnection() {
+        if (!state.terminalController?.term) return;
         setConnState("reconnecting");
         connectDesktopWs();
-      }
-
-      function retryConnection() {
-        if (state.useDesktopTerminal) retryDesktopConnection();
-        else retryTerminalConnection();
       }
 
       // ── Key-to-terminal-escape-sequence mapping ──
@@ -6238,24 +6071,6 @@
         return false;
       }
 
-      /** Send a key name via the mobile text-polling WS as JSON. */
-      function _sendMobileKey(key) {
-        if (state.mobileWs && state.mobileWs.readyState === WebSocket.OPEN) {
-          state.mobileWs.send(JSON.stringify({ type: "key", key }));
-          return true;
-        }
-        return false;
-      }
-
-      /** Send text input via the mobile text-polling WS as JSON. */
-      function _sendMobileInput(text) {
-        if (state.mobileWs && state.mobileWs.readyState === WebSocket.OPEN) {
-          state.mobileWs.send(JSON.stringify({ type: "input", data: text }));
-          return true;
-        }
-        return false;
-      }
-
       function sendMsg() {
         const input = document.getElementById("msg-input");
         const text = input.value.trim();
@@ -6274,7 +6089,7 @@
 
         wpMetrics.sendCount++;
 
-        // Desktop PTY WS path: encode text + CR as binary
+        // PTY WS path: encode text + CR as binary
         if (_sendTerminalInput(_textEncoder.encode(text.replace(/\n/g, " ") + "\r"))) {
           // Enter retry: if output hasn't changed within 800ms, Enter may have been dropped.
           if (state.enterRetryTimer) clearTimeout(state.enterRetryTimer);
@@ -6286,14 +6101,6 @@
             }
             state.enterRetryTimer = null;
           }, 800);
-          return;
-        }
-
-        // Mobile text-polling WS fallback: send text + Enter key as JSON
-        const textSent = _sendMobileInput(text.replace(/\n/g, " "));
-        if (textSent) {
-          _sendMobileKey("Enter");
-          connectMobileTerminalWs();
           return;
         }
 
@@ -6320,15 +6127,9 @@
         if (!state.currentSession) return;
         wpMetrics.sendCount++;
 
-        // Desktop PTY WS path: map key name to escape sequence and send binary
+        // PTY WS path: map key name to escape sequence and send binary
         const esc = KEY_TO_ESCAPE[key];
         if (esc && _sendTerminalInput(_textEncoder.encode(esc))) return;
-
-        // Mobile text-polling WS fallback: send key name as JSON
-        if (_sendMobileKey(key)) {
-          connectMobileTerminalWs();
-          return;
-        }
 
         wpMetrics.sendFailCount++;
       }
@@ -6728,17 +6529,6 @@
             } else if (state.terminalController?.term) {
               state.terminalController.resetRetry();
               connectDesktopWs();
-            } else if (state.mobileStreamingActive) {
-              // WASM fallback: kill stale WS and reconnect fresh.
-              // After backgrounding, the OS suspends the tab and the TCP connection
-              // dies silently — but the WS object may still report readyState=OPEN,
-              // blocking reconnection for 30-60s until the browser detects the dead socket.
-              if (state.mobileWs) {
-                const ws = state.mobileWs;
-                state.mobileWs = null;
-                try { ws.close(1000, "resume foreground"); } catch {}
-              }
-              startPolling(true);
             }
           }
         } else {
