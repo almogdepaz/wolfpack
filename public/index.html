@@ -4052,11 +4052,8 @@
             },
             onBinaryData: (data) => {
               if (!_term) return;
-              if (_reconnectPendingReset) {
+              if (_reconnectPendingReset || _cachedPendingReset) {
                 _reconnectPendingReset = false;
-                _term.reset();
-              }
-              if (_cachedPendingReset) {
                 _cachedPendingReset = false;
                 _term.reset();
                 const el = _getHydrationElement();
@@ -6098,6 +6095,11 @@
           },
           onOutput: (data) => {
             wpMetrics.wsMessagesReceived++;
+            // Cancel Enter retry — output changed, so the Enter wasn't dropped
+            if (state.enterRetryTimer) {
+              clearTimeout(state.enterRetryTimer);
+              state.enterRetryTimer = null;
+            }
             scheduleSnapshotSave(null);
           },
           onViewerConflict: () => showDesktopConflictOverlay(),
@@ -6235,22 +6237,22 @@
         return (state.currentMachine || "") + "|" + (state.currentSession || "");
       }
 
-      function setConnState(state) {
+      function setConnState(connState) {
         const statusEl = document.getElementById("conn-status");
         if (!statusEl) return;
         const active = !!state.terminalController?.term;
-        if (state.currentView !== "terminal" || !active || state === "live") {
+        if (state.currentView !== "terminal" || !active || connState === "live") {
           statusEl.style.display = "none";
           statusEl.style.background = "#cc3333";
           return;
         }
-        if (state === "reconnecting") {
+        if (connState === "reconnecting") {
           statusEl.style.display = "block";
           statusEl.style.background = "#8a5a00";
           statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
           return;
         }
-        if (state === "displaced") {
+        if (connState === "displaced") {
           statusEl.style.display = "block";
           statusEl.style.background = "#8a5a00";
           statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">taken over by another viewer \u2014 <button type="button" id="conn-retry-btn" class="conn-retry-btn">Reconnect</button>';
@@ -6258,7 +6260,7 @@
           if (retryBtn) retryBtn.onclick = retryConnection;
           return;
         }
-        if (state === "offline") {
+        if (connState === "offline") {
           statusEl.style.display = "block";
           statusEl.style.background = "#cc3333";
           statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">connection lost \u2014 <button type="button" id="conn-retry-btn" class="conn-retry-btn">Reconnect</button>';

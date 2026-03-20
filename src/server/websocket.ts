@@ -359,6 +359,10 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
             try {
               entry.viewer.send(viewportBuf);
               entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
+              // Enable dedup so PTY attach doesn't replay viewport content.
+              // Full-scrollback phase will overwrite prefill with the larger buffer.
+              prefill = viewportBuf;
+              shouldDedupeInitialAttach = true;
             } catch (e: unknown) {
               console.error(`PTY viewport prefill send failed [${session}]:`, errMsg(e));
             }
