@@ -6157,6 +6157,38 @@
         window.addEventListener("resize", onResize);
         state.desktopResizeHandler = onResize;
 
+        // ── visualViewport resize for mobile virtual keyboard ──
+        // On mobile, the virtual keyboard changes visualViewport.height without
+        // firing window resize. We adjust the terminal-view height to match the
+        // visible area and refit the terminal so rows/cols stay correct.
+        if (window.visualViewport) {
+          const vvHandler = () => {
+            const vv = window.visualViewport;
+            const termView = document.getElementById("terminal-view");
+            if (!termView) return;
+            // offsetTop accounts for viewport scroll when keyboard pushes content up
+            const availableHeight = vv.height - vv.offsetTop;
+            if (availableHeight < window.innerHeight * 0.95) {
+              // Keyboard is likely visible — constrain height
+              termView.style.height = availableHeight + "px";
+              termView.style.maxHeight = availableHeight + "px";
+            } else {
+              // Keyboard dismissed — reset to natural layout
+              termView.style.height = "";
+              termView.style.maxHeight = "";
+            }
+            // Debounce the terminal refit (same timer as window resize)
+            if (state.desktopResizeTimer) clearTimeout(state.desktopResizeTimer);
+            state.desktopResizeTimer = setTimeout(() => {
+              state.desktopResizeTimer = null;
+              if (state.terminalController) state.terminalController.resize();
+            }, 60);
+          };
+          window.visualViewport.addEventListener("resize", vvHandler);
+          window.visualViewport.addEventListener("scroll", vvHandler);
+          state.visualViewportHandler = vvHandler;
+        }
+
         const onKeyDown = (e) => {
           if (e.key.toLowerCase() === "f" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
             e.preventDefault();
@@ -6183,6 +6215,14 @@
           window.removeEventListener("resize", state.desktopResizeHandler);
           state.desktopResizeHandler = null;
         }
+        if (state.visualViewportHandler && window.visualViewport) {
+          window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
+          window.visualViewport.removeEventListener("scroll", state.visualViewportHandler);
+          state.visualViewportHandler = null;
+        }
+        // Reset terminal-view height in case keyboard was open when destroyed
+        const termView = document.getElementById("terminal-view");
+        if (termView) { termView.style.height = ""; termView.style.maxHeight = ""; }
         const container = document.getElementById("desktop-terminal-container");
         if (container._onKeyDown) {
           document.removeEventListener("keydown", container._onKeyDown);
