@@ -1566,3 +1566,228 @@ The main iteration loop handles: worktree setup, formatting, dedup, task extract
 4. **Extract `app-pty.ts`** (S1 Phase 1) — largest client extraction, cleanest boundary
 5. **Extract remaining app modules** (S1 Phase 2-3) — progressive decomposition
 6. **Consolidate shared utilities** (S4) — cross-cutting cleanup, lower priority
+
+---
+
+# Performance Audit
+
+> Audit performed 2026-03-20. Covers polling frequency, memory management, serialization overhead, bundle size, tmux subprocess spawning, and WebSocket message volume.
+
+## P1. Polling Intervals & Reconnect Strategy
+
+### P1.1 Capture-Pane Polling — 50ms Interval (HIGH)
+
+**Location:** `src/server/websocket.ts:40` — `POLL_INTERVAL_MS = 50`
+
+The mobile terminal WS handler (`handleTerminalWs`) polls `tmux capture-pane` every **50ms** (20 times/sec) per connected client. Each poll:
+1. Optionally runs `tmux list-sessions` (via `isAllowedSession`) — once/sec, gated by `nextSessionCheckAt`
+2. Runs `tmux capture-pane -S -2000` — spawns a child process every 50ms
+3. Compares full pane output string to previous (`pane !== prev`)
+4. If changed, `JSON.stringify`s the entire pane and sends over WS
+
+**Impact:** With N mobile clients, this spawns **20×N tmux processes/sec**. For a single client that's ~1,200 tmux execs/min. The poll timer reschedules after completion (not fixed interval), so actual rate depends on tmux latency, but the target is aggressive.
+
+**Recommendation:** Increase `POLL_INTERVAL_MS` to 150–200ms (5–7 fps). Terminal content rarely changes faster than this, and the 50ms interval provides no perceptible benefit over 150ms for text-based output. Could also implement adaptive polling: fast (100ms) when content is changing, slow (500ms) when idle.
+
+### P1.2 Session List Polling — 5s Client Interval (LOW)
+
+**Location:** `public/app.ts:1294,2594` — `setInterval(loadSessions, 5000)`
+
+The client polls `GET /api/sessions` every 5 seconds. Each call triggers:
+- `tmuxList()` → `tmux list-sessions` exec
+- Per-session `capturePaneForTriage()` → `tmux capture-pane` exec (cached 500ms via `_triageCacheMap`)
+- Triage classification per session
+
+For N sessions, this is N+1 tmux execs per poll (minus triage cache hits). Reasonable for a handful of sessions, but scales linearly.
+
+### P1.3 Reconnect Backoff Strategy (GOOD)
+
+**Location:** `public/app.ts:238-299`
+
+Well-implemented exponential backoff: base 500ms, factor 1.8×, max 5s, jitter ±200ms, budget cap at 2 minutes. Both desktop and mobile paths use `createReconnector()`. No issues found — this is a solid implementation.
+
+### P1.4 Ralph Log Polling — 2s Interval (LOW)
+
+**Location:** `public/app.ts:1265,1348` — `setInterval(refreshRalphDetail, 2000)`
+
+Polls ralph log every 2s when viewing detail. Reads last 128KB of log file per call. Acceptable given it's only active when the user is viewing the ralph detail pane.
+
+## P2. Memory Leaks & Resource Cleanup
+
+### P2.1 Event Listener Cleanup on WS Disconnect (GOOD)
+
+**Server-side:** `websocket.ts:203-213` — terminal WS `close`/`error` handlers clear `pollTimer` and `pingTimer`. PTY WS `detach` handler clears `pingTimer` and calls `teardownPty()`. Pending viewer handlers (`cleanup` function at line 302) properly remove listeners and clear `pingTimer`.
+
+**Client-side:** `destroyDesktopTerminal()` removes `resize` and `keydown` listeners. `stopPolling()` clears timers and closes WS. Grid cell disposal calls `controller.dispose()`.
+
+**No orphaned listeners found.** Both sides clean up on disconnect.
+
+### P2.2 Terminal Buffer Growth — No Server-Side Cap (MEDIUM)
+
+**Location:** `src/server/websocket.ts:118` — `let prev = ""`
+
+The mobile terminal handler stores the full pane content in `prev` (a string). Since `capturePane` fetches `MOBILE_CAPTURE_HISTORY_LINES = 2000` lines, this string can grow to **hundreds of KB** per connected session. This is bounded by the capture-pane line limit, so it won't grow infinitely — but it's retained for the lifetime of the WS connection.
+
+**Client-side:** `DESKTOP_TERMINAL_SCROLLBACK` and `GRID_TERMINAL_SCROLLBACK` control ghostty-web buffer limits. `SNAPSHOT_MAX_BYTES` caps localStorage snapshots.
+
+**`prevPaneContent` map** (`routes.ts:182`): Grows with number of sessions. Entries are deleted on `POST /api/kill` but NOT pruned when sessions are destroyed externally (e.g., `tmux kill-session` from CLI). The `tmuxList()` prune logic cleans `sessionDirMap`, `_triageCacheMap`, and `_backfillCacheMap` — but `prevPaneContent` is not included in the prune sweep.
+
+### P2.3 Per-IP Rate Limiter Map (GOOD)
+
+**Location:** `src/server/http.ts:38-62`
+
+`createPerIpRateLimiter` has an eviction timer (60s) that removes stale entries. Timer is `.unref()`'d. No unbounded growth risk.
+
+### P2.4 PTY Spawn Attempts Map — Test-Only (LOW)
+
+**Location:** `src/server/websocket.ts:33` — `ptySpawnAttempts` Map
+
+Only populated when `WOLFPACK_TEST` is set. No production impact.
+
+## P3. Serialization Hot Paths
+
+### P3.1 Full Pane JSON.stringify on Every WS Poll (HIGH)
+
+**Location:** `src/server/websocket.ts:142`
+
+```js
+ws.send(JSON.stringify({ type: "output", data: pane }));
+```
+
+Every 50ms (when content changes), the server serializes the **entire** capture-pane output (up to 2000 lines) into a JSON message. The pane content is a plain string, but wrapping it in `{ type: "output", data: pane }` forces a full `JSON.stringify`. The client then `JSON.parse`s it (`app.ts:2081`).
+
+**Impact:** For a 200KB pane, this is ~400KB of allocation + serialization per update. At 20 updates/sec (when content is actively changing), that's up to **8MB/sec** of JSON processing.
+
+**Recommendation:** Send pane content as a raw text WS message with a single-byte type prefix (e.g., `\x01` + pane text). The client can distinguish message types by checking the first byte. Eliminates JSON overhead on the hottest path.
+
+### P3.2 Full String Comparison for Change Detection (MEDIUM)
+
+**Location:** `src/server/websocket.ts:141` — `if (pane !== prev)`
+
+Comparing the full pane string (potentially hundreds of KB) on every poll. JavaScript string comparison is byte-by-byte for equal-length strings. This is O(n) on every poll, even when nothing changed.
+
+**Recommendation:** Hash the pane content (e.g., simple FNV-1a or use `Bun.hash`) and compare hashes. Only do the full comparison (or just send) on hash mismatch. Saves CPU on the common "nothing changed" path.
+
+### P3.3 Client-Side JSON.parse on Every WS Message (MEDIUM)
+
+**Location:** `public/app.ts:2081` — `msg = JSON.parse(ev.data)`
+
+Every mobile WS message is JSON-parsed. Combined with the server-side stringify, this is a round-trip serialization tax on every frame update. Desktop mode avoids this by using binary PTY passthrough.
+
+### P3.4 localStorage Snapshot Serialization (LOW)
+
+**Location:** `public/app.ts:1003` — `JSON.stringify({ d: trimmed, ts: Date.now() })`
+
+Snapshot saves are debounced via `SNAPSHOT_SAVE_INTERVAL` and only trigger on content change. The `trimmed` value is capped at `SNAPSHOT_MAX_BYTES`. Acceptable overhead.
+
+## P4. Bundle Size
+
+### P4.1 Client Asset Breakdown
+
+| File | Size | Notes |
+|------|------|-------|
+| `ghostty-web.bundle.js` | 640KB | Third-party terminal emulator (WASM loader + JS). Expected size. |
+| `app.bundle.js` (embedded) | ~193KB | Bundled from `app.ts` (135KB) + `app-grid.ts` (24KB) + `app-ralph.ts` (25KB) + `app-state.ts` (9KB) |
+| `wolfpack-lib.js` | 4.7KB | Shared pure logic |
+| **Total JS shipped** | **~838KB** | Uncompressed. With gzip/brotli this compresses well. |
+
+### P4.2 Embedded Assets in Server Binary (INFO)
+
+**Location:** `src/public-assets.ts` — 914KB
+
+All public assets are base64-embedded at build time for single-binary distribution. This inflates the server binary but avoids filesystem reads at runtime. The `assets` Map is allocated once at startup. No runtime performance concern — this is a deployment trade-off.
+
+### P4.3 No Tree-Shaking on Client Bundle (LOW)
+
+The `app.bundle.js` is generated by `scripts/bundle-app.ts` and includes all code from the four source files. Since there's no tree-shaking step, any dead code in `app-state.ts`, `app-ralph.ts`, or `app-grid.ts` is shipped to clients. Given the total is ~193KB uncompressed, this is minor, but could be improved with a minification/tree-shake step.
+
+## P5. tmux Subprocess Spawning
+
+### P5.1 Spawning Frequency Summary
+
+| Trigger | tmux Command | Frequency | Per-Client |
+|---------|-------------|-----------|------------|
+| Mobile WS poll | `capture-pane -S -2000` | Every 50ms | Yes |
+| Session validation | `list-sessions` | Once/sec per mobile WS | Yes |
+| Session list API | `list-sessions` + N × `capture-pane` | Every 5s (client poll) | No |
+| Backfill cache miss | `show-environment` | Once per 30s per session | No |
+| Desktop PTY attach | `attach-session` (long-lived) | Once per connect | Yes |
+| Desktop prefill | `capture-pane -S -5000` | Once per connect | Yes |
+| Triage cache | `capture-pane` (500ms TTL) | Gated by cache | No |
+
+**The dominant source is P5.2.**
+
+### P5.2 capture-pane at 20Hz Per Mobile Client (HIGH)
+
+**Same as P1.1.** Each mobile client drives ~20 `tmux capture-pane` child processes per second. This is the single largest performance concern in the codebase.
+
+`capturePane()` uses `execFile` (via `promisify(execFile)`), which spawns a new process each time. The 2000-line history capture (`-S -2000`) makes each invocation more expensive than a visible-pane-only capture.
+
+**Recommendations:**
+1. **Reduce poll rate** to 150-200ms (P1.1)
+2. **Reduce history depth** for polling — use `-S -0` (visible pane only) for the hot-path poll, reserve `-S -2000` for initial load. The mobile UI uses `textContent` rendering which doesn't benefit from scrollback history during streaming.
+3. **Batch or debounce** — if multiple mobile clients are viewing the same session, share a single capture-pane result.
+
+### P5.3 isAllowedSession Calls tmuxList Every Time (MEDIUM)
+
+**Location:** `src/server/http.ts:74-77`
+
+```js
+export async function isAllowedSession(session: string): Promise<boolean> {
+  const allowed = await tmuxList();
+  return allowed.includes(session);
+}
+```
+
+Every call to `isAllowedSession` runs a full `tmux list-sessions` + backfill logic. This is called:
+- On every `POST /api/send`, `POST /api/key`, `POST /api/kill`, `POST /api/resize`, `GET /api/poll`, `GET /api/git-status`
+- Once per second inside the mobile WS poll loop
+
+There's no short-TTL cache on `tmuxList()` results. The backfill cache (`_backfillCacheMap`, 30s TTL) reduces `show-environment` calls, but the `list-sessions` exec itself runs every time.
+
+**Recommendation:** Add a short TTL cache (1-2 seconds) on `tmuxList()` results. Session creation/destruction is infrequent — a 1-second stale window is acceptable. This would eliminate redundant `list-sessions` calls when multiple API requests arrive in quick succession.
+
+## P6. WebSocket Message Volume
+
+### P6.1 Full Pane Dumps vs Diffs — No Diffing (HIGH)
+
+**Location:** `src/server/websocket.ts:139-143`
+
+The server sends the **entire pane content** on every change. There's a change-detection gate (`pane !== prev`), but when content does change, the full ~2000-line dump is sent. For an active terminal where a single line changes, this means resending potentially hundreds of KB when only a few bytes changed.
+
+**Impact:** On mobile connections (the primary use case for this WS path), large messages can cause:
+- Bandwidth waste (especially on cellular)
+- Increased latency due to message size
+- JSON parse overhead on the client
+
+**Recommendation:** Implement line-level diffing. Since `capturePane` returns newline-delimited text:
+1. Split current and previous pane by lines
+2. Send only changed lines with their indices: `{ type: "diff", lines: [[idx, text], ...] }`
+3. Fall back to full dump if more than 50% of lines changed
+
+This would reduce typical message size by 90%+ for incremental terminal updates.
+
+### P6.2 Desktop PTY Mode — Binary Passthrough (GOOD)
+
+**Location:** `src/server/websocket.ts:411-426`
+
+Desktop mode uses direct PTY binary passthrough — raw terminal escape sequences, no JSON wrapping, no polling. This is the optimal approach. Binary data flows directly from `tmux attach-session` PTY to WebSocket to ghostty-web terminal emulator.
+
+### P6.3 Mobile WS Has No Compression (LOW)
+
+The WS connection doesn't use `permessage-deflate` compression. For the mobile path sending full text panes, compression would reduce wire size significantly (terminal output compresses very well — typically 80-90% reduction). However, this adds CPU overhead per message, which may not be worthwhile if diff-based messaging (P6.1) is implemented.
+
+## P7. Summary — Priority Matrix
+
+| ID | Issue | Severity | Effort | Impact |
+|----|-------|----------|--------|--------|
+| **P1.1/P5.2** | capture-pane at 50ms (20Hz) per client | **HIGH** | Low | Reduce to 150ms = 60% fewer tmux spawns |
+| **P6.1** | Full pane dumps instead of diffs | **HIGH** | Medium | 90%+ message size reduction |
+| **P3.1** | JSON.stringify/parse on hot WS path | **HIGH** | Low | Eliminate JSON overhead with raw text messages |
+| **P5.3** | isAllowedSession → uncached tmuxList | **MEDIUM** | Low | Eliminate redundant list-sessions execs |
+| **P2.2** | prevPaneContent map never pruned | **MEDIUM** | Trivial | Memory leak for externally-killed sessions |
+| **P5.2b** | 2000-line history on every poll | **MEDIUM** | Low | Use visible-pane-only for polling |
+| **P3.2** | Full string comparison on unchanged pane | **MEDIUM** | Low | Use hash for fast no-change path |
+| **P4.3** | No tree-shaking/minification on bundle | **LOW** | Low | Reduce ~193KB → ~80-100KB with minification |
+| **P6.3** | No WS compression | **LOW** | Low | Better with diff-based messaging |
+| **P1.2** | Session list poll at 5s | **LOW** | N/A | Acceptable for small session counts |
