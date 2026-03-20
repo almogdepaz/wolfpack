@@ -1191,3 +1191,189 @@ Two different headers could produce the same slug (e.g., "Fix: auth bug" and "Fi
 7. **Auth coverage is complete** — no authenticated route found without JWT middleware, no WS route without auth.
 8. **Worktree paths are slug-sanitized** — only `[a-z0-9-]` in directory names, eliminating path traversal.
 9. **`realpathSync` used in worktree creation** — resolves symlinks before constructing paths.
+
+---
+
+# Function-Level Audit — frontend XSS
+
+## Scope
+
+Files audited: `public/app.ts` (3618 LOC), `public/app-grid.ts`, `public/app-ralph.ts`, `public/app-state.ts`.
+
+Focus: DOM injection vectors — `innerHTML`, `insertAdjacentHTML`, `document.write`, template string interpolation into DOM, terminal output sanitization, escape sequence handling.
+
+## Escaping Infrastructure
+
+### `esc()` — `app-state.ts:6-11`
+
+```ts
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = String(s);
+  return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+}
+```
+
+**Verdict: SAFE.** Uses the browser's own `textContent → innerHTML` roundtrip for HTML-entity encoding, then adds single/double quote escaping. This is a well-known pattern that handles `<`, `>`, `&`, `"`, `'` correctly. Suitable for both HTML content and attribute contexts.
+
+### `escAttr()` — `app-state.ts:16-20`
+
+```ts
+function escAttr(s) {
+  return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
+    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26");
+}
+```
+
+**Verdict: SAFE for `onclick="func('...')"` contexts.** Escapes JS string delimiters and HTML-significant chars. Used consistently in all inline `onclick` attribute interpolations. The replacement order is correct (backslash first).
+
+## innerHTML Usage Analysis
+
+Total `innerHTML` assignments found: **~50** across the four files. Categorized below.
+
+### Category 1: Static content only (no dynamic data) — SAFE
+
+Assignments like `el.innerHTML = ""`, `el.innerHTML = '<div class="empty">Loading...</div>'`, `el.innerHTML = '<span class="ralph-status failed">ERROR</span>'`.
+
+Locations: `app-grid.ts:362,365,548,552`, `app.ts:121,207,1622,1627,1641,1649,1670,1699,1824,1923,1947,1953,1961,2916`, `app-ralph.ts:93,95,137,176,299,355,360,365,403,409,415,420,428`.
+
+**No risk** — all hardcoded strings.
+
+### Category 2: Dynamic data escaped with `esc()`/`escAttr()` — SAFE
+
+All dynamic values interpolated into innerHTML are wrapped in `esc()` or `escAttr()`:
+
+| Location | Dynamic data | Escaping |
+|---|---|---|
+| `app-grid.ts:112` | `gs.session` | `esc()` |
+| `app.ts:124-125` | quick cmd labels | `esc()` |
+| `app.ts:149-151` | quick cmd labels/cmds | `esc()` |
+| `app.ts:211,213` | git status, error msg | `esc()` |
+| `app.ts:960` | viewer conflict message | `esc()` |
+| `app.ts:1382-1399` | session names, machine URLs, versions, lastLine, triage | `esc()`/`escAttr()` |
+| `app.ts:1630-1636` | project names | `esc()`/`escAttr()` |
+| `app.ts:1684-1694` | agent labels, commands | `esc()`/`escAttr()` |
+| `app.ts:2290-2298` | drawer items (session names, machine names) | `esc()`/`escAttr()` |
+| `app.ts:2924-2931` | machine names, URLs | `esc()`/`escAttr()` |
+| `app.ts:3280-3284` | sidebar machine names, URLs | `esc()`/`escAttr()` |
+| `app.ts:3304-3326` | sidebar session cards | `esc()`/`escAttr()` |
+| `app-ralph.ts:43-63` | ralph card (project, planFile, lastOutput) | `esc()`/`escAttr()` |
+| `app-ralph.ts:65-73` | sidebar ralph card | `esc()`/`escAttr()` |
+| `app-ralph.ts:104-118` | ralph detail header (planFile, started, finished) | `esc()`/`escAttr()` |
+| `app-ralph.ts:122-128` | ralph actions (planFile, agent, worktree params) | `escAttr()` |
+| `app-ralph.ts:184-200` | ralph iteration cards (title, task, body) | `esc()` |
+| `app-ralph.ts:278,281` | machine picker names | `esc()` |
+| `app-ralph.ts:294,362,407,422` | project/plan/branch option lists | `esc()`/`escAttr()` |
+
+### Category 3: CSS class interpolation from hardcoded sources — SAFE
+
+Several locations interpolate CSS classes from `triageUi()`, `getRalphStatus()`, or local variables into `class="..."`:
+
+- `triageUi()` returns values only from `TRIAGE_MAP` (hardcoded at `app.ts:1365-1369`) — `s.triage` lookups fall back to `idle` for unknown values.
+- `getRalphStatus()` returns hardcoded strings: `"running"`, `"done"`, `"audit"`, `"cleanup"`, `"limit"`, `"idle"` — `app-ralph.ts:30-39`.
+- Status dots: `"green"`, `"red"`, `"gray"`, `"purple"` — all hardcoded conditionals.
+
+**No class injection vector** — even if server data contained unexpected triage values, the `TRIAGE_MAP` lookup defaults to `"idle"`.
+
+**Note:** `s.triage` is also interpolated via `esc()` at `app.ts:1396`: `class="triage-badge ${esc(s.triage || "idle")}"`. While `esc()` prevents HTML injection, a malicious triage value like `idle" onclick="alert(1)` would be entity-encoded to `idle&quot; onclick=&quot;alert(1)` — no breakout. However, this is a CSS class context where `esc()` is technically overkill but harmless. The triage value comes from server-side classification, not raw user input.
+
+### Category 4: Search highlighting — `app.ts:3035-3054` — **REQUIRES SCRUTINY**
+
+```ts
+function applySearchHighlights() {
+  const escaped = state.lastRawPane.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const escapedTerm = state.searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escapedTerm.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"), "gi");
+  const html = escaped.replace(re, (m) => `<mark class="${cls}">${m}</mark>`);
+  term.innerHTML = html;
+}
+```
+
+**Verdict: SAFE.** The pane content is HTML-escaped first (`&`, `<`, `>` replaced with entities), then the search term regex operates on the *escaped* string. The `<mark>` tags wrap matches from the already-escaped content. The search term itself comes from user keyboard input (not from the URL or external source), and is regex-escaped before use. The matched content `m` is a substring of the already-HTML-escaped pane text.
+
+**Edge case considered:** Could `escapedTerm` contain entity sequences that match across escape boundaries? No — the search term is also entity-escaped with the same replacements, so it can only match entity-encoded forms, preserving alignment.
+
+## Terminal Output Rendering
+
+### Mobile terminal (capture-pane polling) — `app.ts:1971-1993`
+
+```ts
+function applyTerminalPane(pane) {
+  term.textContent = pane;  // line 1985
+}
+```
+
+**Verdict: SAFE.** Uses `textContent`, not `innerHTML`. The raw pane content (from `tmux capture-pane`) is assigned as text, so no HTML parsing occurs. ANSI escape sequences and terminal control characters are rendered as literal text (visible as garbage chars on mobile — this is intentional for the mobile polling UI).
+
+**Snapshot restore also uses `textContent`**: `app.ts:1584` — `term.textContent = cached || ""`.
+
+### Desktop terminal (Ghostty-web PTY)
+
+The desktop terminal uses Ghostty-web (`ghostty-web.bundle.js`), a compiled WebAssembly terminal emulator. PTY data flows through a WebSocket as binary data directly to the WASM renderer. The terminal emulator handles escape sequence parsing internally — there is no DOM innerHTML injection from PTY data. XSS via terminal escape sequences is not applicable here because Ghostty renders to a Canvas/WebGL surface, not to the DOM.
+
+### Terminal escape sequence attacks
+
+**Attack vector considered:** A malicious process in a tmux session outputs crafted terminal escape sequences (e.g., OSC title-setting sequences, hyperlink escapes) hoping to inject into the DOM.
+
+- **Mobile path:** `textContent` assignment — completely immune. Escape sequences render as literal characters.
+- **Desktop path:** Ghostty WASM renderer — escape sequences are interpreted by the terminal emulator, not the DOM. Standard terminal emulators handle OSC/CSI sequences in their own state machine. No DOM injection vector.
+- **Search path:** Pane content is HTML-entity-escaped before `innerHTML` assignment — escape sequences become visible entity-encoded text.
+
+**Verdict: NOT VULNERABLE.**
+
+## Content Security Policy
+
+CSP is enforced on HTML responses (`src/server/http.ts:137-144`):
+
+```
+default-src 'self'; script-src 'self' 'nonce-{random}'; style-src 'self' 'unsafe-inline';
+connect-src 'self' wss: https:; img-src 'self' data:
+```
+
+**Script execution is nonce-gated** — even if an innerHTML injection were found, injected `<script>` tags would be blocked by CSP. The `'unsafe-inline'` on `style-src` means CSS injection via `<style>` tags could theoretically work, but this requires an innerHTML injection first (none found).
+
+**Note:** Inline event handlers (`onclick`) in the existing HTML are allowed because they're in the nonce'd script's DOM mutations, not in the initial HTML. However, CSP `script-src` without `'unsafe-inline'` means injected `onclick` attributes via innerHTML would also be blocked by CSP in modern browsers. This provides defense-in-depth.
+
+## Peer Data Trust Boundary
+
+Remote peer data (from Tailscale peer machines) flows through `validatePeerLoops()` (`src/server/routes.ts:98-129`), which:
+
+1. Validates top-level structure (`loops` array of objects).
+2. Requires `project` to be a string.
+3. Allowlists keys via `RALPH_LOOP_SCHEMA` — only known keys with correct types pass through.
+
+String fields from peers (`project`, `planFile`, `agent`, `lastOutput`, `started`, `finished`, `worktreeMode`, `worktreeBranch`) are passed to the client and rendered. All are escaped with `esc()` or `escAttr()` before DOM insertion (verified in Category 2 above).
+
+**Verdict: SAFE.** A malicious peer could send `project: "<img onerror=alert(1) src=x>"` — this gets escaped to `&lt;img onerror=alert(1) src=x&gt;` by `esc()`.
+
+## Other Patterns Checked
+
+| Pattern | Found | Assessment |
+|---|---|---|
+| `document.write()` | No | Not used anywhere |
+| `insertAdjacentHTML()` | No | Not used anywhere |
+| `eval()` / `new Function()` | No | Not used in app code (only in Ghostty bundle) |
+| `setTimeout(string)` | No | Only `setTimeout(() => ..., N)` form used |
+| URL-controlled DOM content | No | No `location.hash`/`location.search` parsed into DOM |
+| `srcdoc` on iframes | No | No iframes used |
+| `DOMParser` | No | Not used |
+
+## Findings Summary
+
+### Vulnerabilities Found: **0**
+
+No XSS vulnerabilities identified. The codebase demonstrates consistent, correct escaping discipline:
+
+1. **All** dynamic values going into `innerHTML` are wrapped in `esc()` (for HTML content) or `escAttr()` (for JS string contexts inside inline event handlers).
+2. Terminal output uses `textContent` (mobile) or WASM rendering (desktop) — no DOM injection surface.
+3. Search highlighting pre-escapes pane content before `innerHTML` assignment.
+4. CSP with script nonces provides defense-in-depth against any hypothetical injection.
+5. Peer data is schema-validated server-side and escaped client-side.
+
+### Informational Notes
+
+1. **INF-XSS1: `unsafe-inline` in `style-src`** — `src/server/http.ts:141`. Allows CSS injection if an innerHTML vulnerability were ever introduced. Consider migrating inline styles to classes and removing `'unsafe-inline'` from `style-src`. **Low priority** — no injection vector exists currently.
+
+2. **INF-XSS2: Heavy reliance on string-template HTML construction** — The codebase builds HTML via string concatenation/template literals rather than using DOM APIs (`createElement`/`appendChild`). While all interpolations are currently escaped, this pattern is more error-prone for future changes. A single forgotten `esc()` call on a new field would introduce XSS. Consider documenting the escaping convention prominently for contributors.
+
+3. **INF-XSS3: `escAttr()` does not escape backticks** — `app-state.ts:18`. If `escAttr()` were ever used inside a template literal context (`` ` ``), a backtick in user data could break out. Currently all `escAttr()` usage is inside single-quoted JS string literals in `onclick` attributes, where backticks are harmless. **No current risk**, but worth noting for future use.
