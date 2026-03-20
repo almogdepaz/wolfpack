@@ -16,12 +16,6 @@ const capturePane = mock(
   async (session: string): Promise<string> =>
     `captured output for ${session}\n`,
 );
-const tmuxSend = mock(
-  async (_s: string, _t: string, _noEnter?: boolean): Promise<void> => {},
-);
-const tmuxSendKey = mock(
-  async (_s: string, _key: string): Promise<void> => {},
-);
 const tmuxResize = mock(
   async (_s: string, _c: number, _r: number): Promise<void> => {},
 );
@@ -66,11 +60,6 @@ function isValidProjectName(name: string): boolean {
 function isValidSessionName(name: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(name) && name.length > 0 && name.length <= 100;
 }
-
-const ALLOWED_KEYS = [
-  "Enter", "Tab", "Escape", "Up", "Down", "Left", "Right",
-  "BTab", "y", "n", "C-c", "C-d", "C-z",
-];
 
 // ─── HTTP helpers (same as serve.ts) ─────────────────────────────────────────
 
@@ -159,18 +148,6 @@ const routes: Record<
     json(res, { sessions: results });
   },
 
-  "POST /api/send": async (req, res) => {
-    const body = await parseBody(req, res);
-    if (!body) return;
-    const { session, text, noEnter } = body;
-    if (!session || !text)
-      return json(res, { error: "missing session or text" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    await tmuxSend(session, text, !!noEnter);
-    json(res, { ok: true });
-  },
-
   "GET /api/next-session-name": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const project = url.searchParams.get("project");
@@ -214,20 +191,6 @@ const routes: Record<
       throw e;
     }
     json(res, { ok: true, session: finalName });
-  },
-
-  "POST /api/key": async (req, res) => {
-    const body = await parseBody<{ session: string; key: string }>(req, res);
-    if (!body) return;
-    const { session, key } = body;
-    if (!session || !key)
-      return json(res, { error: "missing session or key" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    if (!ALLOWED_KEYS.includes(key))
-      return json(res, { error: "key not allowed" }, 400);
-    await tmuxSendKey(session, key);
-    json(res, { ok: true });
   },
 
   "POST /api/kill": async (req, res) => {
@@ -465,55 +428,6 @@ describe("GET /api/sessions", () => {
   });
 });
 
-describe("POST /api/send", () => {
-  test("sends text to valid session", async () => {
-    tmuxSend.mockClear();
-    const res = await post("/api/send", {
-      session: "wolf-1",
-      text: "hello world",
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.ok).toBe(true);
-    expect(tmuxSend).toHaveBeenCalledWith("wolf-1", "hello world", false);
-  });
-
-  test("passes noEnter flag through", async () => {
-    tmuxSend.mockClear();
-    const res = await post("/api/send", {
-      session: "wolf-1",
-      text: "partial",
-      noEnter: true,
-    });
-    expect(res.status).toBe(200);
-    expect(tmuxSend).toHaveBeenCalledWith("wolf-1", "partial", true);
-  });
-
-  test("rejects missing session", async () => {
-    const res = await post("/api/send", { text: "hello" });
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toBe("missing session or text");
-  });
-
-  test("rejects missing text", async () => {
-    const res = await post("/api/send", { session: "wolf-1" });
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toBe("missing session or text");
-  });
-
-  test("rejects unknown session (404)", async () => {
-    const res = await post("/api/send", {
-      session: "ghost",
-      text: "hello",
-    });
-    expect(res.status).toBe(404);
-    const data = await res.json();
-    expect(data.error).toBe("session not found");
-  });
-});
-
 describe("POST /api/create", () => {
   test("creates session for valid project", async () => {
     tmuxNewSession.mockClear();
@@ -653,63 +567,6 @@ describe("GET /api/next-session-name", () => {
   });
 });
 
-describe("POST /api/key", () => {
-  test("sends allowed key to valid session", async () => {
-    tmuxSendKey.mockClear();
-    const res = await post("/api/key", {
-      session: "wolf-1",
-      key: "Enter",
-    });
-    expect(res.status).toBe(200);
-    expect(tmuxSendKey).toHaveBeenCalledWith("wolf-1", "Enter");
-  });
-
-  test("allows all whitelisted keys", async () => {
-    for (const key of ALLOWED_KEYS) {
-      const res = await post("/api/key", { session: "wolf-1", key });
-      expect(res.status).toBe(200);
-    }
-  });
-
-  test("rejects disallowed key", async () => {
-    const res = await post("/api/key", {
-      session: "wolf-1",
-      key: "Delete",
-    });
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error).toBe("key not allowed");
-  });
-
-  test("rejects arbitrary string as key", async () => {
-    const res = await post("/api/key", {
-      session: "wolf-1",
-      key: "rm -rf /",
-    });
-    expect(res.status).toBe(400);
-  });
-
-  test("rejects unknown session", async () => {
-    const res = await post("/api/key", {
-      session: "ghost",
-      key: "Enter",
-    });
-    expect(res.status).toBe(404);
-    const data = await res.json();
-    expect(data.error).toBe("session not found");
-  });
-
-  test("rejects missing session", async () => {
-    const res = await post("/api/key", { key: "Enter" });
-    expect(res.status).toBe(400);
-  });
-
-  test("rejects missing key", async () => {
-    const res = await post("/api/key", { session: "wolf-1" });
-    expect(res.status).toBe(400);
-  });
-});
-
 describe("POST /api/kill", () => {
   test("kills valid session", async () => {
     tmuxKillSession.mockClear();
@@ -832,7 +689,7 @@ describe("POST /api/resize", () => {
 
 describe("bad JSON body", () => {
   test("returns 400 for unparseable JSON", async () => {
-    const res = await fetch(`${base}/api/send`, {
+    const res = await fetch(`${base}/api/kill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "this is not json{{{",
@@ -843,7 +700,7 @@ describe("bad JSON body", () => {
   });
 
   test("returns 400 for empty body on POST route", async () => {
-    const res = await fetch(`${base}/api/send`, {
+    const res = await fetch(`${base}/api/kill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "",
@@ -854,10 +711,10 @@ describe("bad JSON body", () => {
   });
 
   test("returns 400 for truncated JSON", async () => {
-    const res = await fetch(`${base}/api/key`, {
+    const res = await fetch(`${base}/api/kill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: '{"session": "wolf-1", "key":',
+      body: '{"session": "wolf-1",',
     });
     expect(res.status).toBe(400);
     const data = await res.json();
@@ -869,7 +726,7 @@ describe("body > 64KB", () => {
   test("rejects oversized body", async () => {
     const huge = JSON.stringify({ data: "x".repeat(70 * 1024) });
     try {
-      const res = await fetch(`${base}/api/send`, {
+      const res = await fetch(`${base}/api/kill`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: huge,
@@ -889,8 +746,8 @@ describe("body > 64KB", () => {
   test("accepts body just under 64KB", async () => {
     // 63KB of padding + minimal valid JSON structure
     const padding = "a".repeat(60 * 1024);
-    const body = JSON.stringify({ session: "wolf-1", text: padding });
-    const res = await fetch(`${base}/api/send`, {
+    const body = JSON.stringify({ session: "wolf-1", data: padding });
+    const res = await fetch(`${base}/api/kill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,

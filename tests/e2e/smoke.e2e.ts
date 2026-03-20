@@ -39,18 +39,6 @@ test("api/sessions returns mock sessions", async ({ page }) => {
   expect(names).toContain("another-project");
 });
 
-test("api/send dispatches to mock tmux", async ({ page }) => {
-  // Navigate first so page.request sends the correct Origin header
-  await page.goto(srv.baseUrl);
-  const res = await page.request.post(`${srv.baseUrl}/api/send`, {
-    data: { session: "test-project", text: "echo hello" },
-  });
-  // Should succeed (200) — actual tmux call is stubbed
-  expect(res.ok()).toBe(true);
-  const body = await res.json();
-  expect(body).toEqual({ ok: true });
-});
-
 test("malformed wp-effects storage does not brick the app", async ({ page }) => {
   await page.goto(srv.baseUrl);
   await page.evaluate(() => {

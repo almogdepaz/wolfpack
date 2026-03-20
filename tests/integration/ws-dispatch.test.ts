@@ -102,32 +102,6 @@ describe("WS /ws/terminal y/n prompt key dispatch", () => {
     await closeWs(ws!);
   });
 
-  test("y/n via HTTP /api/key returns ok for valid session", async () => {
-    for (const key of ["y", "n"]) {
-      const resp = await fetch(`${baseUrl}/api/key`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session: "dispatch-session", key }),
-      });
-      const body = await resp.json();
-      // tmux will fail but the API validates the key is allowed before attempting
-      // Status might be 200 (ok) or 500 (tmux error) — but NOT 400 (key not allowed)
-      expect(resp.status).not.toBe(400);
-    }
-  });
-
-  test("non-allowlisted keys rejected by HTTP /api/key", async () => {
-    for (const key of ["x", "q", "A", ";"]) {
-      const resp = await fetch(`${baseUrl}/api/key`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session: "dispatch-session", key }),
-      });
-      expect(resp.status).toBe(400);
-      const body = await resp.json();
-      expect(body.error).toBe("key not allowed");
-    }
-  });
 });
 
 // ── Keyboard accessory input coordination ──

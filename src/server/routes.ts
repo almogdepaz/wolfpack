@@ -40,8 +40,6 @@ import {
   RALPH_AGENTS,
   isUnderDevDir,
   tmuxList,
-  tmuxSend,
-  tmuxSendKey,
   tmuxResize,
   tmuxNewSession,
   capturePane,
@@ -228,36 +226,6 @@ export const routes: Record<
     );
     results.sort((a, b) => TRIAGE_PRIORITY[a.triage] - TRIAGE_PRIORITY[b.triage]);
     json(res, { sessions: results });
-  },
-
-  "POST /api/send": async (req, res) => {
-    const body = await parseBody(req, res);
-    if (!body) return;
-    const { session, text, noEnter } = body;
-    if (!session || !text)
-      return json(res, { error: "missing session or text" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    await tmuxSend(session, text, !!noEnter);
-    json(res, { ok: true });
-  },
-
-  "POST /api/key": async (req, res) => {
-    const body = await parseBody<{ session: string; key: string }>(req, res);
-    if (!body) return;
-    const { session, key } = body;
-    if (!session || !key)
-      return json(res, { error: "missing session or key" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    const allowed = [
-      "Enter", "Tab", "Escape", "Up", "Down", "Left", "Right",
-      "BTab", "y", "n", "C-c", "C-d", "C-z",
-    ];
-    if (!allowed.includes(key))
-      return json(res, { error: "key not allowed" }, 400);
-    await tmuxSendKey(session, key);
-    json(res, { ok: true });
   },
 
   "GET /api/projects": async (_req, res) => {

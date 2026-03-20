@@ -73,31 +73,6 @@ test("sending input updates terminal output", async ({ page }, testInfo) => {
   await expect(terminal).toContainText("command-output", { timeout: 5000 });
 });
 
-test("failed send preserves the typed input", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "desktop", "mobile-only input bar flow");
-  await page.goto(srv.baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
-
-  const card = page.locator(".card", { hasText: "test-project" }).first();
-  await card.click();
-  await expect(page.locator("#terminal")).toContainText("mock-terminal-ready", { timeout: 5000 });
-
-  await page.route("**/api/send", async (route) => {
-    if (route.request().method() === "POST") {
-      await route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "session not found" }),
-      });
-      return;
-    }
-    await route.continue();
-  });
-
-  const input = page.locator("#msg-input");
-  await input.fill("echo keep-me");
-  await page.locator("#send-btn").click();
-
-  await expect(input).toHaveValue("echo keep-me");
-});
+// "failed send preserves typed input" test removed — sendMsg/sendKey now use
+// WS binary (PTY) or WS JSON (text-polling) instead of REST /api/send.
 

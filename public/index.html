@@ -2961,20 +2961,23 @@
         el.classList.toggle("visible", state.kbAccessoryOpen);
       }
 
-      async function sendQuickCmd(index) {
+      function sendQuickCmd(index) {
         const cmd = state.quickCmds[index];
         if (!cmd || !state.currentSession) return;
         haptic([30]);
-        try {
-          await api("/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: state.currentSession, text: cmd.cmd }),
-          }, state.currentMachine);
+        wpMetrics.sendCount++;
+
+        // Desktop PTY WS path: encode cmd text + CR as binary
+        if (_sendTerminalInput(_textEncoder.encode(cmd.cmd + "\r"))) return;
+
+        // Mobile text-polling WS fallback
+        if (_sendMobileInput(cmd.cmd)) {
+          _sendMobileKey("Enter");
           connectMobileTerminalWs();
-        } catch {
-          wpMetrics.sendFailCount++;
+          return;
         }
+
+        wpMetrics.sendFailCount++;
       }
 
       function renderQuickCmdSettings() {
@@ -6199,7 +6202,61 @@
         else retryTerminalConnection();
       }
 
-      async function sendMsg() {
+      // ── Key-to-terminal-escape-sequence mapping ──
+      // Used by sendKey() to convert friendly key names to raw terminal bytes
+      // when sending input over the PTY WS binary channel.
+      const KEY_TO_ESCAPE = {
+        Enter: "\r",
+        Tab: "\t",
+        Escape: "\x1b",
+        Up: "\x1b[A",
+        Down: "\x1b[B",
+        Right: "\x1b[C",
+        Left: "\x1b[D",
+        Home: "\x1b[H",
+        End: "\x1b[F",
+        PPage: "\x1b[5~",
+        NPage: "\x1b[6~",
+        BTab: "\x1b[Z",
+        BSpace: "\x7f",
+        DC: "\x1b[3~",
+        y: "y",
+        n: "n",
+        "C-a": "\x01", "C-b": "\x02", "C-c": "\x03", "C-d": "\x04",
+        "C-e": "\x05", "C-f": "\x06", "C-g": "\x07", "C-h": "\x08",
+        "C-k": "\x0b", "C-l": "\x0c", "C-n": "\x0e", "C-p": "\x10",
+        "C-r": "\x12", "C-u": "\x15", "C-w": "\x17", "C-z": "\x1a",
+      };
+      const _textEncoder = new TextEncoder();
+
+      /** Send raw binary data to the PTY via terminalController or JSON via mobile WS. */
+      function _sendTerminalInput(bytes) {
+        if (state.terminalController?.isConnected) {
+          state.terminalController.send(bytes);
+          return true;
+        }
+        return false;
+      }
+
+      /** Send a key name via the mobile text-polling WS as JSON. */
+      function _sendMobileKey(key) {
+        if (state.mobileWs && state.mobileWs.readyState === WebSocket.OPEN) {
+          state.mobileWs.send(JSON.stringify({ type: "key", key }));
+          return true;
+        }
+        return false;
+      }
+
+      /** Send text input via the mobile text-polling WS as JSON. */
+      function _sendMobileInput(text) {
+        if (state.mobileWs && state.mobileWs.readyState === WebSocket.OPEN) {
+          state.mobileWs.send(JSON.stringify({ type: "input", data: text }));
+          return true;
+        }
+        return false;
+      }
+
+      function sendMsg() {
         const input = document.getElementById("msg-input");
         const text = input.value.trim();
         if (!text || !state.currentSession) return;
@@ -6215,18 +6272,11 @@
         void btn.offsetWidth; // force reflow
         btn.classList.add("send-flash");
 
-        try {
-          wpMetrics.sendCount++;
-          await api("/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: state.currentSession, text: text.replace(/\n/g, " ") }),
-          }, state.currentMachine);
-          connectMobileTerminalWs();
+        wpMetrics.sendCount++;
 
+        // Desktop PTY WS path: encode text + CR as binary
+        if (_sendTerminalInput(_textEncoder.encode(text.replace(/\n/g, " ") + "\r"))) {
           // Enter retry: if output hasn't changed within 800ms, Enter may have been dropped.
-          // Timer is cleared on any pane change, so this only fires if truly stuck.
-          // Scope to the session that was active at send time to prevent phantom Enter on other sessions.
           if (state.enterRetryTimer) clearTimeout(state.enterRetryTimer);
           const retrySession = state.currentSession;
           const retryMachine = state.currentMachine;
@@ -6236,13 +6286,23 @@
             }
             state.enterRetryTimer = null;
           }, 800);
-        } catch {
-          wpMetrics.sendFailCount++;
-          input.value = saved;
-          saveDraft();
-          autoResizeInput();
-          updatePreview();
+          return;
         }
+
+        // Mobile text-polling WS fallback: send text + Enter key as JSON
+        const textSent = _sendMobileInput(text.replace(/\n/g, " "));
+        if (textSent) {
+          _sendMobileKey("Enter");
+          connectMobileTerminalWs();
+          return;
+        }
+
+        // No connection available — restore input
+        wpMetrics.sendFailCount++;
+        input.value = saved;
+        saveDraft();
+        autoResizeInput();
+        updatePreview();
       }
 
       function updatePreview() {
@@ -6256,19 +6316,21 @@
         }
       }
 
-      async function sendKey(key) {
+      function sendKey(key) {
         if (!state.currentSession) return;
-        try {
-          wpMetrics.sendCount++;
-          await api("/key", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session: state.currentSession, key }),
-          }, state.currentMachine);
+        wpMetrics.sendCount++;
+
+        // Desktop PTY WS path: map key name to escape sequence and send binary
+        const esc = KEY_TO_ESCAPE[key];
+        if (esc && _sendTerminalInput(_textEncoder.encode(esc))) return;
+
+        // Mobile text-polling WS fallback: send key name as JSON
+        if (_sendMobileKey(key)) {
           connectMobileTerminalWs();
-        } catch {
-          wpMetrics.sendFailCount++;
+          return;
         }
+
+        wpMetrics.sendFailCount++;
       }
 
       async function killSession(name, e, machineUrl) {

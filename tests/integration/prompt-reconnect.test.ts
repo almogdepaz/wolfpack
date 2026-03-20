@@ -46,14 +46,6 @@ afterAll(() => {
 
 // ── Helpers ──
 
-function post(path: string, body: unknown) {
-  return fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
 async function rawUpgrade(path: string): Promise<{ status: number; ws?: WebSocket }> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`${baseWsUrl}${path}`);
@@ -76,65 +68,7 @@ function closeWs(ws: WebSocket): Promise<void> {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 1. Prompt Action Dispatch (y/n key dispatch via HTTP API)
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("Prompt action dispatch — /api/send (yes/no text)", () => {
-  test('sends "yes" text', async () => {
-    const res = await post("/api/send", { session: "prompt-sess", text: "yes" });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.ok).toBe(true);
-  });
-
-  test('sends "no" text', async () => {
-    const res = await post("/api/send", { session: "prompt-sess", text: "no" });
-    expect(res.status).toBe(200);
-    expect((await res.json()).ok).toBe(true);
-  });
-
-  test("noEnter flag passes through correctly", async () => {
-    const res = await post("/api/send", {
-      session: "prompt-sess",
-      text: "y",
-      noEnter: true,
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()).ok).toBe(true);
-  });
-});
-
-describe("Prompt action dispatch — /api/key (Enter, C-c)", () => {
-  test("dispatches Enter key for prompt confirmation", async () => {
-    const res = await post("/api/key", { session: "prompt-sess", key: "Enter" });
-    expect(res.status).toBe(200);
-    expect((await res.json()).ok).toBe(true);
-  });
-
-  test("dispatches C-c key for prompt interrupt", async () => {
-    const res = await post("/api/key", { session: "prompt-sess", key: "C-c" });
-    expect(res.status).toBe(200);
-    expect((await res.json()).ok).toBe(true);
-  });
-
-  test("dispatches y and n single-char keys", async () => {
-    for (const key of ["y", "n"]) {
-      const res = await post("/api/key", { session: "prompt-sess", key });
-      expect(res.status).toBe(200);
-      expect((await res.json()).ok).toBe(true);
-    }
-  });
-
-  test("rejects non-allowlisted keys", async () => {
-    for (const key of ["Delete", "F1", "q", "a", "C-a"]) {
-      const res = await post("/api/key", { session: "prompt-sess", key });
-      expect(res.status).toBe(400);
-    }
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 2. Keyboard Accessory Input Coordination (WS key dispatch)
+// Keyboard Accessory Input Coordination (WS key dispatch)
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Keyboard accessory — WS /ws/terminal key dispatch", () => {
