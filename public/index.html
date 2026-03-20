@@ -1439,7 +1439,8 @@
         visibility: hidden;
         transition: opacity 80ms ease;
       }
-      #desktop-terminal-container.hydrated:not(.transitioning) canvas {
+      #desktop-terminal-container.hydrated:not(.transitioning) canvas,
+      #desktop-terminal-container.cached-visible canvas {
         opacity: 1;
         visibility: visible;
       }
@@ -2596,9 +2597,9 @@
           </label>
           <div class="settings-subsection">
             <div class="flex-between">
-              <span>Recovery snapshot TTL</span><span id="snapshot-ttl-val" class="accent-val">5m</span>
+              <span>Recovery snapshot TTL</span><span id="snapshot-ttl-val" class="accent-val">15m</span>
             </div>
-            <input type="range" id="setting-snapshotTtl" min="60" max="1800" step="60" value="300"
+            <input type="range" id="setting-snapshotTtl" min="60" max="1800" step="60" value="900"
               class="range-input"
               oninput="toggleSetting('snapshotTtl', +this.value); document.getElementById('snapshot-ttl-val').textContent=formatSnapshotTtl(this.value)">
           </div>
@@ -2770,7 +2771,7 @@
 
     <script>
       // ── Settings (persisted to localStorage) ──
-      const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termWrap:false, termFont:"default", snapshotTtl:300, debugPanel:false, ralphEnabled:false};
+      const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termWrap:false, termFont:"default", snapshotTtl:900, debugPanel:false, ralphEnabled:false};
       function loadStoredJson(key, fallback) {
         try {
           const raw = localStorage.getItem(key);
@@ -3227,7 +3228,7 @@
       };
       function setState(patch) { Object.assign(state, patch); }
       const SNAPSHOT_KEY_PREFIX = "wp-snap|";
-      const SNAPSHOT_MAX_BYTES = 8192;
+      const SNAPSHOT_MAX_BYTES = 16384;
       const SNAPSHOT_SAVE_INTERVAL = 2000;
       const DESKTOP_TERMINAL_SCROLLBACK = 2000;
       const GRID_TERMINAL_SCROLLBACK = 1000;
@@ -3370,7 +3371,7 @@
             if (!_pending) {
               const el = opts.getElement();
               if (el) {
-                el.classList.remove("hydrating");
+                el.classList.remove("hydrating", "cached-visible");
                 el.classList.add("hydrated");
               }
               if (term && opts.shouldFocus()) term.focus();
@@ -3677,8 +3678,9 @@
           _fitAddon = result.fitAddon;
 
           // Mark hydrating before terminal mounts to avoid first-frame flicker.
+          // Skip if cached-visible — cached content should remain visible.
           const hydrationEl = _getHydrationElement();
-          if (hydrationEl) { hydrationEl.classList.add("hydrating"); hydrationEl.classList.remove("hydrated"); }
+          if (hydrationEl && !hydrationEl.classList.contains("cached-visible")) { hydrationEl.classList.add("hydrating"); hydrationEl.classList.remove("hydrated"); }
 
           _term.open(container);
 
@@ -3754,7 +3756,7 @@
                   _term.reset();
                   if (_hydration) _hydration.start();
                   const el = _getHydrationElement();
-                  if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
+                  if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated", "cached-visible"); }
                 }
               }
               if (opts.onOpen) opts.onOpen(wasReconnect);
@@ -4530,7 +4532,7 @@
           if (!raw) return null;
           const snap = JSON.parse(raw);
           const age = (Date.now() - snap.ts) / 1000;
-          if (age > (wpSettings.snapshotTtl || 300)) {
+          if (age > (wpSettings.snapshotTtl || 900)) {
             localStorage.removeItem(snapshotKey(machine, session));
             return null;
           }
@@ -4538,7 +4540,7 @@
         } catch { return null; }
       }
       function cleanStaleSnapshots() {
-        const ttl = (wpSettings.snapshotTtl || 300) * 1000;
+        const ttl = (wpSettings.snapshotTtl || 900) * 1000;
         const now = Date.now();
         const toRemove = [];
         for (let i = 0; i < localStorage.length; i++) {
@@ -4561,7 +4563,7 @@
         if (!state.currentSession) { snapshotPending = null; return; }
         let text;
         if (state.useDesktopTerminal && state.desktopController?.term) {
-          text = serializeXtermTail(state.desktopController.term, 100);
+          text = serializeXtermTail(state.desktopController.term, 200);
         } else {
           text = snapshotPending;
         }
@@ -5763,8 +5765,13 @@
         const container = document.getElementById("desktop-terminal-container");
         container.style.display = "block";
         container.innerHTML = "";
-        container.classList.add("hydrating");
-        container.classList.remove("hydrated");
+        if (cached) {
+          container.classList.add("cached-visible");
+          container.classList.remove("hydrating", "hydrated");
+        } else {
+          container.classList.add("hydrating");
+          container.classList.remove("hydrated", "cached-visible");
+        }
         document.getElementById("terminal").style.display = "none";
         document.getElementById("kb-accessory").classList.remove("visible");
         document.getElementById("kb-toggle")?.classList.remove("active");
@@ -5860,7 +5867,7 @@
           container._onKeyDown = null;
         }
         container.style.display = "none";
-        container.classList.remove("hydrating", "hydrated");
+        container.classList.remove("hydrating", "hydrated", "cached-visible");
         container.innerHTML = "";
         document.getElementById("terminal").style.display = "";
         document.getElementById("input-bar").style.display = "";
