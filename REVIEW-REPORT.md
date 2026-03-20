@@ -2043,3 +2043,109 @@ Areas with tests that lack important edge cases:
 3. **Fix service CLI fall-through** (`cli/index.ts:136-144`) — add `process.exit(1)` after printing usage for invalid subcommands
 4. **Standardize error response format** across all API routes — add error code field for programmatic handling
 5. **Fix timing-dependent tests** — replace `setTimeout`-based assertions with polling patterns to eliminate CI flakiness
+
+---
+
+# Final Simplification Roadmap
+
+> Synthesized 2026-03-20. Cross-references security, quality, performance, and simplification findings from all prior sections. Prioritizes refactors that address multiple concerns simultaneously.
+
+## 1. Critical — Security Issues, Data Loss Risks, Crashes
+
+| # | Issue | Refs | Fix |
+|---|-------|------|-----|
+| C1 | **XSS via `innerHTML` in search highlight** | SEC-C1 | Replace `innerHTML` with `textContent` + DOM range-based highlighting, or re-escape matched text before `<mark>` injection. Already confirmed safe on deeper analysis (pane is pre-escaped), but the pattern is fragile — one change to escape order re-introduces the vuln. |
+| C2 | **Git argument injection via orphan branch names** | SEC-C2, WT-PT2 | Add `"--"` separator before all user-derived positional args in every `execFileSync("git", [...])` call across `ralph-macchio.ts`, `worktree.ts`. ~15 call sites. |
+| C3 | **Lock file leak on exception in `POST /api/ralph/start`** | SP1.2 | Wrap handler body in `try { ... } finally { if (!spawned) removeLock(); }`. One missed `removeLock()` = permanent lock = ralph permanently blocked. |
+| C4 | **Service CLI falls through on typo** | SP7.1 | Add `process.exit(1)` after printing usage in `cli/index.ts:136-144`. Without it, `wolfpack service startt` silently starts the server. |
+
+## 2. High — Bugs, Race Conditions, Missing Validation
+
+| # | Issue | Refs | Fix |
+|---|-------|------|-----|
+| H1 | **SIGTERM handler doesn't stop ralph main loop** | ERR-M3, RM-MISC1, SP4.2 | Add `let stopping = false` flag; set in SIGTERM handler; check at top of iteration loop. Prevents orphan agent spawns. |
+| H2 | **`killProcessTree` not awaited in timeout** | ERR-H1, RM-MISC4 | Add `.catch(() => {})` to the `killProcessTree()` call inside `setTimeout`. Prevents unhandled rejection. |
+| H3 | **`removeWorktree` exception aborts remaining cleanup** | ERR-M4, WT-RACE1 | Wrap each `removeWorktree()` call inside `cleanupAllExceptFinal()` loop in individual `try/catch`. |
+| H4 | **No graceful server shutdown** | SP4.1, SP7.3 | Add `SIGTERM`/`SIGINT` handler: `server.close()` → drain WS connections → exit. Prevents orphaned PTY processes. |
+| H5 | **Onclick attribute XSS risk (20 sites)** | SEC-H1, CS-M2 | Migrate from `onclick="fn('${escAttr(x)}')"` to `data-*` attributes + delegated event listeners. Eliminates XSS surface AND deduplicates ~20 inline handler sites. **Multi-concern fix: security + code quality.** |
+| H6 | **Unvalidated `machineUrl` used as fetch base** | SEC-H3 | Validate `machineUrl` against known peer URLs from `discoverPeers()`. Reject unknown origins. |
+| H7 | **Timing-dependent tests** | SP8.1 | Replace `setTimeout`-based assertions in rate-limiter and WS tests with polling/retry patterns. |
+
+## 3. Medium — Performance Issues, Code Quality, Maintainability
+
+| # | Issue | Refs | Fix |
+|---|-------|------|-----|
+| M1 | **capture-pane at 50ms (20Hz) per mobile client** | P1.1, P5.2 | Increase `POLL_INTERVAL_MS` to 150ms. Implement adaptive polling (100ms active, 500ms idle). **60% fewer tmux spawns.** |
+| M2 | **Full pane dumps instead of diffs on mobile WS** | P6.1, P3.1 | Send line-level diffs instead of full pane. Use raw text WS messages with type prefix instead of JSON. **90%+ message size reduction + eliminates JSON overhead.** |
+| M3 | **`isAllowedSession` runs uncached `tmuxList` every call** | P5.3 | Add 1-2s TTL cache on `tmuxList()` results. Eliminates redundant `list-sessions` execs on burst API requests. |
+| M4 | **Capture-pane uses 2000-line history on every poll** | P5.2b | Use `-S -0` (visible pane only) for hot-path poll. Reserve `-S -2000` for initial load. |
+| M5 | **Inconsistent error response shapes across API** | SP1.1 | Standardize on `{ error: string, code?: string, details?: Record<string, unknown> }`. |
+| M6 | **Ralph worker bypasses structured logging** | SP2.1 | Replace `console.error`/`console.warn` with `createLogger("ralph-worker")` from `src/log.ts`. |
+| M7 | **Duplicate merge-fail-and-exit pattern (3 copies)** | CS-M1, S3 | Extract `mergeOrFail(branch, worktree, tasksCompleted, subtasksAdded)` helper. Reduces ~45 lines to 3 call sites. |
+| M8 | **Path traversal: worker doesn't re-validate `--plan`/`--progress`** | SEC-M3, SEC-M7, RM-PT1 | Add `resolved.startsWith(PROJECT_DIR + sep)` check after `path.resolve(join(...))` in worker startup. Defense-in-depth. |
+| M9 | **`prevPaneContent` map never pruned** | P2.2, SP5.3 | Include `prevPaneContent` in the `tmuxList()` prune sweep alongside `sessionDirMap`, `_triageCacheMap`, `_backfillCacheMap`. |
+| M10 | **Error messages leak internal paths/stderr** | SEC-M4, RT-DL1/2/3 | Replace `e.message`/`e.stderr` with generic messages in error responses. Log full details server-side. |
+| M11 | **Mutable module-level state in ralph worker** | CS-M6 | Consolidate ~15 `let`/`const` variables into `RalphConfig` (immutable) and `RalphState` (mutable) objects. |
+| M12 | **`main()` is 285 lines** | CS-H2, S3 | Decompose into `setupWorktrees()`, `runIterationLoop()`, `finalizeWorktrees()`. |
+| M13 | **Duplicate logger component names** | SP2.2, SP2.3 | Rename `routes.ts` logger to `"routes"`, `worktree.ts` logger to `"worktree"`. |
+| M14 | **Port detection silently swallows all errors** | SP7.2 | Distinguish ENOENT/permission errors from "port free". Log non-trivial failures. |
+| M15 | **Full string comparison for pane change detection** | P3.2 | Use `Bun.hash()` for fast no-change path. Only send on hash mismatch. |
+| M16 | **Ralph log scroll position lost on 2s poll update** | SP6.4 | Save `scrollTop` before innerHTML replacement, restore after. |
+
+## 4. Low — Style, Naming, Minor Cleanup
+
+| # | Issue | Refs | Fix |
+|---|-------|------|-----|
+| L1 | **Dead code: `encodeTerminalBinary`** | DC-1 | Remove unused assignment at `app.ts:955`. |
+| L2 | **Dead code: drawer drag state vars** | DC-2 | Remove `drawerDragY`, `drawerDragStartY`, `drawerDragging` at `app.ts:2257-2259`. |
+| L3 | **Dead code: Windows codepath** | DC-3 | Remove `IS_WIN` / Windows path augmentation at `ralph-macchio.ts:86-93`. |
+| L4 | **Dead export: `startServer`** | DC-4 | Remove `export` keyword from `startServer()` at `server/index.ts:215`. |
+| L5 | **Shell-escape test reimplements source** | SP8.5, S4.5 | Import `shellEscape` from `src/validation.ts` instead of local reimplementation. |
+| L6 | **Duplicated WebSocket URL construction** | CS-M3, S4.1 | Extract `buildWsUrl(machineUrl, path, session)` shared helper. |
+| L7 | **Duplicated sidebar collapse/expand** | CS-M4, S4.2 | Extract `setSidebarCollapsed(collapsed: boolean)`. |
+| L8 | **Duplicated quick command persistence triple** | CS-M5, S4.3 | Extract `persistAndRenderQuickCmds()`. |
+| L9 | **Inconsistent session key construction** | API-1, S4.4 | Unify into `storageKey(namespace, machine, session)`. |
+| L10 | **`main().catch()` uses `err.message` without null check** | ERR-M1, RM-MISC3 | Use `errMsg(err)` instead. |
+| L11 | **`this: any` in settings handlers** | TS-M1 | Replace with `HTMLInputElement` type. |
+| L12 | **No session name format validation on WS upgrade** | VAL-GAP1, WS-INJ1 | Add `isValidSessionName(session)` check before `isAllowedSession()`. |
+
+## 5. Simplification Roadmap — Ordered Refactors with Impact
+
+Ordered by: (severity of issues addressed) x (number of cross-cutting concerns resolved) / (effort).
+
+| Order | Refactor | Issues Resolved | Effort | Impact |
+|-------|----------|----------------|--------|--------|
+| **1** | **Add `--` separator to all git `execFileSync` calls** | C2, WT-PT2 | 1h | Closes both CRITICAL git injection findings. ~15 call sites, mechanical change. |
+| **2** | **`try/finally` on ralph/start lock + `process.exit(1)` on CLI typo** | C3, C4 | 30m | Two targeted fixes that prevent permanent lock and silent misbehavior. |
+| **3** | **Add `stopping` flag to ralph SIGTERM handler** | H1, SP4.2 | 30m | Prevents orphan agent spawns. One `let` + one `if` check. |
+| **4** | **Migrate onclick attrs → delegated event listeners** | H5, SEC-H1, SEC-H2, CS-M2, API-3 | 4h | Eliminates XSS surface, removes ~20 duplicate patterns, removes `Object.assign(window, {...})` exports. **Highest multi-concern ROI.** |
+| **5** | **Mobile WS: increase poll interval + visible-pane-only + hash comparison** | M1, M4, M15 | 2h | Three config/logic changes that collectively reduce tmux spawns by 80%+ and CPU on idle path. |
+| **6** | **Mobile WS: line-level diffs + raw text messages** | M2, P3.1, P6.1 | 4h | 90% message size reduction. Requires client-side diff application logic. |
+| **7** | **Extract `routes/ralph.ts`** | S2, SP1.2 (partial) | 3h | Removes 406 lines (45%) from routes.ts. Creates natural boundary for lock management refactor. |
+| **8** | **Extract `mergeOrFail()` + decompose `main()`** | M7, M12, CS-H1, CS-M1 | 2h | Deduplicates 45 lines, makes ralph worker's 285-line main comprehensible. |
+| **9** | **Extract `app-pty.ts` + `app-drawer.ts` + `app-sidebar.ts`** | S1 Phase 1, CS-H1 | 4h | Removes ~1,270 lines (35%) from the 3,618-line frontend monolith. |
+| **10** | **Cache `tmuxList()` + prune `prevPaneContent`** | M3, M9, P5.3, SP5.3 | 1h | Eliminates redundant tmux execs, fixes memory leak. Two small changes. |
+| **11** | **Standardize error responses + structured ralph worker logging** | M5, M6, SP1.1, SP2.1 | 3h | Consistent API contract, correlatable logs across all components. |
+| **12** | **Add graceful server shutdown** | H4, SP4.1, SP7.3 | 2h | `SIGTERM` handler with connection drain. Prevents orphaned processes. |
+| **13** | **Consolidate ralph worker state + extract modules** | M11, S3 | 3h | `RalphConfig`/`RalphState` objects + `ralph-plan.ts`, `ralph-sync.ts` extraction. |
+| **14** | **Dead code removal + shared utility consolidation** | L1-L9, S4, S5 | 2h | Mechanical cleanup. No risk. Removes ~50 lines of dead code, deduplicates ~80 lines of copy-paste. |
+| **15** | **Validate `machineUrl` against peer allowlist** | H6, SEC-H3 | 2h | Requires maintaining a set of known peer URLs from `discoverPeers()`. |
+
+## 6. Quick Wins — Fixable in <30 Minutes, Meaningful Impact
+
+| # | Fix | Time | Why It Matters |
+|---|-----|------|---------------|
+| Q1 | Add `"--"` before branch args in `worktree.ts:53` and `ralph-macchio.ts:608,669,746` | 15m | Closes CRITICAL git injection. Mechanical find-and-insert. |
+| Q2 | Add `process.exit(1)` after usage print in `cli/index.ts:144` | 2m | Prevents silent server start on service subcommand typo. |
+| Q3 | Wrap ralph/start handler in `try/finally` for lock cleanup | 15m | Prevents permanent lock file leak. |
+| Q4 | Add `let stopping = false` to ralph SIGTERM handler | 10m | Prevents orphan agent spawns after SIGTERM. |
+| Q5 | Remove dead code: `encodeTerminalBinary`, drawer drag vars, `IS_WIN` block | 5m | Clean deletion, zero risk. |
+| Q6 | Import `shellEscape` in test instead of reimplementing | 2m | Test now validates actual production code. |
+| Q7 | Add `.catch(() => {})` to `killProcessTree` in timeout handler | 2m | Prevents unhandled promise rejection. |
+| Q8 | Fix logger names: `worktree.ts` → `"worktree"`, disambiguate ralph loggers | 5m | Log lines become attributable to source file. |
+| Q9 | Add `isValidSessionName()` check at WS upgrade handler | 5m | Defense-in-depth for session name validation. |
+| Q10 | Include `prevPaneContent` in tmuxList prune sweep | 5m | Fixes memory leak for externally-killed sessions. |
+| Q11 | Increase `POLL_INTERVAL_MS` from 50 to 150 | 1m | Single constant change → 60% fewer tmux spawns. |
+| Q12 | Use `errMsg(err)` in `main().catch()` | 2m | Prevents undefined message on non-Error rejections. |
+
+**Total quick-win time: ~70 minutes. Resolves 2 critical, 3 high, 4 medium, and 3 low issues.**
