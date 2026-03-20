@@ -2804,8 +2804,6 @@
       function toggleSetting(key, val) {
         wpSettings[key] = val;
         localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
-        // Invalidate cached char dimensions on font changes
-        if (key === "termFontSize" || key === "termFont") _charDimCache = { key: "", w: 0, h: 0 };
         applySetting(key, val);
       }
       function applySetting(key, val) {
@@ -5836,43 +5834,6 @@
         renderSidebar();
       }
 
-      let _charDimCache = { key: "", w: 0, h: 0 };
-      function getCharDimensions() {
-        const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
-        const key = tp.fontSize + "|" + tp.lineHeight + "|" + wpSettings.termFont;
-        if (_charDimCache.key === key && _charDimCache.w > 0) return _charDimCache;
-        const probe = document.createElement("span");
-        probe.style.cssText =
-          'position:absolute;visibility:hidden;white-space:pre;font-size:' + tp.fontSize + 'px;line-height:' + tp.lineHeight + ';font-family:inherit';
-        probe.textContent = "X";
-        document.body.appendChild(probe);
-        _charDimCache = { key, w: probe.offsetWidth, h: probe.offsetHeight };
-        document.body.removeChild(probe);
-        return _charDimCache;
-      }
-
-      async function resizePane() {
-        if (!state.currentSession) return;
-        const term = document.getElementById("terminal");
-        const dims = getCharDimensions();
-        if (!dims.w || !dims.h) return false;
-        const cols = Math.floor(term.clientWidth / dims.w);
-        const rows = Math.floor(term.clientHeight / dims.h);
-        if (cols > 0 && rows > 0) {
-          try {
-            await api("/resize", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ session: state.currentSession, cols, rows }),
-            }, state.currentMachine);
-            return true;
-          } catch {
-            return false;
-          }
-        }
-        return false;
-      }
-
       // ── Project picker ──
 
       async function showProjectPicker(machineUrl) {
@@ -6099,7 +6060,7 @@
           document.getElementById("msg-preview").style.display = "none";
         }
         // Mobile: keep input bar, keyboard accessory, and cmd palette visible
-        // — they send via HTTP API which works alongside PTY WS
+        // — they send via PTY WS binary (sendMsg/sendKey use _sendTerminalInput)
 
         state.terminalController = createPtyTerminalController({
           session: state.currentSession,
