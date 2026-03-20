@@ -4078,7 +4078,7 @@
           state.gridResizeHandler = () => {
             if (!isGridActive()) return;
             for (const gs of state.gridSessions) {
-              if (gs.controller) gs.controller.resizeWithTransition();
+              if (gs.controller) gs.controller.resize();
             }
           };
           window.addEventListener("resize", state.gridResizeHandler);
@@ -5909,7 +5909,7 @@
           if (state.desktopResizeTimer) clearTimeout(state.desktopResizeTimer);
           state.desktopResizeTimer = setTimeout(() => {
             state.desktopResizeTimer = null;
-            if (state.desktopController) state.desktopController.resizeWithTransition();
+            if (state.desktopController) state.desktopController.resize();
           }, 60);
         };
         window.addEventListener("resize", onResize);
