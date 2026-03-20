@@ -1377,3 +1377,192 @@ No XSS vulnerabilities identified. The codebase demonstrates consistent, correct
 2. **INF-XSS2: Heavy reliance on string-template HTML construction** — The codebase builds HTML via string concatenation/template literals rather than using DOM APIs (`createElement`/`appendChild`). While all interpolations are currently escaped, this pattern is more error-prone for future changes. A single forgotten `esc()` call on a new field would introduce XSS. Consider documenting the escaping convention prominently for contributors.
 
 3. **INF-XSS3: `escAttr()` does not escape backticks** — `app-state.ts:18`. If `escAttr()` were ever used inside a template literal context (`` ` ``), a backtick in user data could break out. Currently all `escAttr()` usage is inside single-quoted JS string literals in `onclick` attributes, where backticks are harmless. **No current risk**, but worth noting for future use.
+
+---
+
+# Simplification Opportunities
+
+> Refactoring analysis performed 2026-03-20. Covers file decomposition, route extraction, shared utility consolidation, and dead code identification.
+
+## S1. `public/app.ts` Decomposition (3618 LOC)
+
+The frontend monolith contains ~11 distinct domains in a single file. Three modules have already been extracted (`app-state.ts`, `app-ralph.ts`, `app-grid.ts`). The remaining file is ripe for further decomposition.
+
+### Proposed Module Extractions (by priority)
+
+| Module | Lines | Size | Priority | Rationale |
+|--------|-------|------|----------|-----------|
+| **app-pty.ts** | 221-968 | ~748 | HIGH | PTY socket client, terminal instance, hydration controller, reconnect engine, conflict overlay. Self-contained factory functions with minimal external deps. Largest single extraction. |
+| **app-sidebar.ts** | 3233-3459 | ~227 | HIGH | Desktop-only session sidebar with pinning, drag-resize, refresh polling. Has its own internal state (`sidebarRefreshTimer`, `_sidebarRafId`, `_lastSidebarHtml`). Clean boundary. |
+| **app-drawer.ts** | 2256-2550 | ~295 | HIGH | Mobile-only session switcher drawer with drag-to-dismiss animation. Minimal external deps (`state`, `getMachines()`, `haptic()`). |
+| **app-terminal-ui.ts** | 1929-2255 | ~327 | MEDIUM | Mobile terminal rendering, connection state, follow mode, WS polling. Depends on `createReconnector()` from app-pty — extract after Phase 1. |
+| **app-swipe.ts** | 3081-3232 | ~152 | MEDIUM | Mobile swipe gesture engine (IIFE wrapping touch handlers). Deps: `state`, `showView()`, `isDesktop()`. |
+| **app-search.ts** | 2985-3080 | ~96 | MEDIUM | Mobile terminal search with highlight and pagination. Deps: `state`, DOM refs only. |
+| **app-project-picker.ts** | 1614-1793 | ~180 | LOW | New session creation flow (project selection -> agent picker -> session creation). Needs `api()` injection. |
+
+### Phased Extraction Plan
+
+**Phase 1** — Extract `app-pty.ts` + `app-drawer.ts` + `app-sidebar.ts` → removes ~1,270 lines (35%)
+
+**Phase 2** — Extract `app-terminal-ui.ts` + `app-swipe.ts` + `app-search.ts` → removes ~575 lines (16%)
+
+**Phase 3** — Extract `app-project-picker.ts` → removes ~180 lines (5%)
+
+**Result:** `app.ts` drops from 3,618 to ~1,363 lines (core orchestration, view switching, event binding, machine registry).
+
+### Critical Dependencies to Manage
+
+- **`api(path, opts, machineUrl)`** (line 1116) — universal fetch wrapper used everywhere. Keep in `app.ts` or extract to `app-api.ts` and import.
+- **`state` object** — already in `app-state.ts`, other modules import from there.
+- **`showView(name)`** (line 1149) — view orchestration entry point. Keep in `app.ts` as the coordinator.
+- **`WP` global** — terminal methods from `wolfpack-lib.js`. Already global, no change needed.
+
+---
+
+## S2. `src/server/routes.ts` Route Group Extraction (909 LOC)
+
+Six logical domains identified. Ralph routes dominate at ~45% of file size.
+
+### Proposed Route Files
+
+| File | Routes | Lines | Size | Priority |
+|------|--------|-------|------|----------|
+| **routes/ralph.ts** | `/api/ralph`, `/branches`, `/plans`, `/log`, `/start`, `/task-count`, `/cancel`, `/dismiss` | 502-908 + schema/helpers | ~406 | HIGH |
+| **routes/session.ts** | `/api/sessions`, `/api/send`, `/api/key`, `/api/kill`, `/api/resize` | 264-333, 432-462 | ~199 | MEDIUM |
+| **routes/projects.ts** | `/api/projects`, `/api/next-session-name`, `/api/create` | 335-389 | ~55 | LOW |
+| **routes/settings.ts** | `/api/settings` GET/POST | 391-430 + loadSettings/saveSettings | ~80 | LOW |
+| **routes/static.ts** | `/`, `/manifest.json`, `/sw.js`, `/api/info` | 231-262 | ~32 | LOW |
+| **routes/git.ts** | `/api/poll`, `/api/git-status`, `/api/discover` | 464-501 | ~38 | LOW |
+
+### Prerequisites
+
+Extract shared validation helpers first:
+- `validateProject(res, project)` (line 132-138)
+- `validateProjectDir(res, projectDir)` (line 140-157)
+- `resolveProjectDir(res, project)` (line 171-176)
+
+These are used by both Projects and Ralph route groups.
+
+### Extraction Priority
+
+Start with `routes/ralph.ts` — it's the largest group (406 lines, 8 endpoints), has self-contained state (lock file management, process spawning, schema validation), and its removal alone cuts the main file by 45%.
+
+---
+
+## S3. `src/ralph-macchio.ts` Separation (1049 LOC)
+
+### Proposed Extractions
+
+| Module | Lines | Size | What |
+|--------|-------|------|------|
+| **ralph-plan.ts** | 158-270 | ~113 | Plan I/O: `readPlan()`, `readCompletedTasks()`, `markTaskCompleted()`, `extractCurrentTask()`, `taskSectionHeader()`, `extractAllTaskKeys()`, `areAllTasksDone()` |
+| **ralph-utils.ts** | 111-148, 380-395, 397-442 | ~100 | `resolveBin()`, `AGENTS` config, `getCurrentBranch()`, `worktreeBranchName()`, `parseSubtasks()`, `appendSubtasksToPlan()`, `dedupCheckboxes()` |
+| **ralph-sync.ts** | 570-628 | ~59 | File sync: `syncFilesToWorktree()`, `syncProgressBack()`, `syncPlanToProject()`, `mergeTaskBranch()`, `cleanupTaskWorktree()` |
+
+### Key Deduplication: Merge-Fail-and-Exit Pattern
+
+Three near-identical instances at lines 782-796, 823-839, 951-964. Each performs:
+1. `syncProgressBack()`
+2. `mergeTaskBranch()` check
+3. Log failure message
+4. `syncPlanToProject()`
+5. `logSummary()`
+6. `appendFileSync(LOG_FILE, 'finished: ...')`
+7. `removeLock()`
+8. `process.exit(1)`
+
+**Proposed consolidation:**
+
+```typescript
+function mergeOrFail(branch: string, worktree: string | null, tasksCompleted: number, subtasksAdded: number): void {
+  syncProgressBack();
+  if (!mergeTaskBranch(branch)) {
+    appendFileSync(LOG_FILE, `\n=== Merge failed for ${branch} — stopping ===\n`);
+    if (worktree) {
+      appendFileSync(LOG_FILE, `Task worktree preserved at: ${worktree}\nMain worktree: ${mainWorkDir}\n`);
+    }
+    syncPlanToProject();
+    logSummary(tasksCompleted, subtasksAdded);
+    appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
+    removeLock();
+    process.exit(1);
+  }
+}
+```
+
+Reduces ~45 lines of duplication to 3 call sites.
+
+### State Consolidation
+
+Lines 43-74 declare ~15 module-level `let`/`const` variables (some named as constants in ALL_CAPS but actually reassigned: `mainWorkDir`, `workingDir`, `PLAN_PATH`, `PROGRESS_PATH`). Should be consolidated into a `RalphConfig` object and a `RalphState` object to clarify what's immutable vs. mutable.
+
+### `main()` Function Decomposition (285 lines, 695-979)
+
+The main iteration loop handles: worktree setup, formatting, dedup, task extraction, section switching, corruption recovery, iteration execution, subtask expansion, and final merge. Could be split into:
+1. `setupWorktrees()` — lines 701-750
+2. `runIterationLoop()` — lines 765-948
+3. `finalizeWorktrees()` — lines 950-966
+
+---
+
+## S4. Shared Utility Patterns (Copy-Paste)
+
+### S4.1 WebSocket URL Construction (2 copies)
+
+`buildUrl()` inside `createPtySocketClient` (line ~521) and `mobileTerminalWsUrl()` (line ~2042) implement identical logic: resolve protocol (`wss:` vs `ws:`), construct host from machine URL or `location`, append path + query params.
+
+**Fix:** Extract `buildWsUrl(machineUrl: string | null, path: string, session: string): string`.
+
+### S4.2 Sidebar Collapse/Expand (4+ inline copies)
+
+`classList.add/remove("collapsed")` + `state.sidebarCollapsed = true/false` + `state.sidebarAutoExpanded = false` repeated at lines ~1247, ~1530, ~2816, and throughout `initSidebar()` (~3330-3417).
+
+**Fix:** Extract `setSidebarCollapsed(collapsed: boolean)`.
+
+### S4.3 Quick Command Persistence Triple (4 copies)
+
+`saveQuickCmds()` + `renderQuickCmdSettings()` + `renderCmdPalette()` always called together at lines ~167, ~180, ~187, ~198.
+
+**Fix:** Extract `persistAndRenderQuickCmds()`.
+
+### S4.4 Session Key Construction (4 inconsistent functions)
+
+`sessionKey()`, `terminalSessionKey()`, `snapshotKey()`, `draftKey()` at lines ~223, ~971, ~997, ~1931 all construct `localStorage` keys from machine+session but with inconsistent calling conventions (some take params, some read globals).
+
+**Fix:** Unify into `storageKey(namespace: string, machine: string, session: string): string`.
+
+### S4.5 `shellEscape` Re-implemented in Tests
+
+`tests/unit/shell-escape.test.ts:5` re-implements `shellEscape` locally instead of importing from `src/validation.ts`. The test has a stale comment claiming the function isn't exported — it is.
+
+**Fix:** `import { shellEscape } from "../../src/validation"` in the test file.
+
+---
+
+## S5. Dead Code
+
+### S5.1 Confirmed Dead
+
+| ID | Location | What | Evidence |
+|----|----------|------|----------|
+| **DC-1** | `public/app.ts:955` | `var encodeTerminalBinary = WP.encodeTerminalBinary` | Assigned, never read. Zero grep hits beyond declaration. |
+| **DC-2** | `public/app.ts:2257-2259` | `drawerDragY`, `drawerDragStartY`, `drawerDragging` | Declared at module scope, never read or written. Remnants of abandoned drawer-drag feature. |
+| **DC-3** | `src/ralph-macchio.ts:86-93` | `IS_WIN` / Windows path augmentation | Tool targets macOS/Linux only. Dead codepath. |
+| **DC-4** | `src/server/index.ts:215` | `export function startServer()` | Exported but never imported by any other module. Only called internally at line 239. Export keyword is noise. |
+
+### S5.2 Candidates Requiring Verification
+
+| ID | Location | What | Status |
+|----|----------|------|--------|
+| **DC-5** | `public/app.ts:3605-3617` | `Object.assign(window, {...})` global exports | Many of these are referenced by inline `onclick` attributes in HTML strings. As onclick handlers are migrated to delegated listeners (per recommendation 9.3), these exports become dead. Track during migration. |
+
+---
+
+## S6. Recommended Execution Order
+
+1. **Dead code removal** (S5.1) — zero-risk cleanup, immediate size reduction
+2. **Dedup merge-fail-and-exit** in ralph-macchio (S3) — reduces bug surface in the most complex loop
+3. **Extract `routes/ralph.ts`** (S2) — biggest single-file improvement for server code
+4. **Extract `app-pty.ts`** (S1 Phase 1) — largest client extraction, cleanest boundary
+5. **Extract remaining app modules** (S1 Phase 2-3) — progressive decomposition
+6. **Consolidate shared utilities** (S4) — cross-cutting cleanup, lower priority
