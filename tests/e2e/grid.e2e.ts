@@ -223,7 +223,7 @@ test("re-adding the remaining preserved session from Ralph reinitializes termina
 
   await expect.poll(async () => page.evaluate(() => {
     // @ts-ignore
-    return !!state.desktopController;
+    return !!state.terminalController;
   })).toBe(true);
 
   await expect.poll(async () => page.evaluate(() => {

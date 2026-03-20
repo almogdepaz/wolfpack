@@ -16,7 +16,7 @@ Combined audit context + terminal lifecycle inventory. Nontrivial findings only.
                     │                            │
          ┌──────────▼──────────┐     ┌───────────▼──────────┐
          │ Single Desktop View │     │ Grid Cell View        │
-         │ state.desktopController   │ state.gridSessions[]  │
+         │ state.terminalController  │ state.gridSessions[]  │
          └─────────────────────┘     └───────────────────────┘
 ```
 

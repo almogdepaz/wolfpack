@@ -2820,11 +2820,11 @@
       function applyTermToXterm() {
         const p = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
         const fontFamily = getTerminalFontFamily();
-        if (state.desktopController?.term) {
-          state.desktopController.term.options.fontSize = p.fontSize;
-          state.desktopController.term.options.lineHeight = p.lineHeight;
-          state.desktopController.term.options.fontFamily = fontFamily;
-          state.desktopController.resize();
+        if (state.terminalController?.term) {
+          state.terminalController.term.options.fontSize = p.fontSize;
+          state.terminalController.term.options.lineHeight = p.lineHeight;
+          state.terminalController.term.options.fontFamily = fontFamily;
+          state.terminalController.resize();
         }
         for (const gs of state.gridSessions) {
           if (!gs.controller?.term) continue;
@@ -3189,7 +3189,7 @@
         restartingRalph: false,
         currentRalphAgent: "",
         // desktop/grid terminal state
-        desktopController: null,
+        terminalController: null,
         useDesktopTerminal: false,
         desktopResizeHandler: null,
         desktopResizeTimer: null,
@@ -4212,12 +4212,7 @@
         showView("terminal");
         if (restorePreservedGrid()) return true;
         if (!state.currentSession) return false;
-        if (canUseDesktopTerminal()) {
-          state.useDesktopTerminal = true;
-          if (!state.desktopController) initDesktopTerminal();
-        } else {
-          resizePane().then(() => startPolling());
-        }
+        if (!state.terminalController) initTerminal();
         return true;
       }
 
@@ -4270,7 +4265,7 @@
         const dtc = document.getElementById("desktop-terminal-container");
         dtc.style.display = "none";
         dtc.innerHTML = "";
-        state.desktopController = null;
+        state.terminalController = null;
         if (preserved.focusedSession) {
           setState({
             currentSession: preserved.focusedSession.session,
@@ -4349,7 +4344,7 @@
         // Already in grid?
         if (state.gridSessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""))) return;
         // Track which session had a full-width PTY (needs reset on grid connect)
-        const singleTermSession = (state.desktopController?.term && state.currentSession) ? state.currentSession : null;
+        const singleTermSession = (state.terminalController?.term && state.currentSession) ? state.currentSession : null;
         const singleTermMachine = singleTermSession ? (state.currentMachine || "") : "";
         const gs = {
           session,
@@ -4378,7 +4373,7 @@
         }
         if (isGridActive()) {
           // Destroy single-terminal mode
-          destroyDesktopTerminal();
+          destroyTerminal();
           state.gridFocusIndex = state.gridSessions.length - 1;
           renderGridCells();
           renderSidebar();
@@ -4432,7 +4427,7 @@
       }
 
       // skipRestore: when true, preserves session identity state but does NOT call
-      // initDesktopTerminal(). Pass true when navigating AWAY from terminal view so
+      // initTerminal(). Pass true when navigating AWAY from terminal view so
       // the caller controls when the terminal is next initialized.
       function exitGridMode(skipRestore) {
         cancelGridRelayoutTransition();
@@ -4462,16 +4457,15 @@
         const dtc = document.getElementById("desktop-terminal-container");
         dtc.style.display = "none";
         dtc.innerHTML = "";
-        // Clear state.desktopController reference in case it's stale
-        state.desktopController = null;
+        // Clear state.terminalController reference in case it's stale
+        state.terminalController = null;
         // Preserve which session to restore when returning to terminal view
         if (restoreSession) {
           setState({ currentSession: restoreSession, currentMachine: restoreMachine });
         }
         // Restore single-terminal mode (skip when navigating away from terminal view)
         if (!skipRestore && restoreSession) {
-          state.useDesktopTerminal = true;
-          initDesktopTerminal();
+          initTerminal();
           renderSidebar();
         }
       }
@@ -4636,8 +4630,8 @@
         state.snapshotTimer = null;
         if (!state.currentSession) { snapshotPending = null; return; }
         let text;
-        if (state.useDesktopTerminal && state.desktopController?.term) {
-          text = serializeXtermTail(state.desktopController.term, 200);
+        if (state.useDesktopTerminal && state.terminalController?.term) {
+          text = serializeXtermTail(state.terminalController.term, 200);
         } else {
           text = snapshotPending;
         }
@@ -4783,8 +4777,7 @@
         // Prevents background WS from auto-reconnecting and stealing control from other instances
         if (prevView === "terminal" && effectiveName !== "terminal") {
           if (isGridActive()) { suspendGridMode(); }
-          else if (state.useDesktopTerminal) { destroyDesktopTerminal(); }
-          else { stopPolling(); }
+          else { destroyTerminal(); }
         }
 
         setState({ currentView: effectiveName });
@@ -4907,7 +4900,7 @@
             state.sessionRefreshTimer = setInterval(loadSessions, 5000);
           } else if (name === "projects") {
             back.style.display = "block";
-            back.onclick = () => { stopPolling(); showView(state.viewBeforePicker); loadSessions(); };
+            back.onclick = () => { destroyTerminal(); showView(state.viewBeforePicker); loadSessions(); };
             gear.style.display = "none";
             title.textContent = "select project";
 
@@ -4927,7 +4920,7 @@
           } else if (name === "terminal") {
             back.style.display = "block";
             back.onclick = () => {
-              if (state.useDesktopTerminal) { destroyDesktopTerminal(); } else { stopPolling(); }
+              destroyTerminal();
               closeSearch();
               state.useDesktopTerminal = false;
               setState({ currentSession: null, currentMachine: "" });
@@ -5562,7 +5555,7 @@
         if (isDesktop() && state.currentView === "terminal" && state.currentSession) {
           // If sidebar is auto-expanded (hover), instantly collapse it before
           // switching so the new terminal fits to full width. Without this,
-          // initDesktopTerminal() fits to the narrow width, triggering a PTY
+          // initTerminal() fits to the narrow width, triggering a PTY
           // resize that causes Claude Code's TUI to redraw with · fill dots.
           if (state.sidebarAutoExpanded) {
             const sb = document.getElementById("desktop-sidebar");
@@ -5583,22 +5576,13 @@
         setState({ currentSession: name, currentMachine: machineUrl || "" });
         recordRecent(state.currentMachine, name);
         state.lastRawPane = null;
-        state.useDesktopTerminal = canUseDesktopTerminal();
         wpMetrics.reset();
         setFollowMode(true);
         restoreDraft();
         const cached = loadSnapshot(state.currentMachine, name);
         showView("terminal");
-        if (state.useDesktopTerminal) {
-          destroyDesktopTerminal();
-          initDesktopTerminal(cached);
-        } else {
-          const term = document.getElementById("terminal");
-          term.textContent = cached || "";
-          if (cached) term.scrollTop = term.scrollHeight;
-          await resizePane();
-          startPolling();
-        }
+        destroyTerminal();
+        await initTerminal(cached);
         renderSidebar();
       }
 
@@ -5794,18 +5778,14 @@
           }, machine);
           if (data.session) {
             setState({ currentSession: data.session, currentMachine: machine });
-            state.useDesktopTerminal = canUseDesktopTerminal();
             // Refresh session list in background so it doesn't block terminal init
             loadSessions().then(() => { loadSessionSwitcher(); renderSidebar(); });
-            if (state.useDesktopTerminal && isGridActive()) {
+            if (isGridActive()) {
               // Grid is active — add new session to grid instead of single-terminal
               addToGrid(data.session, machine);
-            } else if (state.useDesktopTerminal) {
-              destroyDesktopTerminal();
-              initDesktopTerminal();
             } else {
-              await resizePane();
-              startPolling();
+              destroyTerminal();
+              await initTerminal();
             }
           } else {
             alert("Failed to create session: Server returned no session (is wolfpack up to date?)");
@@ -5822,18 +5802,18 @@
       // ── Desktop Terminal (ghostty-web + /ws/pty binary WS) ──
 
       function connectDesktopWs() {
-        if (!state.desktopController) return;
-        state.desktopController.connect();
+        if (!state.terminalController) return;
+        state.terminalController.connect();
       }
 
       function showDesktopConflictOverlay() {
         const container = document.getElementById("desktop-terminal-container");
         if (!container) return;
         // Force hydration complete so overlay is visible (container may be opacity:0)
-        if (state.desktopController && state.desktopController.hydration) state.desktopController.hydration.finish();
+        if (state.terminalController && state.terminalController.hydration) state.terminalController.hydration.finish();
         removeDesktopConflictOverlay();
         const overlay = createConflictOverlay("Session active on another device", "Take Control", () => {
-          if (state.desktopController) state.desktopController.sendTakeControl();
+          if (state.terminalController) state.terminalController.sendTakeControl();
           // Don't remove overlay here — wait for control_granted to confirm
         });
         overlay.id = "desktop-conflict-overlay";
@@ -5845,8 +5825,9 @@
         if (el) el.remove();
       }
 
-      async function initDesktopTerminal(cached) {
-        if (state.desktopController) return;
+      async function initTerminal(cached) {
+        if (state.terminalController) return;
+        state.useDesktopTerminal = canUseDesktopTerminal();
         const container = document.getElementById("desktop-terminal-container");
         container.style.display = "block";
         container.innerHTML = "";
@@ -5870,13 +5851,13 @@
         // Mobile: keep input bar, keyboard accessory, and cmd palette visible
         // — they send via HTTP API which works alongside PTY WS
 
-        state.desktopController = createPtyTerminalController({
+        state.terminalController = createPtyTerminalController({
           session: state.currentSession,
           machine: state.currentMachine || "",
           scrollback: DESKTOP_TERMINAL_SCROLLBACK,
           getHydrationElement: () => document.getElementById("desktop-terminal-container"),
           shouldFocus: () => true,
-          shouldReconnect: () => state.useDesktopTerminal && !!state.desktopController?.term,
+          shouldReconnect: () => state.useDesktopTerminal && !!state.terminalController?.term,
           onOpen: (wasReconnect) => {
             if (wasReconnect) wpMetrics.reconnectCount++;
             setConnState("live");
@@ -5888,7 +5869,7 @@
           onViewerConflict: () => showDesktopConflictOverlay(),
           onControlGranted: () => {
             removeDesktopConflictOverlay();
-            if (state.desktopController) state.desktopController.focus();
+            if (state.terminalController) state.terminalController.focus();
           },
           onDisconnected: (code, reason) => {
             removeDesktopConflictOverlay();
@@ -5907,20 +5888,20 @@
               setConnState("session-ended");
               return;
             }
-            state.desktopController.scheduleReconnect();
+            state.terminalController.scheduleReconnect();
           },
           onReconnecting: () => setConnState("reconnecting"),
           onReconnectExhausted: () => setConnState("offline"),
         });
 
-        await state.desktopController.mount(container, { cached });
-        if (!state.desktopController) return; // disposed while awaiting WASM init
+        await state.terminalController.mount(container, { cached });
+        if (!state.terminalController) return; // disposed while awaiting WASM init
 
         // WASM failed during mount — fall back to text polling
-        if (window.wasmFailed && !state.desktopController.term) {
+        if (window.wasmFailed && !state.terminalController.term) {
           console.warn("[wolfpack] WASM unavailable, falling back to text polling");
-          state.desktopController.dispose();
-          state.desktopController = null;
+          state.terminalController.dispose();
+          state.terminalController = null;
           state.useDesktopTerminal = false;
           container.style.display = "none";
           container.innerHTML = "";
@@ -5938,7 +5919,7 @@
           if (state.desktopResizeTimer) clearTimeout(state.desktopResizeTimer);
           state.desktopResizeTimer = setTimeout(() => {
             state.desktopResizeTimer = null;
-            if (state.desktopController) state.desktopController.resize();
+            if (state.terminalController) state.terminalController.resize();
           }, 60);
         };
         window.addEventListener("resize", onResize);
@@ -5961,10 +5942,11 @@
         connectDesktopWs();
       }
 
-      function destroyDesktopTerminal() {
+      function destroyTerminal() {
         if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); flushSnapshot(); }
+        // PTY controller cleanup
         if (state.desktopResizeTimer) { clearTimeout(state.desktopResizeTimer); state.desktopResizeTimer = null; }
-        if (state.desktopController) { state.desktopController.dispose(); state.desktopController = null; }
+        if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
         if (state.desktopResizeHandler) {
           window.removeEventListener("resize", state.desktopResizeHandler);
           state.desktopResizeHandler = null;
@@ -5980,6 +5962,8 @@
         document.getElementById("terminal").style.display = "";
         document.getElementById("input-bar").style.display = "";
         document.getElementById("cmd-palette").style.display = "";
+        // Polling/mobile WS cleanup (WASM fallback path)
+        stopPolling();
       }
 
       // ── Terminal ──
@@ -5991,7 +5975,7 @@
       function setConnState(state) {
         const statusEl = document.getElementById("conn-status");
         if (!statusEl) return;
-        const active = state.useDesktopTerminal ? !!state.desktopController?.term : state.mobileStreamingActive;
+        const active = state.useDesktopTerminal ? !!state.terminalController?.term : state.mobileStreamingActive;
         if (state.currentView !== "terminal" || !active || state === "live") {
           statusEl.style.display = "none";
           statusEl.style.background = "#cc3333";
@@ -6205,7 +6189,7 @@
       }
 
       function retryDesktopConnection() {
-        if (!state.useDesktopTerminal || !state.desktopController?.term) return;
+        if (!state.useDesktopTerminal || !state.terminalController?.term) return;
         setConnState("reconnecting");
         connectDesktopWs();
       }
@@ -6302,7 +6286,7 @@
         }
         const wasCurrentSession = name === state.currentSession && (machineUrl || "") === state.currentMachine;
         if (wasCurrentSession && state.currentView === "terminal") {
-          if (state.useDesktopTerminal) { destroyDesktopTerminal(); } else { stopPolling(); }
+          destroyTerminal();
           closeSearch();
           state.useDesktopTerminal = false;
           setState({ currentSession: null, currentMachine: "" });
@@ -6558,16 +6542,10 @@
         }
         if (name === state.currentSession && machineUrl === state.currentMachine) {
           // Same session — reconnect or reinitialize if the terminal is not active.
-          if (state.useDesktopTerminal) {
-            if (state.desktopController) {
-              if (!state.desktopController.isConnected) connectDesktopWs();
-            } else if (state.currentView === "terminal") {
-              initDesktopTerminal();
-            }
-          } else if (!state.mobileStreamingActive && state.currentView === "terminal") {
-            document.getElementById("terminal").textContent = "";
-            await resizePane();
-            startPolling();
+          if (state.terminalController) {
+            if (!state.terminalController.isConnected) connectDesktopWs();
+          } else if (state.currentView === "terminal") {
+            await initTerminal();
           }
           return;
         }
@@ -6575,11 +6553,7 @@
         // Exit grid mode if active
         if (isGridActive()) exitGridMode();
         // Suspend current mode (cache terminal state)
-        if (state.useDesktopTerminal) {
-          destroyDesktopTerminal();
-        } else {
-          stopPolling();
-        }
+        destroyTerminal();
         setState({ currentSession: name, currentMachine: machineUrl });
         recordRecent(machineUrl, name);
         state.lastRawPane = null;
@@ -6594,14 +6568,7 @@
           hml.textContent = mName;
           hml.style.display = "block";
         }
-        state.useDesktopTerminal = canUseDesktopTerminal();
-        if (state.useDesktopTerminal) {
-          initDesktopTerminal();
-        } else {
-          document.getElementById("terminal").textContent = "";
-          await resizePane();
-          startPolling();
-        }
+        await initTerminal();
         renderSidebar();
       }
 
@@ -6689,19 +6656,17 @@
             state.sessionRefreshTimer = setInterval(loadSessions, 5000);
           }
           if (state.currentSession && state.currentView === "terminal") {
-            if (state.useDesktopTerminal) {
-              // PTY WS (default): reset retry budget and reconnect terminal.
-              if (isGridActive()) {
-                for (const gs of state.gridSessions) {
-                  if (!gs.controller || gs._displaced) continue;
-                  gs.controller.resetRetry();
-                  if (!gs.controller.isConnected) gs.controller.connect();
-                }
-              } else if (state.desktopController?.term) {
-                state.desktopController.resetRetry();
-                connectDesktopWs();
+            // PTY WS (default): reset retry budget and reconnect terminal.
+            if (isGridActive()) {
+              for (const gs of state.gridSessions) {
+                if (!gs.controller || gs._displaced) continue;
+                gs.controller.resetRetry();
+                if (!gs.controller.isConnected) gs.controller.connect();
               }
-            } else {
+            } else if (state.terminalController?.term) {
+              state.terminalController.resetRetry();
+              connectDesktopWs();
+            } else if (state.mobileStreamingActive) {
               // WASM fallback: kill stale WS and reconnect fresh.
               // After backgrounding, the OS suspends the tab and the TCP connection
               // dies silently — but the WS object may still report readyState=OPEN,
@@ -6970,8 +6935,8 @@
           if (isGridActive()) {
             const gs = state.gridSessions[state.gridFocusIndex];
             if (gs && gs.controller && gs.controller.term) gs.controller.term.clear();
-          } else if (state.desktopController?.term) {
-            state.desktopController.term.clear();
+          } else if (state.terminalController?.term) {
+            state.terminalController.term.clear();
           }
           return;
         }
@@ -7099,7 +7064,7 @@
         document.getElementById("search-input").value = "";
         document.getElementById("search-count").textContent = "";
         if (state.useDesktopTerminal) {
-          if (state.desktopController) state.desktopController.focus();
+          if (state.terminalController) state.terminalController.focus();
         } else {
           const term = document.getElementById("terminal");
           if (state.lastRawPane) term.textContent = state.lastRawPane;
@@ -7541,8 +7506,8 @@
             // Pin/unpin — resize PTY to fit new layout
             if (isGridActive()) {
               scheduleGridStabilizedFit();
-            } else if (state.desktopController) {
-              state.desktopController.resizeWithTransition();
+            } else if (state.terminalController) {
+              state.terminalController.resizeWithTransition();
             }
           }
           state.sidebarResizeDone = true;
