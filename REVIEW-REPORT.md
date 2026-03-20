@@ -1791,3 +1791,255 @@ The WS connection doesn't use `permessage-deflate` compression. For the mobile p
 | **P4.3** | No tree-shaking/minification on bundle | **LOW** | Low | Reduce ~193KB → ~80-100KB with minification |
 | **P6.3** | No WS compression | **LOW** | Low | Better with diff-based messaging |
 | **P1.2** | Session list poll at 5s | **LOW** | N/A | Acceptable for small session counts |
+
+---
+
+# Second Pass — Code Review
+
+> Full second-pass review performed 2026-03-20. Informed by security, quality, and performance audits above. Focuses on structural issues, cross-cutting concerns, component boundary problems, error handling patterns, and test quality gaps not covered in prior sections.
+
+## SP1. Cross-Cutting: Error Handling Inconsistency
+
+The codebase has no centralized error policy. Error handling strategy varies by file, function, and even within single functions.
+
+### SP1.1 Inconsistent Error Response Shapes (MEDIUM)
+
+**`src/server/routes.ts`** — API error responses have no consistent schema:
+
+| Route | Error Shape | Metadata |
+|-------|------------|----------|
+| `POST /api/create` line 384 | `{ error, session, hint }` | 3 fields |
+| `POST /api/ralph/start` line 641 | `{ error, pid }` | 2 fields |
+| `POST /api/ralph/cancel` line 837 | `{ error }` | 1 field |
+| `GET /api/git-status` line 498 | `{ error }` (raw `e.message`) | 1 field |
+| `POST /api/ralph/start` line 750 | `{ error }` (interpolated git stderr) | 1 field |
+
+The client cannot predict whether an error response will include metadata fields (`pid`, `hint`, `session`). No error type/code field exists to distinguish error categories programmatically. Client-side code (`app-ralph.ts:136,150,298,378,457`) uses empty catch blocks partly because error responses are unpredictable.
+
+**Recommendation:** Standardize on `{ error: string, code?: string, details?: Record<string, unknown> }`.
+
+### SP1.2 Lock File Management Has Fragile Error Paths (HIGH)
+
+**`src/server/routes.ts:620-803`** — The `POST /api/ralph/start` handler has the most complex error handling in the codebase, with 7+ distinct error paths that must each call `removeLock()`:
+
+- Line 682-686: `removeLock()` defined as local closure
+- Lines 700, 713, 721, 729, 734, 744, 752, 759, 764: each early return calls `removeLock()`
+- Line 793: lock file written _after_ `Bun.spawn()` — if spawn succeeds but `writeFileSync` fails, lock is logged-and-ignored (line 795)
+
+No `try/finally` guards the lock. A thrown exception from any validation step that doesn't have an explicit `removeLock()` call leaks the lock. Currently all early returns appear to have it, but this is a maintenance hazard — one added validation step without `removeLock()` = permanent lock.
+
+**Recommendation:** Wrap the entire handler body in `try { ... } finally { if (!spawned) removeLock(); }`.
+
+### SP1.3 PTY Prefill Failure Breaks Dedup State (MEDIUM)
+
+**`src/server/websocket.ts:390-395`** — If `sendPrefillChunked()` throws, the error is caught and logged, but `shouldDedupeInitialAttach` remains `false`. The `pendingAttach` buffer may have partial state from an incomplete prefill. Subsequent data from the PTY will not be deduped against the prefill, potentially causing duplicate terminal output on the client.
+
+### SP1.4 Stale Lock Detection Assumes ps Failure = Stale (MEDIUM)
+
+**`src/server/routes.ts:656-665`** — When checking if a lock PID is still alive, the code runs `process.kill(lockPid, 0)` then `ps -p <pid> -o command=`. If `ps` fails (permission denied, not just "process exited"), the catch block treats the lock as stale and unlinks it. This could delete an active lock on systems where `ps` is restricted.
+
+---
+
+## SP2. Cross-Cutting: Logging Inconsistency
+
+### SP2.1 Ralph Worker Bypasses Structured Logging (MEDIUM)
+
+**`src/ralph-macchio.ts`** — The most complex subprocess in the system uses bare `console.error` and `console.warn` (lines 146, 154, 377, 385) instead of the structured JSON logger (`src/log.ts`). Every other server component uses `createLogger()` with component tags, timestamps, and structured metadata.
+
+**Impact:** Ralph worker output is not correlatable with server logs. In production, structured log aggregation (e.g., via launchd/systemd journal) cannot parse or filter ralph worker messages.
+
+### SP2.2 Duplicate Logger Component Names (LOW)
+
+- `src/server/routes.ts:39` creates `createLogger("ralph")`
+- `src/server/ralph.ts:16` also creates `createLogger("ralph")`
+
+Two different files log under the same component name, making it impossible to distinguish which file produced a log line.
+
+### SP2.3 Wrong Component Name in worktree.ts (LOW)
+
+**`src/worktree.ts:12`** — Uses `createLogger("service")` but the file contains worktree management logic, not service lifecycle. Should be `createLogger("worktree")`.
+
+---
+
+## SP3. Cross-Cutting: Configuration Management
+
+### SP3.1 Three Unrelated Config Ingestion Paths (MEDIUM)
+
+Configuration enters the system through three independent, un-unified mechanisms:
+
+| Source | Method | Scope | Owner |
+|--------|--------|-------|-------|
+| `WOLFPACK_*` env vars | `process.env` reads scattered across files | Global | No single owner |
+| `~/.wolfpack/config.json` | `loadSettings()` in routes.ts (line 204) | Per-user, read on every API call | routes.ts |
+| CLI `parseArgs()` | `process.argv` in ralph-macchio.ts (line 27) | Per-process | ralph-macchio.ts |
+
+`WOLFPACK_TEST` is read in at least 3 locations: `server/index.ts:76`, `server/tmux.ts:37`, `server/websocket.ts:33`. No centralized validation or documentation of which env vars exist and what they do.
+
+**Settings loaded fresh per request:** `loadSettings()` in `routes.ts:204-212` reads from disk on every `GET /api/settings` and `POST /api/settings` call. No caching. Not a performance problem at current scale, but adds unnecessary filesystem I/O on every settings read.
+
+### SP3.2 Ralph Worker Re-validates Config Independently (LOW)
+
+`routes.ts:688` clamps iterations to `[1, 500]` before spawning the ralph worker. But `ralph-macchio.ts` does not re-validate — it trusts the CLI args. If the worker binary is invoked directly (bypassing the server), there are no bounds on iterations. Same pattern as the plan file validation gap (RM-PT1).
+
+---
+
+## SP4. Cross-Cutting: Process Lifecycle
+
+### SP4.1 No Centralized Process Tracking (HIGH)
+
+Child processes are spawned from multiple locations with different tracking strategies:
+
+| Location | Process | Tracked Via | Cleaned Up |
+|----------|---------|-------------|------------|
+| `routes.ts:786` | ralph worker | PID in lock file | Lock removal on SIGTERM only |
+| `ralph-macchio.ts:459` | agent binary | `activeChild` module global | SIGTERM handler (line 498) |
+| `tmux.ts:291` | tmux sessions | `sessionDirMap` | `cleanupOrphanPtySessions()` |
+| `websocket.ts:406` | PTY attach | `activePtySessions` map | WS close handler |
+| `server/index.ts:212` | HTTP server | module-level singleton | No graceful shutdown handler |
+
+**Key gap:** The HTTP server (`server/index.ts:212-213`) has no `SIGTERM`/`SIGINT` handler for graceful shutdown. The server process can exit while PTY sessions, ralph workers, and tmux operations are in-flight. No `server.close()` call exists anywhere.
+
+**Ralph worker orphan risk:** Worker is spawned with `detached: true` + `unref()` (routes.ts:788-791), meaning it survives server restarts. `cleanupOrphanPtySessions()` only targets `wp_*` tmux sessions, not ralph workers. A crashed server leaves ralph workers running unsupervised.
+
+### SP4.2 SIGTERM Handler Doesn't Stop Ralph Main Loop (MEDIUM)
+
+Already noted in ERR-M3 / RM-MISC1, confirmed here in cross-cutting context: `ralph-macchio.ts:498-518` sets a 3.5s delayed exit but no `stopping` flag. The main iteration loop at line 765 continues executing. Between SIGTERM and the delayed exit, the loop can advance, call `runIteration()`, and spawn a new agent child. This new child is orphaned since the parent exits 3.5s after SIGTERM.
+
+---
+
+## SP5. Component Boundary Contracts
+
+### SP5.1 Server ↔ Ralph Worker: Implicit Protocol (MEDIUM)
+
+The server and ralph worker communicate through an implicit, undocumented protocol:
+
+| Channel | Format | Contract |
+|---------|--------|----------|
+| Launch args | `--plan`, `--progress`, `--iterations`, etc. | No shared schema; routes.ts constructs args, ralph-macchio.ts parses independently |
+| Lock file `.ralph.lock` | Text: `pid` on line 1 | TOCTOU race between write and read |
+| Status `.ralph.log` | Plaintext with magic strings (`started:`, `finished:`, `task:`) | Fragile regex parsing in `ralph.ts:parseRalphLog()` |
+| Plan/progress files | Markdown/text | No version field; format can drift between reader and writer |
+
+If the log format changes (e.g., a new field added to ralph-macchio's output), `parseRalphLog()` in `ralph.ts` silently misparses. There's no schema version or format assertion.
+
+### SP5.2 Shared Mutable State: `sessionDirMap` (MEDIUM)
+
+**`src/server/tmux.ts:56`** — `sessionDirMap` is a module-level `Map<string, string>` populated by `tmuxNewSession()` (called from routes.ts) and pruned by `_realTmuxList()` (called from routes.ts via `tmuxList()`). This creates a bidirectional data coupling between routes.ts and tmux.ts with no transactional guarantees.
+
+- `routes.ts:486` reads `sessionDirMap.get(session)` to resolve project directories
+- `tmux.ts:115` prunes the map during `_realTmuxList()` based on live tmux sessions
+- **Race:** If a route reads between prune and the next `tmuxNewSession()` call, stale data is returned
+
+### SP5.3 `prevPaneContent` Map Never Pruned (MEDIUM)
+
+**`src/server/routes.ts:182`** — `prevPaneContent` is a `Map<string, string>` used for triage change detection. Entries are set during `/api/sessions` processing and deleted on `POST /api/kill`. But sessions destroyed externally (`tmux kill-session` from CLI) leave orphaned entries. The prune sweep in `tmuxList()` cleans `sessionDirMap`, `_triageCacheMap`, and `_backfillCacheMap` — but `prevPaneContent` is not included.
+
+---
+
+## SP6. Client-Side Architectural Issues
+
+### SP6.1 Mobile WS Reconnect Can Fire After Navigation (HIGH)
+
+**`public/app.ts:2052-2095`** — `createReconnector()` schedules reconnect attempts with exponential backoff (500ms-5s delay). If the user navigates away from the terminal view during this delay, `stopPolling()` sets `mobileStreamingActive = false`, but the already-scheduled reconnect callback still fires. The guard in `shouldReconnect()` (line 2053) checks `state.currentView === "terminal"`, which mitigates this, but the timing is fragile — a reconnect could fire in the window between `stopPolling()` and the view change completing.
+
+### SP6.2 Desktop Resize Handler Leak on View Transitions (MEDIUM)
+
+**`public/app.ts:1888, 1913`** — `initDesktopTerminal()` installs `state.desktopResizeHandler` on `window`. It's only cleaned up in `destroyDesktopTerminal()` (line 1913). If the user navigates to settings or ralph views, `destroyDesktopTerminal()` IS called from `showView()` (line 1173). However, in grid mode, the grid has its own resize handler (`app-grid.ts:184-192`) installed without scoped cleanup — if grid is suspended mid-render, the handler persists.
+
+### SP6.3 Full Sidebar Re-render on Every Poll (MEDIUM)
+
+**`public/app.ts:3299-3301`** — `_renderSidebarNow()` rebuilds the entire sidebar HTML and assigns via `innerHTML`. An early return on unchanged HTML (line 3299) prevents DOM churn when nothing changed, which is good. However, for multi-machine setups, the incremental update path (line 1499-1510) and the full-replace path (line 1443) coexist, creating inconsistent rendering behavior depending on machine count.
+
+### SP6.4 Ralph Log Scroll Position Lost on Update (MEDIUM)
+
+**`public/app-ralph.ts:140-150`** — `refreshRalphDetail()` replaces iteration card HTML via `innerHTML` (line 184). Scroll position is not preserved — user scrolling through ralph log sees content jump to top on every 2-second poll. The `wasScrolled` check (line 145) only applies to the terminal container, not the iteration cards section.
+
+### SP6.5 Ralph Form State Pollution Across Sessions (LOW)
+
+**`public/app-ralph.ts:307-351`** — State fields `currentRalphCleanup`, `currentRalphAuditFix`, `currentRalphPlanFile`, `currentRalphAgent` are set and immediately consumed. If the user cancels and re-opens the form, stale values from the previous session may pre-populate fields incorrectly.
+
+---
+
+## SP7. CLI & Service Lifecycle
+
+### SP7.1 Service Subcommand Typos Silently Ignored (HIGH)
+
+**`src/cli/index.ts:136-144`** — If the user types `wolfpack service startt` (typo), the code prints usage but does NOT exit. Execution falls through to the main `start()` function, silently starting the server instead of the service operation.
+
+**Fix:** Add `process.exit(1)` after printing usage for invalid service subcommands.
+
+### SP7.2 Port Detection Silently Swallows All Errors (MEDIUM)
+
+**`src/cli/config.ts:97-115, 117-160`** — `isPortInUse()` and `killPortHolder()` catch ALL exceptions. If `lsof`/`ss` fail for reasons other than "port free" (e.g., permission denied, command not found), the functions return `false`, falsely reporting the port as available. This can cause confusing "address in use" errors during service start.
+
+### SP7.3 No Graceful Shutdown Handler on Server (MEDIUM)
+
+**`src/server/index.ts:212-213`** — The HTTP server singleton has no `SIGTERM`/`SIGINT` handler. When the process receives a termination signal:
+- No `server.close()` to drain in-flight requests
+- No cleanup of active WebSocket connections
+- No notification to connected clients
+- PTY processes attached to the server's stdio may be orphaned
+
+### SP7.4 Service Start/Stop Port Cleanup Not Verified (LOW)
+
+**`src/cli/service.ts:342-378`** — `serviceStop()` stops the service then kills the port holder. But if `killPortHolder()` fails, the port remains occupied. No verification that the port is actually free before returning success.
+
+---
+
+## SP8. Test Quality Issues
+
+### SP8.1 Timing-Dependent Tests Risk Flakiness (HIGH)
+
+Three test files rely on precise timing:
+
+| File | Line | Timing | Risk |
+|------|------|--------|------|
+| `tests/unit/rate-limiter.test.ts` | 20-21 | `setTimeout(220)` for token refill | System load delays refill → false failure |
+| `tests/integration/ws-terminal.test.ts` | 126 | `Promise.race(…, wait(6000))` | CI latency → timeout |
+| `tests/integration/rate-limit.test.ts` | 38-56 | Burst 200 requests, count 429s | Load-dependent count variance |
+
+**Recommendation:** Replace fixed-delay tests with polling/retry patterns that tolerate timing variance.
+
+### SP8.2 Tests Mutate Shared State (MEDIUM)
+
+**`tests/integration/ws-terminal.test.ts:119-121`** — Mutates `FAKE_SESSIONS` array in-place during tests without full restoration guarantee. If test order changes or tests run concurrently, state leaks between tests.
+
+### SP8.3 Tests Coupled to Implementation Details (MEDIUM)
+
+**`tests/unit/rate-limiter.test.ts:34,40,47,56`** — Accesses private `._map` and `._evictTimer` properties directly. These are implementation details that could change without affecting the public API, breaking tests unnecessarily.
+
+### SP8.4 Missing Edge Cases in Tested Areas (MEDIUM)
+
+Areas with tests that lack important edge cases:
+
+| Area | Missing Edge Case |
+|------|------------------|
+| ralph-lifecycle | Corrupted progress file (malformed DONE entries) |
+| ralph-lifecycle | Plan file rewritten mid-execution (header changes) |
+| auth-middleware | JWT secret is empty string or missing from env |
+| ws-terminal | Binary (non-UTF8) WebSocket messages |
+| ws-terminal | Concurrent connections to same session |
+| ralph-api | `.ralph.log` exists as directory instead of file |
+| validation | Regex patterns tested in isolation, not in context of actual file I/O |
+
+### SP8.5 Shell-Escape Test Reimplements Source (LOW)
+
+**`tests/unit/shell-escape.test.ts:5`** — Re-implements `shellEscape` locally instead of importing from `src/validation.ts`. The test comment claims the function isn't exported — it is. This means the test validates a copy, not the actual production code.
+
+---
+
+## SP9. Summary — New Findings by Severity
+
+| Severity | Count | Key Themes |
+|----------|-------|------------|
+| **HIGH** | 5 | Lock file management lacks try/finally, no graceful server shutdown, service CLI falls through on typo, WS reconnect race, timing-dependent test flakiness |
+| **MEDIUM** | 16 | Inconsistent error response shapes, ralph worker bypasses structured logging, no centralized config, implicit server↔worker protocol, shared mutable state races, client rendering inefficiencies, port detection silent failures |
+| **LOW** | 6 | Duplicate logger names, wrong component name, form state pollution, port cleanup not verified, shell-escape test reimplements source, config re-validation gap |
+
+### Top 5 Recommended Actions (from this pass)
+
+1. **Add `try/finally` to ralph/start lock management** (`routes.ts:620-803`) — highest-risk error path in the codebase; one missed `removeLock()` = permanent lock
+2. **Add graceful shutdown handler** (`server/index.ts`) — `SIGTERM` → drain connections → `server.close()` → exit. Prevents orphaned PTY/WS connections.
+3. **Fix service CLI fall-through** (`cli/index.ts:136-144`) — add `process.exit(1)` after printing usage for invalid subcommands
+4. **Standardize error response format** across all API routes — add error code field for programmatic handling
+5. **Fix timing-dependent tests** — replace `setTimeout`-based assertions with polling patterns to eliminate CI flakiness
