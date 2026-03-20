@@ -3342,6 +3342,137 @@
 
         return { term, fitAddon };
       }
+
+      /**
+       * Attach touch-drag scroll handling to a terminal container.
+       * Mouse-mode apps (tmux, vim) get SGR scroll sequences; otherwise native scrollback.
+       * Includes momentum/inertia after touch release.
+       * @param {HTMLElement} container
+       * @param {Terminal} term
+       * @param {(data: Uint8Array) => void} sendInput
+       * @param {() => boolean} canAcceptInput
+       * @returns {() => void} cleanup function
+       */
+      function setupTouchScrollHandler(container, term, sendInput, canAcceptInput) {
+        let lastTouchY = 0;
+        let scrollAccum = 0;
+        let velocityY = 0;
+        let momentumId = null;
+        let tracking = false;
+
+        const SCROLL_THRESHOLD = 60;
+        const FRICTION = 0.95;
+        const MIN_VELOCITY = 0.5;
+        const MAX_LINES_PER_EVENT = 5;
+
+        const velocitySamples = [];
+        const MAX_SAMPLES = 5;
+        const encoder = new TextEncoder();
+
+        function sendScroll(deltaY) {
+          let hasMouse = false;
+          try {
+            hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
+          } catch {}
+
+          scrollAccum += deltaY;
+          const lines = Math.trunc(scrollAccum / SCROLL_THRESHOLD);
+          if (lines === 0) return;
+          scrollAccum -= lines * SCROLL_THRESHOLD;
+
+          if (hasMouse) {
+            const btn = lines > 0 ? 65 : 64;
+            const seq = encoder.encode(`\x1b[<${btn};1;1M`);
+            const count = Math.min(Math.abs(lines), MAX_LINES_PER_EVENT);
+            for (let i = 0; i < count; i++) {
+              if (canAcceptInput()) sendInput(seq);
+            }
+          } else {
+            term.scrollLines(lines);
+          }
+        }
+
+        function cancelMomentum() {
+          if (momentumId !== null) {
+            cancelAnimationFrame(momentumId);
+            momentumId = null;
+          }
+        }
+
+        function computeVelocity() {
+          if (velocitySamples.length < 2) return 0;
+          let totalV = 0;
+          let totalW = 0;
+          for (let i = 1; i < velocitySamples.length; i++) {
+            const dt = velocitySamples[i].t - velocitySamples[i - 1].t;
+            if (dt <= 0) continue;
+            const v = (velocitySamples[i].y - velocitySamples[i - 1].y) / dt;
+            const w = i; // recency-weighted
+            totalV += v * w;
+            totalW += w;
+          }
+          return totalW > 0 ? totalV / totalW : 0;
+        }
+
+        function momentumTick() {
+          velocityY *= FRICTION;
+          if (Math.abs(velocityY) < MIN_VELOCITY) {
+            momentumId = null;
+            return;
+          }
+          sendScroll(velocityY * 16); // ~16ms per frame at 60fps
+          momentumId = requestAnimationFrame(momentumTick);
+        }
+
+        function onTouchStart(e) {
+          if (e.touches.length !== 1) return;
+          cancelMomentum();
+          tracking = true;
+          const touch = e.touches[0];
+          lastTouchY = touch.clientY;
+          scrollAccum = 0;
+          velocitySamples.length = 0;
+          velocitySamples.push({ y: touch.clientY, t: performance.now() });
+        }
+
+        function onTouchMove(e) {
+          if (!tracking || e.touches.length !== 1) return;
+          e.preventDefault();
+          const touch = e.touches[0];
+          const now = performance.now();
+          const deltaY = lastTouchY - touch.clientY; // drag up → scroll down (positive)
+
+          lastTouchY = touch.clientY;
+          velocitySamples.push({ y: touch.clientY, t: now });
+          if (velocitySamples.length > MAX_SAMPLES) velocitySamples.shift();
+
+          sendScroll(deltaY);
+        }
+
+        function onTouchEnd() {
+          if (!tracking) return;
+          tracking = false;
+          // velocity is in clientY px/ms; invert because drag-up = positive scroll
+          velocityY = -computeVelocity();
+          if (Math.abs(velocityY) > MIN_VELOCITY) {
+            momentumId = requestAnimationFrame(momentumTick);
+          }
+        }
+
+        container.addEventListener("touchstart", onTouchStart, { passive: true });
+        container.addEventListener("touchmove", onTouchMove, { passive: false });
+        container.addEventListener("touchend", onTouchEnd, { passive: true });
+        container.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
+        return function cleanup() {
+          cancelMomentum();
+          container.removeEventListener("touchstart", onTouchStart);
+          container.removeEventListener("touchmove", onTouchMove);
+          container.removeEventListener("touchend", onTouchEnd);
+          container.removeEventListener("touchcancel", onTouchEnd);
+        };
+      }
+
       const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 300;
 
       /**
@@ -3658,6 +3789,7 @@
         let _viewportPrefillDone = false;
         let _reconnectPendingReset = false;
         let _cachedPendingReset = false; // reset terminal on first data when cached content is showing
+        let _touchCleanup = null;
         let _mounting = false;
         // For shouldRehydrate: treat "viewport" like "none" (don't reset on first connect)
         const _skipInitialPrefill = opts.prefillMode === "none" || opts.prefillMode === "viewport" || !!opts.skipInitialPrefill;
@@ -3723,6 +3855,13 @@
               }
             }
           }, true);
+
+          // Touch-drag scroll with momentum (mobile/tablet)
+          _touchCleanup = setupTouchScrollHandler(
+            container, _term,
+            (data) => _ptyClient && _ptyClient.send(data),
+            _canAcceptInput,
+          );
 
           // Create hydration controller (started in connect())
           _hydration = createInitialHydrationController({
@@ -3875,6 +4014,7 @@
          * Does NOT clean up view-specific DOM (containers, overlays, event listeners).
          */
         function dispose() {
+          if (_touchCleanup) { _touchCleanup(); _touchCleanup = null; }
           if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
           if (_hydration) { _hydration.cancel(); _hydration = null; }
           _hydrationStarted = false;
