@@ -303,22 +303,22 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
   activePtySessions.set(session, entry as any);
   let spawning = false;
   let latestRequestedSize: { cols: number; rows: number } | null = null;
-  let pendingSkipPrefill = false;
+  let pendingPrefillMode: string | null = null;
 
   async function spawnPty(
     cols: number,
     rows: number,
-    options?: { skipPrefill?: boolean },
+    options?: { prefillMode?: string },
   ) {
-    if (options?.skipPrefill === true) pendingSkipPrefill = true;
+    if (options?.prefillMode) pendingPrefillMode = options.prefillMode;
     latestRequestedSize = { cols, rows };
     if (entry.proc || spawning) return;
     spawning = true;
     if (process.env.WOLFPACK_TEST) {
       ptySpawnAttempts.set(session, (ptySpawnAttempts.get(session) || 0) + 1);
     }
-    const skipPrefill = pendingSkipPrefill;
-    pendingSkipPrefill = false;
+    const prefillMode = pendingPrefillMode || "full";
+    pendingPrefillMode = null;
     let prefill = Buffer.alloc(0);
     let pendingAttach = Buffer.alloc(0);
     let shouldDedupeInitialAttach = false;
@@ -345,7 +345,7 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
 
       // Two-phase prefill: send viewport first (fast, ~10-20ms) so the client can
       // hydrate immediately, then stream full scrollback in the background.
-      if (!skipPrefill) {
+      if (prefillMode !== "none") {
         // Phase 1: Viewport-only prefill (visible pane, ~50-80 lines)
         try {
           const { stdout: viewportStdout } = await exec(TMUX, [
@@ -364,32 +364,34 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
           console.warn(`PTY viewport prefill capture failed [${session}]:`, errMsg(e));
         }
 
-        // Phase 2: Full scrollback prefill (history above viewport)
-        try {
-          const { stdout } = await exec(TMUX, [
-            "capture-pane", "-t", session, "-p", "-e", "-S", `-${DESKTOP_PREFILL_HISTORY_LINES}`,
-          ], { timeout: 3000 });
-          if (stdout && entry.viewer && entry.viewer.readyState === 1) {
-            const rawPrefill = Buffer.from(stdout);
-            if (rawPrefill.length > DESKTOP_PREFILL_MAX_BYTES) {
-              // Keep only the most recent chunk to avoid long first-frame paint stalls.
-              let start = rawPrefill.length - DESKTOP_PREFILL_MAX_BYTES;
-              while (start < rawPrefill.length && rawPrefill[start] !== 0x0a) start++;
-              if (start < rawPrefill.length) start++;
-              prefill = rawPrefill.subarray(start);
-            } else {
-              prefill = rawPrefill;
+        // Phase 2: Full scrollback prefill (history above viewport) — skip for viewport-only mode
+        if (prefillMode === "full") {
+          try {
+            const { stdout } = await exec(TMUX, [
+              "capture-pane", "-t", session, "-p", "-e", "-S", `-${DESKTOP_PREFILL_HISTORY_LINES}`,
+            ], { timeout: 3000 });
+            if (stdout && entry.viewer && entry.viewer.readyState === 1) {
+              const rawPrefill = Buffer.from(stdout);
+              if (rawPrefill.length > DESKTOP_PREFILL_MAX_BYTES) {
+                // Keep only the most recent chunk to avoid long first-frame paint stalls.
+                let start = rawPrefill.length - DESKTOP_PREFILL_MAX_BYTES;
+                while (start < rawPrefill.length && rawPrefill[start] !== 0x0a) start++;
+                if (start < rawPrefill.length) start++;
+                prefill = rawPrefill.subarray(start);
+              } else {
+                prefill = rawPrefill;
+              }
+              try {
+                entry.viewer.send(prefill);
+                entry.viewer.send(JSON.stringify({ type: "prefill_scrollback" }));
+                shouldDedupeInitialAttach = true;
+              } catch (e: unknown) {
+                console.error(`PTY scrollback prefill send failed [${session}]:`, errMsg(e));
+              }
             }
-            try {
-              entry.viewer.send(prefill);
-              entry.viewer.send(JSON.stringify({ type: "prefill_scrollback" }));
-              shouldDedupeInitialAttach = true;
-            } catch (e: unknown) {
-              console.error(`PTY scrollback prefill send failed [${session}]:`, errMsg(e));
-            }
+          } catch (e: unknown) {
+            console.warn(`PTY scrollback prefill capture failed [${session}]:`, errMsg(e));
           }
-        } catch (e: unknown) {
-          console.warn(`PTY scrollback prefill capture failed [${session}]:`, errMsg(e));
         }
       }
 
@@ -473,8 +475,12 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
           // It spawns the PTY without forcing an extra tmux resize if dims are unchanged.
           latestRequestedSize = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
           if (!entry.proc) {
+            // Support both new prefillMode and legacy skipPrefill boolean
+            const prefillMode = (typeof msg.prefillMode === "string" && ["full", "viewport", "none"].includes(msg.prefillMode))
+              ? msg.prefillMode
+              : (msg.skipPrefill === true ? "none" : "full");
             spawnPty(latestRequestedSize.cols, latestRequestedSize.rows, {
-              skipPrefill: msg.skipPrefill === true,
+              prefillMode,
             });
           }
           if (entry.viewer && entry.viewer.readyState === 1) {

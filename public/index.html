@@ -1530,7 +1530,8 @@
         visibility: hidden;
         transition: opacity 80ms ease;
       }
-      .grid-cell.hydrated:not(.grid-loading):not(.transitioning) canvas {
+      .grid-cell.hydrated:not(.grid-loading):not(.transitioning) canvas,
+      .grid-cell.cached-visible canvas {
         opacity: 1;
         visibility: visible;
       }
@@ -3415,7 +3416,8 @@
        * @param {string} opts.session - tmux session name
        * @param {string} opts.machine - remote machine URL ("" for local)
        * @param {boolean} [opts.resetPty] - append &reset=1 on first connect
-       * @param {boolean} [opts.skipInitialPrefill] - ask server to skip first attach prefill
+       * @param {boolean} [opts.skipInitialPrefill] - ask server to skip first attach prefill (legacy)
+       * @param {string} [opts.prefillMode] - "full" (default), "viewport", or "none"
        * @param {() => {cols:number, rows:number}|null} opts.getTermDimensions
        * @param {() => void} opts.fitTerminal
        * @param {(Uint8Array) => void} opts.onBinaryData
@@ -3438,7 +3440,9 @@
         });
         let hasConnected = false;
         let consumeReset = !!opts.resetPty;
-        let _skipInitialPrefill = !!opts.skipInitialPrefill;
+        // Derive initial prefillMode: explicit prefillMode > legacy skipInitialPrefill > "full"
+        let _initialPrefillMode = opts.prefillMode || (opts.skipInitialPrefill ? "none" : "full");
+        let _prefillModeConsumed = false;
         let _attachAckTimer = null;
         let _awaitingAttachAck = false;
 
@@ -3461,11 +3465,13 @@
           try { opts.fitTerminal(); } catch {}
           const dims = opts.getTermDimensions();
           if (!dims) return;
-          const skipPrefill = _skipInitialPrefill;
-          _skipInitialPrefill = false;
+          // First attach uses configured prefillMode; subsequent (reconnect) use "full"
+          const prefillMode = !_prefillModeConsumed ? _initialPrefillMode : "full";
+          _prefillModeConsumed = true;
+          const skipPrefill = prefillMode === "none"; // backward compat for older servers
           _lastSentResize = dims.cols + "x" + dims.rows;
           _awaitingAttachAck = true;
-          ws.send(JSON.stringify({ type: "attach", cols: dims.cols, rows: dims.rows, skipPrefill }));
+          ws.send(JSON.stringify({ type: "attach", cols: dims.cols, rows: dims.rows, skipPrefill, prefillMode }));
           if (_attachAckTimer) clearTimeout(_attachAckTimer);
           // Compatibility fallback: older servers don't implement attach_ack.
           _attachAckTimer = setTimeout(() => {
@@ -3616,7 +3622,8 @@
        * @param {number} [opts.hydrationTimeoutMs] - hydration reveal timeout
        * @param {() => HTMLElement|null} [opts.getHydrationElement] - element to show/hide for hydration (defaults to mount container)
        * @param {boolean} [opts.resetPty] - append &reset=1 on first connect
-       * @param {boolean} [opts.skipInitialPrefill] - skip server prefill on first attach
+       * @param {boolean} [opts.skipInitialPrefill] - skip server prefill on first attach (legacy)
+       * @param {string} [opts.prefillMode] - "full" (default), "viewport", or "none"
        * @param {() => boolean} [opts.shouldReconnect] - guard for reconnect attempts
        * @param {() => boolean} [opts.canAcceptInput] - override stdin guard (default: ptyClient.isOpen)
        * @param {() => boolean} [opts.canSendResize] - override resize guard (default: canAcceptInput)
@@ -3639,7 +3646,10 @@
         let _hydrationWritesInFlight = 0;
         let _viewportPrefillDone = false;
         let _reconnectPendingReset = false;
+        let _cachedPendingReset = false; // reset terminal on first data when cached content is showing
         let _mounting = false;
+        // For shouldRehydrate: treat "viewport" like "none" (don't reset on first connect)
+        const _skipInitialPrefill = opts.prefillMode === "none" || opts.prefillMode === "viewport" || !!opts.skipInitialPrefill;
 
         const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
         const _canSendResize = opts.canSendResize || _canAcceptInput;
@@ -3714,6 +3724,7 @@
 
           fitTerminalPreserveScroll();
           if (mountOpts && mountOpts.cached) {
+            _cachedPendingReset = true;
             _term.write(mountOpts.cached, () => {
               try { _term.scrollToBottom(); } catch {}
             });
@@ -3743,7 +3754,8 @@
             session: opts.session,
             machine: opts.machine || "",
             resetPty: opts.resetPty,
-            skipInitialPrefill: opts.skipInitialPrefill,
+            skipInitialPrefill: _skipInitialPrefill,
+            prefillMode: opts.prefillMode,
             getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
             fitTerminal: fitTerminalPreserveScroll,
             shouldReconnect: opts.shouldReconnect,
@@ -3751,7 +3763,7 @@
               if (!isCurrent()) return;
               // On reconnect, clear stale content and restart hydration —
               // server sends fresh prefill scrollback on the new connection.
-              const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.skipInitialPrefill);
+              const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, _skipInitialPrefill);
               if (rehydrate && _term) {
                 _hydrationWritesInFlight = 0;
                 _viewportPrefillDone = false;
@@ -3774,6 +3786,12 @@
               if (_reconnectPendingReset) {
                 _reconnectPendingReset = false;
                 _term.reset();
+              }
+              if (_cachedPendingReset) {
+                _cachedPendingReset = false;
+                _term.reset();
+                const el = _getHydrationElement();
+                if (el) el.classList.remove("cached-visible");
               }
               if (_hydration && _hydration.pending && !_viewportPrefillDone) {
                 // Viewport prefill phase — track writes for hydration
@@ -3851,6 +3869,7 @@
           _hydrationWritesInFlight = 0;
           _viewportPrefillDone = false;
           _reconnectPendingReset = false;
+          _cachedPendingReset = false;
           _mounting = false;
           if (_term) { try { _term.dispose(); } catch {} _term = null; }
           _fitAddon = null;
@@ -3996,6 +4015,8 @@
       async function mountGridController(gs, cell, idx) {
         if (gs.controller) return; // already mounted
         const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
+        // Load cached snapshot for this grid cell
+        const cached = loadSnapshot(gs.machine || "", gs.session);
         gs.controller = createPtyTerminalController({
           session: gs.session,
           machine: gs.machine || "",
@@ -4004,7 +4025,7 @@
           cursorBlink: idx === state.gridFocusIndex,
           disableStdin: idx !== state.gridFocusIndex,
           resetPty: gs._resetPty,
-          skipInitialPrefill: true,
+          prefillMode: "viewport",
           shouldFocus: () => state.gridSessions[state.gridFocusIndex] === gs,
           shouldReconnect: () => state.gridSessions.includes(gs),
           canAcceptInput: () => !!(gs.controller && gs.controller.isConnected && state.gridSessions[state.gridFocusIndex] === gs),
@@ -4041,7 +4062,12 @@
           },
         });
         delete gs._resetPty;
-        await gs.controller.mount(cell);
+        // Mount with cached content if available
+        if (cached) {
+          cell.classList.add("cached-visible");
+          cell.classList.remove("hydrating", "hydrated");
+        }
+        await gs.controller.mount(cell, { cached });
         gs._needsConnect = true;
       }
 
@@ -4102,10 +4128,22 @@
             if (_gridRenderGeneration !== renderGen) return; // stale render
             runGridRelayoutTransition(() => {
               fitAllGridCells();
+              // Staggered connect: focused cell first (immediate), rest with 50ms delay
+              const focusedGs = state.gridSessions[state.gridFocusIndex];
+              let delay = 0;
               newCellSessions.forEach(gs => {
                 if (gs._needsConnect) {
                   delete gs._needsConnect;
-                  gs.controller.connect();
+                  if (gs === focusedGs) {
+                    gs.controller.connect(); // immediate
+                  } else {
+                    delay += 50;
+                    const d = delay;
+                    setTimeout(() => {
+                      if (_gridRenderGeneration !== renderGen) return;
+                      if (gs.controller) gs.controller.connect();
+                    }, d);
+                  }
                 }
               });
             });
@@ -4209,6 +4247,7 @@
       }
 
       function suspendGridMode() {
+        flushGridSnapshots();
         const preserved = WP.suspendGridState(state.gridSessions, state.gridFocusIndex);
         state.preservedGridSessions = preserved.sessions;
         state.preservedGridFocusIndex = preserved.focusIndex;
@@ -4354,6 +4393,11 @@
         if (idx < 0 || idx >= state.gridSessions.length) return;
         state.sidebarResizeDone = false;
         const gs = state.gridSessions[idx];
+        // Save snapshot before disposing
+        if (gs.controller && gs.controller.term) {
+          const cellText = serializeXtermTail(gs.controller.term, 200);
+          if (cellText) saveSnapshot(gs.machine || "", gs.session, cellText);
+        }
         // Remove cell DOM immediately (avoids full rebuild flash)
         if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
         // Cleanup controller
@@ -4593,6 +4637,17 @@
         }
         snapshotPending = null;
         if (text) saveSnapshot(state.currentMachine, state.currentSession, text);
+        // Also save snapshots for all active grid cells
+        flushGridSnapshots();
+      }
+      function flushGridSnapshots() {
+        if (!isGridActive()) return;
+        for (const gs of state.gridSessions) {
+          if (gs.controller && gs.controller.term) {
+            const cellText = serializeXtermTail(gs.controller.term, 200);
+            if (cellText) saveSnapshot(gs.machine || "", gs.session, cellText);
+          }
+        }
       }
       function serializeXtermTail(term, maxLines) {
         return WP.serializeBufferTail(term.buffer.active, maxLines);
