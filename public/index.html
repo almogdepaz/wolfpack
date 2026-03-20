@@ -3369,6 +3369,39 @@
         const MAX_SAMPLES = 5;
         const encoder = new TextEncoder();
 
+        // Long-press selection state
+        const LONG_PRESS_MS = 500;
+        const LONG_PRESS_MOVE_TOLERANCE = 10; // px — movement beyond this cancels the hold
+        let longPressTimer = null;
+        let selecting = false;
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let anchorCol = 0;
+        let anchorRow = 0;
+
+        /** Convert page-relative touch coords to terminal cell {col, row}. */
+        function touchToCell(touch) {
+          const r = term.renderer;
+          if (!r || !r.charWidth || !r.charHeight) return null;
+          const canvas = container.querySelector("canvas");
+          if (!canvas) return null;
+          const rect = canvas.getBoundingClientRect();
+          const px = touch.clientX - rect.left;
+          const py = touch.clientY - rect.top;
+          const col = Math.max(0, Math.min(Math.floor(px / r.charWidth), term.cols - 1));
+          const row = Math.max(0, Math.min(Math.floor(py / r.charHeight), term.rows - 1));
+          return { col, row };
+        }
+
+        /** Trigger haptic feedback if the Vibration API is available. */
+        function haptic(ms) {
+          try { if (navigator.vibrate) navigator.vibrate(ms || 10); } catch {}
+        }
+
+        function cancelLongPress() {
+          if (longPressTimer !== null) { clearTimeout(longPressTimer); longPressTimer = null; }
+        }
+
         function sendScroll(deltaY) {
           let hasMouse = false;
           try {
@@ -3427,18 +3460,68 @@
         function onTouchStart(e) {
           if (e.touches.length !== 1) return;
           cancelMomentum();
+          cancelLongPress();
+          selecting = false;
           tracking = true;
           const touch = e.touches[0];
           lastTouchY = touch.clientY;
+          touchStartX = touch.clientX;
+          touchStartY = touch.clientY;
           scrollAccum = 0;
           velocitySamples.length = 0;
           velocitySamples.push({ y: touch.clientY, t: performance.now() });
+
+          // Start long-press timer — if finger stays still for LONG_PRESS_MS, enter selection mode
+          longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            const cell = touchToCell(touch);
+            if (!cell) return;
+            selecting = true;
+            tracking = false; // stop scroll tracking
+            anchorCol = cell.col;
+            anchorRow = cell.row;
+            // Select the word/character under the finger
+            term.select(cell.col, cell.row, 1);
+            haptic(30);
+          }, LONG_PRESS_MS);
         }
 
         function onTouchMove(e) {
-          if (!tracking || e.touches.length !== 1) return;
-          e.preventDefault();
+          if (e.touches.length !== 1) return;
           const touch = e.touches[0];
+
+          // If we're in selection mode, extend the selection by dragging
+          if (selecting) {
+            e.preventDefault();
+            const cell = touchToCell(touch);
+            if (!cell) return;
+            // selectLines covers the range from anchor row to current row
+            if (cell.row === anchorRow) {
+              // Same row: character-level selection
+              const startCol = Math.min(anchorCol, cell.col);
+              const length = Math.abs(cell.col - anchorCol) + 1;
+              term.select(startCol, anchorRow, length);
+            } else {
+              // Multi-row: select full lines between anchor and current
+              const startRow = Math.min(anchorRow, cell.row);
+              const endRow = Math.max(anchorRow, cell.row);
+              term.selectLines(startRow, endRow);
+            }
+            return;
+          }
+
+          // If finger moved too far, cancel long-press and commit to scrolling
+          if (longPressTimer !== null) {
+            const dx = touch.clientX - touchStartX;
+            const dy = touch.clientY - touchStartY;
+            if (Math.abs(dx) > LONG_PRESS_MOVE_TOLERANCE || Math.abs(dy) > LONG_PRESS_MOVE_TOLERANCE) {
+              cancelLongPress();
+            }
+          }
+
+          // Normal scroll behavior
+          if (!tracking) return;
+          e.preventDefault();
           const now = performance.now();
           const deltaY = lastTouchY - touch.clientY; // drag up → scroll down (positive)
 
@@ -3450,6 +3533,21 @@
         }
 
         function onTouchEnd() {
+          cancelLongPress();
+
+          // If we were selecting, copy to clipboard + haptic
+          if (selecting) {
+            selecting = false;
+            if (term.hasSelection()) {
+              const text = term.getSelection();
+              if (text) {
+                navigator.clipboard.writeText(text).catch(() => {});
+                haptic(15);
+              }
+            }
+            return;
+          }
+
           if (!tracking) return;
           tracking = false;
           // velocity is in clientY px/ms; invert because drag-up = positive scroll
@@ -3466,6 +3564,7 @@
 
         return function cleanup() {
           cancelMomentum();
+          cancelLongPress();
           container.removeEventListener("touchstart", onTouchStart);
           container.removeEventListener("touchmove", onTouchMove);
           container.removeEventListener("touchend", onTouchEnd);
