@@ -713,3 +713,481 @@ The caller's JWT is forwarded verbatim to Tailscale peers. If a peer is compromi
 | RT-EH1 | INFO | routes | `validateProjectDir` catch treats all errors as 404 |
 
 **No new CRITICAL findings.** The existing CRITICAL (SEC-C2) and HIGH findings from the prior review are confirmed. The codebase demonstrates strong input validation discipline at the route layer, with validation.ts providing a consistent set of safe regex patterns.
+
+---
+
+# Function-Level Audit — websocket, auth, worktree
+
+> Deep function-level security audit of `src/server/websocket.ts`, `src/validation.ts`, `src/auth.ts`, and `src/worktree.ts`. Performed 2026-03-20.
+
+## D. websocket.ts — Function-Level Findings
+
+### D.1 WS Message Dispatch & tmux Injection
+
+**WS-INJ1: Terminal WS `input` message → `tmuxSend()` — no session name format validation (line 177)**
+
+```ts
+ws.on("message", async (raw) => {
+  // ...
+  if (msg.type === "input" && typeof msg.data === "string") {
+    await tmuxSend(session, msg.data, true);
+  }
+```
+
+The `session` parameter arrives from the WS upgrade URL query param (`?session=`), validated at upgrade time by `isAllowedSession()` in `src/server/index.ts:188`. This checks that the session exists in `tmux list-sessions` AND that its `pane_current_path` is under `DEV_DIR`.
+
+However, `isAllowedSession()` does **not** validate the session name format — it only checks membership in the live session list. The session name is passed directly to `tmux send-keys -t <session>`. Since tmux session names are created via `tmuxNewSession()` which validates with `isValidSessionName` (`/^[a-zA-Z0-9_-]+$/`), the live session list should only contain safe names. But if a tmux session were created outside wolfpack with metacharacters in the name, `isAllowedSession` would accept it.
+
+**Severity: LOW** — requires an external actor to create a tmux session with a malicious name AND that session's cwd being under DEV_DIR. Defense-in-depth gap: no format validation on the WS session param at the upgrade handler.
+
+**WS-INJ2: Terminal WS `input` data has no length restriction independent of message size (line 176-177)**
+
+```ts
+if (str.length > MAX_WS_MESSAGE_BYTES) return;  // 65536 bytes
+const msg = JSON.parse(str);
+if (msg.type === "input" && typeof msg.data === "string") {
+  await tmuxSend(session, msg.data, true);
+```
+
+`msg.data` can be up to ~65KB (JSON overhead aside). This is passed to `tmux send-keys -l` which types it verbatim into the pane. A 64KB paste is effectively arbitrary command execution if the pane has a shell prompt. **By design** for a terminal tool, but no per-field length limit exists (the 65KB limit covers the entire JSON envelope).
+
+**Severity: INFO** — consistent with the HTTP `POST /api/send` behavior documented in RT-IV1. Auth is the barrier.
+
+**WS-INJ3: Terminal WS `key` message — `WS_ALLOWED_KEYS` is broader than HTTP allowlist (line 179-183)**
+
+The WS handler allows 26 keys (`WS_ALLOWED_KEYS` in `validation.ts:8-14`) while the HTTP `POST /api/key` allows only 13. The WS set includes `C-a` through `C-z` minus `C-i`, `C-j`, `C-m`, `C-o`, `C-q`, `C-s`, `C-t`, `C-v`, `C-x`, `C-y`. Notable inclusions:
+
+- `C-c` (SIGINT), `C-d` (EOF), `C-z` (SIGTSTP) — process control
+- `C-w` (word delete), `C-u` (line kill), `C-k` (kill to EOL) — editing
+
+These are intentional for a terminal, but `C-c` and `C-z` are powerful primitives — an attacker with WS access can kill or suspend any foreground process in the target pane.
+
+**Severity: INFO** — by design, but worth documenting the signal-sending capability.
+
+### D.2 PTY Access Control
+
+**WS-PTY1: PTY binary data → `proc.terminal.write()` — direct stdin passthrough (line 509-511)**
+
+```ts
+} else if (entry.proc) {
+  if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;  // 16384
+  entry.proc.terminal!.write(raw as Buffer);
+}
+```
+
+Binary WS messages are written directly to the PTY's stdin. The only guard is the 16KB size limit and the rate limiter (60/s). This is the **most direct command execution path** in the application — raw bytes flow from the WebSocket directly to a shell's stdin. No key validation, no filtering. This is the design intent (desktop terminal emulation), but it means any authenticated WS client has full shell access.
+
+**Security properties in place:**
+- Auth (JWT) required at WS upgrade
+- CORS origin check at WS upgrade
+- Session must exist and be under DEV_DIR
+- Rate limit: 60 messages/sec
+- Size limit: 16KB per message
+
+**Severity: BY DESIGN** — PTY passthrough is the core feature. Auth is the sole access control.
+
+**WS-PTY2: `spawnPty()` spawns `tmux attach-session` as a child process (line 406)**
+
+```ts
+entry.proc = Bun.spawn([TMUX, "attach-session", "-t", session], {
+  env: { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
+  terminal: { cols, rows, ... }
+});
+```
+
+The `session` name was validated at upgrade time. The spawn uses `Bun.spawn` (array args, no shell interpolation). `process.env` is spread into the child — this includes `PATH`, `HOME`, and any secrets in the server's environment. The child process inherits the server's full environment.
+
+**Severity: LOW** — the PTY child gets the server's env vars. If `WOLFPACK_JWT_SECRET` or other secrets are in the environment, they're accessible from within the tmux session (via `env` or `/proc/self/environ`). Mitigated by the fact that the user already has shell access via the terminal.
+
+**WS-PTY3: No re-validation of session after PTY spawn (lines 406-461)**
+
+Once the PTY is spawned, the session name is never re-checked against `isAllowedSession()`. If the tmux session's `pane_current_path` changes to outside `DEV_DIR` after PTY attach, the connection remains active. The Terminal WS handler (`handleTerminalWs`) does periodic re-checks (every 1s via `nextSessionCheckAt`), but the PTY handler does not.
+
+**Severity: LOW** — the PTY is attached to the tmux session; the user can `cd` anywhere regardless. Re-validation would be security theater since the user controls the shell.
+
+**WS-PTY4: `take_control` message has no rate limiting on the pending viewer path (line 264-299)**
+
+The `pendingMessage` handler for the pending viewer does not use the rate limiter. A malicious client could rapidly send `take_control` messages. However, the handler is idempotent after the first successful takeover (the entry is deleted from `activePtySessions` and `setupNewPtyEntry` is called once), so repeated messages would hit the `JSON.parse` on a disconnected state.
+
+**Severity: INFO** — no practical exploit, but inconsistent with the rate limiting on the primary message path.
+
+### D.3 Resource & State Management
+
+**WS-RES1: `activePtySessions` map not bounded — potential memory leak (line 26-31)**
+
+No upper limit on the number of concurrent PTY sessions. Each session holds a process handle, two WebSocket references, and buffers. In practice, bounded by the number of tmux sessions, but no explicit guard.
+
+**Severity: LOW** — tmux sessions are the natural bound.
+
+**WS-RES2: `ptySpawnAttempts` map only populated in test mode but never cleared (line 33)**
+
+```ts
+const ptySpawnAttempts = new Map<string, number>();
+```
+
+Populated when `WOLFPACK_TEST` is set, never pruned. Minor memory leak in test mode only. **Severity: INFO.**
+
+**WS-RES3: Prefill buffer retained in closure scope (lines 347-348, 417)**
+
+```ts
+let prefill = Buffer.alloc(0);
+let pendingAttach = Buffer.alloc(0);
+```
+
+The `prefill` buffer (up to 256KB) is captured in the `data` callback closure and retained for the lifetime of the PTY session. After `shouldDedupeInitialAttach` becomes false, the buffer is never used again but cannot be GC'd until the PTY exits.
+
+**Severity: LOW** — 256KB per session is manageable, but could be zeroed after dedup is complete.
+
+---
+
+## E. validation.ts — Validation Completeness Audit
+
+### E.1 Regex Pattern Analysis
+
+**VAL-RE1: `CMD_REGEX` allows `/` and `=` — sufficient for path traversal in commands (line 18)**
+
+```ts
+export const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
+```
+
+This permits paths like `../../../../bin/sh` as a command. However, the regex is used in conjunction with `validateProjectDir()` for the project path — the command itself is intentionally flexible to support commands like `claude --model opus`. The `/` enables paths, and `=` enables flag values. No shell metacharacters (`$`, `` ` ``, `|`, `;`, `&`, `(`, `)`) are permitted.
+
+**Severity: INFO** — intentionally permissive for command paths, no shell injection possible.
+
+**VAL-RE2: `BRANCH_REGEX` prevents `..` and `//` but allows long names (line 19)**
+
+```ts
+export const BRANCH_REGEX = /^(?!.*\.\.)(?!.*\/\/)[a-zA-Z0-9._\-/]+$/;
+```
+
+No length limit. An extremely long branch name (>4096 chars) could cause issues with git or filesystem limits. **Severity: INFO** — git itself enforces ref name length limits.
+
+**VAL-RE3: `PLAN_FILE_REGEX` allows spaces in filenames (line 20)**
+
+```ts
+export const PLAN_FILE_REGEX = /^[a-zA-Z0-9._\- ]+\.md$/;
+```
+
+Spaces in filenames are handled correctly by `join()` and `execFileSync` array args, so no injection risk. **Severity: INFO.**
+
+**VAL-RE4: `isValidPlanFile()` redundantly checks `.` and `..` (line 33-35)**
+
+```ts
+export function isValidPlanFile(name: string): boolean {
+  return PLAN_FILE_REGEX.test(name) && name !== ".." && name !== ".";
+}
+```
+
+`PLAN_FILE_REGEX` requires the name to end with `.md`, so `..` and `.` can never match. The extra checks are harmless belt-and-suspenders. **Not vulnerable.**
+
+### E.2 Validation Coverage Gaps
+
+**VAL-GAP1: No `isValidSessionName()` check on WS upgrade session param**
+
+As noted in WS-INJ1, the WS upgrade handler validates sessions via `isAllowedSession()` (live tmux check) but NOT via `isValidSessionName()` (format check). The session name from `?session=` is passed directly to tmux commands. Adding `isValidSessionName(session)` as a pre-check would provide defense-in-depth.
+
+**Severity: LOW** — `isAllowedSession` is effective because tmux session names are controlled at creation time, but a format check would be more robust.
+
+**VAL-GAP2: No validation function for `POST /api/poll` session query param**
+
+`GET /api/poll` extracts `session` from query params and passes it to `isAllowedSession()` then `capturePane()`. Same gap as VAL-GAP1 — no format validation. Noted in prior review (B.5 cross-reference), confirmed here.
+
+**VAL-GAP3: `shellEscape()` is correct but has no protection against NUL bytes (line 69-71)**
+
+```ts
+export function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+```
+
+A string containing `\0` would be escaped as `'...\0...'`. Most shells truncate at NUL, but this is a theoretical concern. The function's callers (`injectAgentContext`, `tmuxNewSession`) pass strings that don't contain NUL bytes. **Severity: INFO.**
+
+---
+
+## F. auth.ts — Authentication Audit
+
+### F.1 JWT Implementation Review
+
+**AUTH-JWT1: HS256 implementation is sound (lines 119-179)**
+
+The JWT validation:
+- Pins algorithm to HS256 (rejects all others)
+- Uses `timingSafeEqual` for signature comparison
+- Checks length equality before `timingSafeEqual` (required — `timingSafeEqual` throws on mismatched lengths)
+- Validates `exp`, `nbf`, `iat` with configurable clock tolerance
+- Supports optional `iss` and `aud` claims
+- Catches all exceptions and returns structured error
+
+**No vulnerabilities found.** This is a well-implemented JWT validator.
+
+**AUTH-JWT2: Auth disabled path returns `{ ok: true, payload: {} }` (line 205)**
+
+```ts
+if (!cfg.enabled) return { ok: true, payload: {} };
+```
+
+When `WOLFPACK_JWT_SECRET` is unset or too short, ALL requests pass auth. The empty payload `{}` means no claims are available, but no code checks claims for authorization (single-user tool). This is the documented SEC-M1 finding — **confirmed, no new risk.**
+
+**AUTH-JWT3: Secret length check uses `>= MIN_SECRET_LENGTH` (32 chars) (line 98)**
+
+```ts
+enabled: enabled && secret.length >= MIN_SECRET_LENGTH,
+```
+
+A 32-char secret provides ~192 bits of entropy for HS256 (assuming good randomness). NIST recommends at minimum 112 bits. **Well-implemented.**
+
+### F.2 Token Extraction
+
+**AUTH-TOK1: `extractBearerToken()` regex is strict (line 75)**
+
+```ts
+const match = value.trim().match(/^Bearer\s+([^\s]+)$/i);
+```
+
+The regex:
+- Case-insensitive `Bearer` prefix (per RFC 6750)
+- Requires exactly one whitespace-delimited token
+- Rejects tokens with embedded whitespace
+- Trims the header value
+
+**Well-implemented.** One minor note: the `i` flag makes `bearer`, `BEARER`, etc. all valid. RFC 6750 specifies `Bearer` (case-sensitive), but most implementations are lenient. Not a security issue.
+
+**AUTH-TOK2: `getRequestToken()` — query token only when `allowQueryToken=true` (lines 107-117)**
+
+```ts
+if (!allowQueryToken) return null;
+const token = (url.searchParams.get("token") ?? "").trim();
+```
+
+HTTP routes call `validateRequestJwt(headers, url, false)` — no query token.
+WS routes call `validateRequestJwt(headers, url, true)` — query token allowed.
+
+This is correct. WS upgrades can't set custom headers from browsers, so `?token=` is the standard pattern. The token is visible in URL (server logs, browser history) as documented in AA-4.
+
+**Severity: INFO** — standard WS auth pattern.
+
+### F.3 Auth Middleware Coverage Audit
+
+**AUTH-MW1: All `/api/*` routes (except `/api/info`) are authenticated**
+
+Verified in `src/server/index.ts:126-131`:
+
+```ts
+if (shouldAuthenticateApiPath(url.pathname)) {
+  const auth = validateRequestJwt(req.headers, url, false);
+  if (!auth.ok) { writeUnauthorized(res); return; }
+}
+```
+
+`shouldAuthenticateApiPath` returns `true` for any path starting with `/api/` not in `PUBLIC_API_PATHS` (only `/api/info`). **Complete HTTP coverage confirmed.**
+
+**AUTH-MW2: All WS routes are authenticated**
+
+Verified in `src/server/index.ts:177-183`:
+
+```ts
+if (isWsRoute) {
+  const auth = validateRequestJwt(req.headers, url, true);
+  if (!auth.ok) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+}
+```
+
+`isWsRoute` covers `/ws/terminal`, `/ws/mobile`, `/ws/pty`. Non-WS upgrade requests to unknown paths get 404. **Complete WS coverage confirmed.**
+
+**AUTH-MW3: No routes bypass auth unintentionally**
+
+Public routes:
+- `GET /` — static file (no auth needed)
+- `GET /manifest.json` — PWA manifest (no auth needed)
+- `GET /sw.js` — returns 404 (no auth needed)
+- `GET /api/info` — intentionally public (hostname + version only)
+- Static file catch-all — embedded asset lookup, no filesystem access
+
+All other routes require JWT. **No gaps found.**
+
+### F.4 Cached Config
+
+**AUTH-CACHE1: JWT config cached forever after first read (lines 182-192)**
+
+```ts
+let _cachedConfig: JwtAuthConfig | null = null;
+export function getCachedJwtAuthConfig(): JwtAuthConfig {
+  if (!_cachedConfig) { _cachedConfig = getJwtAuthConfig(); }
+  return _cachedConfig;
+}
+```
+
+If `WOLFPACK_JWT_SECRET` is changed after server start, the old value is used until restart. This is documented behavior. **Severity: INFO** — server restart is required for env changes.
+
+---
+
+## G. worktree.ts — Path Traversal & Race Condition Audit
+
+### G.1 Path Traversal
+
+**WT-PT1: `createWorktree()` — `branchName` flows into filesystem path (line 48-50)**
+
+```ts
+const slug = branchName.replace(/^ralph\//, "").replace(/[^a-z0-9-]/g, "-");
+const realProjectDir = realpathSync(projectDir);
+const worktreePath = join(realProjectDir, WORKTREE_DIR, slug);
+```
+
+The `slug` derivation strips all non-`[a-z0-9-]` characters, making path traversal via `..` impossible (dots are replaced with `-`). The slug can only contain lowercase letters, digits, and hyphens. **Well-defended.**
+
+However, `branchName` is passed to git as-is:
+
+```ts
+execFileSync("git", ["worktree", "add", worktreePath, "-b", branchName, baseBranch], ...);
+```
+
+If `branchName` starts with `--`, it becomes a git flag. Callers use `worktreeBranchName()` in ralph-macchio which prefixes with `ralph/`, preventing `--` injection. But `createWorktree()` itself doesn't validate the branch name — it trusts the caller.
+
+**Severity: LOW** — all current callers produce safe branch names (prefixed with `ralph/`). Adding `--` separator before positional args would be defense-in-depth.
+
+**WT-PT2: `createWorktree()` — `baseBranch` passed to git without `--` separator (line 53)**
+
+```ts
+execFileSync("git", ["worktree", "add", worktreePath, "-b", branchName, baseBranch], ...);
+```
+
+`baseBranch` comes from `POST /api/ralph/start` where it's validated against `BRANCH_REGEX`. The regex prevents `..` but allows names containing `/` and `.`. A branch named `--force` would pass `BRANCH_REGEX` validation... wait, no: `BRANCH_REGEX` is `/^(?!.*\.\.)(?!.*\/\/)[a-zA-Z0-9._\-/]+$/` which allows `-` so `--force` would match. However, git's `worktree add` expects the base branch as the last positional argument, and git would interpret `--force` as a ref name in this position (after `-b branchName`).
+
+Actually, git argument parsing: `git worktree add <path> -b <branch> <base>` — the `<base>` is positional after the `-b <branch>` option. Git may still interpret `--force` as a flag if it appears where a flag is expected. Adding `--` before `baseBranch` would be safer.
+
+**Severity: LOW** — `BRANCH_REGEX` allows `--`-prefixed strings. Fix: `["worktree", "add", worktreePath, "-b", branchName, "--", baseBranch]`.
+
+**WT-PT3: `removeWorktree()` — `worktreePath` not validated against project boundary (line 71-86)**
+
+```ts
+export function removeWorktree(worktreePath: string, projectDir?: string): void {
+  execFileSync("git", ["worktree", "remove", worktreePath], opts);
+```
+
+`worktreePath` comes from `listWorktrees()` (git's own output) or from `createWorktree()` (constructed from `WORKTREE_DIR`). There's no validation that `worktreePath` is under the project directory. If `listWorktrees()` returns a path outside the project (e.g., a manually created worktree), `removeWorktree` would remove it.
+
+**Severity: LOW** — git `worktree remove` only removes worktrees that git tracks, so it can't delete arbitrary directories. But it could remove worktrees from other projects if they share the same git repo.
+
+### G.2 Orphan Branch Cleanup Races
+
+**WT-RACE1: `cleanupAllExceptFinal()` — TOCTOU between `listWorktrees()` and `removeWorktree()` (lines 129-182)**
+
+```ts
+const worktrees = listWorktrees(realProjectDir);
+// ... sort, identify toRemove ...
+for (const wt of toRemove) {
+  removeWorktree(wt.path, realProjectDir);  // could fail if worktree was removed between list and remove
+}
+```
+
+Between `listWorktrees()` and `removeWorktree()`, another process (e.g., a concurrent ralph worker) could remove or modify a worktree. The `removeWorktree` call would throw, and as documented in ERR-M4, this aborts cleanup of remaining worktrees since there's no per-iteration try/catch.
+
+**Severity: MEDIUM** — a concurrent ralph run or manual `git worktree remove` could cause partial cleanup. The `for` loop should wrap each `removeWorktree` in try/catch (already noted in ERR-M4, confirmed here with specific race scenario).
+
+**WT-RACE2: ralph-macchio orphan branch cleanup — race between `rev-parse --verify` and `branch -D` (ralph-macchio.ts:665-670)**
+
+```ts
+try {
+  execFileSync("git", ["rev-parse", "--verify", branchName], { cwd: PROJECT_DIR, stdio: "pipe" });
+  execFileSync("git", ["branch", "-D", branchName], { cwd: PROJECT_DIR, stdio: "pipe" });
+} catch { /* branch doesn't exist — good */ }
+```
+
+Between `rev-parse --verify` (check exists) and `branch -D` (delete), another process could:
+1. Create a worktree on that branch → `branch -D` fails (branch is checked out)
+2. Delete the branch → `branch -D` fails (already gone, caught by outer catch)
+
+Case 1 is the problematic one — it leaves the branch alive and `createWorktree` on the next line would fail with "branch already exists". The catch block would then cause the ralph worker to exit.
+
+**Severity: LOW** — only occurs if two ralph workers target the same plan simultaneously, which is prevented by the lock file. The TOCTOU window is between two sequential `execFileSync` calls (microseconds).
+
+### G.3 Lock File TOCTOU
+
+**WT-LOCK1: Worktree order file not locked — concurrent appends could interleave (line 57-63)**
+
+```ts
+const orderFile = join(realProjectDir, WORKTREE_ORDER_FILE);
+appendFileSync(orderFile, `${worktreePath}\n`);
+```
+
+`appendFileSync` on most filesystems is not atomic for multi-line appends. If two processes append simultaneously, lines could interleave. Since each append is a single line (path + newline), and `appendFileSync` with small writes is typically atomic on ext4/APFS, this is unlikely to cause corruption in practice.
+
+**Severity: INFO** — theoretical interleave risk, mitigated by ralph lock file preventing concurrent runs and by the atomic nature of small `appendFileSync` calls on modern filesystems.
+
+**WT-LOCK2: `cleanupAllExceptFinal()` rewrites order file without locking (line 177)**
+
+```ts
+try { writeFileSync(orderFile, `${final.path}\n`); } catch ...
+```
+
+If called concurrently (e.g., two cleanup processes), one write could overwrite the other. Mitigated by the ralph lock file preventing concurrent runs. **Severity: INFO.**
+
+### G.4 Other Findings
+
+**WT-MISC1: `listWorktrees()` trusts git output format (lines 91-123)**
+
+```ts
+for (const line of output.split("\n")) {
+  if (line.startsWith("worktree ")) {
+    current.path = line.slice("worktree ".length);
+```
+
+The parser trusts `git worktree list --porcelain` output format. This is a reasonable trust boundary — git is a local trusted binary. No injection possible since the data comes from git, not from user input. **Severity: INFO.**
+
+**WT-MISC2: `removeWorktree()` uses `--force` as fallback (line 79)**
+
+```ts
+try {
+  execFileSync("git", ["worktree", "remove", worktreePath], opts);
+} catch (gracefulErr: any) {
+  try {
+    execFileSync("git", ["worktree", "remove", worktreePath, "--force"], opts);
+```
+
+The `--force` flag discards uncommitted changes. This is documented in the JSDoc. If the user has uncommitted work in a worktree, it will be lost. **Severity: INFO** — documented behavior, caller's responsibility.
+
+**WT-MISC3: `slugifyTaskName()` collision potential (line 28-37)**
+
+```ts
+export function slugifyTaskName(header: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+}
+```
+
+Two different headers could produce the same slug (e.g., "Fix: auth bug" and "Fix auth! bug" both → "fix-auth-bug"). `createWorktree` would fail when git tries to create a branch that already exists. Ralph-macchio handles this via the `rev-parse --verify` + `branch -D` pattern before creation. **Severity: INFO** — handled by caller.
+
+---
+
+## H. Cross-Cutting Summary — websocket, auth, worktree
+
+| ID | Severity | Component | Finding |
+|----|----------|-----------|---------|
+| WS-INJ1 | LOW | websocket | No session name format validation on WS upgrade — relies solely on `isAllowedSession()` live check |
+| WS-PTY3 | LOW | websocket | No re-validation of session after PTY spawn (terminal WS does periodic re-checks, PTY does not) |
+| WT-PT2 | LOW | worktree | `baseBranch` in `createWorktree` passed to git without `--` separator — `BRANCH_REGEX` allows `--`-prefixed strings |
+| WT-RACE1 | MEDIUM | worktree | `cleanupAllExceptFinal` has no per-iteration try/catch — concurrent worktree removal aborts remaining cleanup |
+| VAL-GAP1 | LOW | validation | WS upgrade and `POST /api/poll` accept session names without format validation |
+| AUTH-JWT1 | INFO | auth | JWT implementation is sound — HS256, timing-safe, proper claim validation |
+| AUTH-MW3 | INFO | auth | No routes bypass auth unintentionally — complete coverage confirmed |
+
+### Defense-in-Depth Recommendations
+
+1. **Add `isValidSessionName()` check at WS upgrade** — `src/server/index.ts:187-188` and `:195-196` should validate `session` format before calling `isAllowedSession()`. Low effort, closes VAL-GAP1.
+
+2. **Add `--` separator in `createWorktree()` git commands** — `["worktree", "add", worktreePath, "-b", branchName, "--", baseBranch]`. Prevents theoretical git flag injection via `baseBranch`.
+
+3. **Wrap `removeWorktree` calls in try/catch within `cleanupAllExceptFinal` loop** — prevents one failed removal from aborting cleanup of remaining worktrees (WT-RACE1).
+
+4. **Zero prefill buffer after dedup completes** — `prefill = Buffer.alloc(0)` after `shouldDedupeInitialAttach = false` in the PTY data handler. Frees ~256KB per session.
+
+### Positive Security Properties Confirmed
+
+1. **WS auth is enforced at upgrade time** for all three WS routes — cannot be bypassed by connecting without auth.
+2. **CORS check on WS upgrade** prevents cross-origin WS connections.
+3. **Rate limiting per-connection** (60/s) on both terminal and PTY WS handlers.
+4. **Binary message size limit** (16KB) on PTY passthrough prevents large payload injection.
+5. **`tmux send-keys -l`** literal mode used consistently — prevents tmux key-name injection.
+6. **JWT implementation** is textbook correct — timing-safe comparison, algorithm pinning, claim validation.
+7. **Auth coverage is complete** — no authenticated route found without JWT middleware, no WS route without auth.
+8. **Worktree paths are slug-sanitized** — only `[a-z0-9-]` in directory names, eliminating path traversal.
+9. **`realpathSync` used in worktree creation** — resolves symlinks before constructing paths.
