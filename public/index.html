@@ -3674,7 +3674,8 @@
           if (_term || _mounting) return; // already mounted or in progress
           _mounting = true;
           try { await window.ghosttyReady; } catch (err) {
-            console.error("[ghostty-web] WASM init failed:", err);
+            console.error("[ghostty-web] WASM init failed, falling back to text mode:", err);
+            window.wasmFailed = true;
             _mounting = false;
             return;
           }
@@ -4211,7 +4212,7 @@
         showView("terminal");
         if (restorePreservedGrid()) return true;
         if (!state.currentSession) return false;
-        if (isDesktop()) {
+        if (canUseDesktopTerminal()) {
           state.useDesktopTerminal = true;
           if (!state.desktopController) initDesktopTerminal();
         } else {
@@ -4321,7 +4322,7 @@
       }
 
       function addToGrid(session, machine) {
-        if (!isDesktop()) return;
+        if (!canUseDesktopTerminal()) return;
         const targetMachine = machine || "";
         if (state.currentView !== "terminal" && hasPreservedGrid()) {
           const result = WP.addToGridState(
@@ -4555,6 +4556,11 @@
 
       function isDesktop() {
         return window.innerWidth > 768;
+      }
+
+      /** Desktop terminal requires both wide viewport AND working WASM. */
+      function canUseDesktopTerminal() {
+        return isDesktop() && !window.wasmFailed;
       }
 
       // ── Per-session draft persistence (UX-03) ──
@@ -5577,7 +5583,7 @@
         setState({ currentSession: name, currentMachine: machineUrl || "" });
         recordRecent(state.currentMachine, name);
         state.lastRawPane = null;
-        state.useDesktopTerminal = isDesktop();
+        state.useDesktopTerminal = canUseDesktopTerminal();
         wpMetrics.reset();
         setFollowMode(true);
         restoreDraft();
@@ -5788,7 +5794,7 @@
           }, machine);
           if (data.session) {
             setState({ currentSession: data.session, currentMachine: machine });
-            state.useDesktopTerminal = isDesktop();
+            state.useDesktopTerminal = canUseDesktopTerminal();
             // Refresh session list in background so it doesn't block terminal init
             loadSessions().then(() => { loadSessionSwitcher(); renderSidebar(); });
             if (state.useDesktopTerminal && isGridActive()) {
@@ -5904,6 +5910,24 @@
 
         await state.desktopController.mount(container, { cached });
         if (!state.desktopController) return; // disposed while awaiting WASM init
+
+        // WASM failed during mount — fall back to text polling
+        if (window.wasmFailed && !state.desktopController.term) {
+          console.warn("[wolfpack] WASM unavailable, falling back to text polling");
+          state.desktopController.dispose();
+          state.desktopController = null;
+          state.useDesktopTerminal = false;
+          container.style.display = "none";
+          container.innerHTML = "";
+          const term = document.getElementById("terminal");
+          term.style.display = "";
+          document.getElementById("input-bar").style.display = "";
+          term.textContent = cached || "";
+          if (cached) term.scrollTop = term.scrollHeight;
+          await resizePane();
+          startPolling();
+          return;
+        }
 
         const onResize = () => {
           if (state.desktopResizeTimer) clearTimeout(state.desktopResizeTimer);
@@ -6563,7 +6587,7 @@
           hml.textContent = mName;
           hml.style.display = "block";
         }
-        state.useDesktopTerminal = isDesktop();
+        state.useDesktopTerminal = canUseDesktopTerminal();
         if (state.useDesktopTerminal) {
           initDesktopTerminal();
         } else {

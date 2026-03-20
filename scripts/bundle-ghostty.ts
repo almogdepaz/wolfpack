@@ -51,13 +51,26 @@ ${umdCode}
 window.Terminal = GhosttyWeb.Terminal;
 window.FitAddon = GhosttyWeb.FitAddon;
 
-// Auto-init WASM — consumers await window.ghosttyReady before creating terminals
-window.ghosttyReady = GhosttyWeb.init().then(function() {
-  console.log("[ghostty-web] WASM initialized");
-}).catch(function(err) {
-  console.error("[ghostty-web] WASM init failed:", err);
-  throw err;
-});
+// WASM fallback detection — set flag so UI can fall back to text polling
+window.wasmFailed = false;
+
+// Feature-detect WebAssembly before attempting init
+if (typeof WebAssembly === "undefined" || typeof WebAssembly.instantiate !== "function") {
+  console.warn("[ghostty-web] WebAssembly not supported — falling back to text mode");
+  window.wasmFailed = true;
+  window.ghosttyReady = Promise.reject(new Error("WebAssembly not supported"));
+  // Swallow unhandled rejection since this is expected
+  window.ghosttyReady.catch(function() {});
+} else {
+  // Auto-init WASM — consumers await window.ghosttyReady before creating terminals
+  window.ghosttyReady = GhosttyWeb.init().then(function() {
+    console.log("[ghostty-web] WASM initialized");
+  }).catch(function(err) {
+    console.error("[ghostty-web] WASM init failed:", err);
+    window.wasmFailed = true;
+    throw err;
+  });
+}
 
 })();
 `;
