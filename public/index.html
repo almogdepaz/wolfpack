@@ -3330,7 +3330,7 @@
 
         return { term, fitAddon };
       }
-      const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
+      const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 300;
 
       /**
        * Shared hydration controller for ghostty-web terminals.
@@ -3426,6 +3426,8 @@
        * @param {() => void} [opts.onReconnecting]
        * @param {() => void} [opts.onReconnectExhausted]
        * @param {() => boolean} [opts.shouldReconnect]
+       * @param {() => void} [opts.onPrefillViewport]
+       * @param {() => void} [opts.onPrefillScrollback]
        */
       function createPtySocketClient(opts) {
         let ws = null;
@@ -3529,6 +3531,10 @@
                   // Fresh viewer takeover needs a fresh attach bootstrap.
                   sendAttachHandshake();
                   if (opts.onControlGranted) opts.onControlGranted();
+                } else if (msg.type === "prefill_viewport") {
+                  if (opts.onPrefillViewport) opts.onPrefillViewport();
+                } else if (msg.type === "prefill_scrollback") {
+                  if (opts.onPrefillScrollback) opts.onPrefillScrollback();
                 }
               } catch {}
               return;
@@ -3631,6 +3637,7 @@
         let _ptyClient = null;
         let _hydrationStarted = false;
         let _hydrationWritesInFlight = 0;
+        let _viewportPrefillDone = false;
         let _reconnectPendingReset = false;
         let _mounting = false;
 
@@ -3747,6 +3754,7 @@
               const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.skipInitialPrefill);
               if (rehydrate && _term) {
                 _hydrationWritesInFlight = 0;
+                _viewportPrefillDone = false;
                 if (wasReconnect) {
                   // Defer terminal reset until first data arrives — keeps old
                   // content visible so there's no blank flash during reconnect.
@@ -3767,11 +3775,17 @@
                 _reconnectPendingReset = false;
                 _term.reset();
               }
-              if (_hydration && _hydration.pending) {
+              if (_hydration && _hydration.pending && !_viewportPrefillDone) {
+                // Viewport prefill phase — track writes for hydration
                 _hydrationWritesInFlight++;
                 _term.write(data, () => {
                   _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
-                  if (_hydration) _hydration.scheduleFinish();
+                  if (_viewportPrefillDone && _hydrationWritesInFlight === 0) {
+                    // Viewport done + writes flushed → finish hydration immediately
+                    if (_hydration) _hydration.finish();
+                  } else if (_hydration) {
+                    _hydration.scheduleFinish();
+                  }
                   if (opts.onOutput) opts.onOutput(data);
                 });
               } else {
@@ -3779,6 +3793,15 @@
                 if (opts.onOutput) opts.onOutput(data);
               }
             },
+            onPrefillViewport: () => {
+              if (!isCurrent()) return;
+              _viewportPrefillDone = true;
+              // If viewport writes already flushed, finish hydration immediately
+              if (_hydration && _hydration.pending && _hydrationWritesInFlight === 0) {
+                _hydration.finish();
+              }
+            },
+            onPrefillScrollback: () => {},
             onViewerConflict: () => { if (isCurrent() && opts.onViewerConflict) opts.onViewerConflict(); },
             onControlGranted: () => { if (isCurrent() && opts.onControlGranted) opts.onControlGranted(); },
             onDisconnected: (code, reason) => { if (isCurrent() && opts.onDisconnected) opts.onDisconnected(code, reason); },
@@ -3826,6 +3849,7 @@
           if (_hydration) { _hydration.cancel(); _hydration = null; }
           _hydrationStarted = false;
           _hydrationWritesInFlight = 0;
+          _viewportPrefillDone = false;
           _reconnectPendingReset = false;
           _mounting = false;
           if (_term) { try { _term.dispose(); } catch {} _term = null; }

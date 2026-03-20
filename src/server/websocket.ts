@@ -343,10 +343,28 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Pre-fill viewer with tmux scrollback so terminal has content to scroll through.
-      // The attach path can replay part of the visible pane, so strip any overlap from
-      // the first PTY bytes only after the prefill has been delivered successfully.
+      // Two-phase prefill: send viewport first (fast, ~10-20ms) so the client can
+      // hydrate immediately, then stream full scrollback in the background.
       if (!skipPrefill) {
+        // Phase 1: Viewport-only prefill (visible pane, ~50-80 lines)
+        try {
+          const { stdout: viewportStdout } = await exec(TMUX, [
+            "capture-pane", "-t", session, "-p", "-e",
+          ], { timeout: 2000 });
+          if (viewportStdout && entry.viewer && entry.viewer.readyState === 1) {
+            const viewportBuf = Buffer.from(viewportStdout);
+            try {
+              entry.viewer.send(viewportBuf);
+              entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
+            } catch (e: unknown) {
+              console.error(`PTY viewport prefill send failed [${session}]:`, errMsg(e));
+            }
+          }
+        } catch (e: unknown) {
+          console.warn(`PTY viewport prefill capture failed [${session}]:`, errMsg(e));
+        }
+
+        // Phase 2: Full scrollback prefill (history above viewport)
         try {
           const { stdout } = await exec(TMUX, [
             "capture-pane", "-t", session, "-p", "-e", "-S", `-${DESKTOP_PREFILL_HISTORY_LINES}`,
@@ -364,13 +382,14 @@ function setupNewPtyEntry(ws: WebSocket, session: string): void {
             }
             try {
               entry.viewer.send(prefill);
+              entry.viewer.send(JSON.stringify({ type: "prefill_scrollback" }));
               shouldDedupeInitialAttach = true;
             } catch (e: unknown) {
-              console.error(`PTY prefill send failed [${session}]:`, errMsg(e));
+              console.error(`PTY scrollback prefill send failed [${session}]:`, errMsg(e));
             }
           }
         } catch (e: unknown) {
-          console.warn(`PTY prefill capture failed [${session}]:`, errMsg(e));
+          console.warn(`PTY scrollback prefill capture failed [${session}]:`, errMsg(e));
         }
       }
 
