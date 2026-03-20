@@ -4558,9 +4558,9 @@
         return window.innerWidth > 768;
       }
 
-      /** Desktop terminal requires both wide viewport AND working WASM. */
+      /** PTY terminal (ghostty-web) is available unless WASM init failed. */
       function canUseDesktopTerminal() {
-        return isDesktop() && !window.wasmFailed;
+        return !window.wasmFailed;
       }
 
       // ── Per-session draft persistence (UX-03) ──
@@ -5858,12 +5858,17 @@
           container.classList.remove("hydrated", "cached-visible");
         }
         document.getElementById("terminal").style.display = "none";
-        document.getElementById("kb-accessory").classList.remove("visible");
-        document.getElementById("kb-toggle")?.classList.remove("active");
-        state.kbAccessoryOpen = false;
-        document.getElementById("input-bar").style.display = "none";
-        document.getElementById("cmd-palette").style.display = "none";
-        document.getElementById("msg-preview").style.display = "none";
+        if (isDesktop()) {
+          // Desktop: ghostty-web handles all input directly
+          document.getElementById("kb-accessory").classList.remove("visible");
+          document.getElementById("kb-toggle")?.classList.remove("active");
+          state.kbAccessoryOpen = false;
+          document.getElementById("input-bar").style.display = "none";
+          document.getElementById("cmd-palette").style.display = "none";
+          document.getElementById("msg-preview").style.display = "none";
+        }
+        // Mobile: keep input bar, keyboard accessory, and cmd palette visible
+        // — they send via HTTP API which works alongside PTY WS
 
         state.desktopController = createPtyTerminalController({
           session: state.currentSession,
@@ -6100,6 +6105,8 @@
         return proto + "//" + location.host + "/ws/terminal?session=" + encodeURIComponent(state.currentSession);
       }
 
+      // WASM fallback: text polling via /ws/terminal (capture-pane).
+      // Only active when ghostty-web WASM init fails.
       const mobileReconnector = createReconnector({
         shouldReconnect: () => state.mobileStreamingActive && !state.useDesktopTerminal && !!state.currentSession && state.currentView === "terminal",
         onReconnecting: () => setConnState("reconnecting"),
@@ -6683,7 +6690,7 @@
           }
           if (state.currentSession && state.currentView === "terminal") {
             if (state.useDesktopTerminal) {
-              // Desktop: reset retry budget and reconnect current terminal context.
+              // PTY WS (default): reset retry budget and reconnect terminal.
               if (isGridActive()) {
                 for (const gs of state.gridSessions) {
                   if (!gs.controller || gs._displaced) continue;
@@ -6695,7 +6702,7 @@
                 connectDesktopWs();
               }
             } else {
-              // Mobile: kill stale WS and reconnect fresh.
+              // WASM fallback: kill stale WS and reconnect fresh.
               // After backgrounding, the OS suspends the tab and the TCP connection
               // dies silently — but the WS object may still report readyState=OPEN,
               // blocking reconnection for 30-60s until the browser detects the dead socket.

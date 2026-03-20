@@ -1,5 +1,6 @@
 /**
- * WebSocket handlers — terminal (capture-pane polling) and PTY (ghostty-web direct).
+ * WebSocket handlers — terminal (capture-pane text polling, WASM fallback only)
+ * and PTY (ghostty-web direct, default for all clients).
  */
 import type { WebSocket } from "ws";
 import {
@@ -87,7 +88,9 @@ export function __getTestState(): { activePtySessions: typeof activePtySessions;
   return { activePtySessions, ptySpawnAttempts };
 }
 
-// ── Terminal WS handler (mobile — capture-pane polling) ──
+// ── Terminal WS handler (WASM fallback — capture-pane text polling) ──
+// Used only when ghostty-web WASM init fails on the client.
+// Default path for all clients is now PTY WS (handlePtyWs).
 
 export function handleTerminalWs(ws: WebSocket, session: string): void {
   let prev = "";
