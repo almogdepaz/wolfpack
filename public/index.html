@@ -1413,6 +1413,21 @@
         background: var(--bg-base);
         overflow: hidden;
       }
+      #mobile-kb-proxy {
+        display: none;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 15;
+        height: 1px;
+        opacity: 0;
+        border: none;
+        padding: 0;
+        margin: 0;
+        font-size: 16px;
+        caret-color: transparent;
+      }
       #desktop-terminal-container.hydrating {
         background: var(--bg-base);
       }
@@ -2397,7 +2412,8 @@
 
       /* ── Mobile-specific ── */
       @media (max-width: 768px) {
-        #kb-toggle { display: flex; }
+        #kb-toggle { display: none; }
+        #kb-accessory { display: flex; }
         .header-center .wolfpack-icon { display: none; }
         #terminal-view {
           padding-top: env(safe-area-inset-top);
@@ -2696,13 +2712,18 @@
       <div id="kb-accessory">
         <button class="kb-key kb-special" data-key="Enter">Enter</button>
         <button class="kb-key" data-key="Escape">Esc</button>
+        <button class="kb-key" data-key="Tab">Tab</button>
         <button class="kb-key" data-key="Up">&#9650;</button>
         <button class="kb-key" data-key="Down">&#9660;</button>
+        <button class="kb-key" data-key="Left">&#9664;</button>
+        <button class="kb-key" data-key="Right">&#9654;</button>
         <button class="kb-key kb-danger" data-key="C-c">^C</button>
+        <button class="kb-key" data-key="C-d">^D</button>
+        <button class="kb-key" data-key="C-z">^Z</button>
         <button class="kb-key kb-git" onclick="showGitStatus()">git</button>
       </div>
+      <input id="mobile-kb-proxy" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Terminal input" />
       <div id="input-bar">
-        <button id="kb-toggle" onclick="toggleKbAccessory()" title="Toggle keys" aria-label="Toggle keyboard shortcuts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
         <textarea
           id="msg-input"
           rows="1"
@@ -6050,24 +6071,26 @@
           container.classList.remove("hydrated", "cached-visible");
         }
         document.getElementById("terminal").style.display = "none";
-        if (isDesktop()) {
-          // Desktop: ghostty-web handles all input directly
-          document.getElementById("kb-accessory").classList.remove("visible");
-          document.getElementById("kb-toggle")?.classList.remove("active");
-          state.kbAccessoryOpen = false;
-          document.getElementById("input-bar").style.display = "none";
+        // Hide input bar on all devices — ghostty-web handles desktop keyboard,
+        // mobile uses the invisible kb-proxy + always-visible kb-accessory.
+        document.getElementById("input-bar").style.display = "none";
+        document.getElementById("msg-preview").style.display = "none";
+        const _isMobile = !isDesktop();
+        const kbProxy = document.getElementById("mobile-kb-proxy");
+        if (_isMobile) {
+          kbProxy.style.display = "block";
+        } else {
+          kbProxy.style.display = "none";
           document.getElementById("cmd-palette").style.display = "none";
-          document.getElementById("msg-preview").style.display = "none";
         }
-        // Mobile: keep input bar, keyboard accessory, and cmd palette visible
-        // — they send via PTY WS binary (sendMsg/sendKey use _sendTerminalInput)
 
         state.terminalController = createPtyTerminalController({
           session: state.currentSession,
           machine: state.currentMachine || "",
           scrollback: DESKTOP_TERMINAL_SCROLLBACK,
+          disableStdin: _isMobile,
           getHydrationElement: () => document.getElementById("desktop-terminal-container"),
-          shouldFocus: () => true,
+          shouldFocus: () => !_isMobile,
           shouldReconnect: () => state.useDesktopTerminal && !!state.terminalController?.term,
           onOpen: (wasReconnect) => {
             if (wasReconnect) wpMetrics.reconnectCount++;
@@ -6086,7 +6109,14 @@
             removeDesktopConflictOverlay();
             var action = WP.classifyDisconnect(code, reason || "");
             if (action === "displaced") {
+              // Reconnect once — gets viewer_conflict → shows Take Control overlay
               setConnState("displaced");
+              setTimeout(() => {
+                if (state.terminalController && !state.terminalController.isConnected) {
+                  state.terminalController.resetRetry();
+                  connectDesktopWs();
+                }
+              }, 500);
               return;
             }
             if (action === "session-ended") {
@@ -6195,6 +6225,8 @@
         document.getElementById("terminal").style.display = "";
         document.getElementById("input-bar").style.display = "";
         document.getElementById("cmd-palette").style.display = "";
+        const kbProxy = document.getElementById("mobile-kb-proxy");
+        if (kbProxy) { kbProxy.blur(); kbProxy.style.display = "none"; }
       }
 
       // ── Terminal ──
@@ -6918,39 +6950,23 @@
 
       (function setupKbAccessory() {
         const acc = document.getElementById("kb-accessory");
-        const ta = document.getElementById("msg-input");
-        const tog = document.getElementById("kb-toggle");
-        if (!acc || !ta) return;
+        if (!acc) return;
 
-        // Insert text at cursor position in textarea
-        function insertAtCursor(char) {
-          const start = ta.selectionStart;
-          const end = ta.selectionEnd;
-          ta.value = ta.value.substring(0, start) + char + ta.value.substring(end);
-          ta.selectionStart = ta.selectionEnd = start + char.length;
-          ta.dispatchEvent(new Event("input"));
-          ta.focus();
-        }
-
-        // Wire up all keys — prevent blur with mousedown/touchstart preventDefault
         acc.querySelectorAll(".kb-key").forEach((btn) => {
           const key = btn.dataset.key;
           const insert = btn.dataset.insert;
-          // Skip buttons with their own onclick (e.g. git button)
           if (!key && !insert) return;
           let touchFired = false;
 
           function fire() {
+            haptic([15]);
             if (key) {
-              haptic([15]);
               sendKey(key);
             } else if (insert) {
-              haptic([10]);
-              insertAtCursor(insert);
+              _sendTerminalInput(_textEncoder.encode(insert));
             }
           }
 
-          // Prevent focus steal (keeps keyboard open)
           btn.addEventListener("mousedown", (e) => e.preventDefault());
           btn.addEventListener("touchstart", (e) => {
             e.preventDefault();
@@ -6958,12 +6974,56 @@
             fire();
           }, { passive: false });
 
-          // Click handler for non-touch devices only
           btn.addEventListener("click", () => {
             if (touchFired) { touchFired = false; return; }
             fire();
           });
         });
+      })();
+
+      // ── Mobile keyboard proxy ──
+      (function setupMobileKbProxy() {
+        const proxy = document.getElementById("mobile-kb-proxy");
+        if (!proxy) return;
+        let _composing = false;
+
+        proxy.addEventListener("compositionstart", () => { _composing = true; });
+        proxy.addEventListener("compositionend", (e) => {
+          _composing = false;
+          if (e.data) _sendTerminalInput(_textEncoder.encode(e.data));
+          proxy.value = "";
+        });
+
+        proxy.addEventListener("input", (e) => {
+          if (_composing) return;
+          if (e.inputType === "deleteContentBackward") {
+            _sendTerminalInput(_textEncoder.encode("\x7f"));
+            return;
+          }
+          const text = e.data || proxy.value;
+          if (text) _sendTerminalInput(_textEncoder.encode(text));
+          proxy.value = "";
+        });
+
+        proxy.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            _sendTerminalInput(_textEncoder.encode("\r"));
+          } else if (e.key === "Backspace") {
+            e.preventDefault();
+            _sendTerminalInput(_textEncoder.encode("\x7f"));
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            _sendTerminalInput(_textEncoder.encode("\x1b"));
+          }
+        });
+
+        // Tap terminal → focus proxy (opens keyboard)
+        document.getElementById("desktop-terminal-container").addEventListener("touchend", () => {
+          if (proxy.style.display !== "none") {
+            setTimeout(() => proxy.focus({ preventScroll: true }), 50);
+          }
+        }, { passive: true });
       })();
 
       // Global arrow keys → tmux when in terminal and textarea not focused
