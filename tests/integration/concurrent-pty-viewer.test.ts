@@ -25,7 +25,7 @@ const FAKE_SESSIONS = [SESSION];
 
 beforeAll(async () => {
   ctx = await bootTestServer({
-    tmuxList: async () => [...FAKE_SESSIONS],
+    sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-concurrent\n",
   });
 });

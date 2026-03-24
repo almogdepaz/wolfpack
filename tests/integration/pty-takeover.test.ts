@@ -30,7 +30,7 @@ const FAKE_SESSIONS = ["takeover-test"];
 
 beforeAll(async () => {
   ctx = await bootTestServer({
-    tmuxList: async () => [...FAKE_SESSIONS],
+    sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-output\n",
   });
 });

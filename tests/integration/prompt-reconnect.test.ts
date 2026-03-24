@@ -5,8 +5,14 @@ import type { AddressInfo } from "node:net";
 process.env.WOLFPACK_TEST = "1";
 
 const { createServerInstance } = await import("../../src/server/index.ts");
-const { __setTestOverrides, __getTestState } = await import("../../src/test-hooks.ts");
+const { __getTestState } = await import("../../src/test-hooks.ts");
+const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { activePtySessions: __activePtySessions } = __getTestState();
+
+const FAKE_SESSIONS = ["prompt-sess", "reconnect-sess"];
+__setTestBackend(new MockBackend({ sessions: FAKE_SESSIONS }));
+
 const { server } = createServerInstance();
 
 // ── Test setup ──
@@ -14,11 +20,6 @@ const { server } = createServerInstance();
 let port: number;
 let baseUrl: string;
 let baseWsUrl: string;
-
-const FAKE_SESSIONS = ["prompt-sess", "reconnect-sess"];
-__setTestOverrides({
-  tmuxList: async () => [...FAKE_SESSIONS],
-});
 
 const _realConsoleError = console.error;
 
