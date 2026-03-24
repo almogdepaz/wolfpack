@@ -39,17 +39,11 @@ import pkg from "../../package.json";
 const log = createLogger("http");
 import {
   DEV_DIR,
-  TMUX,
   RALPH_AGENTS,
   isUnderDevDir,
-  tmuxList,
-  tmuxResize,
-  tmuxNewSession,
-  capturePane,
-  capturePaneForTriage,
-  sessionDirMap,
   exec,
 } from "./tmux.js";
+import { getBackend } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -260,12 +254,12 @@ export const routes: Record<
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const sessions = await tmuxList();
+    const sessions = await getBackend().list();
     const activeNames = new Set<string>();
     const results = await Promise.all(
       sessions.map(async (name) => {
         activeNames.add(name);
-        const pane = await capturePaneForTriage(name);
+        const pane = await getBackend().capturePaneForTriage(name);
         const content = pane.trimEnd();
 
         // Walk lines from bottom, skip junk, take first real line for preview
@@ -332,7 +326,7 @@ export const routes: Record<
       if (!isValidSessionName(customName)) {
         return json(res, { error: "invalid session name (letters, numbers, hyphens, underscores only)" }, 400);
       }
-      const existing = await tmuxList();
+      const existing = await getBackend().list();
       if (existing.includes(customName)) {
         return json(res, { error: "session name already taken" }, 409);
       }
@@ -346,7 +340,7 @@ export const routes: Record<
     if (!validateProjectDir(res, projectDir)) return;
     const finalName = customName || await uniqueSessionName(folderName);
     try {
-      await tmuxNewSession(finalName, projectDir, cmd, loadSettings);
+      await getBackend().createSession(finalName, projectDir, cmd, loadSettings);
     } catch (e: any) {
       if (e.code === "DUPLICATE_SESSION") {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
@@ -407,7 +401,7 @@ export const routes: Record<
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(session);
     prevPaneContent.delete(session);
-    await exec(TMUX, ["kill-session", "-t", session]);
+    await getBackend().killSession(session);
     json(res, { ok: true });
   },
 
@@ -424,7 +418,7 @@ export const routes: Record<
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     if (!activePtySessions.has(session)) {
-      await tmuxResize(session, clampCols(cols), clampRows(rows));
+      await getBackend().resize(session, clampCols(cols), clampRows(rows));
     }
     json(res, { ok: true });
   },
@@ -441,7 +435,7 @@ export const routes: Record<
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    const pane = await capturePane(session);
+    const pane = await getBackend().capturePane(session);
     json(res, { pane });
   },
 
@@ -451,7 +445,7 @@ export const routes: Record<
     if (!validateProject(res, session)) return;
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    const projectDir = sessionDirMap.get(session);
+    const projectDir = getBackend().sessionDir(session);
     if (!projectDir || !existsSync(projectDir))
       return json(res, { error: "project directory not found" }, 404);
     try {
