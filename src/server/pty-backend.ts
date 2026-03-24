@@ -48,6 +48,7 @@ interface PtySession {
   buffer: RingBuffer;
   cwd: string;
   alive: boolean;
+  dataListeners: Set<(data: Uint8Array) => void>;
 }
 
 export class PtyBackend implements SessionBackend {
@@ -80,6 +81,7 @@ export class PtyBackend implements SessionBackend {
     }
 
     const buffer = new RingBuffer(DEFAULT_BUFFER_CAPACITY);
+    const dataListeners = new Set<(data: Uint8Array) => void>();
 
     const proc = Bun.spawn([SHELL, "-lic", shellCmd], {
       cwd,
@@ -94,6 +96,9 @@ export class PtyBackend implements SessionBackend {
         rows: 40,
         data(_terminal: unknown, data: Uint8Array) {
           buffer.write(data);
+          for (const cb of dataListeners) {
+            try { cb(data); } catch { /* listener error — ignore */ }
+          }
         },
         exit(_terminal: unknown, _code: number, _signal: string | null) {
           const session = sessions.get(name);
@@ -111,7 +116,7 @@ export class PtyBackend implements SessionBackend {
     const sessions = this.sessions;
     const triageCache = this.triageCache;
 
-    const session: PtySession = { proc, buffer, cwd, alive: true };
+    const session: PtySession = { proc, buffer, cwd, alive: true, dataListeners };
     this.sessions.set(name, session);
     log.info("session created", { name, cwd, cmd: agentCmd });
   }
@@ -195,6 +200,36 @@ export class PtyBackend implements SessionBackend {
         this.triageCache.delete(name);
       }
     }
+  }
+
+  // ── WS attachment helpers (used by handlePtyWs for direct terminal I/O) ──
+
+  /** Subscribe to terminal output for a session. Returns unsubscribe function. */
+  onSessionData(name: string, cb: (data: Uint8Array) => void): (() => void) | null {
+    const session = this.sessions.get(name);
+    if (!session || !session.alive) return null;
+    session.dataListeners.add(cb);
+    return () => { session.dataListeners.delete(cb); };
+  }
+
+  /** Write raw input bytes to a session's terminal. */
+  writeToTerminal(name: string, data: Buffer | string): void {
+    const session = this.sessions.get(name);
+    if (!session || !session.alive) return;
+    session.proc.terminal!.write(data);
+  }
+
+  /** Get prefill buffer contents for a session. */
+  getSessionPrefill(name: string): Buffer {
+    const session = this.sessions.get(name);
+    if (!session) return Buffer.alloc(0);
+    return session.buffer.readBuffer();
+  }
+
+  /** Check if a session's process is alive. */
+  isSessionAlive(name: string): boolean {
+    const session = this.sessions.get(name);
+    return !!session && session.alive;
   }
 
   /** Expose internal session state for tests. */
