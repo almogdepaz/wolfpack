@@ -11,6 +11,7 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: "box.tail123.ts.net",
+      backend: undefined,
     });
   });
 
@@ -23,6 +24,7 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: "box.tail123.ts.net",
+      backend: undefined,
     });
   });
 
@@ -34,6 +36,46 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
+      backend: undefined,
+    });
+  });
+
+  test("accepts backend 'pty'", () => {
+    expect(parseConfig({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      backend: "pty",
+    })).toEqual({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      tailscaleHostname: undefined,
+      backend: "pty",
+    });
+  });
+
+  test("accepts backend 'tmux'", () => {
+    expect(parseConfig({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      backend: "tmux",
+    })).toEqual({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      tailscaleHostname: undefined,
+      backend: "tmux",
+    });
+  });
+
+  test("ignores invalid backend values", () => {
+    expect(parseConfig({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      backend: "invalid",
+    })).toEqual({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      tailscaleHostname: undefined,
+      backend: undefined,
     });
   });
 
@@ -67,6 +109,7 @@ describe("loadConfigFromText", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
+      backend: undefined,
     });
   });
 
