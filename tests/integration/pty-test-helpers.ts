@@ -22,16 +22,34 @@ export interface PtyTestContext {
 /**
  * Boot the wolfpack server on a random port for integration tests.
  * Call in beforeAll; call ctx.cleanup() in afterAll.
+ *
+ * Injects a MockBackend as the session backend singleton so that
+ * `isAllowedSession` / `uniqueSessionName` (which go through `getBackend().list()`)
+ * work without real tmux. Legacy `__setTestOverrides` is still called for tmux-layer
+ * overrides that some WS handler code paths still depend on.
  */
 export async function bootTestServer(overrides: {
   tmuxList: () => Promise<string[]>;
-  capturePane: () => Promise<string>;
+  capturePane: (session: string) => Promise<string>;
 }): Promise<PtyTestContext> {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { __setTestOverrides, __getTestState } = await import("../../src/test-hooks.ts");
+  const { __setTestBackend } = await import("../../src/server/backend.ts");
+  const { MockBackend } = await import("../../src/server/mock-backend.ts");
   const { activePtySessions, ptySpawnAttempts } = __getTestState();
+
+  // Inject MockBackend so backend.list() returns the fake sessions
+  const sessions = await overrides.tmuxList();
+  const mock = new MockBackend({
+    sessions,
+    capturePane: overrides.capturePane,
+  });
+  __setTestBackend(mock);
+
+  // Keep legacy tmux overrides for code paths that still go through tmux.ts
   __setTestOverrides(overrides);
+
   const { server } = createServerInstance();
 
   const realConsoleError = console.error;

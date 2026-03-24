@@ -8,3 +8,5 @@
 export { __setTestOverrides, __clearBackfillCache, __getBackfillCacheSize } from "./server/tmux.js";
 export { __getTestState } from "./server/websocket.js";
 export { __resetJwtAuthConfig } from "./auth.js";
+export { __setTestBackend, __resetBackend } from "./server/backend.js";
+export { MockBackend } from "./server/mock-backend.js";

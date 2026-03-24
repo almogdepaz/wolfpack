@@ -63,3 +63,11 @@ export function __resetBackend(): void {
   _backend = null;
   _backendType = DEFAULT_BACKEND;
 }
+
+/** Test-only: inject a custom backend (e.g. MockBackend) as the singleton.
+ *  Optionally override the backend type (defaults to "tmux" for backward compat with existing tests). */
+export function __setTestBackend(backend: SessionBackend, type?: BackendType): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__setTestBackend() is only available in test mode");
+  _backend = backend;
+  _backendType = type ?? "tmux";
+}
