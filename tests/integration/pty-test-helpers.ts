@@ -31,6 +31,7 @@ export interface PtyTestContext {
 export async function bootTestServer(opts: {
   sessions: string[];
   capturePane?: (session: string) => Promise<string>;
+  backendType?: "tmux" | "pty";
 }): Promise<PtyTestContext> {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
@@ -44,7 +45,7 @@ export async function bootTestServer(opts: {
     sessions: opts.sessions,
     capturePane: opts.capturePane,
   });
-  __setTestBackend(mock);
+  __setTestBackend(mock, opts.backendType ?? "tmux");
 
   const { server } = createServerInstance();
 
@@ -142,6 +143,13 @@ export function waitForMessage(ws: WebSocket, type: string, timeoutMs = 3000): P
     ws.addEventListener("message", handler);
     ws.addEventListener("close", () => { cleanup(); reject(new Error(`ws closed before ${type}`)); });
   });
+}
+
+/** Send attach (to set dims) + take_control for pending viewers.
+ * The server requires an attach before take_control to know the terminal dimensions. */
+export function sendTakeControl(ws: WebSocket, cols = 80, rows = 24): void {
+  ws.send(JSON.stringify({ type: "attach", cols, rows }));
+  ws.send(JSON.stringify({ type: "take_control" }));
 }
 
 /** Clean up PTY state for the given session names. */

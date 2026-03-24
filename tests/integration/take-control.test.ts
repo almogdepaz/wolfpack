@@ -17,6 +17,7 @@ import {
   connectPty as _connectPty,
   collectJsonMessages,
   waitForMessage,
+  sendTakeControl,
   type PtyTestContext,
 } from "./pty-test-helpers";
 
@@ -30,6 +31,7 @@ beforeAll(async () => {
   ctx = await bootTestServer({
     sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-take-control\n",
+    backendType: "pty",
   });
 });
 
@@ -52,7 +54,7 @@ async function takeControlFrom(session: string, oldWs: WebSocket): Promise<{ ws:
   const ws = await connectPty(session);
   await waitForMessage(ws, "viewer_conflict");
   const grantedPromise = waitForMessage(ws, "control_granted");
-  ws.send(JSON.stringify({ type: "take_control" }));
+  sendTakeControl(ws);
   await grantedPromise;
   return { ws, closeEvent: oldClose };
 }
@@ -74,7 +76,7 @@ describe("take-control: control_granted", () => {
     await waitForMessage(ws2, "viewer_conflict");
 
     const granted = waitForMessage(ws2, "control_granted");
-    ws2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(ws2);
     const msg = await granted;
     expect(msg.type).toBe("control_granted");
 
@@ -93,7 +95,7 @@ describe("take-control: control_granted", () => {
     let grantedFirst = false;
     const granted = waitForMessage(ws2, "control_granted").then(() => { grantedFirst = true; });
 
-    ws2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(ws2);
     await granted;
     // control_granted is sent synchronously after old viewer close in server code
     expect(grantedFirst).toBe(true);
@@ -148,7 +150,7 @@ describe("take-control: entry promotion", () => {
     const entry = ctx.activePtySessions.get(session)!;
     expect(entry.pendingViewer).toBeTruthy();
 
-    ws2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(ws2);
     await waitForMessage(ws2, "control_granted");
     await wait(50);
 
@@ -334,7 +336,7 @@ describe("take-control: pending viewer cleanup", () => {
     // ws3 takes control from ws1
     const ws1Close = waitForClose(ws1);
     const granted = waitForMessage(ws3, "control_granted");
-    ws3.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(ws3);
     await granted;
 
     const ev1 = await ws1Close;
@@ -410,7 +412,7 @@ describe("take-control: multi-hop chain (A → B → C)", () => {
     // A takes control back
     const wsCClose = waitForClose(wsC);
     const granted = waitForMessage(wsA2, "control_granted");
-    wsA2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsA2);
     await granted;
 
     const evC = await wsCClose;
@@ -556,7 +558,7 @@ describe("take-control: edge cases", () => {
     // ws2 is still open but entry is gone
     // Sending take_control now — server should handle gracefully
     // (the pending cleanup handler may have already fired)
-    ws2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(ws2);
     await wait(200);
 
     // ws2 connection should still be open or cleanly closed — no crash
