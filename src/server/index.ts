@@ -14,7 +14,8 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import pkg from "../../package.json";
 import { validateRequestJwt } from "../auth.js";
-import { cleanupOrphanPtySessions, SHELL } from "./tmux.js";
+import { SHELL } from "./tmux.js";
+import { initBackend, getBackend, type BackendType } from "./backend.js";
 import { routes } from "./routes.js";
 import {
   json,
@@ -206,7 +207,12 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 const { server, wss } = createServerInstance();
 
 export function startServer(port = PORT, host = "127.0.0.1"): void {
-  cleanupOrphanPtySessions();
+  // Initialize session backend from env (set by CLI) or default
+  const backendType = (process.env.WOLFPACK_BACKEND as BackendType) || undefined;
+  initBackend(backendType);
+  log.info("backend initialized", { type: backendType ?? "default" });
+
+  getBackend().cleanupOrphans();
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
