@@ -16,7 +16,6 @@ import { homedir, platform } from "node:os";
 import { isValidPort } from "../validation.js";
 import { print, dim, yellow } from "./formatting.js";
 import type { BackendType } from "../server/backend.js";
-import { DEFAULT_BACKEND } from "../server/backend.js";
 
 const IS_MACOS = platform() === "darwin";
 const IS_LINUX = platform() === "linux";

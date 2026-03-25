@@ -24,7 +24,10 @@ export let DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(homedir(), "Dev");
 
 /** Test-only: override the cached DEV_DIR value. */
-export function __setDevDir(dir: string): void { DEV_DIR = dir; }
+export function __setDevDir(dir: string): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__setDevDir() is only available in test mode");
+  DEV_DIR = dir;
+}
 
 // resolve user's shell — Ubuntu defaults to bash, macOS to zsh
 export const SHELL = (() => {

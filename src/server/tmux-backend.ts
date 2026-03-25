@@ -15,9 +15,6 @@ import {
   exec,
   TMUX,
 } from "./tmux.js";
-import { createLogger, errMsg } from "../log.js";
-
-const log = createLogger("tmux-backend");
 
 export class TmuxBackend implements SessionBackend {
   async list(): Promise<string[]> {

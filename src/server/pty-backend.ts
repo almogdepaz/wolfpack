@@ -7,9 +7,7 @@
  */
 import type { SessionBackend } from "./backend.js";
 import { RingBuffer } from "./ring-buffer.js";
-import { SHELL, injectAgentContext, isUnderDevDir, DEV_DIR } from "./tmux.js";
-import { shellEscape } from "../validation.js";
-import { INTERACTIVE_CONTEXT } from "../wolfpack-context.js";
+import { SHELL, injectAgentContext } from "./tmux.js";
 import { createLogger, errMsg } from "../log.js";
 
 const log = createLogger("pty-backend");
@@ -83,6 +81,10 @@ export class PtyBackend implements SessionBackend {
     const buffer = new RingBuffer(DEFAULT_BUFFER_CAPACITY);
     const dataListeners = new Set<(data: Uint8Array) => void>();
 
+    // Capture references for the exit callback closure (must precede Bun.spawn)
+    const sessions = this.sessions;
+    const triageCache = this.triageCache;
+
     const proc = Bun.spawn([SHELL, "-lic", shellCmd], {
       cwd,
       env: {
@@ -90,6 +92,9 @@ export class PtyBackend implements SessionBackend {
         TERM: "xterm-256color",
         LANG: "en_US.UTF-8",
         WOLFPACK_PROJECT_DIR: cwd,
+        // Strip vars that cause agent confusion (consistent with TmuxBackend's env -u)
+        CLAUDECODE: undefined,
+        CLAUDE_CODE_ENTRYPOINT: undefined,
       },
       terminal: {
         cols: 120,
@@ -111,10 +116,6 @@ export class PtyBackend implements SessionBackend {
         },
       },
     });
-
-    // Capture references for the exit callback closure
-    const sessions = this.sessions;
-    const triageCache = this.triageCache;
 
     const session: PtySession = { proc, buffer, cwd, alive: true, dataListeners };
     this.sessions.set(name, session);
