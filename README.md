@@ -35,7 +35,7 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile & desktop command center for AI coding agents. Control tmux-based sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
+Mobile & desktop command center for AI coding agents. Control agent sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Two session backends: **pty** (lightweight, no dependencies) or **tmux** (persistent, survives restarts). Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
 
 Install on your phone's home screen for a native app experience — scan the QR code after setup and tap **"Add to Home Screen"**.
 
@@ -67,8 +67,8 @@ Install on your phone's home screen for a native app experience — scan the QR 
 │   Phone /   │      │ Tailscale │      │          Your Machine            │
 │   Browser   │◄────►│  (HTTPS)  │◄────►│                                  │
 │   (PWA)     │      │  mesh VPN │      │  ┌──────────┐ ┌──────┐ ┌─────┐  │
-└─────────────┘      └───────────┘      │  │ wolfpack │ │ tmux │ │Agent│  │
-                                        │  │  server  │◄│      │◄│(any)│  │
+└─────────────┘      └───────────┘      │  │ wolfpack │ │pty or│ │Agent│  │
+                                        │  │  server  │◄│ tmux │◄│(any)│  │
                                         │  │ HTTP/WS  │ │      │ │     │  │
                                         │  └──────────┘ └──────┘ └─────┘  │
                                         └──────────────────────────────────┘
@@ -76,7 +76,7 @@ Install on your phone's home screen for a native app experience — scan the QR 
 
 **Components:**
 - **PWA** — single-file vanilla JS app (~90KB), no framework. Mobile-optimized touch UI + desktop ANSI terminal
-- **Server** — Bun HTTP + WebSocket. Serves embedded assets, proxies tmux via `capture-pane`/`send-keys`
+- **Server** — Bun HTTP + WebSocket. Serves embedded assets, manages sessions via pty (default) or tmux backend
 - **Ralph** — detached subprocess that iterates through a markdown plan file, invoking agents per-task
 - **Agents** — Claude, Codex, Gemini, or any shell command. Agent-agnostic by design
 
@@ -104,8 +104,8 @@ Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 
 ### Prerequisites
 
-- **tmux**
-- **Tailscale** — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
+- **Tailscale** *(optional)* — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet. Required for remote access.
+- **tmux** *(optional)* — only needed if you choose the tmux backend. The default **pty** backend has no external dependencies.
 
 ### tmux History
 
@@ -134,17 +134,18 @@ wolfpack uninstall          # Remove everything (service, config, global command
 
 On first run, `wolfpack` walks you through:
 
-1. Checking prerequisites (tmux, Tailscale)
-2. Setting your projects directory (default: `~/Dev`)
-3. Choosing a port (default: `18790`)
-4. Enabling Tailscale HTTPS access
-5. Optionally installing as a login service
-6. Displaying a QR code to scan with your phone
+1. Checking prerequisites (tmux, Tailscale — both optional)
+2. Choosing a session backend (pty or tmux, default: pty)
+3. Setting your projects directory (default: `~/Dev`)
+4. Choosing a port (default: `18790`)
+5. Enabling Tailscale HTTPS access
+6. Optionally installing as a login service
+7. Displaying a QR code to scan with your phone
 
 ## Features
 
 ### Session Management
-- Create, view, and kill tmux agent sessions
+- Create, view, and kill agent sessions (pty or tmux backend)
 - Agent picker — Claude, Codex, Gemini, or custom commands per session
 - Session triage — running, idle, and needs-input states with color-coded indicators
 - Live terminal output preview on session cards
@@ -204,6 +205,7 @@ Stored in `~/.wolfpack/config.json`:
 {
   "devDir": "/Users/you/Dev",
   "port": 18790,
+  "backend": "pty",
   "tailscaleHostname": "your-machine.tailnet-name.ts.net"
 }
 ```
