@@ -20,8 +20,11 @@ export const TMUX = "tmux";
 export const MOBILE_CAPTURE_HISTORY_LINES = 2000;
 export const DESKTOP_PREFILL_HISTORY_LINES = 5000;
 
-export const DEV_DIR =
+export let DEV_DIR =
   process.env.WOLFPACK_DEV_DIR || join(homedir(), "Dev");
+
+/** Test-only: override the cached DEV_DIR value. */
+export function __setDevDir(dir: string): void { DEV_DIR = dir; }
 
 // resolve user's shell — Ubuntu defaults to bash, macOS to zsh
 export const SHELL = (() => {
