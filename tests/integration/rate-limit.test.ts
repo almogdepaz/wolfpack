@@ -6,16 +6,20 @@ process.env.WOLFPACK_TEST = "1";
 // Disable JWT so we can hit API endpoints without auth tokens
 delete process.env.WOLFPACK_JWT_SECRET;
 
-const { __resetJwtAuthConfig, __setTestOverrides } = await import("../../src/test-hooks.ts");
+const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
 
+__setTestBackend(new MockBackend({ sessions: ["rate-test"] }));
+
 const {
-  server,
+  createServerInstance,
   __pollRateLimiter,
   __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
 
-__setTestOverrides({ tmuxList: async () => ["rate-test"] });
+const { server } = createServerInstance();
 
 let port = 0;
 let baseUrl = "";
