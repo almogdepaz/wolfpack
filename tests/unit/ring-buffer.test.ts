@@ -99,4 +99,64 @@ describe("RingBuffer", () => {
     // Buffer holds last 4 chars: "6789"
     expect(rb.read()).toBe("6789");
   });
+
+  // ── ANSI / terminal escape handling ──
+
+  test("preserves ANSI color codes", () => {
+    const rb = new RingBuffer(256);
+    const colored = "\x1b[31mred\x1b[0m normal \x1b[32mgreen\x1b[0m";
+    rb.write(Buffer.from(colored));
+    expect(rb.read()).toBe(colored);
+  });
+
+  test("ANSI sequences survive wrap boundary", () => {
+    // Buffer capacity 16, fill 14 bytes then write ANSI that straddles wrap
+    const rb = new RingBuffer(16);
+    rb.write(Buffer.from("A".repeat(14)));   // 14 bytes, head at 14
+    const ansi = "\x1b[1;33mHI\x1b[0m";     // 13 bytes — wraps around
+    rb.write(Buffer.from(ansi));
+    const result = rb.read();
+    // Should contain the full ANSI sequence (last 16 bytes of total 27)
+    expect(result).toContain("HI");
+    expect(result).toContain("\x1b[0m");
+    expect(rb.size).toBe(16);
+  });
+
+  test("handles multi-byte UTF-8 with ANSI", () => {
+    const rb = new RingBuffer(128);
+    const mixed = "\x1b[36m日本語\x1b[0m";
+    rb.write(Buffer.from(mixed));
+    expect(rb.read()).toBe(mixed);
+  });
+
+  test("cursor movement sequences preserved", () => {
+    const rb = new RingBuffer(64);
+    const cursor = "\x1b[2J\x1b[H$ prompt\r\n\x1b[K";
+    rb.write(Buffer.from(cursor));
+    expect(rb.read()).toBe(cursor);
+  });
+
+  // ── Line extraction from buffer ──
+
+  test("line extraction: split on newlines", () => {
+    const rb = new RingBuffer(128);
+    rb.write(Buffer.from("line1\nline2\nline3\n"));
+    const lines = rb.read().split("\n");
+    expect(lines).toEqual(["line1", "line2", "line3", ""]);
+  });
+
+  test("line extraction after overflow preserves line integrity", () => {
+    const rb = new RingBuffer(20);
+    rb.write(Buffer.from("first line\nsecond line\nthird line\n"));
+    const content = rb.read();
+    // Last 20 bytes of "first line\nsecond line\nthird line\n" = "ond line\nthird line\n"
+    expect(content).toContain("third line");
+    expect(content).toContain("\n");
+  });
+
+  test("handles \\r\\n line endings", () => {
+    const rb = new RingBuffer(64);
+    rb.write(Buffer.from("line1\r\nline2\r\nline3\r\n"));
+    expect(rb.read()).toBe("line1\r\nline2\r\nline3\r\n");
+  });
 });
