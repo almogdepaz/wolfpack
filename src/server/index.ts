@@ -6,7 +6,10 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { createServer as createNetServer, type Socket } from "node:net";
 import { WebSocketServer } from "ws";
+import { ensureSelfSignedCert } from "../tls.js";
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -56,6 +59,8 @@ try {
 const ALLOWED_ORIGINS = new Set<string>([
   `http://localhost:${PORT}`,
   `http://127.0.0.1:${PORT}`,
+  `https://localhost:${PORT}`,
+  `https://127.0.0.1:${PORT}`,
 ]);
 
 // Extract tailnet suffix from config
@@ -74,7 +79,7 @@ if (!TAILNET_SUFFIX) {
 }
 
 function isAllowedOrigin(origin: string): boolean {
-  if (process.env.WOLFPACK_TEST && origin.startsWith("http://127.0.0.1:")) return true;
+  if (process.env.WOLFPACK_TEST && (origin.startsWith("http://127.0.0.1:") || origin.startsWith("https://127.0.0.1:"))) return true;
   if (ALLOWED_ORIGINS.has(origin)) return true;
   if (TAILNET_SUFFIX) {
     try {
@@ -206,24 +211,67 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 // Module-level singleton for production
 const { server, wss } = createServerInstance();
 
-export function startServer(port = PORT, host = "127.0.0.1"): void {
-  cleanupOrphanPtySessions();
-
-  server.on("error", (err: NodeJS.ErrnoException) => {
+function onStartupError(port: number) {
+  return (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
       log.error("port already in use", { port, hint: "run 'wolfpack service stop' first" });
       process.exit(1);
     }
     log.error("server error", { error: err.message });
     process.exit(1);
-  });
+  };
+}
 
-  server.listen(port, host, () => {
-    log.info("server started", { url: `http://localhost:${port}/` });
+function onListening(port: number, https: boolean) {
+  return () => {
+    const proto = https ? "https" : "http";
+    log.info("server started", { url: `${proto}://localhost:${port}/`, https });
     discoverPeers().then(() => {
       if (cachedPeers.length) log.info("discovered peers", { count: cachedPeers.length, peers: cachedPeers.map(p => p.name) });
     }).catch((e: unknown) => { log.warn("peer discovery failed at startup", { error: e instanceof Error ? e.message : String(e) }); });
-  });
+  };
+}
+
+export function startServer(port = PORT, host = "127.0.0.1"): void {
+  cleanupOrphanPtySessions();
+
+  const tlsCreds = ensureSelfSignedCert();
+
+  if (tlsCreds) {
+    // HTTPS server sharing the HTTP server's request handler
+    const requestHandler = server.listeners("request")[0] as
+      (req: IncomingMessage, res: ServerResponse) => void;
+    const httpsServer = createHttpsServer(
+      { cert: tlsCreds.cert, key: tlsCreds.key },
+      requestHandler,
+    );
+
+    // Forward WebSocket upgrades from HTTPS → existing upgrade handler
+    httpsServer.on("upgrade", (...args: Parameters<typeof server.listeners>) => {
+      server.emit("upgrade", ...args);
+    });
+
+    // Dual-protocol TCP wrapper: peek first byte to route HTTP vs TLS
+    const netServer = createNetServer((socket: Socket) => {
+      socket.once("data", (buf: Buffer) => {
+        socket.pause();
+        socket.unshift(buf);
+        const target = buf[0] === 0x16 ? httpsServer : server;
+        target.emit("connection", socket);
+        socket.resume();
+      });
+      socket.on("error", (err) => {
+        log.debug("socket error during protocol sniff", { error: err.message });
+      });
+    });
+
+    netServer.on("error", onStartupError(port));
+    netServer.listen(port, host, onListening(port, true));
+  } else {
+    // Fallback: HTTP-only
+    server.on("error", onStartupError(port));
+    server.listen(port, host, onListening(port, false));
+  }
 }
 
 export { server, wss };

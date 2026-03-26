@@ -173,29 +173,43 @@ export async function setup() {
     print("");
   }
 
-  // Dev directory
+  // Dev directory — retry loop so typos don't force a restart
   const defaultDev = resolve(homedir(), "Dev");
-  const rawDevDir = ask(`  Projects directory [${defaultDev}]: `) || defaultDev;
-  const devDir = resolve(rawDevDir);
-
   const SYSTEM_PREFIXES = ["/etc", "/var", "/usr", "/bin", "/sbin", "/sys", "/proc"];
-  if (SYSTEM_PREFIXES.some(p => devDir === p || devDir.startsWith(p + "/"))) {
-    print(red(`  Refusing to use system directory: ${devDir}`));
-    process.exit(1);
-  }
-  if (!devDir.startsWith(homedir())) {
-    print(yellow(`  Warning: projects directory is outside your home folder.`));
-  }
+  const MAX_DIR_ATTEMPTS = 5;
+  let devDir = "";
 
-  if (!existsSync(devDir)) {
-    const create = ask(`  ${devDir} doesn't exist. Create it? (y/n) `);
-    if (create.toLowerCase() === "y") {
+  for (let attempt = 0; attempt < MAX_DIR_ATTEMPTS; attempt++) {
+    const rawDevDir = ask(`  Projects directory [${defaultDev}]: `) || defaultDev;
+    devDir = resolve(rawDevDir);
+
+    if (SYSTEM_PREFIXES.some(p => devDir === p || devDir.startsWith(p + "/"))) {
+      print(red(`  Refusing to use system directory: ${devDir}`));
+      continue;
+    }
+    if (!devDir.startsWith(homedir())) {
+      print(yellow(`  Warning: projects directory is outside your home folder.`));
+    }
+
+    if (existsSync(devDir)) break;
+
+    const choice = ask(`  ${devDir} doesn't exist. (c)reate it, (n)ew path, or (q)uit? `).toLowerCase();
+    if (choice === "c") {
       mkdirSync(devDir, { recursive: true });
       print(green(`  Created ${devDir}`));
-    } else {
+      break;
+    } else if (choice === "n") {
+      continue;
+    } else if (choice === "q") {
       print(red("  Aborted."));
       process.exit(1);
     }
+    // retry — loop again
+  }
+
+  if (!devDir || !existsSync(devDir)) {
+    print(red("  No valid directory selected. Aborting."));
+    process.exit(1);
   }
 
   // Port
