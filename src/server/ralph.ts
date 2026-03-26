@@ -36,12 +36,14 @@ export interface RalphStatus {
   tasksTotal: number;
   worktreeMode: string;
   worktreeBranch: string;
+  sandbox: string;
 }
 
 export function listDevProjects(): string[] {
   try {
     return readdirSync(DEV_DIR)
       .filter((f) => {
+        if (f.startsWith(".")) return false;
         try {
           return statSync(join(DEV_DIR, f)).isDirectory();
         } catch { /* race: entry removed between readdir and stat */
@@ -104,6 +106,7 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
     tasksTotal: 0,
     worktreeMode: "false",
     worktreeBranch: "",
+    sandbox: "",
   };
 
   try {
@@ -124,6 +127,8 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
       if (auditFixMatch) status.auditFixEnabled = auditFixMatch[1] === "on";
       const wtMatch = line.match(/^worktree:\s*(.+)/);
       if (wtMatch) status.worktreeMode = wtMatch[1].trim();
+      const sandboxMatch = line.match(/^sandbox:\s*(.+)/);
+      if (sandboxMatch) status.sandbox = sandboxMatch[1].trim();
       const startMatch = line.match(/^started:\s*(.+)/);
       if (startMatch) status.started = startMatch[1].trim();
       const pidMatch = line.match(/^pid:\s*(\d+)/);
@@ -179,7 +184,7 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
         !l.startsWith("progress:") && !l.startsWith("started:") &&
         !l.startsWith("finished:") && !l.startsWith("pid:") &&
         !l.startsWith("agent:") && !l.startsWith("phase_cleanup:") &&
-        !l.startsWith("phase_audit_fix:") && !l.startsWith("🥋"),
+        !l.startsWith("phase_audit_fix:") && !l.startsWith("sandbox:") && !l.startsWith("🥋"),
     );
     status.lastOutput = meaningful.slice(-5).join("\n");
 

@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-
-// shellEscape is not exported from serve.ts, so we re-implement here
-// (same pattern as esc/escAttr in escaping.test.ts)
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
+import { shellEscape } from "../../src/validation";
 
 describe("shellEscape", () => {
   test("passes through clean string", () => {

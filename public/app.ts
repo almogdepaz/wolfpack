@@ -1082,8 +1082,6 @@ function createPtyTerminalController(opts) {
 }
 
 
-var encodeTerminalBinary = WP.encodeTerminalBinary;
-
 const KEY_TO_ESCAPE = {
   Enter: "\r", Tab: "\t", Escape: "\x1b",
   Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D",
@@ -2383,9 +2381,6 @@ async function killSession(name, e, machineUrl) {
 }
 
 // ── Session drawer ──
-let drawerDragY = 0;
-let drawerDragStartY = 0;
-let drawerDragging = false;
 
 function renderDrawerList() {
   const groups = state.lastSessionGroups;

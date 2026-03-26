@@ -1,6 +1,9 @@
+process.env.WOLFPACK_TEST = "1";
+process.env.WOLFPACK_DEV_DIR = process.env.WOLFPACK_DEV_DIR || "/tmp/test-dev";
 import { describe, expect, test } from "bun:test";
 import * as configModule from "../../src/cli/config.js";
-import { sessionDirMap, tmuxNewSession } from "../../src/server/tmux.js";
+import { sessionDirMap, tmuxNewSession, __setTestOverrides } from "../../src/server/tmux.js";
+import { uniqueSessionName } from "../../src/server/http.js";
 
 describe("tmuxNewSession map update safety", () => {
   test("does not cache session dir when tmux session creation fails", async () => {
@@ -14,6 +17,35 @@ describe("tmuxNewSession map update safety", () => {
     ).rejects.toThrow();
 
     expect(sessionDirMap.has(sessionName)).toBe(false);
+  });
+});
+
+describe("uniqueSessionName dot normalization", () => {
+  const DEV = process.env.WOLFPACK_DEV_DIR!;
+
+  function mockSessions(names: string[]) {
+    // Use listSessionsRaw so _tmuxListFn stays as _realTmuxList (no cross-test pollution)
+    const raw = names.map(n => `${n}|||${DEV}/${n}`).join("\n");
+    __setTestOverrides({
+      listSessionsRaw: async () => raw,
+      showEnvironment: async () => "",
+    });
+    sessionDirMap.clear();
+  }
+
+  test("replaces dots with underscores to match tmux behavior", async () => {
+    mockSessions([]);
+    expect(await uniqueSessionName("my.project")).toBe("my_project");
+  });
+
+  test("deduplicates after dot normalization", async () => {
+    mockSessions(["my_project"]);
+    expect(await uniqueSessionName("my.project")).toBe("my_project-2");
+  });
+
+  test("multiple dots are all replaced", async () => {
+    mockSessions([]);
+    expect(await uniqueSessionName("a.b.c")).toBe("a_b_c");
   });
 });
 

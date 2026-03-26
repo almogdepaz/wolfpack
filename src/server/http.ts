@@ -64,6 +64,9 @@ export function createPerIpRateLimiter(rate: number, evictIntervalMs = 60_000) {
 // ── Session helpers ──
 
 export async function uniqueSessionName(base: string): Promise<string> {
+  // tmux silently replaces dots with underscores in session names — do it upfront
+  // so the name we return matches what tmux actually creates
+  base = base.replace(/\./g, "_");
   const sessions = await getBackend().list();
   if (!sessions.includes(base)) return base;
   let i = 2;

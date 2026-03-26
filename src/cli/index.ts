@@ -142,6 +142,7 @@ async function main() {
     else if (subcmd === "status") serviceStatus();
     else {
       print("  Usage: wolfpack service [install|uninstall|start|stop|status]");
+      process.exit(1);
     }
   } else if (cmd === "uninstall") {
     uninstall();

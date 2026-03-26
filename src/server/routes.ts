@@ -36,7 +36,7 @@ import { assets } from "../public-assets.js";
 import { isInputPrompt, isJunkLine, type TriageStatus } from "../triage.js";
 import pkg from "../../package.json";
 
-const log = createLogger("http");
+const log = createLogger("routes");
 import {
   DEV_DIR,
   RALPH_AGENTS,
@@ -173,11 +173,6 @@ const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
-const TRIAGE_PRIORITY: Record<TriageStatus, number> = {
-  "needs-input": 0,
-  "running": 1,
-  "idle": 2,
-};
 
 const AGENT_PRESETS: Record<string, string> = {
   shell: "shell",
@@ -290,7 +285,11 @@ export const routes: Record<
         return { name, lastLine, triage };
       }),
     );
-    results.sort((a, b) => TRIAGE_PRIORITY[a.triage] - TRIAGE_PRIORITY[b.triage]);
+    results.sort((a, b) => a.name.localeCompare(b.name));
+    // prune prevPaneContent for sessions that no longer exist
+    for (const key of prevPaneContent.keys()) {
+      if (!activeNames.has(key)) prevPaneContent.delete(key);
+    }
     json(res, { sessions: results });
   },
 
@@ -593,9 +592,10 @@ export const routes: Record<
       worktree?: false | "plan" | "task";
       worktreeBranch?: string;
       worktreeBase?: string;
+      sandbox?: boolean;
     }>(req, res);
     if (!body) return;
-    const { project, iterations, planFile, agent, newBranch, sourceBranch, format, cleanup, auditFix, worktree, worktreeBranch, worktreeBase } = body;
+    const { project, iterations, planFile, agent, newBranch, sourceBranch, format, cleanup, auditFix, worktree, worktreeBranch, worktreeBase, sandbox } = body;
     const projectDir = resolveProjectDir(res, project);
     if (!projectDir) return;
     const existing = parseRalphLog(projectDir);
@@ -647,40 +647,34 @@ export const routes: Record<
       }
     };
 
+    let spawned = false;
+    try {
     const iters = Math.max(1, Math.min(500, iterations ?? 5));
     const resolvedPlan = planFile || "PLAN.md";
     if (!isValidPlanFile(resolvedPlan)) {
-      removeLock();
       return json(res, { error: "invalid plan file name" }, 400);
     }
     if (cleanup != null && typeof cleanup !== "boolean") {
-      removeLock();
       return json(res, { error: "invalid cleanup flag" }, 400);
     }
     if (auditFix != null && typeof auditFix !== "boolean") {
-      removeLock();
       return json(res, { error: "invalid auditFix flag" }, 400);
     }
     const VALID_WORKTREE_MODES = [false, "false", "plan", "task"];
     if (worktree != null && !VALID_WORKTREE_MODES.includes(worktree as any)) {
-      removeLock();
       return json(res, { error: "invalid worktree mode — must be false, \"plan\", or \"task\"" }, 400);
     }
     const worktreeMode = (worktree === "plan" || worktree === "task") ? worktree : "false";
     if (worktreeBranch != null && typeof worktreeBranch !== "string") {
-      removeLock();
       return json(res, { error: "invalid worktreeBranch" }, 400);
     }
     if (worktreeBranch && !BRANCH_REGEX.test(worktreeBranch)) {
-      removeLock();
       return json(res, { error: "invalid worktree branch name" }, 400);
     }
     if (worktreeBase != null && typeof worktreeBase !== "string") {
-      removeLock();
       return json(res, { error: "invalid worktreeBase" }, 400);
     }
     if (worktreeBase && !BRANCH_REGEX.test(worktreeBase)) {
-      removeLock();
       return json(res, { error: "invalid worktree base branch name" }, 400);
     }
     const cleanupEnabled = cleanup ?? true;
@@ -688,12 +682,10 @@ export const routes: Record<
 
     if (newBranch) {
       if (!BRANCH_REGEX.test(newBranch)) {
-        removeLock();
         return json(res, { error: "invalid branch name" }, 400);
       }
       const source = sourceBranch || "main";
       if (!BRANCH_REGEX.test(source)) {
-        removeLock();
         return json(res, { error: "invalid source branch name" }, 400);
       }
       try {
@@ -707,7 +699,6 @@ export const routes: Record<
             cwd: projectDir, encoding: "utf-8", timeout: 5000,
           });
         } catch { /* local ref also not found — report fetch failure to user */
-          removeLock();
           return json(res, { error: `failed to fetch source branch '${source}': ${stderr}` }, 400);
         }
       }
@@ -717,13 +708,11 @@ export const routes: Record<
         });
       } catch (e: any) {
         const stderr = e.stderr || e.message || "branch creation failed";
-        removeLock();
         return json(res, { error: stderr }, 400);
       }
     }
 
     if (!existsSync(join(projectDir, resolvedPlan))) {
-      removeLock();
       return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
     }
 
@@ -744,6 +733,7 @@ export const routes: Record<
       "--worktree", worktreeMode,
       ...(worktreeBranch ? ["--worktree-branch", worktreeBranch] : []),
       ...(worktreeBase ? ["--worktree-base", worktreeBase] : []),
+      "--sandbox", String(sandbox !== false),
     ];
     const child = spawn(RALPH_BIN_ARGS[0], workerArgs, {
       cwd: projectDir,
@@ -751,6 +741,7 @@ export const routes: Record<
       stdio: "ignore",
     });
     child.unref();
+    spawned = true;
 
     try { writeFileSync(lockPath, String(child.pid ?? 0)); } catch (e: unknown) {
       log.error("ralph start: failed to write lock file", { error: errMsg(e) });
@@ -762,6 +753,9 @@ export const routes: Record<
       branch: newBranch || undefined,
       worktree: worktreeMode !== "false" ? worktreeMode : undefined,
     });
+    } finally {
+      if (!spawned) removeLock();
+    }
   },
 
   "GET /api/ralph/task-count": async (req, res) => {

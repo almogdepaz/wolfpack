@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { realpathSync, existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { createLogger, errMsg } from "./log.js";
 
-const log = createLogger("service");
+const log = createLogger("worktree");
 
 const WORKTREE_DIR = ".wolfpack/worktrees";
 const WORKTREE_ORDER_FILE = ".wolfpack/worktree-order.txt";
@@ -50,7 +50,7 @@ export function createWorktree(
   const worktreePath = join(realProjectDir, WORKTREE_DIR, slug);
   execFileSync(
     "git",
-    ["worktree", "add", worktreePath, "-b", branchName, baseBranch],
+    ["worktree", "add", worktreePath, "-b", branchName, "--", baseBranch],
     { cwd: realProjectDir, stdio: "pipe" },
   );
   // Track creation order so cleanup can reliably identify the final worktree
@@ -165,8 +165,12 @@ export function cleanupAllExceptFinal(
 
   const removed: string[] = [];
   for (const wt of toRemove) {
-    removeWorktree(wt.path, realProjectDir);
-    removed.push(wt.branch);
+    try {
+      removeWorktree(wt.path, realProjectDir);
+      removed.push(wt.branch);
+    } catch (e: unknown) {
+      log.warn("failed to remove worktree, continuing cleanup", { path: wt.path, branch: wt.branch, error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   // Prune stale worktree refs and clean up order file

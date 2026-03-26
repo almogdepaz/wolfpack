@@ -29,6 +29,7 @@ import {
 } from "./http.js";
 import { handlePtyWs, handleTerminalWs } from "./websocket.js";
 import { createLogger } from "../log.js";
+import { isValidSessionName } from "../validation.js";
 
 const log = createLogger("server");
 
@@ -186,7 +187,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     const session = url.searchParams.get("session");
-    if (!session || !(await isAllowedSession(session))) {
+    if (!session || !isValidSessionName(session) || !(await isAllowedSession(session))) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
       return;

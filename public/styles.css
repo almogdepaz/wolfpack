@@ -480,6 +480,7 @@ body.no-animations, body.no-animations * {
 body.classic-mobile #terminal { display: block; }
 body.classic-mobile #desktop-terminal-container { display: none !important; }
 body.classic-mobile #mobile-kb-proxy { display: none !important; }
+body.classic-mobile .kb-open { display: none !important; }
 
 body.term-size-small #terminal { font-size: 12px !important; line-height: 1.35 !important; }
 body.term-size-medium #terminal { font-size: 13px !important; line-height: 1.45 !important; }
@@ -1377,6 +1378,7 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
   flex: 1;
   min-height: 0;
   margin: 0;
+  padding: 4px;
   background: var(--bg-base);
   overflow: hidden;
 }
@@ -1427,7 +1429,6 @@ body.mobile-no-ghost-focus #desktop-terminal-container textarea {
 }
 #desktop-terminal-container canvas {
   height: 100%;
-  padding: 4px;
   background: #0a0a0a;
   max-width: 100%;
   opacity: 0;

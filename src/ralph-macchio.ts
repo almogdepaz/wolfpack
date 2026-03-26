@@ -18,7 +18,7 @@ import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync, co
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { RALPH_AGENT_CONTEXT, TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
-import { expandBudget, resolveCleanupDiffBase } from "./validation.js";
+import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
 import { buildCleanupPrompt } from "./ralph-skill-cleanup.js";
 import { createWorktree, cleanupAllExceptFinal, removeWorktree, listWorktrees, slugifyTaskName } from "./worktree.js";
@@ -37,6 +37,7 @@ const { values: args } = parseArgs({
     worktree: { type: "string", default: "false" },
     "worktree-branch": { type: "string" },
     "worktree-base": { type: "string" },
+    sandbox: { type: "string", default: "true" },
   },
 });
 
@@ -50,6 +51,7 @@ const AUDIT_FIX_ENABLED = args["audit-fix"] === "true";
 const WORKTREE_MODE = (args.worktree === "plan" || args.worktree === "task") ? args.worktree : "false" as const;
 const WORKTREE_BRANCH = args["worktree-branch"] || undefined;
 const WORKTREE_BASE = args["worktree-base"] || undefined;
+const SANDBOX_ENABLED = args.sandbox !== "false";
 const PROJECT_DIR = process.cwd();
 
 /**
@@ -115,6 +117,28 @@ function resolveBin(name: string): string {
     // `where` on windows can return multiple lines, take the first
     return result.split("\n")[0].trim();
   } catch { return name; }
+}
+
+// ── Sandbox (srt) support ──
+
+const SRT_BIN = SANDBOX_ENABLED ? resolveBin("srt") : "";
+const SRT_AVAILABLE = SANDBOX_ENABLED && SRT_BIN !== "srt"; // resolveBin returns the bare name if not found
+
+/** Path to the per-run srt settings file (cleaned up on exit). */
+const SRT_SETTINGS_PATH = join(PROJECT_DIR, ".ralph-srt-settings.json");
+
+/** Write srt settings file and return the path. */
+function writeSrtSettings(allowedWriteDir: string): string {
+  const settings = buildSrtSettings(allowedWriteDir);
+  writeFileSync(SRT_SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  return SRT_SETTINGS_PATH;
+}
+
+/** Remove the srt settings file. */
+function cleanupSrtSettings(): void {
+  try { unlinkSync(SRT_SETTINGS_PATH); } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") console.warn("failed to clean up srt settings:", errMsg(e));
+  }
 }
 
 interface AgentConfig {
@@ -367,9 +391,16 @@ appendFileSync(LOG_FILE, `progress: ${PROGRESS_FILE}\n`);
 appendFileSync(LOG_FILE, `phase_cleanup: ${CLEANUP_ENABLED ? "on" : "off"}\n`);
 appendFileSync(LOG_FILE, `phase_audit_fix: ${AUDIT_FIX_ENABLED ? "on" : "off"}\n`);
 appendFileSync(LOG_FILE, `worktree: ${WORKTREE_MODE}\n`);
+appendFileSync(LOG_FILE, `sandbox: ${SRT_AVAILABLE ? "srt" : SANDBOX_ENABLED ? "srt-not-found" : "off"}\n`);
 appendFileSync(LOG_FILE, `pid: ${process.pid}\n`);
 appendFileSync(LOG_FILE, `bin: ${agent.bin}\n`);
 appendFileSync(LOG_FILE, `started: ${new Date().toString()}\n\n`);
+
+if (SANDBOX_ENABLED && !SRT_AVAILABLE) {
+  const msg = "⚠️  sandbox requested but srt not found — install with: npm i -g @anthropic-ai/sandbox-runtime";
+  appendFileSync(LOG_FILE, `${msg}\n\n`);
+  console.warn(msg);
+}
 
 // capture starting commit for summary diff
 let START_COMMIT = "";
@@ -452,11 +483,31 @@ const ITERATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes per iteration
 
 // track active child for signal handling
 let activeChild: ReturnType<typeof nodeSpawn> | null = null;
+let stopping = false;
 
 function runIteration(prompt: string): Promise<{ exitCode: number; output: string }> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
-    const child = nodeSpawn(agent.bin, agent.args(prompt), {
+
+    // Wrap with srt sandbox if available
+    let spawnBin: string;
+    let spawnArgs: string[];
+    if (SRT_AVAILABLE) {
+      writeSrtSettings(workingDir);
+      // srt joins positional args with spaces then runs via `bash -c`, so args
+      // containing shell metacharacters (e.g. parentheses in --allowedTools)
+      // must be passed through `-c` with proper quoting.
+      const innerCmd = [agent.bin, ...agent.args(prompt)]
+        .map(a => shellEscape(a))
+        .join(" ");
+      spawnBin = SRT_BIN;
+      spawnArgs = ["--settings", SRT_SETTINGS_PATH, "-c", innerCmd];
+    } else {
+      spawnBin = agent.bin;
+      spawnArgs = agent.args(prompt);
+    }
+
+    const child = nodeSpawn(spawnBin, spawnArgs, {
       cwd: workingDir,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -464,7 +515,7 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
 
     const timeout = setTimeout(() => {
       appendFileSync(LOG_FILE, `\n=== ⚠️  Iteration timed out after ${ITERATION_TIMEOUT_MS / 60000}min — killing agent ===\n`);
-      if (child.pid) killProcessTree(child.pid);
+      if (child.pid) killProcessTree(child.pid).catch((e) => { appendFileSync(LOG_FILE, `kill error: ${errMsg(e)}\n`); });
     }, ITERATION_TIMEOUT_MS);
 
     child.stdout?.on("data", (d: Buffer) => {
@@ -491,11 +542,12 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
   });
 }
 
-// last-resort lock cleanup on any exit (covers unhandled exceptions, SIGINT, etc.)
-process.on("exit", removeLock);
+// last-resort lock + srt settings cleanup on any exit (covers unhandled exceptions, SIGINT, etc.)
+process.on("exit", () => { removeLock(); cleanupSrtSettings(); });
 
 // clean up child process, worktrees, and lock on SIGTERM
 process.on("SIGTERM", () => {
+  stopping = true;
   appendFileSync(LOG_FILE, `\n=== 🛑 Received SIGTERM — cleaning up ===\n`);
   if (activeChild?.pid) {
     killProcessTreeSync(activeChild.pid);
@@ -514,6 +566,7 @@ process.on("SIGTERM", () => {
   syncPlanToProject();
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
   removeLock();
+  cleanupSrtSettings();
   setTimeout(() => process.exit(0), 3500);
 });
 
@@ -605,7 +658,7 @@ function syncPlanToProject(): void {
 /** Merge a task sub-worktree branch into mainWorkDir. Returns true on success. */
 function mergeTaskBranch(taskBranch: string): boolean {
   try {
-    execFileSync("git", ["merge", taskBranch, "-m", `ralph: merge ${taskBranch}`], {
+    execFileSync("git", ["merge", "-m", `ralph: merge ${taskBranch}`, taskBranch], {
       cwd: mainWorkDir,
       stdio: "pipe",
     });
@@ -666,7 +719,7 @@ function createMainWorktree(): void {
     execFileSync("git", ["rev-parse", "--verify", branchName], { cwd: PROJECT_DIR, stdio: "pipe" });
     // Branch exists without a worktree — delete it so createWorktree can start clean
     appendFileSync(LOG_FILE, `deleting orphan branch ${branchName} from previous run\n`);
-    execFileSync("git", ["branch", "-D", branchName], { cwd: PROJECT_DIR, stdio: "pipe" });
+    execFileSync("git", ["branch", "-D", "--", branchName], { cwd: PROJECT_DIR, stdio: "pipe" });
   } catch { /* branch doesn't exist — good */ }
 
   try {
@@ -743,7 +796,7 @@ async function main() {
       try { removeWorktree(orphan.path, PROJECT_DIR); } catch (e: unknown) {
         appendFileSync(LOG_FILE, `warning: failed to remove orphan worktree ${orphan.path}: ${errMsg(e)}\n`);
       }
-      try { execFileSync("git", ["branch", "-D", orphan.branch], { cwd: PROJECT_DIR, stdio: "pipe" }); } catch (e: unknown) {
+      try { execFileSync("git", ["branch", "-D", "--", orphan.branch], { cwd: PROJECT_DIR, stdio: "pipe" }); } catch (e: unknown) {
         appendFileSync(LOG_FILE, `warning: failed to delete orphan branch ${orphan.branch}: ${errMsg(e)}\n`);
       }
     }
@@ -763,6 +816,7 @@ async function main() {
   let lastWasSubtaskEmission = false;
 
   for (let i = 1; i <= maxIterations; i++) {
+    if (stopping) break;
     // extract current task from plan
     const result = extractCurrentTask();
     if (!result) {
@@ -1042,7 +1096,7 @@ async function runFinalPhases(): Promise<void> {
 main().then(() => {
   removeLock();
 }).catch((err) => {
-  appendFileSync(LOG_FILE, `\nFATAL: ${err.message}\n`);
+  appendFileSync(LOG_FILE, `\nFATAL: ${errMsg(err)}\n`);
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
   removeLock();
   process.exit(1);
