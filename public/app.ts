@@ -825,15 +825,26 @@ function createPtyTerminalController(opts) {
    *  Uses clear() instead of reset() to avoid a 1-frame blank flash —
    *  clear() preserves the visible viewport while wiping scrollback.
    *  Buffers writes because ghostty-web WASM crashes with "memory access
-   *  out of bounds" if write() follows clear() in the same tick. */
+   *  out of bounds" if write() follows clear() in the same tick.
+   *  Hide canvas during the gap so stale viewport from an earlier point
+   *  in the conversation doesn't flash for one frame on reconnect. */
   function _scheduleBufferedClear() {
     if (!_postResetBuffer) _postResetBuffer = [];
+    // Hide canvas before clear — visibility:hidden prevents the compositor
+    // from painting the stale viewport that clear() preserves.
+    const canvas = _container ? _container.querySelector('canvas') : null;
+    if (canvas) canvas.style.visibility = 'hidden';
     _term.clear();
     requestAnimationFrame(() => {
-      if (!_term || !_postResetBuffer) return;
+      if (!_term || !_postResetBuffer) {
+        if (canvas) canvas.style.visibility = '';
+        return;
+      }
       const buf = _postResetBuffer;
       _postResetBuffer = null;
       for (const chunk of buf) _writeTermData(chunk);
+      // Restore — fresh data is now in the buffer, safe to show.
+      if (canvas) canvas.style.visibility = '';
     });
   }
 

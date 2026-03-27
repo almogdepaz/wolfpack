@@ -24,3 +24,4 @@ tests/e2e/test-results/
 playwright-report/
 PLAN*.md
 .wolfpack/
+public/.DS_Store
