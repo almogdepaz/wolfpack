@@ -12,6 +12,18 @@ import { createLogger, errMsg } from "../log.js";
 
 const log = createLogger("pty-backend");
 
+/**
+ * Strip ANSI/VT escape sequences from raw PTY output.
+ * Used by capturePane so the classic mobile terminal and triage code
+ * receive plain text, matching what tmux capture-pane would return.
+ */
+function stripAnsi(s: string): string {
+  return s
+    .replace(/\x1b(?:[@-Z\\-_]|\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
 /** Default ring buffer capacity per session — 512 KB covers ~5000 lines of output. */
 const DEFAULT_BUFFER_CAPACITY = 512 * 1024;
 
@@ -143,7 +155,7 @@ export class PtyBackend implements SessionBackend {
   async capturePane(name: string): Promise<string> {
     const session = this.sessions.get(name);
     if (!session) return "";
-    return session.buffer.read();
+    return stripAnsi(session.buffer.read());
   }
 
   async capturePaneForTriage(name: string): Promise<string> {

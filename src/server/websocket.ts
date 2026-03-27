@@ -422,6 +422,11 @@ function setupNewPtyEntry(
       if (prefillMode !== "none") {
         const prefill = ptyBackend.getSessionPrefill(session);
         if (prefill.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
+          // Reset the client terminal before replaying ring buffer bytes.
+          // tmux attach-session does this implicitly (redraws current pane state);
+          // PTY backend must do it explicitly or stale content from a prior
+          // connection persists and gets slowly overwritten as new output arrives.
+          entry.viewer.send(Buffer.from("\x1bc"));
           let sendBuf: Buffer;
           if (prefill.length > DESKTOP_PREFILL_MAX_BYTES) {
             let start = prefill.length - DESKTOP_PREFILL_MAX_BYTES;
