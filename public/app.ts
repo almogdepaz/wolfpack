@@ -819,6 +819,7 @@ function createPtyTerminalController(opts) {
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _cachedLoaded = false;
+  let _userScrolledUp = false;
 
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
@@ -850,7 +851,18 @@ function createPtyTerminalController(opts) {
         if (opts.onOutput) opts.onOutput(data);
       });
     } else {
-      _term.write(data);
+      // Preserve scroll position when user has scrolled up.
+      // The scrollToBottom monkey-patch suppresses explicit scroll calls, but
+      // ghostty-web's cursor-follow scrolls the viewport internally when new
+      // output advances the cursor past the visible area — bypassing the patch.
+      // Restore viewportY explicitly in the write callback to counteract this.
+      const scrollState = _userScrolledUp ? WP.captureScrollState(_term.buffer.active) : null;
+      _term.write(data, (scrollState && !scrollState.wasAtBottom) ? () => {
+        if (_userScrolledUp) {
+          const target = WP.scrollTargetAfterResize(_term.buffer.active.baseY, scrollState.distanceFromBottom);
+          try { _term.scrollToLine(target); } catch {}
+        }
+      } : undefined);
       if (opts.onOutput) opts.onOutput(data);
     }
   }
@@ -907,7 +919,6 @@ function createPtyTerminalController(opts) {
     // and re-enable when they scroll back to the bottom.
     {
       const origScrollToBottom = _term.scrollToBottom.bind(_term);
-      let _userScrolledUp = false;
       _term.scrollToBottom = () => {
         if (_userScrolledUp) return;
         origScrollToBottom();
