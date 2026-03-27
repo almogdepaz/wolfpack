@@ -897,6 +897,31 @@ function createPtyTerminalController(opts) {
 
     _term.open(container);
 
+    // Monkey-patch scrollToBottom to prevent auto-scroll when user has scrolled up.
+    // ghostty-web calls scrollToBottom() on EVERY write when viewportY !== 0,
+    // which makes it impossible to read scrollback while the agent is producing output.
+    // We suppress it when the user has intentionally scrolled up (via wheel/trackpad),
+    // and re-enable when they scroll back to the bottom.
+    {
+      const origScrollToBottom = _term.scrollToBottom.bind(_term);
+      let _userScrolledUp = false;
+      _term.scrollToBottom = () => {
+        if (_userScrolledUp) return;
+        origScrollToBottom();
+      };
+      container.addEventListener("wheel", (ev) => {
+        if (ev.deltaY < 0) {
+          // Scrolling up — user wants to read scrollback
+          _userScrolledUp = true;
+        } else if (ev.deltaY > 0 && _term.viewportY === 0) {
+          // Scrolling down and already at bottom — re-enable follow mode
+          _userScrolledUp = false;
+        }
+      }, { passive: true });
+      // Also re-enable on any user keypress (they're interacting, follow is natural)
+      container.addEventListener("keydown", () => { _userScrolledUp = false; }, true);
+    }
+
     // Let browser shortcuts through — ghostty-web's keydown handler
     // calls preventDefault() on everything, swallowing Cmd+R etc.
     container.addEventListener("keydown", (e) => {
