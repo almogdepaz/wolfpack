@@ -43,7 +43,7 @@ import {
   isUnderDevDir,
   exec,
 } from "./tmux.js";
-import { getBackend } from "./backend.js";
+import { getBackend, getRouter, type BackendType } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -282,7 +282,8 @@ export const routes: Record<
           triage = tail.some(isInputPrompt) ? "needs-input" : "idle";
         }
 
-        return { name, lastLine, triage };
+        const backend = getRouter().getBackendTypeForSession(name);
+        return { name, lastLine, triage, backend };
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
@@ -388,6 +389,42 @@ export const routes: Record<
     }
     saveSettings(settings);
     json(res, { ok: true, settings });
+  },
+
+  "GET /api/backend": async (_req, res) => {
+    const router = getRouter();
+    const counts = await router.getSessionCounts();
+    json(res, {
+      default: router.getDefaultBackend(),
+      tmuxAvailable: router.isTmuxAvailable(),
+      counts,
+    });
+  },
+
+  "POST /api/backend": async (req, res) => {
+    const body = await parseBody<{ default?: BackendType }>(req, res);
+    if (!body) return;
+    const type = body.default;
+    if (type !== "pty" && type !== "tmux") {
+      return json(res, { error: "invalid backend type — must be 'pty' or 'tmux'" }, 400);
+    }
+    const router = getRouter();
+    if (type === "tmux" && !router.isTmuxAvailable()) {
+      return json(res, { error: "tmux is not installed" }, 400);
+    }
+    router.setDefaultBackend(type);
+    // Persist to config so it survives restarts
+    try {
+      const { loadConfig, saveConfig } = await import("../cli/config.js");
+      const config = loadConfig();
+      if (config) {
+        config.backend = type;
+        saveConfig(config);
+      }
+    } catch (e: unknown) {
+      log.warn("failed to persist backend choice to config", { error: errMsg(e) });
+    }
+    json(res, { ok: true, default: type });
   },
 
   "POST /api/kill": async (req, res) => {

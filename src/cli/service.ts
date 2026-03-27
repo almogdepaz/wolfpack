@@ -23,6 +23,7 @@ const log = createLogger("service");
 import {
   WOLFPACK_DIR,
   loadConfig,
+  ask,
   isPortInUse,
   killPortHolder,
   waitForPortFree,
@@ -340,6 +341,31 @@ export function serviceUninstall() {
 }
 
 export function serviceStop() {
+  const config = loadConfig();
+
+  // Warn about active sessions before stopping
+  if (config && isPortInUse(config.port)) {
+    try {
+      const res = execSync(
+        `curl -s --max-time 3 http://127.0.0.1:${config.port}/api/backend`,
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      const data = JSON.parse(res);
+      const { pty = 0, tmux = 0 } = data.counts || {};
+      if (pty > 0 || tmux > 0) {
+        const parts: string[] = [];
+        if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
+        if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
+        print(dim(`\n  ${parts.join(", ")}.`));
+        const answer = ask("  Continue? (y/n) ");
+        if (answer.toLowerCase() !== "y") {
+          print(dim("  Aborted."));
+          return;
+        }
+      }
+    } catch { /* server unreachable or parse error — proceed with stop */ }
+  }
+
   try {
     if (IS_MACOS) {
       launchdBootout();
@@ -351,7 +377,6 @@ export function serviceStop() {
     log.error("failed to stop service", { error: errMsg(e) });
     print(red("  Failed to stop service."));
   }
-  const config = loadConfig();
   if (config && isPortInUse(config.port)) {
     killPortHolder(config.port);
     waitForPortFree(config.port, 5000);

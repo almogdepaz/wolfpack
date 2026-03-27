@@ -1582,7 +1582,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -3074,6 +3074,19 @@ async function showSettings() {
   showView("settings");
   renderMachinesList();
   toggleDebugPanel();
+  // Fetch backend state and update toggle
+  try {
+    const data = await api("/backend");
+    document.querySelectorAll(".backend-btn").forEach((btn) => {
+      const el = btn as HTMLButtonElement;
+      const backend = el.dataset.backend;
+      el.classList.toggle("active", backend === data.default);
+      if (backend === "tmux") {
+        el.disabled = !data.tmuxAvailable;
+        el.title = data.tmuxAvailable ? "" : "tmux is not installed";
+      }
+    });
+  } catch { /* settings view still usable without backend info */ }
 }
 
 async function renderMachinesList() {
@@ -3378,7 +3391,7 @@ function sidebarCardHtml(s, machineUrl) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span></div>
+      <div class="card-status"><span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
@@ -3598,6 +3611,26 @@ function bindHtmlEventListeners(): void {
         document.querySelectorAll(".term-mobile-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.mode === mode));
         // Don't apply classic-mobile class immediately — it takes effect
         // on next session open to avoid mid-session transport mismatch.
+      }
+    });
+  });
+
+  // Backend toggle buttons
+  document.querySelectorAll(".backend-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const el = btn as HTMLButtonElement;
+      if (el.disabled) return;
+      const backend = el.dataset.backend;
+      if (!backend) return;
+      try {
+        const res = await api("/backend", { default: backend });
+        if (res.ok) {
+          document.querySelectorAll(".backend-btn").forEach(b =>
+            b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
+          );
+        }
+      } catch (e) {
+        console.warn("[settings] backend toggle failed:", e);
       }
     });
   });

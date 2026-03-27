@@ -125,7 +125,8 @@ export async function setup() {
   print(`    ${bold("1)")} pty  ${dim("— lightweight, no dependencies (default)")}`);
   print(`    ${bold("2)")} tmux ${dim("— persistent sessions, survives server restarts")}`);
   const backendChoice = ask("  Choose backend [1]: ") || "1";
-  const backend: BackendType = backendChoice === "2" ? "tmux" : DEFAULT_BACKEND;
+  let backend: BackendType = backendChoice === "2" ? "tmux" : DEFAULT_BACKEND;
+  print(dim("  (you can change this later from Settings)"));
 
   if (backend === "tmux" && !hasTmux) {
     print(yellow("\n  tmux backend selected but tmux is not installed."));
@@ -134,9 +135,11 @@ export async function setup() {
       installPackages(["tmux"]);
       if (!check("tmux", "tmux -V")) {
         print(red("  tmux installation failed. Falling back to pty backend."));
+        backend = "pty";
       }
     } else {
       print(yellow("  Falling back to pty backend."));
+      backend = "pty";
     }
   }
 

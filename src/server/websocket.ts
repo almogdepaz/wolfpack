@@ -15,8 +15,7 @@ import {
   DESKTOP_PREFILL_HISTORY_LINES,
   exec,
 } from "./tmux.js";
-import { getBackend, getBackendType } from "./backend.js";
-import type { PtyBackend } from "./pty-backend.js";
+import { getBackend, getBackendTypeForSession, getRouter } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
 
@@ -385,7 +384,7 @@ function setupNewPtyEntry(
   type PrefillMode = typeof VALID_PREFILL_MODES[number];
   let pendingPrefillMode: PrefillMode = "full";
 
-  const backendType = getBackendType();
+  const backendType = getBackendTypeForSession(session);
 
   // ── PTY backend: attach WS directly to session's terminal I/O ──
   async function attachPtyBackend(
@@ -402,7 +401,7 @@ function setupNewPtyEntry(
     }
 
     try {
-      const ptyBackend = getBackend() as PtyBackend;
+      const ptyBackend = getRouter().getPtyBackend();
 
       if (!ptyBackend.isSessionAlive(session)) {
         entry.alive = false;
@@ -694,7 +693,7 @@ function setupNewPtyEntry(
         // Binary data — write to terminal
         if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;
         if (backendType === "pty") {
-          (getBackend() as PtyBackend).writeToTerminal(session, raw as Buffer);
+          getRouter().getPtyBackend().writeToTerminal(session, raw as Buffer);
         } else if (entry.proc) {
           entry.proc.terminal!.write(raw as Buffer);
         }
