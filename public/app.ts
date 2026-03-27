@@ -617,6 +617,9 @@ function createPtySocketClient(opts) {
           if (msg.type === "attach_ack") {
             _awaitingAttachAck = false;
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+            // Re-check dimensions after layout settles — catches stale
+            // initial dims on mobile where layout isn't finalized at connect time.
+            requestAnimationFrame(() => { sendFitResize(); });
           } else if (msg.type === "pty_ready") {
             if (opts.onPtyReady) opts.onPtyReady();
           } else if (msg.type === "prefill_viewport") {
