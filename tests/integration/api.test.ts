@@ -386,6 +386,41 @@ describe("POST /api/kill", () => {
   });
 });
 
+describe("GET /api/backend", () => {
+  test("returns backend state", async () => {
+    const res = await get("/api/backend");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.default).toBeDefined();
+    expect(typeof data.tmuxAvailable).toBe("boolean");
+    expect(typeof data.counts).toBe("object");
+    expect(typeof data.counts.pty).toBe("number");
+    expect(typeof data.counts.tmux).toBe("number");
+  });
+});
+
+describe("POST /api/backend", () => {
+  test("switches to pty", async () => {
+    const res = await post("/api/backend", { default: "pty" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.default).toBe("pty");
+  });
+
+  test("rejects invalid backend type", async () => {
+    const res = await post("/api/backend", { default: "invalid" });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("invalid");
+  });
+
+  test("rejects missing type", async () => {
+    const res = await post("/api/backend", {});
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("POST /api/resize", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);

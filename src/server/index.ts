@@ -209,7 +209,8 @@ const { server, wss } = createServerInstance();
 
 export function startServer(port = PORT, host = "127.0.0.1"): void {
   // Initialize session backend from env (set by CLI) or default
-  const backendType = (process.env.WOLFPACK_BACKEND as BackendType) || undefined;
+  const raw = process.env.WOLFPACK_BACKEND;
+  const backendType = (raw === "pty" || raw === "tmux") ? raw : undefined;
   initBackend(backendType);
   log.info("backend initialized", { type: backendType ?? "default" });
 

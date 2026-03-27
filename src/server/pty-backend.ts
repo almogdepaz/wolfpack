@@ -164,6 +164,10 @@ export class PtyBackend implements SessionBackend {
     }
   }
 
+  // Raw PTY write — equivalent to typing on a keyboard. No shell interpretation.
+  // Unlike TmuxBackend's tmuxSend (which uses `send-keys -l` literal mode),
+  // this goes directly to the terminal fd. Safe because input is user-initiated
+  // via the classic terminal WS handler, gated by WS_ALLOWED_KEYS for key messages.
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     const session = this.sessions.get(name);
     if (!session || !session.alive) return;

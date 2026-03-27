@@ -414,17 +414,21 @@ export const routes: Record<
     }
     router.setDefaultBackend(type);
     // Persist to config so it survives restarts
+    let persisted = false;
     try {
       const { loadConfig, saveConfig } = await import("../cli/config.js");
       const config = loadConfig();
       if (config) {
         config.backend = type;
         saveConfig(config);
+        persisted = true;
       }
     } catch (e: unknown) {
       log.warn("failed to persist backend choice to config", { error: errMsg(e) });
     }
-    json(res, { ok: true, default: type });
+    const resp: any = { ok: true, default: type };
+    if (!persisted) resp.warning = "backend changed but could not persist to config";
+    json(res, resp);
   },
 
   "POST /api/kill": async (req, res) => {

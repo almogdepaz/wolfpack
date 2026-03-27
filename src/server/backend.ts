@@ -181,8 +181,16 @@ export class BackendRouter implements SessionBackend {
       : this.pty;
     const type = backend === this.tmux ? "tmux" : "pty";
 
-    await backend.createSession(name, cwd, cmd, loadSettings);
+    // Set ownership before async create to close TOCTOU window —
+    // getBackendTypeForSession() returns correct type during creation.
+    // Rolled back on failure.
     this.ownership.set(name, type);
+    try {
+      await backend.createSession(name, cwd, cmd, loadSettings);
+    } catch (e) {
+      this.ownership.delete(name);
+      throw e;
+    }
     log.info("session created via router", { name, backend: type });
   }
 
