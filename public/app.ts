@@ -328,7 +328,7 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize }) {
+function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -367,6 +367,10 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
   let _scrollAccum = 0;
   const SCROLL_THRESHOLD = 60; // px of deltaY per scroll line (tuned for trackpad)
   term.attachCustomWheelEventHandler((ev) => {
+    // Notify scroll-lock controller before ghostty-web processes the wheel.
+    // This runs inside ghostty-web's capture-phase wheel handler, which is
+    // the ONLY place we can intercept wheel events before they're consumed.
+    if (onWheelScroll) onWheelScroll(ev);
     try {
       const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
       if (!hasMouse) return false;
@@ -851,29 +855,22 @@ function createPtyTerminalController(opts) {
         if (opts.onOutput) opts.onOutput(data);
       });
     } else {
-      // Preserve scroll position when user has scrolled up.
-      // The scrollToBottom monkey-patch suppresses explicit scroll calls, but
-      // ghostty-web's cursor-follow scrolls the viewport internally when new
-      // output advances the cursor past the visible area — bypassing the patch.
-      // Restore viewportY explicitly in the write callback to counteract this.
-      const scrollState = _userScrolledUp ? WP.captureScrollState(_term.buffer.active) : null;
-      _term.write(data, (scrollState && !scrollState.wasAtBottom) ? () => {
-        if (_userScrolledUp) {
-          const target = WP.scrollTargetAfterResize(_term.buffer.active.baseY, scrollState.distanceFromBottom);
-          try { _term.scrollToLine(target); } catch {}
-        }
-      } : undefined);
+      _term.write(data);
       if (opts.onOutput) opts.onOutput(data);
     }
   }
 
   function fitTerminalPreserveScroll() {
     if (!_fitAddon || !_term) return;
-    const scrollState = WP.captureScrollState(_term.buffer.active);
+    // ghostty-web: viewportY and getScrollbackLength() are on _term directly
+    // (no buffer.active like xterm.js)
+    const vp = _term.viewportY ?? 0;
+    const scrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : 0;
+    const wasAtBottom = vp === 0;
     _fitAddon.fit();
-    if (!scrollState.wasAtBottom) {
-      const target = WP.scrollTargetAfterResize(_term.buffer.active.baseY, scrollState.distanceFromBottom);
-      try { _term.scrollToLine(target); } catch {}
+    if (!wasAtBottom && vp > 0) {
+      const newScrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : scrollback;
+      try { _term.scrollToLine(Math.max(0, newScrollback - (scrollback - vp))); } catch {}
     }
   }
 
@@ -902,6 +899,13 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
+      onWheelScroll: (ev) => {
+        if (ev.deltaY < 0) {
+          _userScrolledUp = true;
+        } else if (ev.deltaY > 0 && _term && _term.viewportY === 0) {
+          _userScrolledUp = false;
+        }
+      },
     });
     _term = result.term;
     _fitAddon = result.fitAddon;
@@ -918,22 +922,38 @@ function createPtyTerminalController(opts) {
     // We suppress it when the user has intentionally scrolled up (via wheel/trackpad),
     // and re-enable when they scroll back to the bottom.
     {
+      // Scroll-lock: scroll up → suppress scrollToBottom, any key → snap back.
+      //
+      // ghostty-web's writeInternal() calls this.scrollToBottom() on every
+      // write when viewportY !== 0. Patching the instance method is sufficient.
+      //
+      // Wheel events are intercepted via onWheelScroll callback passed to
+      // createTerminalInstance (fires inside ghostty-web's capture-phase
+      // custom wheel handler — the ONLY place we can see wheel events before
+      // ghostty-web consumes them with {capture:true, passive:false}).
       const origScrollToBottom = _term.scrollToBottom.bind(_term);
       _term.scrollToBottom = () => {
         if (_userScrolledUp) return;
         origScrollToBottom();
       };
-      container.addEventListener("wheel", (ev) => {
-        if (ev.deltaY < 0) {
-          // Scrolling up — user wants to read scrollback
+      // Intercept scrollLines (used by mobile touch scroll + momentum).
+      // When viewport moves away from bottom, set _userScrolledUp.
+      // When it reaches bottom, clear it.
+      const origScrollLines = _term.scrollLines.bind(_term);
+      _term.scrollLines = (n) => {
+        origScrollLines(n);
+        if (_term.viewportY > 0) {
           _userScrolledUp = true;
-        } else if (ev.deltaY > 0 && _term.viewportY === 0) {
-          // Scrolling down and already at bottom — re-enable follow mode
+        } else {
           _userScrolledUp = false;
         }
-      }, { passive: true });
-      // Also re-enable on any user keypress (they're interacting, follow is natural)
-      container.addEventListener("keydown", () => { _userScrolledUp = false; }, true);
+      };
+      container.addEventListener("keydown", () => {
+        if (_userScrolledUp) {
+          _userScrolledUp = false;
+          origScrollToBottom();
+        }
+      }, true);
     }
 
     // Let browser shortcuts through — ghostty-web's keydown handler
@@ -2760,17 +2780,19 @@ document.addEventListener("visibilitychange", () => {
           state.terminalController.reconnect();
         }
       } else if (hiddenDuration > DESKTOP_STALE_THRESHOLD_MS) {
-        // Desktop: reconnect only if tab was backgrounded >60s (App Nap,
-        // browser throttling can silently kill the TCP connection too).
+        // Desktop: force-reconnect if tab was backgrounded >60s.
+        // Browser throttling / App Nap can silently kill TCP while
+        // readyState still reports OPEN (zombie socket). Force-close
+        // and reconnect to get fresh data, matching mobile behavior.
         if (isGridActive()) {
           for (const gs of state.gridSessions) {
             if (!gs.controller || gs._displaced) continue;
             gs.controller.resetRetry();
-            if (!gs.controller.isConnected) gs.controller.connect();
+            gs.controller.reconnect();
           }
         } else if (state.terminalController?.term) {
           state.terminalController.resetRetry();
-          if (!state.terminalController.isConnected) connectDesktopWs();
+          state.terminalController.reconnect();
         }
       }
     }
