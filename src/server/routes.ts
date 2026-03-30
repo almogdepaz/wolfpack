@@ -34,6 +34,7 @@ import {
 import { cleanupAllExceptFinal } from "../worktree.js";
 import { assets } from "../public-assets.js";
 import { isJunkLine, type TriageStatus } from "../triage.js";
+import { getVapidPublicKey, addSubscription, removeSubscription, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
@@ -243,8 +244,14 @@ export const routes: Record<
     res.end(JSON.stringify(manifest, null, 2));
   },
   "GET /sw.js": (_req, res) => {
-    res.writeHead(404);
-    res.end("Not Found");
+    const sw = assets["sw-push.js"];
+    if (sw) {
+      res.writeHead(200, { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/" });
+      res.end(sw);
+    } else {
+      res.writeHead(404);
+      res.end("Not Found");
+    }
   },
 
   "GET /api/info": (_req, res) => {
@@ -862,5 +869,29 @@ export const routes: Record<
     }
 
     json(res, { ok: true, deleted, failed, ...(worktreeCleanup && { worktreeCleanup }) });
+  },
+
+  // ── Push notifications ──
+
+  "GET /api/push/vapid-key": (_req, res) => {
+    json(res, { publicKey: getVapidPublicKey() });
+  },
+
+  "POST /api/push/subscribe": async (req, res) => {
+    const body = await parseBody<PushSubscription>(req, res);
+    if (!body) return;
+    if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
+    if (!body.keys?.p256dh || !body.keys?.auth) return json(res, { error: "missing keys" }, 400);
+    try { new URL(body.endpoint); } catch { return json(res, { error: "invalid endpoint URL" }, 400); }
+    addSubscription({ endpoint: body.endpoint, keys: { p256dh: body.keys.p256dh, auth: body.keys.auth } });
+    json(res, { ok: true });
+  },
+
+  "POST /api/push/unsubscribe": async (req, res) => {
+    const body = await parseBody<{ endpoint?: string }>(req, res);
+    if (!body) return;
+    if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
+    removeSubscription(body.endpoint);
+    json(res, { ok: true });
   },
 };
