@@ -34,7 +34,7 @@ import {
 import { cleanupAllExceptFinal } from "../worktree.js";
 import { assets } from "../public-assets.js";
 import { isJunkLine, type TriageStatus } from "../triage.js";
-import { getVapidPublicKey, addSubscription, removeSubscription, type PushSubscription } from "./push.js";
+import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, getSubscriptionCount, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
@@ -180,6 +180,45 @@ const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
+/** Previous triage state per session — for push notification triggers. */
+const prevTriageState = new Map<string, TriageStatus>();
+/** Last push time per key — 30s debounce. */
+const lastPushTime = new Map<string, number>();
+const PUSH_DEBOUNCE_MS = 30_000;
+
+/** Previous ralph loop state per project — for push notification triggers. */
+const prevRalphState = new Map<string, string>();
+
+function ralphLoopStatus(loop: { active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }): string {
+  if (loop.audit || loop.cleanup || loop.active) return "running";
+  if (loop.completed) return "done";
+  if (!loop.active && !loop.completed && loop.finished) return "limit";
+  return "idle";
+}
+
+function checkRalphPushTransitions(loops: Array<{ project: string; active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }>): void {
+  if (getSubscriptionCount() === 0) return;
+  const now = Date.now();
+  for (const loop of loops) {
+    const key = `ralph-${loop.project}`;
+    const prev = prevRalphState.get(key);
+    const cur = ralphLoopStatus(loop);
+    prevRalphState.set(key, cur);
+    if (prev === "running" && (cur === "done" || cur === "idle" || cur === "limit")) {
+      const lastPush = lastPushTime.get(key) || 0;
+      if (now - lastPush > PUSH_DEBOUNCE_MS) {
+        lastPushTime.set(key, now);
+        const labels: Record<string, string> = { done: "All tasks complete", idle: "Stopped", limit: "Hit iteration limit" };
+        sendPush({
+          title: `Wolfpack: ralph`,
+          body: `${loop.project}: ${labels[cur] || cur}`,
+          tag: `ralph-${loop.project}`,
+        }).catch(() => {});
+      }
+    }
+  }
+}
+
 
 const AGENT_PRESETS: Record<string, string> = {
   shell: "shell",
@@ -299,6 +338,26 @@ export const routes: Record<
       if (!activeNames.has(key)) prevPaneContent.delete(key);
     }
     json(res, { sessions: results });
+
+    // Fire push notifications for running → idle transitions (async, don't block response)
+    if (getSubscriptionCount() > 0) {
+      const now = Date.now();
+      for (const s of results) {
+        const prev = prevTriageState.get(s.name);
+        prevTriageState.set(s.name, s.triage);
+        if (prev === "running" && s.triage === "idle") {
+          const lastPush = lastPushTime.get(s.name) || 0;
+          if (now - lastPush > PUSH_DEBOUNCE_MS) {
+            lastPushTime.set(s.name, now);
+            sendPush({ title: `Wolfpack: ${s.name}`, body: "Finished", tag: `session-${s.name}` }).catch(() => {});
+          }
+        }
+      }
+      // Prune state for removed sessions
+      for (const key of prevTriageState.keys()) {
+        if (!activeNames.has(key)) { prevTriageState.delete(key); lastPushTime.delete(key); }
+      }
+    }
   },
 
   "GET /api/projects": async (_req, res) => {
@@ -477,7 +536,9 @@ export const routes: Record<
     const localLoops = scanRalphLoops().map(l => ({ ...l, machineName: selfHost, machineUrl: "" }));
 
     if (!aggregate || cachedPeers.length === 0) {
-      return json(res, { loops: localLoops });
+      json(res, { loops: localLoops });
+      checkRalphPushTransitions(localLoops);
+      return;
     }
 
     const remotePeers = cachedPeers.filter(p => p.name !== selfHost);
@@ -505,7 +566,9 @@ export const routes: Record<
       })
     );
 
-    json(res, { loops: [...localLoops, ...peerResults.flat()] });
+    const allLoops = [...localLoops, ...peerResults.flat()];
+    json(res, { loops: allLoops });
+    checkRalphPushTransitions(allLoops);
   },
 
   "GET /api/ralph/branches": async (req, res) => {
