@@ -180,8 +180,6 @@ const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
-
-
 const AGENT_PRESETS: Record<string, string> = {
   shell: "shell",
   claude: "claude",

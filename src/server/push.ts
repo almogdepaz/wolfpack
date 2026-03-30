@@ -293,7 +293,20 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
   const vapid = getVapidKeys();
   const payloadBuf = Buffer.from(JSON.stringify(payload));
 
-  const results = await Promise.allSettled(subs.map(async (sub) => {
+  // Filter out stored subscriptions with invalid endpoints (defense-in-depth for legacy data)
+  const validSubs = subs.filter(sub => {
+    try {
+      const url = new URL(sub.endpoint);
+      return url.protocol === "https:";
+    } catch { return false; }
+  });
+  if (validSubs.length < subs.length) {
+    saveSubscriptions(validSubs);
+    log.warn("pruned invalid subscriptions on send", { count: subs.length - validSubs.length });
+  }
+  if (validSubs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
+
+  const results = await Promise.allSettled(validSubs.map(async (sub) => {
     const audience = new URL(sub.endpoint).origin;
     const jwt = createVapidJwt(audience, "mailto:noreply@wolfpack.local", vapid);
 
@@ -333,7 +346,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
   // Prune dead subscriptions
   if (toRemove.length > 0) {
-    const remaining = subs.filter((s) => !toRemove.includes(s.endpoint));
+    const remaining = validSubs.filter((s) => !toRemove.includes(s.endpoint));
     saveSubscriptions(remaining);
     log.info("pruned expired push subscriptions", { count: toRemove.length });
   }
@@ -384,6 +397,7 @@ export function checkSessionTransitions(sessions: Array<{ name: string; triage: 
 export function checkRalphLoopTransitions(loops: Array<{ project: string; active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }>): void {
   if (getSubscriptionCount() === 0) return;
   const now = Date.now();
+  const activeKeys = new Set(loops.map(l => `ralph-${l.project}`));
   for (const loop of loops) {
     const key = `ralph-${loop.project}`;
     const prev = prevRalphState.get(key);
@@ -401,6 +415,10 @@ export function checkRalphLoopTransitions(loops: Array<{ project: string; active
         }).catch(() => {});
       }
     }
+  }
+  // Prune state for removed projects
+  for (const key of prevRalphState.keys()) {
+    if (!activeKeys.has(key)) { prevRalphState.delete(key); lastPushTime.delete(key); }
   }
 }
 
@@ -425,4 +443,6 @@ export const _testing = {
   lastPushTime,
   prevRalphState,
   PUSH_DEBOUNCE_MS,
+  get notifyTimestamps() { return notifyTimestamps; },
+  set notifyTimestamps(v: number[]) { notifyTimestamps = v; },
 };

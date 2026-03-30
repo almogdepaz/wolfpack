@@ -3913,7 +3913,7 @@ function destroyClassicMobile() {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.getRegistrations().then(regs => {
     regs.forEach(r => {
-      if (r.active?.scriptURL?.endsWith("/sw.js")) return;
+      if (r.active?.scriptURL === `${location.origin}/sw.js`) return;
       r.unregister();
     });
   });

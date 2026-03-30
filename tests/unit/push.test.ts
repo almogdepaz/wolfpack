@@ -243,6 +243,30 @@ describe("push: subscription cap", () => {
   });
 });
 
+// ── Rate limit tests ──
+
+describe("push: checkNotifyRateLimit", () => {
+  beforeEach(async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    _testing.notifyTimestamps = [];
+  });
+
+  test("allows 10 calls then rejects", async () => {
+    const { checkNotifyRateLimit } = await import("../../src/server/push.ts");
+    for (let i = 0; i < 10; i++) {
+      expect(checkNotifyRateLimit()).toBeNull();
+    }
+    expect(checkNotifyRateLimit()).toBe("rate limit exceeded (10/min)");
+  });
+
+  test("resets after timestamps expire", async () => {
+    const { checkNotifyRateLimit, _testing } = await import("../../src/server/push.ts");
+    // Fill with timestamps from 61s ago (expired)
+    _testing.notifyTimestamps = Array(10).fill(Date.now() - 61_000);
+    expect(checkNotifyRateLimit()).toBeNull();
+  });
+});
+
 // ── State transition + debounce tests ──
 
 describe("push: checkSessionTransitions", () => {
@@ -379,6 +403,26 @@ describe("push: checkRalphLoopTransitions", () => {
     _testing.prevRalphState.clear();
     checkRalphLoopTransitions([{ project: "p1", active: false, completed: false }]);
     expect(_testing.prevRalphState.get("ralph-p1")).toBe("idle");
+
+    removeSubscription(ep);
+  });
+
+  test("prunes state for removed projects", async () => {
+    const { checkRalphLoopTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
+    const ep = `https://fcm.googleapis.com/ralph-prune-${Date.now()}`;
+    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+
+    // Seed state for a project that will disappear
+    _testing.prevRalphState.set("ralph-old-project", "idle");
+    _testing.lastPushTime.set("ralph-old-project", Date.now());
+
+    // Call with only "new-project" — old-project should be pruned
+    checkRalphLoopTransitions([{ project: "new-project", active: true, completed: false }]);
+
+    expect(_testing.prevRalphState.has("ralph-old-project")).toBe(false);
+    expect(_testing.lastPushTime.has("ralph-old-project")).toBe(false);
+    expect(_testing.prevRalphState.get("ralph-new-project")).toBe("running");
 
     removeSubscription(ep);
   });
