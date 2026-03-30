@@ -34,7 +34,7 @@ import {
 import { cleanupAllExceptFinal } from "../worktree.js";
 import { assets } from "../public-assets.js";
 import { isJunkLine, type TriageStatus } from "../triage.js";
-import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, getSubscriptionCount, type PushSubscription } from "./push.js";
+import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkRalphLoopTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
@@ -180,47 +180,6 @@ const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
-/** Previous triage state per session — for push notification triggers. */
-const prevTriageState = new Map<string, TriageStatus>();
-/** Last push time per key — 30s debounce. */
-const lastPushTime = new Map<string, number>();
-const PUSH_DEBOUNCE_MS = 30_000;
-
-/** Previous ralph loop state per project — for push notification triggers. */
-const prevRalphState = new Map<string, string>();
-
-/** Rate-limit timestamps for POST /api/notify (10/min). */
-let notifyTimestamps: number[] = [];
-
-function ralphLoopStatus(loop: { active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }): string {
-  if (loop.audit || loop.cleanup || loop.active) return "running";
-  if (loop.completed) return "done";
-  if (!loop.active && !loop.completed && loop.finished) return "limit";
-  return "idle";
-}
-
-function checkRalphPushTransitions(loops: Array<{ project: string; active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }>): void {
-  if (getSubscriptionCount() === 0) return;
-  const now = Date.now();
-  for (const loop of loops) {
-    const key = `ralph-${loop.project}`;
-    const prev = prevRalphState.get(key);
-    const cur = ralphLoopStatus(loop);
-    prevRalphState.set(key, cur);
-    if (prev === "running" && (cur === "done" || cur === "idle" || cur === "limit")) {
-      const lastPush = lastPushTime.get(key) || 0;
-      if (now - lastPush > PUSH_DEBOUNCE_MS) {
-        lastPushTime.set(key, now);
-        const labels: Record<string, string> = { done: "All tasks complete", idle: "Stopped", limit: "Hit iteration limit" };
-        sendPush({
-          title: `Wolfpack: ralph`,
-          body: `${loop.project}: ${labels[cur] || cur}`,
-          tag: `ralph-${loop.project}`,
-        }).catch(() => {});
-      }
-    }
-  }
-}
 
 
 const AGENT_PRESETS: Record<string, string> = {
@@ -343,24 +302,7 @@ export const routes: Record<
     json(res, { sessions: results });
 
     // Fire push notifications for running → idle transitions (async, don't block response)
-    if (getSubscriptionCount() > 0) {
-      const now = Date.now();
-      for (const s of results) {
-        const prev = prevTriageState.get(s.name);
-        prevTriageState.set(s.name, s.triage);
-        if (prev === "running" && s.triage === "idle") {
-          const lastPush = lastPushTime.get(s.name) || 0;
-          if (now - lastPush > PUSH_DEBOUNCE_MS) {
-            lastPushTime.set(s.name, now);
-            sendPush({ title: `Wolfpack: ${s.name}`, body: "Finished", tag: `session-${s.name}` }).catch(() => {});
-          }
-        }
-      }
-      // Prune state for removed sessions
-      for (const key of prevTriageState.keys()) {
-        if (!activeNames.has(key)) { prevTriageState.delete(key); lastPushTime.delete(key); }
-      }
-    }
+    checkSessionTransitions(results);
   },
 
   "GET /api/projects": async (_req, res) => {
@@ -540,7 +482,7 @@ export const routes: Record<
 
     if (!aggregate || cachedPeers.length === 0) {
       json(res, { loops: localLoops });
-      checkRalphPushTransitions(localLoops);
+      checkRalphLoopTransitions(localLoops);
       return;
     }
 
@@ -571,7 +513,7 @@ export const routes: Record<
 
     const allLoops = [...localLoops, ...peerResults.flat()];
     json(res, { loops: allLoops });
-    checkRalphPushTransitions(allLoops);
+    checkRalphLoopTransitions(allLoops);
   },
 
   "GET /api/ralph/branches": async (req, res) => {
@@ -946,10 +888,11 @@ export const routes: Record<
   "POST /api/push/subscribe": async (req, res) => {
     const body = await parseBody<PushSubscription>(req, res);
     if (!body) return;
-    if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
-    if (!body.keys?.p256dh || !body.keys?.auth) return json(res, { error: "missing keys" }, 400);
-    try { new URL(body.endpoint); } catch { return json(res, { error: "invalid endpoint URL" }, 400); }
-    addSubscription({ endpoint: body.endpoint, keys: { p256dh: body.keys.p256dh, auth: body.keys.auth } });
+    const sub: PushSubscription = { endpoint: body.endpoint, keys: { p256dh: body.keys?.p256dh, auth: body.keys?.auth } };
+    const validationError = validateSubscription(sub);
+    if (validationError) return json(res, { error: validationError }, 400);
+    const result = addSubscription(sub);
+    if (!result.ok) return json(res, { error: result.error }, 429);
     json(res, { ok: true });
   },
 
@@ -969,11 +912,8 @@ export const routes: Record<
     if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
     const message = body.message.slice(0, 500);
 
-    // Rate limit: 10/minute
-    const now = Date.now();
-    notifyTimestamps = notifyTimestamps.filter(t => now - t < 60_000);
-    if (notifyTimestamps.length >= 10) return json(res, { error: "rate limit exceeded (10/min)" }, 429);
-    notifyTimestamps.push(now);
+    const rateLimitError = checkNotifyRateLimit();
+    if (rateLimitError) return json(res, { error: rateLimitError }, 429);
 
     const result = await sendPush({ title: "Wolfpack", body: message, tag: "wolfpack-notify" });
     json(res, { ok: true, ...result });

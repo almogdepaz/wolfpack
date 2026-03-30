@@ -525,7 +525,7 @@ export function showRalphStart(machineUrl) {
 
 const prevRalphStates: Record<string, string> = {};
 
-export function getRalphNotificationStatus(loop) {
+function getRalphNotificationStatus(loop) {
   if (loop.audit) return "running";
   if (loop.cleanup) return "running";
   if (loop.active) return "running";

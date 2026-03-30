@@ -38,6 +38,7 @@ async function uniqueSessionName(base: string): Promise<string> {
 
 // ─── Triage classification (imported from shared module) ─────────────────────
 import { isJunkLine, type TriageStatus } from "../../src/triage.ts";
+import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, type PushSubscription } from "../../src/server/push.ts";
 
 /** Content-diff state for test sessions route */
 const testPrevPaneContent = new Map<string, string>();
@@ -139,10 +140,6 @@ const routes: Record<
           triage = "running";
           testPrevPaneContent.set(name, content);
         } else {
-          const tail: string[] = [];
-          for (let i = lines.length - 1; i >= 0 && tail.length < 3; i--) {
-            if (!isJunkLine(lines[i])) tail.push(lines[i].trim());
-          }
           triage = "idle";
         }
         return { name, lastLine, triage };
@@ -227,6 +224,42 @@ const routes: Record<
       Math.max(5, Math.min(rows, 100)),
     );
     json(res, { ok: true });
+  },
+
+  // ── Push notifications ──
+
+  "GET /api/push/vapid-key": (_req, res) => {
+    json(res, { publicKey: getVapidPublicKey() });
+  },
+
+  "POST /api/push/subscribe": async (req, res) => {
+    const body = await parseBody<PushSubscription>(req, res);
+    if (!body) return;
+    const sub: PushSubscription = { endpoint: body.endpoint, keys: { p256dh: body.keys?.p256dh, auth: body.keys?.auth } };
+    const validationError = validateSubscription(sub);
+    if (validationError) return json(res, { error: validationError }, 400);
+    const result = addSubscription(sub);
+    if (!result.ok) return json(res, { error: result.error }, 429);
+    json(res, { ok: true });
+  },
+
+  "POST /api/push/unsubscribe": async (req, res) => {
+    const body = await parseBody<{ endpoint?: string }>(req, res);
+    if (!body) return;
+    if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
+    removeSubscription(body.endpoint);
+    json(res, { ok: true });
+  },
+
+  "POST /api/notify": async (req, res) => {
+    const body = await parseBody<{ message?: string }>(req, res);
+    if (!body) return;
+    if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
+    const message = body.message.slice(0, 500);
+    const rateLimitError = checkNotifyRateLimit();
+    if (rateLimitError) return json(res, { error: rateLimitError }, 429);
+    const result = await sendPush({ title: "Wolfpack", body: message, tag: "wolfpack-notify" });
+    json(res, { ok: true, ...result });
   },
 };
 
@@ -811,5 +844,135 @@ describe("unknown routes", () => {
   test("POST to GET-only route → 404", async () => {
     const res = await post("/api/info", {});
     expect(res.status).toBe(404);
+  });
+});
+
+// ── Push notification endpoint tests ──
+
+describe("GET /api/push/vapid-key", () => {
+  test("returns publicKey", async () => {
+    const res = await get("/api/push/vapid-key");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.publicKey).toBeString();
+    expect(data.publicKey.length).toBeGreaterThan(40);
+  });
+});
+
+describe("POST /api/push/subscribe", () => {
+  // Generate a valid test subscription with proper key lengths
+  const { createECDH, randomBytes } = require("node:crypto");
+  const ecdh = createECDH("prime256v1");
+  ecdh.generateKeys();
+  const p256dh = ecdh.getPublicKey("base64url");
+  const auth = randomBytes(16).toString("base64url");
+
+  const validSub = {
+    endpoint: "https://fcm.googleapis.com/fcm/send/test-integration",
+    keys: { p256dh, auth },
+  };
+
+  test("valid subscription → 200", async () => {
+    const res = await post("/api/push/subscribe", validSub);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    // cleanup
+    await post("/api/push/unsubscribe", { endpoint: validSub.endpoint });
+  });
+
+  test("missing endpoint → 400", async () => {
+    const res = await post("/api/push/subscribe", { keys: { p256dh, auth } });
+    expect(res.status).toBe(400);
+  });
+
+  test("missing keys → 400", async () => {
+    const res = await post("/api/push/subscribe", { endpoint: "https://example.com/push" });
+    expect(res.status).toBe(400);
+  });
+
+  test("invalid endpoint URL → 400", async () => {
+    const res = await post("/api/push/subscribe", { endpoint: "not-a-url", keys: { p256dh, auth } });
+    expect(res.status).toBe(400);
+  });
+
+  test("bad p256dh length → 400", async () => {
+    const res = await post("/api/push/subscribe", {
+      endpoint: "https://example.com/push",
+      keys: { p256dh: randomBytes(32).toString("base64url"), auth },
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("65 bytes");
+  });
+
+  test("bad auth length → 400", async () => {
+    const res = await post("/api/push/subscribe", {
+      endpoint: "https://example.com/push",
+      keys: { p256dh, auth: randomBytes(8).toString("base64url") },
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("16 bytes");
+  });
+
+  test("http:// endpoint rejected (SSRF prevention) → 400", async () => {
+    const res = await post("/api/push/subscribe", {
+      endpoint: "http://localhost:8080/internal",
+      keys: { p256dh, auth },
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("HTTPS");
+  });
+
+  test("file:// endpoint rejected → 400", async () => {
+    const res = await post("/api/push/subscribe", {
+      endpoint: "file:///etc/passwd",
+      keys: { p256dh, auth },
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("HTTPS");
+  });
+});
+
+describe("POST /api/push/unsubscribe", () => {
+  test("valid unsubscribe → 200", async () => {
+    const res = await post("/api/push/unsubscribe", { endpoint: "https://example.com/push/gone" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+  });
+
+  test("missing endpoint → 400", async () => {
+    const res = await post("/api/push/unsubscribe", {});
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/notify", () => {
+  test("valid notification → 200", async () => {
+    const res = await post("/api/notify", { message: "test notification" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+  });
+
+  test("missing message → 400", async () => {
+    const res = await post("/api/notify", {});
+    expect(res.status).toBe(400);
+  });
+
+  test("rate limit after 10 rapid calls → 429", async () => {
+    // The checkNotifyRateLimit is module-level state, and we already sent 1 call above.
+    // Send enough to hit the 10/min limit.
+    const results: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const res = await post("/api/notify", { message: `rate-test-${i}` });
+      results.push(res.status);
+    }
+    // At least one should be 429
+    expect(results).toContain(429);
   });
 });

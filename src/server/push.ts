@@ -2,11 +2,12 @@
  * Web Push notification support — VAPID signing + payload encryption (RFC 8291).
  * Zero external dependencies, uses node:crypto only.
  */
-import { createECDH, createSign, createHmac, createCipheriv, randomBytes } from "node:crypto";
+import { createECDH, createSign, createPrivateKey, createHmac, createCipheriv, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
+import type { TriageStatus } from "../triage.js";
 
 const log = createLogger("push");
 
@@ -54,14 +55,28 @@ function generateVapidKeys(): VapidKeys {
 
 let _vapidKeys: VapidKeys | null = null;
 
+/** Validate VAPID keys decode to correct lengths (65-byte public, 32-byte private). */
+function isValidVapidKeys(keys: VapidKeys): boolean {
+  try {
+    if (!keys.publicKey || !keys.privateKey) return false;
+    const pub = b64urlDecode(keys.publicKey);
+    const priv = b64urlDecode(keys.privateKey);
+    return pub.length === 65 && priv.length === 32;
+  } catch { return false; }
+}
+
 export function getVapidKeys(): VapidKeys {
   if (_vapidKeys) return _vapidKeys;
   mkdirSync(WOLFPACK_DIR, { recursive: true, mode: 0o700 });
 
   if (existsSync(VAPID_PATH)) {
     try {
-      _vapidKeys = JSON.parse(readFileSync(VAPID_PATH, "utf-8"));
-      return _vapidKeys!;
+      const loaded = JSON.parse(readFileSync(VAPID_PATH, "utf-8")) as VapidKeys;
+      if (isValidVapidKeys(loaded)) {
+        _vapidKeys = loaded;
+        return _vapidKeys;
+      }
+      log.warn("vapid-keys.json has invalid key lengths, regenerating");
     } catch (e) {
       log.warn("corrupt vapid-keys.json, regenerating", { error: errMsg(e) });
     }
@@ -80,6 +95,9 @@ export function getVapidPublicKey(): string {
 
 // ── Subscription persistence ──
 
+const MAX_SUBSCRIPTIONS = 20;
+const MAX_ENDPOINT_LENGTH = 1024;
+
 function loadSubscriptions(): PushSubscription[] {
   if (!existsSync(SUBS_PATH)) return [];
   try {
@@ -94,14 +112,39 @@ function saveSubscriptions(subs: PushSubscription[]): void {
   writeFileSync(SUBS_PATH, JSON.stringify(subs, null, 2), { mode: 0o600 });
 }
 
-export function addSubscription(sub: PushSubscription): void {
+/** Validate subscription keys have correct decoded lengths. Returns error string or null. */
+export function validateSubscription(sub: PushSubscription): string | null {
+  if (!sub.endpoint || typeof sub.endpoint !== "string") return "missing endpoint";
+  if (sub.endpoint.length > MAX_ENDPOINT_LENGTH) return "endpoint too long";
+  try {
+    const url = new URL(sub.endpoint);
+    if (url.protocol !== "https:") return "endpoint must use HTTPS";
+  } catch { return "invalid endpoint URL"; }
+  if (!sub.keys?.p256dh || !sub.keys?.auth) return "missing keys";
+  try {
+    const p256dh = b64urlDecode(sub.keys.p256dh);
+    if (p256dh.length !== 65) return "p256dh must decode to 65 bytes (uncompressed P-256 point)";
+  } catch { return "p256dh is not valid base64url"; }
+  try {
+    const auth = b64urlDecode(sub.keys.auth);
+    if (auth.length !== 16) return "auth must decode to 16 bytes";
+  } catch { return "auth is not valid base64url"; }
+  return null;
+}
+
+export function addSubscription(sub: PushSubscription): { ok: boolean; error?: string } {
   const subs = loadSubscriptions();
   // Dedupe by endpoint
   const idx = subs.findIndex((s) => s.endpoint === sub.endpoint);
-  if (idx >= 0) subs[idx] = sub;
-  else subs.push(sub);
+  if (idx >= 0) {
+    subs[idx] = sub;
+  } else {
+    if (subs.length >= MAX_SUBSCRIPTIONS) return { ok: false, error: "subscription limit reached (max " + MAX_SUBSCRIPTIONS + ")" };
+    subs.push(sub);
+  }
   saveSubscriptions(subs);
   log.info("push subscription added", { endpoint: sub.endpoint.slice(0, 60) });
+  return { ok: true };
 }
 
 export function removeSubscription(endpoint: string): void {
@@ -116,6 +159,21 @@ export function getSubscriptionCount(): number {
 
 // ── VAPID JWT (RFC 8292) ──
 
+/** Build a JWK-based private key object for ES256 signing. */
+function buildSigningKey(vapid: VapidKeys) {
+  const pubBuf = b64urlDecode(vapid.publicKey);
+  return createPrivateKey({
+    key: {
+      kty: "EC",
+      crv: "P-256",
+      d: vapid.privateKey,
+      x: b64urlEncode(pubBuf.subarray(1, 33)),
+      y: b64urlEncode(pubBuf.subarray(33, 65)),
+    },
+    format: "jwk",
+  });
+}
+
 function createVapidJwt(audience: string, subject: string, vapid: VapidKeys, expSeconds = 12 * 3600): string {
   const header = b64urlEncode(Buffer.from(JSON.stringify({ typ: "JWT", alg: "ES256" })));
   const now = Math.floor(Date.now() / 1000);
@@ -126,35 +184,15 @@ function createVapidJwt(audience: string, subject: string, vapid: VapidKeys, exp
   })));
 
   const unsigned = `${header}.${payload}`;
-  const sign = createSign("SHA256");
-  sign.update(unsigned);
-
-  // Build DER-encoded private key for P-256
-  const privBuf = b64urlDecode(vapid.privateKey);
-  const der = buildEcPrivateKeyDer(privBuf);
-  const sig = sign.sign({ key: Buffer.from(der), format: "der", type: "sec1" });
+  const signer = createSign("SHA256");
+  signer.update(unsigned);
+  const sig = signer.sign(buildSigningKey(vapid));
 
   // Convert DER signature to raw r||s (each 32 bytes)
   const rawSig = derToRaw(sig);
   const sigB64 = b64urlEncode(rawSig);
 
   return `${unsigned}.${sigB64}`;
-}
-
-/** Build a minimal SEC1 DER encoding for a P-256 private key. */
-function buildEcPrivateKeyDer(privKey: Buffer): Uint8Array {
-  // SEC1 ECPrivateKey structure for P-256
-  const ecOid = Buffer.from("06082a8648ce3d030107", "hex"); // OID 1.2.840.10045.3.1.7
-  // SEQUENCE { INTEGER 1, OCTET STRING privKey, [0] OID }
-  const privOctet = Buffer.concat([Buffer.from([0x04, privKey.length]), privKey]);
-  const oidTagged = Buffer.concat([Buffer.from([0xa0, ecOid.length]), ecOid]);
-  const innerLen = 3 + privOctet.length + oidTagged.length; // 02 01 01 + octet + oid
-  const seq = Buffer.alloc(2 + innerLen);
-  seq[0] = 0x30; seq[1] = innerLen;
-  seq[2] = 0x02; seq[3] = 0x01; seq[4] = 0x01;
-  privOctet.copy(seq, 5);
-  oidTagged.copy(seq, 5 + privOctet.length);
-  return seq;
 }
 
 /** Convert DER ECDSA signature to raw 64-byte r||s. */
@@ -178,7 +216,12 @@ function derToRaw(der: Buffer): Buffer {
 
 // ── Web Push Encryption (RFC 8291, aes128gcm) ──
 
-function hkdfExpand(ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
+/**
+ * HKDF-SHA256 extract-then-expand (RFC 5869) — single iteration only.
+ * Safe for output lengths <= 32 bytes (one HMAC block), which covers
+ * AES-128-GCM key (16 bytes) and nonce (12 bytes) derivation.
+ */
+function hkdfSha256(ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
   const prk = createHmac("sha256", salt).update(ikm).digest();
   const infoWithCounter = Buffer.concat([info, Buffer.from([1])]);
   const okm = createHmac("sha256", prk).update(infoWithCounter).digest();
@@ -210,13 +253,13 @@ function encryptPayload(
     clientPub,
     serverPub,
   ]);
-  const ikm = hkdfExpand(sharedSecret, clientAuth, authInfo, 32);
+  const ikm = hkdfSha256(sharedSecret, clientAuth, authInfo, 32);
 
   // Derive content encryption key and nonce
   const cekInfo = Buffer.from("Content-Encoding: aes128gcm\0");
   const nonceInfo = Buffer.from("Content-Encoding: nonce\0");
-  const cek = hkdfExpand(ikm, salt, cekInfo, 16);
-  const nonce = hkdfExpand(ikm, salt, nonceInfo, 12);
+  const cek = hkdfSha256(ikm, salt, cekInfo, 16);
+  const nonce = hkdfSha256(ikm, salt, nonceInfo, 12);
 
   // Encrypt with AES-128-GCM
   // Pad payload with 0x02 delimiter (RFC 8291 §4)
@@ -249,43 +292,44 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
   const vapid = getVapidKeys();
   const payloadBuf = Buffer.from(JSON.stringify(payload));
-  const toRemove: string[] = [];
+
+  const results = await Promise.allSettled(subs.map(async (sub) => {
+    const audience = new URL(sub.endpoint).origin;
+    const jwt = createVapidJwt(audience, "mailto:noreply@wolfpack.local", vapid);
+
+    const { body } = encryptPayload(payloadBuf, sub);
+
+    const resp = await fetch(sub.endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Encoding": "aes128gcm",
+        TTL: "86400",
+        Authorization: `vapid t=${jwt}, k=${vapid.publicKey}`,
+      },
+      body,
+    });
+
+    return { endpoint: sub.endpoint, status: resp.status };
+  }));
+
   let sent = 0;
   let failed = 0;
+  const toRemove: string[] = [];
 
-  await Promise.all(subs.map(async (sub) => {
-    try {
-      const audience = new URL(sub.endpoint).origin;
-      const jwt = createVapidJwt(audience, "mailto:wolfpack@localhost", vapid);
-      const vapidPubB64 = vapid.publicKey;
-
-      const { body } = encryptPayload(payloadBuf, sub);
-
-      const resp = await fetch(sub.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "Content-Encoding": "aes128gcm",
-          TTL: "86400",
-          Authorization: `vapid t=${jwt}, k=${vapidPubB64}`,
-        },
-        body,
-      });
-
-      if (resp.status === 201 || resp.status === 200) {
-        sent++;
-      } else if (resp.status === 404 || resp.status === 410) {
-        // Subscription expired or unsubscribed
-        toRemove.push(sub.endpoint);
-      } else {
-        log.warn("push delivery failed", { status: resp.status, endpoint: sub.endpoint.slice(0, 60) });
-        failed++;
-      }
-    } catch (e) {
-      log.warn("push send error", { error: errMsg(e), endpoint: sub.endpoint.slice(0, 60) });
+  for (const r of results) {
+    if (r.status === "rejected") {
+      log.warn("push send error", { error: errMsg(r.reason) });
+      failed++;
+    } else if (r.value.status === 200 || r.value.status === 201) {
+      sent++;
+    } else if (r.value.status === 404 || r.value.status === 410) {
+      toRemove.push(r.value.endpoint);
+    } else {
+      log.warn("push delivery failed", { status: r.value.status, endpoint: r.value.endpoint.slice(0, 60) });
       failed++;
     }
-  }));
+  }
 
   // Prune dead subscriptions
   if (toRemove.length > 0) {
@@ -296,3 +340,89 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
   return { sent, failed, pruned: toRemove.length };
 }
+
+// ── Push state tracking (transition-based notifications) ──
+
+const prevTriageState = new Map<string, TriageStatus>();
+const lastPushTime = new Map<string, number>();
+const PUSH_DEBOUNCE_MS = 30_000;
+const prevRalphState = new Map<string, string>();
+
+/** Rate-limit timestamps for POST /api/notify (10/min). */
+let notifyTimestamps: number[] = [];
+
+function ralphLoopStatus(loop: { active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }): string {
+  if (loop.audit || loop.cleanup || loop.active) return "running";
+  if (loop.completed) return "done";
+  if (!loop.active && !loop.completed && loop.finished) return "limit";
+  return "idle";
+}
+
+/** Check session triage transitions and fire push notifications for running → idle. */
+export function checkSessionTransitions(sessions: Array<{ name: string; triage: TriageStatus }>): void {
+  if (getSubscriptionCount() === 0) return;
+  const now = Date.now();
+  const activeNames = new Set(sessions.map(s => s.name));
+  for (const s of sessions) {
+    const prev = prevTriageState.get(s.name);
+    prevTriageState.set(s.name, s.triage);
+    if (prev === "running" && s.triage === "idle") {
+      const last = lastPushTime.get(s.name) || 0;
+      if (now - last > PUSH_DEBOUNCE_MS) {
+        lastPushTime.set(s.name, now);
+        sendPush({ title: `Wolfpack: ${s.name}`, body: "Finished", tag: `session-${s.name}` }).catch(() => {});
+      }
+    }
+  }
+  // Prune state for removed sessions
+  for (const key of prevTriageState.keys()) {
+    if (!activeNames.has(key)) { prevTriageState.delete(key); lastPushTime.delete(key); }
+  }
+}
+
+/** Check ralph loop transitions and fire push notifications for running → done/idle/limit. */
+export function checkRalphLoopTransitions(loops: Array<{ project: string; active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }>): void {
+  if (getSubscriptionCount() === 0) return;
+  const now = Date.now();
+  for (const loop of loops) {
+    const key = `ralph-${loop.project}`;
+    const prev = prevRalphState.get(key);
+    const cur = ralphLoopStatus(loop);
+    prevRalphState.set(key, cur);
+    if (prev === "running" && (cur === "done" || cur === "idle" || cur === "limit")) {
+      const last = lastPushTime.get(key) || 0;
+      if (now - last > PUSH_DEBOUNCE_MS) {
+        lastPushTime.set(key, now);
+        const labels: Record<string, string> = { done: "All tasks complete", idle: "Stopped", limit: "Hit iteration limit" };
+        sendPush({
+          title: `Wolfpack: ralph`,
+          body: `${loop.project}: ${labels[cur] || cur}`,
+          tag: `ralph-${loop.project}`,
+        }).catch(() => {});
+      }
+    }
+  }
+}
+
+/** Check notify rate limit (10/min). Returns error string or null if ok. */
+export function checkNotifyRateLimit(): string | null {
+  const now = Date.now();
+  notifyTimestamps = notifyTimestamps.filter(t => now - t < 60_000);
+  if (notifyTimestamps.length >= 10) return "rate limit exceeded (10/min)";
+  notifyTimestamps.push(now);
+  return null;
+}
+
+// ── Test-only exports ──
+
+export const _testing = {
+  createVapidJwt,
+  encryptPayload,
+  derToRaw,
+  b64urlEncode,
+  b64urlDecode,
+  prevTriageState,
+  lastPushTime,
+  prevRalphState,
+  PUSH_DEBOUNCE_MS,
+};

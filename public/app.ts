@@ -3909,10 +3909,13 @@ function destroyClassicMobile() {
 // classic-mobile class is applied by initClassicMobile() on session open,
 // not at boot — avoids mid-session transport mismatch if setting changes.
 
-// Unregister any stale service workers (no longer used)
+// Unregister stale service workers but keep our push SW
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.getRegistrations().then(regs => {
-    regs.forEach(r => r.unregister());
+    regs.forEach(r => {
+      if (r.active?.scriptURL?.endsWith("/sw.js")) return;
+      r.unregister();
+    });
   });
 }
 
