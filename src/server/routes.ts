@@ -189,6 +189,9 @@ const PUSH_DEBOUNCE_MS = 30_000;
 /** Previous ralph loop state per project — for push notification triggers. */
 const prevRalphState = new Map<string, string>();
 
+/** Rate-limit timestamps for POST /api/notify (10/min). */
+let notifyTimestamps: number[] = [];
+
 function ralphLoopStatus(loop: { active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }): string {
   if (loop.audit || loop.cleanup || loop.active) return "running";
   if (loop.completed) return "done";
@@ -956,5 +959,23 @@ export const routes: Record<
     if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
     removeSubscription(body.endpoint);
     json(res, { ok: true });
+  },
+
+  // ── Agent-triggered notifications ──
+
+  "POST /api/notify": async (req, res) => {
+    const body = await parseBody<{ message?: string }>(req, res);
+    if (!body) return;
+    if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
+    const message = body.message.slice(0, 500);
+
+    // Rate limit: 10/minute
+    const now = Date.now();
+    notifyTimestamps = notifyTimestamps.filter(t => now - t < 60_000);
+    if (notifyTimestamps.length >= 10) return json(res, { error: "rate limit exceeded (10/min)" }, 429);
+    notifyTimestamps.push(now);
+
+    const result = await sendPush({ title: "Wolfpack", body: message, tag: "wolfpack-notify" });
+    json(res, { ok: true, ...result });
   },
 };

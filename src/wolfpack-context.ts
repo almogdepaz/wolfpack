@@ -24,7 +24,10 @@ Implement auth middleware with JWT validation
 Add integration tests for auth endpoints
 </subtasks>
 \`\`\`
-Each subtask = a meaningful deliverable (3-5 per breakdown). NOT single lines of code or imports — a unit of work a senior dev would recognize as coherent.`;
+Each subtask = a meaningful deliverable (3-5 per breakdown). NOT single lines of code or imports — a unit of work a senior dev would recognize as coherent.
+
+To notify the user (push notification to their phone/desktop):
+curl -s http://localhost:18790/api/notify -H 'Content-Type: application/json' -d '{"message": "your message"}'`;
 
 /** Context for interactive claude sessions — plan format + granularity. */
 export const INTERACTIVE_CONTEXT = `## Wolfpack Plan Conventions
