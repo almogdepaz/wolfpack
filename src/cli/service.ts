@@ -25,6 +25,7 @@ import {
   IS_MACOS,
   IS_LINUX,
   loadConfig,
+  ask,
   isPortInUse,
   killPortHolder,
   waitForPortFree,
@@ -105,6 +106,7 @@ export function renderPlist(config: Config | null, args: string[], logPath: stri
   const env: Record<string, string> = { WOLFPACK_SERVICE: "1" };
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
+  if (config?.backend) env.WOLFPACK_BACKEND = config.backend;
 
   const envEntries = Object.entries(env)
     .map(([k, v]) => `      <key>${xmlEsc(k)}</key>\n      <string>${xmlEsc(v)}</string>`)
@@ -156,6 +158,7 @@ export function renderSystemdUnit(config: Config | null, args: string[]): string
   ];
   if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${systemdEsc(config.devDir)}"`);
   if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);
+  if (config?.backend) envLines.push(`Environment="WOLFPACK_BACKEND=${systemdEsc(config.backend)}"`);
 
   const quotedArgs = args.map(a => `"${systemdEsc(a)}"`).join(" ");
   return `[Unit]
@@ -339,6 +342,31 @@ export function serviceUninstall() {
 }
 
 export function serviceStop() {
+  const config = loadConfig();
+
+  // Warn about active sessions before stopping
+  if (config && isPortInUse(config.port)) {
+    try {
+      const res = execFileSync(
+        "curl", ["-s", "--max-time", "3", `http://127.0.0.1:${config.port}/api/backend`],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      const data = JSON.parse(res);
+      const { pty = 0, tmux = 0 } = data.counts || {};
+      if (pty > 0 || tmux > 0) {
+        const parts: string[] = [];
+        if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
+        if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
+        print(dim(`\n  ${parts.join(", ")}.`));
+        const answer = ask("  Continue? (y/n) ");
+        if (answer.toLowerCase() !== "y") {
+          print(dim("  Aborted."));
+          return;
+        }
+      }
+    } catch { /* server unreachable or parse error — proceed with stop */ }
+  }
+
   try {
     if (IS_MACOS) {
       launchdBootout();
@@ -350,7 +378,6 @@ export function serviceStop() {
     log.error("failed to stop service", { error: errMsg(e) });
     print(red("  Failed to stop service."));
   }
-  const config = loadConfig();
   if (config && isPortInUse(config.port)) {
     killPortHolder(config.port);
     waitForPortFree(config.port, 5000);

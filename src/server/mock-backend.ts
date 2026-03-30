@@ -1,0 +1,125 @@
+/**
+ * MockBackend — SessionBackend implementation for integration tests.
+ *
+ * Replaces __setTestOverrides by providing a fully controllable backend
+ * that can be injected via __setTestBackend(). No tmux or real PTY needed.
+ */
+import type { SessionBackend } from "./backend.js";
+import { stripAnsi } from "./pty-backend.js";
+
+export interface MockBackendOptions {
+  sessions?: string[];
+  capturePane?: (session: string) => Promise<string>;
+  /** Hook called inside createSession before adding to set — use to simulate TOCTOU races. */
+  onBeforeCreate?: (name: string) => void;
+}
+
+export class MockBackend implements SessionBackend {
+  private _sessions: Set<string>;
+  private _capturePane: (session: string) => Promise<string>;
+  private _onBeforeCreate: ((name: string) => void) | null;
+
+  /** Last arguments passed to createSession (name, cwd, cmd). */
+  lastCreateArgs: { name: string; cwd: string; cmd: string | undefined } | null = null;
+  /** Last arguments passed to resize (name, cols, rows). */
+  lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
+
+  constructor(opts: MockBackendOptions = {}) {
+    this._sessions = new Set(opts.sessions ?? []);
+    this._capturePane = opts.capturePane ?? (async () => "");
+    this._onBeforeCreate = opts.onBeforeCreate ?? null;
+  }
+
+  /** Override the session list at runtime (useful for per-test setup). */
+  setSessions(sessions: string[]): void {
+    this._sessions = new Set(sessions);
+  }
+
+  /** Override capturePane at runtime. */
+  setCapturePane(fn: (session: string) => Promise<string>): void {
+    this._capturePane = fn;
+  }
+
+  async list(): Promise<string[]> {
+    return Array.from(this._sessions);
+  }
+
+  /** Set hook called inside createSession before adding to set. */
+  setOnBeforeCreate(fn: ((name: string) => void) | null): void {
+    this._onBeforeCreate = fn;
+  }
+
+  async createSession(
+    name: string,
+    cwd: string,
+    cmd: string | undefined,
+    _loadSettings: () => { agentCmd: string },
+  ): Promise<void> {
+    this.lastCreateArgs = { name, cwd, cmd };
+    if (this._onBeforeCreate) this._onBeforeCreate(name);
+    if (this._sessions.has(name)) {
+      const err = new Error(`duplicate session: ${name}`);
+      (err as any).code = "DUPLICATE_SESSION";
+      throw err;
+    }
+    this._sessions.add(name);
+  }
+
+  async killSession(name: string): Promise<void> {
+    this._sessions.delete(name);
+  }
+
+  async hasSession(name: string): Promise<boolean> {
+    return this._sessions.has(name);
+  }
+
+  async capturePane(name: string): Promise<string> {
+    if (!this._sessions.has(name)) return "";
+    return stripAnsi(await this._capturePane(name));
+  }
+
+  async capturePaneForTriage(name: string): Promise<string> {
+    return this.capturePane(name);
+  }
+
+  async resize(name: string, cols: number, rows: number): Promise<void> {
+    this.lastResizeArgs = { name, cols, rows };
+  }
+
+  async send(): Promise<void> {
+    // no-op in mock
+  }
+
+  async sendKey(): Promise<void> {
+    // no-op in mock
+  }
+
+  sessionDir(): string | undefined {
+    return undefined;
+  }
+
+  async cleanupOrphans(): Promise<void> {
+    // no-op in mock
+  }
+
+  // ── PtyBackend-compatible methods ──
+  // websocket.ts casts backend to PtyBackend and calls these directly.
+  // MockBackend provides no-op/stub versions so tests don't crash.
+
+  isSessionAlive(name: string): boolean {
+    return this._sessions.has(name);
+  }
+
+  onSessionData(_name: string, _cb: (data: Uint8Array) => void): (() => void) | null {
+    // No real data stream — return a no-op unsubscribe
+    return () => {};
+  }
+
+  writeToTerminal(_name: string, _data: Buffer | string): void {
+    // no-op in mock
+  }
+
+  getSessionPrefill(_name: string): Buffer {
+    return Buffer.alloc(0);
+  }
+}

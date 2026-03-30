@@ -5,8 +5,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { assets } from "../public-assets.js";
-import { tmuxList } from "./tmux.js";
 import { exec } from "./tmux.js";
+import { getBackend } from "./backend.js";
 import { createLogger } from "../log.js";
 
 const log = createLogger("http");
@@ -73,7 +73,7 @@ export async function uniqueSessionName(base: string): Promise<string> {
   // tmux silently replaces dots with underscores in session names — do it upfront
   // so the name we return matches what tmux actually creates
   base = base.replace(/\./g, "_");
-  const sessions = await tmuxList();
+  const sessions = await getBackend().list();
   if (!sessions.includes(base)) return base;
   let i = 2;
   while (sessions.includes(`${base}-${i}`)) i++;
@@ -81,7 +81,7 @@ export async function uniqueSessionName(base: string): Promise<string> {
 }
 
 export async function isAllowedSession(session: string): Promise<boolean> {
-  const allowed = await tmuxList();
+  const allowed = await getBackend().list();
   return allowed.includes(session);
 }
 

@@ -10,10 +10,10 @@ import type { AddressInfo } from "node:net";
 
 process.env.WOLFPACK_TEST = "1";
 
-const { server } = await import("../../src/server/index.ts");
-const { __setTestOverrides } = await import("../../src/test-hooks.ts");
+const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { MockBackend } = await import("../../src/server/mock-backend.ts");
 
-// ── Mock tmux ──
+// ── Mock backend ──
 
 const fakeSessions = [
   "test-project",
@@ -29,28 +29,13 @@ const paneContent: Record<string, string> = {
   "error-project": "$ bun test\nError: 3 tests failed\n",
 };
 
-__setTestOverrides({
-  tmuxList: async () => [...fakeSessions],
-  tmuxResize: async () => {},
+const mock = new MockBackend({
+  sessions: fakeSessions,
   capturePane: async (session) => paneContent[session] || "",
-  // Stub exec so handlePtyWs doesn't call real tmux
-  exec: (async (cmd: string, args?: readonly string[]) => {
-    const a = args || [];
-    if (a[0] === "has-session") {
-      const session = String(a[2] || "");
-      if (!fakeSessions.includes(session)) throw new Error("session not found");
-      return { stdout: "", stderr: "" };
-    }
-    if (a[0] === "set-option" || a[0] === "resize-window") {
-      return { stdout: "", stderr: "" };
-    }
-    if (a[0] === "capture-pane") {
-      const session = String(a[2] || "");
-      return { stdout: paneContent[session] || "", stderr: "" };
-    }
-    return { stdout: "", stderr: "" };
-  }) as any,
 });
+__setTestBackend(mock);
+
+const { server } = await import("../../src/server/index.ts");
 
 // Suppress expected tmux noise
 const origError = console.error;

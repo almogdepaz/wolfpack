@@ -1,0 +1,79 @@
+{
+  "lastCommit": "5e08973ebc3b5700fddcf5fc3731736ade5e34b4",
+  "lastFullBuild": "bf609e929b570ff17e934aa1798da5560b440b6c",
+  "lastUpdate": "2026-03-30T00:00:00.000Z",
+  "modules": {
+    "server": {
+      "files": [
+        "src/server/index.ts",
+        "src/server/http.ts",
+        "src/server/routes.ts",
+        "src/server/websocket.ts",
+        "src/server/backend.ts",
+        "src/server/pty-backend.ts",
+        "src/server/tmux-backend.ts",
+        "src/server/tmux.ts",
+        "src/server/ring-buffer.ts",
+        "src/server/ralph.ts",
+        "src/server/mock-backend.ts",
+        "src/auth.ts"
+      ],
+      "contextFile": ".context/server.md"
+    },
+    "client": {
+      "files": [
+        "public/app.ts",
+        "public/app-state.ts",
+        "public/app-grid.ts",
+        "public/app-touch.ts",
+        "public/app-ralph.ts",
+        "public/index.html",
+        "public/styles.css"
+      ],
+      "contextFile": ".context/client.md"
+    },
+    "core": {
+      "files": [
+        "src/grid-logic.ts",
+        "src/take-control-logic.ts",
+        "src/terminal-buffer.ts",
+        "src/terminal-input.ts",
+        "src/reconnect-hydration.ts",
+        "src/triage.ts",
+        "src/validation.ts",
+        "src/wolfpack-context.ts",
+        "src/worktree.ts",
+        "src/log.ts"
+      ],
+      "contextFile": ".context/core.md"
+    },
+    "ralph": {
+      "files": [
+        "src/ralph-macchio.ts",
+        "src/ralph-skill-audit.ts",
+        "src/ralph-skill-cleanup.ts",
+        "src/shared/process-cleanup.ts"
+      ],
+      "contextFile": ".context/ralph.md"
+    },
+    "cli": {
+      "files": [
+        "src/cli/index.ts",
+        "src/cli/config.ts",
+        "src/cli/setup.ts",
+        "src/cli/service.ts",
+        "src/cli/formatting.ts"
+      ],
+      "contextFile": ".context/cli.md"
+    },
+    "tests": {
+      "files": [
+        "tests/unit",
+        "tests/integration",
+        "tests/snapshot",
+        "tests/e2e"
+      ],
+      "contextFile": ".context/tests.md"
+    }
+  }
+}

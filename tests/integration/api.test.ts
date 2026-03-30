@@ -1,332 +1,93 @@
-import { describe, expect, test, beforeAll, afterAll, mock } from "bun:test";
-import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
+import { describe, expect, test, beforeAll, afterAll, beforeEach } from "bun:test";
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdirSync, rmSync, realpathSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir, hostname } from "node:os";
+import pkg from "../../package.json";
 
-// ─── Stubs for tmux + filesystem deps ────────────────────────────────────────
-// These replace the real tmux/exec calls so no tmux server is needed.
+// ─── Environment setup (must precede imports that read env) ──────────────────
+process.env.WOLFPACK_TEST = "1";
+delete process.env.WOLFPACK_JWT_SECRET;
 
-let fakeSessions: string[] = ["wolf-1", "wolf-2"];
+// Create a real temp dir for test project directories.
+// realpathSync resolves macOS /var → /private/var so isUnderDevDir agrees.
+const _rawTmpDir = join(tmpdir(), `wolfpack-api-test-${process.pid}`);
+mkdirSync(_rawTmpDir, { recursive: true });
+const TEST_DEV_DIR = realpathSync(_rawTmpDir);
+process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 
-const tmuxList = mock(async (): Promise<string[]> => fakeSessions);
-const capturePane = mock(
-  async (session: string): Promise<string> =>
-    `captured output for ${session}\n`,
-);
-const tmuxResize = mock(
-  async (_s: string, _c: number, _r: number): Promise<void> => {},
-);
-const tmuxNewSession = mock(
-  async (_n: string, _cwd: string, _cmd?: string): Promise<void> => {},
-);
-const tmuxKillSession = mock(async (_s: string): Promise<void> => {});
+const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
+const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { MockBackend } = await import("../../src/server/mock-backend.ts");
+__resetJwtAuthConfig();
 
-async function isAllowedSession(session: string): Promise<boolean> {
-  return (await tmuxList()).includes(session);
-}
+// Override cached DEV_DIR so routes.ts join(DEV_DIR, ...) uses our temp path.
+// Other test files may have imported tmux.ts first with a different env value.
+__setDevDir(TEST_DEV_DIR);
+process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 
-async function uniqueSessionName(base: string): Promise<string> {
-  const sessions = await tmuxList();
-  if (!sessions.includes(base)) return base;
-  let i = 2;
-  while (sessions.includes(`${base}-${i}`)) i++;
-  return `${base}-${i}`;
-}
+const mockBackend = new MockBackend({
+  sessions: ["wolf-1", "wolf-2"],
+  capturePane: async (s: string) => `captured output for ${s}\n`,
+});
+__setTestBackend(mockBackend);
 
-// ─── Triage classification (imported from shared module) ─────────────────────
-import { isJunkLine, type TriageStatus } from "../../src/triage.ts";
-import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, type PushSubscription } from "../../src/server/push.ts";
+// Reset rate limiters so they don't interfere
+const {
+  createServerInstance,
+  __pollRateLimiter,
+  __globalRateLimiter,
+} = await import("../../src/server/index.ts") as any;
 
-/** Content-diff state for test sessions route */
-const testPrevPaneContent = new Map<string, string>();
+const { server } = createServerInstance();
 
-// ─── Validation / config replicated from serve.ts ────────────────────────────
+let base = "";
 
-const VERSION = "1.2.0";
-const TEST_PORT = 0; // OS picks a free port
-const ALLOWED_ORIGINS = new Set<string>(); // populated in beforeAll
+// Test project names used by /api/create tests
+const TEST_PROJECTS = ["my-app", "wolf-1", "fresh-app"];
 
-function isAllowedOrigin(origin: string): boolean {
-  if (ALLOWED_ORIGINS.has(origin)) return true;
-  return false;
-}
+// Track dirs we actually created so we only clean up what we own
+const createdDirs: string[] = [];
 
-function isValidProjectName(name: string): boolean {
-  return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
-}
-
-function isValidSessionName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]+$/.test(name) && name.length > 0 && name.length <= 100;
-}
-
-const ALLOWED_KEYS = [
-  "Enter", "Tab", "Escape", "Up", "Down", "Left", "Right",
-  "BTab", "y", "n", "C-c", "C-d", "C-z",
-];
-
-// ─── HTTP helpers (same as serve.ts) ─────────────────────────────────────────
-
-function json(res: ServerResponse, data: unknown, status = 200): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(data));
-}
-
-const MAX_BODY = 64 * 1024;
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (c: Buffer) => {
-      size += c.length;
-      if (size > MAX_BODY) {
-        req.destroy();
-        reject(new Error("body too large"));
-        return;
-      }
-      chunks.push(c);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
-}
-
-async function parseBody<T = any>(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<T | null> {
-  try {
-    return JSON.parse(await readBody(req)) as T;
-  } catch {
-    json(res, { error: "invalid JSON body" }, 400);
-    return null;
+function ensureTestProjectDirs(): void {
+  mkdirSync(TEST_DEV_DIR, { recursive: true });
+  for (const name of TEST_PROJECTS) {
+    const dir = join(TEST_DEV_DIR, name);
+    mkdirSync(dir, { recursive: true });
+    createdDirs.push(dir);
   }
 }
 
-// ─── Routes (subset matching the test spec) ──────────────────────────────────
-
-const routes: Record<
-  string,
-  (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
-> = {
-  "GET /api/info": (_req, res) => {
-    json(res, { name: "test-host", version: VERSION });
-  },
-
-  "GET /api/sessions": async (_req, res) => {
-    const sessions = await tmuxList();
-    const results = await Promise.all(
-      sessions.map(async (name) => {
-        const pane = await capturePane(name);
-        const content = pane.trimEnd();
-        const lines = content.split("\n");
-
-        // Walk lines from bottom, skip junk, take first real line
-        let lastLine = "";
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (!isJunkLine(lines[i])) {
-            lastLine = lines[i].trim();
-            break;
-          }
-        }
-
-        // Content-diff triage
-        const prev = testPrevPaneContent.get(name);
-        let triage: TriageStatus;
-        if (prev !== content) {
-          triage = "running";
-          testPrevPaneContent.set(name, content);
-        } else {
-          triage = "idle";
-        }
-        return { name, lastLine, triage };
-      }),
-    );
-    const TRIAGE_PRIORITY: Record<TriageStatus, number> = { "running": 0, "idle": 1 };
-    results.sort((a, b) => TRIAGE_PRIORITY[a.triage] - TRIAGE_PRIORITY[b.triage]);
-    json(res, { sessions: results });
-  },
-
-  "GET /api/next-session-name": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const project = url.searchParams.get("project");
-    if (!project || !isValidProjectName(project)) {
-      return json(res, { error: "invalid project" }, 400);
-    }
-    const name = await uniqueSessionName(project);
-    json(res, { name });
-  },
-
-  "POST /api/create": async (req, res) => {
-    const body = await parseBody<{
-      project?: string;
-      newProject?: string;
-      cmd?: string;
-      sessionName?: string;
-    }>(req, res);
-    if (!body) return;
-    const { project, newProject, cmd, sessionName } = body;
-    const folderName = newProject?.trim() || project?.trim();
-    if (!folderName || !isValidProjectName(folderName)) {
-      return json(res, { error: "invalid project name" }, 400);
-    }
-    const customName = sessionName?.trim();
-    if (customName) {
-      if (!isValidSessionName(customName)) {
-        return json(res, { error: "invalid session name (letters, numbers, hyphens, underscores only)" }, 400);
-      }
-      const existing = await tmuxList();
-      if (existing.includes(customName)) {
-        return json(res, { error: "session name already taken" }, 409);
-      }
-    }
-    const finalName = customName || await uniqueSessionName(folderName);
-    try {
-      await tmuxNewSession(finalName, `/tmp/dev/${folderName}`, cmd);
-    } catch (e: any) {
-      if (e.code === "DUPLICATE_SESSION") {
-        return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
-      }
-      throw e;
-    }
-    json(res, { ok: true, session: finalName });
-  },
-
-  "POST /api/kill": async (req, res) => {
-    const body = await parseBody<{ session: string }>(req, res);
-    if (!body) return;
-    const { session } = body;
-    if (!session) return json(res, { error: "missing session" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    await tmuxKillSession(session);
-    json(res, { ok: true });
-  },
-
-  "POST /api/resize": async (req, res) => {
-    const body = await parseBody<{
-      session: string;
-      cols: number;
-      rows: number;
-    }>(req, res);
-    if (!body) return;
-    const { session, cols, rows } = body;
-    if (!session || !cols || !rows)
-      return json(res, { error: "missing params" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    await tmuxResize(
-      session,
-      Math.max(20, Math.min(cols, 300)),
-      Math.max(5, Math.min(rows, 100)),
-    );
-    json(res, { ok: true });
-  },
-
-  // ── Push notifications ──
-
-  "GET /api/push/vapid-key": (_req, res) => {
-    json(res, { publicKey: getVapidPublicKey() });
-  },
-
-  "POST /api/push/subscribe": async (req, res) => {
-    const body = await parseBody<PushSubscription>(req, res);
-    if (!body) return;
-    const sub: PushSubscription = { endpoint: body.endpoint, keys: { p256dh: body.keys?.p256dh, auth: body.keys?.auth } };
-    const validationError = validateSubscription(sub);
-    if (validationError) return json(res, { error: validationError }, 400);
-    const result = addSubscription(sub);
-    if (!result.ok) return json(res, { error: result.error }, 429);
-    json(res, { ok: true });
-  },
-
-  "POST /api/push/unsubscribe": async (req, res) => {
-    const body = await parseBody<{ endpoint?: string }>(req, res);
-    if (!body) return;
-    if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
-    removeSubscription(body.endpoint);
-    json(res, { ok: true });
-  },
-
-  "POST /api/notify": async (req, res) => {
-    const body = await parseBody<{ message?: string }>(req, res);
-    if (!body) return;
-    if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
-    const message = body.message.slice(0, 500);
-    const rateLimitError = checkNotifyRateLimit();
-    if (rateLimitError) return json(res, { error: rateLimitError }, 429);
-    const result = await sendPush({ title: "Wolfpack", body: message, tag: "wolfpack-notify" });
-    json(res, { ok: true, ...result });
-  },
-};
-
-// ─── Server setup (mirrors serve.ts handler, with injectable CORS) ───────────
-
-let server: ReturnType<typeof createServer>;
-let base: string;
-
-function startTestServer(): Promise<string> {
-  return new Promise((resolve) => {
-    server = createServer(async (req, res) => {
-      // CORS
-      const origin = req.headers.origin;
-      if (origin) {
-        if (isAllowedOrigin(origin)) {
-          res.setHeader("Access-Control-Allow-Origin", origin);
-          res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-          res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-          res.setHeader("Vary", "Origin");
-        } else {
-          res.writeHead(403, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "origin not allowed" }));
-          return;
-        }
-      }
-      if (req.method === "OPTIONS") {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-
-      const url = new URL(req.url ?? "/", "http://localhost");
-      const key = `${req.method ?? "GET"} ${url.pathname}`;
-      const handler = routes[key];
-      if (handler) {
-        try {
-          await handler(req, res);
-        } catch (err) {
-          if (!res.headersSent) json(res, { error: "internal error" }, 500);
-        }
-      } else {
-        res.writeHead(404);
-        res.end("Not Found");
-      }
-    });
-
-    server.listen(0, () => {
-      const { port } = server.address() as AddressInfo;
-      const url = `http://127.0.0.1:${port}`;
-      ALLOWED_ORIGINS.add(url);
-      ALLOWED_ORIGINS.add(`http://localhost:${port}`);
-      resolve(url);
-    });
-  });
-}
-
-// ─── Test lifecycle ──────────────────────────────────────────────────────────
+// ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
-  base = await startTestServer();
+  ensureTestProjectDirs();
+
+  await new Promise<void>((resolve) => {
+    (server as Server).listen(0, "127.0.0.1", () => {
+      const port = ((server as Server).address() as AddressInfo).port;
+      base = `http://127.0.0.1:${port}`;
+      resolve();
+    });
+  });
+});
+
+beforeEach(() => {
+  // Reset rate limiters before each test
+  __pollRateLimiter._map.clear();
+  __globalRateLimiter._map.clear();
 });
 
 afterAll(() => {
-  server?.close();
+  (server as Server).close();
+  // Clean up only dirs we created (not TEST_DEV_DIR itself)
+  for (const dir of createdDirs) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
 });
 
-// ─── Helper ──────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function post(path: string, body: unknown, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, {
@@ -349,8 +110,11 @@ describe("GET /api/info", () => {
     const res = await get("/api/info");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.name).toBe("test-host");
-    expect(data.version).toBe(VERSION);
+    const expectedName = hostname()
+      .replace(/\.local$/, "")
+      .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
+    expect(data.name).toBe(expectedName);
+    expect(data.version).toBe(pkg.version);
   });
 
   test("response is application/json", async () => {
@@ -360,8 +124,13 @@ describe("GET /api/info", () => {
 });
 
 describe("GET /api/sessions", () => {
+  beforeEach(() => {
+    // Reset backend to known state
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
+  });
+
   test("returns session list with lastLine and triage", async () => {
-    testPrevPaneContent.clear();
     const res = await get("/api/sessions");
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -372,62 +141,42 @@ describe("GET /api/sessions", () => {
   });
 
   test("returns empty list when no sessions", async () => {
-    const orig = fakeSessions;
-    fakeSessions = [];
-    tmuxList.mockImplementation(async () => []);
+    mockBackend.setSessions([]);
     const res = await get("/api/sessions");
     const data = await res.json();
     expect(data.sessions).toHaveLength(0);
-    fakeSessions = orig;
-    tmuxList.mockImplementation(async () => fakeSessions);
-  });
-
-  test("capturePane called for each session", async () => {
-    testPrevPaneContent.clear();
-    capturePane.mockClear();
-    await get("/api/sessions");
-    expect(capturePane).toHaveBeenCalledTimes(2);
-    expect(capturePane).toHaveBeenCalledWith("wolf-1");
-    expect(capturePane).toHaveBeenCalledWith("wolf-2");
   });
 
   test("classifies running when content changes", async () => {
-    testPrevPaneContent.clear();
-    capturePane.mockImplementation(async () => "compiling...\n");
+    mockBackend.setCapturePane(async () => "compiling...\n");
     const res = await get("/api/sessions");
     const data = await res.json();
     // First call — no previous content, so content differs → running
     expect(data.sessions[0].triage).toBe("running");
-    capturePane.mockImplementation(async (s: string) => `captured output for ${s}\n`);
   });
 
-  test("classifies idle when content stable (even with prompt-like text)", async () => {
-    testPrevPaneContent.clear();
-    capturePane.mockImplementation(async () => "Do you want to continue? (y/n)\n");
+  test("classifies idle when content stable with prompt", async () => {
+    mockBackend.setCapturePane(async () => "Do you want to continue? (y/n)\n");
     // First call seeds the content
     await get("/api/sessions");
-    // Second call — same content → idle (no needs-input distinction)
+    // Second call — same content → idle
     const res = await get("/api/sessions");
     const data = await res.json();
     expect(data.sessions[0].triage).toBe("idle");
-    capturePane.mockImplementation(async (s: string) => `captured output for ${s}\n`);
   });
 
   test("classifies idle when content stable without prompt", async () => {
-    testPrevPaneContent.clear();
-    capturePane.mockImplementation(async () => "$ \n");
+    mockBackend.setCapturePane(async () => "$ \n");
     // First call seeds the content
     await get("/api/sessions");
     // Second call — same content, bare prompt is junk, no input prompt → idle
     const res = await get("/api/sessions");
     const data = await res.json();
     expect(data.sessions[0].triage).toBe("idle");
-    capturePane.mockImplementation(async (s: string) => `captured output for ${s}\n`);
   });
 
   test("lastLine skips junk lines", async () => {
-    testPrevPaneContent.clear();
-    capturePane.mockImplementation(async () => "real output here\n─────────────\n$ \n\n");
+    mockBackend.setCapturePane(async () => "real output here\n─────────────\n$ \n\n");
     await get("/api/sessions");
     const res = await get("/api/sessions");
     const data = await res.json();
@@ -435,46 +184,50 @@ describe("GET /api/sessions", () => {
   });
 
   test("sorts sessions by triage priority", async () => {
-    testPrevPaneContent.clear();
-    fakeSessions = ["idle-sess", "running-sess"];
-    tmuxList.mockImplementation(async () => fakeSessions);
+    mockBackend.setSessions(["idle-sess", "running-sess", "input-sess"]);
     // Seed content on first call
-    capturePane.mockImplementation(async (s: string) => {
+    mockBackend.setCapturePane(async (s: string) => {
+      if (s === "input-sess") return "Continue? (y/n)\n";
       if (s === "running-sess") return "compiling step 1...\n";
       return "done\n";
     });
     await get("/api/sessions");
-    // Second call — idle-sess unchanged, running-sess changes
-    capturePane.mockImplementation(async (s: string) => {
+    // Second call — input-sess and idle-sess unchanged, running-sess changes
+    mockBackend.setCapturePane(async (s: string) => {
+      if (s === "input-sess") return "Continue? (y/n)\n";
       if (s === "running-sess") return "compiling step 2...\n";
       return "done\n";
     });
     const res = await get("/api/sessions");
     const data = await res.json();
-    expect(data.sessions[0].name).toBe("running-sess");
-    expect(data.sessions[0].triage).toBe("running");
-    expect(data.sessions[1].name).toBe("idle-sess");
+    // Sessions sorted alphabetically (5cf260d), triage is per-session metadata
+    expect(data.sessions[0].name).toBe("idle-sess");
+    expect(data.sessions[0].triage).toBe("idle");
+    expect(data.sessions[1].name).toBe("input-sess");
     expect(data.sessions[1].triage).toBe("idle");
-    // restore
-    fakeSessions = ["wolf-1", "wolf-2"];
-    tmuxList.mockImplementation(async () => fakeSessions);
-    capturePane.mockImplementation(async (s: string) => `captured output for ${s}\n`);
+    expect(data.sessions[2].name).toBe("running-sess");
+    expect(data.sessions[2].triage).toBe("running");
   });
 });
 
 describe("POST /api/create", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    // Re-assert env — other test files in the suite may overwrite it
+    process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+  });
+
   test("creates session for valid project", async () => {
-    tmuxNewSession.mockClear();
     const res = await post("/api/create", { project: "my-app" });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.session).toBe("my-app");
-    expect(tmuxNewSession).toHaveBeenCalledTimes(1);
   });
 
   test("generates unique session name on collision", async () => {
-    // wolf-1 already exists in fakeSessions
+    // wolf-1 already exists in sessions
+    mkdirSync(join(TEST_DEV_DIR, "wolf-1"), { recursive: true });
     const res = await post("/api/create", { project: "wolf-1" });
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -486,7 +239,7 @@ describe("POST /api/create", () => {
     const res = await post("/api/create", { project: "../etc" });
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toBe("invalid project name");
+    expect(data.error).toContain("invalid project");
   });
 
   test("rejects empty project name", async () => {
@@ -498,7 +251,7 @@ describe("POST /api/create", () => {
     const res = await post("/api/create", { project: ".." });
     expect(res.status).toBe(400);
     const data = await res.json();
-    expect(data.error).toBe("invalid project name");
+    expect(data.error).toContain("invalid project");
   });
 
   test("rejects missing project entirely", async () => {
@@ -507,29 +260,26 @@ describe("POST /api/create", () => {
   });
 
   test("uses newProject field when provided", async () => {
-    tmuxNewSession.mockClear();
     const res = await post("/api/create", { newProject: "fresh-app" });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.session).toBe("fresh-app");
   });
 
-  test("passes cmd through to tmuxNewSession", async () => {
-    tmuxNewSession.mockClear();
+  test("creates session with cmd", async () => {
+    mockBackend.lastCreateArgs = null;
     const res = await post("/api/create", {
       project: "my-app",
       cmd: "claude",
     });
     expect(res.status).toBe(200);
-    expect(tmuxNewSession).toHaveBeenCalledWith(
-      "my-app",
-      "/tmp/dev/my-app",
-      "claude",
-    );
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.session).toBe("my-app");
+    expect(mockBackend.lastCreateArgs!.cmd).toBe("claude");
   });
 
   test("uses custom sessionName when provided", async () => {
-    tmuxNewSession.mockClear();
     const res = await post("/api/create", {
       project: "my-app",
       sessionName: "auth-refactor",
@@ -537,11 +287,6 @@ describe("POST /api/create", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.session).toBe("auth-refactor");
-    expect(tmuxNewSession).toHaveBeenCalledWith(
-      "auth-refactor",
-      "/tmp/dev/my-app",
-      undefined,
-    );
   });
 
   test("rejects invalid session name characters", async () => {
@@ -564,20 +309,39 @@ describe("POST /api/create", () => {
     expect(data.error).toBe("session name already taken");
   });
 
-  test("returns 409 when tmux reports duplicate session (race condition)", async () => {
-    const err = new Error("duplicate session: my-app");
-    (err as any).code = "DUPLICATE_SESSION";
-    tmuxNewSession.mockRejectedValueOnce(err);
-    const res = await post("/api/create", { project: "my-app" });
+  test("returns 409 when backend reports duplicate session (race condition)", async () => {
+    // Simulate TOCTOU: session doesn't exist during pre-check, but appears
+    // between list() and createSession() — so createSession throws DUPLICATE_SESSION.
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setOnBeforeCreate((name) => {
+      // Inject the session into the set right before createSession checks,
+      // simulating another concurrent request that created it first.
+      if (name === "race-target") mockBackend.setSessions(["wolf-1", "wolf-2", "race-target"]);
+    });
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "race-target",
+    });
+    mockBackend.setOnBeforeCreate(null);
     expect(res.status).toBe(409);
     const data = await res.json();
+    // This hits the DUPLICATE_SESSION catch path, not the pre-check
     expect(data.error).toBe("session exists");
-    expect(data.session).toBe("my-app");
-    expect(data.hint).toBe("reconnect or choose a different name");
+  });
+
+  test("project dir not found returns 404", async () => {
+    const res = await post("/api/create", { project: "nonexistent-proj" });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toBe("project directory not found");
   });
 });
 
 describe("GET /api/next-session-name", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+  });
+
   test("returns project name when not taken", async () => {
     const res = await fetch(`${base}/api/next-session-name?project=my-app`);
     expect(res.status).toBe(200);
@@ -604,13 +368,19 @@ describe("GET /api/next-session-name", () => {
 });
 
 describe("POST /api/kill", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+  });
+
   test("kills valid session", async () => {
-    tmuxKillSession.mockClear();
     const res = await post("/api/kill", { session: "wolf-1" });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
-    expect(tmuxKillSession).toHaveBeenCalledWith("wolf-1");
+    // Verify session was actually removed from backend
+    const sessions = await get("/api/sessions");
+    const list = await sessions.json();
+    expect(list.sessions.map((s: any) => s.name)).not.toContain("wolf-1");
   });
 
   test("rejects unknown session", async () => {
@@ -628,60 +398,103 @@ describe("POST /api/kill", () => {
   });
 });
 
+describe("GET /api/backend", () => {
+  test("returns backend state", async () => {
+    const res = await get("/api/backend");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.default).toBeDefined();
+    expect(typeof data.tmuxAvailable).toBe("boolean");
+    expect(typeof data.counts).toBe("object");
+    expect(typeof data.counts.pty).toBe("number");
+    expect(typeof data.counts.tmux).toBe("number");
+  });
+});
+
+describe("POST /api/backend", () => {
+  test("switches to pty", async () => {
+    const res = await post("/api/backend", { default: "pty" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.default).toBe("pty");
+  });
+
+  test("rejects invalid backend type", async () => {
+    const res = await post("/api/backend", { default: "invalid" });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("invalid");
+  });
+
+  test("rejects missing type", async () => {
+    const res = await post("/api/backend", {});
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("POST /api/resize", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+  });
+
   test("resizes with valid params", async () => {
-    tmuxResize.mockClear();
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 120,
       rows: 40,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 120, 40);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
   });
 
   test("clamps cols to minimum 20", async () => {
-    tmuxResize.mockClear();
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 5,
       rows: 40,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 20, 40);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(20);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(40);
   });
 
   test("clamps cols to maximum 300", async () => {
-    tmuxResize.mockClear();
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 999,
       rows: 40,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 300, 40);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(300);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(40);
   });
 
   test("clamps rows to minimum 5", async () => {
-    tmuxResize.mockClear();
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 80,
       rows: 1,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 80, 5);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(80);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(5);
   });
 
   test("clamps rows to maximum 100", async () => {
-    tmuxResize.mockClear();
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 80,
       rows: 999,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 80, 100);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(80);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(100);
   });
 
   test("rejects missing params", async () => {
@@ -701,25 +514,21 @@ describe("POST /api/resize", () => {
   });
 
   test("boundary: cols=20, rows=5 (minimum)", async () => {
-    tmuxResize.mockClear();
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 20,
       rows: 5,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 20, 5);
   });
 
   test("boundary: cols=300, rows=100 (maximum)", async () => {
-    tmuxResize.mockClear();
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 300,
       rows: 100,
     });
     expect(res.status).toBe(200);
-    expect(tmuxResize).toHaveBeenCalledWith("wolf-1", 300, 100);
   });
 });
 
@@ -768,9 +577,7 @@ describe("body > 64KB", () => {
         body: huge,
       });
       // Either connection reset or 400 — both acceptable
-      // The server destroys the socket, so fetch may throw or get an error response
       if (res.ok) {
-        // Should not succeed
         expect(res.status).not.toBe(200);
       }
     } catch {

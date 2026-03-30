@@ -22,16 +22,31 @@ export interface PtyTestContext {
 /**
  * Boot the wolfpack server on a random port for integration tests.
  * Call in beforeAll; call ctx.cleanup() in afterAll.
+ *
+ * Injects a MockBackend as the session backend singleton so that
+ * `isAllowedSession` / `uniqueSessionName` (which go through `getBackend().list()`)
+ * work without real tmux. No tmux overrides needed — all backend calls route
+ * through MockBackend.
  */
-export async function bootTestServer(overrides: {
-  tmuxList: () => Promise<string[]>;
-  capturePane: () => Promise<string>;
+export async function bootTestServer(opts: {
+  sessions: string[];
+  capturePane?: (session: string) => Promise<string>;
+  backendType?: "tmux" | "pty";
 }): Promise<PtyTestContext> {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
-  const { __setTestOverrides, __getTestState } = await import("../../src/test-hooks.ts");
+  const { __getTestState } = await import("../../src/test-hooks.ts");
+  const { __setTestBackend } = await import("../../src/server/backend.ts");
+  const { MockBackend } = await import("../../src/server/mock-backend.ts");
   const { activePtySessions, ptySpawnAttempts } = __getTestState();
-  __setTestOverrides(overrides);
+
+  // Inject MockBackend so backend.list() returns the fake sessions
+  const mock = new MockBackend({
+    sessions: opts.sessions,
+    capturePane: opts.capturePane,
+  });
+  __setTestBackend(mock, opts.backendType ?? "tmux");
+
   const { server } = createServerInstance();
 
   const realConsoleError = console.error;
@@ -128,6 +143,13 @@ export function waitForMessage(ws: WebSocket, type: string, timeoutMs = 3000): P
     ws.addEventListener("message", handler);
     ws.addEventListener("close", () => { cleanup(); reject(new Error(`ws closed before ${type}`)); });
   });
+}
+
+/** Send attach (to set dims) + take_control for pending viewers.
+ * The server requires an attach before take_control to know the terminal dimensions. */
+export function sendTakeControl(ws: WebSocket, cols = 80, rows = 24): void {
+  ws.send(JSON.stringify({ type: "attach", cols, rows }));
+  ws.send(JSON.stringify({ type: "take_control" }));
 }
 
 /** Clean up PTY state for the given session names. */

@@ -30,7 +30,7 @@ const GRID_SESSIONS = ["grid-a", "grid-b", "grid-c", "grid-d", "grid-e", "grid-f
 
 beforeAll(async () => {
   ctx = await bootTestServer({
-    tmuxList: async () => [...GRID_SESSIONS],
+    sessions: [...GRID_SESSIONS],
     capturePane: async () => "$ grid-mock-output\n",
   });
 });

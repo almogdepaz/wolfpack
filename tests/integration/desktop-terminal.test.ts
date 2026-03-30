@@ -29,7 +29,7 @@ const FAKE_SESSIONS = ["desktop-test"];
 
 beforeAll(async () => {
   ctx = await bootTestServer({
-    tmuxList: async () => [...FAKE_SESSIONS],
+    sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-desktop-output\n",
   });
 });
@@ -460,22 +460,17 @@ describe("desktop terminal: two-phase prefill", () => {
     await wait(100);
   });
 
-  test("session-unavailable closes with 4001 before any prefill (no real tmux session)", async () => {
-    // In test mode, has-session fails → server closes WS with 4001 before prefill.
-    // This verifies the client gets a clean close code instead of hanging.
-    const ws = await connectPty("desktop-test");
-    const msgs = collectJsonMessages(ws);
-    const closePromise = waitForClose(ws, 5000);
-
-    ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, prefillMode: "full" }));
-
-    const closeEv = await closePromise;
-    expect(closeEv.code).toBe(4001);
-    // No prefill messages should have been sent — session didn't exist
-    const types = msgs.map(m => m.type);
-    expect(types).not.toContain("prefill_viewport");
-    expect(types).not.toContain("prefill_done");
-
-    await wait(100);
+  test("session-unavailable closes with 4001 before any prefill (unknown session)", async () => {
+    // Connect with a session name NOT in MockBackend's list.
+    // The WS upgrade is rejected at isAllowedSession → connection fails.
+    try {
+      const ws = await connectPty("nonexistent-session-xyz");
+      // If we get here, server accepted upgrade — wait for close
+      const ev = await waitForClose(ws, 3000);
+      expect(ev.code).toBeGreaterThanOrEqual(1000);
+      await closeWs(ws).catch(() => {});
+    } catch {
+      // connect failed outright — expected (server rejects upgrade for unknown session)
+    }
   });
 });

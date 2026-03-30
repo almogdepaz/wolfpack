@@ -328,7 +328,7 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize }) {
+function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -367,6 +367,10 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
   let _scrollAccum = 0;
   const SCROLL_THRESHOLD = 60; // px of deltaY per scroll line (tuned for trackpad)
   term.attachCustomWheelEventHandler((ev) => {
+    // Notify scroll-lock controller before ghostty-web processes the wheel.
+    // This runs inside ghostty-web's capture-phase wheel handler, which is
+    // the ONLY place we can intercept wheel events before they're consumed.
+    if (onWheelScroll) onWheelScroll(ev);
     try {
       const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
       if (!hasMouse) return false;
@@ -621,6 +625,9 @@ function createPtySocketClient(opts) {
             _attachAckReceived = true;
             _awaitingAttachAck = false;
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+            // Re-check dimensions after layout settles — catches stale
+            // initial dims on mobile where layout isn't finalized at connect time.
+            requestAnimationFrame(() => { sendFitResize(); });
           } else if (msg.type === "pty_ready") {
             if (opts.onPtyReady) opts.onPtyReady();
           } else if (msg.type === "prefill_viewport") {
@@ -820,6 +827,9 @@ function createPtyTerminalController(opts) {
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _cachedLoaded = false;
+  let _userScrolledUp = false;
+  let _scrollLockKeydownHandler = null;
+  let _browserShortcutKeydownHandler = null;
 
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
@@ -869,11 +879,15 @@ function createPtyTerminalController(opts) {
 
   function fitTerminalPreserveScroll() {
     if (!_fitAddon || !_term) return;
-    const scrollState = WP.captureScrollState(_term.buffer.active);
+    // ghostty-web: viewportY and getScrollbackLength() are on _term directly
+    // (no buffer.active like xterm.js)
+    const vp = _term.viewportY ?? 0;
+    const scrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : 0;
+    const wasAtBottom = vp === 0;
     _fitAddon.fit();
-    if (!scrollState.wasAtBottom) {
-      const target = WP.scrollTargetAfterResize(_term.buffer.active.baseY, scrollState.distanceFromBottom);
-      try { _term.scrollToLine(target); } catch {}
+    if (!wasAtBottom && vp > 0) {
+      const newScrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : scrollback;
+      try { _term.scrollToLine(Math.max(0, newScrollback - (scrollback - vp))); } catch {}
     }
   }
 
@@ -890,7 +904,7 @@ function createPtyTerminalController(opts) {
       _mounting = false;
       return;
     }
-    if (_term) { _mounting = false; return; } // double-mount during async gap
+    if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
     const result = createTerminalInstance({
@@ -902,6 +916,16 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
+      onWheelScroll: (ev) => {
+        // Only set scroll-lock when viewport actually moved away from bottom.
+        // In mouse mode, wheel events send SGR sequences to the app — viewportY
+        // stays 0, so we must not set _userScrolledUp in that case.
+        if (ev.deltaY < 0 && _term && _term.viewportY > 0) {
+          _userScrolledUp = true;
+        } else if (ev.deltaY > 0 && _term && _term.viewportY === 0) {
+          _userScrolledUp = false;
+        }
+      },
     });
     _term = result.term;
     _fitAddon = result.fitAddon;
@@ -912,16 +936,58 @@ function createPtyTerminalController(opts) {
 
     _term.open(container);
 
+    // Monkey-patch scrollToBottom to prevent auto-scroll when user has scrolled up.
+    // ghostty-web calls scrollToBottom() on EVERY write when viewportY !== 0,
+    // which makes it impossible to read scrollback while the agent is producing output.
+    // We suppress it when the user has intentionally scrolled up (via wheel/trackpad),
+    // and re-enable when they scroll back to the bottom.
+    {
+      // Scroll-lock: scroll up → suppress scrollToBottom, any key → snap back.
+      //
+      // ghostty-web's writeInternal() calls this.scrollToBottom() on every
+      // write when viewportY !== 0. Patching the instance method is sufficient.
+      //
+      // Wheel events are intercepted via onWheelScroll callback passed to
+      // createTerminalInstance (fires inside ghostty-web's capture-phase
+      // custom wheel handler — the ONLY place we can see wheel events before
+      // ghostty-web consumes them with {capture:true, passive:false}).
+      const origScrollToBottom = _term.scrollToBottom.bind(_term);
+      _term.scrollToBottom = () => {
+        if (_userScrolledUp) return;
+        origScrollToBottom();
+      };
+      // Intercept scrollLines (used by mobile touch scroll + momentum).
+      // When viewport moves away from bottom, set _userScrolledUp.
+      // When it reaches bottom, clear it.
+      const origScrollLines = _term.scrollLines.bind(_term);
+      _term.scrollLines = (n) => {
+        origScrollLines(n);
+        if (_term.viewportY > 0) {
+          _userScrolledUp = true;
+        } else {
+          _userScrolledUp = false;
+        }
+      };
+      _scrollLockKeydownHandler = () => {
+        if (_userScrolledUp) {
+          _userScrolledUp = false;
+          origScrollToBottom();
+        }
+      };
+      container.addEventListener("keydown", _scrollLockKeydownHandler, true);
+    }
+
     // Let browser shortcuts through — ghostty-web's keydown handler
     // calls preventDefault() on everything, swallowing Cmd+R etc.
-    container.addEventListener("keydown", (e) => {
+    _browserShortcutKeydownHandler = (e) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey) {
         const k = e.key.toLowerCase();
         if ("rwtlnq".includes(k) || (e.shiftKey && k === "r")) {
           e.stopImmediatePropagation();
         }
       }
-    }, true);
+    };
+    container.addEventListener("keydown", _browserShortcutKeydownHandler, true);
 
     // Create hydration controller (started in connect())
     _hydration = createInitialHydrationController({
@@ -997,6 +1063,7 @@ function createPtyTerminalController(opts) {
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
         }
+        _userScrolledUp = false; // reset scroll-lock on reconnect
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
@@ -1056,7 +1123,7 @@ function createPtyTerminalController(opts) {
 
   /**
    * dispose() — close socket, cancel hydration, dispose addons and terminal.
-   * Does NOT clean up view-specific DOM (containers, overlays, event listeners).
+   * Removes keydown listeners from container before disposing terminal.
    */
   function dispose() {
     if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
@@ -1067,6 +1134,13 @@ function createPtyTerminalController(opts) {
     _postResetBuffer = null;
     _mounting = false;
     _cachedLoaded = false;
+    _userScrolledUp = false;
+    if (_container) {
+      if (_scrollLockKeydownHandler) _container.removeEventListener("keydown", _scrollLockKeydownHandler, true);
+      if (_browserShortcutKeydownHandler) _container.removeEventListener("keydown", _browserShortcutKeydownHandler, true);
+    }
+    _scrollLockKeydownHandler = null;
+    _browserShortcutKeydownHandler = null;
     if (_term) { try { _term.dispose(); } catch {} _term = null; }
     _fitAddon = null;
     _container = null;
@@ -1602,7 +1676,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -2056,7 +2130,7 @@ async function initTerminal(cached) {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "none",
+    prefillMode: "viewport",
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -2226,7 +2300,10 @@ function destroyTerminal() {
   if (document.body.classList.contains("classic-mobile")) destroyClassicMobile();
   if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
-  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); flushSnapshot(); }
+  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
+  // Always flush snapshot before disposing terminal — even if no timer was
+  // pending, the terminal has content worth persisting for instant restore.
+  flushSnapshot();
   if (state.desktopResizeTimer) { clearTimeout(state.desktopResizeTimer); state.desktopResizeTimer = null; }
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
@@ -2732,17 +2809,19 @@ document.addEventListener("visibilitychange", () => {
           state.terminalController.reconnect();
         }
       } else if (hiddenDuration > DESKTOP_STALE_THRESHOLD_MS) {
-        // Desktop: reconnect only if tab was backgrounded >60s (App Nap,
-        // browser throttling can silently kill the TCP connection too).
+        // Desktop: force-reconnect if tab was backgrounded >60s.
+        // Browser throttling / App Nap can silently kill TCP while
+        // readyState still reports OPEN (zombie socket). Force-close
+        // and reconnect to get fresh data, matching mobile behavior.
         if (isGridActive()) {
           for (const gs of state.gridSessions) {
             if (!gs.controller || gs._displaced) continue;
             gs.controller.resetRetry();
-            if (!gs.controller.isConnected) gs.controller.connect();
+            gs.controller.reconnect();
           }
         } else if (state.terminalController?.term) {
           state.terminalController.resetRetry();
-          if (!state.terminalController.isConnected) connectDesktopWs();
+          state.terminalController.reconnect();
         }
       }
     }
@@ -3085,6 +3164,19 @@ async function showSettings() {
   showView("settings");
   renderMachinesList();
   toggleDebugPanel();
+  // Fetch backend state and update toggle
+  try {
+    const data = await api("/backend");
+    document.querySelectorAll(".backend-btn").forEach((btn) => {
+      const el = btn as HTMLButtonElement;
+      const backend = el.dataset.backend;
+      el.classList.toggle("active", backend === data.default);
+      if (backend === "tmux") {
+        el.disabled = !data.tmuxAvailable;
+        el.title = data.tmuxAvailable ? "" : "tmux is not installed";
+      }
+    });
+  } catch { /* settings view still usable without backend info */ }
 }
 
 async function renderMachinesList() {
@@ -3389,7 +3481,7 @@ function sidebarCardHtml(s, machineUrl) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
+      <div class="card-status"><span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
@@ -3613,6 +3705,28 @@ function bindHtmlEventListeners(): void {
     });
   });
 
+  // Backend toggle buttons
+  document.querySelectorAll(".backend-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const el = btn as HTMLButtonElement;
+      if (el.disabled) return;
+      const backend = el.dataset.backend;
+      if (!backend) return;
+      try {
+        await api("/backend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ default: backend }),
+        });
+        document.querySelectorAll(".backend-btn").forEach(b =>
+          b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
+        );
+      } catch (e) {
+        console.warn("[settings] backend toggle failed:", e);
+      }
+    });
+  });
+
   // Quick commands
   on("add-quick-cmd-btn", "click", () => addQuickCmd());
 
@@ -3704,10 +3818,20 @@ function applyTerminalPane(pane) {
       state.enterRetryTimer = null;
     }
     if (state.searchActive && state.searchTerm) {
-      // Search highlight: wrap matches in <mark> tags
+      // Search highlight: run regex on raw text (not HTML-escaped) to avoid
+      // splitting HTML entities like &amp;, then build safe HTML per-segment.
       const escaped = state.searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp(escaped, "gi");
-      term.innerHTML = esc(pane).replace(re, m => `<mark>${m}</mark>`);
+      let html = "";
+      let lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(pane)) !== null) {
+        html += esc(pane.slice(lastIndex, match.index));
+        html += `<mark>${esc(match[0])}</mark>`;
+        lastIndex = re.lastIndex;
+      }
+      html += esc(pane.slice(lastIndex));
+      term.innerHTML = html;
     } else {
       term.textContent = pane;
     }

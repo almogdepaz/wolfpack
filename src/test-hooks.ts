@@ -5,6 +5,8 @@
  * These functions all throw unless WOLFPACK_TEST=1.
  */
 
-export { __setTestOverrides, __resetTmuxListFn, __clearBackfillCache, __getBackfillCacheSize } from "./server/tmux.js";
+export { __setTestOverrides, __clearBackfillCache, __getBackfillCacheSize, __setDevDir } from "./server/tmux.js";
 export { __getTestState } from "./server/websocket.js";
 export { __resetJwtAuthConfig } from "./auth.js";
+export { __setTestBackend, __resetBackend } from "./server/backend.js";
+export { MockBackend } from "./server/mock-backend.js";
