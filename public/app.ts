@@ -19,7 +19,7 @@ import {
   openRalphDetail, refreshRalphDetail, parseIterations, toggleRawLog,
   cancelRalph, loadRalphStartForm, onIsolationChange,
   startRalph, continueRalph, discardRalph, showRalphStart, dismissRalph,
-  getRalphNotificationStatus, checkRalphTransitions,
+  checkRalphTransitions,
 } from "./app-ralph";
 
 import {
@@ -2675,36 +2675,27 @@ async function switchSession(val) {
 
 
 // ── Notifications ──
+// Push notifications are handled server-side. Frontend only tracks state for haptic feedback.
 
-// State-transition notification tracking
 const prevSessionStates = {};  // "machineUrl|sessionName" → triage
 function checkStateTransitions(groups) {
-  if (!state.notificationsEnabled || !wpSettings.notifications) return;
-  if (document.visibilityState === "visible") return;
+  if (!wpSettings.notifications) return;
 
   for (const g of groups) {
     if (!g.online) continue;
     const mUrl = g.machine.url || "";
-    const mName = g.machine.name || "local";
 
-    // Session transitions: running → idle
     for (const s of g.sessions) {
       const key = mUrl + "|" + s.name;
       const prev = prevSessionStates[key];
       const cur = s.triage || "idle";
       prevSessionStates[key] = cur;
       if (prev === "running" && cur === "idle") {
-        const title = getMachines().length > 0 ? `${mName}: ${s.name}` : `Wolfpack: ${s.name}`;
-        new Notification(title, {
-          body: "Finished",
-          tag: "wolfpack-session-" + key,
-        });
         haptic([200, 100, 200]);
       }
     }
 
-    // Ralph transitions: running/cleanup → done/idle/limit
-    checkRalphTransitions(g.loops, mUrl, mName);
+    checkRalphTransitions(g.loops, mUrl, g.machine.name || "local");
   }
 }
 

@@ -521,6 +521,7 @@ export function showRalphStart(machineUrl) {
 }
 
 // ── Notification helpers ──
+// Push notifications are handled server-side. Frontend only tracks state for haptic feedback.
 
 const prevRalphStates: Record<string, string> = {};
 
@@ -541,12 +542,6 @@ export function checkRalphTransitions(loops, mUrl, mName) {
     const cur = getRalphNotificationStatus(loop);
     prevRalphStates[key] = cur;
     if ((prev === "running") && (cur === "done" || cur === "idle" || cur === "limit")) {
-      const title = deps.getMachines().length > 0 ? `${mName}: ralph` : "Wolfpack: ralph";
-      const labels = { done: "All tasks complete", idle: "Stopped", limit: "Hit iteration limit" };
-      new Notification(title, {
-        body: `${loop.project}: ${labels[cur] || cur}`,
-        tag: "wolfpack-ralph-" + key,
-      });
       haptic([200, 100, 200]);
     }
   }
