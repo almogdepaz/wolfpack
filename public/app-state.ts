@@ -80,7 +80,10 @@ export function toggleSetting(key, val) {
 
 export function applySetting(key, val) {
   if (key === "animations") document.body.classList.toggle("no-animations", !val);
-  if (key === "notifications" && val) requestNotifications();
+  if (key === "notifications") {
+    if (val) requestNotifications();
+    else unsubscribeNotifications();
+  }
   if (key === "enterSends") {
     const el = document.getElementById("msg-input");
     if (el) el.placeholder = val ? "$ (Enter to send)" : "$ (⚡ to send)";
@@ -143,15 +146,86 @@ export function haptic(pattern) {
   if (wpSettings.haptics && navigator.vibrate) navigator.vibrate(pattern);
 }
 
-// ── Notifications ──
+// ── Push Notifications ──
 
-export function requestNotifications() {
-  if ("Notification" in window && Notification.permission === "default") {
-    Notification.requestPermission().then((p) => {
-      state.notificationsEnabled = p === "granted";
+/** Convert a base64url string to a Uint8Array (for applicationServerKey). */
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+export async function requestNotifications() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    console.warn("Push notifications not supported");
+    return;
+  }
+
+  // Request notification permission
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    state.notificationsEnabled = false;
+    return;
+  }
+
+  try {
+    // Get VAPID public key from server
+    const vapidResp = await fetch("/api/push/vapid-key");
+    const { publicKey } = await vapidResp.json();
+    if (!publicKey) throw new Error("no VAPID key from server");
+
+    // Register service worker
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+
+    // Subscribe to push
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
-  } else if ("Notification" in window && Notification.permission === "granted") {
-    state.notificationsEnabled = true;
+
+    // Send subscription to server
+    const resp = await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sub.toJSON()),
+    });
+
+    if (resp.ok) {
+      state.notificationsEnabled = true;
+      console.log("Push subscription registered");
+    } else {
+      throw new Error(`subscribe failed: ${resp.status}`);
+    }
+  } catch (e) {
+    console.error("Push subscription failed:", e);
+    state.notificationsEnabled = false;
+  }
+}
+
+export async function unsubscribeNotifications() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return;
+
+    // Tell server to remove subscription
+    await fetch("/api/push/unsubscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    });
+
+    // Unsubscribe locally
+    await sub.unsubscribe();
+    state.notificationsEnabled = false;
+    console.log("Push subscription removed");
+  } catch (e) {
+    console.error("Push unsubscribe failed:", e);
   }
 }
 
@@ -249,7 +323,7 @@ export const state = {
   isNewProject: false,
   enterRetryTimer: null,
   drawerOpen: false,
-  notificationsEnabled: ("Notification" in window && Notification.permission === "granted"),
+  notificationsEnabled: ("Notification" in window && Notification.permission === "granted" && "PushManager" in window),
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
   _ghostInputObserver: null,
