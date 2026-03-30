@@ -33,7 +33,7 @@ import {
 } from "../validation.js";
 import { cleanupAllExceptFinal } from "../worktree.js";
 import { assets } from "../public-assets.js";
-import { isInputPrompt, isJunkLine, type TriageStatus } from "../triage.js";
+import { isJunkLine, type TriageStatus } from "../triage.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
@@ -280,12 +280,7 @@ export const routes: Record<
           triage = "running";
           prevPaneContent.set(name, content);
         } else {
-          // Stable — check last non-junk lines for input prompts
-          const tail: string[] = [];
-          for (let i = lines.length - 1; i >= 0 && tail.length < 3; i--) {
-            if (!isJunkLine(lines[i])) tail.push(lines[i].trim());
-          }
-          triage = tail.some(isInputPrompt) ? "needs-input" : "idle";
+          triage = "idle";
         }
 
         return { name, lastLine, triage };

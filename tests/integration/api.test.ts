@@ -37,7 +37,7 @@ async function uniqueSessionName(base: string): Promise<string> {
 }
 
 // ─── Triage classification (imported from shared module) ─────────────────────
-import { isInputPrompt, isJunkLine, type TriageStatus } from "../../src/triage.ts";
+import { isJunkLine, type TriageStatus } from "../../src/triage.ts";
 
 /** Content-diff state for test sessions route */
 const testPrevPaneContent = new Map<string, string>();
@@ -143,12 +143,12 @@ const routes: Record<
           for (let i = lines.length - 1; i >= 0 && tail.length < 3; i--) {
             if (!isJunkLine(lines[i])) tail.push(lines[i].trim());
           }
-          triage = tail.some(isInputPrompt) ? "needs-input" : "idle";
+          triage = "idle";
         }
         return { name, lastLine, triage };
       }),
     );
-    const TRIAGE_PRIORITY: Record<TriageStatus, number> = { "needs-input": 0, "running": 1, "idle": 2 };
+    const TRIAGE_PRIORITY: Record<TriageStatus, number> = { "running": 0, "idle": 1 };
     results.sort((a, b) => TRIAGE_PRIORITY[a.triage] - TRIAGE_PRIORITY[b.triage]);
     json(res, { sessions: results });
   },
@@ -335,7 +335,7 @@ describe("GET /api/sessions", () => {
     expect(data.sessions).toHaveLength(2);
     expect(typeof data.sessions[0].lastLine).toBe("string");
     expect(typeof data.sessions[0].triage).toBe("string");
-    expect(["needs-input", "running", "idle"]).toContain(data.sessions[0].triage);
+    expect(["running", "idle"]).toContain(data.sessions[0].triage);
   });
 
   test("returns empty list when no sessions", async () => {
@@ -368,15 +368,15 @@ describe("GET /api/sessions", () => {
     capturePane.mockImplementation(async (s: string) => `captured output for ${s}\n`);
   });
 
-  test("classifies needs-input when content stable with prompt", async () => {
+  test("classifies idle when content stable (even with prompt-like text)", async () => {
     testPrevPaneContent.clear();
     capturePane.mockImplementation(async () => "Do you want to continue? (y/n)\n");
     // First call seeds the content
     await get("/api/sessions");
-    // Second call — same content, prompt detected → needs-input
+    // Second call — same content → idle (no needs-input distinction)
     const res = await get("/api/sessions");
     const data = await res.json();
-    expect(data.sessions[0].triage).toBe("needs-input");
+    expect(data.sessions[0].triage).toBe("idle");
     capturePane.mockImplementation(async (s: string) => `captured output for ${s}\n`);
   });
 
@@ -403,29 +403,25 @@ describe("GET /api/sessions", () => {
 
   test("sorts sessions by triage priority", async () => {
     testPrevPaneContent.clear();
-    fakeSessions = ["idle-sess", "running-sess", "input-sess"];
+    fakeSessions = ["idle-sess", "running-sess"];
     tmuxList.mockImplementation(async () => fakeSessions);
     // Seed content on first call
     capturePane.mockImplementation(async (s: string) => {
-      if (s === "input-sess") return "Continue? (y/n)\n";
       if (s === "running-sess") return "compiling step 1...\n";
       return "done\n";
     });
     await get("/api/sessions");
-    // Second call — input-sess and idle-sess unchanged, running-sess changes
+    // Second call — idle-sess unchanged, running-sess changes
     capturePane.mockImplementation(async (s: string) => {
-      if (s === "input-sess") return "Continue? (y/n)\n";
       if (s === "running-sess") return "compiling step 2...\n";
       return "done\n";
     });
     const res = await get("/api/sessions");
     const data = await res.json();
-    expect(data.sessions[0].name).toBe("input-sess");
-    expect(data.sessions[0].triage).toBe("needs-input");
-    expect(data.sessions[1].name).toBe("running-sess");
-    expect(data.sessions[1].triage).toBe("running");
-    expect(data.sessions[2].name).toBe("idle-sess");
-    expect(data.sessions[2].triage).toBe("idle");
+    expect(data.sessions[0].name).toBe("running-sess");
+    expect(data.sessions[0].triage).toBe("running");
+    expect(data.sessions[1].name).toBe("idle-sess");
+    expect(data.sessions[1].triage).toBe("idle");
     // restore
     fakeSessions = ["wolf-1", "wolf-2"];
     tmuxList.mockImplementation(async () => fakeSessions);

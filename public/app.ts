@@ -1567,12 +1567,11 @@ function showView(name, skipAnimation) {
 // ── Sessions ──
 
 const TRIAGE_MAP = {
-  "needs-input": { dot: "yellow", card: "attention", label: "input", title: "waiting for input" },
   "running":     { dot: "green",  card: "active-session", label: "running", title: "running" },
   "idle":        { dot: "gray",   card: "idle-session", label: "idle", title: "idle" },
 };
 
-const VALID_TRIAGE = new Set(["needs-input", "running", "idle"]);
+const VALID_TRIAGE = new Set(["running", "idle"]);
 
 function safeTriage(v: string): string {
   return VALID_TRIAGE.has(v) ? v : "idle";
@@ -2688,16 +2687,16 @@ function checkStateTransitions(groups) {
     const mUrl = g.machine.url || "";
     const mName = g.machine.name || "local";
 
-    // Session transitions: running → idle or needs-input
+    // Session transitions: running → idle
     for (const s of g.sessions) {
       const key = mUrl + "|" + s.name;
       const prev = prevSessionStates[key];
       const cur = s.triage || "idle";
       prevSessionStates[key] = cur;
-      if (prev === "running" && (cur === "idle" || cur === "needs-input")) {
+      if (prev === "running" && cur === "idle") {
         const title = getMachines().length > 0 ? `${mName}: ${s.name}` : `Wolfpack: ${s.name}`;
         new Notification(title, {
-          body: cur === "needs-input" ? "Needs input" : "Finished",
+          body: "Finished",
           tag: "wolfpack-session-" + key,
         });
         haptic([200, 100, 200]);
