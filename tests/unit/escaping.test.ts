@@ -27,7 +27,9 @@ function escAttr(s: unknown): string {
     .replace(/"/g, '\\"')
     .replace(/</g, "\\x3c")
     .replace(/>/g, "\\x3e")
-    .replace(/&/g, "\\x26");
+    .replace(/&/g, "\\x26")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
 }
 
 // ── xmlEsc tests ──
@@ -157,6 +159,18 @@ describe("escAttr", () => {
 
   test("backslash before quote is double-escaped", () => {
     expect(escAttr("\\'")).toBe("\\\\\\'");
+  });
+
+  test("escapes newline", () => {
+    expect(escAttr("line1\nline2")).toBe("line1\\nline2");
+  });
+
+  test("escapes carriage return", () => {
+    expect(escAttr("line1\rline2")).toBe("line1\\rline2");
+  });
+
+  test("escapes CRLF", () => {
+    expect(escAttr("a\r\nb")).toBe("a\\r\\nb");
   });
 });
 
