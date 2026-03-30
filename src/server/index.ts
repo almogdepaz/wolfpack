@@ -104,7 +104,25 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer(async (req, res) => {
-    const origin = req.headers.origin;
+    let origin = req.headers.origin;
+    // Tailscale serve strips the Origin header when proxying to localhost.
+    // Detect this via Tailscale-User-Login (injected by tailscale daemon,
+    // cannot be spoofed when traffic flows through tailscale serve).
+    // TRUST MODEL: This relies on tailscale-user-login being unforgeable.
+    // If wolfpack is ever exposed via a non-Tailscale reverse proxy that
+    // forwards arbitrary client headers, this becomes a CORS bypass.
+    const tsLogin = req.headers["tailscale-user-login"];
+    if (!origin && tsLogin && typeof tsLogin === "string" && tsLogin.length > 0 && TAILNET_SUFFIX) {
+      const referer = req.headers.referer;
+      if (referer) {
+        try {
+          const refUrl = new URL(referer);
+          if (refUrl.protocol === "https:" && refUrl.hostname.endsWith("." + TAILNET_SUFFIX)) {
+            origin = refUrl.origin;
+          }
+        } catch { /* malformed referer — leave origin empty */ }
+      }
+    }
     if (origin) {
       if (isAllowedOrigin(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);

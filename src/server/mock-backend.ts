@@ -5,19 +5,29 @@
  * that can be injected via __setTestBackend(). No tmux or real PTY needed.
  */
 import type { SessionBackend } from "./backend.js";
+import { stripAnsi } from "./pty-backend.js";
 
 export interface MockBackendOptions {
   sessions?: string[];
   capturePane?: (session: string) => Promise<string>;
+  /** Hook called inside createSession before adding to set — use to simulate TOCTOU races. */
+  onBeforeCreate?: (name: string) => void;
 }
 
 export class MockBackend implements SessionBackend {
   private _sessions: Set<string>;
   private _capturePane: (session: string) => Promise<string>;
+  private _onBeforeCreate: ((name: string) => void) | null;
+
+  /** Last arguments passed to createSession (name, cwd, cmd). */
+  lastCreateArgs: { name: string; cwd: string; cmd: string | undefined } | null = null;
+  /** Last arguments passed to resize (name, cols, rows). */
+  lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
 
   constructor(opts: MockBackendOptions = {}) {
     this._sessions = new Set(opts.sessions ?? []);
     this._capturePane = opts.capturePane ?? (async () => "");
+    this._onBeforeCreate = opts.onBeforeCreate ?? null;
   }
 
   /** Override the session list at runtime (useful for per-test setup). */
@@ -34,7 +44,19 @@ export class MockBackend implements SessionBackend {
     return Array.from(this._sessions);
   }
 
-  async createSession(name: string): Promise<void> {
+  /** Set hook called inside createSession before adding to set. */
+  setOnBeforeCreate(fn: ((name: string) => void) | null): void {
+    this._onBeforeCreate = fn;
+  }
+
+  async createSession(
+    name: string,
+    cwd: string,
+    cmd: string | undefined,
+    _loadSettings: () => { agentCmd: string },
+  ): Promise<void> {
+    this.lastCreateArgs = { name, cwd, cmd };
+    if (this._onBeforeCreate) this._onBeforeCreate(name);
     if (this._sessions.has(name)) {
       const err = new Error(`duplicate session: ${name}`);
       (err as any).code = "DUPLICATE_SESSION";
@@ -53,15 +75,15 @@ export class MockBackend implements SessionBackend {
 
   async capturePane(name: string): Promise<string> {
     if (!this._sessions.has(name)) return "";
-    return this._capturePane(name);
+    return stripAnsi(await this._capturePane(name));
   }
 
   async capturePaneForTriage(name: string): Promise<string> {
     return this.capturePane(name);
   }
 
-  async resize(): Promise<void> {
-    // no-op in mock
+  async resize(name: string, cols: number, rows: number): Promise<void> {
+    this.lastResizeArgs = { name, cols, rows };
   }
 
   async send(): Promise<void> {

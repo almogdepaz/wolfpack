@@ -83,6 +83,7 @@ export class BackendRouter implements SessionBackend {
   private backendFor(name: string): SessionBackend {
     const type = this.ownership.get(name);
     if (type === "tmux" && this.tmux) return this.tmux;
+    if (!type) log.debug("no ownership for session, falling back to pty", { session: name });
     return this.pty;
   }
 
@@ -116,6 +117,21 @@ export class BackendRouter implements SessionBackend {
       const { TmuxBackend } = require("./tmux-backend.js");
       this.tmux = new TmuxBackend();
       log.info("tmux backend initialized (now available)");
+    } else if (!this._tmuxAvailable && this.tmux) {
+      // tmux was uninstalled — tear down the stale backend
+      // Log orphaned tmux sessions before nulling the backend
+      const orphaned = [...this.ownership.entries()]
+        .filter(([, t]) => t === "tmux")
+        .map(([n]) => n);
+      if (orphaned.length > 0) {
+        log.warn("tmux sessions orphaned (tmux no longer available)", { sessions: orphaned });
+        for (const name of orphaned) this.ownership.delete(name);
+      }
+      this.tmux = null;
+      if (this._defaultBackend === "tmux") {
+        this._defaultBackend = "pty";
+        log.warn("tmux no longer available, default backend reverted to pty");
+      }
     }
     if (was !== this._tmuxAvailable) {
       log.info("tmux availability changed", { available: this._tmuxAvailable });
@@ -141,15 +157,19 @@ export class BackendRouter implements SessionBackend {
     const ptySessions = await this.pty.list();
     const tmuxSessions = this.tmux ? await this.tmux.list() : [];
 
-    // Reconcile ownership map
+    // Reconcile ownership map — PTY wins over tmux for same-named sessions
+    // (PTY sessions are in-process and authoritative; tmux may be stale orphans)
     const all = new Set<string>();
+    const ptySet = new Set(ptySessions);
     for (const name of ptySessions) {
       all.add(name);
       this.ownership.set(name, "pty");
     }
     for (const name of tmuxSessions) {
       all.add(name);
-      this.ownership.set(name, "tmux");
+      if (!ptySet.has(name)) {
+        this.ownership.set(name, "tmux");
+      }
     }
     // Prune stale entries
     for (const name of this.ownership.keys()) {

@@ -200,12 +200,13 @@ describe("GET /api/sessions", () => {
     });
     const res = await get("/api/sessions");
     const data = await res.json();
-    expect(data.sessions[0].name).toBe("input-sess");
-    expect(data.sessions[0].triage).toBe("needs-input");
-    expect(data.sessions[1].name).toBe("running-sess");
-    expect(data.sessions[1].triage).toBe("running");
-    expect(data.sessions[2].name).toBe("idle-sess");
-    expect(data.sessions[2].triage).toBe("idle");
+    // Sessions sorted alphabetically (5cf260d), triage is per-session metadata
+    expect(data.sessions[0].name).toBe("idle-sess");
+    expect(data.sessions[0].triage).toBe("idle");
+    expect(data.sessions[1].name).toBe("input-sess");
+    expect(data.sessions[1].triage).toBe("needs-input");
+    expect(data.sessions[2].name).toBe("running-sess");
+    expect(data.sessions[2].triage).toBe("running");
   });
 });
 
@@ -266,6 +267,7 @@ describe("POST /api/create", () => {
   });
 
   test("creates session with cmd", async () => {
+    mockBackend.lastCreateArgs = null;
     const res = await post("/api/create", {
       project: "my-app",
       cmd: "claude",
@@ -274,6 +276,7 @@ describe("POST /api/create", () => {
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.session).toBe("my-app");
+    expect(mockBackend.lastCreateArgs!.cmd).toBe("claude");
   });
 
   test("uses custom sessionName when provided", async () => {
@@ -307,18 +310,23 @@ describe("POST /api/create", () => {
   });
 
   test("returns 409 when backend reports duplicate session (race condition)", async () => {
-    // MockBackend.createSession throws DUPLICATE_SESSION when session already exists
-    // "wolf-1" is already in the session set, but we use a custom sessionName
-    // to bypass the name-taken check and let createSession throw
-    mockBackend.setSessions(["wolf-1", "wolf-2", "sneaky"]);
+    // Simulate TOCTOU: session doesn't exist during pre-check, but appears
+    // between list() and createSession() — so createSession throws DUPLICATE_SESSION.
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setOnBeforeCreate((name) => {
+      // Inject the session into the set right before createSession checks,
+      // simulating another concurrent request that created it first.
+      if (name === "race-target") mockBackend.setSessions(["wolf-1", "wolf-2", "race-target"]);
+    });
     const res = await post("/api/create", {
       project: "my-app",
-      sessionName: "sneaky",
+      sessionName: "race-target",
     });
+    mockBackend.setOnBeforeCreate(null);
     expect(res.status).toBe(409);
     const data = await res.json();
-    // The pre-check catches this as "session name already taken"
-    expect(data.error).toBe("session name already taken");
+    // This hits the DUPLICATE_SESSION catch path, not the pre-check
+    expect(data.error).toBe("session exists");
   });
 
   test("project dir not found returns 404", async () => {
@@ -369,6 +377,10 @@ describe("POST /api/kill", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
+    // Verify session was actually removed from backend
+    const sessions = await get("/api/sessions");
+    const list = await sessions.json();
+    expect(list.sessions.map((s: any) => s.name)).not.toContain("wolf-1");
   });
 
   test("rejects unknown session", async () => {
@@ -437,40 +449,52 @@ describe("POST /api/resize", () => {
     expect(data.ok).toBe(true);
   });
 
-  test("clamps cols to minimum 20 (returns ok)", async () => {
+  test("clamps cols to minimum 20", async () => {
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 5,
       rows: 40,
     });
     expect(res.status).toBe(200);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(20);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(40);
   });
 
-  test("clamps cols to maximum 300 (returns ok)", async () => {
+  test("clamps cols to maximum 300", async () => {
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 999,
       rows: 40,
     });
     expect(res.status).toBe(200);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(300);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(40);
   });
 
-  test("clamps rows to minimum 5 (returns ok)", async () => {
+  test("clamps rows to minimum 5", async () => {
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 80,
       rows: 1,
     });
     expect(res.status).toBe(200);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(80);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(5);
   });
 
-  test("clamps rows to maximum 100 (returns ok)", async () => {
+  test("clamps rows to maximum 100", async () => {
+    mockBackend.lastResizeArgs = null;
     const res = await post("/api/resize", {
       session: "wolf-1",
       cols: 80,
       rows: 999,
     });
     expect(res.status).toBe(200);
+    expect(mockBackend.lastResizeArgs!.cols).toBe(80);
+    expect(mockBackend.lastResizeArgs!.rows).toBe(100);
   });
 
   test("rejects missing params", async () => {

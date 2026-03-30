@@ -409,6 +409,7 @@ export const routes: Record<
       return json(res, { error: "invalid backend type — must be 'pty' or 'tmux'" }, 400);
     }
     const router = getRouter();
+    if (type === "tmux") router.recheckTmux(); // re-probe in case tmux was installed after server start
     if (type === "tmux" && !router.isTmuxAvailable()) {
       return json(res, { error: "tmux is not installed" }, 400);
     }

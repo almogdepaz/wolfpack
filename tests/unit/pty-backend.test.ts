@@ -104,15 +104,16 @@ describe("PtyBackend", () => {
     await backend.sendKey("key-test", "C-c");
   });
 
-  test("cleanupOrphans removes dead sessions", async () => {
+  test("cleanupOrphans is a no-op (exit callback handles cleanup)", async () => {
     await backend.createSession("orphan", "/tmp", "shell", () => ({ agentCmd: "shell" }));
-    // Forcefully mark as dead via test hook
     const session = backend.__getSession("orphan");
     expect(session).toBeDefined();
     session!.alive = false;
+    // cleanupOrphans is a no-op — PTY sessions are cleaned up by the exit callback.
+    // Dead sessions with alive=false shouldn't exist in the map in practice.
     await backend.cleanupOrphans();
-    // The dead session should be cleaned up
-    expect(await backend.list()).not.toContain("orphan");
+    // Session still in map (cleanup is the exit callback's job, not cleanupOrphans)
+    expect(await backend.list()).toContain("orphan");
   });
 
   test("capturePaneForTriage caches", async () => {

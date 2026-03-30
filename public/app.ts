@@ -824,6 +824,8 @@ function createPtyTerminalController(opts) {
   let _mounting = false;
   let _cachedLoaded = false;
   let _userScrolledUp = false;
+  let _scrollLockKeydownHandler = null;
+  let _browserShortcutKeydownHandler = null;
 
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
@@ -887,7 +889,7 @@ function createPtyTerminalController(opts) {
       _mounting = false;
       return;
     }
-    if (_term) { _mounting = false; return; } // double-mount during async gap
+    if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
     const result = createTerminalInstance({
@@ -900,7 +902,10 @@ function createPtyTerminalController(opts) {
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
       onWheelScroll: (ev) => {
-        if (ev.deltaY < 0) {
+        // Only set scroll-lock when viewport actually moved away from bottom.
+        // In mouse mode, wheel events send SGR sequences to the app — viewportY
+        // stays 0, so we must not set _userScrolledUp in that case.
+        if (ev.deltaY < 0 && _term && _term.viewportY > 0) {
           _userScrolledUp = true;
         } else if (ev.deltaY > 0 && _term && _term.viewportY === 0) {
           _userScrolledUp = false;
@@ -948,24 +953,26 @@ function createPtyTerminalController(opts) {
           _userScrolledUp = false;
         }
       };
-      container.addEventListener("keydown", () => {
+      _scrollLockKeydownHandler = () => {
         if (_userScrolledUp) {
           _userScrolledUp = false;
           origScrollToBottom();
         }
-      }, true);
+      };
+      container.addEventListener("keydown", _scrollLockKeydownHandler, true);
     }
 
     // Let browser shortcuts through — ghostty-web's keydown handler
     // calls preventDefault() on everything, swallowing Cmd+R etc.
-    container.addEventListener("keydown", (e) => {
+    _browserShortcutKeydownHandler = (e) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey) {
         const k = e.key.toLowerCase();
         if ("rwtlnq".includes(k) || (e.shiftKey && k === "r")) {
           e.stopImmediatePropagation();
         }
       }
-    }, true);
+    };
+    container.addEventListener("keydown", _browserShortcutKeydownHandler, true);
 
     // Create hydration controller (started in connect())
     _hydration = createInitialHydrationController({
@@ -1041,6 +1048,7 @@ function createPtyTerminalController(opts) {
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
         }
+        _userScrolledUp = false; // reset scroll-lock on reconnect
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
@@ -1100,7 +1108,7 @@ function createPtyTerminalController(opts) {
 
   /**
    * dispose() — close socket, cancel hydration, dispose addons and terminal.
-   * Does NOT clean up view-specific DOM (containers, overlays, event listeners).
+   * Removes keydown listeners from container before disposing terminal.
    */
   function dispose() {
     if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
@@ -1111,6 +1119,13 @@ function createPtyTerminalController(opts) {
     _postResetBuffer = null;
     _mounting = false;
     _cachedLoaded = false;
+    _userScrolledUp = false;
+    if (_container) {
+      if (_scrollLockKeydownHandler) _container.removeEventListener("keydown", _scrollLockKeydownHandler, true);
+      if (_browserShortcutKeydownHandler) _container.removeEventListener("keydown", _browserShortcutKeydownHandler, true);
+    }
+    _scrollLockKeydownHandler = null;
+    _browserShortcutKeydownHandler = null;
     if (_term) { try { _term.dispose(); } catch {} _term = null; }
     _fitAddon = null;
     _container = null;
@@ -2095,7 +2110,7 @@ async function initTerminal(cached) {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "none",
+    prefillMode: "viewport",
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -2265,7 +2280,10 @@ function destroyTerminal() {
   if (document.body.classList.contains("classic-mobile")) destroyClassicMobile();
   if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
-  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); flushSnapshot(); }
+  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
+  // Always flush snapshot before disposing terminal — even if no timer was
+  // pending, the terminal has content worth persisting for instant restore.
+  flushSnapshot();
   if (state.desktopResizeTimer) { clearTimeout(state.desktopResizeTimer); state.desktopResizeTimer = null; }
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
@@ -3684,12 +3702,14 @@ function bindHtmlEventListeners(): void {
       const backend = el.dataset.backend;
       if (!backend) return;
       try {
-        const res = await api("/backend", { default: backend });
-        if (res.ok) {
-          document.querySelectorAll(".backend-btn").forEach(b =>
-            b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
-          );
-        }
+        await api("/backend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ default: backend }),
+        });
+        document.querySelectorAll(".backend-btn").forEach(b =>
+          b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
+        );
       } catch (e) {
         console.warn("[settings] backend toggle failed:", e);
       }
@@ -3787,10 +3807,20 @@ function applyTerminalPane(pane) {
       state.enterRetryTimer = null;
     }
     if (state.searchActive && state.searchTerm) {
-      // Search highlight: wrap matches in <mark> tags
+      // Search highlight: run regex on raw text (not HTML-escaped) to avoid
+      // splitting HTML entities like &amp;, then build safe HTML per-segment.
       const escaped = state.searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp(escaped, "gi");
-      term.innerHTML = esc(pane).replace(re, m => `<mark>${m}</mark>`);
+      let html = "";
+      let lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(pane)) !== null) {
+        html += esc(pane.slice(lastIndex, match.index));
+        html += `<mark>${esc(match[0])}</mark>`;
+        lastIndex = re.lastIndex;
+      }
+      html += esc(pane.slice(lastIndex));
+      term.innerHTML = html;
     } else {
       term.textContent = pane;
     }

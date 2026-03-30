@@ -16,7 +16,8 @@ export function esc(s) {
 export function escAttr(s) {
   if (s == null) return "";
   return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
-    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26");
+    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26")
+    .replace(/\n/g, "\\n").replace(/\r/g, "\\r");
 }
 
 // ── Generic utilities ──

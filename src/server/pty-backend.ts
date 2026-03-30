@@ -8,6 +8,7 @@
 import type { SessionBackend } from "./backend.js";
 import { RingBuffer } from "./ring-buffer.js";
 import { SHELL, injectAgentContext } from "./tmux.js";
+import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 
 const log = createLogger("pty-backend");
@@ -17,9 +18,9 @@ const log = createLogger("pty-backend");
  * Used by capturePane so the classic mobile terminal and triage code
  * receive plain text, matching what tmux capture-pane would return.
  */
-function stripAnsi(s: string): string {
+export function stripAnsi(s: string): string {
   return s
-    .replace(/\x1b(?:[@-Z\\-_]|\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g, "")
+    .replace(/\x1b(?:[@-Z\\-_]|\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)/g, "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n");
 }
@@ -82,6 +83,12 @@ export class PtyBackend implements SessionBackend {
     }
 
     const agentCmd = cmd || loadSettings().agentCmd || "claude";
+    // Defense-in-depth: validate the command before shell interpolation.
+    // CMD_REGEX is the primary gate (routes.ts), but PtyBackend passes cmd
+    // directly to SHELL -lic (no outer shell like tmux), so re-validate here.
+    if (agentCmd !== "shell" && !CMD_REGEX.test(agentCmd)) {
+      throw new Error(`invalid command: ${agentCmd}`);
+    }
     let shellCmd: string;
     if (agentCmd === "shell") {
       shellCmd = SHELL;
@@ -119,7 +126,9 @@ export class PtyBackend implements SessionBackend {
         },
         exit(_terminal: unknown, _code: number, _signal: string | null) {
           const session = sessions.get(name);
-          if (session) {
+          // Guard against name reuse: only clean up if this is still OUR session.
+          // A new session with the same name may have been created after killSession.
+          if (session && session.proc === proc) {
             session.alive = false;
             sessions.delete(name);
             triageCache.delete(name);
@@ -209,14 +218,8 @@ export class PtyBackend implements SessionBackend {
   }
 
   async cleanupOrphans(): Promise<void> {
-    // No external processes to clean up — all sessions are children of this process.
-    // Kill any sessions that are no longer alive.
-    for (const [name, session] of this.sessions) {
-      if (!session.alive) {
-        this.sessions.delete(name);
-        this.triageCache.delete(name);
-      }
-    }
+    // No-op: all PTY sessions are children of this process and cleaned up
+    // by the exit callback in createSession. No external orphans possible.
   }
 
   // ── WS attachment helpers (used by handlePtyWs for direct terminal I/O) ──

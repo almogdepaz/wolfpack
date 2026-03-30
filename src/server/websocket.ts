@@ -415,10 +415,7 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Resize to client dimensions
-      await ptyBackend.resize(session, cols, rows);
-
-      // Send prefill from ring buffer
+      // Send prefill from ring buffer (snapshot BEFORE resize so content is stable)
       if (prefillMode !== "none") {
         const prefill = ptyBackend.getSessionPrefill(session);
         if (prefill.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
@@ -433,13 +430,10 @@ function setupNewPtyEntry(
           }
 
           if (prefillMode === "viewport") {
-            // For viewport, send all as a single viewport frame
             entry.viewer.send(sendBuf);
             entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
             sendPrefillDone(entry);
           } else {
-            // Full: send viewport first, then full scrollback
-            entry.viewer.send(sendBuf);
             entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
             await sendPrefillChunked(entry, sendBuf, session);
           }
@@ -450,7 +444,8 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Subscribe to terminal output — forward to WS viewer
+      // Subscribe to terminal output BEFORE resize — resize may trigger PTY
+      // redraw output that must be forwarded to the viewer immediately.
       const unsub = ptyBackend.onSessionData(session, (data: Uint8Array) => {
         if (!entry.alive) return;
         if (entry.viewer && entry.viewer.readyState === 1) {
@@ -458,6 +453,10 @@ function setupNewPtyEntry(
         }
       });
       entry.unsubscribe = unsub;
+
+      // Resize to client dimensions — now that listener is attached, any
+      // redraw output from the PTY will be forwarded to the viewer.
+      await ptyBackend.resize(session, cols, rows);
 
       sendPtyReady(entry);
     } finally {
