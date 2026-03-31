@@ -109,7 +109,7 @@ export async function setup() {
 
   // ── Backend selection ──
   print(bold("  Session backend:"));
-  print(`    ${bold("1)")} pty  ${dim("— lightweight, no dependencies (default)")}`);
+  print(`    ${bold("1)")} pty  ${dim("— lightweight, no dependencies (default) — sessions lost on restart")}`);
   print(`    ${bold("2)")} tmux ${dim("— persistent sessions, survives server restarts")}`);
   const backendChoice = ask("  Choose backend [1]: ") || "1";
   let backend: BackendType = backendChoice === "2" ? "tmux" : DEFAULT_BACKEND;

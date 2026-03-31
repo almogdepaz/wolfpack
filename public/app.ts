@@ -1010,6 +1010,14 @@ function createPtyTerminalController(opts) {
     });
 
     fitTerminalPreserveScroll();
+    // Force canvas repaint after mount — ghostty-web's WASM renderer may
+    // retain stale framebuffer pixels from a previous terminal instance.
+    // Writing an empty string + scheduling a fit on the next frame ensures
+    // the canvas is redrawn with the new (empty) terminal state before any
+    // cached content or prefill data arrives.
+    _term.write('', () => {
+      requestAnimationFrame(() => { if (_term && _fitAddon) _fitAddon.fit(); });
+    });
     if (mountOpts && mountOpts.cached) {
       _cachedLoaded = true;
       _term.write(mountOpts.cached, () => {
@@ -1860,13 +1868,16 @@ async function openSession(name, machineUrl) {
     renderSidebar();
     return;
   }
+  // Destroy BEFORE changing state — flushSnapshot() inside destroyTerminal()
+  // reads state.currentSession to key the snapshot. If we set state first,
+  // the OLD terminal's content gets saved under the NEW session's key.
+  destroyTerminal();
   setState({ currentSession: name, currentMachine: machineUrl || "" });
   recordRecent(state.currentMachine, name);
   wpMetrics.reset();
   restoreDraft();
   const cached = loadSnapshot(state.currentMachine, name);
   showView("terminal");
-  destroyTerminal();
   if (useClassicMobile()) {
     initClassicMobile(cached);
   } else {
