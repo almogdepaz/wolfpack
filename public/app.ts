@@ -917,13 +917,23 @@ function createPtyTerminalController(opts) {
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
       onWheelScroll: (ev) => {
-        // Only set scroll-lock when viewport actually moved away from bottom.
-        // In mouse mode, wheel events send SGR sequences to the app — viewportY
-        // stays 0, so we must not set _userScrolledUp in that case.
-        if (ev.deltaY < 0 && _term && _term.viewportY > 0) {
+        if (!_term) return;
+        // Skip scroll-lock in mouse mode — wheel events send SGR sequences
+        // to the app, the viewport doesn't actually move.
+        try {
+          const hasMouse = _term.getMode(1000) || _term.getMode(1002) || _term.getMode(1003);
+          if (hasMouse) return;
+        } catch { /* getMode may not exist on older builds */ }
+        // This callback fires BEFORE ghostty-web updates the viewport, so
+        // viewportY is stale. For scroll-up we trust deltaY direction (user
+        // wants to read scrollback). For scroll-down we defer the viewportY
+        // check to next frame when ghostty has finished processing.
+        if (ev.deltaY < 0) {
           _userScrolledUp = true;
-        } else if (ev.deltaY > 0 && _term && _term.viewportY === 0) {
-          _userScrolledUp = false;
+        } else if (ev.deltaY > 0) {
+          requestAnimationFrame(() => {
+            if (_term && _term.viewportY === 0) _userScrolledUp = false;
+          });
         }
       },
     });
