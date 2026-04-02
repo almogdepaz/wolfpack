@@ -319,11 +319,17 @@ if command -v wolfpack &>/dev/null; then
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
   echo ""
+  echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
+  echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
+  echo ""
   exec wolfpack setup < /dev/tty
 elif [ -x "${INSTALL_DIR}/${BINARY_NAME}" ]; then
   echo "  $(green '✓') $(bold 'wolfpack') installed"
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
+  echo ""
+  echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
+  echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
   echo ""
   exec "${INSTALL_DIR}/${BINARY_NAME}" setup < /dev/tty
 else

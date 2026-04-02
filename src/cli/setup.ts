@@ -327,6 +327,13 @@ export async function setup() {
   print("");
   printQR(url);
   print("");
+  print(yellow("  Security: Always use the Tailscale hostname URL — not your machine's IP (it won't work)."));
+  print("");
+  print(bold("  JWT Authentication:"));
+  print(dim("  1. Generate a secret:  openssl rand -base64 48"));
+  print(dim("  2. Export before starting:  export WOLFPACK_JWT_SECRET=\"your-secret\""));
+  print(dim("  3. For services, add to your service environment or shell profile."));
+  print("");
 
   if (serviceInstalled) {
     print(green("  Wolfpack is running as a background service."));
