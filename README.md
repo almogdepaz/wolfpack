@@ -193,6 +193,31 @@ All settings (terminal mode, font size, haptics, etc.) persist in localStorage a
 
 Tailscale's encrypted mesh network handles auth and routing — no ports to open, no DNS to configure.
 
+### Security
+
+**Always use the Tailscale hostname** (e.g. `https://mybox.tail1234.ts.net`) — not raw IPs. The QR code from setup already points to the correct URL. Raw IP access (LAN or Tailscale `100.x.x.x`) bypasses Tailscale's DNS-based routing and may not be protected by CORS.
+
+**JWT authentication** adds a second layer of protection. Without it, anyone who can reach the server port has full access to your tmux sessions. To enable:
+
+1. Generate a secret (minimum 32 characters):
+   ```bash
+   openssl rand -base64 48
+   ```
+2. Set the environment variable before starting wolfpack:
+   ```bash
+   export WOLFPACK_JWT_SECRET="your-secret-here"
+   ```
+   For service installs, add it to your shell profile or the service environment.
+
+3. Optional configuration:
+   - `WOLFPACK_JWT_AUDIENCE` — expected `aud` claim
+   - `WOLFPACK_JWT_ISSUER` — expected `iss` claim
+   - `WOLFPACK_JWT_CLOCK_TOLERANCE_SEC` — clock skew tolerance (default: 30s)
+
+Tokens use HS256 (HMAC-SHA256). The server validates but does not issue tokens — generate them with any JWT library using the same secret.
+
+**Without `WOLFPACK_JWT_SECRET` set, authentication is disabled.** This is fine for localhost-only usage but strongly recommended when the server is reachable over a network.
+
 ## Ralph Loop
 
 Autonomous task runner. Write a markdown plan file, pick an agent, set iterations, and let it rip. Ralph reads the plan, extracts the first incomplete task, hands it to the agent, marks it done, and moves on — implementing, testing, and committing along the way. See [full documentation](docs/ralph-macchio.md).
