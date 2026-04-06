@@ -2852,19 +2852,17 @@ document.addEventListener("visibilitychange", () => {
         // Browser throttling / App Nap can silently kill TCP while
         // readyState still reports OPEN (zombie socket). Force-close
         // and reconnect to get fresh data, matching mobile behavior.
+        // Force-reconnect unconditionally — zombie sockets report readyState=OPEN
+        // so isConnected would be true even though the socket is dead.
         if (isGridActive()) {
           for (const gs of state.gridSessions) {
             if (!gs.controller || gs._displaced) continue;
-            if (!gs.controller.isConnected) {
-              gs.controller.resetRetry();
-              gs.controller.reconnect();
-            }
+            gs.controller.resetRetry();
+            gs.controller.reconnect();
           }
         } else if (state.terminalController?.term) {
-          if (!state.terminalController.isConnected) {
-            state.terminalController.resetRetry();
-            state.terminalController.reconnect();
-          }
+          state.terminalController.resetRetry();
+          state.terminalController.reconnect();
         }
       }
     }

@@ -130,6 +130,7 @@ export class PtyBackend implements SessionBackend {
           // A new session with the same name may have been created after killSession.
           if (session && session.proc === proc) {
             session.alive = false;
+            dataListeners.clear();
             sessions.delete(name);
             triageCache.delete(name);
             log.info("session exited", { name });
