@@ -3,7 +3,7 @@
  * Zero external dependencies, uses node:crypto only.
  */
 import { createECDH, createSign, createPrivateKey, createHmac, createCipheriv, randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
@@ -109,7 +109,9 @@ function loadSubscriptions(): PushSubscription[] {
 }
 
 function saveSubscriptions(subs: PushSubscription[]): void {
-  writeFileSync(SUBS_PATH, JSON.stringify(subs, null, 2), { mode: 0o600 });
+  const tmp = SUBS_PATH + ".tmp";
+  writeFileSync(tmp, JSON.stringify(subs, null, 2), { mode: 0o600 });
+  renameSync(tmp, SUBS_PATH);
 }
 
 /** Validate subscription keys have correct decoded lengths. Returns error string or null. */
@@ -119,6 +121,16 @@ export function validateSubscription(sub: PushSubscription): string | null {
   try {
     const url = new URL(sub.endpoint);
     if (url.protocol !== "https:") return "endpoint must use HTTPS";
+    // Restrict to known push service domains to prevent SSRF
+    const ALLOWED_PUSH_HOSTS = [
+      "fcm.googleapis.com",
+      "updates.push.services.mozilla.com",
+      "wns.windows.com",
+      "web.push.apple.com",
+    ];
+    if (!ALLOWED_PUSH_HOSTS.some(h => url.hostname === h || url.hostname.endsWith("." + h))) {
+      return "endpoint host not recognized as a push service";
+    }
   } catch { return "invalid endpoint URL"; }
   if (!sub.keys?.p256dh || !sub.keys?.auth) return "missing keys";
   try {
@@ -357,6 +369,8 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 // ── Push state tracking (transition-based notifications) ──
 
 const prevTriageState = new Map<string, TriageStatus>();
+// Shared rate-limit map — session keys use bare names, ralph keys use "ralph-" prefix.
+// Each namespace is pruned by its own check function (checkSessionTransitions / checkRalphLoopTransitions).
 const lastPushTime = new Map<string, number>();
 const PUSH_DEBOUNCE_MS = 30_000;
 const prevRalphState = new Map<string, string>();

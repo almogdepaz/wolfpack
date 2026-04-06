@@ -200,10 +200,19 @@ describe("push: validateSubscription", () => {
   test("rejects endpoint over 1024 chars", async () => {
     const { validateSubscription } = await import("../../src/server/push.ts");
     const err = validateSubscription({
-      endpoint: "https://example.com/" + "a".repeat(1010),
+      endpoint: "https://fcm.googleapis.com/" + "a".repeat(1010),
       keys: { p256dh, auth },
     });
     expect(err).toBe("endpoint too long");
+  });
+
+  test("rejects non-push-service host (SSRF prevention)", async () => {
+    const { validateSubscription } = await import("../../src/server/push.ts");
+    const err = validateSubscription({
+      endpoint: "https://evil.com/push",
+      keys: { p256dh, auth },
+    });
+    expect(err).toBe("endpoint host not recognized as a push service");
   });
 });
 

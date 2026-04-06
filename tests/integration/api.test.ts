@@ -694,7 +694,7 @@ describe("POST /api/push/subscribe", () => {
   });
 
   test("missing keys → 400", async () => {
-    const res = await post("/api/push/subscribe", { endpoint: "https://example.com/push" });
+    const res = await post("/api/push/subscribe", { endpoint: "https://fcm.googleapis.com/fcm/send/test-integration" });
     expect(res.status).toBe(400);
   });
 
@@ -705,7 +705,7 @@ describe("POST /api/push/subscribe", () => {
 
   test("bad p256dh length → 400", async () => {
     const res = await post("/api/push/subscribe", {
-      endpoint: "https://example.com/push",
+      endpoint: "https://fcm.googleapis.com/fcm/send/test-integration",
       keys: { p256dh: randomBytes(32).toString("base64url"), auth },
     });
     expect(res.status).toBe(400);
@@ -715,7 +715,7 @@ describe("POST /api/push/subscribe", () => {
 
   test("bad auth length → 400", async () => {
     const res = await post("/api/push/subscribe", {
-      endpoint: "https://example.com/push",
+      endpoint: "https://fcm.googleapis.com/fcm/send/test-integration",
       keys: { p256dh, auth: randomBytes(8).toString("base64url") },
     });
     expect(res.status).toBe(400);
@@ -746,7 +746,7 @@ describe("POST /api/push/subscribe", () => {
 
 describe("POST /api/push/unsubscribe", () => {
   test("valid unsubscribe → 200", async () => {
-    const res = await post("/api/push/unsubscribe", { endpoint: "https://example.com/push/gone" });
+    const res = await post("/api/push/unsubscribe", { endpoint: "https://fcm.googleapis.com/fcm/send/test-integration/gone" });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);

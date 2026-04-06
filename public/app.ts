@@ -1709,7 +1709,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -2853,12 +2853,16 @@ document.addEventListener("visibilitychange", () => {
         if (isGridActive()) {
           for (const gs of state.gridSessions) {
             if (!gs.controller || gs._displaced) continue;
-            gs.controller.resetRetry();
-            gs.controller.reconnect();
+            if (!gs.controller.isConnected) {
+              gs.controller.resetRetry();
+              gs.controller.reconnect();
+            }
           }
         } else if (state.terminalController?.term) {
-          state.terminalController.resetRetry();
-          state.terminalController.reconnect();
+          if (!state.terminalController.isConnected) {
+            state.terminalController.resetRetry();
+            state.terminalController.reconnect();
+          }
         }
       }
     }
@@ -3225,7 +3229,7 @@ async function renderMachinesList() {
   }
   // Check status of each machine
   const checks = await Promise.all(machines.map(m =>
-    fetch(m.url + "/api/info", { signal: AbortSignal.timeout(3000) })
+    fetch(new URL("/api/info", m.url).href, { signal: AbortSignal.timeout(3000) })
       .then(() => true).catch(() => false)
   ));
   el.innerHTML = machines.map((m, i) => {
@@ -3518,7 +3522,7 @@ function sidebarCardHtml(s, machineUrl) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${esc(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
+      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}

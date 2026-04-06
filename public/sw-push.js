@@ -13,7 +13,10 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || "/";
+  // Only allow same-origin or relative URLs to prevent open-redirect via push payload
+  let url = event.notification.data?.url || "/";
+  if (url.startsWith("/")) { /* relative — ok */ }
+  else { try { if (new URL(url).origin !== self.location.origin) url = "/"; } catch { url = "/"; } }
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
       // Focus existing wolfpack window if open
