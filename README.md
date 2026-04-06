@@ -107,6 +107,24 @@ Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 - **Tailscale** *(optional)* — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet. Required for remote access.
 - **tmux** *(optional)* — only needed if you choose the tmux backend. The default **pty** backend has no external dependencies.
 
+### Session Backends
+
+Wolfpack supports two backends for managing terminal sessions. You choose during setup and can switch at runtime from Settings.
+
+| | **PTY** (default) | **tmux** |
+|---|---|---|
+| **Dependencies** | None | Requires tmux installed |
+| **Session persistence** | In-memory — sessions lost on server crash/restart | tmux server is a separate process — sessions survive wolfpack restarts, deploys, and crashes |
+| **Terminal streaming** | Direct binary WebSocket (`/ws/pty`) — low latency | Capture-pane polling (`/ws/terminal`) |
+| **Desktop terminal** | ghostty-web with full scrollback | ghostty-web with full scrollback |
+| **Best for** | Quick setup, no-dependency environments | Long-running agent sessions where persistence matters |
+
+**Why tmux is more robust:** tmux runs as an independent server process. Your agent sessions live inside tmux, not inside wolfpack. If wolfpack crashes, gets redeployed, or restarts (e.g. `launchctl kickstart`), tmux sessions keep running untouched. When wolfpack comes back up, it reconnects to the existing tmux sessions automatically. With the PTY backend, a wolfpack restart kills all running sessions — any in-progress agent work is lost.
+
+**Why PTY is the default:** zero dependencies, simpler setup, and lower latency terminal streaming. For most users running short agent tasks, the convenience outweighs the persistence tradeoff.
+
+Both backends can run simultaneously — the backend router tracks which backend owns each session. You can have tmux sessions and PTY sessions active at the same time.
+
 ### tmux History
 
 Wolfpack can only hydrate history that tmux still retains. Desktop terminal sessions prefill the latest 5,000 lines on connect, so if you want deeper scrollback, raise tmux's history limit:
