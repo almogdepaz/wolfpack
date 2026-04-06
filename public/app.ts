@@ -1604,6 +1604,7 @@ function showView(name, skipAnimation) {
       back.onclick = null;
       gear.style.display = "";
       title.textContent = "wolfpack";
+      loadSessions(); // immediate refresh on entering sessions view
       state.sessionRefreshTimer = setInterval(loadSessions, 5000);
     } else if (name === "projects") {
       back.style.display = "block";
@@ -2572,6 +2573,7 @@ function openDrawer() {
   if (isDesktop()) return; // sidebar handles session switching on desktop
   if (state.drawerOpen) return;
   state.drawerOpen = true;
+  loadSessions().then(renderDrawerList); // fresh data on open
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
   const chip = document.getElementById("session-chip");
