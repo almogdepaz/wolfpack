@@ -28,10 +28,8 @@
 - **Problem:** `curl -fsSL https://tailscale.com/install.sh | sudo sh` — no hash verification.
 - **Why it matters:** MITM or compromised CDN could deliver malicious install script. Standard pattern but worth noting.
 
-### ISS-06: shellEscape does not handle NUL bytes
-- **Files:** `src/validation.ts` L69-71
-- **Problem:** NUL bytes (`\0`) pass through shellEscape unescaped. Behavior is shell-dependent.
-- **Why it matters:** Could theoretically truncate or alter shell command strings on some shells.
+### ~~ISS-06: shellEscape does not handle NUL bytes~~ (FIXED)
+- **Fixed in:** `src/validation.ts` L74 — `.replace(/\0/g, "")` strips NUL bytes before escaping.
 
 ### ISS-23: Tailscale CORS recovery trusts Tailscale-User-Login header
 - **Files:** `src/server/index.ts` L107-125
@@ -50,10 +48,8 @@
 - **Problem:** When returning "show-overlay", newState is the original state object (not a spread copy). All other transitions return spread copies.
 - **Why it matters:** If caller mutates the returned newState, it mutates the original. Works only because callers treat state as immutable (implicit contract).
 
-### ISS-08: classifyDisconnect fragile string contract
-- **Files:** `src/take-control-logic.ts` L67, `src/server/websocket.ts` L514
-- **Problem:** `reason === "pty exited"` is an exact string match shared between client and server with no type enforcement.
-- **Why it matters:** Server-side change to this reason string silently breaks client disconnect classification without compile error.
+### ~~ISS-08: classifyDisconnect fragile string contract~~ (FIXED)
+- **Fixed in:** `src/ws-constants.ts` — shared constants (`WS_CLOSE_REASONS.PTY_EXITED`). Both `take-control-logic.ts` and `websocket.ts` import from the same module. String contract enforced at compile time.
 
 ### ISS-09: countTasksInContent double-counting in mixed-format plans
 - **Files:** `src/wolfpack-context.ts` L85-99
@@ -75,10 +71,8 @@
 - **Problem:** No guard against negative subtaskCount. Would decrease current budget.
 - **Why it matters:** If a caller ever passed a negative count, the iteration budget would shrink unexpectedly.
 
-### ISS-13: log.ts emit extra key collision
-- **Files:** `src/log.ts` L38-53
-- **Problem:** `...extra` spread into log entry can overwrite reserved fields (ts, level, component, msg).
-- **Why it matters:** Corrupts structured log records if extra contains reserved keys.
+### ~~ISS-13: log.ts emit extra key collision~~ (FIXED)
+- **Fixed in:** `src/log.ts` — reserved keys (`ts`, `level`, `component`, `msg`) are filtered from `extra` before spreading. Reserved fields always set explicitly after spread.
 
 ### ISS-14: createPtySocketClient 300ms attach_ack compat timer
 - **Files:** `public/app.ts` L564-570
@@ -95,10 +89,8 @@
 
 ## Robustness
 
-### ISS-15: cleanupAllExceptFinal no mutex
-- **Files:** `src/worktree.ts` L129-186
-- **Problem:** No lock/mutex for concurrent cleanup calls (e.g., from multiple ralph completions). Both compute same "final" worktree, both attempt same removals.
-- **Why it matters:** Second removal calls fail safely (errors caught) but order file could be written twice. Not a data loss risk but adds noise.
+### ~~ISS-15: cleanupAllExceptFinal no mutex~~ (FIXED)
+- **Fixed in:** `src/worktree.ts` L153-162 — `_cleanupInProgress` flag guards against concurrent calls. Second caller returns `{ removed: [], kept: "" }` immediately.
 
 ### ISS-16: killProcessTree group signal mismatch
 - **Files:** `src/ralph-macchio.ts` L460, `src/shared/process-cleanup.ts` L40-41
