@@ -78,6 +78,10 @@ function installPackages(pkgs: string[]) {
     }
     if (pkgs.includes("tailscale")) {
       print("  Installing Tailscale...");
+      // Security note: curl-pipe-sh without hash verification. This is the official
+      // Tailscale install pattern (https://tailscale.com/kb/1031/install-linux) and
+      // only runs during interactive user-initiated setup, not unattended. No practical
+      // alternative exists for cross-distro interactive CLI installation.
       execSync("curl -fsSL https://tailscale.com/install.sh | sudo sh", { stdio: "inherit" });
     }
   } else {

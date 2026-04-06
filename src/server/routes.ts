@@ -844,9 +844,6 @@ export const routes: Record<
     }
     try {
       process.kill(status.pid, "SIGTERM");
-      try { process.kill(-status.pid, "SIGTERM"); } catch (e: unknown) {
-        log.warn("ralph cancel: failed to SIGTERM process group", { error: errMsg(e) });
-      }
       // Clean up progress file so cancelled loop starts fresh on next continue
       if (status.progressFile && SAFE_FILENAME.test(status.progressFile) && !status.progressFile.includes("..")) {
         try { unlinkSync(join(projectDir, status.progressFile)); } catch { /* may not exist */ }

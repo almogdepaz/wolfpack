@@ -3,116 +3,81 @@
 
 ## Security
 
-### ISS-01: Peer response name field not sanitized
-- **Files:** `src/server/http.ts` (discoverPeers), `src/server/routes.ts` (aggregate API)
-- **Problem:** `info.name` from Tailscale peer `/api/info` response stored in cachedPeers without sanitization. Flows into aggregate API responses and potentially into client-side rendering.
-- **Why it matters:** A compromised peer could inject arbitrary content into the peer name field. Client escapes via esc() but server-side consumers may not.
+### ~~ISS-01: Peer response name field not sanitized~~ (FIXED)
+- **Fixed in:** `src/server/http.ts` — `sanitizePeerName()` strips C0/C1 control characters and truncates to 64 chars.
 
-### ISS-02: parseRalphLog incomplete path boundary check
-- **Files:** `src/server/ralph.ts` L197
-- **Problem:** `workdirPath.startsWith(projectDir)` lacks trailing slash. `/Dev/project` would match `/Dev/project2`.
-- **Why it matters:** Could allow workdir resolution to escape project boundary in crafted .ralph.log content. isUnderDevDir uses the `/` suffix pattern but this check does not.
+### ~~ISS-02: parseRalphLog incomplete path boundary check~~ (FIXED)
+- **Fixed in:** `src/server/ralph.ts` — uses `workdirPath === projectDir || workdirPath.startsWith(projectDir + "/")`.
 
-### ISS-03: Machine URL concatenation without URL validation
-- **Files:** `public/app.ts` (api function, L1311-1329)
-- **Problem:** `machineUrl + "/api" + path` — string concatenation, no URL object. machineUrl from localStorage (server-discovered or manually added).
-- **Why it matters:** Malformed machineUrl (trailing slash, fragment, path component) could produce unexpected URLs. A compromised machine URL could redirect API calls.
+### ~~ISS-03: Machine URL concatenation without URL validation~~ (FIXED)
+- **Fixed in:** `public/app.ts` — `api()` uses `new URL()`, `renderMachinesList` uses `new URL("/api/info", m.url).href`.
 
-### ISS-04: s.triage used as CSS class via esc() not CSS sanitizer
-- **Files:** `public/app.ts` L1585
-- **Problem:** `esc(s.triage || "idle")` injected as CSS class. esc() escapes HTML but not CSS identifiers. Value like `"idle extra"` would inject an extra class.
-- **Why it matters:** Low severity — server triage values are enum-like ("needs-input", "running", "idle") but no validation enforces this on the client.
+### ~~ISS-04: s.triage used as CSS class via esc() not CSS sanitizer~~ (FIXED)
+- **Fixed in:** `public/app.ts` — `safeTriage()` allowlist restored at both call sites.
 
-### ISS-05: tailscale install via curl pipe sudo sh
-- **Files:** `src/cli/setup.ts` L142
-- **Problem:** `curl -fsSL https://tailscale.com/install.sh | sudo sh` — no hash verification.
-- **Why it matters:** MITM or compromised CDN could deliver malicious install script. Standard pattern but worth noting.
+### ~~ISS-05: tailscale install via curl pipe sudo sh~~ (DOCUMENTED)
+- **Status:** Risk accepted. Comment added in `src/cli/setup.ts` documenting the trust model (official Tailscale pattern, interactive-only, no practical alternative).
 
 ### ~~ISS-06: shellEscape does not handle NUL bytes~~ (FIXED)
 - **Fixed in:** `src/validation.ts` L74 — `.replace(/\0/g, "")` strips NUL bytes before escaping.
 
 ### ISS-23: Tailscale CORS recovery trusts Tailscale-User-Login header
 - **Files:** `src/server/index.ts` L107-125
-- **Problem:** CORS origin is reconstructed from Referer when Tailscale-User-Login header is present. This header is unforgeable when traffic flows through tailscale serve, but if wolfpack is ever exposed via a non-Tailscale reverse proxy that forwards arbitrary client headers, an attacker could spoof both headers to bypass CORS.
-- **Why it matters:** Currently safe (wolfpack binds to 127.0.0.1, only reachable via tailscale serve), but the trust assumption must be maintained. Adding a second reverse proxy layer would silently break it.
+- **Problem:** CORS origin is reconstructed from Referer when Tailscale-User-Login header is present. Unforgeable when traffic flows through tailscale serve, but vulnerable if exposed via a non-Tailscale reverse proxy.
+- **Status:** Accepted risk. Documented in code comments. wolfpack binds to 127.0.0.1, only reachable via tailscale serve.
 
 ### ISS-24: No tests for Tailscale CORS origin recovery
 - **Files:** `src/server/index.ts` L107-125
-- **Problem:** The origin recovery logic (Tailscale-User-Login + Referer → synthetic origin) has no integration tests. Behavior is only verified manually.
-- **Why it matters:** Regressions in this path would silently break cross-machine access behind tailscale serve.
+- **Problem:** The origin recovery logic has no integration tests. Behavior is only verified manually.
 
 ## Correctness
 
-### ISS-07: handleViewerConflict show-overlay returns original state reference
-- **Files:** `src/take-control-logic.ts` L50
-- **Problem:** When returning "show-overlay", newState is the original state object (not a spread copy). All other transitions return spread copies.
-- **Why it matters:** If caller mutates the returned newState, it mutates the original. Works only because callers treat state as immutable (implicit contract).
+### ~~ISS-07: handleViewerConflict show-overlay returns original state reference~~ (FIXED)
+- **Fixed in:** `src/take-control-logic.ts` — returns `{ ...state }` spread copy like all other transitions.
 
 ### ~~ISS-08: classifyDisconnect fragile string contract~~ (FIXED)
-- **Fixed in:** `src/ws-constants.ts` — shared constants (`WS_CLOSE_REASONS.PTY_EXITED`). Both `take-control-logic.ts` and `websocket.ts` import from the same module. String contract enforced at compile time.
+- **Fixed in:** `src/ws-constants.ts` — shared constants. Both client and server import from the same module.
 
-### ISS-09: countTasksInContent double-counting in mixed-format plans
-- **Files:** `src/wolfpack-context.ts` L85-99
-- **Problem:** Additive count of checkboxes + section headers. Plans using both formats count the same task twice.
-- **Why it matters:** Inflated progress percentages in UI. Ralph loop budget calculations could be wrong.
+### ~~ISS-09: countTasksInContent double-counting in mixed-format plans~~ (FIXED)
+- **Fixed in:** `src/wolfpack-context.ts` — headers checked first, checkboxes only as fallback. No double-counting.
 
-### ISS-10: listWorktrees potential edge with final section
-- **Files:** `src/worktree.ts` L91-123
-- **Problem:** Porcelain parser relies on empty-line terminator per section. If git output ends without trailing newline, final section may not be emitted.
-- **Why it matters:** Could silently drop the last worktree from the list. In practice git porcelain always ends with newline.
+### ~~ISS-10: listWorktrees potential edge with final section~~ (FIXED)
+- **Fixed in:** `src/worktree.ts` — flush pending section after loop.
 
-### ISS-11: appendSubtasksToPlan does not strip embedded newlines
-- **Files:** `src/ralph-macchio.ts` L403-408
-- **Problem:** Subtask text from agent output may contain newlines. The sanitization strips headers and `~~` but not `\n`.
-- **Why it matters:** Newlines in `- [ ] <text>` break the checkbox regex matching in extractCurrentTask, making the subtask invisible to the scheduler.
+### ~~ISS-11: appendSubtasksToPlan does not strip embedded newlines~~ (FIXED)
+- **Fixed in:** `src/ralph-macchio.ts` — `.replace(/[\r\n]+/g, " ")` in sanitization chain.
 
-### ISS-12: expandBudget allows negative subtaskCount
-- **Files:** `src/validation.ts` L40-42
-- **Problem:** No guard against negative subtaskCount. Would decrease current budget.
-- **Why it matters:** If a caller ever passed a negative count, the iteration budget would shrink unexpectedly.
+### ~~ISS-12: expandBudget allows negative subtaskCount~~ (FIXED)
+- **Fixed in:** `src/validation.ts` — `Math.max(0, subtaskCount)` clamp.
 
 ### ~~ISS-13: log.ts emit extra key collision~~ (FIXED)
-- **Fixed in:** `src/log.ts` — reserved keys (`ts`, `level`, `component`, `msg`) are filtered from `extra` before spreading. Reserved fields always set explicitly after spread.
+- **Fixed in:** `src/log.ts` — reserved keys filtered from `extra` before spreading.
 
-### ISS-14: createPtySocketClient 300ms attach_ack compat timer
-- **Files:** `public/app.ts` L564-570
-- **Problem:** 300ms compatibility fallback timer for old servers without attach_ack. If attach_ack arrives in >300ms, both timer and ack handler fire.
-- **Why it matters:** Could cause double resize sends. Low severity — old server compat path.
-- **Note:** Mitigated — attach_ack handler now clears timer AND sends rAF resize; compat path's resize is deduplicated by `_lastSentResize` check.
+### ~~ISS-14: createPtySocketClient 300ms attach_ack compat timer~~ (MITIGATED)
+- **Status:** attach_ack handler clears timer; compat path's resize deduplicated by `_lastSentResize` check.
 
 ### ~~ISS-21: CORS headers missing when behind tailscale serve~~ (FIXED)
-- **Fixed in:** 5e08973 — Origin recovered from Referer header when Tailscale-User-Login header present + tailnet suffix matches. Trust model documented in code comments.
-- **Residual concern:** If wolfpack is exposed via a non-Tailscale reverse proxy that forwards arbitrary client headers, this becomes a CORS bypass. Documented as trust assumption in code.
+- **Fixed in:** 5e08973
 
 ### ~~ISS-22: Scroll-lock monkey-patch not cleaned up on dispose~~ (FIXED)
-- **Fixed in:** 5e08973 — `dispose()` now explicitly removes `_scrollLockKeydownHandler` and `_browserShortcutKeydownHandler` from container via `removeEventListener`. Handler references stored as controller-level variables. Grid dispose order also fixed (controller before DOM removal).
+- **Fixed in:** 5e08973
 
 ## Robustness
 
 ### ~~ISS-15: cleanupAllExceptFinal no mutex~~ (FIXED)
-- **Fixed in:** `src/worktree.ts` L153-162 — `_cleanupInProgress` flag guards against concurrent calls. Second caller returns `{ removed: [], kept: "" }` immediately.
+- **Fixed in:** `src/worktree.ts` — `_cleanupInProgress` flag guards concurrent calls.
 
-### ISS-16: killProcessTree group signal mismatch
-- **Files:** `src/ralph-macchio.ts` L460, `src/shared/process-cleanup.ts` L40-41
-- **Problem:** nodeSpawn does not use {detached: true}. Child joins parent's process group. `process.kill(-pid)` using child's PID as PGID fails silently (child is not group leader).
-- **Why it matters:** Group signal has no effect. Individual kill works correctly. Group kill is redundant but harmless.
+### ~~ISS-16: killProcessTree group signal mismatch~~ (FIXED)
+- **Fixed in:** `src/server/routes.ts` — removed ineffective `process.kill(-pid)` group kill. Individual kill is sufficient.
 
-### ISS-17: ask() fd leak on readSync failure
-- **Files:** `src/cli/config.ts` L37-46
-- **Problem:** No try/finally around readSync. If readSync throws (signal interrupt), closeSync never called.
-- **Why it matters:** Minor fd leak. Process-local, cleaned up on exit.
+### ~~ISS-17: ask() fd leak on readSync failure~~ (FIXED)
+- **Fixed in:** `src/cli/config.ts` — `try/finally` wrapping `readSync` with `closeSync(fd)`.
 
-### ISS-18: Per-IP rate limiter unbounded growth
-- **Files:** `src/server/http.ts` createPerIpRateLimiter
-- **Problem:** Map grows unbounded between 60s eviction intervals. Heavy load from many unique IPs scales memory linearly.
-- **Why it matters:** Could consume excessive memory under DDoS with many source IPs. Unlikely in typical Tailscale-only deployment.
+### ~~ISS-18: Per-IP rate limiter unbounded growth~~ (FIXED)
+- **Fixed in:** `src/server/http.ts` — 10K IP cap + insertion-order eviction.
 
-### ISS-19: discoverPeers wraps tailscale in login shell unnecessarily
-- **Files:** `src/server/http.ts` L191
-- **Problem:** Uses `/bin/sh -l -c "${tsBin}" status --json` instead of direct execFile(tsBin, ["status", "--json"]). PATH is already enriched at startup.
-- **Why it matters:** More permissive than necessary. Not a security risk (tsBin is from hardcoded paths) but unnecessary shell invocation.
+### ~~ISS-19: discoverPeers wraps tailscale in login shell unnecessarily~~ (FIXED)
+- **Fixed in:** `src/server/http.ts` — already uses `exec(tsBin, ["status", "--json"])` (direct execFile).
 
-### ISS-20: createWorktree partial failure leaves inconsistent state
-- **Files:** `src/worktree.ts` L43-65
-- **Problem:** If `git worktree add` succeeds but order file append fails, worktree exists but is unrecorded. On cleanup, unrecorded worktree gets sort key 999 (kept as "final"), potentially causing the intended final worktree to be removed instead.
-- **Why it matters:** Rare but could cause wrong worktree to survive cleanup.
+### ~~ISS-20: createWorktree partial failure leaves inconsistent state~~ (FIXED)
+- **Fixed in:** `src/worktree.ts` — order-file write failure logs warning instead of rolling back worktree. Unrecorded worktrees sorted by path instead of collapsing to key 999.
