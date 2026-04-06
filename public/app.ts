@@ -946,6 +946,21 @@ function createPtyTerminalController(opts) {
 
     _term.open(container);
 
+    // WORKAROUND: ghostty-web v0.4.0 WASM state retention
+    // The WASM allocator reuses freed page memory without zeroing, so new
+    // Terminal instances inherit stale screen content from previous ones.
+    // reset() frees+recreates the WASM handle but renderer.clear() doesn't
+    // repaint the Canvas 2D framebuffer. Direct fillRect is the only fix.
+    // Upstream: github.com/coder/ghostty-web/issues/138, /141, /142
+    const _openCanvas = container.querySelector('canvas');
+    if (_openCanvas) {
+      const ctx = _openCanvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#0a0a0a'; // match terminal background
+        ctx.fillRect(0, 0, _openCanvas.width, _openCanvas.height);
+      }
+    }
+
     // Monkey-patch scrollToBottom to prevent auto-scroll when user has scrolled up.
     // ghostty-web calls scrollToBottom() on EVERY write when viewportY !== 0,
     // which makes it impossible to read scrollback while the agent is producing output.
@@ -1010,14 +1025,6 @@ function createPtyTerminalController(opts) {
     });
 
     fitTerminalPreserveScroll();
-    // Force canvas repaint after mount — ghostty-web's WASM renderer may
-    // retain stale framebuffer pixels from a previous terminal instance.
-    // Writing an empty string + scheduling a fit on the next frame ensures
-    // the canvas is redrawn with the new (empty) terminal state before any
-    // cached content or prefill data arrives.
-    _term.write('', () => {
-      requestAnimationFrame(() => { if (_term && _fitAddon) _fitAddon.fit(); });
-    });
     if (mountOpts && mountOpts.cached) {
       _cachedLoaded = true;
       _term.write(mountOpts.cached, () => {
@@ -1064,6 +1071,14 @@ function createPtyTerminalController(opts) {
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
+        // Always reset on first connect — ghostty-web's WASM retains the
+        // previous terminal's screen buffer across Terminal instances.
+        // Without this, new sessions with sparse prefill show stale content.
+        // shouldRehydrate skips the reset for viewport prefill mode, but
+        // the WASM buffer must be cleared regardless.
+        if (!wasReconnect && _term) {
+          _term.reset();
+        }
         // On reconnect, clear stale content and restart hydration —
         // server sends fresh prefill scrollback on the new connection.
         const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "full");
@@ -1075,7 +1090,6 @@ function createPtyTerminalController(opts) {
             _reconnectPendingReset = true;
             if (_hydration) _hydration.start();
           } else {
-            _term.reset();
             if (_hydration) _hydration.start();
             const el = _getHydrationElement();
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
