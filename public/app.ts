@@ -1731,8 +1731,10 @@ function renderMachineGroupHtml(g, multiMachine) {
 }
 
 function fetchMachine(machineUrl, machineMeta) {
-  const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", undefined, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
-  return Promise.all([api("/sessions", undefined, machineUrl || undefined), api("/info", undefined, machineUrl || undefined), ralphFetch])
+  // Timeout remote machines so one unreachable host can't block the entire UI
+  const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(5000) } : undefined;
+  const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
+  return Promise.all([api("/sessions", remoteOpts, machineUrl || undefined), api("/info", remoteOpts, machineUrl || undefined), ralphFetch])
     .then(([d, info, ralph]) => ({
       machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
       sessions: d.sessions || [], loops: ralph.loops || [], online: true, pending: false,
