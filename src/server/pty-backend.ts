@@ -17,10 +17,15 @@ const log = createLogger("pty-backend");
  * Strip ANSI/VT escape sequences from raw PTY output.
  * Used by capturePane so the classic mobile terminal and triage code
  * receive plain text, matching what tmux capture-pane would return.
+ *
+ * Bare `\r` is converted to `\n` — imperfect (progress bars produce extra
+ * lines) but safe. Attempts to rewind-on-CR break TUI frame rendering (ink
+ * emits `\r<content>\x1b[K\n` per row; rewinding eats content). A proper
+ * fix needs a server-side VT emulator.
  */
 export function stripAnsi(s: string): string {
   return s
-    .replace(/\x1b(?:[@-Z\\-_]|\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)/g, "")
+    .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)/g, "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n");
 }

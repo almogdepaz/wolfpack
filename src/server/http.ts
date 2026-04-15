@@ -189,6 +189,17 @@ export function sanitizePeerName(name: unknown): string {
 // Cached peer list for server-side aggregation (populated by /api/discover)
 export let cachedPeers: { url: string; name: string }[] = [];
 
+// Must invoke via login shell: the macOS App Store Tailscale CLI
+// (/Applications/Tailscale.app/Contents/MacOS/Tailscale) relies on the user's
+// session env to reach the GUI-hosted daemon. Under launchd's stripped env a
+// direct execFile prints "The Tailscale GUI failed to start..." to stdout
+// (exit 0), which then fails JSON.parse. `/bin/sh -l -c` sources the user's
+// login profile so the bridge resolves. Revert warning: do NOT "simplify" to
+// a direct execFile — that silently breaks discovery on App Store installs.
+export function buildTailscaleStatusArgv(tsBin: string): { cmd: string; args: string[] } {
+  return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status --json`] };
+}
+
 export async function discoverPeers(): Promise<{ peers: any[]; error?: string }> {
   const tsBin = [
     "/usr/local/bin/tailscale",
@@ -199,8 +210,9 @@ export async function discoverPeers(): Promise<{ peers: any[]; error?: string }>
   if (!tsBin) return { peers: [], error: "tailscale not found" };
 
   try {
+    const { cmd, args } = buildTailscaleStatusArgv(tsBin);
     const { stdout } = await exec(
-      tsBin, ["status", "--json"],
+      cmd, args,
       { maxBuffer: TAILSCALE_MAX_BUFFER },
     );
     const status = JSON.parse(stdout);

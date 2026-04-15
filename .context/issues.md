@@ -76,8 +76,9 @@
 ### ~~ISS-18: Per-IP rate limiter unbounded growth~~ (FIXED)
 - **Fixed in:** `src/server/http.ts` — 10K IP cap + insertion-order eviction.
 
-### ~~ISS-19: discoverPeers wraps tailscale in login shell unnecessarily~~ (FIXED)
-- **Fixed in:** `src/server/http.ts` — already uses `exec(tsBin, ["status", "--json"])` (direct execFile).
+### ISS-19: discoverPeers wraps tailscale in login shell (REVERTED — intentional)
+- Previously "fixed" in d6ffb69 by switching to direct `exec(tsBin, ["status", "--json"])`. This broke peer discovery under launchd for users with the macOS App Store Tailscale: its CLI needs the user session env to reach the GUI-hosted daemon, and under launchd's stripped env it prints a plaintext error to stdout (exit 0), which then fails `JSON.parse`.
+- Reverted to `/bin/sh -l -c "\"${tsBin}\" status --json"`. Login shell sources the user's profile so the GUI bridge resolves. Locked in by `tests/unit/tailscale-exec.test.ts`.
 
 ### ~~ISS-20: createWorktree partial failure leaves inconsistent state~~ (FIXED)
 - **Fixed in:** `src/worktree.ts` — order-file write failure logs warning instead of rolling back worktree. Unrecorded worktrees sorted by path instead of collapsing to key 999.
