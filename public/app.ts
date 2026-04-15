@@ -10,7 +10,12 @@ import {
 } from "./app-state";
 
 function useClassicMobile(): boolean {
-  return !isDesktop() && wpSettings.mobileTerminal === "classic";
+  // Classic mobile terminal disabled — all mobile access uses ghostty-web.
+  // The classic polling path can't render modern TUIs correctly on PTY
+  // backend (stripAnsi can't dedupe cursor-redrawn frames, no reflow).
+  // Dead code (handleTerminalWs, applyTerminalPane, initClassicMobile,
+  // etc.) kept for now, cleanup in follow-up PR.
+  return false;
 }
 
 import {
@@ -835,20 +840,20 @@ function createPtyTerminalController(opts) {
   const _canSendResize = opts.canSendResize || _canAcceptInput;
   const _getHydrationElement = opts.getHydrationElement || (() => _container);
 
-  /** Clear scrollback and flush buffered writes next frame.
-   *  Uses clear() instead of reset() to avoid a 1-frame blank flash —
-   *  clear() preserves the visible viewport while wiping scrollback.
-   *  Buffers writes because ghostty-web WASM crashes with "memory access
-   *  out of bounds" if write() follows clear() in the same tick.
-   *  Hide canvas during the gap so stale viewport from an earlier point
-   *  in the conversation doesn't flash for one frame on reconnect. */
+  /** Full terminal reset, then flush buffered writes next frame.
+   *  reset() wipes both viewport and scrollback — clear() only wiped
+   *  scrollback and preserved the cursor line, which caused duplicate
+   *  content on reconnect (banner replayed over leftover viewport) and
+   *  broken scrollback history (cursor pinned at bottom of old viewport).
+   *  Canvas is hidden across the rAF gap so the brief blank frame from
+   *  reset() isn't visible. Writes are deferred because ghostty-web WASM
+   *  crashes with "memory access out of bounds" if write() follows
+   *  reset()/clear() in the same tick. */
   function _scheduleBufferedClear() {
     if (!_postResetBuffer) _postResetBuffer = [];
-    // Hide canvas before clear — visibility:hidden prevents the compositor
-    // from painting the stale viewport that clear() preserves.
     const canvas = _container ? _container.querySelector('canvas') : null;
     if (canvas) canvas.style.visibility = 'hidden';
-    _term.clear();
+    _term.reset();
     requestAnimationFrame(() => {
       if (!_term || !_postResetBuffer) {
         if (canvas) canvas.style.visibility = '';
