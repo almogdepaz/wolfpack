@@ -39,6 +39,7 @@ const {
   __pollRateLimiter,
   __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
+const { _testing: pushTesting } = await import("../../src/server/push.ts");
 
 const { server } = createServerInstance();
 
@@ -77,6 +78,9 @@ beforeEach(() => {
   // Reset rate limiters before each test
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
+  // Reset push notify debounce/rate-limit state so notify tests don't
+  // depend on execution order (see TEST-01).
+  pushTesting.resetDebounce();
 });
 
 afterAll(() => {
@@ -772,14 +776,13 @@ describe("POST /api/notify", () => {
   });
 
   test("rate limit after 10 rapid calls → 429", async () => {
-    // The checkNotifyRateLimit is module-level state, and we already sent 1 call above.
-    // Send enough to hit the 10/min limit.
+    // beforeEach resets notifyTimestamps, so this test is self-contained.
+    // 10/min limit → calls 11 and 12 should return 429.
     const results: number[] = [];
     for (let i = 0; i < 12; i++) {
       const res = await post("/api/notify", { message: `rate-test-${i}` });
       results.push(res.status);
     }
-    // At least one should be 429
     expect(results).toContain(429);
   });
 });

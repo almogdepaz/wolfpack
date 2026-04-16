@@ -348,8 +348,9 @@ export function syncNotificationsPermission() {
   const granted = Notification.permission === "granted";
   if (state.notificationsEnabled && !granted) {
     state.notificationsEnabled = false;
-    wpSettings.notifications = false;
-    try { localStorage.setItem("wp-effects", JSON.stringify(wpSettings)); } catch { /* quota/private mode */ }
+    // Route through toggleSetting so applySetting("notifications", false) runs
+    // unsubscribeNotifications() — otherwise server retains stale push endpoint.
+    toggleSetting("notifications", false);
   }
 }
 if (typeof document !== "undefined") {

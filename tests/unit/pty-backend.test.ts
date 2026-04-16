@@ -6,6 +6,24 @@ import { PtyBackend } from "../../src/server/pty-backend";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+// Poll capturePane until `marker` is visible or deadline (ms) expires.
+// Replaces fixed sleep() waits that were flaky on loaded CI.
+async function waitForPaneContains(
+  backend: PtyBackend,
+  session: string,
+  marker: string,
+  timeoutMs = 3000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let output = "";
+  while (Date.now() < deadline) {
+    output = await backend.capturePane(session);
+    if (output.includes(marker)) return output;
+    await sleep(50);
+  }
+  return output;
+}
+
 describe("PtyBackend", () => {
   let backend: PtyBackend;
 
@@ -69,20 +87,15 @@ describe("PtyBackend", () => {
 
   test("capturePane captures PTY output", async () => {
     await backend.createSession("echo-test", "/tmp", "shell", () => ({ agentCmd: "shell" }));
-    // Explicitly produce output — shell prompt timing varies
-    await sleep(300);
     await backend.send("echo-test", "echo PTY_CAPTURE_OK");
-    await sleep(500);
-    const output = await backend.capturePane("echo-test");
+    const output = await waitForPaneContains(backend, "echo-test", "PTY_CAPTURE_OK");
     expect(output).toContain("PTY_CAPTURE_OK");
   });
 
   test("send writes to PTY", async () => {
     await backend.createSession("send-test", "/tmp", "shell", () => ({ agentCmd: "shell" }));
-    await sleep(300);
     await backend.send("send-test", "echo WOLFPACK_PTY_TEST_MARKER");
-    await sleep(500);
-    const output = await backend.capturePane("send-test");
+    const output = await waitForPaneContains(backend, "send-test", "WOLFPACK_PTY_TEST_MARKER");
     expect(output).toContain("WOLFPACK_PTY_TEST_MARKER");
   });
 

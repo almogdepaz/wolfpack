@@ -257,6 +257,11 @@ export function renderGridCells() {
         newCellSessions.forEach(gs => {
           if (gs._needsConnect) {
             delete gs._needsConnect;
+            // Force hydration complete before connecting: grid cells use
+            // prefillMode:"none" so there's no prefill burst to wait for.
+            // Without this, an actively-outputting PTY keeps _hydrationWritesInFlight
+            // non-zero and hydration blocks for up to maxPendingMs (4s).
+            if (gs.controller.hydration) gs.controller.hydration.finish();
             gs.controller.connect();
           }
         });

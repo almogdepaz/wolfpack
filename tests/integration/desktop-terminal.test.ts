@@ -20,6 +20,7 @@ import {
   waitForMessage,
   type PtyTestContext,
 } from "./pty-test-helpers";
+import { CLOSE_CODE_SESSION_UNAVAILABLE } from "../../src/ws-constants.js";
 
 // ── Test setup ──
 
@@ -462,15 +463,32 @@ describe("desktop terminal: two-phase prefill", () => {
 
   test("session-unavailable closes with 4001 before any prefill (unknown session)", async () => {
     // Connect with a session name NOT in MockBackend's list.
-    // The WS upgrade is rejected at isAllowedSession → connection fails.
+    // Two acceptable paths, both lock in the "no prefill for unknown session" invariant:
+    //   1. Server rejects at HTTP upgrade (403) → connectPty promise rejects.
+    //   2. Server accepts upgrade then sends WS close 4001 before any prefill.
+    // If the server accepts the upgrade AND any prefill_* leaks through, the
+    // take-control state machine regresses — fail the test.
+    let connectRejected = false;
+    let ws: WebSocket | null = null;
     try {
-      const ws = await connectPty("nonexistent-session-xyz");
-      // If we get here, server accepted upgrade — wait for close
-      const ev = await waitForClose(ws, 3000);
-      expect(ev.code).toBeGreaterThanOrEqual(1000);
-      await closeWs(ws).catch(() => {});
+      ws = await connectPty("nonexistent-session-xyz");
     } catch {
-      // connect failed outright — expected (server rejects upgrade for unknown session)
+      connectRejected = true;
     }
+
+    if (connectRejected) {
+      // Preferred path: upgrade rejected at HTTP layer. Nothing more to assert.
+      return;
+    }
+
+    // Server accepted the upgrade — must close with CLOSE_CODE_SESSION_UNAVAILABLE
+    // before emitting any prefill frames.
+    const msgs = collectJsonMessages(ws!);
+    const ev = await waitForClose(ws!, 3000);
+    expect(ev.code).toBe(CLOSE_CODE_SESSION_UNAVAILABLE);
+    const types = msgs.map(m => m.type);
+    expect(types).not.toContain("prefill_viewport");
+    expect(types).not.toContain("prefill_done");
+    await closeWs(ws!).catch(() => {});
   });
 });

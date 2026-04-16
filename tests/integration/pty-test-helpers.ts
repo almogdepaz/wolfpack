@@ -36,7 +36,7 @@ export async function bootTestServer(opts: {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { __getTestState } = await import("../../src/test-hooks.ts");
-  const { __setTestBackend } = await import("../../src/server/backend.ts");
+  const { __setTestBackend, __resetBackend } = await import("../../src/server/backend.ts");
   const { MockBackend } = await import("../../src/server/mock-backend.ts");
   const { activePtySessions, ptySpawnAttempts } = __getTestState();
 
@@ -71,6 +71,9 @@ export async function bootTestServer(opts: {
     cleanup: () => {
       console.error = realConsoleError;
       server.close();
+      // Reset backend singleton so a later test file in the same bun worker
+      // doesn't inherit this MockBackend.
+      __resetBackend();
     },
   };
 }

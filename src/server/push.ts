@@ -317,7 +317,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
   const validSubs = subs.filter(sub => {
     try {
       const url = new URL(sub.endpoint);
-      return url.protocol === "https:";
+      return url.protocol === "https:" && ALLOWED_PUSH_HOSTS.has(url.hostname);
     } catch { return false; }
   });
   if (validSubs.length < subs.length) {
@@ -457,6 +457,7 @@ export function checkNotifyRateLimit(): string | null {
 
 /** Reset all per-namespace debounce and rate-limit state. Tests should call this in beforeEach. */
 export function _testingResetDebounce(): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("_testingResetDebounce() is only available in test mode");
   prevTriageState.clear();
   lastSessionPushTime.clear();
   lastRalphPushTime.clear();
@@ -478,5 +479,8 @@ export const _testing = {
   PUSH_DEBOUNCE_MS,
   resetDebounce: _testingResetDebounce,
   get notifyTimestamps() { return notifyTimestamps; },
-  set notifyTimestamps(v: number[]) { notifyTimestamps = v; },
+  set notifyTimestamps(v: number[]) {
+    if (!process.env.WOLFPACK_TEST) throw new Error("_testing.notifyTimestamps setter is only available in test mode");
+    notifyTimestamps = v;
+  },
 };

@@ -285,31 +285,34 @@ describe("push: subscription cap", () => {
     const initial = getSubscriptionCount();
     const added: string[] = [];
 
-    // Fill up to 20
-    for (let i = initial; i < 20; i++) {
-      const ep = `https://fcm.googleapis.com/cap-test-${i}-${Date.now()}`;
-      const result = addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-      expect(result.ok).toBe(true);
-      added.push(ep);
+    try {
+      // Fill up to 20
+      for (let i = initial; i < 20; i++) {
+        const ep = `https://fcm.googleapis.com/cap-test-${i}-${Date.now()}`;
+        const result = addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+        expect(result.ok).toBe(true);
+        added.push(ep);
+      }
+      expect(getSubscriptionCount()).toBe(20);
+
+      // 21st should fail
+      const result = addSubscription({
+        endpoint: `https://fcm.googleapis.com/cap-test-overflow-${Date.now()}`,
+        keys: { p256dh: "k", auth: "a" },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("limit");
+      expect(getSubscriptionCount()).toBe(20);
+
+      // Updating existing endpoint should still work (dedupe path)
+      const updateResult = addSubscription({ endpoint: added[0], keys: { p256dh: "updated", auth: "a" } });
+      expect(updateResult.ok).toBe(true);
+      expect(getSubscriptionCount()).toBe(20);
+    } finally {
+      // Always clean up persisted entries — otherwise a mid-test assertion
+      // failure leaves garbage in ~/.wolfpack/push-subscriptions.json.
+      for (const ep of added) removeSubscription(ep);
     }
-    expect(getSubscriptionCount()).toBe(20);
-
-    // 21st should fail
-    const result = addSubscription({
-      endpoint: `https://fcm.googleapis.com/cap-test-overflow-${Date.now()}`,
-      keys: { p256dh: "k", auth: "a" },
-    });
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("limit");
-    expect(getSubscriptionCount()).toBe(20);
-
-    // Updating existing endpoint should still work (dedupe path)
-    const updateResult = addSubscription({ endpoint: added[0], keys: { p256dh: "updated", auth: "a" } });
-    expect(updateResult.ok).toBe(true);
-    expect(getSubscriptionCount()).toBe(20);
-
-    // Cleanup
-    for (const ep of added) removeSubscription(ep);
   });
 });
 

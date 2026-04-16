@@ -146,6 +146,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     if (shouldAuthenticateApiPath(url.pathname)) {
       const auth = validateRequestJwt(req.headers, url, false);
       if (!auth.ok) {
+        log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
         writeUnauthorized(res);
         return;
       }
@@ -193,6 +194,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 
     const auth = validateRequestJwt(req.headers, url, true);
     if (!auth.ok) {
+      log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
