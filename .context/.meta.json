@@ -1,7 +1,7 @@
 {
-  "lastCommit": "5e08973ebc3b5700fddcf5fc3731736ade5e34b4",
+  "lastCommit": "44c3647ec0d3639ef53c5ac2f92980046d8626c5",
   "lastFullBuild": "bf609e929b570ff17e934aa1798da5560b440b6c",
-  "lastUpdate": "2026-03-30T00:00:00.000Z",
+  "lastUpdate": "2026-04-16T00:00:00.000Z",
   "modules": {
     "server": {
       "files": [
@@ -16,6 +16,7 @@
         "src/server/ring-buffer.ts",
         "src/server/ralph.ts",
         "src/server/mock-backend.ts",
+        "src/server/push.ts",
         "src/auth.ts"
       ],
       "contextFile": ".context/server.md"
@@ -28,7 +29,9 @@
         "public/app-touch.ts",
         "public/app-ralph.ts",
         "public/index.html",
-        "public/styles.css"
+        "public/styles.css",
+        "public/sw-push.js",
+        "public/wolfpack-lib.js"
       ],
       "contextFile": ".context/client.md"
     },
@@ -43,7 +46,8 @@
         "src/validation.ts",
         "src/wolfpack-context.ts",
         "src/worktree.ts",
-        "src/log.ts"
+        "src/log.ts",
+        "src/ws-constants.ts"
       ],
       "contextFile": ".context/core.md"
     },
@@ -62,7 +66,8 @@
         "src/cli/config.ts",
         "src/cli/setup.ts",
         "src/cli/service.ts",
-        "src/cli/formatting.ts"
+        "src/cli/formatting.ts",
+        "src/cli/doctor.ts"
       ],
       "contextFile": ".context/cli.md"
     },

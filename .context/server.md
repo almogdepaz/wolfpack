@@ -15,7 +15,8 @@ Dual-backend router — holds both PtyBackend (always initialized) and TmuxBacke
 - `_defaultBackend: BackendType` — which backend new sessions are created on
 - `list()` merges both backends' lists and reconciles ownership map. **PTY wins** for same-named sessions (in-process sessions are authoritative; tmux may be stale orphans). Prunes stale entries.
 - `createSession()` uses `_defaultBackend`, checks uniqueness across BOTH backends. Sets ownership BEFORE async create (closes TOCTOU window), rolls back on failure.
-- `backendFor(name)` looks up ownership, logs debug warning for unknown sessions, falls back to PTY
+- `backendFor(name)` private helper: looks up ownership, logs debug warning for unknown sessions, falls back to PTY. Public `getBackendForSession(name)` delegates to it.
+- `getBackendTypeForSession(name)` returns `"tmux"` or `"pty"` per session by comparing `backendFor(name)` to `this.tmux`.
 - All other methods look up `ownership.get(name)` → delegate to correct backend
 - `setDefaultBackend(type)` — runtime toggle, throws if tmux unavailable
 - `recheckTmux()` — re-probes tmux availability, lazily initializes TmuxBackend. **Handles tmux uninstall:** tears down stale backend, logs orphaned tmux sessions, deletes their ownership entries, reverts default to pty if needed.
@@ -28,11 +29,11 @@ Dual-backend router — holds both PtyBackend (always initialized) and TmuxBacke
 - `getBackend()` returns `_testBackend` if set, else router
 - `getRouter()` returns typed router (auto-inits if needed)
 - `getBackendType()` returns default backend type (for new sessions)
-- `getBackendTypeForSession(name)` returns per-session backend type
+- `getBackendTypeForSession(name)` returns per-session backend type, falls back to `_testBackendType` in test mode
 - `__setTestBackend(backend, type?)` sets test override AND creates a router wrapper with mock injected as both backends (so `getRouter()` works in tests)
 
 ### checkTmuxAvailable()
-`execSync("tmux -V", { stdio: "ignore" })` try/catch. Called once at router construction.
+`execSync("tmux -V", { stdio: "ignore" })` try/catch. Called once at router construction and again on `recheckTmux()`.
 
 ---
 
@@ -50,7 +51,7 @@ Factory for HTTP + WS server pair. Request flow:
 8. Route lookup and dispatch
 9. Static file fallback for single-segment paths
 
-WS upgrade flow: CORS -> JWT auth (always, including non-API paths) -> path whitelist (`/ws/pty`, `/ws/terminal`) -> session validation (isValidSessionName + isAllowedSession).
+WS upgrade flow: CORS -> JWT auth (always, including non-API paths) -> path whitelist (`/ws/pty`, `/ws/terminal`) -> session validation (isValidSessionName + isAllowedSession). `?reset=1` param triggers PTY teardown before re-attach.
 
 **Rate limiting occurs AFTER auth** — unauthenticated requests to non-API paths (static files) bypass auth but still hit rate limits.
 
@@ -71,19 +72,22 @@ Overrides `process.env.PATH` with login shell PATH via `execFileSync(SHELL, ["-l
 Token bucket; tokens refill continuously based on elapsed time. Burst capacity equals rate. Singletons: `pollRateLimiter` (10/s), `globalRateLimiter` (120/s).
 
 ### createPerIpRateLimiter(rate, evictIntervalMs=60000)
-Per-IP wrapper with Map<string, {rl, lastSeen}>. Eviction timer `.unref()`'d. "unknown" used as literal key for requests with no socket address. Map grows unbounded between eviction intervals.
+Per-IP wrapper with Map<string, {rl, lastSeen}>. Eviction timer `.unref()`'d. Capped at MAX_IP_ENTRIES=10,000 (insertion-order eviction at cap). "unknown" used as literal key for requests with no socket address.
 
 ### uniqueSessionName(base)
-Replaces dots with underscores (tmux silently does this), then appends counter suffix if name already exists. Uses `getBackend().list()` which now returns merged list from both backends.
+Replaces dots with underscores (tmux silently does this), then appends counter suffix if name already exists. Uses `getBackend().list()` which returns merged list from both backends.
 
 ### serveFile(res, filename)
-Serves from compile-time embedded asset map. Injects per-request CSP nonce (128-bit random, base64) into `<script` tags via regex. CSP policy: `script-src 'nonce-...'`; `style-src 'unsafe-inline'`; `connect-src wss: https:`.
+Serves from compile-time embedded asset map. Injects per-request CSP nonce (128-bit random, base64) into `<script` tags via regex. CSP policy: `default-src 'self'`; `script-src 'self' 'nonce-...'`; `style-src 'self' 'unsafe-inline'`; `connect-src 'self' wss: https:`; `img-src 'self' data:`.
+
+### sanitizePeerName(name)
+Strips C0/C1 control characters, truncates to 64 chars. Applied to peer `name` fields from `/api/info` responses before storing in `cachedPeers`.
 
 ### discoverPeers()
-Finds Tailscale peers via hardcoded binary paths + `tailscale status --json`. Probes each online peer's `/api/info` with 3s timeout. **Peer response `name` field stored in cachedPeers without sanitization** — flows into aggregate API responses.
+Finds Tailscale peers via hardcoded binary paths + `tailscale status --json` (invoked through login shell to support App Store Tailscale). Probes each online peer's `/api/info` with 3s timeout. Peer name sanitized via `sanitizePeerName()` before caching.
 
 ### isAllowedSession(session)
-Calls `getBackend().list()` per invocation (no caching). Now returns merged pty+tmux list via BackendRouter. Gates all session operations.
+Calls `getBackend().list()` per invocation (no caching). Returns merged pty+tmux list via BackendRouter. Gates all session operations.
 
 ---
 
@@ -101,7 +105,7 @@ Calls `getBackend().list()` per invocation (no caching). Now returns merged pty+
 - Duplicate session detection via `getBackend().list()` which now checks both backends
 
 ### GET /api/sessions
-Returns session list enriched with `backend` field (`"pty"` or `"tmux"`) via `getRouter().getBackendTypeForSession(name)`.
+Returns session list enriched with `backend` field (`"pty"` or `"tmux"`) via `getRouter().getBackendTypeForSession(name)`. After response, fires `checkSessionTransitions(results)` async (does not block response) to trigger push notifications on running → idle transitions.
 
 ### GET /api/backend
 Returns `{ default, tmuxAvailable, counts: { pty, tmux } }`. Used by settings UI toggle and daemon stop warning.
@@ -114,6 +118,18 @@ Accepts `{ default: "pty"|"tmux" }`. Validates tmux availability. **Re-probes tm
 - Stale lock: reads PID, checks alive via `process.kill(pid, 0)`, verifies cmdline via `ps`
 - Worker spawned detached+unref'd
 
+### GET /api/ralph
+After returning response, fires `checkRalphLoopTransitions(loops)` async. Handles both local and aggregate (peer) ralph loops for push notifications.
+
+### Push notification routes (NEW)
+- **GET /api/push/vapid-key** — returns VAPID public key for frontend subscription setup (no auth bypass — covered by API auth gate)
+- **POST /api/push/subscribe** — validates PushSubscription (endpoint HTTPS, allowed host, key lengths), dedupes by endpoint, enforces MAX_SUBSCRIPTIONS=20 cap
+- **POST /api/push/unsubscribe** — removes by endpoint
+- **POST /api/notify** — agent-triggered manual push; rate-limited to 10/min via `checkNotifyRateLimit()`, message truncated to 500 chars
+
+### GET /sw.js
+Serves `sw-push.js` asset with `Service-Worker-Allowed: /` header (required for service worker scope).
+
 ### Module state
 - `prevPaneContent` Map for triage diffing, pruned when sessions disappear
 
@@ -122,32 +138,39 @@ Accepts `{ default: "pty"|"tmux" }`. Validates tmux availability. **Re-probes tm
 ## src/server/websocket.ts
 
 ### activePtySessions
-Central registry `Map<string, {viewer, pendingViewer, proc, alive}>`. Mutated by handlePtyWs, setupNewPtyEntry, teardownPty.
+Central registry `Map<string, {viewer, pendingViewer, proc, alive, unsubscribe}>`. Mutated by handlePtyWs, setupNewPtyEntry, teardownPty. `unsubscribe` field added to track PtyBackend data listener cleanup.
 
 ### handleTerminalWs (classic text-polling)
 - Polls `capturePane` every 50ms via `getBackend()` (routes through BackendRouter)
 - Input types: `input` (arbitrary text via send literal), `key` (WS_ALLOWED_KEYS allowlisted), `resize`
-- Session liveness re-checked at most 1/sec via isAllowedSession
+- Session liveness re-checked at most 1/sec via `backend.hasSession()`
+- Uses `CLOSE_CODE_SESSION_UNAVAILABLE` constant on session end
 
 ### handlePtyWs (ghostty-web PTY)
-- `backendType` now per-session via `getBackendTypeForSession(session)` (captured once at WS connect time)
+- `backendType` captured once at WS connect time via `getBackendTypeForSession(session)`
 - Viewer conflict negotiation: only one PTY viewer per session
+- `reset=true` param triggers teardown of existing PTY before creating new one
 - Two-phase prefill: viewport (sent immediately) + scrollback (buffered until prefill_done)
 - Binary frames capped at MAX_PTY_BINARY_BYTES=16384
-- PtyBackend access via `getRouter().getPtyBackend()` (no more unsafe casts)
+- PtyBackend access via `getRouter().getPtyBackend()` (typed, no unsafe casts)
+- `takeControl` flag in attach message allows immediate takeover without waiting for explicit `take_control` message
 
 ### setupNewPtyEntry
 - Prefill sent **before** resize (snapshot content while stable)
-- Subscribes to PTY data **before** resize — resize may trigger PTY redraw that must be forwarded immediately
+- For PTY backend: subscribes to session data **before** resize — resize may trigger PTY redraw that must be forwarded immediately; stores `unsubscribe` fn in entry
 - PTY backend path: subscribes to session data via `ptyBackend.onSessionData()`
 - Tmux backend path: spawns `Bun.spawn([TMUX, "attach-session", "-t", session])` with PTY
 - Prefill dedup via `__stripInitialPtyOverlap` (suffix-match search)
 - `spawning` flag prevents double-spawn
-- Full prefill mode: sends viewport marker before chunked scrollback (was sending buffer before marker)
+- Full prefill mode: sends viewport marker before chunked scrollback
 
 ### teardownPty
+- Calls `entry.unsubscribe()` to clean up PtyBackend data listener (prevents memory leak)
 - Closes viewer WebSockets, kills PTY process, removes entry from activePtySessions
 - Entry removed from map before viewer close (prevents re-entrant teardown)
+
+### WS close codes
+Imported from `../ws-constants.js`: CLOSE_CODE_NORMAL, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_DISPLACED, and WS_CLOSE_REASONS string map.
 
 ---
 
@@ -158,28 +181,30 @@ Direct PTY process management using Bun's native PTY support:
 - `sessions: Map<string, PtySession>` — in-memory session storage
 - `createSession()`: spawns `${SHELL} -lic ${cmd}` with PTY terminal config. **Defense-in-depth:** re-validates `agentCmd` against `CMD_REGEX` before shell interpolation (primary gate is in routes.ts, but PtyBackend passes cmd directly to SHELL without tmux's outer shell layer).
 - Exit callback guards against **name reuse race**: only cleans up if `session.proc === proc` (a new session with the same name may have been created after killSession).
-- `capturePane()`: returns RingBuffer contents stripped of ANSI/VT escape sequences via `stripAnsi()` (matches tmux capture-pane plain text output)
-- `stripAnsi()` — exported, handles standard CSI/OSC sequences **plus DCS** (Device Control String `ESC P ... ESC \`)
+- `capturePane()`: returns RingBuffer contents stripped of ANSI/VT escape sequences via `stripAnsi()`
+- `stripAnsi()` — exported, handles standard CSI sequences, OSC sequences, and DCS (Device Control String `ESC P ... ESC \`). Widened regex vs earlier versions.
 - `sendKey()`: maps tmux-style key names to raw byte sequences
 - `resize()`: direct `session.proc.terminal.resize(cols, rows)`
-- `onSessionData()`: subscription for WS handlers
+- `onSessionData()`: subscription for WS handlers; returns unsubscribe fn for cleanup
 - `writeToTerminal()`: raw input to PTY
 - `getSessionPrefill()`: ring buffer read for WS hydration
 - Output captured to RingBuffer (512KB default per session)
 - Triage cache with 500ms TTL
-- `cleanupOrphans()`: **no-op** — all PTY sessions are children of this process and cleaned up by the exit callback. No external orphans possible.
+- `cleanupOrphans()`: **no-op** — all PTY sessions are children of this process, cleaned up by exit callback. No external orphans possible.
+- `__getSession(name)`: test-only internal state accessor (guarded by WOLFPACK_TEST)
 
 ---
 
 ## src/server/tmux-backend.ts
 
 ### TmuxBackend (implements SessionBackend)
-Wraps existing tmux.ts functions:
+Thin wrapper over tmux.ts functions:
 - `list()` delegates to `tmuxList()`
 - `createSession()` delegates to `tmuxNewSession()`
-- `killSession()`: `tmux kill-session -t name`
-- `hasSession()`: `tmux has-session -t name`
+- `killSession()`: `tmux kill-session -t name` + `sessionDirMap.delete(name)`
+- `hasSession()`: `tmux has-session -t name` with 2s timeout
 - All other methods delegate to tmux.ts helpers
+- `cleanupOrphans()` delegates to `cleanupOrphanPtySessions()` (kills `wp_*` tmux sessions)
 
 ---
 
@@ -187,9 +212,10 @@ Wraps existing tmux.ts functions:
 
 ### RingBuffer
 Fixed-capacity circular buffer for terminal output capture:
-- `write(data)`: appends, wraps around on overflow
-- `read()`: returns string from buffer contents
+- `write(data)`: appends, wraps around on overflow; if data >= capacity, keeps only tail
+- `read()`: returns string from buffer contents; handles both contiguous and wrapped state
 - `readBuffer()`: returns Buffer copy for WS prefill
+- `clear()`: resets head and len without reallocating
 - Default capacity: 512KB (~5000 lines)
 
 ---
@@ -197,26 +223,186 @@ Fixed-capacity circular buffer for terminal output capture:
 ## src/server/tmux.ts
 
 ### tmuxList()
-Lists sessions via `list-sessions -F "#{session_name}|||#{pane_current_path}"`. Filters by `isUnderDevDir(pane_current_path)`. Excludes `wp_*` sessions.
+Lists sessions via `list-sessions -F "#{session_name}|||#{pane_current_path}"`. Filters by `isUnderDevDir(pane_current_path)`. Excludes `wp_*` sessions. Backfills `sessionDirMap` from tmux environment (`WOLFPACK_PROJECT_DIR`) with 30s TTL cache. Prunes stale caches on each call.
 
 ### tmuxNewSession(name, cwd, cmd)
-Command construction: `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT ${SHELL} -lic ${shellEscape(fullCmd + "; exec " + SHELL)}`. Duplicate guard via `has-session` pre-check.
+Command construction: `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT ${SHELL} -lic ${shellEscape(fullCmd + "; exec " + SHELL)}`. Duplicate guard via `has-session` pre-check. Sets `mouse on`. Persists project dir in tmux session env.
+
+### injectAgentContext(agentCmd)
+Detects agent type (claude/gemini/codex/cursor) and injects context prompt:
+- claude: `--append-system-prompt <INTERACTIVE_CONTEXT> || agentCmd` (fallback if flag unsupported)
+- gemini: `-i <INTERACTIVE_CONTEXT>`
+- others: passthrough
 
 ### Module state
-- `sessionDirMap`: Map<string, string> — session name to project dir
-- `_backfillCacheMap`, `_triageCacheMap`: TTL caches
+- `sessionDirMap`: Map<string, string> — session name to project dir (exported, used by TmuxBackend)
+- `_backfillCacheMap`: TTL cache for show-environment results
+- `_triageCacheMap`: TTL cache (500ms) for capturePaneForTriage
+
+---
+
+## src/server/ralph.ts
+
+### parseRalphLog(projectDir)
+Reads `.ralph.log` from project dir, parses header fields (agent, plan, progress, pid, phases, worktree), detects active status via `process.kill(pid, 0)`. Cleans stale lock file when PID is dead. Validates `planFile` and `progressFile` values via `isSafeRelativePath()` to prevent path traversal. Validates `workdir` is under `projectDir` before using as base for plan/progress paths.
+
+### scanRalphLoops()
+Iterates all dev projects, calls `parseRalphLog`. Skips entries where planFile doesn't exist on disk.
+
+### checkRalphLoopTransitions (in push.ts, called from routes.ts)
+Called after `/api/ralph` response. Fires push on running → done/idle/limit transitions per project.
+
+---
+
+## src/server/push.ts (NEW)
+
+### Purpose
+Web Push notification subsystem. Zero external dependencies — implements RFC 8291 (payload encryption), RFC 8188 (aes128gcm content-coding), and RFC 8292 (VAPID JWT) using `node:crypto` only.
+
+### VAPID key management
+- Keys stored at `~/.wolfpack/vapid-keys.json` (mode 0o600), auto-generated on first use
+- `getVapidKeys()`: loads from disk, validates decoded key lengths (65-byte public, 32-byte private), regenerates if corrupt
+- `_vapidKeys`: module-level singleton (lazy-initialized)
+- `getVapidPublicKey()`: returns base64url public key for frontend `applicationServerKey`
+
+### Subscription management
+- `PushSubscription`: `{ endpoint: string, keys: { p256dh, auth } }`
+- Stored at `~/.wolfpack/push-subscriptions.json` (mode 0o600), written atomically via tmp + rename
+- **MAX_SUBSCRIPTIONS = 20**, **MAX_ENDPOINT_LENGTH = 1024**
+- `validateSubscription()`: validates endpoint HTTPS, restricts to known push service hosts (FCM, Mozilla, WNS, Apple) to prevent SSRF, validates key byte lengths (p256dh=65, auth=16)
+- `addSubscription()`: dedupes by endpoint; returns 429-style error at cap
+- Subscriptions with 404/410 responses auto-pruned on send
+
+### Push encryption (encryptPayload)
+RFC 8291 aes128gcm:
+1. Generate ephemeral P-256 ECDH keypair
+2. Derive shared secret via ECDH with client public key
+3. HKDF-SHA256 (single-block, output ≤32 bytes) for CEK (16 bytes) and nonce (12 bytes)
+4. AES-128-GCM encrypt with 0x02 delimiter padding (RFC 8291 §4)
+5. Prepend aes128gcm header: salt(16) + rs(4, BE=4096) + idlen(1) + server_pub(65)
+
+### VAPID JWT (createVapidJwt)
+ES256 JWT (RFC 8292): builds JWK private key from stored scalar, signs header.payload, converts DER signature to raw r||s (64 bytes) via `derToRaw()`. Default TTL: 12 hours.
+
+### Transition-based notifications
+Module-level state maps (debounce per namespace):
+- `prevTriageState: Map<string, TriageStatus>` — last known triage state per session
+- `lastSessionPushTime: Map<string, number>` — last push timestamp per session (debounce)
+- `prevRalphState: Map<string, string>` — last known ralph loop status per project
+- `lastRalphPushTime: Map<string, number>` — last push timestamp per project (debounce)
+- `PUSH_DEBOUNCE_MS = 30_000` — 30s minimum between notifications for same session/project
+- Dead sessions/projects are pruned from state maps on each call
+
+`checkSessionTransitions()`: called after GET /api/sessions; fires push on `running → idle`.
+`checkRalphLoopTransitions()`: called after GET /api/ralph; fires push on `running → done|idle|limit`.
+
+### POST /api/notify rate limit
+`notifyTimestamps: number[]` — sliding window (60s), max 10 calls/min. `checkNotifyRateLimit()` filters expired entries on each call.
+
+---
+
+## src/server/mock-backend.ts
+
+### MockBackend (implements SessionBackend + PtyBackendMethods)
+In-memory test double. No tmux or real PTY required. Injected via `__setTestBackend()`. Provides:
+- Controllable session set (`setSessions`, `setOnBeforeCreate` for TOCTOU race simulation)
+- Stub PtyBackend-compatible methods (`isSessionAlive`, `onSessionData`, `writeToTerminal`, `getSessionPrefill`)
+- `lastCreateArgs`, `lastResizeArgs` for assertion
+- `capturePane` passes output through `stripAnsi()` (matches real backend behavior)
 
 ---
 
 ## src/auth.ts
 
 ### validateJwtHs256(token, secret, options)
-Hand-rolled HS256 JWT validation: base64url character class validated, timingSafeEqual for signature, strict alg check (only "HS256"), temporal claims with clock tolerance.
+Hand-rolled HS256 JWT validation: base64url character class validated, `timingSafeEqual` for signature, strict alg check (only "HS256"), temporal claims with clock tolerance (default 30s).
+
+### getJwtAuthConfig(env)
+Reads `WOLFPACK_JWT_SECRET` (min 32 chars to enable auth), `WOLFPACK_JWT_ISSUER`, `WOLFPACK_JWT_AUDIENCE`, `WOLFPACK_JWT_CLOCK_TOLERANCE_SEC`. Auth disabled if secret absent or too short (warning logged).
 
 ### validateRequestJwt(headers, url, allowQueryToken)
-Top-level auth gate. Returns {ok: true, payload: {}} when auth disabled.
+Top-level auth gate. Returns `{ok: true, payload: {}}` when auth disabled. Accepts Bearer header or (when `allowQueryToken=true`) `?token=` query param (used for WS upgrades).
+
+### getCachedJwtAuthConfig()
+Config read once at import time. Server restart required to pick up env changes.
+
+---
+
+## Key Flows
+
+### Auth handshake
+HTTP: `shouldAuthenticateApiPath()` → `validateRequestJwt(headers, url, false)` (Bearer only). WS: always authenticates via `validateRequestJwt(headers, url, true)` (allows `?token=` query param).
+
+### PTY attach (PTY backend)
+1. Client connects `/ws/pty?session=X`
+2. Server validates JWT + session existence
+3. `handlePtyWs()` → `setupNewPtyEntry()` → `attachPtyBackend(cols, rows)`
+4. Prefill from ring buffer sent in chunks (viewport marker + `prefill_done` after full scrollback)
+5. `ptyBackend.onSessionData()` subscribed before resize
+6. Resize issued → PTY redraws → data forwarded live
+7. Binary WS frames → `writeToTerminal()`
+8. On WS close → `teardownPty()` → `unsubscribe()` + kill proc
+
+### PTY attach (tmux backend)
+1. Same auth/validation as PTY backend
+2. `spawnTmuxPty()` issues `tmux capture-pane` for viewport + scrollback prefill
+3. Spawns `Bun.spawn([TMUX, "attach-session", "-t", session])` with PTY
+4. Initial attach output deduped via `__stripInitialPtyOverlap()`
+5. Post-spawn resize: `tmux set-option window-size latest` + `tmux resize-window`
+
+### Push subscription flow
+1. Client GETs `/api/push/vapid-key` → gets VAPID public key
+2. Client registers service worker, calls `pushManager.subscribe({ applicationServerKey })`
+3. Client POSTs subscription to `/api/push/subscribe` → validated + stored
+4. On session idle/ralph completion → `checkSessionTransitions()` / `checkRalphLoopTransitions()` → `sendPush()` → VAPID JWT + RFC 8291 encrypted payload → fetch to push service endpoint
+
+---
+
+## Critical Invariants
+
+- **Only one active PTY viewer per session** (`activePtySessions` map; conflict protocol via `viewer_conflict` + `take_control` / `takeControl`)
+- **PTY wins over tmux for same-named sessions** in `BackendRouter.list()` (in-process is authoritative)
+- **Ownership set before async create** in `BackendRouter.createSession()` (TOCTOU protection), rolled back on failure
+- **Auth required for all `/api/*` except `/api/info`** (`shouldAuthenticateApiPath`)
+- **WS always authenticated**, including non-API paths
+- **Push service allowlist** in `validateSubscription()` prevents SSRF via subscription endpoint
+- **Subscription file written atomically** (tmp + rename)
+- **Subscribe before resize**: in PTY backend, `onSessionData()` called before `resize()` so redraw output isn't lost
+- **Rate limiting after auth**: unauthenticated static file requests bypass auth gate but still hit per-IP rate limits
+
+---
+
+## Trust Boundaries
+
+| Input | Trusted? | Notes |
+|---|---|---|
+| `Tailscale-User-Login` header | Conditionally | Only when `TAILNET_SUFFIX` set and traffic through tailscale serve. Direct proxy exposure = CORS bypass |
+| JWT bearer token | After validation | HS256 + timingSafeEqual |
+| `?token=` query param | WS only | `allowQueryToken=true` only in WS upgrade path |
+| Session names from WS params | Validated | `isValidSessionName` + `isAllowedSession` |
+| Push subscription endpoint | Validated | HTTPS required; allowlisted to known push service hosts |
+| Peer ralph loop data | Untrusted | Validated via `validatePeerLoops()` schema; unexpected keys stripped |
+| `body.cmd` in /api/create | Validated | CMD_REGEX at route layer; re-validated in PtyBackend before shell interpolation |
+| `planFile` / `progressFile` in ralph log | Validated | `isSafeRelativePath()` + no `..` |
+| `workdir` in ralph log | Validated | Must be `projectDir` or child of it |
+
+---
+
+## Known Issues / Code Smells
+
+- **`index.ts` L41-42**: PATH extraction via `execFileSync(SHELL, ["-lic", "echo $PATH"])` has no timeout. Hangs if login shell blocks (e.g. network NFS mounts in `.zshrc`).
+- **`push.ts` `hkdfSha256()`**: Single-block HKDF only (output ≤32 bytes). Safe for current use (CEK=16, nonce=12) but will silently truncate if ever called with `length > 32`. No assertion.
+- **`push.ts` `derToRaw()`**: Manual DER parsing with fixed offsets (L215-227). Assumes standard 2-byte wrapper; malformed DER from `createSign` (theoretical) would produce garbage signature, not an error.
+- **`push.ts` VAPID subject**: Hardcoded `"mailto:noreply@wolfpack.local"` (L323) — not a real address, but RFC 8292 only requires a contact URI.
+- **`push.ts` per-namespace debounce maps** (`lastSessionPushTime`, `lastRalphPushTime`): module-level singletons, not reset between test runs unless `_testing` exports are used directly.
+- **`http.ts` `discoverPeers()`**: Peer name sanitization (`sanitizePeerName`) was added, but `version` field from peer `/api/info` is stored unsanitized into `wolfpackPeers` (L237).
+- **`routes.ts` `/api/ralph` peer auth forwarding** (L528-530): Forwards the caller's `Authorization` header to remote peers verbatim. If the caller's token has restricted scope, it is still forwarded to all peers.
+- **`websocket.ts` `handleTerminalWs`**: captures `backend` reference at connect time (L136). If `_router` is re-initialized (e.g. via `initBackend()`) during a live WS session, the handler holds a stale backend reference.
+- **`backend.ts` `__setTestBackend()`** (L313-316): Manually pokes private fields on `_router` via `(router as any)` — brittle if field names change.
+- **`tmux.ts` `cleanupOrphanPtySessions()`**: Kills all `wp_*` sessions at startup fire-and-forget. If tmux is unavailable, this silently no-ops (caught in `exec` rejection); no warning logged.
 
 ---
 
 ## Constants
-DESKTOP_PREFILL_MAX_BYTES=256KB, PREFILL_CHUNK_SIZE=32KB, POLL_INTERVAL_MS=50ms, PING_INTERVAL_MS=25s, RATE_LIMIT_PER_SEC=60, RESIZE_DEBOUNCE_MS=80ms, RAPID_EXIT_THRESHOLD_MS=3s
+
+DESKTOP_PREFILL_MAX_BYTES=256KB, PREFILL_CHUNK_SIZE=32KB, PREFILL_CHUNK_DELAY_MS=8ms, POLL_INTERVAL_MS=50ms, PING_INTERVAL_MS=25s, RATE_LIMIT_PER_SEC=60, RESIZE_DEBOUNCE_MS=80ms, RAPID_EXIT_THRESHOLD_MS=3s, MAX_PTY_BINARY_BYTES=16384, POST_SPAWN_RESIZE_DELAY_MS=100ms, PUSH_DEBOUNCE_MS=30s, MAX_SUBSCRIPTIONS=20, MAX_ENDPOINT_LENGTH=1024, BACKFILL_CACHE_TTL_MS=30s, TRIAGE_CACHE_TTL_MS=500ms, PEER_PROBE_TIMEOUT_MS=3s, MAX_BODY=64KB, MAX_IP_ENTRIES=10000

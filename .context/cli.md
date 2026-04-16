@@ -4,10 +4,13 @@
 ## src/cli/index.ts
 
 ### main()
-Command dispatcher. Subcommands: start, setup, status, stop, install, uninstall, worker, migrate-plan. Worker dispatch rewrites process.argv before dynamic import of ralph-macchio.
+Command dispatcher. Subcommands: start, setup, service (install|uninstall|start|stop|status), doctor, uninstall, migrate-plan, worker. Worker dispatch rewrites process.argv before dynamic import of ralph-macchio. `doctor` exits with the return value of `doctor()` (0 = all pass, 1 = any fail).
 
 ### start()
-Daemon mode (WOLFPACK_SERVICE=1): sets env vars from config (including `WOLFPACK_BACKEND` if config.backend is set), imports server. CLI mode: ensures service running, prints QR code and status.
+Daemon mode (WOLFPACK_SERVICE=1): sets env vars from config (including `WOLFPACK_BACKEND` if config.backend is set), imports server. CLI mode: calls `updateStableBinary()` first — if binary was replaced AND service was already running, reinstalls immediately (handles in-place upgrade). Otherwise uses `planServiceEnsureAction` to decide noop/start/install.
+
+### planServiceEnsureAction(running, installed)
+Pure helper. Returns "noop" if running, "start" if installed-but-stopped, "install" otherwise. Exported for testing.
 
 ---
 
@@ -20,13 +23,16 @@ Daemon mode (WOLFPACK_SERVICE=1): sets env vars from config (including `WOLFPACK
 Type-safe deserializer. Port validated via isValidPort [1,65535]. Backend validated as `"pty" | "tmux"` or undefined.
 
 ### ask(question)
-Sync prompt via `/dev/tty`. 1024-byte buffer, no timeout. Sets hasTTY=false if /dev/tty unavailable. No try/finally around readSync — fd leak possible on read failure.
+Sync prompt via `/dev/tty`. 1024-byte buffer, no timeout. Sets hasTTY=false if /dev/tty unavailable. fd is now properly closed in a `finally` block (prior bug: fd leak on read failure was fixed).
 
 ### isPortInUse(port)
 lsof (macOS) / ss (Linux). Port validated as integer before subprocess call. execFileSync with array args (no shell).
 
 ### killPortHolder(port)
-Identifies port holder, verifies wolfpack process via ps cmdline, then SIGTERM. Guards: pid > 1, isWolfpackProcess check.
+Identifies port holder, verifies wolfpack process via ps cmdline, then SIGTERM. Guards: pid > 1, isWolfpackProcess check. Uses `resolveProcessCommandForValidation` to fall back to full args when binary name alone is non-descriptive.
+
+### tailscaleBin()
+Checks PATH first (`tailscale`), then macOS app bundle (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`). Returns null if neither found.
 
 ---
 
@@ -34,15 +40,19 @@ Identifies port holder, verifies wolfpack process via ps cmdline, then SIGTERM. 
 
 ### setup()
 Interactive wizard flow:
-1. Check prerequisites (tmux optional, tailscale)
+1. Check prerequisites (tmux optional, tailscale via `tailscaleBin()`)
 2. Backend selection: pty (default) or tmux. Note printed: "you can change this later from Settings"
-3. If tmux selected but not installed: offer to install, fall back to pty on failure. **Fixed:** `let backend` (was `const`) so fallback actually updates the variable before config save.
-4. Collect devDir (validated against SYSTEM_PREFIXES), port
-5. Query tailscale hostname, configure serve
-6. Save config with backend field, optionally install service
+3. If tmux selected but not installed: offer to install, fall back to pty on failure. `let backend` (was `const` — fixed so fallback actually updates the variable before config save).
+4. Collect devDir (validated against SYSTEM_PREFIXES + warns if outside homedir), port
+5. Query tailscale hostname via `tailscale status --self --json`, optionally wait up to 120s for sign-in (polls /dev/tty non-blocking for Enter-to-skip)
+6. Configure `tailscale serve --bg <port>`
+7. Save config with backend field, optionally install service
 
 ### SYSTEM_PREFIXES guard
-Rejects /etc, /var, /usr, /bin, /sbin, /sys, /proc as devDir.
+Rejects /etc, /var, /usr, /bin, /sbin, /sys, /proc as devDir. Additional warning if devDir is outside homedir (not a hard reject).
+
+### installPackages(pkgs)
+macOS: brew for standard packages, brew cask for tailscale. Linux: apt for packages, official curl-pipe-sh script for tailscale (intentional; comment in source documents the security tradeoff).
 
 ---
 
@@ -54,17 +64,49 @@ Session-aware stop with user confirmation:
 2. If pty or tmux sessions active: prints warning (`N pty sessions will be killed, M tmux sessions will persist`), asks y/n
 3. If user declines: aborts without stopping
 4. If server unreachable: proceeds with stop (no warning)
-5. Stops via launchd (macOS) or systemctl (Linux)
-6. Kills stale port holder if still running
+5. Stops via launchd (macOS: `launchdBootout`) or systemctl (Linux)
+6. Kills stale port holder if still running after stop
 
 ### serviceInstall()
-Validates config, stops existing, writes plist/unit, registers with launchd/systemctl. Linux linger enabled.
+Validates config, stops existing service, waits for port free, writes plist/unit, registers with launchd/systemctl. Linux linger enabled via `loginctl enable-linger` (username validated with `/^[a-z_][a-z0-9_-]*$/` before passing to sudo). Exits process on any failure.
+
+### updateStableBinary()
+Copies running binary to `~/.wolfpack/bin/wolfpack` if different (compared by size then byte-by-byte). Returns true if replaced (upgrade detected). Called by `start()` in CLI mode.
 
 ### programArgs()
-Detects Bun vs compiled binary. Copies binary to ~/.wolfpack/bin/ for stable service path.
+Detects Bun vs compiled binary. Copies binary to `~/.wolfpack/bin/` for stable service path; returns stable path.
 
-### renderPlist/renderSystemdUnit
-All dynamic values through xmlEsc/systemdEsc. Propagates `WOLFPACK_BACKEND` env var from config when set.
+### renderPlist / renderSystemdUnit
+All dynamic values through xmlEsc/systemdEsc. Propagates `WOLFPACK_BACKEND` env var from config when set. Plist hardcodes PATH `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin`.
+
+### uninstall()
+Calls serviceUninstall() then removes `~/.wolfpack/` entirely via rmSync. Binary itself not removed (user must do manually).
+
+---
+
+## src/cli/doctor.ts  ← NEW
+
+### Purpose
+`wolfpack doctor` — system health check. Exits 0 if all checks pass, 1 if any fail. `--fix` flag attempts auto-remediation then re-runs all checks.
+
+### CheckResult interface
+`{ name, group, status: "pass"|"fail"|"warn", detail, fixHint?, fix?() }`. `fix` is an optional zero-arg function for auto-remediation. `fixHint` is a display-only string shown under fail lines.
+
+### Check groups (run sequentially)
+1. **Dependencies** — tmux (pass requires >= 3.0), tailscale binary present + connected (warn if not connected), SHELL env var exists on disk
+2. **Config** — `~/.wolfpack/` exists, `config.json` parses cleanly, devDir exists and is readable
+3. **Service** — service installed, service running (fix: `serviceStart()`), port ownership vs service state
+4. **Connectivity** — `curl localhost:<port>/api/info` responds with valid JSON; DNS lookup of tailscaleHostname (warn if doesn't resolve)
+5. **Binary** — `~/.wolfpack/bin/wolfpack` exists, is executable (fix: chmod 755), macOS codesign valid (fix: `codesign -f -s -`)
+6. **tmux Runtime** — lists sessions, creates+destroys a throwaway session `_wolfpack_doctor_<ts>` to verify tmux is functional
+7. **Environment** — PATH includes `/opt/homebrew/bin` + `/usr/local/bin` (macOS) or `/usr/local/bin` (Linux); HOME is set
+8. **Logs** — `~/.wolfpack/wolfpack.log` size/mtime; scans last 100 lines via `tail -n 100` for error/fatal/crash/SIGKILL/panic keywords
+
+### applyFixes(results)
+Exported. Runs `fix()` on all fail-status results that have one. On success: re-runs all check groups. Returns count of fix attempts.
+
+### doctor({ fix })
+Main export. `fix` defaults to `process.argv.includes("--fix")`. Returns exit code (0 or 1). Prints grouped results with ✓/✗/⚠ icons. If failures exist and `--fix` not passed, shows count of auto-fixable issues.
 
 ---
 

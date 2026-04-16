@@ -280,3 +280,25 @@ Changed files: public/app-grid.ts, public/app-state.ts, public/app.ts, src/cli/s
 Modules re-analyzed: server, client, cli, tests
 Issues added: 2 (ISS-23 Tailscale CORS trust, ISS-24 no CORS recovery tests)
 Issues removed: 2 (ISS-21 CORS fixed, ISS-22 scroll-lock cleanup fixed)
+
+---
+## Incremental Update — 2026-04-16
+Base: 5e08973 (fix: harden PTY lifecycle, backend routing, and client scroll-lock)
+Head: 44c3647 (refactor: derive backend type via backendFor in getBackendTypeForSession)
+Changed files (source only, docs/tests excluded): public/app-ralph.ts, public/app-state.ts, public/app.ts, public/index.html, public/styles.css, public/sw-push.js (NEW), public/wolfpack-lib.js (NEW), src/auth.ts, src/cli/config.ts, src/cli/doctor.ts (NEW), src/cli/index.ts, src/cli/service.ts, src/cli/setup.ts, src/log.ts, src/ralph-macchio.ts, src/server/backend.ts, src/server/http.ts, src/server/pty-backend.ts, src/server/push.ts (NEW), src/server/ralph.ts, src/server/routes.ts, src/server/tmux.ts, src/server/websocket.ts, src/shared/process-cleanup.ts, src/take-control-logic.ts, src/test-hooks.ts, src/triage.ts, src/validation.ts, src/wolfpack-context.ts, src/worktree.ts, src/ws-constants.ts (NEW)
+Modules re-analyzed: server, client, core, ralph, cli, tests (all)
+Issues added: 15 (ISS-25..ISS-39 — push.ts subsystem, peer version sanitization, ralph cleanup logging, state drift, etc.)
+Issues removed: 9 (ISS-06 NUL bytes, ISS-07 show-overlay ref, ISS-08 classifyDisconnect string contract, ISS-09 double-count, ISS-10 worktree flush, ISS-11 subtask newlines, ISS-12 expandBudget negative, ISS-13 log key collision, ISS-16 process group kill — all confirmed fixed in code)
+Key changes since 5e08973:
+- NEW push subsystem (src/server/push.ts, public/sw-push.js): VAPID key gen, RFC 8291 payload encryption, RFC 8292 JWT signing, subscription persistence (atomic write), per-namespace debounce maps (session vs ralph), transition hooks called from session create/end and ralph loop
+- NEW shared ws-constants.ts: close codes + message types. classifyDisconnect now compile-time safe (ISS-08 fixed).
+- NEW cli doctor subcommand: 8 check groups with --fix remediation. Full upgrade-detection flow in cli/index.ts start().
+- Triage simplified to binary running/idle (removed INPUT_PATTERNS / isInputPrompt).
+- Worktree: creation-order file for cleanup ordering; GPG signing disabled in test helper.
+- Tailscale exec reverted to login-shell wrapping (ISS-19) — locked in by regression test.
+- Zombie socket reconnect + PTY exit memory leak fix in pty-backend.ts.
+- Widened stripAnsi regex to cover private-mark CSI and bracketed-paste.
+- Push endpoint validation with allowlist (validateSubscription) — prevents SSRF.
+- Peer `name` sanitized via sanitizePeerName; `version` still unsanitized (ISS-25).
+- PTY subscribe-before-resize pattern: data listener attached before resize() so initial redraw survives.
+- Test suite: 928 → 1267 (+339 tests, +29 files). Full push test coverage, doctor, ws-constants, tailscale-exec regression.

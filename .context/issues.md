@@ -30,6 +30,36 @@
 - **Files:** `src/server/index.ts` L107-125
 - **Problem:** The origin recovery logic has no integration tests. Behavior is only verified manually.
 
+### ISS-25: Peer `version` field stored unsanitized
+- **Files:** `src/server/http.ts` (peer `/api/info` response handling)
+- **Problem:** `sanitizePeerName()` covers the `name` field, but `version` from remote peers is stored without the same C0/C1 stripping/truncation. Low-severity — version only flows to UI labels — but inconsistent with the established invariant.
+- **Suggestion:** Add `sanitizePeerVersion()` (or reuse the same helper) and apply to `version`.
+
+### ISS-26: `/api/ralph` forwards caller's auth token to peers verbatim
+- **Files:** `src/server/routes.ts` ralph aggregation handler
+- **Problem:** When fanning out to discovered peers, the client's JWT is forwarded as-is. Peer trust is currently tailscale-bounded, but this means any peer learns the token and could replay it against any other host the token is valid for.
+- **Suggestion:** Use per-peer service tokens or scope-restricted tokens for cross-host aggregation.
+
+### ISS-27: Push payload title/body not validated
+- **Files:** `public/sw-push.js`, `src/server/push.ts` (`/api/notify`)
+- **Problem:** The service worker renders payload.title and payload.body directly into the Notification API. No length cap, no content validation, no HTML/URL scanning. The `/api/notify` endpoint is auth-gated (JWT required), so this is a post-auth concern — but any compromised token can push arbitrary-looking notifications.
+- **Suggestion:** Cap title/body length server-side; strip control chars.
+
+### ISS-28: Hardcoded VAPID subject in `push.ts`
+- **Files:** `src/server/push.ts`
+- **Problem:** VAPID `sub` claim is hardcoded (e.g. `mailto:admin@example.com` or similar). Spec-compliant push services may reject or flag non-genuine contact URIs.
+- **Suggestion:** Derive from config (user email from `~/.wolfpack/config.json`), or at minimum document that push may break on strict push services.
+
+### ISS-29: `push.ts` manual DER parsing is fragile
+- **Files:** `src/server/push.ts` (RFC 8292 JWT ES256 signing path)
+- **Problem:** The signature is converted from DER to JOSE format via manual byte parsing. Edge cases (leading zeros, short signatures) could produce invalid JWTs.
+- **Suggestion:** Use `jose` or bun's built-in signer if available; otherwise add fuzz tests covering the DER→JOSE conversion.
+
+### ISS-30: `push.ts` HKDF expand uses single-block output
+- **Files:** `src/server/push.ts` (RFC 8291 payload encryption)
+- **Problem:** HKDF-expand is implemented as a single HMAC block. For output lengths > 32 bytes it would silently truncate. Current callers only request ≤32 bytes (IKM, CEK, nonce) so this is latent, but the function's behavior does not match the RFC spec.
+- **Suggestion:** Either add a length guard (throw on length > 32) or implement full multi-block HKDF-expand.
+
 ## Correctness
 
 ### ~~ISS-07: handleViewerConflict show-overlay returns original state reference~~ (FIXED)
@@ -62,6 +92,46 @@
 ### ~~ISS-22: Scroll-lock monkey-patch not cleaned up on dispose~~ (FIXED)
 - **Fixed in:** 5e08973
 
+### ISS-31: `_warn` in process-cleanup.ts hardcodes `component: "pty"`
+- **Files:** `src/shared/process-cleanup.ts:12`
+- **Problem:** Shared helper reused by ralph + pty backends logs every warning with `component: "pty"`, so ralph-side process kill failures look like PTY issues in the structured log.
+- **Suggestion:** Accept component as a parameter or let the caller inject a logger.
+
+### ISS-32: Subtask budget exhaustion is silent
+- **Files:** `src/ralph-macchio.ts:~970`
+- **Problem:** When `expandBudget` returns 0 (budget exhausted), the iteration skips subtask expansion with no log entry. Operators investigating "why did ralph stop adding subtasks?" have nothing to correlate against.
+- **Suggestion:** Log a warn entry on budget exhaustion.
+
+### ISS-33: Ralph early-exit path may skip final phases
+- **Files:** `src/ralph-macchio.ts:~851`
+- **Problem:** If the plan is already complete on the first iteration's readiness check, ralph exits without running post-iteration hooks (sync-back, cleanup) that later iterations trigger. Uncommon path but can leave a half-initialized worktree.
+- **Suggestion:** Run finalization unconditionally in a `finally`.
+
+### ISS-34: `SRT_AVAILABLE` detection is brittle
+- **Files:** `src/ralph-macchio.ts` (srt binary check)
+- **Problem:** Detection relies on a naming heuristic — any binary literally named `srt` on PATH would falsely report unavailable.
+- **Suggestion:** Probe for an sentinel flag (e.g. `srt --version` exit 0) instead of name matching.
+
+### ISS-35: `resolveRipgrepBin` calls `execFileSync("which", ...)` at each invocation
+- **Files:** `src/validation.ts:109`
+- **Problem:** Synchronous `which` shell-out every time the helper is invoked. Fine in tests, measurable cost on hot paths.
+- **Suggestion:** Cache the resolved path at module load.
+
+### ISS-36: `isJunkLine` requires pre-stripped VT input
+- **Files:** `src/triage.ts`
+- **Problem:** Function silently misclassifies if the caller passes raw terminal output with ANSI escapes. The contract is implicit — no assertion, no precondition.
+- **Suggestion:** Either strip internally or document the precondition with a runtime guard in dev builds.
+
+### ISS-37: `state.notificationsEnabled` can drift from browser permission
+- **Files:** `public/app-state.ts`, `public/app.ts` (push subscription flow)
+- **Problem:** If the user revokes notification permission via browser settings, `state.notificationsEnabled` is not refreshed. The UI toggle stays "on" until a manual re-check.
+- **Suggestion:** Re-read `Notification.permission` on visibilitychange / focus.
+
+### ISS-38: `_cachedFallbackTimer` leak edge path
+- **Files:** `public/app-state.ts` (reconnect/hydration fallback timer cache)
+- **Problem:** Under certain rapid reconnect/disconnect sequences, the fallback timer reference is overwritten before clear, leaving the old timer pending.
+- **Suggestion:** Clear before assigning new timer on all code paths.
+
 ## Robustness
 
 ### ~~ISS-15: cleanupAllExceptFinal no mutex~~ (FIXED)
@@ -82,3 +152,8 @@
 
 ### ~~ISS-20: createWorktree partial failure leaves inconsistent state~~ (FIXED)
 - **Fixed in:** `src/worktree.ts` — order-file write failure logs warning instead of rolling back worktree. Unrecorded worktrees sorted by path instead of collapsing to key 999.
+
+### ISS-39: Per-namespace push debounce maps not reset between tests
+- **Files:** `src/server/push.ts`
+- **Problem:** The recent split of debounce maps per namespace (`session` vs `ralph`) does not expose a test-reset path. Tests that cross namespaces can observe stale debounce state.
+- **Suggestion:** Export a `_testingResetDebounce()` helper (following the existing `_testing` pattern elsewhere).

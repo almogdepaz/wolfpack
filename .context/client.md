@@ -12,22 +12,43 @@ JS-string-literal escaper for `onclick="func('...')"` contexts. Escapes: backsla
 ### state object
 Single mutable global. Categories: view/navigation, session data, ralph loop, desktop/grid terminal, sidebar, connection, classic mobile terminal. No encapsulation — `setState(patch)` is shallow Object.assign.
 
+Notable field: `notificationsEnabled` is initialized from live browser state (`Notification.permission === "granted" && "PushManager" in window`) — reflects whether push is already active, not just the setting.
+
 ### toggleSetting/applySetting
-Persists to localStorage, applies DOM side-effects. Setting values come from hardcoded UI buttons only (no user-controlled injection into class names).
+Persists to localStorage, applies DOM side-effects. `notifications` key now wires into push subscription: toggling on calls `requestNotifications()`, off calls `unsubscribeNotifications()`.
+
+### Push Notification helpers (NEW)
+
+**`requestNotifications()`** — full push subscription flow:
+1. `Notification.requestPermission()`
+2. `GET /api/push/vapid-key` → VAPID public key
+3. `navigator.serviceWorker.register("/sw.js")` + `navigator.serviceWorker.ready`
+4. `reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) })`
+5. `POST /api/push/subscribe` with `sub.toJSON()`
+6. Sets `state.notificationsEnabled = true` on success
+
+Trust boundary: `applicationServerKey` comes from server-vended VAPID public key. The service worker URL is hardcoded `/sw.js` (which is `sw-push.js` served at that path).
+
+**`unsubscribeNotifications()`** — `POST /api/push/unsubscribe` with `{ endpoint }`, then `sub.unsubscribe()` locally.
+
+**`urlBase64ToUint8Array(base64String)`** — internal helper, converts base64url VAPID key to Uint8Array for the push subscription API.
+
+### Settings storage
+All persisted under `"wp-effects"` localStorage key. Defaults in `wpDefaults`. `mobileTerminal` setting exists but is dead — `useClassicMobile()` is hardcoded to `return false`.
 
 ---
 
 ## public/app.ts (3922 lines — orchestrator)
 
 ### api(path, opts, machineUrl)
-HTTP wrapper for all REST API calls. **machineUrl concatenated as string** (`machineUrl + "/api" + path`) — no URL object, no validation. Machine URLs from localStorage (server-discovered or manually added). Throws Error with .status and .data on non-2xx.
+HTTP wrapper. Now uses `new URL("/api" + path, machineUrl).href` for remote machines (safe URL construction, not string concatenation as it was previously). Local path remains `"/api" + path`. Throws Error with .status and .data on non-2xx.
 
 ### createPtySocketClient(opts)
 Low-level WS client for `/ws/pty`. Key behaviors:
 - URL construction: local uses `location.protocol`, remote uses `new URL(opts.machine)` (proper URL parsing)
 - `consumeReset` flag consumed once (reset=1 only on first connect per lifecycle)
-- Two-phase prefill: viewport chunks flushed immediately, scrollback chunks buffered until prefill_done
-- 2s safety timeout force-flushes if prefill_done never arrives
+- Two-phase prefill: viewport chunks flushed immediately (`prefill_viewport`), scrollback chunks buffered until `prefill_done`
+- 2s safety timeout force-flushes if prefill_done never arrives (flaky mobile guard)
 - 300ms compat fallback for old servers without attach_ack
 - `_takeControlOnAttach` consumed once per connection
 - Post-attach_ack: `requestAnimationFrame(() => sendFitResize())` re-checks dims after layout settles (fixes stale mobile dims)
@@ -38,12 +59,14 @@ Composes terminal instance + hydration controller + socket client. Key guards:
 - `isCurrent()` closure prevents stale callback mutations from replaced clients
 - `_postResetBuffer` buffers writes during terminal reset (prevents WASM crash)
 - `_reconnectPendingReset = true` defers terminal reset to first data arrival (avoids blank screen flash)
+- **Canvas clear on mount (NEW)**: after `_term.open(container)`, directly fills the canvas with `#0a0a0a` via `getContext('2d').fillRect(...)`. Fixes ghostty-web v0.4.0 WASM stale buffer retention — new Terminal instances inherit screen content from prior ones. See upstream issues /138, /141, /142.
 - `dispose()` **removes keydown listeners** from container (`_scrollLockKeydownHandler`, `_browserShortcutKeydownHandler`) before disposing terminal. Resets `_userScrolledUp`.
-- **Scroll-lock**: `_userScrolledUp` flag suppresses `scrollToBottom()` during active output when user has scrolled up via wheel/trackpad. Monkey-patches `_term.scrollToBottom` and `_term.scrollLines`. Any keydown snaps back to bottom. Wheel events intercepted via `onWheelScroll` callback — **only sets scroll-lock when `viewportY > 0`** (prevents false positives in mouse mode where wheel sends SGR sequences but viewport stays at 0). Reset on reconnect (`onOpen`).
-- Desktop `prefillMode` is `"viewport"` (was `"none"`).
+- **Scroll-lock (UPDATED)**: `_userScrolledUp` flag suppresses `scrollToBottom()` during active output when user has scrolled up via wheel/trackpad. On scroll-up (`ev.deltaY < 0`), sets `_userScrolledUp = true` immediately (trusts wheel direction). On scroll-down (`ev.deltaY > 0`), defers to next `requestAnimationFrame` to check `_term.viewportY === 0` after ghostty processes the event. Monkey-patches `_term.scrollToBottom` and `_term.scrollLines`. Any keydown snaps back to bottom. Critically: **mouse mode check** — if `getMode(1000/1002/1003)` returns true, wheel events are SGR sequences, not viewport scrolls, so scroll-lock is skipped entirely. Reset on reconnect (`onOpen`).
+- On first connect (not reconnect): `_term.reset()` always runs to clear WASM retained state, even without rehydrate flag.
+- Desktop `prefillMode` is `"viewport"` (not `"full"` or `"none"`).
 
 ### createTerminalInstance (scroll hook)
-Accepts `onWheelScroll` callback — fires inside ghostty-web's capture-phase wheel handler (the only place to intercept before ghostty-web consumes the event). Used by scroll-lock to detect intentional scroll-up.
+Accepts `onWheelScroll` callback — fires inside ghostty-web's capture-phase wheel handler (the only place to intercept before ghostty-web consumes the event). Used by scroll-lock to detect intentional scroll-up vs. SGR mouse reporting.
 
 ### fitTerminalPreserveScroll
 Uses ghostty-web native `_term.viewportY` and `_term.getScrollbackLength()` (not xterm.js `buffer.active`). Preserves scroll position across `_fitAddon.fit()` by computing delta from scrollback length change.
@@ -55,13 +78,13 @@ Exponential backoff: 500ms base, 5s max, 2min budget. Jitter 0-200ms. `block()` 
 Epoch-based concurrency guard (`loadSessionsEpoch`). Multi-machine first-load shows pending placeholders, replaces individually as resolved. Subsequent polls replace only changed groups by comparing outerHTML strings.
 
 ### renderMachineGroupHtml(g, multiMachine)
-All server-supplied strings through esc()/escAttr(). Status dot classes from boolean expressions only. `s.triage` used as CSS class with esc() — but esc() is HTML escaper, not CSS identifier sanitizer.
+All server-supplied strings through esc()/escAttr(). Status dot classes from boolean expressions only. `s.triage` sanitized through `safeTriage()` which allowlists against `VALID_TRIAGE = new Set(["running", "idle"])` before use as CSS class — prevents arbitrary class injection from server data.
 
 ### visibilitychange handler (desktop reconnect)
 Desktop wake (>60s hidden): force-reconnects even if `readyState` reports OPEN (zombie socket detection). Calls `reconnect()` instead of conditional `connect()`. Applies to both single terminal and grid mode.
 
 ### initTerminal(cached)
-ghostty-web WASM terminal lifecycle. Mobile: neutralizes ghost focus elements (inputmode=none, readonly) via MutationObserver. Desktop: intercepts Cmd/Ctrl+R/W/T/L/N/Q to prevent browser shortcuts from being swallowed.
+ghostty-web WASM terminal lifecycle. `container.innerHTML = ""` clears stale canvas before mounting new terminal (prevents ghost content from prior session). Mobile: neutralizes ghost focus elements (inputmode=none, readonly) via MutationObserver. Desktop: intercepts Cmd/Ctrl+R/W/T/L/N/Q to prevent browser shortcuts from being swallowed. `_cachedFallbackTimer` stored on state so `destroyTerminal()` can cancel it — prevents cross-session side effects on fast session switching.
 
 ### showView(name, skipAnimation)
 Navigation controller. Terminal connections always torn down when leaving terminal view (suspendGridMode or destroyTerminal). Timer management: sessionRefreshTimer and ralphLogPollTimer cleared on every view change.
@@ -70,7 +93,7 @@ Navigation controller. Terminal connections always torn down when leaving termin
 Mobile input path. `text.replace(/\n/g, " ")` collapses newlines. Encoded to Uint8Array, sent via _sendTerminalInput. Enter-retry: if output unchanged within 800ms, sends Enter. Optimistic clear, restore on failure.
 
 ### applyTerminalPane(pane)
-Classic mobile terminal rendering. Search inactive: `term.textContent = pane` (safe). Search active: regex runs on **raw text** (not HTML-escaped), then builds HTML per-segment via `esc()` + `<mark>` wrapping. This prevents splitting HTML entities like `&amp;` that the old `esc(pane).replace(re, ...)` approach suffered from.
+Classic mobile terminal rendering (DEAD CODE — `useClassicMobile()` returns false). Search inactive: `term.textContent = pane` (safe). Search active: regex runs on **raw text** (not HTML-escaped), then builds HTML per-segment via `esc()` + `<mark>` wrapping.
 
 ### Window globals
 `state`, `openSession`, `killSession`, `showView`, etc. exposed on `window` for e2e tests via page.evaluate.
@@ -99,7 +122,7 @@ Disposes controller **before** removing cell DOM element (controller.dispose() n
 ## public/app-touch.ts
 
 ### setupTouchScrollHandler
-Momentum scrolling + long-press text selection for classic mobile. Scroll: sends SGR escape sequences when mouse mode active, else `term.scrollLines()`. 500ms long-press threshold, 10px move tolerance. Copy via `navigator.clipboard.writeText()` (requires HTTPS). Returns cleanup function.
+Momentum scrolling + long-press text selection for classic mobile (now used with ghostty-web WASM path on mobile — `useClassicMobile()` is false). Scroll: checks `term.getMode(1000/1002/1003)` — if mouse mode active, sends SGR escape sequences (`\x1b[<65;1;1M` / `\x1b[<64;1;1M`); else `term.scrollLines()`. 500ms long-press threshold, 10px move tolerance. Copy via `navigator.clipboard.writeText()` (requires HTTPS). Returns cleanup function.
 
 ---
 
@@ -115,14 +138,99 @@ All server data escaped via esc()/escAttr(). Status/statusLabel from hardcoded e
 Collects form values, POSTs to /ralph/start. No client-side validation on newBranch/worktreeBranch beyond emptiness check. Body via JSON.stringify (safe from interpolation).
 
 ### parseIterations(log)
-Regex split on `=== ... ===` markers. Bodies rendered via esc() inside `<pre>`.
+Regex split on `=== 🥋 (.+?) ===` markers. Bodies rendered via esc() inside `<pre>`.
+
+### checkRalphTransitions(loops, mUrl, mName) (NEW)
+Detects running→done/idle/limit state transitions and fires `haptic([200, 100, 200])`. Pure client-side haptic feedback. Push notifications for the same events are handled server-side; this is a local supplement for when the PWA is in the foreground.
+
+---
+
+## public/sw-push.js (NEW)
+
+Service worker for Web Push API. Registered at `/sw.js` by `requestNotifications()`.
+
+**push event handler**: calls `self.registration.showNotification(data.title, { body, tag, icon: "/icon-192.png", data: { url } })`. Payload parsed from `event.data.json()` — no authentication/signature check on payload content (VAPID auth happens at the transport layer, not here).
+
+**notificationclick handler**: closes notification, then:
+- Validates `url` from notification data: relative URLs (`/...`) pass through; absolute URLs are checked via `new URL(url).origin !== self.location.origin` and reset to `"/"` if cross-origin. Prevents open-redirect via push payload.
+- Focuses existing same-origin window if one is open; otherwise `clients.openWindow(url)`.
+
+**Trust boundary**: notification payload `title`, `body`, `tag`, `url` are server-controlled. `url` is validated for same-origin before use. `title`/`body`/`tag` go directly into the system notification without further sanitization — XSS risk is mitigated by the OS notification system (not rendered as HTML).
+
+---
+
+## public/wolfpack-lib.js (NEW)
+
+Auto-generated bundle (`scripts/bundle-client-lib.ts`). Exposes `window.WP` as a namespace of pure utility functions extracted from server-shared modules. All functions are stateless.
+
+**Exports via `window.WP`:**
+
+| Function | Source module | Purpose |
+|---|---|---|
+| `captureScrollState(buffer)` | terminal-buffer | Snapshot viewportY/baseY before fit |
+| `scrollTargetAfterResize(nextBaseY, distanceFromBottom)` | terminal-buffer | Restore scroll after fit |
+| `serializeBufferTail(buffer, maxLines)` | terminal-buffer | Snapshot last N lines of terminal buffer |
+| `shouldInterceptCopy(event, hasSelection)` | terminal-input | True if Cmd/Ctrl+C with selection |
+| `encodeTerminalBinary(data)` | terminal-input | String → Uint8Array (Latin-1) |
+| `shouldRehydrate(wasReconnect, hydrationStarted, prefillDisabled)` | reconnect-hydration | Whether to replay prefill on reconnect |
+| `addToGridState(gridSessions, session, machine, currentSession, currentMachine)` | grid-logic | Pure grid add (returns new state or null) |
+| `removeFromGridState(gridSessions, idx, focusIndex)` | grid-logic | Pure grid remove (returns new state + exitGrid flag) |
+| `cloneGridState / suspendGridState / resumeGridState` | grid-logic | Snapshot/restore grid session arrays |
+| `handleViewerConflict(state)` | take-control-logic | Returns `"auto-take-control"` or `"show-overlay"` |
+| `handleControlGranted(state)` | take-control-logic | Clears displaced/autoTakeControl flags |
+| `classifyDisconnect(code, reason)` | take-control-logic | Maps close code/reason to `"displaced"/"session-ended"/"pty-exited"/"reconnect"` |
+| `handleTakeControlClick(isConnected)` | take-control-logic | Returns `"send-take-control"` or `"reconnect-with-auto"` |
+| `handleDisplaced(state) / prepareAutoTakeControl(state)` | take-control-logic | Immutable state updaters |
+| `CLOSE_CODE_NORMAL / CLOSE_CODE_SESSION_UNAVAILABLE / CLOSE_CODE_DISPLACED` | ws-constants | 1000 / 4001 / 4002 |
+
+**Usage pattern**: `app.ts` and `app-grid.ts` consume `WP.*` directly — the lib is loaded synchronously before `app.bundle.js` (see `index.html` script order). The grid-logic functions mirror the stateful operations in `app-grid.ts` as pure equivalents used for preserved-grid manipulation when the grid is suspended.
 
 ---
 
 ## public/index.html
 
-Single-page application shell. All dynamic content via JS innerHTML. Script loading: wolfpack-lib.js (WP.* functions), ghostty-web.bundle.js (WASM terminal), app.bundle.js (compiled client). All local-origin, no CDN. No CSP meta tag (CSP injected server-side).
+Single-page application shell. All dynamic content via JS innerHTML. Script loading order (critical):
+1. `/wolfpack-lib.js` — loads `window.WP` (must precede app.bundle.js)
+2. `/ghostty-web.bundle.js` — WASM terminal (async WASM init, `window.ghosttyReady` promise)
+3. `/app.bundle.js` — compiled client (inline at body end)
+
+Push notification UI: `<input type="checkbox" id="setting-notifications">` in settings view — toggling calls `toggleSetting("notifications", val)` which delegates to `requestNotifications()` / `unsubscribeNotifications()`.
+
+No CSP meta tag (CSP injected server-side). No CDN dependencies — all local-origin.
+
+---
 
 ## public/styles.css
 
 ~2000+ lines. CSS custom properties for dark theme. Grid layout classes (grid-2 through grid-6). No inline script content or expression() injection vectors.
+
+---
+
+## Cross-module coupling
+
+- **WS protocol**: client depends on server message types (`attach`, `attach_ack`, `pty_ready`, `prefill_viewport`, `prefill_done`, `viewer_conflict`, `control_granted`, `resize`, `take_control`) and close codes (4001 = session unavailable, 4002 = displaced). `wolfpack-lib.js` shares `ws-constants.ts` with server.
+- **Push API endpoints**: `GET /api/push/vapid-key`, `POST /api/push/subscribe`, `POST /api/push/unsubscribe` — new server endpoints required.
+- **Service worker registration**: `requestNotifications()` registers `/sw.js` which must be served at root scope. Server routes this to `sw-push.js` content.
+- **VAPID**: server holds private key, vends public key to client on demand.
+
+---
+
+## Trust boundaries
+
+- **JWT**: not stored in localStorage or visible to client JS — auth handled server-side via cookie or header (server injects auth tokens at the HTTP layer, not via JS).
+- **Push payload**: `sw-push.js` validates `url` for same-origin before `openWindow()`. `title`/`body` are system notification strings, not DOM content.
+- **Session list**: `s.triage` validated through `safeTriage()` allowlist before CSS class use.
+- **Ralph loops from peers**: comment in `renderMachineGroupHtml` notes server-side `validatePeerLoops()` strips unexpected keys; all fields escaped client-side.
+- **machineUrl**: still passed as raw string to `api()` but now wrapped in `new URL(...)` constructor — invalid URLs throw before any fetch.
+
+---
+
+## Known issues / code smells
+
+- **Dead code**: `useClassicMobile()` hardcoded `return false` (app.ts:13-18). All classic mobile code (`handleTerminalWs`, `applyTerminalPane`, `initClassicMobile`, etc.) is unreachable. Comment says "cleanup in follow-up PR." The `mobileTerminal` setting in `wpSettings` and its UI buttons are inert.
+- **Canvas stale state (ghostty-web bug)**: workaround at app.ts ~955-967: new Terminal instances inherit stale screen from prior ones due to WASM allocator reuse. Fixed with direct `fillRect` on open. Upstream-tracked; can be removed when ghostty-web ships a fix.
+- **`fitTerminalPreserveScroll` ghostty-web API assumptions**: reads `_term.viewportY` and `_term.getScrollbackLength()` directly — these are non-standard ghostty-web extensions, will break if ghostty-web API changes.
+- **Scroll-lock race on scroll-down**: the rAF deferral for scroll-down viewportY check means a very fast upward re-scroll (before the frame fires) could incorrectly clear `_userScrolledUp`. Low severity.
+- **Push payload trust**: sw-push.js does not verify push message authenticity beyond VAPID transport auth. A compromised server could push arbitrary `title`/`body` text to all subscribed clients.
+- **`state.notificationsEnabled` init**: set at module load time from `Notification.permission`. If permission is revoked between loads without re-toggling the setting, the UI checkbox state diverges from actual capability.
+- **`_cachedFallbackTimer` leak path**: stored on `state` rather than in closure to allow `destroyTerminal()` cancellation. If `destroyTerminal()` is called in the same tick as `initTerminal()` (edge case), the timer could still fire after session teardown. The `5000ms` window makes this unlikely to matter in practice.
