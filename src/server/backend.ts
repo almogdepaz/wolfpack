@@ -92,7 +92,7 @@ export class BackendRouter implements SessionBackend {
   }
 
   getBackendTypeForSession(name: string): BackendType {
-    return this.ownership.get(name) ?? this._defaultBackend;
+    return this.backendFor(name) === this.tmux ? "tmux" : "pty";
   }
 
   // ── Default backend management ──
