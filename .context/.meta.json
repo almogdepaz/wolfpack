@@ -1,84 +1,19 @@
 {
-  "lastCommit": "44c3647ec0d3639ef53c5ac2f92980046d8626c5",
-  "lastFullBuild": "bf609e929b570ff17e934aa1798da5560b440b6c",
+  "lastCommit": "5e1f434bf48aa08ab7f5d7a4a311d66d20a44120",
+  "lastFullBuild": "5e1f434bf48aa08ab7f5d7a4a311d66d20a44120",
   "lastUpdate": "2026-04-16T00:00:00.000Z",
   "modules": {
-    "server": {
-      "files": [
-        "src/server/index.ts",
-        "src/server/http.ts",
-        "src/server/routes.ts",
-        "src/server/websocket.ts",
-        "src/server/backend.ts",
-        "src/server/pty-backend.ts",
-        "src/server/tmux-backend.ts",
-        "src/server/tmux.ts",
-        "src/server/ring-buffer.ts",
-        "src/server/ralph.ts",
-        "src/server/mock-backend.ts",
-        "src/server/push.ts",
-        "src/auth.ts"
-      ],
-      "contextFile": ".context/server.md"
-    },
-    "client": {
-      "files": [
-        "public/app.ts",
-        "public/app-state.ts",
-        "public/app-grid.ts",
-        "public/app-touch.ts",
-        "public/app-ralph.ts",
-        "public/index.html",
-        "public/styles.css",
-        "public/sw-push.js",
-        "public/wolfpack-lib.js"
-      ],
-      "contextFile": ".context/client.md"
-    },
-    "core": {
-      "files": [
-        "src/grid-logic.ts",
-        "src/take-control-logic.ts",
-        "src/terminal-buffer.ts",
-        "src/terminal-input.ts",
-        "src/reconnect-hydration.ts",
-        "src/triage.ts",
-        "src/validation.ts",
-        "src/wolfpack-context.ts",
-        "src/worktree.ts",
-        "src/log.ts",
-        "src/ws-constants.ts"
-      ],
-      "contextFile": ".context/core.md"
-    },
-    "ralph": {
-      "files": [
-        "src/ralph-macchio.ts",
-        "src/ralph-skill-audit.ts",
-        "src/ralph-skill-cleanup.ts",
-        "src/shared/process-cleanup.ts"
-      ],
-      "contextFile": ".context/ralph.md"
-    },
-    "cli": {
-      "files": [
-        "src/cli/index.ts",
-        "src/cli/config.ts",
-        "src/cli/setup.ts",
-        "src/cli/service.ts",
-        "src/cli/formatting.ts",
-        "src/cli/doctor.ts"
-      ],
-      "contextFile": ".context/cli.md"
-    },
-    "tests": {
-      "files": [
-        "tests/unit",
-        "tests/integration",
-        "tests/snapshot",
-        "tests/e2e"
-      ],
-      "contextFile": ".context/tests.md"
-    }
+    "auth": { "files": ["src/auth.ts"], "contextFile": ".context/auth.md" },
+    "validation": { "files": ["src/validation.ts", "src/ws-constants.ts", "src/wolfpack-context.ts"], "contextFile": ".context/validation.md" },
+    "server-core": { "files": ["src/server/index.ts", "src/server/routes.ts", "src/server/http.ts"], "contextFile": ".context/server-core.md" },
+    "websocket": { "files": ["src/server/websocket.ts", "src/take-control-logic.ts", "src/reconnect-hydration.ts"], "contextFile": ".context/websocket.md" },
+    "session-backends": { "files": ["src/server/backend.ts", "src/server/pty-backend.ts", "src/server/tmux-backend.ts", "src/server/tmux.ts", "src/server/ring-buffer.ts", "src/server/mock-backend.ts"], "contextFile": ".context/session-backends.md" },
+    "ralph": { "files": ["src/ralph-macchio.ts", "src/server/ralph.ts", "src/ralph-skill-audit.ts", "src/ralph-skill-cleanup.ts", "src/worktree.ts"], "contextFile": ".context/ralph.md" },
+    "push": { "files": ["src/server/push.ts", "public/sw-push.js"], "contextFile": ".context/push.md" },
+    "cli": { "files": ["src/cli/index.ts", "src/cli/config.ts", "src/cli/setup.ts", "src/cli/service.ts", "src/cli/doctor.ts", "src/cli/formatting.ts"], "contextFile": ".context/cli.md" },
+    "frontend": { "files": ["public/app.ts", "public/app-state.ts", "public/app-ralph.ts", "public/app-grid.ts", "public/app-touch.ts", "public/index.html", "public/manifest.json", "public/sw-push.js", "public/wolfpack-lib.js"], "contextFile": ".context/frontend.md" },
+    "shared": { "files": ["src/log.ts", "src/triage.ts", "src/qr.ts", "src/shared/process-cleanup.ts", "src/public-assets.ts", "src/terminal-buffer.ts", "src/terminal-input.ts", "src/grid-logic.ts", "src/test-hooks.ts", "src/types.d.ts"], "contextFile": ".context/shared.md" },
+    "build": { "files": ["scripts/build.ts", "scripts/bundle-app.ts", "scripts/gen-assets.ts", "scripts/bundle-ghostty.ts", "scripts/bundle-client-lib.ts"], "contextFile": ".context/build.md" },
+    "tests": { "files": ["tests/unit/", "tests/integration/", "tests/e2e/", "tests/snapshot/"], "contextFile": ".context/tests.md" }
   }
 }

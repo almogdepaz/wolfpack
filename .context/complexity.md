@@ -2,168 +2,196 @@
 # Complexity Audit
 
 ## Summary
-- Bloat score: 3/10 (mostly lean; app.ts is the main outlier)
-- Dead exports: 11
-- Wrapper functions: 10 (5 are intentional test hooks)
+
+- **Bloat score: 3/10** — codebase is broadly lean; most modules are appropriately sized for what they do. The main issues are a stale test file that reimplements production logic (now-exported) and a heavyweight integration test that spins up a hand-rolled server instead of using the real one.
+- Dead exports: 2 (module-level)
+- Wrapper functions: 1 pure pass-through; 9 necessary delegation wrappers
 - Over-abstracted modules: 0
-- Duplicated code blocks: 4 (test mirroring)
-- Oversized files: 3
+- Duplicated code blocks: 3 (triage cache pattern, SAFE_FILENAME inline copies, validation.test.ts inline copies)
+- Oversized files: 4 (ralph-macchio.ts, routes.ts, websocket.ts, doctor.ts)
+
+---
 
 ## LOC Estimates vs Reality
 
-| Module | Estimated LOC | Actual LOC | Ratio | Verdict |
-|--------|--------------|-----------|-------|---------|
-| server (7 files) | ~2,200 | 2,746 | 1.25x | OK |
-| client (5 TS + html + css) | ~6,000 | 8,582 | 1.43x | OK (css inflates; app.ts is the concern) |
-| core (10 files) | ~800 | 924 | 1.15x | Lean |
-| ralph (4 files) | ~1,200 | 1,468 | 1.22x | OK |
-| cli (5 files) | ~1,000 | 1,171 | 1.17x | OK |
+Estimates are "what a senior eng would write for the described complexity." Ratios >1.5x are flagged; >2x are flagged as bloated.
 
-No module exceeds 2x estimate. The codebase is reasonably sized for its complexity.
+| Module | Estimated LOC | Actual LOC | Ratio | Verdict |
+|--------|--------------|------------|-------|---------|
+| Auth | 180 | 216 | 1.2x | OK — deliberate crypto guards, test hook |
+| Validation | 250 | 316 | 1.3x | OK — many regexes + srt settings builder |
+| Server Core (index+routes+http) | 900 | 1461 | 1.6x | WATCH — routes.ts at 952 LOC for 29 handlers (avg 33 LOC each) is borderline but each handler has legitimate validation/error logic |
+| WebSocket | 600 | 864 | 1.4x | OK — prefill/dedup/take-control state is genuinely complex |
+| Session Backends | 900 | 1201 | 1.3x | OK — dual-backend router + 500ms triage cache duplication (minor) |
+| Ralph Orchestration | 1200 | 1925 | 1.6x | WATCH — ralph-macchio.ts at 1103 LOC is the largest single file; bulk is prompt-template content and iteration-loop state machine |
+| Push Notifications | 400 | 482 | 1.2x | OK — RFC 8291 encryption is legitimately verbose |
+| CLI | 1200 | 1774 | 1.5x | WATCH — doctor.ts (556 LOC) has 8 check groups × ~60 LOC each; acceptable given the functional breadth |
+| Shared Utilities | 300 | 490 | 1.6x | WATCH — grid-logic.ts (236 LOC) is slightly over; most of that is the 6-cell layout/navigation math |
+| Frontend (TS source) | 3500 | 5997 | 1.7x | WATCH — app.ts alone is 4105 LOC (monolithic frontend); but this is a PWA with complex WS lifecycle, so not surprising |
+
+No module exceeds 2x. The closest is Frontend at 1.7x, which reflects that `public/app.ts` is a single-file frontend bundle entry (common pattern for vanilla TS PWAs).
+
+---
 
 ## Dead Exports
 
-### src/auth.ts — 5 over-exported internal helpers
-- `extractBearerToken` — only used by `getRequestToken` in same file
-- `getJwtAuthConfig` — only used by `getCachedJwtAuthConfig` in same file
-- `getRequestToken` — only used by `validateRequestJwt` in same file
-- `validateJwtHs256` — only used by `validateRequestJwt` in same file
-- `getCachedJwtAuthConfig` — only used by `validateRequestJwt` in same file
-- **Suggestion:** Remove `export` from all five; the public API is just `validateRequestJwt` + `__resetJwtAuthConfig`.
+**`getBackendForSession(name: string): SessionBackend`** — `src/server/backend.ts:90`
 
-### src/server/tmux.ts — 3 internal helpers
-- `MOBILE_CAPTURE_HISTORY_LINES` — only used internally in `capturePane`
-- `detectAgent` — only used by `injectAgentContext` in same file
-- `injectAgentContext` — only used by `tmuxNewSession` in same file
-- **Suggestion:** Remove `export` from all three.
+Method on `BackendRouter` that wraps the private `backendFor()` helper. Zero external callers found — only the `getBackendTypeForSession` variant is called externally (in `routes.ts:286` and `websocket.ts`). The method leaks `SessionBackend` as a public type when callers only ever need the type string.
 
-### src/triage.ts — 2 internal pattern arrays
-- `INPUT_PATTERNS` — only used by `isInputPrompt` in same file
-- `JUNK_LINE_PATTERNS` — only used by `isJunkLine` in same file
-- **Suggestion:** Remove `export`; only the predicate functions need to be public.
+Suggestion: make `getBackendForSession` private or remove it; callers already have `getBackendTypeForSession` and can call `getBackend()` directly.
 
-### src/shared/process-cleanup.ts — 1 internal helper
-- `isProcessAlive` — only used by `killProcessTree` in same file
-- **Suggestion:** Remove `export`.
+**`getRequestToken(headers, url, allowQueryToken): string | null`** — `src/auth.ts:107`
 
-### public/app-state.ts — 1 internal cache
-- `_charDimCache` — only used by `getCharDimensions` in same file
-- **Suggestion:** Remove `export`.
+Exported but only called internally by `validateRequestJwt` on line 208 in the same file. No external callers.
+
+Suggestion: unexport (make it a module-private function); its signature is an internal implementation detail of `validateRequestJwt`.
+
+---
 
 ## Wrapper Functions
 
-### Intentional test hooks (5) — src/server/tmux.ts
-- `tmuxList` wraps `_tmuxListFn` (L169)
-- `tmuxSend` wraps `_tmuxSendFn` (L193)
-- `tmuxSendKey` wraps `_tmuxSendKeyFn` (L197)
-- `tmuxResize` wraps `_tmuxResizeFn` (L209)
-- `capturePane` wraps `_capturePane` (L227)
-- **Verdict:** Justified — enables test injection. Not bloat.
+**`TmuxBackend` methods** — `src/server/tmux-backend.ts:19-74`
 
-### Semantic aliases (2) — src/grid-logic.ts
-- `suspendGridState` wraps `cloneGridState` (L112)
-- `resumeGridState` wraps `cloneGridState` (L123)
-- **Verdict:** Borderline — provides naming clarity at call sites. Low cost.
+All 9 interface methods are 1-3 line pass-throughs that call the equivalent `tmux.ts` function with identical args:
 
-### Config-binding wrappers (2) — src/cli/service.ts
-- `generatePlist` wraps `renderPlist` with `loadConfig()`, `programArgs()` (L145)
-- `generateSystemdUnit` wraps `renderSystemdUnit` with `loadConfig()`, `programArgs()` (L178)
-- **Verdict:** Justified — binds config to render. Not bloat.
+```
+list()              → tmuxList()
+createSession(...)  → tmuxNewSession(...)
+killSession(name)   → exec(TMUX, ["kill-session", "-t", name])
+hasSession(name)    → exec(TMUX, ["has-session", ...])
+capturePane(name)   → capturePane(name)
+capturePaneForTriage(name) → capturePaneForTriage(name)
+resize(name,c,r)    → tmuxResize(name,c,r)
+send(name,t,ne)     → tmuxSend(name,t,ne)
+sendKey(name,key)   → tmuxSendKey(name,key)
+sessionDir(name)    → sessionDirMap.get(name)
+cleanupOrphans()    → cleanupOrphanPtySessions()
+```
 
-### Thin predicate (1) — src/server/http.ts
-- `isAllowedSession` wraps `tmuxList` + `.includes()` (L77-79)
-- **Verdict:** Justified — used at multiple call sites as a semantic gate.
+These are NOT dead weight — `TmuxBackend` implements `SessionBackend` and enables the `BackendRouter` dual-dispatch design. The abstraction is earning its keep (tests inject `MockBackend`; production routes to tmux vs pty transparently). Listed here for completeness, not as a fix target.
+
+**`resolveCleanupDiffBase(startCommit: string): string`** — `src/validation.ts:49`
+
+Single-line wrapper: `return startCommit || "HEAD~10"`. Has two production callers and regression tests. The function name documents intent (what "no start commit" means), so it's justified over inlining. Borderline but not a real problem.
+
+---
 
 ## Over-Abstracted Modules
 
-None detected. Export-to-caller ratios are reasonable across all modules. The core pure-logic modules (grid-logic, take-control-logic, terminal-buffer, etc.) have clean focused APIs consumed by 1-3 callers each.
+None found. Every abstraction (BackendRouter, RingBuffer, take-control state machine, wolfpack-client-lib barrel) has ≥2 independent callers or enables a clear testing seam.
+
+---
 
 ## Duplication
 
-### Test mirroring (production logic copied into tests)
+**1. Triage cache — near-identical pattern in two backends**
 
-1. **tests/unit/validation.test.ts** — copies 5 functions/regexes from `src/validation.ts` (`isValidProjectName`, `CMD_REGEX`, `isValidPlanFile`, `BRANCH_REGEX`, `isValidSessionName`). The file `validation-fuzzing.test.ts` imports them correctly — this file should too.
-   - **Suggestion:** Import from `src/validation.ts` instead of redefining.
+`src/server/tmux.ts:250-258` and `src/server/pty-backend.ts:37,72,177-180` implement the same 500ms TTL response-cache pattern:
 
-2. **tests/unit/escaping.test.ts** — copies `esc()` and `escAttr()` from browser-side code. Labeled "Mirrors index.html". Cannot import directly (browser-only code).
-   - **Suggestion:** Extract esc/escAttr to a shared isomorphic module (they use no DOM — the textContent/innerHTML technique can be replaced with string ops for test).
+```ts
+// tmux.ts
+const _triageCacheMap = new Map<string, { content: string; ts: number }>();
+const TRIAGE_CACHE_TTL_MS = 500;
+const cached = _triageCacheMap.get(session);
+if (cached && Date.now() - cached.ts < TRIAGE_CACHE_TTL_MS) return cached.content;
+_triageCacheMap.set(session, { content, ts: Date.now() });
 
-3. **tests/unit/prompt-classifier.test.ts** — copies `PROMPT_PATTERNS` (18 regexes) + `detectPrompt()` from frontend. Labeled "must stay in sync with the frontend patterns."
-   - **Suggestion:** Extract to shared isomorphic module or accept the divergence risk.
+// pty-backend.ts — identical TTL, identical Map value shape
+private triageCache = new Map<string, { content: string; ts: number }>();
+const TRIAGE_CACHE_TTL_MS = 500; // same constant, same name
+```
 
-4. **tests/unit/audit-regressions.test.ts:51-58** — copies `validateProjectDir` core logic from `src/server/routes.ts`.
-   - **Suggestion:** Import or call the production function directly.
+Context notes this intentionally: "separate caches per backend. Avoids O(N) tmux execs on rapid /api/sessions polls." The duplication is conscious (different cache lifecycles — module-level vs instance-level). Low priority.
 
-### Cross-module duplication
+Suggestion: if a third backend were added, extract `createTriageCache()` helper. Not worth it for two.
 
-- **gridTemplate / gridArrowNav / CSS grid classes** — three independent encodings of the same layout model (noted in context.md coupling section). Not code duplication per se, but semantic duplication that requires manual sync.
+**2. `SAFE_FILENAME` inline copies in test and production**
+
+`src/validation.ts:25` exports `SAFE_FILENAME = /^[a-zA-Z0-9._\- ]+$/`.
+
+`tests/integration/ralph-api.test.ts:308,334` inlines it twice as local `const SAFE_FILENAME = /^[a-zA-Z0-9._\- ]+$/` instead of importing.
+
+Suggestion: replace the two inline copies in `ralph-api.test.ts` with `import { SAFE_FILENAME } from "../../src/validation.ts"`. Three-line fix.
+
+**3. `validation.test.ts` reimplements exported functions**
+
+`tests/unit/validation.test.ts:3-25` inlines copies of `isValidSessionName`, `isValidProjectName`, `isValidPlanFile`, `CMD_REGEX`, and `BRANCH_REGEX`. The file comment says "replicated here" and was written before these functions were exported from `src/validation.ts`.
+
+`tests/unit/validation-extracted.test.ts` and `tests/unit/validation-fuzzing.test.ts` already import and test the same functions from the real source. The old `validation.test.ts` now tests inline copies that may silently diverge from the production implementations.
+
+Suggestion: delete `tests/unit/validation.test.ts` (401 LOC) — all its test cases are covered by `validation-extracted.test.ts` and `validation-fuzzing.test.ts` which import from `src/`. Confirm coverage before deleting.
+
+---
 
 ## Oversized Files
 
-| File | LOC | Median | Ratio | Flag |
-|------|-----|--------|-------|------|
-| public/app.ts | 3,921 | 227 | 17.3x | **26.3% of total LOC** |
-| public/styles.css | 2,490 | 227 | 11.0x | CSS; less concerning |
-| src/ralph-macchio.ts | 1,052 | 227 | 4.6x | Complex orchestrator |
-| src/server/routes.ts | 869 | 227 | 3.8x | 21 route handlers |
-| public/app-grid.ts | 698 | 227 | 3.1x | Already extracted from app.ts |
-| src/server/websocket.ts | 645 | 227 | 2.8x | Near threshold |
+Median file LOC across `src/`: ~144. 3× median = 432. Files over 500 LOC:
 
-**public/app.ts at 3,921 lines is the primary concern.** It mixes terminal lifecycle, session management, UI rendering, WS protocol handling, reconnect logic, mobile input handling, and settings management. Several logical chunks have already been extracted (app-grid, app-touch, app-ralph, app-state), but the remaining 3,921 lines still span multiple concerns.
+| File | LOC | Notes |
+|------|-----|-------|
+| `src/ralph-macchio.ts` | 1103 | Largest single file; 12.5% of total src LOC. Worker subprocess with 34+ functions. Could be split: iteration-loop core vs worktree helpers vs prompt-building. Not urgent — it's a standalone worker entry point, not imported by other modules. |
+| `src/server/routes.ts` | 952 | 29 route handlers inline in one file. Each handler averages 33 LOC including validation. Extraction would add indirection without benefit at current scale. Watch if it keeps growing. |
+| `src/server/websocket.ts` | 740 | Two WS handlers + prefill/dedup logic. The prefill flow (`__stripInitialPtyOverlap`, chunked send) is inherently complex. Borderline but justified. |
+| `src/cli/doctor.ts` | 556 | 8 check groups × ~60 LOC each. Mechanical repetition but each check is different in substance. Acceptable for diagnostic tooling. |
 
-**src/ralph-macchio.ts at 1,052 lines** is a complex orchestrator with legitimate density — main loop, worktree management, plan parsing, agent spawning, signal handling. Could theoretically be split (e.g., worktree logic, agent spawning, plan management) but the module-level mutable state makes splitting harder.
+No file holds >30% of project LOC. `ralph-macchio.ts` at 12.5% is the closest.
+
+---
 
 ## Deep Call Chains
 
-### Session creation: POST /api/create -> tmux session
-```
-routes.ts handleCreate
-  -> resolveProjectDir (validateProject + validateProjectDir)
-  -> uniqueSessionName
-  -> tmuxNewSession
-    -> injectAgentContext
-      -> shellEscape
-    -> exec(TMUX, ["new-session", ...])
-```
-Depth: 4. Reasonable — each hop adds validation or transformation.
+Key flows from `context.md`:
 
-### PTY connection: WS upgrade -> terminal output
+**Auth → Session → WS Relay**
 ```
-index.ts upgrade handler
-  -> isAllowedOrigin
-  -> validateRequestJwt
-  -> isValidSessionName
-  -> isAllowedSession
-  -> handlePtyWs
-    -> setupNewPtyEntry
-      -> spawnPty
-        -> exec(TMUX, ["has-session", ...])
-        -> capturePane (prefill)
-        -> Bun.spawn([TMUX, "attach-session", ...])
+browser → HTTP/WS
+  → validateRequestJwt (auth.ts)            depth 1
+  → getBackend().list() / isAllowedSession  depth 2
+  → handlePtyWs (websocket.ts)             depth 3
+  → setupNewPtyEntry                        depth 4
+  → attachPtyBackend / spawnTmuxPty         depth 5
+  → ptyBackend.onSessionData               depth 6
 ```
-Depth: 6+ but justified — auth, validation, session setup, prefill, and PTY spawn are all distinct concerns.
+Depth 6 for a PTY attach operation. Two of those (3→4→5) are necessary setup sequencing within `websocket.ts`. The `attachPtyBackend` / `spawnTmuxPty` split at depth 5 is a legitimate backend branch, not gratuitous indirection.
 
-### Ralph iteration: main loop -> agent execution
+**POST /api/ralph/start**
 ```
-ralph-macchio.ts main
-  -> extractCurrentTask
-    -> readCompletedTasks
-  -> buildPrompt
-  -> runIteration
-    -> nodeSpawn(agent.bin, args)
-  -> parseSubtasks
-  -> appendSubtasksToPlan / markTaskCompleted
+HTTP handler (routes.ts)
+  → validateProjectDir                      depth 2
+  → parseRalphLog (check for active loop)   depth 2
+  → writeFileSync (lock)                    depth 2
+  → Bun.spawn (detached worker)             depth 2
 ```
-Depth: 3-4. Clean and direct.
+Flat. No deep chain.
 
-No problematic deep chains or pure-passthrough hops found in key flows.
+**Take-Control**
+```
+WS message "take_control"
+  → performImmediateTakeover (websocket.ts) depth 2
+  → teardownPty                             depth 3
+  → setupNewPtyEntry                        depth 4
+```
+Depth 4 for what is a simple ownership transfer. Reasonable.
+
+No chains exceed 6 levels, and none of those levels are pass-through wrappers (each does real work). No flag.
+
+---
 
 ## Test Mirroring
 
-See Duplication section above. Summary:
-- `validation.test.ts`: 5 reimplemented functions (should import)
-- `escaping.test.ts`: 2 reimplemented functions (browser/Node split makes this harder)
-- `prompt-classifier.test.ts`: 1 reimplemented function + 18 regex patterns (same browser/Node split)
-- `audit-regressions.test.ts`: 1 reimplemented function (should import)
+**CRITICAL: `tests/integration/ralph-api.test.ts`** — 1683 LOC, uses a hand-rolled mini-server
 
-The browser/Node module boundary is the root cause for 3 of 4 cases. Extracting `esc`/`escAttr` and `PROMPT_PATTERNS`/`detectPrompt` into isomorphic modules would eliminate the forced duplication.
+This file builds its own `createServer` with custom routes that reimplement ~120+ lines of `src/server/routes.ts` handler logic (the `POST /api/ralph/start`, `POST /api/ralph/cancel`, `POST /api/ralph/dismiss`, `GET /api/ralph`, `GET /api/ralph/task-count` handlers). It also inlines `readBody`, `parseBody`, `json`, `isValidProjectName`, `listDevProjects`, `scanRalphLoops`, and `SAFE_FILENAME`.
+
+The motivation is understandable: the test needs to intercept the worker spawn call (`lastSpawnArgs`) rather than actually launch a subprocess. But the side effect is that the test validates behavior of its own reimplementation, not the production handler. If `routes.ts` validation logic changes, `ralph-api.test.ts` won't catch the regression.
+
+Suggestion: refactor to use `createServerInstance()` with a mock spawn function injected via `WOLFPACK_TEST` gate — the same pattern used in `concurrent-pty-viewer.test.ts`. This is significant work (~300 LOC) but would eliminate ~800 LOC of duplicated handler code and make the tests test actual production logic.
+
+**STALE: `tests/unit/validation.test.ts`** — 401 LOC, inlines copies of exported functions
+
+Described fully under Duplication above. The comment in the file itself says the functions are "replicated here" because they weren't exported at write time. They now are. The newer `validation-extracted.test.ts` and `validation-fuzzing.test.ts` import from src and test the same functions properly.
+
+**KNOWN (documented): `public/app-grid.ts` inline `isGridActive()`** — `public/app-grid.ts:84`
+
+The frontend has its own `export function isGridActive() { return state.gridSessions.length >= 2; }` which is a closure over local `state`. The canonical testable version in `src/grid-logic.ts` takes a `sessions` array arg (pure). These are intentionally different APIs — the frontend version is an accessor for module-local state; the src version is used for pure unit testing. Not real duplication, noted for clarity.
