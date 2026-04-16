@@ -282,7 +282,7 @@ describe("push: checkSessionTransitions", () => {
   beforeEach(async () => {
     const { _testing } = await import("../../src/server/push.ts");
     _testing.prevTriageState.clear();
-    _testing.lastPushTime.clear();
+    _testing.lastSessionPushTime.clear();
   });
 
   test("does nothing when no subscriptions", async () => {
@@ -316,16 +316,16 @@ describe("push: checkSessionTransitions", () => {
     const now = Date.now();
 
     // Simulate a recent push for "sess1"
-    _testing.lastPushTime.set("sess1", now);
+    _testing.lastSessionPushTime.set("sess1", now);
 
     // A transition happening now should be debounced
-    const last = _testing.lastPushTime.get("sess1") || 0;
+    const last = _testing.lastSessionPushTime.get("sess1") || 0;
     expect(now - last).toBeLessThan(_testing.PUSH_DEBOUNCE_MS);
 
     // A transition 31s later should not be debounced
     const future = now - 31_000;
-    _testing.lastPushTime.set("sess1", future);
-    const futureGap = now - (_testing.lastPushTime.get("sess1") || 0);
+    _testing.lastSessionPushTime.set("sess1", future);
+    const futureGap = now - (_testing.lastSessionPushTime.get("sess1") || 0);
     expect(futureGap).toBeGreaterThan(_testing.PUSH_DEBOUNCE_MS);
   });
 
@@ -338,13 +338,13 @@ describe("push: checkSessionTransitions", () => {
 
     // Seed state for a session that will disappear
     _testing.prevTriageState.set("old-session", "idle");
-    _testing.lastPushTime.set("old-session", Date.now());
+    _testing.lastSessionPushTime.set("old-session", Date.now());
 
     // Call with only "new-session" — old-session should be pruned
     checkSessionTransitions([{ name: "new-session", triage: "running" }]);
 
     expect(_testing.prevTriageState.has("old-session")).toBe(false);
-    expect(_testing.lastPushTime.has("old-session")).toBe(false);
+    expect(_testing.lastSessionPushTime.has("old-session")).toBe(false);
     expect(_testing.prevTriageState.get("new-session")).toBe("running");
 
     removeSubscription(ep);
@@ -355,7 +355,7 @@ describe("push: checkRalphLoopTransitions", () => {
   beforeEach(async () => {
     const { _testing } = await import("../../src/server/push.ts");
     _testing.prevRalphState.clear();
-    _testing.lastPushTime.clear();
+    _testing.lastRalphPushTime.clear();
   });
 
   test("tracks ralph loop status correctly", async () => {
@@ -373,7 +373,7 @@ describe("push: checkRalphLoopTransitions", () => {
     expect(_testing.prevRalphState.get("ralph-proj1")).toBe("done");
 
     // Verify debounce was set
-    expect(_testing.lastPushTime.has("ralph-proj1")).toBe(true);
+    expect(_testing.lastRalphPushTime.has("proj1")).toBe(true);
 
     removeSubscription(ep);
   });
@@ -424,13 +424,13 @@ describe("push: checkRalphLoopTransitions", () => {
 
     // Seed state for a project that will disappear
     _testing.prevRalphState.set("ralph-old-project", "idle");
-    _testing.lastPushTime.set("ralph-old-project", Date.now());
+    _testing.lastRalphPushTime.set("old-project", Date.now());
 
     // Call with only "new-project" — old-project should be pruned
     checkRalphLoopTransitions([{ project: "new-project", active: true, completed: false }]);
 
     expect(_testing.prevRalphState.has("ralph-old-project")).toBe(false);
-    expect(_testing.lastPushTime.has("ralph-old-project")).toBe(false);
+    expect(_testing.lastRalphPushTime.has("old-project")).toBe(false);
     expect(_testing.prevRalphState.get("ralph-new-project")).toBe("running");
 
     removeSubscription(ep);

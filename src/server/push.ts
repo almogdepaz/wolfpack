@@ -369,9 +369,8 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 // ── Push state tracking (transition-based notifications) ──
 
 const prevTriageState = new Map<string, TriageStatus>();
-// Shared rate-limit map — session keys use bare names, ralph keys use "ralph-" prefix.
-// Each namespace is pruned by its own check function (checkSessionTransitions / checkRalphLoopTransitions).
-const lastPushTime = new Map<string, number>();
+const lastSessionPushTime = new Map<string, number>();
+const lastRalphPushTime = new Map<string, number>();
 const PUSH_DEBOUNCE_MS = 30_000;
 const prevRalphState = new Map<string, string>();
 
@@ -394,16 +393,16 @@ export function checkSessionTransitions(sessions: Array<{ name: string; triage: 
     const prev = prevTriageState.get(s.name);
     prevTriageState.set(s.name, s.triage);
     if (prev === "running" && s.triage === "idle") {
-      const last = lastPushTime.get(s.name) || 0;
+      const last = lastSessionPushTime.get(s.name) || 0;
       if (now - last > PUSH_DEBOUNCE_MS) {
-        lastPushTime.set(s.name, now);
+        lastSessionPushTime.set(s.name, now);
         sendPush({ title: `Wolfpack: ${s.name}`, body: "Finished", tag: `session-${s.name}` }).catch(() => {});
       }
     }
   }
   // Prune state for removed sessions
   for (const key of prevTriageState.keys()) {
-    if (!activeNames.has(key)) { prevTriageState.delete(key); lastPushTime.delete(key); }
+    if (!activeNames.has(key)) { prevTriageState.delete(key); lastSessionPushTime.delete(key); }
   }
 }
 
@@ -418,9 +417,9 @@ export function checkRalphLoopTransitions(loops: Array<{ project: string; active
     const cur = ralphLoopStatus(loop);
     prevRalphState.set(key, cur);
     if (prev === "running" && (cur === "done" || cur === "idle" || cur === "limit")) {
-      const last = lastPushTime.get(key) || 0;
+      const last = lastRalphPushTime.get(loop.project) || 0;
       if (now - last > PUSH_DEBOUNCE_MS) {
-        lastPushTime.set(key, now);
+        lastRalphPushTime.set(loop.project, now);
         const labels: Record<string, string> = { done: "All tasks complete", idle: "Stopped", limit: "Hit iteration limit" };
         sendPush({
           title: `Wolfpack: ralph`,
@@ -432,7 +431,7 @@ export function checkRalphLoopTransitions(loops: Array<{ project: string; active
   }
   // Prune state for removed projects
   for (const key of prevRalphState.keys()) {
-    if (!activeKeys.has(key)) { prevRalphState.delete(key); lastPushTime.delete(key); }
+    if (!activeKeys.has(key)) { prevRalphState.delete(key); lastRalphPushTime.delete(key.slice("ralph-".length)); }
   }
 }
 
@@ -454,7 +453,8 @@ export const _testing = {
   b64urlEncode,
   b64urlDecode,
   prevTriageState,
-  lastPushTime,
+  lastSessionPushTime,
+  lastRalphPushTime,
   prevRalphState,
   PUSH_DEBOUNCE_MS,
   get notifyTimestamps() { return notifyTimestamps; },
