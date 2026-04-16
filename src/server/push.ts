@@ -98,6 +98,13 @@ export function getVapidPublicKey(): string {
 const MAX_SUBSCRIPTIONS = 20;
 const MAX_ENDPOINT_LENGTH = 1024;
 
+const ALLOWED_PUSH_HOSTS = new Set([
+  "fcm.googleapis.com",
+  "updates.push.services.mozilla.com",
+  "wns.windows.com",
+  "web.push.apple.com",
+]);
+
 function loadSubscriptions(): PushSubscription[] {
   if (!existsSync(SUBS_PATH)) return [];
   try {
@@ -121,14 +128,8 @@ export function validateSubscription(sub: PushSubscription): string | null {
   try {
     const url = new URL(sub.endpoint);
     if (url.protocol !== "https:") return "endpoint must use HTTPS";
-    // Restrict to known push service domains to prevent SSRF
-    const ALLOWED_PUSH_HOSTS = [
-      "fcm.googleapis.com",
-      "updates.push.services.mozilla.com",
-      "wns.windows.com",
-      "web.push.apple.com",
-    ];
-    if (!ALLOWED_PUSH_HOSTS.some(h => url.hostname === h || url.hostname.endsWith("." + h))) {
+    // Exact-match allowlist prevents SSRF via attacker-controlled subdomains
+    if (!ALLOWED_PUSH_HOSTS.has(url.hostname)) {
       return "endpoint host not recognized as a push service";
     }
   } catch { return "invalid endpoint URL"; }
@@ -210,13 +211,19 @@ function createVapidJwt(audience: string, subject: string, vapid: VapidKeys, exp
 /** Convert DER ECDSA signature to raw 64-byte r||s. */
 function derToRaw(der: Buffer): Buffer {
   // DER: 0x30 <len> 0x02 <rlen> <r> 0x02 <slen> <s>
+  // P-256 sigs are always < 128 bytes so BER multi-byte length encoding cannot occur here.
+  if (der.length < 8 || der[0] !== 0x30) throw new Error("derToRaw: invalid DER header");
   let offset = 2; // skip 0x30 + total length
-  offset += 1; // skip 0x02
+  if (der[offset] !== 0x02) throw new Error("derToRaw: expected INTEGER tag for r");
+  offset += 1;
   const rLen = der[offset++];
+  if (offset + rLen > der.length) throw new Error("derToRaw: r length overflows");
   const r = der.subarray(offset, offset + rLen);
   offset += rLen;
-  offset += 1; // skip 0x02
+  if (der[offset] !== 0x02) throw new Error("derToRaw: expected INTEGER tag for s");
+  offset += 1;
   const sLen = der[offset++];
+  if (offset + sLen > der.length) throw new Error("derToRaw: s length overflows");
   const s = der.subarray(offset, offset + sLen);
 
   // Pad/trim to 32 bytes each
@@ -234,6 +241,7 @@ function derToRaw(der: Buffer): Buffer {
  * AES-128-GCM key (16 bytes) and nonce (12 bytes) derivation.
  */
 function hkdfSha256(ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
+  if (length > 32) throw new Error(`hkdfSha256: single-block limit is 32 bytes, requested ${length}`);
   const prk = createHmac("sha256", salt).update(ikm).digest();
   const infoWithCounter = Buffer.concat([info, Buffer.from([1])]);
   const okm = createHmac("sha256", prk).update(infoWithCounter).digest();
@@ -396,7 +404,8 @@ export function checkSessionTransitions(sessions: Array<{ name: string; triage: 
       const last = lastSessionPushTime.get(s.name) || 0;
       if (now - last > PUSH_DEBOUNCE_MS) {
         lastSessionPushTime.set(s.name, now);
-        sendPush({ title: `Wolfpack: ${s.name}`, body: "Finished", tag: `session-${s.name}` }).catch(() => {});
+        // "Stopped" covers both finished-and-exited and blocked-at-prompt — binary triage can't distinguish.
+        sendPush({ title: `Wolfpack: ${s.name}`, body: "Stopped", tag: `session-${s.name}` }).catch(() => {});
       }
     }
   }
@@ -446,10 +455,20 @@ export function checkNotifyRateLimit(): string | null {
 
 // ── Test-only exports ──
 
+/** Reset all per-namespace debounce and rate-limit state. Tests should call this in beforeEach. */
+export function _testingResetDebounce(): void {
+  prevTriageState.clear();
+  lastSessionPushTime.clear();
+  lastRalphPushTime.clear();
+  prevRalphState.clear();
+  notifyTimestamps = [];
+}
+
 export const _testing = {
   createVapidJwt,
   encryptPayload,
   derToRaw,
+  hkdfSha256,
   b64urlEncode,
   b64urlDecode,
   prevTriageState,
@@ -457,6 +476,7 @@ export const _testing = {
   lastRalphPushTime,
   prevRalphState,
   PUSH_DEBOUNCE_MS,
+  resetDebounce: _testingResetDebounce,
   get notifyTimestamps() { return notifyTimestamps; },
   set notifyTimestamps(v: number[]) { notifyTimestamps = v; },
 };

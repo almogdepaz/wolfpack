@@ -12,12 +12,13 @@ export function esc(s) {
 
 // JS-safe escaper for use inside onclick="func('...')" attribute contexts.
 // Backslash-escapes characters that could break out of a JS string literal
-// AFTER HTML attribute decoding.
+// AFTER HTML attribute decoding. Note: escAttr is for JS-string-in-HTML-attribute
+// dual contexts (esc() is the right choice for plain HTML attributes).
 export function escAttr(s) {
   if (s == null) return "";
   return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
     .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26")
-    .replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+    .replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
 }
 
 // ── Generic utilities ──
@@ -338,6 +339,23 @@ export const state = {
 };
 
 export function setState(patch) { Object.assign(state, patch); }
+
+// Detect OS-level notification permission revoke. Browser permission can be
+// toggled from the URL bar / system settings without the page knowing —
+// re-check on visibility/focus so the UI toggle doesn't silently lie.
+export function syncNotificationsPermission() {
+  if (!("Notification" in window)) return;
+  const granted = Notification.permission === "granted";
+  if (state.notificationsEnabled && !granted) {
+    state.notificationsEnabled = false;
+    wpSettings.notifications = false;
+    try { localStorage.setItem("wp-effects", JSON.stringify(wpSettings)); } catch { /* quota/private mode */ }
+  }
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", syncNotificationsPermission);
+  window.addEventListener("focus", syncNotificationsPermission);
+}
 
 // ── Constants ──
 

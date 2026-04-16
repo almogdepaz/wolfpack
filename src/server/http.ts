@@ -234,7 +234,7 @@ export async function discoverPeers(): Promise<{ peers: any[]; error?: string }>
           clearTimeout(timer);
           const info = await r.json();
           const sanitized = sanitizePeerName(info.name);
-          return { ...p, name: sanitized || p.hostname, version: info.version, wolfpack: true as const };
+          return { ...p, name: sanitized || p.hostname, version: sanitizePeerName(info.version), wolfpack: true as const };
         } catch { /* expected: peer unreachable or not running wolfpack */
           return { ...p, name: p.hostname, version: undefined, wolfpack: false as const };
         }

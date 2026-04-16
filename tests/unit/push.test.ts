@@ -159,6 +159,49 @@ describe("push: crypto round-trip", () => {
     expect(raw.subarray(0, 32)).toEqual(r);
     expect(raw.subarray(32, 64)).toEqual(s);
   });
+
+  test("derToRaw throws on missing SEQUENCE header", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    expect(() => _testing.derToRaw(Buffer.from([0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00]))).toThrow(/invalid DER header/);
+  });
+
+  test("derToRaw throws on undersized DER input", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    expect(() => _testing.derToRaw(Buffer.from([0x30, 0x04]))).toThrow(/invalid DER header/);
+  });
+
+  test("derToRaw throws on missing INTEGER tag", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    // 0x30 <len> <not 0x02> ...
+    const bad = Buffer.from([0x30, 0x06, 0x03, 0x01, 0x00, 0x02, 0x01, 0x00]);
+    expect(() => _testing.derToRaw(bad)).toThrow(/expected INTEGER tag/);
+  });
+
+  test("derToRaw throws when r length overflows buffer", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    // Claims rlen=100 but buffer is tiny
+    const bad = Buffer.from([0x30, 0x06, 0x02, 0x64, 0x00, 0x00, 0x00, 0x00]);
+    expect(() => _testing.derToRaw(bad)).toThrow(/r length overflows/);
+  });
+
+  test("hkdfSha256 throws when requested length exceeds 32 bytes (single-block limit)", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    const ikm = Buffer.alloc(32, 0x01);
+    const salt = Buffer.alloc(16, 0x02);
+    const info = Buffer.from("info");
+    expect(() => _testing.hkdfSha256(ikm, salt, info, 33)).toThrow(/single-block limit/);
+    expect(() => _testing.hkdfSha256(ikm, salt, info, 64)).toThrow(/single-block limit/);
+  });
+
+  test("hkdfSha256 accepts lengths up to 32 bytes", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    const ikm = Buffer.alloc(32, 0x01);
+    const salt = Buffer.alloc(16, 0x02);
+    const info = Buffer.from("info");
+    expect(_testing.hkdfSha256(ikm, salt, info, 32).length).toBe(32);
+    expect(_testing.hkdfSha256(ikm, salt, info, 16).length).toBe(16);
+    expect(_testing.hkdfSha256(ikm, salt, info, 12).length).toBe(12);
+  });
 });
 
 // ── Validation tests ──
@@ -210,6 +253,24 @@ describe("push: validateSubscription", () => {
     const { validateSubscription } = await import("../../src/server/push.ts");
     const err = validateSubscription({
       endpoint: "https://evil.com/push",
+      keys: { p256dh, auth },
+    });
+    expect(err).toBe("endpoint host not recognized as a push service");
+  });
+
+  test("rejects subdomain of allowlisted push host (exact-match allowlist)", async () => {
+    const { validateSubscription } = await import("../../src/server/push.ts");
+    const err = validateSubscription({
+      endpoint: "https://attacker.fcm.googleapis.com/push",
+      keys: { p256dh, auth },
+    });
+    expect(err).toBe("endpoint host not recognized as a push service");
+  });
+
+  test("rejects suffix-match attack (attacker-fcm.googleapis.com)", async () => {
+    const { validateSubscription } = await import("../../src/server/push.ts");
+    const err = validateSubscription({
+      endpoint: "https://attacker-fcm.googleapis.com/push",
       keys: { p256dh, auth },
     });
     expect(err).toBe("endpoint host not recognized as a push service");

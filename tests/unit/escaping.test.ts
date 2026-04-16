@@ -29,7 +29,8 @@ function escAttr(s: unknown): string {
     .replace(/>/g, "\\x3e")
     .replace(/&/g, "\\x26")
     .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r");
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t");
 }
 
 // ── xmlEsc tests ──
@@ -171,6 +172,10 @@ describe("escAttr", () => {
 
   test("escapes CRLF", () => {
     expect(escAttr("a\r\nb")).toBe("a\\r\\nb");
+  });
+
+  test("escapes tab", () => {
+    expect(escAttr("a\tb")).toBe("a\\tb");
   });
 });
 

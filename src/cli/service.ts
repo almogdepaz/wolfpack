@@ -352,16 +352,27 @@ export function serviceStop() {
         { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
       );
       const data = JSON.parse(res);
-      const { pty = 0, tmux = 0 } = data.counts || {};
-      if (pty > 0 || tmux > 0) {
-        const parts: string[] = [];
-        if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
-        if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
-        print(dim(`\n  ${parts.join(", ")}.`));
+      if (!data?.counts) {
+        // /api/backend returned a non-count payload — likely 401 when JWT auth is configured.
+        // Don't silently skip the warning: pty sessions die on stop, so ask before proceeding.
+        print(dim("\n  Session count unavailable (server may require auth). PTY sessions will be killed."));
         const answer = ask("  Continue? (y/n) ");
         if (answer.toLowerCase() !== "y") {
           print(dim("  Aborted."));
           return;
+        }
+      } else {
+        const { pty = 0, tmux = 0 } = data.counts;
+        if (pty > 0 || tmux > 0) {
+          const parts: string[] = [];
+          if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
+          if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
+          print(dim(`\n  ${parts.join(", ")}.`));
+          const answer = ask("  Continue? (y/n) ");
+          if (answer.toLowerCase() !== "y") {
+            print(dim("  Aborted."));
+            return;
+          }
         }
       }
     } catch { /* server unreachable or parse error — proceed with stop */ }
