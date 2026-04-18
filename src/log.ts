@@ -7,7 +7,7 @@
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
-export type Component = "pty" | "ws" | "http" | "ralph" | "auth" | "service" | "config" | "setup" | "tmux" | "server" | "worktree" | "routes";
+export type Component = "pty" | "pty-backend" | "ws" | "http" | "ralph" | "auth" | "service" | "config" | "setup" | "tmux" | "tmux-backend" | "server" | "worktree" | "routes";
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -35,11 +35,16 @@ interface LogEntry {
   [key: string]: unknown;
 }
 
+const RESERVED_KEYS = new Set(["ts", "level", "component", "msg"]);
+
 function emit(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): void {
   if (!shouldLog(level)) return;
   const ts = new Date().toISOString();
+  // Spread extra first, then override with reserved fields so callers
+  // can't accidentally corrupt structured log entries (ISS-13).
+  const safe = extra ? Object.fromEntries(Object.entries(extra).filter(([k]) => !RESERVED_KEYS.has(k))) : undefined;
   const entry: LogEntry = {
-    ...extra,
+    ...safe,
     ts,
     level,
     component,

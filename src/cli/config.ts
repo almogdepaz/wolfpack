@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { isValidPort } from "../validation.js";
 import { print, dim, yellow } from "./formatting.js";
+import type { BackendType } from "../server/backend.js";
 
 export const IS_MACOS = platform() === "darwin";
 export const IS_LINUX = platform() === "linux";
@@ -26,6 +27,7 @@ export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
+  backend?: BackendType;
 }
 
 export let hasTTY = true;
@@ -59,7 +61,10 @@ export function parseConfig(raw: unknown): Config | null {
     typeof candidate.tailscaleHostname === "string"
       ? candidate.tailscaleHostname.trim() || undefined
       : undefined;
-  return { devDir, port, tailscaleHostname };
+  const rawBackend = candidate.backend;
+  const backend: BackendType | undefined =
+    rawBackend === "pty" || rawBackend === "tmux" ? rawBackend : undefined;
+  return { devDir, port, tailscaleHostname, backend };
 }
 
 export function loadConfigFromText(text: string): Config | null {

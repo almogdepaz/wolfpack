@@ -12,11 +12,13 @@ export function esc(s) {
 
 // JS-safe escaper for use inside onclick="func('...')" attribute contexts.
 // Backslash-escapes characters that could break out of a JS string literal
-// AFTER HTML attribute decoding.
+// AFTER HTML attribute decoding. Note: escAttr is for JS-string-in-HTML-attribute
+// dual contexts (esc() is the right choice for plain HTML attributes).
 export function escAttr(s) {
   if (s == null) return "";
   return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
-    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26");
+    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26")
+    .replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
 }
 
 // ── Generic utilities ──
@@ -67,7 +69,7 @@ export function getCharDimensions() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termWrap:false, termFont:"default", snapshotTtl:900, debugPanel:false, ralphEnabled:false, mobileTerminal:"classic"};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termWrap:false, termFont:"default", snapshotTtl:900, debugPanel:false, ralphEnabled:false, mobileTerminal:"wasm"};
 export const wpSettings = Object.assign({}, wpDefaults, loadStoredJson("wp-effects", {}));
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
@@ -80,7 +82,10 @@ export function toggleSetting(key, val) {
 
 export function applySetting(key, val) {
   if (key === "animations") document.body.classList.toggle("no-animations", !val);
-  if (key === "notifications" && val) requestNotifications();
+  if (key === "notifications") {
+    if (val) requestNotifications();
+    else unsubscribeNotifications();
+  }
   if (key === "enterSends") {
     const el = document.getElementById("msg-input");
     if (el) el.placeholder = val ? "$ (Enter to send)" : "$ (⚡ to send)";
@@ -143,15 +148,86 @@ export function haptic(pattern) {
   if (wpSettings.haptics && navigator.vibrate) navigator.vibrate(pattern);
 }
 
-// ── Notifications ──
+// ── Push Notifications ──
 
-export function requestNotifications() {
-  if ("Notification" in window && Notification.permission === "default") {
-    Notification.requestPermission().then((p) => {
-      state.notificationsEnabled = p === "granted";
+/** Convert a base64url string to a Uint8Array (for applicationServerKey). */
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+export async function requestNotifications() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    console.warn("Push notifications not supported");
+    return;
+  }
+
+  // Request notification permission
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    state.notificationsEnabled = false;
+    return;
+  }
+
+  try {
+    // Get VAPID public key from server
+    const vapidResp = await fetch("/api/push/vapid-key");
+    const { publicKey } = await vapidResp.json();
+    if (!publicKey) throw new Error("no VAPID key from server");
+
+    // Register service worker
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+
+    // Subscribe to push
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
-  } else if ("Notification" in window && Notification.permission === "granted") {
-    state.notificationsEnabled = true;
+
+    // Send subscription to server
+    const resp = await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sub.toJSON()),
+    });
+
+    if (resp.ok) {
+      state.notificationsEnabled = true;
+      console.log("Push subscription registered");
+    } else {
+      throw new Error(`subscribe failed: ${resp.status}`);
+    }
+  } catch (e) {
+    console.error("Push subscription failed:", e);
+    state.notificationsEnabled = false;
+  }
+}
+
+export async function unsubscribeNotifications() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return;
+
+    // Tell server to remove subscription
+    await fetch("/api/push/unsubscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    });
+
+    // Unsubscribe locally
+    await sub.unsubscribe();
+    state.notificationsEnabled = false;
+    console.log("Push subscription removed");
+  } catch (e) {
+    console.error("Push unsubscribe failed:", e);
   }
 }
 
@@ -249,7 +325,7 @@ export const state = {
   isNewProject: false,
   enterRetryTimer: null,
   drawerOpen: false,
-  notificationsEnabled: ("Notification" in window && Notification.permission === "granted"),
+  notificationsEnabled: ("Notification" in window && Notification.permission === "granted" && "PushManager" in window),
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
   _ghostInputObserver: null,
@@ -263,6 +339,24 @@ export const state = {
 };
 
 export function setState(patch) { Object.assign(state, patch); }
+
+// Detect OS-level notification permission revoke. Browser permission can be
+// toggled from the URL bar / system settings without the page knowing —
+// re-check on visibility/focus so the UI toggle doesn't silently lie.
+export function syncNotificationsPermission() {
+  if (!("Notification" in window)) return;
+  const granted = Notification.permission === "granted";
+  if (state.notificationsEnabled && !granted) {
+    state.notificationsEnabled = false;
+    // Route through toggleSetting so applySetting("notifications", false) runs
+    // unsubscribeNotifications() — otherwise server retains stale push endpoint.
+    toggleSetting("notifications", false);
+  }
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", syncNotificationsPermission);
+  window.addEventListener("focus", syncNotificationsPermission);
+}
 
 // ── Constants ──
 

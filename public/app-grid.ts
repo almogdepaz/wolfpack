@@ -257,6 +257,11 @@ export function renderGridCells() {
         newCellSessions.forEach(gs => {
           if (gs._needsConnect) {
             delete gs._needsConnect;
+            // Force hydration complete before connecting: grid cells use
+            // prefillMode:"none" so there's no prefill burst to wait for.
+            // Without this, an actively-outputting PTY keeps _hydrationWritesInFlight
+            // non-zero and hydration blocks for up to maxPendingMs (4s).
+            if (gs.controller.hydration) gs.controller.hydration.finish();
             gs.controller.connect();
           }
         });
@@ -389,8 +394,8 @@ export function suspendGridMode() {
     state.gridResizeHandler = null;
   }
   for (const gs of state.gridSessions) {
-    if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
     if (gs.controller) gs.controller.dispose();
+    if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
   }
   state.gridSessions = [];
   state.gridFocusIndex = 0;
@@ -529,10 +534,9 @@ export function removeFromGrid(idx) {
   const gs = state.gridSessions[idx];
   // Save snapshot before disposing
   if (deps.saveGridCellSnapshot) deps.saveGridCellSnapshot(gs);
-  // Remove cell DOM immediately (avoids full rebuild flash)
-  if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
-  // Cleanup controller
+  // Cleanup controller before removing DOM (dispose needs container for removeEventListener)
   if (gs.controller) gs.controller.dispose();
+  if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
   state.gridSessions.splice(idx, 1);
   // Adjust focus — shift left when a cell before the focused one is removed
   if (idx < state.gridFocusIndex) {

@@ -1,5 +1,8 @@
 /**
  * WebSocket handlers — PTY (ghostty-web WASM) + classic terminal (text polling).
+ *
+ * Backend-agnostic: works with both TmuxBackend (spawns `tmux attach-session`)
+ * and PtyBackend (pipes WS directly to session terminal I/O).
  */
 import type { WebSocket } from "ws";
 import {
@@ -17,11 +20,8 @@ import {
   TMUX,
   DESKTOP_PREFILL_HISTORY_LINES,
   exec,
-  capturePane,
-  tmuxSend,
-  tmuxSendKey,
-  tmuxResize,
 } from "./tmux.js";
+import { getBackend, getBackendTypeForSession, getRouter } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
 
@@ -32,8 +32,9 @@ const log = createLogger("ws");
 export const activePtySessions = new Map<string, {
   viewer: WebSocket | null;
   pendingViewer: WebSocket | null;
-  proc: ReturnType<typeof Bun.spawn>;
+  proc: ReturnType<typeof Bun.spawn> | null;
   alive: boolean;
+  unsubscribe?: (() => void) | null;
 }>();
 
 const ptySpawnAttempts = new Map<string, number>();
@@ -132,6 +133,7 @@ export function __getTestState(): {
 // ── Classic terminal WS handler (text polling for mobile) ──
 
 export function handleTerminalWs(ws: WebSocket, session: string): void {
+  const backend = getBackend();
   let prev = "";
   let alive = true;
   let sized = false;
@@ -146,14 +148,14 @@ export function handleTerminalWs(ws: WebSocket, session: string): void {
       const now = Date.now();
       if (now >= nextSessionCheckAt) {
         nextSessionCheckAt = now + 1000;
-        if (!(await isAllowedSession(session))) {
+        if (!(await backend.hasSession(session))) {
           alive = false;
           updating = false;
           try { ws.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_ENDED); } catch (e: unknown) { log.debug(`ws.close failed`, { session, error: errMsg(e) }); }
           return;
         }
       }
-      const pane = await capturePane(session);
+      const pane = await backend.capturePane(session);
       if (pane !== prev) {
         prev = pane;
         ws.send(JSON.stringify({ type: "output", data: pane }));
@@ -191,11 +193,11 @@ export function handleTerminalWs(ws: WebSocket, session: string): void {
       if (str.length > MAX_WS_MESSAGE_BYTES) return;
       const msg = JSON.parse(str);
       if (msg.type === "input" && typeof msg.data === "string") {
-        await tmuxSend(session, msg.data, true);
+        await backend.send(session, msg.data, true);
         setTimeout(sendUpdate, POST_INPUT_DELAY_MS);
       } else if (msg.type === "key" && typeof msg.key === "string") {
         if (WS_ALLOWED_KEYS.has(msg.key)) {
-          await tmuxSendKey(session, msg.key);
+          await backend.sendKey(session, msg.key);
           setTimeout(sendUpdate, POST_INPUT_DELAY_MS);
         }
       } else if (
@@ -204,7 +206,7 @@ export function handleTerminalWs(ws: WebSocket, session: string): void {
         typeof msg.rows === "number"
       ) {
         if (!activePtySessions.has(session)) {
-          await tmuxResize(session, clampCols(msg.cols), clampRows(msg.rows));
+          await backend.resize(session, clampCols(msg.cols), clampRows(msg.rows));
         }
         if (!sized) {
           sized = true;
@@ -237,6 +239,10 @@ export function teardownPty(session: string): void {
   if (!entry) return;
   entry.alive = false;
   activePtySessions.delete(session);
+  if (entry.unsubscribe) {
+    entry.unsubscribe();
+    entry.unsubscribe = null;
+  }
   if (entry.viewer) {
     try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
     entry.viewer = null;
@@ -266,14 +272,15 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     const existing = maybeExisting; // const binding for closure narrowing
 
     // ── Fast path: immediate takeover ──
-    // When a reconnecting client already knows it wants control (e.g. grid
-    // cell reclaiming after displacement), it sets takeControl=true in the
-    // attach. We skip the viewer_conflict → take_control handshake entirely.
     function performImmediateTakeover(dims: { cols: number; rows: number; prefillMode?: string } | null) {
       const oldViewer = existing.viewer;
       existing.viewer = null;
       if (oldViewer) {
         try { oldViewer.close(CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED); } catch (e: unknown) { log.debug(`takeover: oldViewer close failed`, { session, error: errMsg(e) }); }
+      }
+      if (existing.unsubscribe) {
+        existing.unsubscribe();
+        existing.unsubscribe = null;
       }
       const oldProc = existing.proc;
       existing.alive = false;
@@ -304,8 +311,6 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
       else clearInterval(pingTimer);
     }, PING_INTERVAL_MS);
 
-    // Capture the initial attach dimensions so we can spawn the PTY
-    // immediately on take_control without waiting for a second attach.
     let pendingAttachDims: { cols: number; rows: number; prefillMode?: string } | null = null;
 
     function cleanupPending() {
@@ -326,13 +331,11 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
           pendingAttachDims = { cols: msg.cols, rows: msg.rows, prefillMode: pm };
-          // Immediate takeover: client already knows it wants control
           if (msg.takeControl) {
             cleanupPending();
             performImmediateTakeover(pendingAttachDims);
             return;
           }
-          // Ack so client doesn't hit the fallback timer
           try { ws.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`pending attach_ack send failed`, { session, error: errMsg(e) }); }
           return;
         }
@@ -378,6 +381,7 @@ function setupNewPtyEntry(
     pendingViewer: null as WebSocket | null,
     proc: null as ReturnType<typeof Bun.spawn> | null,
     alive: true,
+    unsubscribe: null as (() => void) | null,
   };
   activePtySessions.set(session, entry as any);
   let spawning = false;
@@ -386,7 +390,88 @@ function setupNewPtyEntry(
   type PrefillMode = typeof VALID_PREFILL_MODES[number];
   let pendingPrefillMode: PrefillMode = "full";
 
-  async function spawnPty(
+  const backendType = getBackendTypeForSession(session);
+
+  // ── PTY backend: attach WS directly to session's terminal I/O ──
+  async function attachPtyBackend(
+    cols: number,
+    rows: number,
+    options?: { prefillMode?: PrefillMode },
+  ) {
+    const prefillMode = options?.prefillMode ?? "full";
+    latestRequestedSize = { cols, rows };
+    if (entry.unsubscribe || spawning) return;
+    spawning = true;
+    if (process.env.WOLFPACK_TEST) {
+      ptySpawnAttempts.set(session, (ptySpawnAttempts.get(session) || 0) + 1);
+    }
+
+    try {
+      const ptyBackend = getRouter().getPtyBackend();
+
+      if (!ptyBackend.isSessionAlive(session)) {
+        entry.alive = false;
+        activePtySessions.delete(session);
+        if (entry.viewer) {
+          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`session unavailable: viewer close failed`, { session, error: errMsg(e) }); }
+          entry.viewer = null;
+        }
+        return;
+      }
+
+      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Send prefill from ring buffer (snapshot BEFORE resize so content is stable)
+      if (prefillMode !== "none") {
+        const prefill = ptyBackend.getSessionPrefill(session);
+        if (prefill.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
+          let sendBuf: Buffer;
+          if (prefill.length > DESKTOP_PREFILL_MAX_BYTES) {
+            let start = prefill.length - DESKTOP_PREFILL_MAX_BYTES;
+            while (start < prefill.length && prefill[start] !== 0x0a) start++;
+            if (start < prefill.length) start++;
+            sendBuf = prefill.subarray(start);
+          } else {
+            sendBuf = prefill;
+          }
+
+          if (prefillMode === "viewport") {
+            entry.viewer.send(sendBuf);
+            entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
+            sendPrefillDone(entry);
+          } else {
+            entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
+            await sendPrefillChunked(entry, sendBuf, session);
+          }
+        } else {
+          sendPrefillDone(entry);
+        }
+      }
+
+      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Subscribe to terminal output BEFORE resize — resize may trigger PTY
+      // redraw output that must be forwarded to the viewer immediately.
+      const unsub = ptyBackend.onSessionData(session, (data: Uint8Array) => {
+        if (!entry.alive) return;
+        if (entry.viewer && entry.viewer.readyState === 1) {
+          try { entry.viewer.send(data); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
+        }
+      });
+      entry.unsubscribe = unsub;
+
+      // Resize to client dimensions — now that listener is attached, any
+      // redraw output from the PTY will be forwarded to the viewer.
+      await ptyBackend.resize(session, cols, rows);
+
+      sendPtyReady(entry);
+    } finally {
+      spawning = false;
+    }
+  }
+
+  // ── Tmux backend: spawn `tmux attach-session` as intermediate PTY ──
+  async function spawnTmuxPty(
     cols: number,
     rows: number,
     options?: { prefillMode?: PrefillMode; skipPrefill?: boolean },
@@ -465,9 +550,6 @@ function setupNewPtyEntry(
               }
               try {
                 phase2Completed = await sendPrefillChunked(entry, fullPrefill, session);
-                // Only update dedup reference when the full scrollback was actually
-                // sent — partial sends leave the client with viewport-only data, so
-                // dedup must match what was actually delivered. See PR #89 review.
                 if (phase2Completed) prefill = fullPrefill;
               } catch (e: unknown) {
                 log.error("PTY scrollback prefill send failed", { session, error: errMsg(e) });
@@ -478,7 +560,6 @@ function setupNewPtyEntry(
           }
           if (!phase2Completed) sendPrefillDone(entry);
         } else if (prefillMode !== "full") {
-          // Viewport-only: send prefill_done so client exits buffering state
           if (!sendPrefillDone(entry)) {
             log.debug("PTY viewport-only prefill_done not sent (WS closed)", { session });
           }
@@ -535,7 +616,6 @@ function setupNewPtyEntry(
         if (!entry.alive || !entry.proc) return;
         const latestSize = latestRequestedSize || initialSize;
         try {
-          // Re-force latest in case Claude Code re-applied manual during spawn
           await exec(TMUX, ["set-option", "-t", session, "window-size", "latest"], { timeout: 2000 });
           await exec(TMUX, ["resize-window", "-t", session, "-x", String(latestSize.cols), "-y", String(latestSize.rows)], { timeout: 2000 });
         } catch (e: unknown) { log.debug(`post-spawn tmux resize failed`, { session, error: errMsg(e) }); }
@@ -547,6 +627,9 @@ function setupNewPtyEntry(
       spawning = false;
     }
   }
+
+  // Select spawn function based on backend
+  const spawnPty = backendType === "pty" ? attachPtyBackend : spawnTmuxPty;
 
   const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -563,11 +646,9 @@ function setupNewPtyEntry(
           typeof msg.cols === "number" &&
           typeof msg.rows === "number"
         ) {
-          // Attach handshake is a one-time bootstrap for a fresh WS viewer.
-          // It spawns the PTY without forcing an extra tmux resize if dims are unchanged.
           latestRequestedSize = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
-          if (!entry.proc) {
-            // Parse prefillMode with backward compat for skipPrefill boolean
+          const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
+          if (!isAttached) {
             let prefillMode: PrefillMode = "full";
             if (typeof msg.prefillMode === "string" && VALID_PREFILL_MODES.includes(msg.prefillMode)) {
               prefillMode = msg.prefillMode as PrefillMode;
@@ -580,11 +661,8 @@ function setupNewPtyEntry(
           }
           if (entry.viewer && entry.viewer.readyState === 1) {
             try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`attach_ack send failed`, { session, error: errMsg(e) }); }
-            if (entry.proc) {
+            if (isAttached) {
               sendPtyReady(entry);
-              // Client expects prefill_done after every attach — without it,
-              // binary output is buffered indefinitely. Send it immediately
-              // since we're not doing a fresh capture for an existing proc.
               sendPrefillDone(entry);
             }
           }
@@ -592,25 +670,38 @@ function setupNewPtyEntry(
           const cols = clampCols(msg.cols);
           const rows = clampRows(msg.rows);
           latestRequestedSize = { cols, rows };
-          if (!entry.proc) {
-            // Backward compatibility: older clients still bootstrap PTY via first resize.
+          const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
+          if (!isAttached) {
             spawnPty(cols, rows);
           } else {
-            // Debounce resize to prevent storms crashing TUI apps
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
-              if (!entry.alive || !entry.proc) return;
-              entry.proc.terminal!.resize(cols, rows);
-              exec(TMUX, ["set-option", "-t", session, "window-size", "latest"], { timeout: 2000 })
-                .then(() => exec(TMUX, ["resize-window", "-t", session, "-x", String(cols), "-y", String(rows)], { timeout: 2000 }))
-                .catch((e: unknown) => { log.debug(`tmux resize failed`, { session, error: errMsg(e) }); });
+              if (!entry.alive) return;
+              if (backendType === "pty") {
+                // Direct resize via backend
+                getBackend().resize(session, cols, rows).catch((e: unknown) => {
+                  log.debug(`pty backend resize failed`, { session, error: errMsg(e) });
+                });
+              } else {
+                // Tmux: resize both the intermediate PTY and the tmux window
+                if (!entry.proc) return;
+                entry.proc.terminal!.resize(cols, rows);
+                exec(TMUX, ["set-option", "-t", session, "window-size", "latest"], { timeout: 2000 })
+                  .then(() => exec(TMUX, ["resize-window", "-t", session, "-x", String(cols), "-y", String(rows)], { timeout: 2000 }))
+                  .catch((e: unknown) => { log.debug(`tmux resize failed`, { session, error: errMsg(e) }); });
+              }
             }, RESIZE_DEBOUNCE_MS);
           }
         }
-      } else if (entry.proc) {
+      } else {
+        // Binary data — write to terminal
         if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;
-        entry.proc.terminal!.write(raw as Buffer);
+        if (backendType === "pty") {
+          getRouter().getPtyBackend().writeToTerminal(session, raw as Buffer);
+        } else if (entry.proc) {
+          entry.proc.terminal!.write(raw as Buffer);
+        }
       }
     } catch (e: unknown) {
       if (e instanceof SyntaxError) return;
@@ -625,8 +716,6 @@ function setupNewPtyEntry(
 
   function detach() {
     clearInterval(pingTimer);
-    // Only tear down if OUR entry is still the active one in the map.
-    // A new entry may have replaced it (e.g. grid view reconnect with reset=1).
     if (entry.alive && entry.viewer === ws && activePtySessions.get(session) === entry) {
       entry.viewer = null;
       teardownPty(session);

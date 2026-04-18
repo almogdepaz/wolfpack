@@ -193,6 +193,7 @@ export function getCachedJwtAuthConfig(): JwtAuthConfig {
 
 /** Reset cached config — only for tests that need to override env vars. */
 export function __resetJwtAuthConfig(): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__resetJwtAuthConfig() is only available in test mode");
   _cachedConfig = null;
 }
 

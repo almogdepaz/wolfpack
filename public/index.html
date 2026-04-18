@@ -135,6 +135,16 @@
           </label>
         </div>
         <div class="settings-section">
+          <div class="settings-label">Session Backend</div>
+          <div class="settings-subsection">
+            <div class="preset-row">
+              <button class="backend-btn preset-btn" data-backend="pty">PTY</button>
+              <button class="backend-btn preset-btn" data-backend="tmux">tmux</button>
+            </div>
+            <div class="settings-description">PTY: lightweight, in-process. tmux: persistent, survives restarts.</div>
+          </div>
+        </div>
+        <div class="settings-section">
           <div class="settings-label">Terminal</div>
           <div class="settings-subsection">
             <div class="settings-sub-heading">Font size</div>
@@ -154,14 +164,6 @@
           <label class="settings-toggle">
             <input type="checkbox" id="setting-termWrap"> Wrap long lines
           </label>
-          <div class="settings-subsection mobile-only-setting">
-            <div class="settings-sub-heading">Mobile renderer</div>
-            <div class="preset-row">
-              <button class="term-mobile-btn preset-btn" data-mode="classic">Classic</button>
-              <button class="term-mobile-btn preset-btn" data-mode="wasm">Ghostty</button>
-            </div>
-            <div class="settings-description">Classic: lightweight text polling. WASM: full ghostty terminal (experimental).</div>
-          </div>
           <div class="settings-subsection">
             <div class="flex-between">
               <span>Recovery snapshot TTL</span><span id="snapshot-ttl-val" class="accent-val">15m</span>

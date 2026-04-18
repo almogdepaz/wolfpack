@@ -10,7 +10,12 @@ import {
 } from "./app-state";
 
 function useClassicMobile(): boolean {
-  return !isDesktop() && wpSettings.mobileTerminal === "classic";
+  // Classic mobile terminal disabled — all mobile access uses ghostty-web.
+  // The classic polling path can't render modern TUIs correctly on PTY
+  // backend (stripAnsi can't dedupe cursor-redrawn frames, no reflow).
+  // Dead code (handleTerminalWs, applyTerminalPane, initClassicMobile,
+  // etc.) kept for now, cleanup in follow-up PR.
+  return false;
 }
 
 import {
@@ -19,7 +24,7 @@ import {
   openRalphDetail, refreshRalphDetail, parseIterations, toggleRawLog,
   cancelRalph, loadRalphStartForm, onIsolationChange,
   startRalph, continueRalph, discardRalph, showRalphStart, dismissRalph,
-  getRalphNotificationStatus, checkRalphTransitions,
+  checkRalphTransitions,
 } from "./app-ralph";
 
 import {
@@ -328,7 +333,7 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize }) {
+function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -367,6 +372,10 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
   let _scrollAccum = 0;
   const SCROLL_THRESHOLD = 60; // px of deltaY per scroll line (tuned for trackpad)
   term.attachCustomWheelEventHandler((ev) => {
+    // Notify scroll-lock controller before ghostty-web processes the wheel.
+    // This runs inside ghostty-web's capture-phase wheel handler, which is
+    // the ONLY place we can intercept wheel events before they're consumed.
+    if (onWheelScroll) onWheelScroll(ev);
     try {
       const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
       if (!hasMouse) return false;
@@ -621,6 +630,9 @@ function createPtySocketClient(opts) {
             _attachAckReceived = true;
             _awaitingAttachAck = false;
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+            // Re-check dimensions after layout settles — catches stale
+            // initial dims on mobile where layout isn't finalized at connect time.
+            requestAnimationFrame(() => { sendFitResize(); });
           } else if (msg.type === "pty_ready") {
             if (opts.onPtyReady) opts.onPtyReady();
           } else if (msg.type === "prefill_viewport") {
@@ -820,25 +832,28 @@ function createPtyTerminalController(opts) {
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _cachedLoaded = false;
+  let _userScrolledUp = false;
+  let _scrollLockKeydownHandler = null;
+  let _browserShortcutKeydownHandler = null;
 
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
   const _getHydrationElement = opts.getHydrationElement || (() => _container);
 
-  /** Clear scrollback and flush buffered writes next frame.
-   *  Uses clear() instead of reset() to avoid a 1-frame blank flash —
-   *  clear() preserves the visible viewport while wiping scrollback.
-   *  Buffers writes because ghostty-web WASM crashes with "memory access
-   *  out of bounds" if write() follows clear() in the same tick.
-   *  Hide canvas during the gap so stale viewport from an earlier point
-   *  in the conversation doesn't flash for one frame on reconnect. */
+  /** Full terminal reset, then flush buffered writes next frame.
+   *  reset() wipes both viewport and scrollback — clear() only wiped
+   *  scrollback and preserved the cursor line, which caused duplicate
+   *  content on reconnect (banner replayed over leftover viewport) and
+   *  broken scrollback history (cursor pinned at bottom of old viewport).
+   *  Canvas is hidden across the rAF gap so the brief blank frame from
+   *  reset() isn't visible. Writes are deferred because ghostty-web WASM
+   *  crashes with "memory access out of bounds" if write() follows
+   *  reset()/clear() in the same tick. */
   function _scheduleBufferedClear() {
     if (!_postResetBuffer) _postResetBuffer = [];
-    // Hide canvas before clear — visibility:hidden prevents the compositor
-    // from painting the stale viewport that clear() preserves.
     const canvas = _container ? _container.querySelector('canvas') : null;
     if (canvas) canvas.style.visibility = 'hidden';
-    _term.clear();
+    _term.reset();
     requestAnimationFrame(() => {
       if (!_term || !_postResetBuffer) {
         if (canvas) canvas.style.visibility = '';
@@ -869,11 +884,15 @@ function createPtyTerminalController(opts) {
 
   function fitTerminalPreserveScroll() {
     if (!_fitAddon || !_term) return;
-    const scrollState = WP.captureScrollState(_term.buffer.active);
+    // ghostty-web: viewportY and getScrollbackLength() are on _term directly
+    // (no buffer.active like xterm.js)
+    const vp = _term.viewportY ?? 0;
+    const scrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : 0;
+    const wasAtBottom = vp === 0;
     _fitAddon.fit();
-    if (!scrollState.wasAtBottom) {
-      const target = WP.scrollTargetAfterResize(_term.buffer.active.baseY, scrollState.distanceFromBottom);
-      try { _term.scrollToLine(target); } catch {}
+    if (!wasAtBottom && vp > 0) {
+      const newScrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : scrollback;
+      try { _term.scrollToLine(Math.max(0, newScrollback - (scrollback - vp))); } catch {}
     }
   }
 
@@ -890,7 +909,7 @@ function createPtyTerminalController(opts) {
       _mounting = false;
       return;
     }
-    if (_term) { _mounting = false; return; } // double-mount during async gap
+    if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
     const result = createTerminalInstance({
@@ -902,6 +921,26 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
+      onWheelScroll: (ev) => {
+        if (!_term) return;
+        // Skip scroll-lock in mouse mode — wheel events send SGR sequences
+        // to the app, the viewport doesn't actually move.
+        try {
+          const hasMouse = _term.getMode(1000) || _term.getMode(1002) || _term.getMode(1003);
+          if (hasMouse) return;
+        } catch { /* getMode may not exist on older builds */ }
+        // This callback fires BEFORE ghostty-web updates the viewport, so
+        // viewportY is stale. For scroll-up we trust deltaY direction (user
+        // wants to read scrollback). For scroll-down we defer the viewportY
+        // check to next frame when ghostty has finished processing.
+        if (ev.deltaY < 0) {
+          _userScrolledUp = true;
+        } else if (ev.deltaY > 0) {
+          requestAnimationFrame(() => {
+            if (_term && _term.viewportY === 0) _userScrolledUp = false;
+          });
+        }
+      },
     });
     _term = result.term;
     _fitAddon = result.fitAddon;
@@ -912,16 +951,73 @@ function createPtyTerminalController(opts) {
 
     _term.open(container);
 
+    // WORKAROUND: ghostty-web v0.4.0 WASM state retention
+    // The WASM allocator reuses freed page memory without zeroing, so new
+    // Terminal instances inherit stale screen content from previous ones.
+    // reset() frees+recreates the WASM handle but renderer.clear() doesn't
+    // repaint the Canvas 2D framebuffer. Direct fillRect is the only fix.
+    // Upstream: github.com/coder/ghostty-web/issues/138, /141, /142
+    const _openCanvas = container.querySelector('canvas');
+    if (_openCanvas) {
+      const ctx = _openCanvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#0a0a0a'; // match terminal background
+        ctx.fillRect(0, 0, _openCanvas.width, _openCanvas.height);
+      }
+    }
+
+    // Monkey-patch scrollToBottom to prevent auto-scroll when user has scrolled up.
+    // ghostty-web calls scrollToBottom() on EVERY write when viewportY !== 0,
+    // which makes it impossible to read scrollback while the agent is producing output.
+    // We suppress it when the user has intentionally scrolled up (via wheel/trackpad),
+    // and re-enable when they scroll back to the bottom.
+    {
+      // Scroll-lock: scroll up → suppress scrollToBottom, any key → snap back.
+      //
+      // ghostty-web's writeInternal() calls this.scrollToBottom() on every
+      // write when viewportY !== 0. Patching the instance method is sufficient.
+      //
+      // Wheel events are intercepted via onWheelScroll callback passed to
+      // createTerminalInstance (fires inside ghostty-web's capture-phase
+      // custom wheel handler — the ONLY place we can see wheel events before
+      // ghostty-web consumes them with {capture:true, passive:false}).
+      const origScrollToBottom = _term.scrollToBottom.bind(_term);
+      _term.scrollToBottom = () => {
+        if (_userScrolledUp) return;
+        origScrollToBottom();
+      };
+      // Intercept scrollLines (used by mobile touch scroll + momentum).
+      // When viewport moves away from bottom, set _userScrolledUp.
+      // When it reaches bottom, clear it.
+      const origScrollLines = _term.scrollLines.bind(_term);
+      _term.scrollLines = (n) => {
+        origScrollLines(n);
+        if (_term.viewportY > 0) {
+          _userScrolledUp = true;
+        } else {
+          _userScrolledUp = false;
+        }
+      };
+      _scrollLockKeydownHandler = () => {
+        if (_userScrolledUp) {
+          _userScrolledUp = false;
+          origScrollToBottom();
+        }
+      };
+      container.addEventListener("keydown", _scrollLockKeydownHandler, true);
+    }
+
     // Let browser shortcuts through — ghostty-web's keydown handler
     // calls preventDefault() on everything, swallowing Cmd+R etc.
-    container.addEventListener("keydown", (e) => {
+    _browserShortcutKeydownHandler = (e) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey) {
         const k = e.key.toLowerCase();
         if ("rwtlnq".includes(k) || (e.shiftKey && k === "r")) {
           e.stopImmediatePropagation();
         }
       }
-    }, true);
+    };
+    container.addEventListener("keydown", _browserShortcutKeydownHandler, true);
 
     // Create hydration controller (started in connect())
     _hydration = createInitialHydrationController({
@@ -980,6 +1076,14 @@ function createPtyTerminalController(opts) {
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
+        // Always reset on first connect — ghostty-web's WASM retains the
+        // previous terminal's screen buffer across Terminal instances.
+        // Without this, new sessions with sparse prefill show stale content.
+        // shouldRehydrate skips the reset for viewport prefill mode, but
+        // the WASM buffer must be cleared regardless.
+        if (!wasReconnect && _term) {
+          _term.reset();
+        }
         // On reconnect, clear stale content and restart hydration —
         // server sends fresh prefill scrollback on the new connection.
         const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "full");
@@ -991,12 +1095,12 @@ function createPtyTerminalController(opts) {
             _reconnectPendingReset = true;
             if (_hydration) _hydration.start();
           } else {
-            _term.reset();
             if (_hydration) _hydration.start();
             const el = _getHydrationElement();
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
         }
+        _userScrolledUp = false; // reset scroll-lock on reconnect
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
@@ -1056,7 +1160,7 @@ function createPtyTerminalController(opts) {
 
   /**
    * dispose() — close socket, cancel hydration, dispose addons and terminal.
-   * Does NOT clean up view-specific DOM (containers, overlays, event listeners).
+   * Removes keydown listeners from container before disposing terminal.
    */
   function dispose() {
     if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
@@ -1067,6 +1171,13 @@ function createPtyTerminalController(opts) {
     _postResetBuffer = null;
     _mounting = false;
     _cachedLoaded = false;
+    _userScrolledUp = false;
+    if (_container) {
+      if (_scrollLockKeydownHandler) _container.removeEventListener("keydown", _scrollLockKeydownHandler, true);
+      if (_browserShortcutKeydownHandler) _container.removeEventListener("keydown", _browserShortcutKeydownHandler, true);
+    }
+    _scrollLockKeydownHandler = null;
+    _browserShortcutKeydownHandler = null;
     if (_term) { try { _term.dispose(); } catch {} _term = null; }
     _fitAddon = null;
     _container = null;
@@ -1498,6 +1609,7 @@ function showView(name, skipAnimation) {
       back.onclick = null;
       gear.style.display = "";
       title.textContent = "wolfpack";
+      loadSessions(); // immediate refresh on entering sessions view
       state.sessionRefreshTimer = setInterval(loadSessions, 5000);
     } else if (name === "projects") {
       back.style.display = "block";
@@ -1567,12 +1679,11 @@ function showView(name, skipAnimation) {
 // ── Sessions ──
 
 const TRIAGE_MAP = {
-  "needs-input": { dot: "yellow", card: "attention", label: "input", title: "waiting for input" },
   "running":     { dot: "green",  card: "active-session", label: "running", title: "running" },
   "idle":        { dot: "gray",   card: "idle-session", label: "idle", title: "idle" },
 };
 
-const VALID_TRIAGE = new Set(["needs-input", "running", "idle"]);
+const VALID_TRIAGE = new Set(["running", "idle"]);
 
 function safeTriage(v: string): string {
   return VALID_TRIAGE.has(v) ? v : "idle";
@@ -1603,7 +1714,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -1625,8 +1736,10 @@ function renderMachineGroupHtml(g, multiMachine) {
 }
 
 function fetchMachine(machineUrl, machineMeta) {
-  const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", undefined, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
-  return Promise.all([api("/sessions", undefined, machineUrl || undefined), api("/info", undefined, machineUrl || undefined), ralphFetch])
+  // Timeout remote machines so one unreachable host can't block the entire UI
+  const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(5000) } : undefined;
+  const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
+  return Promise.all([api("/sessions", remoteOpts, machineUrl || undefined), api("/info", remoteOpts, machineUrl || undefined), ralphFetch])
     .then(([d, info, ralph]) => ({
       machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
       sessions: d.sessions || [], loops: ralph.loops || [], online: true, pending: false,
@@ -1777,13 +1890,16 @@ async function openSession(name, machineUrl) {
     renderSidebar();
     return;
   }
+  // Destroy BEFORE changing state — flushSnapshot() inside destroyTerminal()
+  // reads state.currentSession to key the snapshot. If we set state first,
+  // the OLD terminal's content gets saved under the NEW session's key.
+  destroyTerminal();
   setState({ currentSession: name, currentMachine: machineUrl || "" });
   recordRecent(state.currentMachine, name);
   wpMetrics.reset();
   restoreDraft();
   const cached = loadSnapshot(state.currentMachine, name);
   showView("terminal");
-  destroyTerminal();
   if (useClassicMobile()) {
     initClassicMobile(cached);
   } else {
@@ -2057,7 +2173,7 @@ async function initTerminal(cached) {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "none",
+    prefillMode: "viewport",
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -2227,7 +2343,10 @@ function destroyTerminal() {
   if (document.body.classList.contains("classic-mobile")) destroyClassicMobile();
   if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
-  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); flushSnapshot(); }
+  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
+  // Always flush snapshot before disposing terminal — even if no timer was
+  // pending, the terminal has content worth persisting for instant restore.
+  flushSnapshot();
   if (state.desktopResizeTimer) { clearTimeout(state.desktopResizeTimer); state.desktopResizeTimer = null; }
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
@@ -2461,6 +2580,7 @@ function openDrawer() {
   if (isDesktop()) return; // sidebar handles session switching on desktop
   if (state.drawerOpen) return;
   state.drawerOpen = true;
+  loadSessions().then(renderDrawerList); // fresh data on open
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
   const chip = document.getElementById("session-chip");
@@ -2676,36 +2796,27 @@ async function switchSession(val) {
 
 
 // ── Notifications ──
+// Push notifications are handled server-side. Frontend only tracks state for haptic feedback.
 
-// State-transition notification tracking
 const prevSessionStates = {};  // "machineUrl|sessionName" → triage
 function checkStateTransitions(groups) {
-  if (!state.notificationsEnabled || !wpSettings.notifications) return;
-  if (document.visibilityState === "visible") return;
+  if (!wpSettings.notifications) return;
 
   for (const g of groups) {
     if (!g.online) continue;
     const mUrl = g.machine.url || "";
-    const mName = g.machine.name || "local";
 
-    // Session transitions: running → idle or needs-input
     for (const s of g.sessions) {
       const key = mUrl + "|" + s.name;
       const prev = prevSessionStates[key];
       const cur = s.triage || "idle";
       prevSessionStates[key] = cur;
-      if (prev === "running" && (cur === "idle" || cur === "needs-input")) {
-        const title = getMachines().length > 0 ? `${mName}: ${s.name}` : `Wolfpack: ${s.name}`;
-        new Notification(title, {
-          body: cur === "needs-input" ? "Needs input" : "Finished",
-          tag: "wolfpack-session-" + key,
-        });
+      if (prev === "running" && cur === "idle") {
         haptic([200, 100, 200]);
       }
     }
 
-    // Ralph transitions: running/cleanup → done/idle/limit
-    checkRalphTransitions(g.loops, mUrl, mName);
+    checkRalphTransitions(g.loops, mUrl, g.machine.name || "local");
   }
 }
 
@@ -2742,17 +2853,21 @@ document.addEventListener("visibilitychange", () => {
           state.terminalController.reconnect();
         }
       } else if (hiddenDuration > DESKTOP_STALE_THRESHOLD_MS) {
-        // Desktop: reconnect only if tab was backgrounded >60s (App Nap,
-        // browser throttling can silently kill the TCP connection too).
+        // Desktop: force-reconnect if tab was backgrounded >60s.
+        // Browser throttling / App Nap can silently kill TCP while
+        // readyState still reports OPEN (zombie socket). Force-close
+        // and reconnect to get fresh data, matching mobile behavior.
+        // Force-reconnect unconditionally — zombie sockets report readyState=OPEN
+        // so isConnected would be true even though the socket is dead.
         if (isGridActive()) {
           for (const gs of state.gridSessions) {
             if (!gs.controller || gs._displaced) continue;
             gs.controller.resetRetry();
-            if (!gs.controller.isConnected) gs.controller.connect();
+            gs.controller.reconnect();
           }
         } else if (state.terminalController?.term) {
           state.terminalController.resetRetry();
-          if (!state.terminalController.isConnected) connectDesktopWs();
+          state.terminalController.reconnect();
         }
       }
     }
@@ -3095,6 +3210,19 @@ async function showSettings() {
   showView("settings");
   renderMachinesList();
   toggleDebugPanel();
+  // Fetch backend state and update toggle
+  try {
+    const data = await api("/backend");
+    document.querySelectorAll(".backend-btn").forEach((btn) => {
+      const el = btn as HTMLButtonElement;
+      const backend = el.dataset.backend;
+      el.classList.toggle("active", backend === data.default);
+      if (backend === "tmux") {
+        el.disabled = !data.tmuxAvailable;
+        el.title = data.tmuxAvailable ? "" : "tmux is not installed";
+      }
+    });
+  } catch { /* settings view still usable without backend info */ }
 }
 
 async function renderMachinesList() {
@@ -3106,7 +3234,7 @@ async function renderMachinesList() {
   }
   // Check status of each machine
   const checks = await Promise.all(machines.map(m =>
-    fetch(m.url + "/api/info", { signal: AbortSignal.timeout(3000) })
+    fetch(new URL("/api/info", m.url).href, { signal: AbortSignal.timeout(3000) })
       .then(() => true).catch(() => false)
   ));
   el.innerHTML = machines.map((m, i) => {
@@ -3399,7 +3527,7 @@ function sidebarCardHtml(s, machineUrl) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
+      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
@@ -3623,6 +3751,28 @@ function bindHtmlEventListeners(): void {
     });
   });
 
+  // Backend toggle buttons
+  document.querySelectorAll(".backend-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const el = btn as HTMLButtonElement;
+      if (el.disabled) return;
+      const backend = el.dataset.backend;
+      if (!backend) return;
+      try {
+        await api("/backend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ default: backend }),
+        });
+        document.querySelectorAll(".backend-btn").forEach(b =>
+          b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
+        );
+      } catch (e) {
+        console.warn("[settings] backend toggle failed:", e);
+      }
+    });
+  });
+
   // Quick commands
   on("add-quick-cmd-btn", "click", () => addQuickCmd());
 
@@ -3714,10 +3864,20 @@ function applyTerminalPane(pane) {
       state.enterRetryTimer = null;
     }
     if (state.searchActive && state.searchTerm) {
-      // Search highlight: wrap matches in <mark> tags
+      // Search highlight: run regex on raw text (not HTML-escaped) to avoid
+      // splitting HTML entities like &amp;, then build safe HTML per-segment.
       const escaped = state.searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp(escaped, "gi");
-      term.innerHTML = esc(pane).replace(re, m => `<mark>${m}</mark>`);
+      let html = "";
+      let lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(pane)) !== null) {
+        html += esc(pane.slice(lastIndex, match.index));
+        html += `<mark>${esc(match[0])}</mark>`;
+        lastIndex = re.lastIndex;
+      }
+      html += esc(pane.slice(lastIndex));
+      term.innerHTML = html;
     } else {
       term.textContent = pane;
     }
@@ -3919,10 +4079,13 @@ function destroyClassicMobile() {
 // classic-mobile class is applied by initClassicMobile() on session open,
 // not at boot — avoids mid-session transport mismatch if setting changes.
 
-// Unregister any stale service workers (no longer used)
+// Unregister stale service workers but keep our push SW
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.getRegistrations().then(regs => {
-    regs.forEach(r => r.unregister());
+    regs.forEach(r => {
+      if (r.active?.scriptURL === `${location.origin}/sw.js`) return;
+      r.unregister();
+    });
   });
 }
 

@@ -33,23 +33,18 @@ import {
 } from "../validation.js";
 import { cleanupAllExceptFinal } from "../worktree.js";
 import { assets } from "../public-assets.js";
-import { isInputPrompt, isJunkLine, type TriageStatus } from "../triage.js";
+import { isJunkLine, type TriageStatus } from "../triage.js";
+import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkRalphLoopTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
 import {
   DEV_DIR,
-  TMUX,
   RALPH_AGENTS,
   isUnderDevDir,
-  tmuxList,
-  tmuxResize,
-  tmuxNewSession,
-  capturePane,
-  capturePaneForTriage,
-  sessionDirMap,
   exec,
 } from "./tmux.js";
+import { getBackend, getRouter, type BackendType } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -179,7 +174,6 @@ const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
-
 const AGENT_PRESETS: Record<string, string> = {
   shell: "shell",
   claude: "claude",
@@ -243,8 +237,14 @@ export const routes: Record<
     res.end(JSON.stringify(manifest, null, 2));
   },
   "GET /sw.js": (_req, res) => {
-    res.writeHead(404);
-    res.end("Not Found");
+    const sw = assets.get("sw-push.js");
+    if (sw) {
+      res.writeHead(200, { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/" });
+      res.end(sw);
+    } else {
+      res.writeHead(404);
+      res.end("Not Found");
+    }
   },
 
   "GET /api/info": (_req, res) => {
@@ -255,12 +255,12 @@ export const routes: Record<
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const sessions = await tmuxList();
+    const sessions = await getBackend().list();
     const activeNames = new Set<string>();
     const results = await Promise.all(
       sessions.map(async (name) => {
         activeNames.add(name);
-        const pane = await capturePaneForTriage(name);
+        const pane = await getBackend().capturePaneForTriage(name);
         const content = pane.trimEnd();
 
         // Walk lines from bottom, skip junk, take first real line for preview
@@ -280,15 +280,11 @@ export const routes: Record<
           triage = "running";
           prevPaneContent.set(name, content);
         } else {
-          // Stable — check last non-junk lines for input prompts
-          const tail: string[] = [];
-          for (let i = lines.length - 1; i >= 0 && tail.length < 3; i--) {
-            if (!isJunkLine(lines[i])) tail.push(lines[i].trim());
-          }
-          triage = tail.some(isInputPrompt) ? "needs-input" : "idle";
+          triage = "idle";
         }
 
-        return { name, lastLine, triage };
+        const backend = getRouter().getBackendTypeForSession(name);
+        return { name, lastLine, triage, backend };
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
@@ -297,6 +293,9 @@ export const routes: Record<
       if (!activeNames.has(key)) prevPaneContent.delete(key);
     }
     json(res, { sessions: results });
+
+    // Fire push notifications for running → idle transitions (async, don't block response)
+    checkSessionTransitions(results);
   },
 
   "GET /api/projects": async (_req, res) => {
@@ -331,7 +330,7 @@ export const routes: Record<
       if (!isValidSessionName(customName)) {
         return json(res, { error: "invalid session name (letters, numbers, hyphens, underscores only)" }, 400);
       }
-      const existing = await tmuxList();
+      const existing = await getBackend().list();
       if (existing.includes(customName)) {
         return json(res, { error: "session name already taken" }, 409);
       }
@@ -345,7 +344,7 @@ export const routes: Record<
     if (!validateProjectDir(res, projectDir)) return;
     const finalName = customName || await uniqueSessionName(folderName);
     try {
-      await tmuxNewSession(finalName, projectDir, cmd, loadSettings);
+      await getBackend().createSession(finalName, projectDir, cmd, loadSettings);
     } catch (e: any) {
       if (e.code === "DUPLICATE_SESSION") {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
@@ -396,6 +395,47 @@ export const routes: Record<
     json(res, { ok: true, settings });
   },
 
+  "GET /api/backend": async (_req, res) => {
+    const router = getRouter();
+    const counts = await router.getSessionCounts();
+    json(res, {
+      default: router.getDefaultBackend(),
+      tmuxAvailable: router.isTmuxAvailable(),
+      counts,
+    });
+  },
+
+  "POST /api/backend": async (req, res) => {
+    const body = await parseBody<{ default?: BackendType }>(req, res);
+    if (!body) return;
+    const type = body.default;
+    if (type !== "pty" && type !== "tmux") {
+      return json(res, { error: "invalid backend type — must be 'pty' or 'tmux'" }, 400);
+    }
+    const router = getRouter();
+    if (type === "tmux") router.recheckTmux(); // re-probe in case tmux was installed after server start
+    if (type === "tmux" && !router.isTmuxAvailable()) {
+      return json(res, { error: "tmux is not installed" }, 400);
+    }
+    router.setDefaultBackend(type);
+    // Persist to config so it survives restarts
+    let persisted = false;
+    try {
+      const { loadConfig, saveConfig } = await import("../cli/config.js");
+      const config = loadConfig();
+      if (config) {
+        config.backend = type;
+        saveConfig(config);
+        persisted = true;
+      }
+    } catch (e: unknown) {
+      log.warn("failed to persist backend choice to config", { error: errMsg(e) });
+    }
+    const resp: any = { ok: true, default: type };
+    if (!persisted) resp.warning = "backend changed but could not persist to config";
+    json(res, resp);
+  },
+
   "POST /api/kill": async (req, res) => {
     const body = await parseBody<{ session: string }>(req, res);
     if (!body) return;
@@ -406,7 +446,7 @@ export const routes: Record<
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(session);
     prevPaneContent.delete(session);
-    await exec(TMUX, ["kill-session", "-t", session]);
+    await getBackend().killSession(session);
     json(res, { ok: true });
   },
 
@@ -423,7 +463,7 @@ export const routes: Record<
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     if (!activePtySessions.has(session)) {
-      await tmuxResize(session, clampCols(cols), clampRows(rows));
+      await getBackend().resize(session, clampCols(cols), clampRows(rows));
     }
     json(res, { ok: true });
   },
@@ -440,7 +480,7 @@ export const routes: Record<
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    const pane = await capturePane(session);
+    const pane = await getBackend().capturePane(session);
     json(res, { pane });
   },
 
@@ -450,7 +490,7 @@ export const routes: Record<
     if (!validateProject(res, session)) return;
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
-    const projectDir = sessionDirMap.get(session);
+    const projectDir = getBackend().sessionDir(session);
     if (!projectDir || !existsSync(projectDir))
       return json(res, { error: "project directory not found" }, 404);
     try {
@@ -475,7 +515,9 @@ export const routes: Record<
     const localLoops = scanRalphLoops().map(l => ({ ...l, machineName: selfHost, machineUrl: "" }));
 
     if (!aggregate || cachedPeers.length === 0) {
-      return json(res, { loops: localLoops });
+      json(res, { loops: localLoops });
+      checkRalphLoopTransitions(localLoops);
+      return;
     }
 
     const remotePeers = cachedPeers.filter(p => p.name !== selfHost);
@@ -503,7 +545,9 @@ export const routes: Record<
       })
     );
 
-    json(res, { loops: [...localLoops, ...peerResults.flat()] });
+    const allLoops = [...localLoops, ...peerResults.flat()];
+    json(res, { loops: allLoops });
+    checkRalphLoopTransitions(allLoops);
   },
 
   "GET /api/ralph/branches": async (req, res) => {
@@ -800,9 +844,6 @@ export const routes: Record<
     }
     try {
       process.kill(status.pid, "SIGTERM");
-      try { process.kill(-status.pid, "SIGTERM"); } catch (e: unknown) {
-        log.warn("ralph cancel: failed to SIGTERM process group", { error: errMsg(e) });
-      }
       // Clean up progress file so cancelled loop starts fresh on next continue
       if (status.progressFile && SAFE_FILENAME.test(status.progressFile) && !status.progressFile.includes("..")) {
         try { unlinkSync(join(projectDir, status.progressFile)); } catch { /* may not exist */ }
@@ -867,5 +908,45 @@ export const routes: Record<
     }
 
     json(res, { ok: true, deleted, failed, ...(worktreeCleanup && { worktreeCleanup }) });
+  },
+
+  // ── Push notifications ──
+
+  "GET /api/push/vapid-key": (_req, res) => {
+    json(res, { publicKey: getVapidPublicKey() });
+  },
+
+  "POST /api/push/subscribe": async (req, res) => {
+    const body = await parseBody<PushSubscription>(req, res);
+    if (!body) return;
+    const sub: PushSubscription = { endpoint: body.endpoint, keys: { p256dh: body.keys?.p256dh, auth: body.keys?.auth } };
+    const validationError = validateSubscription(sub);
+    if (validationError) return json(res, { error: validationError }, 400);
+    const result = addSubscription(sub);
+    if (!result.ok) return json(res, { error: result.error }, 429);
+    json(res, { ok: true });
+  },
+
+  "POST /api/push/unsubscribe": async (req, res) => {
+    const body = await parseBody<{ endpoint?: string }>(req, res);
+    if (!body) return;
+    if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
+    removeSubscription(body.endpoint);
+    json(res, { ok: true });
+  },
+
+  // ── Agent-triggered notifications ──
+
+  "POST /api/notify": async (req, res) => {
+    const body = await parseBody<{ message?: string }>(req, res);
+    if (!body) return;
+    if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
+    const message = body.message.slice(0, 500);
+
+    const rateLimitError = checkNotifyRateLimit();
+    if (rateLimitError) return json(res, { error: rateLimitError }, 429);
+
+    const result = await sendPush({ title: "Wolfpack", body: message, tag: "wolfpack-notify" });
+    json(res, { ok: true, ...result });
   },
 };

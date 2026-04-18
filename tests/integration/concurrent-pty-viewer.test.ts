@@ -15,6 +15,7 @@ import {
   wait,
   connectPty as _connectPty,
   waitForMessage,
+  sendTakeControl,
   type PtyTestContext,
 } from "./pty-test-helpers";
 
@@ -25,8 +26,9 @@ const FAKE_SESSIONS = [SESSION];
 
 beforeAll(async () => {
   ctx = await bootTestServer({
-    tmuxList: async () => [...FAKE_SESSIONS],
+    sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-concurrent\n",
+    backendType: "pty",
   });
 });
 
@@ -100,7 +102,7 @@ describe("concurrent viewers: A displaced → B takes control → A reconnects",
     // Step 3: B sends take_control — A is displaced
     const wsAClose = waitForClose(wsA);
     const grantedB = waitForMessage(wsB, "control_granted");
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await grantedB;
 
     const evA = await wsAClose;
@@ -119,7 +121,7 @@ describe("concurrent viewers: A displaced → B takes control → A reconnects",
     // Step 5: A takes control back from B
     const wsBClose = waitForClose(wsB);
     const grantedA2 = waitForMessage(wsA2, "control_granted");
-    wsA2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsA2);
     await grantedA2;
 
     const evB = await wsBClose;
@@ -146,7 +148,7 @@ describe("concurrent viewers: A displaced → B takes control → A reconnects",
     await waitForMessage(wsB, "viewer_conflict");
 
     const wsAClose = waitForClose(wsA);
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
     await wsAClose;
 
@@ -200,7 +202,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
 
     // B takes control — this kills the old proc
     const wsAClose = waitForClose(wsA);
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
     await wsAClose;
     await wait(100);
@@ -224,7 +226,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
     const wsB = await connectPty();
     await waitForMessage(wsB, "viewer_conflict");
 
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
     await wait(50);
 
@@ -318,7 +320,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
 
     // B sends take_control after crash — server should handle gracefully
     // (the take_control handler still runs via the closure, but entry is dead)
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await wait(200);
 
     // B may get control_granted and create a new entry, or may have been closed
@@ -349,14 +351,14 @@ describe("concurrent viewers: no leaked activePtySessions entries", () => {
     await waitForMessage(wsB, "viewer_conflict");
 
     // B takes from A
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
     await wait(50);
 
     // A reconnects and takes from B
     const wsA2 = await connectPty();
     await waitForMessage(wsA2, "viewer_conflict");
-    wsA2.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsA2);
     await waitForMessage(wsA2, "control_granted");
     await wait(50);
 
@@ -379,7 +381,7 @@ describe("concurrent viewers: no leaked activePtySessions entries", () => {
 
     // B takes control
     const wsAClose = waitForClose(wsA);
-    wsB.send(JSON.stringify({ type: "take_control" }));
+    sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
     await wsAClose;
 
@@ -398,7 +400,7 @@ describe("concurrent viewers: no leaked activePtySessions entries", () => {
       const next = await connectPty();
       await waitForMessage(next, "viewer_conflict");
       const prevClose = waitForClose(prev);
-      next.send(JSON.stringify({ type: "take_control" }));
+      sendTakeControl(next);
       await waitForMessage(next, "control_granted");
       await prevClose;
       await wait(30);

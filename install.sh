@@ -80,130 +80,21 @@ echo "  $(bold 'WOLFPACK') — AI Agent Bridge"
 echo "  $(dim 'Deploy your pack. Command from anywhere.')"
 echo ""
 
-# ── Prerequisites (tmux + tailscale only) ──
-
-missing=()
+# ── Prerequisites ──
 
 if command -v tmux &>/dev/null; then
   echo "  $(green '✓') tmux $(tmux -V)"
 else
-  echo "  $(red '✗') tmux not found"
-  missing+=("tmux")
+  echo "  $(dim '○') tmux not found $(dim '(optional — needed for tmux backend)')"
 fi
 
 if command -v tailscale &>/dev/null || { $IS_MACOS && [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; }; then
   echo "  $(green '✓') Tailscale"
 else
-  echo "  $(red '✗') Tailscale not found (needed for remote access)"
-  missing+=("tailscale")
+  echo "  $(dim '○') Tailscale not found $(dim '(optional — needed for remote access)')"
 fi
 
 echo ""
-
-if [ ${#missing[@]} -gt 0 ]; then
-  if $IS_MACOS; then
-    if ! command -v brew &>/dev/null; then
-      echo "  $(red 'Homebrew is required to install missing dependencies.')"
-      echo "  Install from: $(bold 'https://brew.sh')"
-      echo ""
-      exit 1
-    fi
-  elif $IS_LINUX; then
-    if ! command -v apt &>/dev/null; then
-      echo "  $(red 'apt is required to install missing dependencies.')"
-      echo ""
-      exit 1
-    fi
-  else
-    echo "  $(red 'Unsupported platform. Please install manually:') ${missing[*]}"
-    exit 1
-  fi
-
-  echo "  Will install: $(bold "${missing[*]}")"
-  printf "  Proceed? (y/n) "
-  read -r answer < /dev/tty
-  if [ "$answer" != "y" ]; then
-    echo "  Aborted."
-    exit 1
-  fi
-
-  if $IS_MACOS; then
-    brew_pkgs=()
-    brew_casks=()
-    for pkg in "${missing[@]}"; do
-      if [ "$pkg" = "tailscale" ]; then
-        brew_casks+=("tailscale")
-      else
-        brew_pkgs+=("$pkg")
-      fi
-    done
-
-    if [ ${#brew_pkgs[@]} -gt 0 ]; then
-      echo "  Installing ${brew_pkgs[*]}..."
-      brew install --quiet "${brew_pkgs[@]}"
-    fi
-
-    if [ ${#brew_casks[@]} -gt 0 ]; then
-      echo "  Installing Tailscale (GUI app)..."
-      brew install --cask --quiet tailscale
-    fi
-  elif $IS_LINUX; then
-    apt_pkgs=()
-    for pkg in "${missing[@]}"; do
-      if [ "$pkg" = "tailscale" ]; then
-        : # handled separately
-      else
-        apt_pkgs+=("$pkg")
-      fi
-    done
-
-    if [ ${#apt_pkgs[@]} -gt 0 ]; then
-      echo "  Installing ${apt_pkgs[*]}..."
-      sudo apt update -qq && sudo apt install -y -qq "${apt_pkgs[@]}"
-    fi
-
-    for pkg in "${missing[@]}"; do
-      if [ "$pkg" = "tailscale" ]; then
-        echo "  Installing Tailscale..."
-        curl -fsSL https://tailscale.com/install.sh | sudo sh
-      fi
-    done
-  fi
-
-  echo ""
-
-  # Verify
-  verify_fail=0
-  for pkg in "${missing[@]}"; do
-    if [ "$pkg" = "tailscale" ]; then
-      if command -v tailscale &>/dev/null || { $IS_MACOS && [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; }; then
-        echo "  $(green '✓') Tailscale installed"
-        if $IS_MACOS; then
-          echo "  $(dim 'Open Tailscale.app and sign in to enable remote access.')"
-        else
-          echo "  $(dim 'Run: sudo tailscale up')"
-        fi
-      else
-        echo "  $(red '✗') Tailscale failed to install"
-        verify_fail=1
-      fi
-    else
-      if command -v "$pkg" &>/dev/null; then
-        echo "  $(green '✓') $pkg installed"
-      else
-        echo "  $(red '✗') $pkg failed to install"
-        verify_fail=1
-      fi
-    fi
-  done
-
-  echo ""
-  if [ "$verify_fail" -eq 1 ]; then
-    echo "  $(red 'Some dependencies failed to install.')"
-    echo ""
-    exit 1
-  fi
-fi
 
 # ── Download binary ──
 
@@ -319,11 +210,17 @@ if command -v wolfpack &>/dev/null; then
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
   echo ""
+  echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
+  echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
+  echo ""
   exec wolfpack setup < /dev/tty
 elif [ -x "${INSTALL_DIR}/${BINARY_NAME}" ]; then
   echo "  $(green '✓') $(bold 'wolfpack') installed"
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
+  echo ""
+  echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
+  echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
   echo ""
   exec "${INSTALL_DIR}/${BINARY_NAME}" setup < /dev/tty
 else

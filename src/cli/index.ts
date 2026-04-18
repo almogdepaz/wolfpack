@@ -60,6 +60,7 @@ async function start() {
   if (serviceMode) {
     process.env.WOLFPACK_DEV_DIR = config.devDir;
     process.env.WOLFPACK_PORT = String(config.port);
+    if (config.backend) process.env.WOLFPACK_BACKEND = config.backend;
     await import("../server/index.js");
     return;
   }

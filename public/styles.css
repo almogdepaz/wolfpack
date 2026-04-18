@@ -273,9 +273,21 @@ header h1 {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.triage-badge.needs-input { color: var(--warning); background: #ffcc0015; }
 .triage-badge.running { color: var(--accent); background: var(--accent-ghost); }
 .triage-badge.idle { color: var(--text-dim); background: #55555515; }
+.backend-badge {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  margin-left: 4px;
+  color: var(--text-dim);
+  background: #44444420;
+}
+.backend-btn.active { border-color: rgba(0,255,65,0.5) !important; color: var(--accent) !important; background: rgba(0,255,65,0.05) !important; }
+.backend-btn:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
 .dot {
   width: 10px;
   height: 10px;

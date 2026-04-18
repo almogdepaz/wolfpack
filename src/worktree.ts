@@ -64,9 +64,8 @@ export function createWorktree(
     mkdirSync(join(realProjectDir, ".wolfpack"), { recursive: true });
     appendFileSync(orderFile, `${worktreePath}\n`);
   } catch (e: unknown) {
-    // Order file write failed — roll back the worktree to avoid partial state
-    try { removeWorktree(worktreePath); } catch { /* best effort */ }
-    throw e;
+    // Worktree was created successfully — don't roll back, just warn
+    log.warn("createWorktree: failed to write order file", { worktreePath, error: errMsg(e) });
   }
   return worktreePath;
 }
@@ -190,7 +189,15 @@ function _cleanupAllExceptFinalImpl(
   if (orderedPaths && orderedPaths.length > 0) {
     // Order managed worktrees by creation order
     const pathOrder = new Map(orderedPaths.map((p, i) => [p, i]));
-    managed.sort((a, b) => (pathOrder.get(a.path) ?? 999) - (pathOrder.get(b.path) ?? 999));
+    // Unrecorded worktrees sort after all recorded ones, ordered by path
+    managed.sort((a, b) => {
+      const aInOrder = pathOrder.has(a.path);
+      const bInOrder = pathOrder.has(b.path);
+      if (aInOrder && bInOrder) return pathOrder.get(a.path)! - pathOrder.get(b.path)!;
+      if (aInOrder && !bInOrder) return -1;
+      if (!aInOrder && bInOrder) return 1;
+      return a.path.localeCompare(b.path, undefined, { numeric: true });
+    });
   } else {
     // Fallback: numeric-aware path sort
     managed.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));

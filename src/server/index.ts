@@ -14,7 +14,8 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import pkg from "../../package.json";
 import { validateRequestJwt } from "../auth.js";
-import { cleanupOrphanPtySessions, SHELL } from "./tmux.js";
+import { SHELL } from "./tmux.js";
+import { initBackend, getBackend, type BackendType } from "./backend.js";
 import { routes } from "./routes.js";
 import {
   json,
@@ -103,7 +104,25 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer(async (req, res) => {
-    const origin = req.headers.origin;
+    let origin = req.headers.origin;
+    // Tailscale serve strips the Origin header when proxying to localhost.
+    // Detect this via Tailscale-User-Login (injected by tailscale daemon,
+    // cannot be spoofed when traffic flows through tailscale serve).
+    // TRUST MODEL: This relies on tailscale-user-login being unforgeable.
+    // If wolfpack is ever exposed via a non-Tailscale reverse proxy that
+    // forwards arbitrary client headers, this becomes a CORS bypass.
+    const tsLogin = req.headers["tailscale-user-login"];
+    if (!origin && tsLogin && typeof tsLogin === "string" && tsLogin.length > 0 && TAILNET_SUFFIX) {
+      const referer = req.headers.referer;
+      if (referer) {
+        try {
+          const refUrl = new URL(referer);
+          if (refUrl.protocol === "https:" && refUrl.hostname.endsWith("." + TAILNET_SUFFIX)) {
+            origin = refUrl.origin;
+          }
+        } catch { /* malformed referer — leave origin empty */ }
+      }
+    }
     if (origin) {
       if (isAllowedOrigin(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
@@ -127,6 +146,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     if (shouldAuthenticateApiPath(url.pathname)) {
       const auth = validateRequestJwt(req.headers, url, false);
       if (!auth.ok) {
+        log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
         writeUnauthorized(res);
         return;
       }
@@ -174,6 +194,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 
     const auth = validateRequestJwt(req.headers, url, true);
     if (!auth.ok) {
+      log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -207,7 +228,13 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 const { server, wss } = createServerInstance();
 
 export function startServer(port = PORT, host = "127.0.0.1"): void {
-  cleanupOrphanPtySessions();
+  // Initialize session backend from env (set by CLI) or default
+  const raw = process.env.WOLFPACK_BACKEND;
+  const backendType = (raw === "pty" || raw === "tmux") ? raw : undefined;
+  initBackend(backendType);
+  log.info("backend initialized", { type: backendType ?? "default" });
+
+  getBackend().cleanupOrphans();
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {

@@ -8,7 +8,7 @@ import { createWorktree, listWorktrees, removeWorktree } from "../../src/worktre
 let repoDir: string;
 
 function git(...args: string[]) {
-  return execFileSync("git", args, { cwd: repoDir, encoding: "utf-8", stdio: "pipe" });
+  return execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd: repoDir, encoding: "utf-8", stdio: "pipe" });
 }
 
 function initRepo() {

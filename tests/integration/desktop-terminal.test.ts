@@ -20,6 +20,7 @@ import {
   waitForMessage,
   type PtyTestContext,
 } from "./pty-test-helpers";
+import { CLOSE_CODE_SESSION_UNAVAILABLE } from "../../src/ws-constants.js";
 
 // ── Test setup ──
 
@@ -29,7 +30,7 @@ const FAKE_SESSIONS = ["desktop-test"];
 
 beforeAll(async () => {
   ctx = await bootTestServer({
-    tmuxList: async () => [...FAKE_SESSIONS],
+    sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-desktop-output\n",
   });
 });
@@ -460,22 +461,34 @@ describe("desktop terminal: two-phase prefill", () => {
     await wait(100);
   });
 
-  test("session-unavailable closes with 4001 before any prefill (no real tmux session)", async () => {
-    // In test mode, has-session fails → server closes WS with 4001 before prefill.
-    // This verifies the client gets a clean close code instead of hanging.
-    const ws = await connectPty("desktop-test");
-    const msgs = collectJsonMessages(ws);
-    const closePromise = waitForClose(ws, 5000);
+  test("session-unavailable closes with 4001 before any prefill (unknown session)", async () => {
+    // Connect with a session name NOT in MockBackend's list.
+    // Two acceptable paths, both lock in the "no prefill for unknown session" invariant:
+    //   1. Server rejects at HTTP upgrade (403) → connectPty promise rejects.
+    //   2. Server accepts upgrade then sends WS close 4001 before any prefill.
+    // If the server accepts the upgrade AND any prefill_* leaks through, the
+    // take-control state machine regresses — fail the test.
+    let connectRejected = false;
+    let ws: WebSocket | null = null;
+    try {
+      ws = await connectPty("nonexistent-session-xyz");
+    } catch {
+      connectRejected = true;
+    }
 
-    ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, prefillMode: "full" }));
+    if (connectRejected) {
+      // Preferred path: upgrade rejected at HTTP layer. Nothing more to assert.
+      return;
+    }
 
-    const closeEv = await closePromise;
-    expect(closeEv.code).toBe(4001);
-    // No prefill messages should have been sent — session didn't exist
+    // Server accepted the upgrade — must close with CLOSE_CODE_SESSION_UNAVAILABLE
+    // before emitting any prefill frames.
+    const msgs = collectJsonMessages(ws!);
+    const ev = await waitForClose(ws!, 3000);
+    expect(ev.code).toBe(CLOSE_CODE_SESSION_UNAVAILABLE);
     const types = msgs.map(m => m.type);
     expect(types).not.toContain("prefill_viewport");
     expect(types).not.toContain("prefill_done");
-
-    await wait(100);
+    await closeWs(ws!).catch(() => {});
   });
 });

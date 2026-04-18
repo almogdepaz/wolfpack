@@ -35,7 +35,7 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile & desktop command center for AI coding agents. Control tmux-based sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
+Mobile & desktop command center for AI coding agents. Control agent sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Two session backends: **pty** (lightweight, no dependencies) or **tmux** (persistent, survives restarts). Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
 
 Install on your phone's home screen for a native app experience — scan the QR code after setup and tap **"Add to Home Screen"**.
 
@@ -67,8 +67,8 @@ Install on your phone's home screen for a native app experience — scan the QR 
 │   Phone /   │      │ Tailscale │      │          Your Machine            │
 │   Browser   │◄────►│  (HTTPS)  │◄────►│                                  │
 │   (PWA)     │      │  mesh VPN │      │  ┌──────────┐ ┌──────┐ ┌─────┐  │
-└─────────────┘      └───────────┘      │  │ wolfpack │ │ tmux │ │Agent│  │
-                                        │  │  server  │◄│      │◄│(any)│  │
+└─────────────┘      └───────────┘      │  │ wolfpack │ │pty or│ │Agent│  │
+                                        │  │  server  │◄│ tmux │◄│(any)│  │
                                         │  │ HTTP/WS  │ │      │ │     │  │
                                         │  └──────────┘ └──────┘ └─────┘  │
                                         └──────────────────────────────────┘
@@ -76,7 +76,7 @@ Install on your phone's home screen for a native app experience — scan the QR 
 
 **Components:**
 - **PWA** — single-file vanilla JS app (~90KB), no framework. Mobile-optimized touch UI + desktop ANSI terminal
-- **Server** — Bun HTTP + WebSocket. Serves embedded assets, proxies tmux via `capture-pane`/`send-keys`
+- **Server** — Bun HTTP + WebSocket. Serves embedded assets, manages sessions via pty (default) or tmux backend
 - **Ralph** — detached subprocess that iterates through a markdown plan file, invoking agents per-task
 - **Agents** — Claude, Codex, Gemini, or any shell command. Agent-agnostic by design
 
@@ -104,8 +104,26 @@ Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
 
 ### Prerequisites
 
-- **tmux**
-- **Tailscale** — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet
+- **Tailscale** *(optional)* — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet. Required for remote access.
+- **tmux** *(optional)* — only needed if you choose the tmux backend. The default **pty** backend has no external dependencies.
+
+### Session Backends
+
+Wolfpack supports two backends for managing terminal sessions. You choose during setup and can switch at runtime from Settings.
+
+| | **PTY** (default) | **tmux** |
+|---|---|---|
+| **Dependencies** | None | Requires tmux installed |
+| **Session persistence** | In-memory — sessions lost on server crash/restart | tmux server is a separate process — sessions survive wolfpack restarts, deploys, and crashes |
+| **Terminal streaming** | Direct binary WebSocket (`/ws/pty`) — low latency | Capture-pane polling (`/ws/terminal`) |
+| **Desktop terminal** | ghostty-web with full scrollback | ghostty-web with full scrollback |
+| **Best for** | Quick setup, no-dependency environments | Long-running agent sessions where persistence matters |
+
+**Why tmux is more robust:** tmux runs as an independent server process. Your agent sessions live inside tmux, not inside wolfpack. If wolfpack crashes, gets redeployed, or restarts (e.g. `launchctl kickstart`), tmux sessions keep running untouched. When wolfpack comes back up, it reconnects to the existing tmux sessions automatically. With the PTY backend, a wolfpack restart kills all running sessions — any in-progress agent work is lost.
+
+**Why PTY is the default:** zero dependencies, simpler setup, and lower latency terminal streaming. For most users running short agent tasks, the convenience outweighs the persistence tradeoff.
+
+Both backends can run simultaneously — the backend router tracks which backend owns each session. You can have tmux sessions and PTY sessions active at the same time.
 
 ### tmux History
 
@@ -134,17 +152,18 @@ wolfpack uninstall          # Remove everything (service, config, global command
 
 On first run, `wolfpack` walks you through:
 
-1. Checking prerequisites (tmux, Tailscale)
-2. Setting your projects directory (default: `~/Dev`)
-3. Choosing a port (default: `18790`)
-4. Enabling Tailscale HTTPS access
-5. Optionally installing as a login service
-6. Displaying a QR code to scan with your phone
+1. Checking prerequisites (tmux, Tailscale — both optional)
+2. Choosing a session backend (pty or tmux, default: pty)
+3. Setting your projects directory (default: `~/Dev`)
+4. Choosing a port (default: `18790`)
+5. Enabling Tailscale HTTPS access
+6. Optionally installing as a login service
+7. Displaying a QR code to scan with your phone
 
 ## Features
 
 ### Session Management
-- Create, view, and kill tmux agent sessions
+- Create, view, and kill agent sessions (pty or tmux backend)
 - Agent picker — Claude, Codex, Gemini, or custom commands per session
 - Session triage — running, idle, and needs-input states with color-coded indicators
 - Live terminal output preview on session cards
@@ -192,6 +211,31 @@ All settings (terminal mode, font size, haptics, etc.) persist in localStorage a
 
 Tailscale's encrypted mesh network handles auth and routing — no ports to open, no DNS to configure.
 
+### Security
+
+**Always use the Tailscale hostname** (e.g. `https://mybox.tail1234.ts.net`) — not raw IPs. The QR code from setup already points to the correct URL. Raw IP access (LAN or Tailscale `100.x.x.x`) bypasses Tailscale's DNS-based routing and may not be protected by CORS.
+
+**JWT authentication** adds a second layer of protection. Without it, anyone who can reach the server port has full access to your tmux sessions. To enable:
+
+1. Generate a secret (minimum 32 characters):
+   ```bash
+   openssl rand -base64 48
+   ```
+2. Set the environment variable before starting wolfpack:
+   ```bash
+   export WOLFPACK_JWT_SECRET="your-secret-here"
+   ```
+   For service installs, add it to your shell profile or the service environment.
+
+3. Optional configuration:
+   - `WOLFPACK_JWT_AUDIENCE` — expected `aud` claim
+   - `WOLFPACK_JWT_ISSUER` — expected `iss` claim
+   - `WOLFPACK_JWT_CLOCK_TOLERANCE_SEC` — clock skew tolerance (default: 30s)
+
+Tokens use HS256 (HMAC-SHA256). The server validates but does not issue tokens — generate them with any JWT library using the same secret.
+
+**Without `WOLFPACK_JWT_SECRET` set, authentication is disabled.** This is fine for localhost-only usage but strongly recommended when the server is reachable over a network.
+
 ## Ralph Loop
 
 Autonomous task runner. Write a markdown plan file, pick an agent, set iterations, and let it rip. Ralph reads the plan, extracts the first incomplete task, hands it to the agent, marks it done, and moves on — implementing, testing, and committing along the way. See [full documentation](docs/ralph-macchio.md).
@@ -204,6 +248,7 @@ Stored in `~/.wolfpack/config.json`:
 {
   "devDir": "/Users/you/Dev",
   "port": 18790,
+  "backend": "pty",
   "tailscaleHostname": "your-machine.tailnet-name.ts.net"
 }
 ```
