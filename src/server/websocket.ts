@@ -390,6 +390,12 @@ function setupNewPtyEntry(
   type PrefillMode = typeof VALID_PREFILL_MODES[number];
   let pendingPrefillMode: PrefillMode = "full";
 
+  // Entry is valid if still alive, still the registered session entry, and the
+  // viewer WS hasn't been displaced by a takeover. Checked at every await
+  // boundary during prefill/spawn so a late teardown doesn't send to a dead WS.
+  const isCurrent = () =>
+    entry.alive && activePtySessions.get(session) === entry && entry.viewer === ws;
+
   const backendType = getBackendTypeForSession(session);
 
   // ── PTY backend: attach WS directly to session's terminal I/O ──
@@ -419,7 +425,7 @@ function setupNewPtyEntry(
         return;
       }
 
-      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+      if (!isCurrent()) return;
 
       // Send prefill from ring buffer (snapshot BEFORE resize so content is stable)
       if (prefillMode !== "none") {
@@ -448,7 +454,7 @@ function setupNewPtyEntry(
         }
       }
 
-      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+      if (!isCurrent()) return;
 
       // Subscribe to terminal output BEFORE resize — resize may trigger PTY
       // redraw output that must be forwarded to the viewer immediately.
@@ -508,7 +514,7 @@ function setupNewPtyEntry(
         log.debug(`tmux set-option window-size failed`, { session, error: errMsg(e) });
       });
 
-      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+      if (!isCurrent()) return;
 
       // Two-phase prefill:
       // Phase 1 (viewport): Send visible pane content for instant display.
@@ -566,7 +572,7 @@ function setupNewPtyEntry(
         }
       }
 
-      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+      if (!isCurrent()) return;
 
       const initialSize = latestRequestedSize || { cols, rows };
       const spawnedAt = Date.now();

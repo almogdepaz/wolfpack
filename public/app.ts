@@ -440,7 +440,14 @@ function createInitialHydrationController(opts) {
   const maxPendingMs = opts.maxPendingMs || 4000;
 
   function finish() {
-    if (!_pending) return;
+    if (!_pending) {
+      // Pre-start reveal (prefillMode:"none" callers force-finish before
+      // hydration.start()). Swap CSS directly so the canvas isn't stuck
+      // on the `hydrating` class forever.
+      const el = opts.getElement();
+      if (el) { el.classList.remove("hydrating"); el.classList.add("hydrated"); }
+      return;
+    }
     if (opts.canFinish && !opts.canFinish()) {
       if (Date.now() - _startedAt >= maxPendingMs) {
         // Safety valve: avoid infinite loader on very high-throughput sessions.
@@ -537,6 +544,17 @@ function createPtySocketClient(opts) {
   let _awaitingPrefillDone = false;
   let _sawViewportPrefill = false;
   let _prefillDoneTimeout = null;
+
+  // Clear attach/prefill state on takeover, disconnect, or explicit close.
+  // Called from viewer_conflict, onclose, close(), reconnect().
+  function _resetAttachState() {
+    _awaitingAttachAck = false;
+    _awaitingPrefillDone = false;
+    _prefillChunks = [];
+    _sawViewportPrefill = false;
+    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
+    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+  }
 
   function buildUrl() {
     const resetSuffix = consumeReset ? "&reset=1" : "";
@@ -681,12 +699,7 @@ function createPtySocketClient(opts) {
             }
           } else if (msg.type === "viewer_conflict") {
             console.log("[pty-ws]", opts.session, "viewer_conflict");
-            _awaitingAttachAck = false;
-            _awaitingPrefillDone = false;
-            _prefillChunks = [];
-            _sawViewportPrefill = false;
-            if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-            if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+            _resetAttachState();
             if (opts.onViewerConflict) opts.onViewerConflict();
           } else if (msg.type === "control_granted") {
             console.log("[pty-ws]", opts.session, "control_granted — sending re-attach");
@@ -708,12 +721,7 @@ function createPtySocketClient(opts) {
       // Ignore stale close events from sockets replaced by reconnect().
       if (ws !== sock) return;
       ws = null;
-      _awaitingAttachAck = false;
-      _awaitingPrefillDone = false;
-      _prefillChunks = [];
-      _sawViewportPrefill = false;
-      if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-      if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+      _resetAttachState();
       if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
     };
 
@@ -745,12 +753,7 @@ function createPtySocketClient(opts) {
   function close() {
     _rc.cancel();
     _rc.block();
-    _awaitingAttachAck = false;
-    _awaitingPrefillDone = false;
-    _prefillChunks = [];
-    _sawViewportPrefill = false;
-    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+    _resetAttachState();
     if (ws) { ws.close(); ws = null; }
   }
 
@@ -763,12 +766,7 @@ function createPtySocketClient(opts) {
   // against this and bails. reconnect() bypasses that guard. See PR #89 review / df4180c.
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
     _rc.cancel();
-    _awaitingAttachAck = false;
-    _awaitingPrefillDone = false;
-    _prefillChunks = [];
-    _sawViewportPrefill = false;
-    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+    _resetAttachState();
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
     if (ws) { try { ws.close(); } catch {} ws = null; }
     connect();
@@ -2173,7 +2171,12 @@ async function initTerminal(cached) {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "viewport",
+    // Raw ring-buffer replay renders at the PTY's historical dims, not the
+    // client's. Slicing the buffer also loses VT state (SGR, alt-screen,
+    // cursor mode) and produces garbled output. Grid cells use "none" for
+    // the same reason; matching them here. Cached localStorage snapshot
+    // still provides instant paint via the cached-visible class.
+    prefillMode: "none",
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -2247,6 +2250,11 @@ async function initTerminal(cached) {
     container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:13px;padding:20px;text-align:center">Terminal unavailable — WebAssembly not supported in this browser</div>';
     return;
   }
+  // With prefillMode:"none" there's no prefill burst to finish hydration.
+  // An actively-outputting PTY keeps _hydrationWritesInFlight non-zero and
+  // blocks reveal for up to maxPendingMs (~4s). Force-finish now so the
+  // canvas is visible immediately. Grid cells do the same (app-grid.ts).
+  if (state.terminalController.hydration) state.terminalController.hydration.finish();
 
   // Mobile: attach touch scroll handler + blur any auto-focused element
   if (isMobile && state.terminalController.term) {
