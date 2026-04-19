@@ -24,6 +24,7 @@ import {
 import { getBackend, getBackendTypeForSession, getRouter } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
+import { stripLeadingPartialEscape } from "./strip-ansi.js";
 
 const log = createLogger("ws");
 
@@ -430,10 +431,14 @@ function setupNewPtyEntry(
             let start = prefill.length - DESKTOP_PREFILL_MAX_BYTES;
             while (start < prefill.length && prefill[start] !== 0x0a) start++;
             if (start < prefill.length) start++;
-            sendBuf = prefill.subarray(start);
+            sendBuf = stripLeadingPartialEscape(prefill.subarray(start));
           } else {
-            sendBuf = prefill;
+            sendBuf = stripLeadingPartialEscape(prefill);
           }
+          // Reset SGR/cursor state before prefill — discarded ring buffer bytes
+          // may have set attributes (bold, color) with no matching reset.
+          const reset = Buffer.from("\x1b[0m\x1b[?25h");
+          sendBuf = Buffer.concat([reset, sendBuf]);
 
           if (prefillMode === "viewport") {
             entry.viewer.send(sendBuf);
