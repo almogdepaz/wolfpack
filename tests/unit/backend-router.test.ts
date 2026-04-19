@@ -155,7 +155,7 @@ describe("BackendRouter", () => {
       expect(await ptyMock.hasSession("pty-sess")).toBe(true);
     });
 
-    test("routes send/sendKey/resize/capturePane to correct backend", async () => {
+    test("routes resize/capturePane to correct backend", async () => {
       const { router, ptyMock, tmuxMock } = createTestRouter();
       ptyMock.setSessions(["pty-sess"]);
       tmuxMock.setSessions(["tmux-sess"]);
@@ -167,11 +167,7 @@ describe("BackendRouter", () => {
       expect(await router.capturePane("pty-sess")).toBe("pty-output");
       expect(await router.capturePane("tmux-sess")).toBe("tmux-output");
 
-      // send/sendKey/resize don't throw for valid sessions
-      await router.send("pty-sess", "hello");
-      await router.send("tmux-sess", "hello");
-      await router.sendKey("pty-sess", "Enter");
-      await router.sendKey("tmux-sess", "Enter");
+      // resize doesn't throw for valid sessions
       await router.resize("pty-sess", 80, 24);
       await router.resize("tmux-sess", 80, 24);
     });

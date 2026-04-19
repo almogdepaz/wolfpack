@@ -10,7 +10,7 @@ Abstracts over two session multiplexer strategies: `PtyBackend` (raw Bun PTY pro
 - `src/server/backend.ts` — `SessionBackend` interface, `BackendRouter`, module singletons (`initBackend`, `getBackend`, `getRouter`)
 - `src/server/pty-backend.ts` — `PtyBackend`, `stripAnsi`, ring-buffer integration, `dataListeners` pub/sub
 - `src/server/tmux-backend.ts` — thin adapter delegating to `tmux.ts` functions
-- `src/server/tmux.ts` — `tmuxList`, `tmuxNewSession`, `tmuxSend`, `tmuxSendKey`, `tmuxResize`, `capturePane`, `sessionDirMap`, `isUnderDevDir`, `cleanupOrphanPtySessions`, exec wrapper
+- `src/server/tmux.ts` — `tmuxList`, `tmuxNewSession`, `tmuxResize`, `capturePane`, `sessionDirMap`, `isUnderDevDir`, `cleanupOrphanPtySessions`, exec wrapper
 - `src/server/ring-buffer.ts` — `RingBuffer` circular byte buffer
 - `src/server/mock-backend.ts` — `MockBackend` for integration tests
 
@@ -36,7 +36,7 @@ Validates `agentCmd` against `CMD_REGEX` (defense-in-depth, routes.ts is primary
 
 **`stripAnsi(s)`** (`src/server/pty-backend.ts:26`)
 
-Strips ANSI/VT escape sequences from raw PTY output for `capturePane` (classic terminal and triage). Bare `\r` becomes `\n`. Known limitation: progress bars (which use `\r` to overwrite lines) produce extra newlines. Full fix requires a server-side VT emulator — noted in comment.
+Strips ANSI/VT escape sequences from raw PTY output for `capturePane` (triage). Bare `\r` becomes `\n`. Known limitation: progress bars (which use `\r` to overwrite lines) produce extra newlines. Full fix requires a server-side VT emulator — noted in comment.
 
 **`PtyBackend` attachment methods** (`src/server/pty-backend.ts:233-259`)
 

@@ -87,16 +87,9 @@ describe("PtyBackend", () => {
 
   test("capturePane captures PTY output", async () => {
     await backend.createSession("echo-test", "/tmp", "shell", () => ({ agentCmd: "shell" }));
-    await backend.send("echo-test", "echo PTY_CAPTURE_OK");
+    backend.writeToTerminal("echo-test", "echo PTY_CAPTURE_OK\r");
     const output = await waitForPaneContains(backend, "echo-test", "PTY_CAPTURE_OK");
     expect(output).toContain("PTY_CAPTURE_OK");
-  });
-
-  test("send writes to PTY", async () => {
-    await backend.createSession("send-test", "/tmp", "shell", () => ({ agentCmd: "shell" }));
-    await backend.send("send-test", "echo WOLFPACK_PTY_TEST_MARKER");
-    const output = await waitForPaneContains(backend, "send-test", "WOLFPACK_PTY_TEST_MARKER");
-    expect(output).toContain("WOLFPACK_PTY_TEST_MARKER");
   });
 
   test("resize does not throw", async () => {
@@ -108,13 +101,6 @@ describe("PtyBackend", () => {
 
   test("resize on nonexistent is no-op", async () => {
     await backend.resize("ghost", 80, 24); // should not throw
-  });
-
-  test("sendKey does not throw for known keys", async () => {
-    await backend.createSession("key-test", "/tmp", "shell", () => ({ agentCmd: "shell" }));
-    await sleep(200);
-    await backend.sendKey("key-test", "Enter");
-    await backend.sendKey("key-test", "C-c");
   });
 
   test("cleanupOrphans is a no-op (exit callback handles cleanup)", async () => {
@@ -133,8 +119,8 @@ describe("PtyBackend", () => {
     await backend.createSession("triage-test", "/tmp", "shell", () => ({ agentCmd: "shell" }));
     await sleep(300);
     const first = await backend.capturePaneForTriage("triage-test");
-    // Send something to change the buffer
-    await backend.send("triage-test", "echo CHANGE", true);
+    // Write something to change the buffer
+    backend.writeToTerminal("triage-test", "echo CHANGE");
     // Immediate second call should return cached value
     const second = await backend.capturePaneForTriage("triage-test");
     expect(second).toBe(first);

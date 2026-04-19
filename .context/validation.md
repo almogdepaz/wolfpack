@@ -3,21 +3,17 @@
 
 ## Purpose
 
-`src/validation.ts`, `src/ws-constants.ts`, and `src/wolfpack-context.ts` are the shared validation and constants layer. Zero side effects — pure functions and constants used across server, CLI, and tests. Provides: input regex guards, path-safety functions, terminal key allowlist, WebSocket close codes, plan format parsing, and AI agent context strings.
+`src/validation.ts`, `src/ws-constants.ts`, and `src/wolfpack-context.ts` are the shared validation and constants layer. Zero side effects — pure functions and constants used across server, CLI, and tests. Provides: input regex guards, path-safety functions, WebSocket close codes, plan format parsing, and AI agent context strings.
 
 ## Key Files
 
-- `src/validation.ts` — regex constants, validation functions, terminal input allowlist, srt sandbox settings builder, shell/XML/systemd escaping
+- `src/validation.ts` — regex constants, validation functions, srt sandbox settings builder, shell/XML/systemd escaping
 - `src/ws-constants.ts` — WebSocket close codes (4001: session unavailable, 4002: displaced) and reason strings
 - `src/wolfpack-context.ts` — plan format parsing, task counting, migration helpers, agent context strings
 
 ## Key Functions
 
-**`WS_ALLOWED_KEYS`** (`src/validation.ts:12`)
-
-Set of tmux key names accepted by the classic mobile terminal WS handler. Whitelist-based: anything not in this set is silently dropped. Covers navigation (arrow, home, end, page), control characters (C-a through C-z), and a few literal characters (`y`, `n`). Does NOT include printable text — that comes via `msg.type === "input"` with free-form strings.
-
-**`CMD_REGEX`** (`src/validation.ts:22`)
+**`CMD_REGEX`** (`src/validation.ts`)
 
 `/^[a-zA-Z0-9 \-._/=]+$/` — validates agent command strings before they reach `shell -lic`. Rejecting shell metacharacters prevents command injection. Allows `/` and `=` (needed for flags like `--dangerously-skip-permissions`). Defense-in-depth: string is passed as argument to `-lic`, not interpolated into the shell string.
 

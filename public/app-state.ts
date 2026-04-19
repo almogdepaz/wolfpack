@@ -69,7 +69,7 @@ export function getCharDimensions() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termWrap:false, termFont:"default", snapshotTtl:900, debugPanel:false, ralphEnabled:false, mobileTerminal:"wasm"};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", snapshotTtl:900, debugPanel:false, ralphEnabled:false};
 export const wpSettings = Object.assign({}, wpDefaults, loadStoredJson("wp-effects", {}));
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
@@ -96,9 +96,6 @@ export function applySetting(key, val) {
     document.body.classList.add("term-size-" + val);
     document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", b.dataset.size === val));
     applyTermToXterm();
-  }
-  if (key === "termWrap") {
-    document.body.classList.toggle("term-wrap", val);
   }
   if (key === "ralphEnabled") {
     document.body.classList.toggle("ralph-hidden", !val);
@@ -329,13 +326,6 @@ export const state = {
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
   _ghostInputObserver: null,
-  // classic mobile terminal state
-  mobileWs: null,
-  mobileStreamingActive: false,
-  termFollowMode: true,
-  lastRawPane: "",
-  searchActive: false,
-  searchTerm: "",
 };
 
 export function setState(patch) { Object.assign(state, patch); }

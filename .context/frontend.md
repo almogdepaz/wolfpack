@@ -3,7 +3,7 @@
 
 ## Purpose
 
-The frontend is a mobile-first PWA built with vanilla TypeScript/JavaScript. Compiled into `public/app.bundle.js` at build time and served as an embedded asset. The main terminal uses ghostty-web (WASM) for PTY-mode and a simple div for classic mode. The grid view allows up to 6 simultaneous sessions. The ralph panel tracks AI agent progress.
+The frontend is a mobile-first PWA built with vanilla TypeScript/JavaScript. Compiled into `public/app.bundle.js` at build time and served as an embedded asset. The main terminal uses ghostty-web (WASM) for PTY-mode. The grid view allows up to 6 simultaneous sessions. The ralph panel tracks AI agent progress.
 
 ## Key Files
 
@@ -30,12 +30,6 @@ The frontend is a mobile-first PWA built with vanilla TypeScript/JavaScript. Com
 6. Binary WS messages forwarded directly to ghostty-web WASM terminal
 7. Terminal `onBinary` callback → `encodeTerminalBinary(data)` → sends as binary WS frame
 8. On resize: `{ type: "resize", cols, rows }` debounced at RESIZE_DEBOUNCE_MS
-
-**Classic mobile terminal flow**:
-1. WS to `/ws/terminal?session=<name>`
-2. Server polls `capturePane` every 50ms, sends `{ type: "output", data: pane }` on diff
-3. Client renders pane text in scrollable div
-4. Keyboard input → `{ type: "key", key }` for special keys, `{ type: "input", data }` for text
 
 **Grid flow**:
 1. User adds session to grid via `addToGrid(session, machine)`

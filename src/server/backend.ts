@@ -23,8 +23,6 @@ export interface SessionBackend {
   capturePane(name: string): Promise<string>;
   capturePaneForTriage(name: string): Promise<string>;
   resize(name: string, cols: number, rows: number): Promise<void>;
-  send(name: string, text: string, noEnter?: boolean): Promise<void>;
-  sendKey(name: string, key: string): Promise<void>;
   sessionDir(name: string): string | undefined;
   cleanupOrphans(): Promise<void>;
 }
@@ -233,14 +231,6 @@ export class BackendRouter implements SessionBackend {
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
     return this.backendFor(name).resize(name, cols, rows);
-  }
-
-  async send(name: string, text: string, noEnter?: boolean): Promise<void> {
-    return this.backendFor(name).send(name, text, noEnter);
-  }
-
-  async sendKey(name: string, key: string): Promise<void> {
-    return this.backendFor(name).sendKey(name, key);
   }
 
   sessionDir(name: string): string | undefined {

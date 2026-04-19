@@ -91,21 +91,17 @@ Handles both string and `string[]` header values. Matches `Bearer <token>` case-
 
 ### Purpose
 
-`src/validation.ts`, `src/ws-constants.ts`, and `src/wolfpack-context.ts` are the shared validation and constants layer. Zero side effects — pure functions and constants used across server, CLI, and tests. Provides: input regex guards, path-safety functions, terminal key allowlist, WebSocket close codes, plan format parsing, and AI agent context strings.
+`src/validation.ts`, `src/ws-constants.ts`, and `src/wolfpack-context.ts` are the shared validation and constants layer. Zero side effects — pure functions and constants used across server, CLI, and tests. Provides: input regex guards, path-safety functions, WebSocket close codes, plan format parsing, and AI agent context strings.
 
 ### Key Files
 
-- `src/validation.ts` — regex constants, validation functions, terminal input allowlist, srt sandbox settings builder, shell/XML/systemd escaping
+- `src/validation.ts` — regex constants, validation functions, srt sandbox settings builder, shell/XML/systemd escaping
 - `src/ws-constants.ts` — WebSocket close codes (4001: session unavailable, 4002: displaced) and reason strings
 - `src/wolfpack-context.ts` — plan format parsing, task counting, migration helpers, agent context strings
 
 ### Key Functions / Flows
 
-**`WS_ALLOWED_KEYS`** (`src/validation.ts:12`)
-
-Set of tmux key names accepted by the classic mobile terminal WS handler. Whitelist-based: anything not in this set is silently dropped. Covers navigation (arrow, home, end, page), control characters (C-a through C-z), and a few literal characters (`y`, `n`). Does NOT include printable text — that comes via `msg.type === "input"` with free-form strings (gated by `backend.send(..., noEnter=true)`).
-
-**`CMD_REGEX`** (`src/validation.ts:22`)
+**`CMD_REGEX`** (`src/validation.ts`)
 
 `/^[a-zA-Z0-9 \-._/=]+$/` — used to validate agent command strings before they reach `shell -lic`. Rejecting shell metacharacters prevents command injection. Note: this allows `/` and `=` which could be misused but are needed for flags like `--dangerously-skip-permissions`. The actual safety net is that the string is passed as an argument to `-lic`, not interpolated into the shell string (for tmux backend), and double-validated in `PtyBackend.createSession` as well.
 
@@ -186,9 +182,9 @@ Two token-bucket limiters per-IP: global at 120 req/s, and a tighter 10 req/s fo
 
 1. CORS origin check (same allowlist)
 2. `validateRequestJwt` with `allowQueryToken=true`
-3. Path must be `/ws/pty` or `/ws/terminal`
+3. Path must be `/ws/pty`
 4. `session` param: `isValidSessionName` + `isAllowedSession` (checks backend.list())
-5. Dispatch to `handlePtyWs` or `handleTerminalWs`
+5. Dispatch to `handlePtyWs`
 
 **`POST /api/ralph/start`** (`src/server/routes.ts:631`)
 
@@ -245,11 +241,11 @@ When `aggregate=true`, forwards the caller's `Authorization` header to peer wolf
 
 ### Purpose
 
-`src/server/websocket.ts` implements two WS handlers: `handleTerminalWs` (classic text polling for mobile, 50ms interval) and `handlePtyWs` (direct binary PTY relay for ghostty-web WASM). `src/take-control-logic.ts` is the pure state machine for the viewer-conflict/take-control protocol. `src/reconnect-hydration.ts` is a single pure decision function for reconnect behavior.
+`src/server/websocket.ts` implements the PTY WS handler `handlePtyWs` (direct binary PTY relay for ghostty-web WASM). `src/take-control-logic.ts` is the pure state machine for the viewer-conflict/take-control protocol. `src/reconnect-hydration.ts` is a single pure decision function for reconnect behavior.
 
 ### Key Files
 
-- `src/server/websocket.ts` — `activePtySessions` map, `teardownPty`, `handleTerminalWs`, `handlePtyWs`, `setupNewPtyEntry`, prefill logic, `__stripInitialPtyOverlap`
+- `src/server/websocket.ts` — `activePtySessions` map, `teardownPty`, `handlePtyWs`, `setupNewPtyEntry`, prefill logic, `__stripInitialPtyOverlap`
 - `src/take-control-logic.ts` — pure decision functions: `handleViewerConflict`, `classifyDisconnect`, `handleTakeControlClick`, `handleDisplaced`, `prepareAutoTakeControl`, `handleControlGranted`
 - `src/reconnect-hydration.ts` — `shouldRehydrate` decision function
 
@@ -259,11 +255,7 @@ When `aggregate=true`, forwards the caller's `Authorization` header to peer wolf
 
 Per-session state for PTY-mode connections. Each entry: `{ viewer: WebSocket|null, pendingViewer: WebSocket|null, proc: Bun.spawn|null, alive: boolean, unsubscribe: (() => void)|null }`. Module-level — persists for server lifetime. Invariant: only one `viewer` active per session at a time.
 
-**`handleTerminalWs(ws, session)`** (`src/server/websocket.ts:135`)
-
-Classic terminal WS handler. Polls `backend.capturePane(session)` every 50ms. Sends `{ type: "output", data: pane }` JSON on diff. Message types from client: `input` (free text), `key` (WS_ALLOWED_KEYS whitelist), `resize`. Session existence checked every 1000ms; closes with `CLOSE_CODE_SESSION_UNAVAILABLE` if session disappears. Rate-limited at 60 msg/s. Does NOT use `activePtySessions` — it's a separate, simpler path.
-
-**`handlePtyWs(ws, session, reset)`** (`src/server/websocket.ts:260`)
+**`handlePtyWs(ws, session, reset)`** (`src/server/websocket.ts`)
 
 PTY WS handler. Two cases:
 
@@ -308,8 +300,6 @@ Decision: should clear+restart terminal hydration on WS open? True when: auto-re
 
 - WS connection is only accepted after JWT and `isAllowedSession` checks in the upgrade handler.
 - Input messages: JSON-parsed, type-checked. Binary messages: size-capped at 16KB (`MAX_PTY_BINARY_BYTES`).
-- Key messages filtered against `WS_ALLOWED_KEYS` whitelist.
-- Text `input` messages passed through to `backend.send(..., noEnter=true)` with no additional filtering — trust model: user-authenticated WS session is trusted to send arbitrary input to their own terminal.
 - Message rate-limited at 60/s per WS connection.
 
 ### Cross-Module Dependencies
@@ -339,7 +329,7 @@ Abstracts over two session multiplexer strategies: `PtyBackend` (raw Bun PTY pro
 - `src/server/backend.ts` — `SessionBackend` interface, `BackendRouter`, module singletons (`initBackend`, `getBackend`, `getRouter`)
 - `src/server/pty-backend.ts` — `PtyBackend`, `stripAnsi`, ring-buffer integration, `dataListeners` pub/sub
 - `src/server/tmux-backend.ts` — thin adapter delegating to `tmux.ts` functions
-- `src/server/tmux.ts` — `tmuxList`, `tmuxNewSession`, `tmuxSend`, `tmuxSendKey`, `tmuxResize`, `capturePane`, `sessionDirMap`, `isUnderDevDir`, `cleanupOrphanPtySessions`, exec wrapper
+- `src/server/tmux.ts` — `tmuxList`, `tmuxNewSession`, `tmuxResize`, `capturePane`, `sessionDirMap`, `isUnderDevDir`, `cleanupOrphanPtySessions`, exec wrapper
 - `src/server/ring-buffer.ts` — `RingBuffer` circular byte buffer
 - `src/server/mock-backend.ts` — `MockBackend` for integration tests
 
@@ -367,7 +357,7 @@ Strips `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` env vars to avoid confusing nes
 
 **`stripAnsi(s)`** (`src/server/pty-backend.ts:26`)
 
-Strips ANSI/VT escape sequences from raw PTY output for `capturePane` (classic terminal and triage). Bare `\r` becomes `\n`. Known limitation: progress bars (which use `\r` to overwrite lines) produce extra newlines. Full fix requires a server-side VT emulator — noted in comment.
+Strips ANSI/VT escape sequences from raw PTY output for `capturePane` (triage). Bare `\r` becomes `\n`. Known limitation: progress bars (which use `\r` to overwrite lines) produce extra newlines. Full fix requires a server-side VT emulator — noted in comment.
 
 **`PtyBackend` attachment methods** (`src/server/pty-backend.ts:233-259`)
 
@@ -681,7 +671,7 @@ Validates `devDir` (string, non-empty), `port` (valid port number via `isValidPo
 
 ### Purpose
 
-The frontend is a mobile-first PWA built with vanilla TypeScript/JavaScript. Compiled into `public/app.bundle.js` at build time and served as an embedded asset. The main terminal uses ghostty-web (WASM) for PTY-mode and a simple div for classic mode. The grid view allows up to 6 simultaneous sessions. The ralph panel tracks AI agent progress.
+The frontend is a mobile-first PWA built with vanilla TypeScript/JavaScript. Compiled into `public/app.bundle.js` at build time and served as an embedded asset. The main terminal uses ghostty-web (WASM) for PTY-mode. The grid view allows up to 6 simultaneous sessions. The ralph panel tracks AI agent progress.
 
 ### Key Files
 
@@ -708,12 +698,6 @@ The frontend is a mobile-first PWA built with vanilla TypeScript/JavaScript. Com
 6. Binary WS messages forwarded directly to ghostty-web WASM terminal
 7. Terminal `onBinary` callback → `encodeTerminalBinary(data)` → sends as binary WS frame
 8. On resize: `{ type: "resize", cols, rows }` debounced at RESIZE_DEBOUNCE_MS
-
-**Classic mobile terminal flow**:
-1. WS to `/ws/terminal?session=<name>`
-2. Server polls `capturePane` every 50ms, sends `{ type: "output", data: pane }` on diff
-3. Client renders pane text in scrollable div
-4. Keyboard input → `{ type: "key", key }` for special keys, `{ type: "input", data }` for text
 
 **Grid flow**:
 1. User adds session to grid via `addToGrid(session, machine)`
@@ -977,12 +961,10 @@ Internet / Tailscale network
             ├─ WebSocket
             │   ├─ CORS + JWT + isAllowedSession checks on upgrade
             │   ├─ Binary input: capped at 16KB
-            │   ├─ Key input: WS_ALLOWED_KEYS whitelist (classic terminal)
             │   └─ Text input: free-form (PTY mode, after auth)
             │
             ├─ tmux / PTY sessions (subprocess boundary)
-            │   ├─ Input: WS_ALLOWED_KEYS for classic; raw bytes for PTY
-            │   └─ Text via send-keys -l (literal mode, no shell interpretation)
+            │   └─ Input: raw bytes for PTY
             │
             ├─ Ralph worker (detached subprocess)
             │   ├─ Lock file prevents concurrent starts

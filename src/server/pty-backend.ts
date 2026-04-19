@@ -36,29 +36,6 @@ const DEFAULT_BUFFER_CAPACITY = 512 * 1024;
 /** Triage cache TTL — avoids re-reading the ring buffer on rapid polling. */
 const TRIAGE_CACHE_TTL_MS = 500;
 
-/** Tmux-style key names → raw byte sequences for PTY input. */
-const KEY_MAP: Record<string, string> = {
-  Enter: "\r",
-  Tab: "\t",
-  Escape: "\x1b",
-  BSpace: "\x7f",
-  DC: "\x1b[3~",
-  Up: "\x1b[A",
-  Down: "\x1b[B",
-  Right: "\x1b[C",
-  Left: "\x1b[D",
-  Home: "\x1b[H",
-  End: "\x1b[F",
-  PPage: "\x1b[5~",
-  NPage: "\x1b[6~",
-  BTab: "\x1b[Z",
-  // Ctrl-key combos (C-a through C-z)
-  "C-a": "\x01", "C-b": "\x02", "C-c": "\x03", "C-d": "\x04",
-  "C-e": "\x05", "C-f": "\x06", "C-g": "\x07", "C-h": "\x08",
-  "C-k": "\x0b", "C-l": "\x0c", "C-n": "\x0e", "C-p": "\x10",
-  "C-r": "\x12", "C-u": "\x15", "C-w": "\x17", "C-z": "\x1a",
-};
-
 interface PtySession {
   proc: ReturnType<typeof Bun.spawn>;
   buffer: RingBuffer;
@@ -188,34 +165,6 @@ export class PtyBackend implements SessionBackend {
       session.proc.terminal!.resize(cols, rows);
     } catch (e: unknown) {
       log.debug("resize failed", { name, error: errMsg(e) });
-    }
-  }
-
-  // Raw PTY write — equivalent to typing on a keyboard. No shell interpretation.
-  // Unlike TmuxBackend's tmuxSend (which uses `send-keys -l` literal mode),
-  // this goes directly to the terminal fd. Safe because input is user-initiated
-  // via the classic terminal WS handler, gated by WS_ALLOWED_KEYS for key messages.
-  async send(name: string, text: string, noEnter?: boolean): Promise<void> {
-    const session = this.sessions.get(name);
-    if (!session || !session.alive) return;
-    const terminal = session.proc.terminal!;
-    terminal.write(text);
-    if (!noEnter) {
-      terminal.write("\r");
-    }
-  }
-
-  async sendKey(name: string, key: string): Promise<void> {
-    const session = this.sessions.get(name);
-    if (!session || !session.alive) return;
-    const seq = KEY_MAP[key];
-    if (seq) {
-      session.proc.terminal!.write(seq);
-    } else if (key.length === 1) {
-      // Single printable character — send as-is
-      session.proc.terminal!.write(key);
-    } else {
-      log.warn("sendKey: unknown key", { name, key });
     }
   }
 

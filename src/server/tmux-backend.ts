@@ -6,8 +6,6 @@ import {
   tmuxList,
   tmuxNewSession,
   tmuxResize,
-  tmuxSend,
-  tmuxSendKey,
   capturePane,
   capturePaneForTriage,
   sessionDirMap,
@@ -54,14 +52,6 @@ export class TmuxBackend implements SessionBackend {
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
     return tmuxResize(name, cols, rows);
-  }
-
-  async send(name: string, text: string, noEnter?: boolean): Promise<void> {
-    return tmuxSend(name, text, noEnter);
-  }
-
-  async sendKey(name: string, key: string): Promise<void> {
-    return tmuxSendKey(name, key);
   }
 
   sessionDir(name: string): string | undefined {

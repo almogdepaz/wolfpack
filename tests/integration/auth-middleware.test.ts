@@ -187,16 +187,6 @@ describe("JWT auth middleware", () => {
     expect(Array.isArray(body.projects)).toBe(true);
   });
 
-  test("reaches endpoint validation logic when authorized", async () => {
-    const token = createValidToken();
-    const res = await fetch(`${baseUrl}/api/poll`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status).toBe(400);
-    const body = await res.json() as { error: string };
-    expect(body.error).toBe("missing session param");
-  });
-
   test("rejects websocket upgrade without token", async () => {
     const { status, ws } = await rawUpgrade("/ws/pty?session=auth-session");
     expect(status).not.toBe(101);

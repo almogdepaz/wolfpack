@@ -53,7 +53,7 @@ Suggestion: unexport (make it a module-private function); its signature is an in
 
 **`TmuxBackend` methods** — `src/server/tmux-backend.ts:19-74`
 
-All 9 interface methods are 1-3 line pass-throughs that call the equivalent `tmux.ts` function with identical args:
+All 7 interface methods are 1-3 line pass-throughs that call the equivalent `tmux.ts` function with identical args:
 
 ```
 list()              → tmuxList()
@@ -63,8 +63,6 @@ hasSession(name)    → exec(TMUX, ["has-session", ...])
 capturePane(name)   → capturePane(name)
 capturePaneForTriage(name) → capturePaneForTriage(name)
 resize(name,c,r)    → tmuxResize(name,c,r)
-send(name,t,ne)     → tmuxSend(name,t,ne)
-sendKey(name,key)   → tmuxSendKey(name,key)
 sessionDir(name)    → sessionDirMap.get(name)
 cleanupOrphans()    → cleanupOrphanPtySessions()
 ```
@@ -132,7 +130,7 @@ Median file LOC across `src/`: ~144. 3× median = 432. Files over 500 LOC:
 |------|-----|-------|
 | `src/ralph-macchio.ts` | 1103 | Largest single file; 12.5% of total src LOC. Worker subprocess with 34+ functions. Could be split: iteration-loop core vs worktree helpers vs prompt-building. Not urgent — it's a standalone worker entry point, not imported by other modules. |
 | `src/server/routes.ts` | 952 | 29 route handlers inline in one file. Each handler averages 33 LOC including validation. Extraction would add indirection without benefit at current scale. Watch if it keeps growing. |
-| `src/server/websocket.ts` | 740 | Two WS handlers + prefill/dedup logic. The prefill flow (`__stripInitialPtyOverlap`, chunked send) is inherently complex. Borderline but justified. |
+| `src/server/websocket.ts` | ~650 | PTY WS handler + prefill/dedup logic. The prefill flow (`__stripInitialPtyOverlap`, chunked send) is inherently complex. Borderline but justified. |
 | `src/cli/doctor.ts` | 556 | 8 check groups × ~60 LOC each. Mechanical repetition but each check is different in substance. Acceptable for diagnostic tooling. |
 
 No file holds >30% of project LOC. `ralph-macchio.ts` at 12.5% is the closest.

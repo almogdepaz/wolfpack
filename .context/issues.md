@@ -89,7 +89,7 @@ All known problems, risks, bugs, and fragility points across the codebase. Each 
 
 **[BACK-4] stripAnsi progress bar artifact**
 - Files: `src/server/pty-backend.ts:26`
-- `stripAnsi` converts bare `\r` to `\n`. Progress bars that use `\r` to overwrite lines produce extra newlines in the classic terminal view. Full fix requires a server-side VT emulator.
+- `stripAnsi` converts bare `\r` to `\n`. Progress bars that use `\r` to overwrite lines produce extra newlines in the triage output. Full fix requires a server-side VT emulator.
 
 ---
 

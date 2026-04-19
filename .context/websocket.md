@@ -3,11 +3,11 @@
 
 ## Purpose
 
-`src/server/websocket.ts` implements two WS handlers: `handleTerminalWs` (classic text polling for mobile, 50ms interval) and `handlePtyWs` (direct binary PTY relay for ghostty-web WASM). `src/take-control-logic.ts` is the pure state machine for the viewer-conflict/take-control protocol. `src/reconnect-hydration.ts` is a single pure decision function for reconnect behavior.
+`src/server/websocket.ts` implements the PTY WS handler `handlePtyWs` (direct binary PTY relay for ghostty-web WASM). `src/take-control-logic.ts` is the pure state machine for the viewer-conflict/take-control protocol. `src/reconnect-hydration.ts` is a single pure decision function for reconnect behavior.
 
 ## Key Files
 
-- `src/server/websocket.ts` — `activePtySessions` map, `teardownPty`, `handleTerminalWs`, `handlePtyWs`, `setupNewPtyEntry`, prefill logic, `__stripInitialPtyOverlap`
+- `src/server/websocket.ts` — `activePtySessions` map, `teardownPty`, `handlePtyWs`, `setupNewPtyEntry`, prefill logic, `__stripInitialPtyOverlap`
 - `src/take-control-logic.ts` — pure decision functions: `handleViewerConflict`, `classifyDisconnect`, `handleTakeControlClick`, `handleDisplaced`, `prepareAutoTakeControl`, `handleControlGranted`
 - `src/reconnect-hydration.ts` — `shouldRehydrate` decision function
 
@@ -17,11 +17,7 @@
 
 Per-session state for PTY-mode connections. Each entry: `{ viewer: WebSocket|null, pendingViewer: WebSocket|null, proc: Bun.spawn|null, alive: boolean, unsubscribe: (() => void)|null }`. Module-level — persists for server lifetime. Invariant: only one `viewer` active per session at a time.
 
-**`handleTerminalWs(ws, session)`** (`src/server/websocket.ts:135`)
-
-Classic terminal WS handler. Polls `backend.capturePane(session)` every 50ms. Sends `{ type: "output", data: pane }` JSON on diff. Message types from client: `input` (free text), `key` (WS_ALLOWED_KEYS whitelist), `resize`. Session existence checked every 1000ms; closes with `CLOSE_CODE_SESSION_UNAVAILABLE` if session disappears. Rate-limited at 60 msg/s. Does NOT use `activePtySessions` — separate, simpler path.
-
-**`handlePtyWs(ws, session, reset)`** (`src/server/websocket.ts:260`)
+**`handlePtyWs(ws, session, reset)`** (`src/server/websocket.ts`)
 
 Two cases:
 1. **Session occupied**: sends `viewer_conflict` to new WS, registers as `pendingViewer`. On `take_control`: calls `performImmediateTakeover` which atomically displaces old viewer (close 4002), kills old proc, calls `setupNewPtyEntry`, sends `control_granted`.
@@ -64,8 +60,6 @@ True when: auto-reconnect OR (manual retry AND prefill is full mode). Grid cells
 
 - WS connection accepted only after JWT and `isAllowedSession` checks in upgrade handler.
 - Input messages: JSON-parsed, type-checked. Binary messages: size-capped at 16KB (`MAX_PTY_BINARY_BYTES`).
-- Key messages filtered against `WS_ALLOWED_KEYS` whitelist.
-- Text `input` messages passed through to `backend.send(..., noEnter=true)` with no additional filtering — authenticated WS session is trusted to send arbitrary input to their own terminal.
 - Message rate-limited at 60/s per WS connection.
 
 ## Cross-Module Dependencies

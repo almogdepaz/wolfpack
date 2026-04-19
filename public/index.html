@@ -161,9 +161,6 @@
               <button class="term-font-btn preset-btn font-alt" data-font="alt">Alt Mono</button>
             </div>
           </div>
-          <label class="settings-toggle">
-            <input type="checkbox" id="setting-termWrap"> Wrap long lines
-          </label>
           <div class="settings-subsection">
             <div class="flex-between">
               <span>Recovery snapshot TTL</span><span id="snapshot-ttl-val" class="accent-val">15m</span>
@@ -225,21 +222,12 @@
 
     <!-- Terminal view -->
     <div id="terminal-view" class="view">
-      <div id="search-bar">
-        <input id="search-input" type="text" placeholder="Search..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-        <span id="search-count"></span>
-        <button id="search-prev-btn">&#9650;</button>
-        <button id="search-next-btn">&#9660;</button>
-        <button id="search-close-btn">&#10005;</button>
-      </div>
       <div
         id="conn-status"
         class="conn-status"
       >
         Reconnecting...
       </div>
-      <div id="terminal"></div>
-      <button id="jump-to-live">&#9660; Live</button>
       <div id="desktop-terminal-container"></div>
       <input id="mobile-kb-proxy" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Terminal input" />
       <div id="desktop-grid-container"></div>
