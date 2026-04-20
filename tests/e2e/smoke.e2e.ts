@@ -48,3 +48,15 @@ test("malformed wp-effects storage does not brick the app", async ({ page }) => 
   await page.waitForSelector(".card", { timeout: 5000 });
   await expect(page.locator(".card").first()).toBeVisible();
 });
+
+test("legacy mobileTerminal=classic is migrated to wasm on load", async ({ page }) => {
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => {
+    localStorage.setItem("wp-effects", JSON.stringify({ mobileTerminal: "classic", haptics: false }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("wp-effects") ?? "{}"));
+  expect(stored.mobileTerminal).toBe("wasm");
+  expect(stored.haptics).toBe(false);
+});

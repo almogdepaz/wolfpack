@@ -71,6 +71,12 @@ export function getCharDimensions() {
 
 export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termWrap:false, termFont:"default", snapshotTtl:900, debugPanel:false, ralphEnabled:false, mobileTerminal:"wasm"};
 export const wpSettings = Object.assign({}, wpDefaults, loadStoredJson("wp-effects", {}));
+// Migration: "classic" mobile terminal is gone; rewrite any persisted legacy
+// value to the current default so inspecting localStorage isn't confusing.
+if ((wpSettings as any).mobileTerminal === "classic") {
+  (wpSettings as any).mobileTerminal = "wasm";
+  try { localStorage.setItem("wp-effects", JSON.stringify(wpSettings)); } catch { /* quota / private mode */ }
+}
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
 
