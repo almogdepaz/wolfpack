@@ -560,7 +560,6 @@ function createPtySocketClient(opts) {
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const prefillMode = _initialPrefillMode;
-    _initialPrefillMode = "full";
     _lastSentResize = dims.cols + "x" + dims.rows;
     _awaitingAttachAck = true;
     _attachAckReceived = false;
