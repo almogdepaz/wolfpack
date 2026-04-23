@@ -333,7 +333,7 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null }) {
+function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -376,10 +376,17 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
     // This runs inside ghostty-web's capture-phase wheel handler, which is
     // the ONLY place we can intercept wheel events before they're consumed.
     if (onWheelScroll) onWheelScroll(ev);
-    try {
-      const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
-      if (!hasMouse) return false;
-    } catch { return false; }
+    // For tmux sessions we always forward — tmux has `mouse on` and will
+    // route wheel events (copy-mode scrollback at shell, app-mouse when in
+    // a TUI). Client-side scrollback is useless for tmux since it redraws
+    // the full pane on every output. For PTY, only forward when the app
+    // enabled mouse reporting; otherwise let ghostty scroll locally.
+    if (!alwaysForwardWheel) {
+      try {
+        const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
+        if (!hasMouse) return false;
+      } catch { return false; }
+    }
     _scrollAccum += ev.deltaY;
     const lines = Math.trunc(_scrollAccum / SCROLL_THRESHOLD);
     if (lines === 0) return true; // accumulate more before scrolling
@@ -911,6 +918,16 @@ function createPtyTerminalController(opts) {
     if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
+    const isTmuxSession = (() => {
+      const groups = (state as any).lastSessionGroups || [];
+      for (const g of groups) {
+        for (const s of (g?.sessions || [])) {
+          if (s.name === opts.session) return (s.backend ?? "tmux") === "tmux";
+        }
+      }
+      return true; // default-tmux world: assume tmux when session info isn't loaded yet
+    })();
+
     const result = createTerminalInstance({
       fontSize: opts.fontSize,
       scrollback: opts.scrollback,
@@ -920,10 +937,12 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
+      alwaysForwardWheel: isTmuxSession,
       onWheelScroll: (ev) => {
         if (!_term) return;
-        // Skip scroll-lock in mouse mode — wheel events send SGR sequences
-        // to the app, the viewport doesn't actually move.
+        // Skip scroll-lock when wheel is forwarded to the server — the
+        // viewport doesn't actually move on the client.
+        if (isTmuxSession) return;
         try {
           const hasMouse = _term.getMode(1000) || _term.getMode(1002) || _term.getMode(1003);
           if (hasMouse) return;
@@ -3209,19 +3228,6 @@ async function showSettings() {
   showView("settings");
   renderMachinesList();
   toggleDebugPanel();
-  // Fetch backend state and update toggle
-  try {
-    const data = await api("/backend");
-    document.querySelectorAll(".backend-btn").forEach((btn) => {
-      const el = btn as HTMLButtonElement;
-      const backend = el.dataset.backend;
-      el.classList.toggle("active", backend === data.default);
-      if (backend === "tmux") {
-        el.disabled = !data.tmuxAvailable;
-        el.title = data.tmuxAvailable ? "" : "tmux is not installed";
-      }
-    });
-  } catch { /* settings view still usable without backend info */ }
 }
 
 async function renderMachinesList() {
@@ -3746,28 +3752,6 @@ function bindHtmlEventListeners(): void {
         document.querySelectorAll(".term-mobile-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.mode === mode));
         // Don't apply classic-mobile class immediately — it takes effect
         // on next session open to avoid mid-session transport mismatch.
-      }
-    });
-  });
-
-  // Backend toggle buttons
-  document.querySelectorAll(".backend-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const el = btn as HTMLButtonElement;
-      if (el.disabled) return;
-      const backend = el.dataset.backend;
-      if (!backend) return;
-      try {
-        await api("/backend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ default: backend }),
-        });
-        document.querySelectorAll(".backend-btn").forEach(b =>
-          b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
-        );
-      } catch (e) {
-        console.warn("[settings] backend toggle failed:", e);
       }
     });
   });

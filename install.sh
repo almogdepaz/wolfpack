@@ -85,7 +85,36 @@ echo ""
 if command -v tmux &>/dev/null; then
   echo "  $(green '✓') tmux $(tmux -V)"
 else
-  echo "  $(dim '○') tmux not found $(dim '(optional — needed for tmux backend)')"
+  echo "  $(dim '○') tmux not found — installing..."
+  if $IS_MACOS; then
+    if command -v brew &>/dev/null; then
+      brew install --quiet tmux || {
+        echo "  $(red '✗') Failed to install tmux via brew."
+        echo "  Install manually: $(bold 'brew install tmux')"
+        exit 1
+      }
+    else
+      echo "  $(red '✗') Homebrew is required to install tmux on macOS."
+      echo "  Install Homebrew from https://brew.sh, then re-run this installer."
+      exit 1
+    fi
+  elif $IS_LINUX; then
+    if command -v apt &>/dev/null; then
+      sudo apt update -qq && sudo apt install -y -qq tmux || {
+        echo "  $(red '✗') Failed to install tmux via apt."
+        echo "  Install manually: $(bold 'sudo apt install tmux')"
+        exit 1
+      }
+    else
+      echo "  $(red '✗') apt is required to install tmux on Linux."
+      echo "  Install tmux manually with your package manager, then re-run this installer."
+      exit 1
+    fi
+  else
+    echo "  $(red '✗') Unsupported platform — install tmux manually, then re-run."
+    exit 1
+  fi
+  echo "  $(green '✓') tmux $(tmux -V)"
 fi
 
 if command -v tailscale &>/dev/null || { $IS_MACOS && [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; }; then
