@@ -88,7 +88,7 @@ else
   echo "  $(dim '○') tmux not found — installing..."
   if $IS_MACOS; then
     if command -v brew &>/dev/null; then
-      brew install --quiet tmux || {
+      brew install --quiet tmux </dev/null || {
         echo "  $(red '✗') Failed to install tmux via brew."
         echo "  Install manually: $(bold 'brew install tmux')"
         exit 1
@@ -100,7 +100,7 @@ else
     fi
   elif $IS_LINUX; then
     if command -v apt &>/dev/null; then
-      sudo apt update -qq && sudo apt install -y -qq tmux || {
+      sudo apt update -qq </dev/null && sudo apt install -y -qq tmux </dev/null || {
         echo "  $(red '✗') Failed to install tmux via apt."
         echo "  Install manually: $(bold 'sudo apt install tmux')"
         exit 1
