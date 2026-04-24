@@ -575,6 +575,11 @@ function setupNewPtyEntry(
 
       const initialSize = latestRequestedSize || { cols, rows };
       const spawnedAt = Date.now();
+      // Re-enforce mouse on — heals sessions that were created with it off
+      // (e.g. by older wolfpack builds) so wheel scrollback works on attach.
+      await exec(TMUX, ["set-option", "-t", session, "mouse", "on"]).catch((e: unknown) => {
+        log.debug("attach: failed to re-enforce mouse option", { session, error: errMsg(e) });
+      });
       entry.proc = Bun.spawn([TMUX, "attach-session", "-t", session], {
         env: { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
         terminal: {
