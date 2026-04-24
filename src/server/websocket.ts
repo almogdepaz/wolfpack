@@ -40,6 +40,20 @@ export const activePtySessions = new Map<string, {
 
 const ptySpawnAttempts = new Map<string, number>();
 
+// Per-session peak viewport size. Tmux scrollback bakes the pane width of the
+// moment it was written; shrinking later (e.g. a phone taking control of a
+// session that was desktop-sized) corrupts the history column alignment. Keep
+// resize requests monotonic — never shrink below the largest size seen.
+const sessionPeakSize = new Map<string, { cols: number; rows: number }>();
+
+function clampToPeak(session: string, cols: number, rows: number): { cols: number; rows: number } {
+  const prev = sessionPeakSize.get(session);
+  const peakCols = prev ? Math.max(prev.cols, cols) : cols;
+  const peakRows = prev ? Math.max(prev.rows, rows) : rows;
+  sessionPeakSize.set(session, { cols: peakCols, rows: peakRows });
+  return { cols: peakCols, rows: peakRows };
+}
+
 // ── Constants ──
 const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
 const PREFILL_CHUNK_SIZE = 32 * 1024;
@@ -240,6 +254,7 @@ export function teardownPty(session: string): void {
   if (!entry) return;
   entry.alive = false;
   activePtySessions.delete(session);
+  sessionPeakSize.delete(session);
   if (entry.unsubscribe) {
     entry.unsubscribe();
     entry.unsubscribe = null;
@@ -575,6 +590,11 @@ function setupNewPtyEntry(
 
       const initialSize = latestRequestedSize || { cols, rows };
       const spawnedAt = Date.now();
+      // Re-enforce mouse on — heals sessions that were created with it off
+      // (e.g. by older wolfpack builds) so wheel scrollback works on attach.
+      await exec(TMUX, ["set-option", "-t", session, "mouse", "on"]).catch((e: unknown) => {
+        log.debug("attach: failed to re-enforce mouse option", { session, error: errMsg(e) });
+      });
       entry.proc = Bun.spawn([TMUX, "attach-session", "-t", session], {
         env: { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
         terminal: {
@@ -651,7 +671,7 @@ function setupNewPtyEntry(
           typeof msg.cols === "number" &&
           typeof msg.rows === "number"
         ) {
-          latestRequestedSize = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
+          latestRequestedSize = clampToPeak(session, clampCols(msg.cols), clampRows(msg.rows));
           const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
           if (!isAttached) {
             let prefillMode: PrefillMode = "full";
@@ -672,8 +692,9 @@ function setupNewPtyEntry(
             }
           }
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          const cols = clampCols(msg.cols);
-          const rows = clampRows(msg.rows);
+          const peak = clampToPeak(session, clampCols(msg.cols), clampRows(msg.rows));
+          const cols = peak.cols;
+          const rows = peak.rows;
           latestRequestedSize = { cols, rows };
           const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
           if (!isAttached) {
@@ -736,7 +757,7 @@ function setupNewPtyEntry(
     if (typeof initialDims.prefillMode === "string" && VALID_PREFILL_MODES.includes(initialDims.prefillMode as PrefillMode)) {
       prefillMode = initialDims.prefillMode as PrefillMode;
     }
-    latestRequestedSize = { cols: clampCols(initialDims.cols), rows: clampRows(initialDims.rows) };
+    latestRequestedSize = clampToPeak(session, clampCols(initialDims.cols), clampRows(initialDims.rows));
     spawnPty(latestRequestedSize.cols, latestRequestedSize.rows, { prefillMode });
     if (entry.viewer && entry.viewer.readyState === 1) {
       try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`immediate attach_ack send failed`, { session, error: errMsg(e) }); }

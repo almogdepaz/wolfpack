@@ -106,7 +106,6 @@ export function renderPlist(config: Config | null, args: string[], logPath: stri
   const env: Record<string, string> = { WOLFPACK_SERVICE: "1" };
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
-  if (config?.backend) env.WOLFPACK_BACKEND = config.backend;
 
   const envEntries = Object.entries(env)
     .map(([k, v]) => `      <key>${xmlEsc(k)}</key>\n      <string>${xmlEsc(v)}</string>`)
@@ -158,7 +157,6 @@ export function renderSystemdUnit(config: Config | null, args: string[]): string
   ];
   if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${systemdEsc(config.devDir)}"`);
   if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);
-  if (config?.backend) envLines.push(`Environment="WOLFPACK_BACKEND=${systemdEsc(config.backend)}"`);
 
   const quotedArgs = args.map(a => `"${systemdEsc(a)}"`).join(" ");
   return `[Unit]

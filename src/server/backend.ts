@@ -31,7 +31,7 @@ export interface SessionBackend {
 
 export type BackendType = "pty" | "tmux";
 
-export const DEFAULT_BACKEND: BackendType = "pty";
+export const DEFAULT_BACKEND: BackendType = "tmux";
 
 // ── PtyBackend-specific methods needed by websocket.ts ──
 

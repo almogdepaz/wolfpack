@@ -28,7 +28,6 @@ import {
   tailscaleBin,
   type Config,
 } from "./config.js";
-import { DEFAULT_BACKEND, type BackendType } from "../server/backend.js";
 import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
 
@@ -97,10 +96,7 @@ export async function setup() {
 
   print(bold("  Checking prerequisites...\n"));
 
-  const hasTmux = check("tmux", "tmux -V");
-  if (!hasTmux) {
-    print(dim("    (optional — only needed for tmux backend)"));
-  }
+  let hasTmux = check("tmux", "tmux -V");
   const tsBin = tailscaleBin();
   const hasTailscale = !!tsBin;
   if (hasTailscale) {
@@ -111,30 +107,16 @@ export async function setup() {
 
   print("");
 
-  // ── Backend selection ──
-  print(bold("  Session backend:"));
-  print(`    ${bold("1)")} pty  ${dim("— lightweight, no dependencies (default) — sessions lost on restart")}`);
-  print(`    ${bold("2)")} tmux ${dim("— persistent sessions, survives server restarts")}`);
-  const backendChoice = ask("  Choose backend [1]: ") || "1";
-  let backend: BackendType = backendChoice === "2" ? "tmux" : DEFAULT_BACKEND;
-  print(dim("  (you can change this later from Settings)"));
-
-  if (backend === "tmux" && !hasTmux) {
-    print(yellow("\n  tmux backend selected but tmux is not installed."));
-    const installTmux = ask("  Install tmux now? (y/n) ");
-    if (installTmux.toLowerCase() === "y") {
-      installPackages(["tmux"]);
-      if (!check("tmux", "tmux -V")) {
-        print(red("  tmux installation failed. Falling back to pty backend."));
-        backend = "pty";
-      }
-    } else {
-      print(yellow("  Falling back to pty backend."));
-      backend = "pty";
+  if (!hasTmux) {
+    print(yellow("  tmux is required — installing..."));
+    installPackages(["tmux"]);
+    hasTmux = check("tmux", "tmux -V");
+    if (!hasTmux) {
+      print(red("  tmux installation failed. Install it manually, then re-run 'wolfpack setup'."));
+      process.exit(1);
     }
+    print("");
   }
-
-  print("");
 
   // ── Install optional missing deps (tailscale only) ──
   if (!hasTailscale) {
@@ -258,7 +240,7 @@ export async function setup() {
     }
   }
 
-  const config: Config = { devDir, port, tailscaleHostname, backend };
+  const config: Config = { devDir, port, tailscaleHostname };
   saveConfig(config);
 
   print("");
