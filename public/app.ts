@@ -3642,12 +3642,15 @@ function initSidebar() {
       // Hover expand/collapse — reveal without resizing PTY
       revealGridCellsWithoutResize();
     } else if (!state.sidebarAutoExpanded) {
-      // Pin/unpin — resize PTY to fit new layout
+      // Pin/unpin — resize PTY to fit new layout, then reveal the canvas.
+      // Without the reveal the .transitioning class stays on the container
+      // and the canvas stays hidden, leaving a black gap.
       if (isGridActive()) {
         scheduleGridStabilizedFit();
       } else if (state.terminalController) {
         state.terminalController.resizeWithTransition();
       }
+      revealGridCellsWithoutResize();
     }
     state.sidebarResizeDone = true;
   });
