@@ -1809,7 +1809,15 @@ async function loadSessions() {
   }
 
   const groups = new Array(allMachines.length);
-  const renderedHtml = new Array(allMachines.length).fill("");
+  // Previous cycle's groups by url — used as fallback for unresolved slots
+  // during refresh so sidebar order stays stable (add-order) and peers don't
+  // flicker to "pending" each poll.
+  const prevByUrl = new Map((state.lastSessionGroups || []).map(g => [g.machine.url, g]));
+  const pendingPlaceholder = m => ({
+    machine: { ...m.meta, url: m.url, version: "" },
+    sessions: [], loops: [], online: false, pending: true,
+  });
+  const groupsInOrder = () => allMachines.map((m, i) => groups[i] || prevByUrl.get(m.url) || pendingPlaceholder(m));
 
   // Render each machine group as its fetch resolves — a slow/dead peer can't
   // delay rendering of machines that responded quickly.
@@ -1823,24 +1831,13 @@ async function loadSessions() {
       tmp.innerHTML = newHtml;
       existing.replaceWith(tmp.firstElementChild);
     }
-    renderedHtml[i] = newHtml;
-  };
-
-  const rebuildAllSessionsFromGroups = () => {
-    const out = [];
-    for (const g of groups) {
-      if (!g) continue;
-      for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
-    }
-    state.allSessions = out;
   };
 
   const promises = allMachines.map((m, i) =>
     fetchMachine(m.url, m.meta).then(g => {
       if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
       groups[i] = g;
-      state.lastSessionGroups = groups.filter(Boolean);
-      rebuildAllSessionsFromGroups();
+      state.lastSessionGroups = groupsInOrder();
       renderGroup(i, g);
       // Sidebar reads from state.lastSessionGroups — refresh it now so the
       // local machine's card appears without waiting for slow peers.
@@ -1867,10 +1864,14 @@ async function loadSessions() {
     }
   }
 
-  state.lastSessionsHtml = renderedHtml.join("");
   state.firstLoad = false;
-  state.lastSessionGroups = groups;
-  rebuildAllSessionsFromGroups();
+  state.lastSessionGroups = groupsInOrder();
+  const out = [];
+  for (const g of groups) {
+    if (!g) continue;
+    for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
+  }
+  state.allSessions = out;
   checkStateTransitions(groups);
 }
 
