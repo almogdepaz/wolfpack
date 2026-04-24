@@ -23,16 +23,16 @@ describe("backend singleton", () => {
 
   // ── DEFAULT_BACKEND ──
 
-  test("DEFAULT_BACKEND is 'pty'", () => {
-    expect(DEFAULT_BACKEND).toBe("pty");
+  test("DEFAULT_BACKEND is 'tmux'", () => {
+    expect(DEFAULT_BACKEND).toBe("tmux");
   });
 
   // ── initBackend ──
 
-  test("initBackend() defaults to pty backend", () => {
+  test("initBackend() defaults to tmux backend", () => {
     const backend = initBackend();
     expect(backend).toBeDefined();
-    expect(getBackendType()).toBe("pty");
+    expect(getBackendType()).toBe("tmux");
   });
 
   test("initBackend('pty') sets pty backend", () => {

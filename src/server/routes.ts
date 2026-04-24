@@ -44,7 +44,7 @@ import {
   isUnderDevDir,
   exec,
 } from "./tmux.js";
-import { getBackend, getRouter, type BackendType } from "./backend.js";
+import { getBackend, getRouter } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -403,37 +403,6 @@ export const routes: Record<
       tmuxAvailable: router.isTmuxAvailable(),
       counts,
     });
-  },
-
-  "POST /api/backend": async (req, res) => {
-    const body = await parseBody<{ default?: BackendType }>(req, res);
-    if (!body) return;
-    const type = body.default;
-    if (type !== "pty" && type !== "tmux") {
-      return json(res, { error: "invalid backend type — must be 'pty' or 'tmux'" }, 400);
-    }
-    const router = getRouter();
-    if (type === "tmux") router.recheckTmux(); // re-probe in case tmux was installed after server start
-    if (type === "tmux" && !router.isTmuxAvailable()) {
-      return json(res, { error: "tmux is not installed" }, 400);
-    }
-    router.setDefaultBackend(type);
-    // Persist to config so it survives restarts
-    let persisted = false;
-    try {
-      const { loadConfig, saveConfig } = await import("../cli/config.js");
-      const config = loadConfig();
-      if (config) {
-        config.backend = type;
-        saveConfig(config);
-        persisted = true;
-      }
-    } catch (e: unknown) {
-      log.warn("failed to persist backend choice to config", { error: errMsg(e) });
-    }
-    const resp: any = { ok: true, default: type };
-    if (!persisted) resp.warning = "backend changed but could not persist to config";
-    json(res, resp);
   },
 
   "POST /api/kill": async (req, res) => {
