@@ -329,6 +329,9 @@ export const state = {
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
   _ghostInputObserver: null,
+  // peer health: { [machineUrl]: { failures } }. A peer that fails repeatedly
+  // drops to a shorter fetch timeout so it doesn't dominate UI refresh time.
+  peerHealth: {} as Record<string, { failures: number }>,
   // classic mobile terminal state
   mobileWs: null,
   mobileStreamingActive: false,

@@ -27,6 +27,14 @@ export {
 } from "./grid-logic";
 
 export {
+  recordFailure as peerHealthRecordFailure,
+  recordSuccess as peerHealthRecordSuccess,
+  fetchTimeoutMs as peerHealthTimeoutMs,
+  FAILING_TIMEOUT_MS as PEER_FAILING_TIMEOUT_MS,
+  HEALTHY_TIMEOUT_MS as PEER_HEALTHY_TIMEOUT_MS,
+} from "./peer-health";
+
+export {
   CLOSE_CODE_DISPLACED,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   CLOSE_CODE_NORMAL,
