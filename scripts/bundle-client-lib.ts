@@ -55,6 +55,8 @@ const REQUIRED_EXPORTS = [
   "classifyDisconnect", "handleViewerConflict", "handleControlGranted",
   "handleDisplaced", "prepareAutoTakeControl", "handleTakeControlClick",
   "CLOSE_CODE_DISPLACED", "CLOSE_CODE_SESSION_UNAVAILABLE", "CLOSE_CODE_NORMAL",
+  "peerHealthRecordFailure", "peerHealthRecordSuccess", "peerHealthTimeoutMs",
+  "PEER_FAILING_TIMEOUT_MS", "PEER_HEALTHY_TIMEOUT_MS",
 ];
 for (const name of REQUIRED_EXPORTS) {
   if (!exportedNames.includes(name)) {

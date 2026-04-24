@@ -324,7 +324,7 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null }) {
+function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -367,10 +367,17 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
     // This runs inside ghostty-web's capture-phase wheel handler, which is
     // the ONLY place we can intercept wheel events before they're consumed.
     if (onWheelScroll) onWheelScroll(ev);
-    try {
-      const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
-      if (!hasMouse) return false;
-    } catch { return false; }
+    // For tmux sessions we always forward — tmux has `mouse on` and will
+    // route wheel events (copy-mode scrollback at shell, app-mouse when in
+    // a TUI). Client-side scrollback is useless for tmux since it redraws
+    // the full pane on every output. For PTY, only forward when the app
+    // enabled mouse reporting; otherwise let ghostty scroll locally.
+    if (!alwaysForwardWheel) {
+      try {
+        const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
+        if (!hasMouse) return false;
+      } catch { return false; }
+    }
     _scrollAccum += ev.deltaY;
     const lines = Math.trunc(_scrollAccum / SCROLL_THRESHOLD);
     if (lines === 0) return true; // accumulate more before scrolling
@@ -551,7 +558,6 @@ function createPtySocketClient(opts) {
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const prefillMode = _initialPrefillMode;
-    _initialPrefillMode = "full";
     _lastSentResize = dims.cols + "x" + dims.rows;
     _awaitingAttachAck = true;
     _attachAckReceived = false;
@@ -903,6 +909,16 @@ function createPtyTerminalController(opts) {
     if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
+    const isTmuxSession = (() => {
+      const groups = (state as any).lastSessionGroups || [];
+      for (const g of groups) {
+        for (const s of (g?.sessions || [])) {
+          if (s.name === opts.session) return (s.backend ?? "tmux") === "tmux";
+        }
+      }
+      return true; // default-tmux world: assume tmux when session info isn't loaded yet
+    })();
+
     const result = createTerminalInstance({
       fontSize: opts.fontSize,
       scrollback: opts.scrollback,
@@ -912,10 +928,12 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
+      alwaysForwardWheel: isTmuxSession,
       onWheelScroll: (ev) => {
         if (!_term) return;
-        // Skip scroll-lock in mouse mode — wheel events send SGR sequences
-        // to the app, the viewport doesn't actually move.
+        // Skip scroll-lock when wheel is forwarded to the server — the
+        // viewport doesn't actually move on the client.
+        if (isTmuxSession) return;
         try {
           const hasMouse = _term.getMode(1000) || _term.getMode(1002) || _term.getMode(1003);
           if (hasMouse) return;
@@ -1718,18 +1736,26 @@ function renderMachineGroupHtml(g, multiMachine) {
 }
 
 function fetchMachine(machineUrl, machineMeta) {
-  // Timeout remote machines so one unreachable host can't block the entire UI
-  const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(5000) } : undefined;
+  // Timeout remote machines so one unreachable host can't block the entire UI.
+  // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
+  const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
+  const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
   const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
   return Promise.all([api("/sessions", remoteOpts, machineUrl || undefined), api("/info", remoteOpts, machineUrl || undefined), ralphFetch])
-    .then(([d, info, ralph]) => ({
-      machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
-      sessions: d.sessions || [], loops: ralph.loops || [], online: true, pending: false,
-    }))
-    .catch(() => ({
-      machine: { ...machineMeta, url: machineUrl, version: "" },
-      sessions: [], loops: [], online: false, pending: false,
-    }));
+    .then(([d, info, ralph]) => {
+      if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
+      return {
+        machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
+        sessions: d.sessions || [], loops: ralph.loops || [], online: true, pending: false,
+      };
+    })
+    .catch(() => {
+      if (machineUrl) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
+      return {
+        machine: { ...machineMeta, url: machineUrl, version: "" },
+        sessions: [], loops: [], online: false, pending: false,
+      };
+    });
 }
 
 async function loadSessions() {
@@ -1765,64 +1791,69 @@ async function loadSessions() {
   }
 
   const groups = new Array(allMachines.length);
+  // Previous cycle's groups by url — used as fallback for unresolved slots
+  // during refresh so sidebar order stays stable (add-order) and peers don't
+  // flicker to "pending" each poll.
+  const prevByUrl = new Map((state.lastSessionGroups || []).map(g => [g.machine.url, g]));
+  const pendingPlaceholder = m => ({
+    machine: { ...m.meta, url: m.url, version: "" },
+    sessions: [], loops: [], online: false, pending: true,
+  });
+  const groupsInOrder = () => allMachines.map((m, i) => groups[i] || prevByUrl.get(m.url) || pendingPlaceholder(m));
 
-  // On first load, render each machine group as it resolves for perceived speed.
-  // On subsequent polls, just collect results silently — final render handles it.
+  // Render each machine group as its fetch resolves — a slow/dead peer can't
+  // delay rendering of machines that responded quickly.
+  const renderGroup = (i, g) => {
+    const m = allMachines[i];
+    const existing = el.querySelector(`[data-machine="${escAttr(m.url)}"]`);
+    if (!existing) return;
+    const newHtml = renderMachineGroupHtml(g, true);
+    if (existing.outerHTML !== newHtml) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = newHtml;
+      existing.replaceWith(tmp.firstElementChild);
+    }
+  };
+
   const promises = allMachines.map((m, i) =>
     fetchMachine(m.url, m.meta).then(g => {
+      if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
       groups[i] = g;
-      state.lastSessionGroups = groups.filter(Boolean);
-      if (state.firstLoad) {
-        const existing = el.querySelector(`[data-machine="${escAttr(m.url)}"]`);
-        if (existing) {
-          const tmp = document.createElement("div");
-          tmp.innerHTML = renderMachineGroupHtml(g, true);
-          existing.replaceWith(tmp.firstElementChild);
-        }
-      }
+      state.lastSessionGroups = groupsInOrder();
+      renderGroup(i, g);
+      // Sidebar reads from state.lastSessionGroups — refresh it now so the
+      // local machine's card appears without waiting for slow peers.
+      renderSidebar();
     })
   );
 
   await Promise.all(promises);
   if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
 
-  // Version outdated check (needs all machines resolved)
-  const versions = groups.filter(g => g.online && g.machine.version).map(g => g.machine.version);
+  // Version-outdated check requires all machines resolved. Re-render only
+  // groups whose outdated flag actually changed — avoids flicker.
+  const versions = groups.filter(g => g && g.online && g.machine.version).map(g => g.machine.version);
   const newestVersion = versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0] || "";
   if (newestVersion) {
-    groups.forEach(g => {
-      g.outdated = g.online && g.machine.version !== newestVersion;
-    });
-  }
-
-  // Render groups in stable order (no reordering)
-  const html = groups.map(g => renderMachineGroupHtml(g, true)).join("");
-  if (html !== state.lastSessionsHtml) {
-    // Incremental per-group update: replace only changed groups
-    const perGroupHtml = groups.map(g => renderMachineGroupHtml(g, true));
-    let didIncrementalUpdate = false;
-    if (!state.firstLoad && el.children.length === groups.length) {
-      didIncrementalUpdate = true;
-      for (let gi = 0; gi < groups.length; gi++) {
-        const existingChild = el.children[gi];
-        const newHtml = perGroupHtml[gi];
-        if (existingChild && existingChild.outerHTML !== newHtml) {
-          const tmp = document.createElement("div");
-          tmp.innerHTML = newHtml;
-          existingChild.replaceWith(tmp.firstElementChild);
-        }
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      if (!g) continue;
+      const nowOutdated = g.online && g.machine.version !== newestVersion;
+      if (nowOutdated !== !!g.outdated) {
+        g.outdated = nowOutdated;
+        renderGroup(i, g);
       }
     }
-    if (!didIncrementalUpdate) {
-      el.innerHTML = html;
-    }
-    state.lastSessionsHtml = html;
   }
 
   state.firstLoad = false;
-  state.lastSessionGroups = groups;
-  state.allSessions = [];
-  groups.forEach(g => g.sessions.forEach(s => state.allSessions.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name })));
+  state.lastSessionGroups = groupsInOrder();
+  const out = [];
+  for (const g of groups) {
+    if (!g) continue;
+    for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
+  }
+  state.allSessions = out;
   checkStateTransitions(groups);
 }
 
@@ -3174,19 +3205,6 @@ async function showSettings() {
   showView("settings");
   renderMachinesList();
   toggleDebugPanel();
-  // Fetch backend state and update toggle
-  try {
-    const data = await api("/backend");
-    document.querySelectorAll(".backend-btn").forEach((btn) => {
-      const el = btn as HTMLButtonElement;
-      const backend = el.dataset.backend;
-      el.classList.toggle("active", backend === data.default);
-      if (backend === "tmux") {
-        el.disabled = !data.tmuxAvailable;
-        el.title = data.tmuxAvailable ? "" : "tmux is not installed";
-      }
-    });
-  } catch { /* settings view still usable without backend info */ }
 }
 
 async function renderMachinesList() {
@@ -3601,12 +3619,15 @@ function initSidebar() {
       // Hover expand/collapse — reveal without resizing PTY
       revealGridCellsWithoutResize();
     } else if (!state.sidebarAutoExpanded) {
-      // Pin/unpin — resize PTY to fit new layout
+      // Pin/unpin — resize PTY to fit new layout, then reveal the canvas.
+      // Without the reveal the .transitioning class stays on the container
+      // and the canvas stays hidden, leaving a black gap.
       if (isGridActive()) {
         scheduleGridStabilizedFit();
       } else if (state.terminalController) {
         state.terminalController.resizeWithTransition();
       }
+      revealGridCellsWithoutResize();
     }
     state.sidebarResizeDone = true;
   });
@@ -3698,28 +3719,6 @@ function bindHtmlEventListeners(): void {
     btn.addEventListener("click", () => {
       const font = (btn as HTMLElement).dataset.font;
       if (font) toggleSetting("termFont", font);
-    });
-  });
-
-  // Backend toggle buttons
-  document.querySelectorAll(".backend-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const el = btn as HTMLButtonElement;
-      if (el.disabled) return;
-      const backend = el.dataset.backend;
-      if (!backend) return;
-      try {
-        await api("/backend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ default: backend }),
-        });
-        document.querySelectorAll(".backend-btn").forEach(b =>
-          b.classList.toggle("active", (b as HTMLElement).dataset.backend === backend)
-        );
-      } catch (e) {
-        console.warn("[settings] backend toggle failed:", e);
-      }
     });
   });
 

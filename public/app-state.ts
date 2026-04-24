@@ -135,10 +135,6 @@ export function initSettings() {
   });
   const ttlLabel = document.getElementById("snapshot-ttl-val");
   if (ttlLabel) ttlLabel.textContent = formatSnapshotTtl(wpSettings.snapshotTtl);
-  // Set active state on mobile terminal mode buttons
-  document.querySelectorAll(".term-mobile-btn").forEach(b =>
-    b.classList.toggle("active", (b as any).dataset.mode === wpSettings.mobileTerminal)
-  );
 }
 
 export function haptic(pattern) {
@@ -326,6 +322,9 @@ export const state = {
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
   _ghostInputObserver: null,
+  // peer health: { [machineUrl]: { failures } }. A peer that fails repeatedly
+  // drops to a shorter fetch timeout so it doesn't dominate UI refresh time.
+  peerHealth: {} as Record<string, { failures: number }>,
 };
 
 export function setState(patch) { Object.assign(state, patch); }

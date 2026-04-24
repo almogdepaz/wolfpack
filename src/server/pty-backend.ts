@@ -15,8 +15,8 @@ const log = createLogger("pty-backend");
 
 /**
  * Strip ANSI/VT escape sequences from raw PTY output.
- * Used by capturePane so the classic mobile terminal and triage code
- * receive plain text, matching what tmux capture-pane would return.
+ * Used by capturePane so triage code receives plain text, matching what
+ * tmux capture-pane would return.
  *
  * Bare `\r` is converted to `\n` — imperfect (progress bars produce extra
  * lines) but safe. Attempts to rewind-on-CR break TUI frame rendering (ink

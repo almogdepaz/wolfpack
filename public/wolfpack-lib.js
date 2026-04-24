@@ -90,6 +90,24 @@ function suspendGridState(gridSessions, focusIndex) {
 function resumeGridState(suspendedSessions, focusIndex) {
   return cloneGridState(suspendedSessions, focusIndex);
 }
+// src/peer-health.ts
+var FAILING_TIMEOUT_MS = 1500;
+var HEALTHY_TIMEOUT_MS = 5000;
+var FAILURE_THRESHOLD = 2;
+function recordFailure(state, url) {
+  const cur = state[url]?.failures ?? 0;
+  return { ...state, [url]: { failures: cur + 1 } };
+}
+function recordSuccess(state, url) {
+  if (!state[url])
+    return state;
+  const next = { ...state };
+  delete next[url];
+  return next;
+}
+function fetchTimeoutMs(state, url) {
+  return (state[url]?.failures ?? 0) >= FAILURE_THRESHOLD ? FAILING_TIMEOUT_MS : HEALTHY_TIMEOUT_MS;
+}
 // src/ws-constants.ts
 var CLOSE_CODE_NORMAL = 1000;
 var CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
@@ -136,6 +154,6 @@ function handleDisplaced(state) {
 function prepareAutoTakeControl(state) {
   return { ...state, autoTakeControl: true };
 }
-var WP = {suspendGridState, shouldRehydrate, shouldInterceptCopy, serializeBufferTail, scrollTargetAfterResize, resumeGridState, removeFromGridState, prepareAutoTakeControl, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
+var WP = {suspendGridState, shouldRehydrate, shouldInterceptCopy, serializeBufferTail, scrollTargetAfterResize, resumeGridState, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
 window.WP = WP;
 })();
