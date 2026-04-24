@@ -1,6 +1,6 @@
 import {
   esc, escAttr, loadStoredJson, isDesktop, formatSnapshotTtl,
-  getTerminalFontFamily, getCharDimensions,
+  getTerminalFontFamily,
   wpDefaults, wpSettings, TERM_PRESETS, toggleSetting, applySetting,
   applyTermToXterm, initSettings, haptic, requestNotifications,
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
