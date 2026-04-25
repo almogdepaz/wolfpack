@@ -1,12 +1,11 @@
 /**
- * WebSocket handlers — PTY (ghostty-web WASM) + classic terminal (text polling).
+ * WebSocket handlers — PTY (ghostty-web WASM direct).
  *
  * Backend-agnostic: works with both TmuxBackend (spawns `tmux attach-session`)
  * and PtyBackend (pipes WS directly to session terminal I/O).
  */
 import type { WebSocket } from "ws";
 import {
-  WS_ALLOWED_KEYS,
   clampCols,
   clampRows,
 } from "../validation.js";
@@ -59,8 +58,6 @@ const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
 const PREFILL_CHUNK_SIZE = 32 * 1024;
 const PREFILL_CHUNK_DELAY_MS = 8;
 const PREFILL_OVERLAP_LIMIT = 32 * 1024;
-const POLL_INTERVAL_MS = 50;
-const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
 const RATE_LIMIT_PER_SEC = 60;
@@ -143,108 +140,6 @@ export function __getTestState(): {
 } {
   if (!process.env.WOLFPACK_TEST) throw new Error("__getTestState() is only available in test mode (WOLFPACK_TEST=1)");
   return { activePtySessions, ptySpawnAttempts, sendPrefillChunked, PREFILL_CHUNK_SIZE };
-}
-
-// ── Classic terminal WS handler (text polling for mobile) ──
-
-export function handleTerminalWs(ws: WebSocket, session: string): void {
-  const backend = getBackend();
-  let prev = "";
-  let alive = true;
-  let sized = false;
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let updating = false;
-  let nextSessionCheckAt = 0;
-
-  async function sendUpdate() {
-    if (!alive || updating) return;
-    updating = true;
-    try {
-      const now = Date.now();
-      if (now >= nextSessionCheckAt) {
-        nextSessionCheckAt = now + 1000;
-        if (!(await backend.hasSession(session))) {
-          alive = false;
-          updating = false;
-          try { ws.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_ENDED); } catch (e: unknown) { log.debug(`ws.close failed`, { session, error: errMsg(e) }); }
-          return;
-        }
-      }
-      const pane = await backend.capturePane(session);
-      if (pane !== prev) {
-        prev = pane;
-        ws.send(JSON.stringify({ type: "output", data: pane }));
-      }
-    } catch (e: unknown) {
-      log.warn("sendUpdate failed", { session, error: errMsg(e) });
-    }
-    updating = false;
-    schedulePoll();
-  }
-
-  function schedulePoll() {
-    if (!alive) return;
-    if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = setTimeout(sendUpdate, POLL_INTERVAL_MS);
-  }
-
-  schedulePoll();
-
-  const pingTimer = setInterval(() => {
-    if (alive && ws.readyState === 1) {
-      try { ws.ping(); } catch (e: unknown) { log.debug(`ws ping failed`, { session, error: errMsg(e) }); }
-    } else {
-      clearInterval(pingTimer);
-    }
-  }, PING_INTERVAL_MS);
-
-  const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
-
-  ws.on("message", async (raw) => {
-    if (!rl.allow()) return;
-
-    try {
-      const str = String(raw);
-      if (str.length > MAX_WS_MESSAGE_BYTES) return;
-      const msg = JSON.parse(str);
-      if (msg.type === "input" && typeof msg.data === "string") {
-        await backend.send(session, msg.data, true);
-        setTimeout(sendUpdate, POST_INPUT_DELAY_MS);
-      } else if (msg.type === "key" && typeof msg.key === "string") {
-        if (WS_ALLOWED_KEYS.has(msg.key)) {
-          await backend.sendKey(session, msg.key);
-          setTimeout(sendUpdate, POST_INPUT_DELAY_MS);
-        }
-      } else if (
-        msg.type === "resize" &&
-        typeof msg.cols === "number" &&
-        typeof msg.rows === "number"
-      ) {
-        if (!activePtySessions.has(session)) {
-          await backend.resize(session, clampCols(msg.cols), clampRows(msg.rows));
-        }
-        if (!sized) {
-          sized = true;
-          setTimeout(sendUpdate, POLL_INTERVAL_MS);
-        }
-      }
-    } catch (e: unknown) {
-      if (e instanceof SyntaxError) return;
-      log.warn("WS error", { session, error: errMsg(e) });
-    }
-  });
-
-  ws.on("close", () => {
-    alive = false;
-    clearInterval(pingTimer);
-    if (pollTimer) clearTimeout(pollTimer);
-  });
-
-  ws.on("error", () => {
-    alive = false;
-    clearInterval(pingTimer);
-    if (pollTimer) clearTimeout(pollTimer);
-  });
 }
 
 // ── PTY WS handler (ghostty-web WASM direct) ──

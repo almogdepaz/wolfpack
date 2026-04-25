@@ -86,14 +86,6 @@ export class MockBackend implements SessionBackend {
     this.lastResizeArgs = { name, cols, rows };
   }
 
-  async send(): Promise<void> {
-    // no-op in mock
-  }
-
-  async sendKey(): Promise<void> {
-    // no-op in mock
-  }
-
   sessionDir(): string | undefined {
     return undefined;
   }

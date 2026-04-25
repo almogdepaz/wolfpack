@@ -483,6 +483,20 @@ export function addToGrid(session, machine) {
   if (state.currentView !== "terminal") {
     deps.showView("terminal", true);
   }
+  // If sidebar is auto-expanded (hover), force it collapsed synchronously so
+  // the grid sizes against the final layout. Without this, grid cells fit to
+  // the expanded width and leave a gap on the right after the sidebar closes.
+  if (state.sidebarAutoExpanded) {
+    const sb = document.getElementById("desktop-sidebar");
+    if (sb) {
+      sb.style.transition = "none";
+      sb.classList.add("collapsed");
+      void sb.offsetHeight;
+      sb.style.transition = "";
+    }
+    state.sidebarCollapsed = true;
+    state.sidebarAutoExpanded = false;
+  }
   state.sidebarResizeDone = false;
   // Already in grid?
   if (state.gridSessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""))) return;
@@ -610,6 +624,11 @@ export function exitGridMode(skipRestore?) {
 }
 
 export function fitAllGridCells() {
+  // Force synchronous layout flush before measuring cell widths. Without this,
+  // a fit triggered after display:none→grid + async wasm mount can race the
+  // layout engine and read stale clientWidth, leaving a gap on the right.
+  const container = document.getElementById("desktop-grid-container");
+  if (container) void container.offsetWidth;
   for (const gs of state.gridSessions) {
     if (gs.controller) {
       try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }

@@ -443,16 +443,6 @@ export const routes: Record<
     json(res, { peers: result.peers });
   },
 
-  "GET /api/poll": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const session = url.searchParams.get("session");
-    if (!session) return json(res, { error: "missing session param" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
-    const pane = await getBackend().capturePane(session);
-    json(res, { pane });
-  },
-
   "GET /api/git-status": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");

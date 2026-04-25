@@ -143,8 +143,6 @@ export function __setTestOverrides(overrides: Partial<{
   tmuxList: () => Promise<string[]>;
   tmuxResize: (session: string, cols: number, rows: number) => Promise<void>;
   capturePane: (session: string) => Promise<string>;
-  tmuxSend: (session: string, text: string, noEnter?: boolean) => Promise<void>;
-  tmuxSendKey: (session: string, key: string) => Promise<void>;
   listSessionsRaw: () => Promise<string>;
   showEnvironment: (session: string) => Promise<string>;
   exec: typeof _realExec;
@@ -153,8 +151,6 @@ export function __setTestOverrides(overrides: Partial<{
   if (overrides.tmuxList) _tmuxListFn = overrides.tmuxList;
   if (overrides.tmuxResize) _tmuxResizeFn = overrides.tmuxResize;
   if (overrides.capturePane) _capturePane = overrides.capturePane;
-  if (overrides.tmuxSend) _tmuxSendFn = overrides.tmuxSend;
-  if (overrides.tmuxSendKey) _tmuxSendKeyFn = overrides.tmuxSendKey;
   if (overrides.listSessionsRaw) _listSessionsRaw = overrides.listSessionsRaw;
   if (overrides.showEnvironment) _showEnvironment = overrides.showEnvironment;
   if (overrides.exec) _execOverride = overrides.exec;
@@ -182,34 +178,6 @@ export function __getBackfillCacheSize(): number {
 
 export async function tmuxList(): Promise<string[]> {
   return _tmuxListFn();
-}
-
-// ── tmuxSend / tmuxSendKey (classic mobile terminal) ──
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const SEND_ENTER_DELAY_MS = 50;
-
-async function _realTmuxSend(session: string, text: string, noEnter = false): Promise<void> {
-  await exec(TMUX, ["send-keys", "-l", "-t", session, text]);
-  if (!noEnter) {
-    await sleep(SEND_ENTER_DELAY_MS);
-    await exec(TMUX, ["send-keys", "-t", session, "Enter"]);
-  }
-}
-
-async function _realTmuxSendKey(session: string, key: string): Promise<void> {
-  await exec(TMUX, ["send-keys", "-t", session, key]);
-}
-
-let _tmuxSendFn: (session: string, text: string, noEnter?: boolean) => Promise<void> = _realTmuxSend;
-let _tmuxSendKeyFn: (session: string, key: string) => Promise<void> = _realTmuxSendKey;
-
-export async function tmuxSend(session: string, text: string, noEnter = false): Promise<void> {
-  return _tmuxSendFn(session, text, noEnter);
-}
-
-export async function tmuxSendKey(session: string, key: string): Promise<void> {
-  return _tmuxSendKeyFn(session, key);
 }
 
 // ── tmuxResize ──

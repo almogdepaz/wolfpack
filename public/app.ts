@@ -1,6 +1,6 @@
 import {
   esc, escAttr, loadStoredJson, isDesktop, formatSnapshotTtl,
-  getTerminalFontFamily, getCharDimensions,
+  getTerminalFontFamily,
   wpDefaults, wpSettings, TERM_PRESETS, toggleSetting, applySetting,
   applyTermToXterm, initSettings, haptic, requestNotifications,
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
@@ -8,15 +8,6 @@ import {
   SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL,
   DESKTOP_TERMINAL_SCROLLBACK, GRID_TERMINAL_SCROLLBACK,
 } from "./app-state";
-
-function useClassicMobile(): boolean {
-  // Classic mobile terminal disabled — all mobile access uses ghostty-web.
-  // The classic polling path can't render modern TUIs correctly on PTY
-  // backend (stripAnsi can't dedupe cursor-redrawn frames, no reflow).
-  // Dead code (handleTerminalWs, applyTerminalPane, initClassicMobile,
-  // etc.) kept for now, cleanup in follow-up PR.
-  return false;
-}
 
 import {
   initRalphDeps,
@@ -357,6 +348,32 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+  // Ghostty-web's FitAddon hardcodes a 15px right-edge scrollbar reservation,
+  // but ghostty-web renders its scrollbar onto the canvas itself — so that's
+  // dead space, visible as a ~15-20px gap on the right of every terminal
+  // (especially obvious framed inside grid cells). Override proposeDimensions
+  // to drop the reservation.
+  fitAddon.proposeDimensions = function () {
+    const t = this._terminal;
+    if (!t?.element) return;
+    const r = t.renderer;
+    if (!r || typeof r.getMetrics !== "function") return;
+    const m = r.getMetrics();
+    if (!m || m.width === 0 || m.height === 0) return;
+    const el = t.element;
+    if (typeof el.clientWidth === "undefined") return;
+    const cs = window.getComputedStyle(el);
+    const pT = parseInt(cs.paddingTop) || 0;
+    const pB = parseInt(cs.paddingBottom) || 0;
+    const pL = parseInt(cs.paddingLeft) || 0;
+    const pR = parseInt(cs.paddingRight) || 0;
+    const w = el.clientWidth, h = el.clientHeight;
+    if (w === 0 || h === 0) return;
+    return {
+      cols: Math.max(1, Math.floor((w - pL - pR) / m.width)),
+      rows: Math.max(1, Math.floor((h - pT - pB) / m.height)),
+    };
+  };
   // Copy (ghostty renders to canvas, so native copy doesn't work)
   // ghostty-web: true = "handled, stop", false = "not handled, continue"
   term.attachCustomKeyEventHandler((e) => {
@@ -1240,15 +1257,6 @@ const KEY_TO_ESCAPE = {
 const _textEncoder = new TextEncoder();
 
 function _sendTerminalInput(bytes) {
-  // Classic mobile: send text via JSON over /ws/terminal
-  if (useClassicMobile()) {
-    if (state.mobileWs && state.mobileWs.readyState === WebSocket.OPEN) {
-      const text = new TextDecoder().decode(bytes);
-      state.mobileWs.send(JSON.stringify({ type: "input", data: text }));
-      return true;
-    }
-    return false;
-  }
   // In grid mode, route to the focused grid cell's controller
   if (isGridActive()) {
     const gs = state.gridSessions[state.gridFocusIndex];
@@ -1931,11 +1939,7 @@ async function openSession(name, machineUrl) {
   restoreDraft();
   const cached = loadSnapshot(state.currentMachine, name);
   showView("terminal");
-  if (useClassicMobile()) {
-    initClassicMobile(cached);
-  } else {
-    initTerminal(cached);
-  }
+  initTerminal(cached);
   renderSidebar();
 }
 
@@ -2370,8 +2374,6 @@ async function initTerminal(cached) {
 }
 
 function destroyTerminal() {
-  // Clean up classic mobile if it was active
-  if (document.body.classList.contains("classic-mobile")) destroyClassicMobile();
   if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
@@ -2512,16 +2514,6 @@ function updatePreview() {
 
 function sendKey(key) {
   if (!state.currentSession) return;
-  // Classic mobile: send key name directly via WS JSON
-  if (useClassicMobile()) {
-    if (state.mobileWs && state.mobileWs.readyState === WebSocket.OPEN) {
-      wpMetrics.sendCount++;
-      state.mobileWs.send(JSON.stringify({ type: "key", key }));
-    } else {
-      wpMetrics.sendFailCount++;
-    }
-    return;
-  }
   const esc = KEY_TO_ESCAPE[key];
   if (!esc) return;
   wpMetrics.sendCount++;
@@ -2871,9 +2863,7 @@ document.addEventListener("visibilitychange", () => {
       if (!isDesktop()) {
         // Mobile: always force-reconnect — iOS/Android background tabs kill
         // TCP silently while readyState still reports OPEN.
-        if (useClassicMobile()) {
-          startClassicPolling(true);
-        } else if (isGridActive()) {
+        if (isGridActive()) {
           for (const gs of state.gridSessions) {
             if (!gs.controller || gs._displaced) continue;
             gs.controller.resetRetry();
@@ -3732,7 +3722,6 @@ function bindHtmlEventListeners(): void {
   on("setting-animations", "change", function(this: any) { toggleSetting("animations", this.checked); });
   on("setting-haptics", "change", function(this: any) { toggleSetting("haptics", this.checked); });
   on("setting-notifications", "change", function(this: any) { toggleSetting("notifications", this.checked); });
-  on("setting-termWrap", "change", function(this: any) { toggleSetting("termWrap", this.checked); });
   on("setting-enterSends", "change", function(this: any) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: any) { toggleSetting("holdToSend", this.checked); });
   on("setting-ralphEnabled", "change", function(this: any) { toggleSetting("ralphEnabled", this.checked); });
@@ -3756,19 +3745,6 @@ function bindHtmlEventListeners(): void {
     btn.addEventListener("click", () => {
       const font = (btn as HTMLElement).dataset.font;
       if (font) toggleSetting("termFont", font);
-    });
-  });
-
-  // Mobile terminal mode buttons — setting takes effect on next session open
-  document.querySelectorAll(".term-mobile-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const mode = (btn as HTMLElement).dataset.mode;
-      if (mode && mode !== wpSettings.mobileTerminal) {
-        toggleSetting("mobileTerminal", mode);
-        document.querySelectorAll(".term-mobile-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.mode === mode));
-        // Don't apply classic-mobile class immediately — it takes effect
-        // on next session open to avoid mid-session transport mismatch.
-      }
     });
   });
 
@@ -3833,250 +3809,6 @@ if (isDesktop() && state.sessionsExpanded) {
 }
 showView("sessions", true);
 loadSessions().then(renderSidebar);
-
-// ── Classic mobile terminal (text polling) ──
-
-function classicMobileWsUrl() {
-  if (state.currentMachine) {
-    const remote = new URL(state.currentMachine);
-    const proto = remote.protocol === "https:" ? "wss:" : "ws:";
-    return proto + "//" + remote.host + "/ws/terminal?session=" + encodeURIComponent(state.currentSession);
-  }
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return proto + "//" + location.host + "/ws/terminal?session=" + encodeURIComponent(state.currentSession);
-}
-
-const classicReconnector = createReconnector({
-  shouldReconnect: () => state.mobileStreamingActive && useClassicMobile() && !!state.currentSession && state.currentView === "terminal",
-  onReconnecting: () => setConnState("reconnecting"),
-  onExhausted: () => setConnState("offline"),
-});
-
-function applyTerminalPane(pane) {
-  const renderStart = performance.now();
-  const term = document.getElementById("terminal");
-  const changed = pane !== state.lastRawPane;
-  state.lastRawPane = pane;
-  if (changed) {
-    if (state.enterRetryTimer) {
-      clearTimeout(state.enterRetryTimer);
-      state.enterRetryTimer = null;
-    }
-    if (state.searchActive && state.searchTerm) {
-      // Search highlight: run regex on raw text (not HTML-escaped) to avoid
-      // splitting HTML entities like &amp;, then build safe HTML per-segment.
-      const escaped = state.searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp(escaped, "gi");
-      let html = "";
-      let lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = re.exec(pane)) !== null) {
-        html += esc(pane.slice(lastIndex, match.index));
-        html += `<mark>${esc(match[0])}</mark>`;
-        lastIndex = re.lastIndex;
-      }
-      html += esc(pane.slice(lastIndex));
-      term.innerHTML = html;
-    } else {
-      term.textContent = pane;
-    }
-    wpMetrics.recordLatency(performance.now() - renderStart);
-    if (state.termFollowMode) term.scrollTop = term.scrollHeight;
-  }
-  if (changed) {
-    scheduleSnapshotSave(pane);
-  }
-}
-
-function setFollowMode(on) {
-  state.termFollowMode = on;
-  const btn = document.getElementById("jump-to-live");
-  if (btn) {
-    if (on) btn.classList.remove("visible");
-    else btn.classList.add("visible");
-  }
-}
-
-function jumpToLive() {
-  const term = document.getElementById("terminal");
-  term.scrollTop = term.scrollHeight;
-  setFollowMode(true);
-  haptic([10]);
-}
-
-// Detect user scroll-up to pause follow mode (classic terminal)
-(function() {
-  const term = document.getElementById("terminal");
-  if (!term) return;
-  let programmaticScroll = false;
-  const origDesc = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
-  Object.defineProperty(term, "scrollTop", {
-    get() { return origDesc.get.call(this); },
-    set(v) {
-      programmaticScroll = true;
-      origDesc.set.call(this, v);
-      Promise.resolve().then(() => { programmaticScroll = false; });
-    }
-  });
-  term.addEventListener("scroll", () => {
-    if (programmaticScroll) return;
-    const atBottom = term.scrollHeight - origDesc.get.call(term) - term.clientHeight < 40;
-    if (atBottom) setFollowMode(true);
-    else if (state.termFollowMode) setFollowMode(false);
-  }, { passive: true });
-})();
-
-function connectClassicMobileWs() {
-  if (!state.mobileStreamingActive || !useClassicMobile() || !state.currentSession || state.currentView !== "terminal") return;
-  if (classicReconnector.isBlocked) return;
-  if (state.mobileWs && state.mobileWs.readyState <= WebSocket.OPEN) return;
-  const connectKey = terminalSessionKey();
-  const ws = new WebSocket(classicMobileWsUrl());
-  state.mobileWs = ws;
-
-  ws.onopen = async () => {
-    if (state.mobileWs !== ws) return;
-    if (!state.mobileStreamingActive || !useClassicMobile() || connectKey !== terminalSessionKey()) {
-      ws.close();
-      return;
-    }
-    if (classicReconnector.connected()) wpMetrics.reconnectCount++;
-    setConnState("live");
-    await resizePaneClassic();
-  };
-
-  ws.onmessage = (ev) => {
-    if (state.mobileWs !== ws) return;
-    wpMetrics.wsMessagesReceived++;
-    let msg = null;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg?.type === "output" && typeof msg.data === "string") {
-      setConnState("live");
-      applyTerminalPane(msg.data);
-    }
-  };
-
-  ws.onclose = (ev) => {
-    if (state.mobileWs === ws) state.mobileWs = null;
-    if (!state.mobileStreamingActive || !useClassicMobile() || connectKey !== terminalSessionKey()) return;
-    if (ev.code === 4001 || (ev.code === 1000 && ev.reason === "session ended")) {
-      setConnState("session-ended");
-      return;
-    }
-    classicReconnector.schedule(connectClassicMobileWs);
-  };
-
-  ws.onerror = () => {};
-}
-
-async function resizePaneClassic() {
-  if (!state.currentSession) return;
-  const term = document.getElementById("terminal");
-  const dims = getCharDimensions();
-  if (!dims.w || !dims.h) return;
-  const cols = Math.floor(term.clientWidth / dims.w);
-  const rows = Math.floor(term.clientHeight / dims.h);
-  if (cols > 0 && rows > 0) {
-    try {
-      await api("/resize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session: state.currentSession, cols, rows }),
-      }, state.currentMachine);
-    } catch {}
-  }
-}
-
-function startClassicPolling(resetBudget = true) {
-  state.mobileStreamingActive = true;
-  if (resetBudget) classicReconnector.reset();
-  if (classicReconnector.isBlocked && !resetBudget) {
-    setConnState("offline");
-    return;
-  }
-  classicReconnector.cancel();
-  if (!state.mobileWs || state.mobileWs.readyState === WebSocket.CLOSED) {
-    setConnState("reconnecting");
-  }
-  connectClassicMobileWs();
-}
-
-function stopClassicPolling() {
-  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); flushSnapshot(); }
-  state.mobileStreamingActive = false;
-  classicReconnector.reset();
-  classicReconnector.cancel();
-  if (state.enterRetryTimer) {
-    clearTimeout(state.enterRetryTimer);
-    state.enterRetryTimer = null;
-  }
-  if (state.mobileWs) {
-    const ws = state.mobileWs;
-    state.mobileWs = null;
-    try { ws.close(1000, "viewer changed"); } catch {}
-  }
-  const statusEl = document.getElementById("conn-status");
-  if (statusEl) {
-    statusEl.style.display = "none";
-    statusEl.style.background = "#cc3333";
-  }
-}
-
-function initClassicMobile(cached) {
-  document.body.classList.add("classic-mobile");
-  const term = document.getElementById("terminal");
-  if (cached) {
-    term.textContent = cached;
-    state.lastRawPane = cached;
-  } else {
-    term.textContent = "";
-    state.lastRawPane = "";
-  }
-  state.termFollowMode = true;
-  resizePaneClassic();
-  startClassicPolling();
-}
-
-function destroyClassicMobile() {
-  stopClassicPolling();
-  document.body.classList.remove("classic-mobile");
-  const term = document.getElementById("terminal");
-  if (term) term.textContent = "";
-}
-
-// Classic mobile search bar handlers
-(function() {
-  const searchInput = document.getElementById("search-input");
-  const searchBar = document.getElementById("search-bar");
-  const searchCount = document.getElementById("search-count");
-  if (!searchInput || !searchBar) return;
-
-  searchInput.addEventListener("input", () => {
-    state.searchTerm = searchInput.value;
-    state.searchActive = !!state.searchTerm;
-    if (state.lastRawPane) applyTerminalPane(state.lastRawPane);
-    // Count matches
-    if (state.searchTerm && searchCount) {
-      const escaped = state.searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const matches = (state.lastRawPane || "").match(new RegExp(escaped, "gi"));
-      searchCount.textContent = matches ? matches.length + " found" : "0 found";
-    } else if (searchCount) {
-      searchCount.textContent = "";
-    }
-  });
-
-  document.getElementById("search-close-btn")?.addEventListener("click", () => {
-    searchBar.classList.remove("visible");
-    state.searchActive = false;
-    state.searchTerm = "";
-    searchInput.value = "";
-    if (searchCount) searchCount.textContent = "";
-    if (state.lastRawPane) applyTerminalPane(state.lastRawPane);
-  });
-})();
-
-// classic-mobile class is applied by initClassicMobile() on session open,
-// not at boot — avoids mid-session transport mismatch if setting changes.
 
 // Unregister stale service workers but keep our push SW
 if ("serviceWorker" in navigator) {

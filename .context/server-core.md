@@ -37,9 +37,9 @@ Two token-bucket limiters per-IP: global at 120 req/s, and tighter 10 req/s for 
 
 1. CORS origin check (same allowlist)
 2. `validateRequestJwt` with `allowQueryToken=true`
-3. Path must be `/ws/pty` or `/ws/terminal`
+3. Path must be `/ws/pty`
 4. `session` param: `isValidSessionName` + `isAllowedSession` (checks backend.list())
-5. Dispatch to `handlePtyWs` or `handleTerminalWs`
+5. Dispatch to `handlePtyWs`
 
 **`POST /api/ralph/start`** (`src/server/routes.ts:631`)
 
