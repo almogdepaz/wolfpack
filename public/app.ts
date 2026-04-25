@@ -348,6 +348,32 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+  // Ghostty-web's FitAddon hardcodes a 15px right-edge scrollbar reservation,
+  // but ghostty-web renders its scrollbar onto the canvas itself — so that's
+  // dead space, visible as a ~15-20px gap on the right of every terminal
+  // (especially obvious framed inside grid cells). Override proposeDimensions
+  // to drop the reservation.
+  fitAddon.proposeDimensions = function () {
+    const t = this._terminal;
+    if (!t?.element) return;
+    const r = t.renderer;
+    if (!r || typeof r.getMetrics !== "function") return;
+    const m = r.getMetrics();
+    if (!m || m.width === 0 || m.height === 0) return;
+    const el = t.element;
+    if (typeof el.clientWidth === "undefined") return;
+    const cs = window.getComputedStyle(el);
+    const pT = parseInt(cs.paddingTop) || 0;
+    const pB = parseInt(cs.paddingBottom) || 0;
+    const pL = parseInt(cs.paddingLeft) || 0;
+    const pR = parseInt(cs.paddingRight) || 0;
+    const w = el.clientWidth, h = el.clientHeight;
+    if (w === 0 || h === 0) return;
+    return {
+      cols: Math.max(1, Math.floor((w - pL - pR) / m.width)),
+      rows: Math.max(1, Math.floor((h - pT - pB) / m.height)),
+    };
+  };
   // Copy (ghostty renders to canvas, so native copy doesn't work)
   // ghostty-web: true = "handled, stop", false = "not handled, continue"
   term.attachCustomKeyEventHandler((e) => {
