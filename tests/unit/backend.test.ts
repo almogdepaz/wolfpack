@@ -23,8 +23,8 @@ describe("backend singleton", () => {
 
   // ── DEFAULT_BACKEND ──
 
-  test("DEFAULT_BACKEND is 'pty'", () => {
-    expect(DEFAULT_BACKEND).toBe("pty");
+  test("DEFAULT_BACKEND is 'broker'", () => {
+    expect(DEFAULT_BACKEND).toBe("broker");
   });
 
   // ── initBackend ──
@@ -62,10 +62,11 @@ describe("backend singleton", () => {
   // ── getBackend ──
 
   test("getBackend auto-initializes when no backend set", () => {
-    // after reset, no backend is set
+    // after reset, no backend is set; auto-init falls back to pty when the
+    // broker socket isn't reachable (which is always the case in unit tests).
     const backend = getBackend();
     expect(backend).toBeDefined();
-    expect(getBackendType()).toBe(DEFAULT_BACKEND);
+    expect(getBackendType()).toBe("pty");
   });
 
   test("getBackend returns same instance after init", () => {
@@ -76,9 +77,11 @@ describe("backend singleton", () => {
 
   // ── getBackendType ──
 
-  test("getBackendType returns default before init", () => {
-    // after reset, type is DEFAULT_BACKEND
-    expect(getBackendType()).toBe(DEFAULT_BACKEND);
+  test("getBackendType returns the effective default before init", () => {
+    // After reset + auto-init, the broker socket isn't reachable in unit
+    // tests, so the router falls back to "pty" even though DEFAULT_BACKEND
+    // is "broker".
+    expect(getBackendType()).toBe("pty");
   });
 
   // ── __resetBackend ──
@@ -86,18 +89,19 @@ describe("backend singleton", () => {
   test("__resetBackend clears the singleton", () => {
     initBackend();
     __resetBackend();
-    // getBackend should auto-init a new one
+    // After reset, getBackend auto-inits with broker→pty fallback in unit env.
     const fresh = getBackend();
     expect(fresh).toBeDefined();
-    expect(getBackendType()).toBe(DEFAULT_BACKEND);
+    expect(getBackendType()).toBe("pty");
   });
 
-  test("__resetBackend resets backend type to default", () => {
+  test("__resetBackend resets backend type to default (effective)", () => {
     const mock = new MockBackend();
-    __setTestBackend(mock, "tmux");
-    expect(getBackendType()).toBe("tmux");
+    __setTestBackend(mock, "broker");
+    expect(getBackendType()).toBe("broker");
     __resetBackend();
-    expect(getBackendType()).toBe(DEFAULT_BACKEND);
+    // Same fallback as above.
+    expect(getBackendType()).toBe("pty");
   });
 
   test("__resetBackend throws outside test mode", () => {
@@ -115,14 +119,14 @@ describe("backend singleton", () => {
     expect(getBackend()).toBe(mock);
   });
 
-  test("__setTestBackend defaults type to tmux", () => {
+  test("__setTestBackend defaults type to pty", () => {
     __setTestBackend(new MockBackend());
-    expect(getBackendType()).toBe("tmux");
+    expect(getBackendType()).toBe("pty");
   });
 
   test("__setTestBackend accepts custom type", () => {
-    __setTestBackend(new MockBackend(), "pty");
-    expect(getBackendType()).toBe("pty");
+    __setTestBackend(new MockBackend(), "broker");
+    expect(getBackendType()).toBe("broker");
   });
 
   test("__setTestBackend throws outside test mode", () => {

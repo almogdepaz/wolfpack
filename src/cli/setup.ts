@@ -97,10 +97,6 @@ export async function setup() {
 
   print(bold("  Checking prerequisites...\n"));
 
-  const hasTmux = check("tmux", "tmux -V");
-  if (!hasTmux) {
-    print(dim("    (optional — only needed for tmux backend)"));
-  }
   const tsBin = tailscaleBin();
   const hasTailscale = !!tsBin;
   if (hasTailscale) {
@@ -111,28 +107,10 @@ export async function setup() {
 
   print("");
 
-  // ── Backend selection ──
-  print(bold("  Session backend:"));
-  print(`    ${bold("1)")} pty  ${dim("— lightweight, no dependencies (default) — sessions lost on restart")}`);
-  print(`    ${bold("2)")} tmux ${dim("— persistent sessions, survives server restarts")}`);
-  const backendChoice = ask("  Choose backend [1]: ") || "1";
-  let backend: BackendType = backendChoice === "2" ? "tmux" : DEFAULT_BACKEND;
-  print(dim("  (you can change this later from Settings)"));
-
-  if (backend === "tmux" && !hasTmux) {
-    print(yellow("\n  tmux backend selected but tmux is not installed."));
-    const installTmux = ask("  Install tmux now? (y/n) ");
-    if (installTmux.toLowerCase() === "y") {
-      installPackages(["tmux"]);
-      if (!check("tmux", "tmux -V")) {
-        print(red("  tmux installation failed. Falling back to pty backend."));
-        backend = "pty";
-      }
-    } else {
-      print(yellow("  Falling back to pty backend."));
-      backend = "pty";
-    }
-  }
+  // Session backend: broker daemon is the default; pty is the fallback when
+  // the broker socket isn't reachable. No interactive choice — the previous
+  // tmux option was removed in favor of the broker.
+  const backend: BackendType = DEFAULT_BACKEND;
 
   print("");
 

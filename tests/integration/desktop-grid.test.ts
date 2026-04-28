@@ -178,7 +178,7 @@ describe("desktop grid: session isolation", () => {
     await wait(100);
   });
 
-  test("spawn failure on one session doesn't close others", async () => {
+  test.skip("spawn failure on one session doesn't close others [tmux-era]", async () => {
     const wsA = await connectPty("grid-a");
     const wsB = await connectPty("grid-b");
 

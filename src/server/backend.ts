@@ -1,13 +1,15 @@
 /**
- * SessionBackend interface — abstraction over tmux vs raw-PTY session management.
+ * SessionBackend interface — abstraction over the broker daemon and an
+ * in-process raw-PTY fallback. tmux is no longer supported.
  *
- * BackendRouter holds pty/tmux/broker backends simultaneously and routes
+ * BackendRouter holds pty + broker backends simultaneously and routes
  * operations to the correct one based on session ownership. New sessions
  * use the current default backend; existing sessions keep their original
- * backend.
+ * backend. The PTY fallback path remains so that wolfpack still boots when
+ * the broker socket isn't reachable; section 6 of the broker plan removes
+ * this fallback entirely.
  */
 import { existsSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { createLogger, errMsg } from "../log.js";
 import { defaultBrokerSocketPath } from "../broker/client.js";
 import type { BrokerBackend } from "./broker-backend.js";
@@ -37,9 +39,9 @@ export interface SessionBackend {
   cleanupOrphans(): Promise<void>;
 }
 
-export type BackendType = "pty" | "tmux" | "broker";
+export type BackendType = "pty" | "broker";
 
-export const DEFAULT_BACKEND: BackendType = "pty";
+export const DEFAULT_BACKEND: BackendType = "broker";
 
 // ── PtyBackend-specific methods needed by websocket.ts ──
 
@@ -76,15 +78,6 @@ export interface PtyBackendMethods {
 
 // ── Backend Router ──
 
-function checkTmuxAvailable(): boolean {
-  try {
-    execSync("tmux -V", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Sync probe: does the broker socket file exist? Cheap; never opens it. */
 export function checkBrokerSocketExists(socketPath: string = defaultBrokerSocketPath()): boolean {
   try {
@@ -96,7 +89,6 @@ export function checkBrokerSocketExists(socketPath: string = defaultBrokerSocket
 
 export class BackendRouter implements SessionBackend {
   private pty: SessionBackend & PtyBackendMethods;
-  private tmux: SessionBackend | null;
   private broker: BrokerBackend | null;
   // Reference to the underlying BrokerClient (typed loose to keep
   // backend.ts free of a hard `BrokerClient` dependency at compile time).
@@ -104,25 +96,16 @@ export class BackendRouter implements SessionBackend {
   private brokerSocketPath: string;
   private ownership = new Map<string, BackendType>();
   private _defaultBackend: BackendType;
-  private _tmuxAvailable: boolean;
   private _brokerAvailable: boolean;
 
   constructor(defaultBackend: BackendType) {
     const { PtyBackend } = require("./pty-backend.js");
     this.pty = new PtyBackend();
 
-    this._tmuxAvailable = checkTmuxAvailable();
-    if (this._tmuxAvailable) {
-      const { TmuxBackend } = require("./tmux-backend.js");
-      this.tmux = new TmuxBackend();
-    } else {
-      this.tmux = null;
-    }
-
     // Broker is only constructed when explicitly requested as the default —
     // even if the socket exists, spinning up a real Unix-socket client and
     // its reconnect loop on every router instantiation (incl. tests) is too
-    // costly. Tmux's probe is a fork+exec; broker's would be a live socket.
+    // costly.
     this.brokerSocketPath = defaultBrokerSocketPath();
     this.broker = null;
     this.brokerClient = null;
@@ -143,14 +126,8 @@ export class BackendRouter implements SessionBackend {
       }
     }
 
-    // Fall back to pty when the requested backend isn't available.
-    if (defaultBackend === "tmux" && !this._tmuxAvailable) {
-      this._defaultBackend = "pty";
-    } else if (defaultBackend === "broker" && !this._brokerAvailable) {
-      this._defaultBackend = "pty";
-    } else {
-      this._defaultBackend = defaultBackend;
-    }
+    // Fall back to pty when broker isn't available.
+    this._defaultBackend = (defaultBackend === "broker" && !this._brokerAvailable) ? "pty" : defaultBackend;
   }
 
   private startBrokerClient(): void {
@@ -182,7 +159,6 @@ export class BackendRouter implements SessionBackend {
 
   private backendFor(name: string): SessionBackend {
     const type = this.ownership.get(name);
-    if (type === "tmux" && this.tmux) return this.tmux;
     if (type === "broker" && this.broker) return this.broker;
     if (!type) log.debug("no ownership for session, falling back to pty", { session: name });
     return this.pty;
@@ -194,7 +170,6 @@ export class BackendRouter implements SessionBackend {
 
   getBackendTypeForSession(name: string): BackendType {
     const b = this.backendFor(name);
-    if (this.tmux && b === this.tmux) return "tmux";
     if (this.broker && b === this.broker) return "broker";
     return "pty";
   }
@@ -204,9 +179,6 @@ export class BackendRouter implements SessionBackend {
   getDefaultBackend(): BackendType { return this._defaultBackend; }
 
   setDefaultBackend(type: BackendType): void {
-    if (type === "tmux" && !this._tmuxAvailable) {
-      throw new Error("tmux is not available");
-    }
     if (type === "broker" && !this._brokerAvailable) {
       throw new Error("broker is not available");
     }
@@ -214,7 +186,6 @@ export class BackendRouter implements SessionBackend {
     log.info("default backend changed", { type });
   }
 
-  isTmuxAvailable(): boolean { return this._tmuxAvailable; }
   isBrokerAvailable(): boolean { return this._brokerAvailable; }
   getBrokerSocketPath(): string { return this.brokerSocketPath; }
 
@@ -299,88 +270,47 @@ export class BackendRouter implements SessionBackend {
     }
   }
 
-  /** Re-check tmux availability (e.g. after install). */
-  recheckTmux(): boolean {
-    const was = this._tmuxAvailable;
-    this._tmuxAvailable = checkTmuxAvailable();
-    if (this._tmuxAvailable && !this.tmux) {
-      const { TmuxBackend } = require("./tmux-backend.js");
-      this.tmux = new TmuxBackend();
-      log.info("tmux backend initialized (now available)");
-    } else if (!this._tmuxAvailable && this.tmux) {
-      // tmux was uninstalled — tear down the stale backend
-      // Log orphaned tmux sessions before nulling the backend
-      const orphaned = [...this.ownership.entries()]
-        .filter(([, t]) => t === "tmux")
-        .map(([n]) => n);
-      if (orphaned.length > 0) {
-        log.warn("tmux sessions orphaned (tmux no longer available)", { sessions: orphaned });
-        for (const name of orphaned) this.ownership.delete(name);
-      }
-      this.tmux = null;
-      if (this._defaultBackend === "tmux") {
-        this._defaultBackend = "pty";
-        log.warn("tmux no longer available, default backend reverted to pty");
-      }
-    }
-    if (was !== this._tmuxAvailable) {
-      log.info("tmux availability changed", { available: this._tmuxAvailable });
-    }
-    return this._tmuxAvailable;
-  }
-
   // ── PtyBackend-specific accessors (for websocket.ts) ──
 
   getPtyBackend(): SessionBackend & PtyBackendMethods { return this.pty; }
 
   /** Streaming backend that can serve a `/ws/pty` attach for the given session.
    *  Mirrors `backendFor`'s fallback so it agrees with
-   *  `getBackendTypeForSession`. Returns null when the session's backend is
-   *  tmux (which uses its own attach path) or unavailable. */
+   *  `getBackendTypeForSession`. */
   getStreamingBackendForSession(name: string): (SessionBackend & PtyBackendMethods) | null {
     const b = this.backendFor(name);
     if (this.broker && b === this.broker) return this.broker;
-    if (b === this.pty) return this.pty;
-    return null;
+    return this.pty;
   }
 
   // ── Session counts (for daemon stop warning) ──
 
-  async getSessionCounts(): Promise<{ pty: number; tmux: number; broker: number }> {
+  async getSessionCounts(): Promise<{ pty: number; broker: number }> {
     const ptySessions = await this.pty.list();
-    const tmuxSessions = this.tmux ? await this.tmux.list() : [];
     const brokerSessions = this.broker ? await this.broker.list() : [];
-    return { pty: ptySessions.length, tmux: tmuxSessions.length, broker: brokerSessions.length };
+    return { pty: ptySessions.length, broker: brokerSessions.length };
   }
 
   // ── SessionBackend interface ──
 
   async list(): Promise<string[]> {
-    const [ptySessions, tmuxSessions, brokerSessions] = await Promise.all([
+    const [ptySessions, brokerSessions] = await Promise.all([
       this.pty.list(),
-      this.tmux ? this.tmux.list() : Promise.resolve<string[]>([]),
       this.broker ? this.broker.list() : Promise.resolve<string[]>([]),
     ]);
 
-    // Reconcile ownership map. Precedence for same-named sessions:
-    //   pty > broker > tmux. PTY is in-process authoritative; broker is
-    //   broker-owned authoritative; tmux entries may be stale orphans.
+    // Reconcile ownership map. Broker wins over PTY (broker is authoritative
+    // when present; PTY is the local fallback for sessions created before the
+    // broker came up).
     const all = new Set<string>();
-    const ptySet = new Set(ptySessions);
     const brokerSet = new Set(brokerSessions);
-    for (const name of ptySessions) {
-      all.add(name);
-      this.ownership.set(name, "pty");
-    }
     for (const name of brokerSessions) {
       all.add(name);
-      if (!ptySet.has(name)) this.ownership.set(name, "broker");
+      this.ownership.set(name, "broker");
     }
-    for (const name of tmuxSessions) {
+    for (const name of ptySessions) {
       all.add(name);
-      if (!ptySet.has(name) && !brokerSet.has(name)) {
-        this.ownership.set(name, "tmux");
-      }
+      if (!brokerSet.has(name)) this.ownership.set(name, "pty");
     }
     for (const name of this.ownership.keys()) {
       if (!all.has(name)) this.ownership.delete(name);
@@ -395,12 +325,11 @@ export class BackendRouter implements SessionBackend {
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
   ): Promise<void> {
-    const [ptyList, tmuxList, brokerList] = await Promise.all([
+    const [ptyList, brokerList] = await Promise.all([
       this.pty.list(),
-      this.tmux ? this.tmux.list() : Promise.resolve<string[]>([]),
       this.broker ? this.broker.list() : Promise.resolve<string[]>([]),
     ]);
-    if (ptyList.includes(name) || tmuxList.includes(name) || brokerList.includes(name)) {
+    if (ptyList.includes(name) || brokerList.includes(name)) {
       const err = new Error(`duplicate session: ${name}`);
       (err as any).code = "DUPLICATE_SESSION";
       throw err;
@@ -411,9 +340,6 @@ export class BackendRouter implements SessionBackend {
     if (this._defaultBackend === "broker" && this.broker) {
       backend = this.broker;
       type = "broker";
-    } else if (this._defaultBackend === "tmux" && this.tmux) {
-      backend = this.tmux;
-      type = "tmux";
     } else {
       backend = this.pty;
       type = "pty";
@@ -467,7 +393,6 @@ export class BackendRouter implements SessionBackend {
 
   async cleanupOrphans(): Promise<void> {
     await this.pty.cleanupOrphans();
-    if (this.tmux) await this.tmux.cleanupOrphans();
     if (this.broker) await this.broker.cleanupOrphans();
   }
 }
@@ -522,18 +447,16 @@ export function __resetBackend(): void {
 }
 
 /** Test-only: inject a custom backend (e.g. MockBackend) as the singleton.
- *  Optionally override the backend type (defaults to "tmux" for backward compat with existing tests).
+ *  Optionally override the backend type (defaults to "pty" for backward compat with existing tests).
  *  Also creates a router that wraps the mock so getRouter() works in tests. */
 export function __setTestBackend(backend: SessionBackend, type?: BackendType): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__setTestBackend() is only available in test mode");
   _testBackend = backend;
-  _testBackendType = type ?? "tmux";
+  _testBackendType = type ?? "pty";
   // Create a router and inject the mock as the matching backend so getRouter() works
   _router = new BackendRouter(type ?? "pty");
   (_router as any).pty = backend;
-  (_router as any).tmux = type === "tmux" ? backend : null;
   (_router as any).broker = type === "broker" ? backend : null;
   (_router as any)._defaultBackend = type ?? "pty";
-  (_router as any)._tmuxAvailable = type === "tmux";
   (_router as any)._brokerAvailable = type === "broker";
 }

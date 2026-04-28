@@ -400,7 +400,6 @@ export const routes: Record<
     const counts = await router.getSessionCounts();
     json(res, {
       default: router.getDefaultBackend(),
-      tmuxAvailable: router.isTmuxAvailable(),
       brokerAvailable: router.isBrokerAvailable(),
       counts,
     });
@@ -410,13 +409,12 @@ export const routes: Record<
     const body = await parseBody<{ default?: BackendType }>(req, res);
     if (!body) return;
     const type = body.default;
-    if (type !== "pty" && type !== "tmux") {
-      return json(res, { error: "invalid backend type — must be 'pty' or 'tmux'" }, 400);
+    if (type !== "pty" && type !== "broker") {
+      return json(res, { error: "invalid backend type — must be 'pty' or 'broker'" }, 400);
     }
     const router = getRouter();
-    if (type === "tmux") router.recheckTmux(); // re-probe in case tmux was installed after server start
-    if (type === "tmux" && !router.isTmuxAvailable()) {
-      return json(res, { error: "tmux is not installed" }, 400);
+    if (type === "broker" && !router.isBrokerAvailable()) {
+      return json(res, { error: "broker daemon is not reachable" }, 400);
     }
     router.setDefaultBackend(type);
     // Persist to config so it survives restarts

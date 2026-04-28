@@ -231,7 +231,7 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
   // Initialize session backend from env (set by CLI) or default
   const raw = process.env.WOLFPACK_BACKEND;
   const backendType: BackendType | undefined =
-    raw === "pty" || raw === "tmux" || raw === "broker" ? raw : undefined;
+    raw === "pty" || raw === "broker" ? raw : undefined;
   initBackend(backendType);
   log.info("backend initialized", { type: backendType ?? "default" });
 

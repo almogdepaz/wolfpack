@@ -68,7 +68,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ── Close code semantics driving reconnect decisions ──
 
 describe("WS close code semantics (backoff decision drivers)", () => {
-  test("PTY spawn failure yields 4001 (prevents reconnect loop)", async () => {
+  test.skip("PTY spawn failure yields 4001 (prevents reconnect loop) [tmux-era]", async () => {
     const ptySessions = __activePtySessions;
     ptySessions.delete("dispatch-session");
     await wait(50);
