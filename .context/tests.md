@@ -7,7 +7,7 @@ The test suite covers ~928 tests across 34 files in unit, integration, e2e (Play
 
 ## Structure
 
-**`tests/unit/`** (30 files) — fast, no server required. All use MockBackend or mock tmux overrides.
+**`tests/unit/`** — fast, no server required. All use MockBackend.
 
 Key files:
 - `auth-middleware.test.ts` — JWT validation, clock tolerance, iss/aud, timing-safe comparison
@@ -15,8 +15,9 @@ Key files:
 - `ralph-lifecycle.test.ts` — subtask expansion, budget limits, same-task guard
 - `ralph-log.test.ts` — log parsing, PID alive detection, path safety
 - `push.test.ts` — VAPID keygen, subscription validation, SSRF prevention, RFC 8291 encryption
-- `backend-router.test.ts` — ownership routing, duplicate detection, recheckTmux
-- `pty-backend.test.ts` — stripAnsi, ring buffer, CMD_REGEX defense-in-depth
+- `backend-router.test.ts` — broker-only routing, duplicate detection, handshake probe
+- `broker-backend.test.ts` — broker RPC translation, snapshot prefill, lifecycle events
+- `strip-ansi.test.ts` — ANSI/VT escape stripping for snapshot triage
 - `grid-logic.test.ts` — grid add/remove state, arrow navigation, input gating
 - `rate-limit.test.ts` — token bucket behavior, per-IP limiter eviction
 - `csp-nonce.test.ts` — CSP header format, nonce freshness per request
@@ -54,11 +55,11 @@ Key files:
 
 **JWT config singleton**: `getCachedJwtAuthConfig()` caches on first call. Tests that set `WOLFPACK_JWT_SECRET` after module load must call `__resetJwtAuthConfig()` in `beforeEach`. Failure mode: test sets env, calls API, gets stale cached config → intermittent auth failures. Integration test suite uses a separate `bun test` invocation step because JWT env vars contaminate Bun's shared module cache.
 
-**MockBackend**: replaces real PTY/tmux in integration tests. Does not emit real PTY data or test ring buffer behavior. PTY data path (binary WS frames, prefill, `onSessionData`) is integration-tested only in `concurrent-pty-viewer.test.ts` with the real PtyBackend via Bun.spawn mocking.
+**MockBackend**: replaces the real broker in integration tests. Does not emit real PTY data — `onSessionData`, `getSessionPrefill`, `onSessionLifecycle` are stubs. The broker streaming path is exercised end-to-end in `tests/e2e/` and in `tests/integration/broker-*.test.ts` (which spawn a real `wolfpack-broker` binary).
+
+**setSessionAlive override**: integration tests use `MockBackend.setSessionAlive(name, false)` to simulate a session that's listed (so WS upgrade passes `isAllowedSession`) but whose backing process is dead — yields the 4001 close-code contract on attach.
 
 **Inline replicas**: `grid-logic.ts` and `wolfpack-lib.js` are the canonical testable implementations. The HTML inline counterparts in `app.bundle.js` are equivalent but not separately tested. Divergence caught only by e2e tests.
-
-**tmux tests**: unit tests override `_listSessionsRaw` / `_showEnvironment` via `__setTestOverrides`. Real tmux is not required. Integration tests use MockBackend which bypasses tmux entirely.
 
 **e2e coverage gaps**: push notification end-to-end flow (requires real push service), ralph worker spawning in browser context, mobile-specific touch gestures.
 

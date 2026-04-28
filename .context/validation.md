@@ -17,7 +17,7 @@
 
 `/^[a-zA-Z0-9 \-._/=]+$/` — validates agent command strings before they reach `shell -lic`. Rejecting shell metacharacters prevents command injection. Allows `/` and `=` (needed for flags like `--dangerously-skip-permissions`). Defense-in-depth: string is passed as argument to `-lic`, not interpolated into the shell string.
 
-**`isUnderDevDir(dir)`** (`src/server/tmux.ts:54`)
+**`isUnderDevDir(dir)`** (`src/server/dev-dir.ts`)
 
 Path-containment check for project directory boundary. Uses proper boundary: `candidate === baseDir || candidate.startsWith(baseDir + "/")`. Reads `WOLFPACK_DEV_DIR` at call time (not module load) so test env overrides take effect. Called after `realpathSync` to resolve symlinks.
 
@@ -44,9 +44,9 @@ Literal strings injected into agent sessions. `RALPH_AGENT_CONTEXT` prepends to 
 
 ## Cross-Module Dependencies
 
-- `src/validation.ts`: imported by routes.ts, tmux.ts, pty-backend.ts, ralph-macchio.ts, service.ts
+- `src/validation.ts`: imported by routes.ts, broker-backend.ts, ralph-macchio.ts, service.ts
 - `src/ws-constants.ts`: imported by websocket.ts and take-control-logic.ts
-- `src/wolfpack-context.ts`: imported by ralph-macchio.ts, ralph.ts, tmux.ts (for INTERACTIVE_CONTEXT)
+- `src/wolfpack-context.ts`: imported by ralph-macchio.ts, ralph.ts, shell.ts (for INTERACTIVE_CONTEXT)
 
 ## Known Issues / Gotchas
 

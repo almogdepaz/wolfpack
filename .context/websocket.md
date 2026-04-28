@@ -25,21 +25,28 @@ Two cases:
 
 `reset=true` (from `?reset=1` query param): tears down existing entry before proceeding.
 
-**`setupNewPtyEntry(ws, session, initialDims?)`** (`src/server/websocket.ts:374`)
+**`setupNewPtyEntry(ws, session, initialDims?)`** (`src/server/websocket.ts`)
 
-Selects `spawnPty` function based on backend type:
-- PTY backend: `attachPtyBackend` — subscribes to `ptyBackend.onSessionData`, resizes terminal, sends prefill from ring buffer
-- Tmux backend: `spawnTmuxPty` — spawns `tmux attach-session` as intermediate PTY via `Bun.spawn`
+Calls `attachStreamingBackend(brokerBackend, ...)`. The streaming backend
+is always the broker; it implements `SessionBackend & PtyBackendMethods`,
+which exposes `onSessionData`, `getSessionPrefill`, `isSessionAlive`, and
+`onSessionLifecycle`. If `isSessionAlive(name)` returns false, the WS is
+closed with `CLOSE_CODE_SESSION_UNAVAILABLE` (4001) before any prefill.
 
-If `initialDims` provided (captured before take_control), spawns immediately — saves a round trip.
+If `initialDims` provided (captured before take_control), spawns
+immediately — saves a round trip.
 
-**Prefill flow (tmux backend)** (`src/server/websocket.ts:516-567`)
+**Prefill flow (broker)** (`src/server/websocket.ts`)
 
-Two-phase:
-1. Viewport-only: `tmux capture-pane -t <session> -p -e` → sends raw buffer → sends `{ type: "prefill_viewport" }` signal
-2. Full scrollback (if `prefillMode === "full"`): `tmux capture-pane -t <session> -p -e -S -5000` → chunked send at 32KB/8ms chunks → sends `{ type: "prefill_done" }`
+`getSessionPrefill(name)` issues a `snapshot` RPC to the broker; the
+returned bytes are sent to the viewer in two phases:
+1. Viewport: send raw buffer → `{ type: "prefill_viewport" }`
+2. Full scrollback (if `prefillMode === "full"`): chunked send at
+   32KB/8ms chunks → `{ type: "prefill_done" }`
 
-Deduplication (`__stripInitialPtyOverlap`): after prefill, the tmux attach process replays terminal state. Incoming data accumulated and compared against prefill buffer tail; matching prefix skipped to avoid double-rendering. Tries decreasing overlap sizes from `min(prefillTail, attachPrefix)` down to 1.
+Subsequent live output is forwarded via `onSessionData` callbacks. The
+broker drops its lifecycle subscription on `session_exited`, which the
+WS handler propagates as a 4001 close to the viewer.
 
 **`teardownPty(session)`** (`src/server/websocket.ts:237`)
 
@@ -64,14 +71,13 @@ True when: auto-reconnect OR (manual retry AND prefill is full mode). Grid cells
 
 ## Cross-Module Dependencies
 
-- `websocket.ts` imports: validation.ts, ws-constants.ts, tmux.ts, backend.ts, http.ts, log.ts
+- `websocket.ts` imports: validation.ts, ws-constants.ts, backend.ts, broker-backend.ts (via type), http.ts, log.ts
 - `take-control-logic.ts` imports: ws-constants.ts only (re-exports them for backward compat)
 - `reconnect-hydration.ts`: no imports (pure function)
 
 ## Known Issues / Gotchas
 
-- `activePtySessions` is module-level state. A server restart resets it, but tmux sessions survive. On reconnect after restart, PTY sessions need fresh `handlePtyWs` calls.
-- `spawning` flag inside `setupNewPtyEntry` prevents duplicate spawns when multiple `attach` messages arrive before the first completes. Local variable per entry closure.
-- `RAPID_EXIT_THRESHOLD_MS = 3000`: if the tmux attach process exits within 3 seconds of spawn, WS closes with `CLOSE_CODE_SESSION_UNAVAILABLE` (session gone) vs. `CLOSE_CODE_NORMAL` (normal disconnect).
-- Post-spawn resize: after spawning `tmux attach-session`, a 100ms delayed resize is issued to reconcile PTY's initial size with client's reported dimensions. Avoids timing race.
-- Prefill deduplication (`__stripInitialPtyOverlap`) uses a 32KB tail comparison window. If tmux reattach output differs significantly from capture-pane (e.g. terminal was resized), dedup may fail — cosmetically annoying but functionally safe.
+- `activePtySessions` is module-level state on the wolfpack server. A server restart resets it, but broker sessions survive (the broker is a separate process). On reconnect after a wolfpack restart, the broker still has the session and re-attach succeeds via fresh `handlePtyWs` calls.
+- `spawning` flag inside `attachStreamingBackend` prevents duplicate prefill+subscribe when multiple `attach` messages arrive before the first completes. Local variable per entry closure.
+- The broker emits `session_exited` on child reap; the WS handler closes the viewer with `CLOSE_CODE_SESSION_UNAVAILABLE` (4001) so the client distinguishes remote-side session death from a normal disconnect.
+- The broker performs its own VT emulation for snapshots; the wolfpack-side prefill no longer needs a deduplication step.

@@ -3,81 +3,130 @@
 
 ## Purpose
 
-Abstracts over two session multiplexer strategies: `PtyBackend` (raw Bun PTY processes, in-memory, no external deps) and `TmuxBackend` (wraps the tmux binary). `BackendRouter` holds both simultaneously and routes per-session based on ownership. `RingBuffer` provides fixed-capacity output capture for PTY sessions.
+Wolfpack delegates session ownership to a single external broker daemon
+(`wolfpack-broker`). The TypeScript server talks to it over a Unix socket
+and exposes a uniform `SessionBackend` interface to the rest of the
+codebase. The broker is mandatory — there is no in-process fallback. Earlier
+revisions supported a raw-Bun-PTY backend and a tmux backend; both were
+removed in S5/S6.
 
 ## Key Files
 
-- `src/server/backend.ts` — `SessionBackend` interface, `BackendRouter`, module singletons (`initBackend`, `getBackend`, `getRouter`)
-- `src/server/pty-backend.ts` — `PtyBackend`, `stripAnsi`, ring-buffer integration, `dataListeners` pub/sub
-- `src/server/tmux-backend.ts` — thin adapter delegating to `tmux.ts` functions
-- `src/server/tmux.ts` — `tmuxList`, `tmuxNewSession`, `tmuxResize`, `capturePane`, `sessionDirMap`, `isUnderDevDir`, `cleanupOrphanPtySessions`, exec wrapper
-- `src/server/ring-buffer.ts` — `RingBuffer` circular byte buffer
+- `src/server/backend.ts` — `SessionBackend` interface, `BackendRouter`
+  (now a thin shim), `PtyBackendMethods` (streaming-attach surface),
+  module singletons (`initBackend`, `getBackend`, `getRouter`,
+  `__setTestBackend`)
+- `src/server/broker-backend.ts` — `BrokerBackend`, the production
+  implementation that turns `SessionBackend` calls into broker RPCs +
+  consumes `output`/`session_exited` events
 - `src/server/mock-backend.ts` — `MockBackend` for integration tests
+  (controllable list, capture, isSessionAlive override)
+- `src/server/strip-ansi.ts` — `stripAnsi`, `stripLeadingPartialEscape`
+  for snapshot triage and prefill truncation
+- `src/server/shell.ts` — `SHELL`, `injectAgentContext`, `RALPH_AGENTS`,
+  `exec` (used to compose the agent command before broker spawn)
+- `src/server/dev-dir.ts` — `DEV_DIR`, `isUnderDevDir`, `sessionDirMap`
+  (project-directory trust boundary)
 
 ## Key Functions / Flows
 
-**`BackendRouter`** (`src/server/backend.ts:56`)
+**`BackendRouter`** (`src/server/backend.ts`)
 
-Holds both backends as instance fields. `ownership` Map (`session → BackendType`) tracks which backend created each session. Routes all `SessionBackend` method calls to the correct backend via `backendFor(name)`.
+Wraps `BrokerBackend`. The constructor probes the broker socket
+synchronously and starts a `BrokerClient`; if the socket is missing it
+throws (production) or noops (when `WOLFPACK_TEST=1`, leaving the broker
+field null for tests to inject a `MockBackend`).
 
-`list()`: queries both backends, reconciles ownership map (PTY wins over tmux for same-named sessions — PTY sessions are in-process and authoritative), prunes stale entries. Returns sorted union.
+`list()`, `createSession()`, `killSession()`, etc. all route directly to
+the broker. `createSession()` lists first to reject duplicates with a
+`DUPLICATE_SESSION` code. `killSession()` is a thin pass-through.
 
-`createSession()`: checks both backends for duplicates first. Sets ownership BEFORE calling `backend.createSession` to close the TOCTOU window — if `getBackendTypeForSession` is called during async create, it returns the correct type. Rolls back ownership on failure.
+`recheckBroker()`: re-probes the socket file. Disappearance is logged as
+fatal — next operation surfaces a 4001 to the client. No fallback path.
 
-`killSession()`: routes via `backendFor`, then removes ownership entry.
+`verifyBrokerHandshake()`: async — waits for the socket to connect,
+issues a `list_sessions` RPC with a 1s timeout, tears down the client on
+failure.
 
-`recheckTmux()`: re-probes `tmux -V`, initializes `TmuxBackend` if newly available, orphans tracked tmux sessions if tmux disappears.
+**`BrokerBackend.createSession`** (`src/server/broker-backend.ts`)
 
-**`PtyBackend.createSession`** (`src/server/pty-backend.ts:83`)
+Validates `agentCmd` against `CMD_REGEX` (defense-in-depth, routes.ts is
+primary). For non-shell commands wraps with `injectAgentContext` and
+`exec $SHELL` so the shell stays alive after the agent exits. Issues a
+`spawn_session` RPC to the broker; the broker forks a child PTY,
+streams `output` events back, and emits `session_exited` when the child
+reaps.
 
-Validates `agentCmd` against `CMD_REGEX` (defense-in-depth, routes.ts is primary). For non-shell commands: `injectAgentContext(agentCmd) + "; exec $SHELL"` — keeps shell alive after agent exits. Spawns via `Bun.spawn([SHELL, "-lic", shellCmd], { terminal: { cols: 120, rows: 40, data(...), exit(...) } })`.
+**`BrokerBackend` streaming surface (PtyBackendMethods)**
 
-`data` callback: writes to `RingBuffer`, broadcasts to all `dataListeners`. `exit` callback: guards against name reuse (checks `session.proc === proc` before cleanup — new session with same name may have been created after kill). Strips `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` env vars to avoid confusing nested claude instances.
+- `onSessionData(name, cb)`: registers `cb` against the broker's
+  per-session output stream; returns an unsubscribe function. Used by
+  the WS attach handler to forward raw terminal bytes to the viewer.
+- `getSessionPrefill(name)`: issues a `snapshot` RPC and returns the
+  most recent N lines as raw ANSI bytes for WS prefill.
+- `isSessionAlive(name)`: cache-backed sync probe — true while the
+  broker last reported the session present in `list_sessions` and
+  hasn't fired `session_exited`.
+- `onSessionLifecycle(name, cb)`: fires `cb({ kind: "exited", … })`
+  when the broker reports the session reaped.
 
-**`stripAnsi(s)`** (`src/server/pty-backend.ts:26`)
+**`stripAnsi(s)`** (`src/server/strip-ansi.ts`)
 
-Strips ANSI/VT escape sequences from raw PTY output for `capturePane` (triage). Bare `\r` becomes `\n`. Known limitation: progress bars (which use `\r` to overwrite lines) produce extra newlines. Full fix requires a server-side VT emulator — noted in comment.
+Strips ANSI/VT escape sequences from raw PTY output for `capturePane`
+(triage). Bare `\r` becomes `\n`. Known limitation: progress bars (which
+use `\r` to overwrite lines) produce extra newlines. Full fix requires
+a server-side VT emulator.
 
-**`PtyBackend` attachment methods** (`src/server/pty-backend.ts:233-259`)
+**`MockBackend`** (`src/server/mock-backend.ts`)
 
-`onSessionData(name, cb)`: adds `cb` to `dataListeners` Set, returns unsubscribe function. Used by `handlePtyWs` (PTY backend path) to receive raw terminal bytes.
+Test-only `SessionBackend` implementation. Holds a `Set<string>` of
+sessions and pluggable `capturePane`. Implements the streaming surface
+as no-ops/stubs so WS-attach tests don't crash. Notable extension:
+`setSessionAlive(name, alive)` overrides `isSessionAlive` per-session
+without affecting `list()` — used by integration tests to simulate a
+listed-but-dead session (yields 4001 on attach).
 
-`getSessionPrefill(name)`: calls `session.buffer.readBuffer()` — returns current ring buffer contents as `Buffer` for WS prefill.
+**`injectAgentContext(agentCmd)`** (`src/server/shell.ts`)
 
-**`tmuxNewSession`** (`src/server/tmux.ts:291`)
-
-Checks for existing session via `tmux has-session` first (throws with `DUPLICATE_SESSION` code). For non-shell agents: wraps command in `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT $SHELL -lic <cmd>`. Uses `shellEscape` for the command argument. Sets `mouse on` post-creation, persists `WOLFPACK_PROJECT_DIR` to tmux session env for restart recovery.
-
-**`tmuxList`** (`src/server/tmux.ts:183`)
-
-Calls `tmux list-sessions -F "#{session_name}|||#{pane_current_path}"`. Filters out `wp_` prefixed sessions (intermediate PTY attach sessions). Filters out sessions not under `DEV_DIR`. Backfills `sessionDirMap` by reading `WOLFPACK_PROJECT_DIR` from tmux session env (30s TTL cache). Prunes stale map entries.
-
-**`RingBuffer`** (`src/server/ring-buffer.ts`)
-
-Fixed-capacity circular byte buffer. `head` is the next write position; `len` is currently stored byte count. When full: `len === capacity` and oldest data is at `buf[head]` (wraps around). `read()` and `readBuffer()` reconstruct contiguous buffer by concatenating `buf[head..capacity]` + `buf[0..head]`. Writes larger than capacity: keeps only the tail.
-
-**`injectAgentContext(agentCmd)`** (`src/server/tmux.ts:276`)
-
-For `claude`: appends `--append-system-prompt <INTERACTIVE_CONTEXT>` with a `|| agentCmd` fallback. For `gemini`: appends `-i <INTERACTIVE_CONTEXT>`. Other agents: pass through unchanged.
+For `claude`: appends `--append-system-prompt <INTERACTIVE_CONTEXT>`
+with a `|| agentCmd` fallback. For `gemini`: appends
+`-i <INTERACTIVE_CONTEXT>`. Other agents pass through unchanged.
 
 ## Trust Boundaries
 
-- `backendFor(name)`: falls back to PTY if no ownership record exists (with a debug log). Unknown session names silently route to PTY — could lead to silent misrouting if ownership map is stale.
-- `sessionDirMap` is lazily rebuilt from tmux env on each `tmuxList` call. Fresh server process starts with empty map; first `list()` call rebuilds it. Routes that read `sessionDir()` before first list call get `undefined`.
-- `CMD_REGEX` validated in both `routes.ts` and `pty-backend.ts` (defense-in-depth).
+- `BackendRouter` constructor in production refuses to start without a
+  reachable broker socket — wolfpack will not boot if the broker is
+  down. Test mode (`WOLFPACK_TEST=1`) is the only escape hatch and it
+  requires `__setTestBackend` to inject a mock.
+- `CMD_REGEX` validated in both `routes.ts` and `broker-backend.ts`
+  (defense-in-depth).
+- `sessionDirMap` populated at session-create time; routes reading
+  `sessionDir(name)` before the first broker `list_sessions` call get
+  `undefined` (cold-start gap).
 
 ## Cross-Module Dependencies
 
-- `backend.ts` requires `pty-backend.ts` and `tmux-backend.ts` via `require()` (dynamic import to avoid circular dep at module init time).
-- `websocket.ts` accesses `BackendRouter.getPtyBackend()` directly for PTY-specific methods.
-- Routes use `getBackend()` (returns `BackendRouter` in production) and `getRouter()` for router-specific methods.
+- `backend.ts` requires `broker-backend.ts` and `../broker/client.js`
+  via `require()` (dynamic import to avoid circular dep at module-init
+  time).
+- `websocket.ts` consumes the streaming surface via
+  `getRouter().getStreamingBackendForSession(name)` (returns the broker,
+  typed as `SessionBackend & PtyBackendMethods`).
+- Routes use `getBackend()` (returns `BackendRouter` in production) and
+  `getRouter()` for router-specific methods (`getSessionCounts`,
+  `isBrokerAvailable`).
 
 ## Known Issues / Gotchas
 
-- PTY sessions are in-process — they die with the server. tmux sessions survive server restarts.
-- `wp_` prefix: wolfpack creates `tmux attach-session` subprocesses as sessions named `wp_<random>` (legacy code path still present in `cleanupOrphanPtySessions`). Cleaned up on server start.
-- `DEFAULT_BACKEND = "pty"` (`src/server/backend.ts:34`). Changed to `tmux` via `POST /api/backend` or `config.backend`.
-- `TRIAGE_CACHE_TTL_MS = 500` in both `tmux.ts` and `pty-backend.ts` — separate caches per backend. Avoids O(N) tmux execs on rapid `/api/sessions` polls.
-- Ring buffer capacity 512KB per PTY session. Memory footprint: ~512KB × N sessions. Not bounded globally.
-- **Stale ownership risk**: `backendFor(name)` falls back silently to PTY for unknown sessions — stale ownership can cause silent misrouting.
-- **sessionDirMap cold start**: routes reading `sessionDir()` before any `list()` call get `undefined`. Affects `/api/git-status`.
+- Sessions die when the broker process dies — there is no in-process
+  fallback. `kill -9 <broker-pid>` surfaces as 4001 in the UI.
+- `BackendType` is a single-variant alias (`"broker"`); kept for back-
+  compat with the public `POST /api/backend` route. Legacy `"pty"`
+  values in the saved config are silently ignored on parse.
+- `WOLFPACK_BACKEND` env var is no longer consulted — the broker is the
+  only supported backend.
+- `BrokerBackend` caches `list_sessions` results briefly; rapid creates
+  followed by an immediate `isSessionAlive` check may race against the
+  cache. The router serializes creates so the cache is correct after
+  await.
+

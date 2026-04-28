@@ -78,9 +78,9 @@ When `aggregate=true`, forwards the caller's `Authorization` header to peer wolf
 
 ## Cross-Module Dependencies
 
-- `index.ts` imports: auth.ts, websocket.ts, backend.ts, http.ts, routes.ts, tmux.ts, validation.ts, log.ts
-- `routes.ts` imports: validation.ts, worktree.ts, public-assets.ts, triage.ts, push.ts, tmux.ts, backend.ts, ralph.ts, http.ts, websocket.ts, log.ts
-- `http.ts` imports: public-assets.ts, tmux.ts (for exec), backend.ts, log.ts
+- `index.ts` imports: auth.ts, websocket.ts, backend.ts, http.ts, routes.ts, shell.ts (SHELL), validation.ts, log.ts
+- `routes.ts` imports: validation.ts, worktree.ts, public-assets.ts, triage.ts, push.ts, shell.ts (RALPH_AGENTS, exec), dev-dir.ts (DEV_DIR, isUnderDevDir), backend.ts, ralph.ts, http.ts, websocket.ts, log.ts
+- `http.ts` imports: public-assets.ts, shell.ts (for exec), backend.ts, log.ts
 
 ## Known Issues / Gotchas
 

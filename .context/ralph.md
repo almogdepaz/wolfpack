@@ -86,7 +86,7 @@ Finds all managed worktrees under `.wolfpack/worktrees/`, determines "final" (la
 ## Cross-Module Dependencies
 
 - `ralph-macchio.ts` imports: wolfpack-context.ts, validation.ts, ralph-skill-audit.ts, ralph-skill-cleanup.ts, worktree.ts, shared/process-cleanup.ts
-- `server/ralph.ts` imports: wolfpack-context.ts, tmux.ts (for DEV_DIR), log.ts
+- `server/ralph.ts` imports: wolfpack-context.ts, dev-dir.ts (for DEV_DIR), log.ts
 - Routes import: ralph.ts, worktree.ts
 
 ## Known Issues / Gotchas

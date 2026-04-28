@@ -47,7 +47,7 @@ macOS: `lsof -i :<port> -t`. Linux: `ss -tlnp sport = :<port>`. `killPortHolder`
 
 **`doctor()`** (`src/cli/doctor.ts:515`)
 
-Runs 8 check groups sequentially: deps (tmux, tailscale, shell), config (dir/file), service (installed/running/port), connectivity (localhost curl, DNS lookup), binary (exists/executable/codesign), tmux runtime (session create/kill), environment (PATH), logs (size, error scan). With `--fix`: runs `applyFixes()` then re-runs all checks.
+Runs check groups sequentially: deps (tailscale, shell), config (dir/file), service (installed/running/port), broker (binary present, socket reachable), connectivity (localhost curl, DNS lookup), binary (exists/executable/codesign), environment (PATH), logs (size, error scan). With `--fix`: runs `applyFixes()` then re-runs all checks.
 
 **`updateStableBinary()`** (`src/cli/service.ts:79`)
 
