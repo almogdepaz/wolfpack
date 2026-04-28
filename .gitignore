@@ -25,3 +25,4 @@ playwright-report/
 PLAN*.md
 .wolfpack/
 public/.DS_Store
+broker/target/
