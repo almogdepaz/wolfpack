@@ -5,7 +5,7 @@
  * into a per-session RingBuffer so capturePane/capturePaneForTriage work
  * without an external multiplexer.
  */
-import type { SessionBackend } from "./backend.js";
+import type { SessionBackend, SessionLifecycleEvent } from "./backend.js";
 import { RingBuffer } from "./ring-buffer.js";
 import { SHELL, injectAgentContext } from "./tmux.js";
 import { CMD_REGEX } from "../validation.js";
@@ -256,6 +256,16 @@ export class PtyBackend implements SessionBackend {
   isSessionAlive(name: string): boolean {
     const session = this.sessions.get(name);
     return !!session && session.alive;
+  }
+
+  /**
+   * Stub: PtyBackend doesn't currently surface lifecycle events through this
+   * channel. PTY death is observed via `isSessionAlive()` polling and via
+   * the existing exit callback in `createSession`. Returns a no-op unsub so
+   * callers can register without special-casing the backend.
+   */
+  onSessionLifecycle(_name: string, _cb: (event: SessionLifecycleEvent) => void): (() => void) | null {
+    return () => {};
   }
 
   /** Expose internal session state for tests. */

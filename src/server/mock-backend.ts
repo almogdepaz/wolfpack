@@ -122,4 +122,8 @@ export class MockBackend implements SessionBackend {
   getSessionPrefill(_name: string): Buffer {
     return Buffer.alloc(0);
   }
+
+  onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {
+    return () => {};
+  }
 }

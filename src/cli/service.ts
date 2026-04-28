@@ -362,11 +362,12 @@ export function serviceStop() {
           return;
         }
       } else {
-        const { pty = 0, tmux = 0 } = data.counts;
-        if (pty > 0 || tmux > 0) {
+        const { pty = 0, tmux = 0, broker = 0 } = data.counts;
+        if (pty > 0 || tmux > 0 || broker > 0) {
           const parts: string[] = [];
           if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
           if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
+          if (broker > 0) parts.push(`${broker} broker session${broker > 1 ? "s" : ""} will persist`);
           print(dim(`\n  ${parts.join(", ")}.`));
           const answer = ask("  Continue? (y/n) ");
           if (answer.toLowerCase() !== "y") {

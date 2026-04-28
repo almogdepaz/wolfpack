@@ -3,6 +3,8 @@ import { MockBackend } from "../../src/server/mock-backend";
 import {
   BackendRouter,
   __resetBackend,
+  checkBrokerSocketExists,
+  type BackendType,
   type SessionBackend,
   type PtyBackendMethods,
 } from "../../src/server/backend";
@@ -11,23 +13,29 @@ import {
  * Create a BackendRouter with two MockBackends injected, bypassing
  * the real PtyBackend/TmuxBackend constructors via Object.create.
  */
-function createTestRouter(opts?: { default?: "pty" | "tmux" }): {
+function createTestRouter(opts?: { default?: BackendType; brokerMock?: MockBackend }): {
   router: BackendRouter;
   ptyMock: MockBackend;
   tmuxMock: MockBackend;
+  brokerMock: MockBackend | null;
 } {
   const ptyMock = new MockBackend();
   const tmuxMock = new MockBackend();
+  const brokerMock = opts?.brokerMock ?? null;
 
   // Skip constructor entirely — avoids spawning a real PtyBackend
   const router = Object.create(BackendRouter.prototype) as BackendRouter;
   (router as any).pty = ptyMock;
   (router as any).tmux = tmuxMock;
+  (router as any).broker = brokerMock;
+  (router as any).brokerClient = null;
+  (router as any).brokerSocketPath = "/tmp/wolfpack-broker-test.sock";
   (router as any).ownership = new Map();
   (router as any)._tmuxAvailable = true;
+  (router as any)._brokerAvailable = !!brokerMock;
   (router as any)._defaultBackend = opts?.default ?? "pty";
 
-  return { router, ptyMock, tmuxMock };
+  return { router, ptyMock, tmuxMock, brokerMock };
 }
 
 const loadSettings = () => ({ agentCmd: "shell" });
@@ -216,7 +224,7 @@ describe("BackendRouter", () => {
       tmuxMock.setSessions(["t1"]);
 
       const counts = await router.getSessionCounts();
-      expect(counts).toEqual({ pty: 2, tmux: 1 });
+      expect(counts).toEqual({ pty: 2, tmux: 1, broker: 0 });
     });
 
     test("returns zero for tmux when unavailable", async () => {
@@ -225,7 +233,7 @@ describe("BackendRouter", () => {
       ptyMock.setSessions(["p1"]);
 
       const counts = await router.getSessionCounts();
-      expect(counts).toEqual({ pty: 1, tmux: 0 });
+      expect(counts).toEqual({ pty: 1, tmux: 0, broker: 0 });
     });
   });
 
@@ -242,6 +250,82 @@ describe("BackendRouter", () => {
       await router.cleanupOrphans();
       expect(ptyCalled).toBe(true);
       expect(tmuxCalled).toBe(true);
+    });
+
+    test("calls cleanup on broker backend when present", async () => {
+      const brokerMock = new MockBackend();
+      const { router } = createTestRouter({ brokerMock });
+      let brokerCalled = false;
+      (brokerMock as any).cleanupOrphans = async () => { brokerCalled = true; };
+      await router.cleanupOrphans();
+      expect(brokerCalled).toBe(true);
+    });
+  });
+
+  // ── broker routing ──
+
+  describe("broker backend", () => {
+    test("isBrokerAvailable reflects internal flag", () => {
+      const { router } = createTestRouter();
+      expect(router.isBrokerAvailable()).toBe(false);
+      const brokerMock = new MockBackend();
+      const { router: r2 } = createTestRouter({ brokerMock });
+      expect(r2.isBrokerAvailable()).toBe(true);
+    });
+
+    test("createSession routes to broker when default=broker", async () => {
+      const brokerMock = new MockBackend();
+      const { router } = createTestRouter({ default: "broker", brokerMock });
+      await router.createSession("brk-1", "/tmp", undefined, () => ({ agentCmd: "shell" }));
+      expect(await brokerMock.hasSession("brk-1")).toBe(true);
+      expect(router.getBackendTypeForSession("brk-1")).toBe("broker");
+    });
+
+    test("list() reports broker sessions and pty wins on duplicate names", async () => {
+      const brokerMock = new MockBackend();
+      const { router, ptyMock } = createTestRouter({ brokerMock });
+      brokerMock.setSessions(["solo-broker", "shared"]);
+      ptyMock.setSessions(["shared"]);
+      const all = await router.list();
+      expect(all).toEqual(["shared", "solo-broker"]);
+      expect(router.getBackendTypeForSession("shared")).toBe("pty");
+      expect(router.getBackendTypeForSession("solo-broker")).toBe("broker");
+    });
+
+    test("createSession rejects duplicates already owned by broker", async () => {
+      const brokerMock = new MockBackend();
+      const { router } = createTestRouter({ brokerMock });
+      brokerMock.setSessions(["taken"]);
+      await expect(
+        router.createSession("taken", "/tmp", undefined, () => ({ agentCmd: "shell" })),
+      ).rejects.toThrow("duplicate session");
+    });
+
+    test("setDefaultBackend('broker') throws when broker unavailable", () => {
+      const { router } = createTestRouter();
+      expect(() => router.setDefaultBackend("broker")).toThrow("broker is not available");
+    });
+
+    test("getSessionCounts includes broker count", async () => {
+      const brokerMock = new MockBackend();
+      const { router, ptyMock } = createTestRouter({ brokerMock });
+      ptyMock.setSessions(["p1"]);
+      brokerMock.setSessions(["b1", "b2"]);
+      const counts = await router.getSessionCounts();
+      expect(counts).toEqual({ pty: 1, tmux: 0, broker: 2 });
+    });
+
+    test("verifyBrokerHandshake returns false when no broker client", async () => {
+      const { router } = createTestRouter();
+      expect(await router.verifyBrokerHandshake()).toBe(false);
+    });
+  });
+
+  // ── checkBrokerSocketExists helper ──
+
+  describe("checkBrokerSocketExists", () => {
+    test("returns false for paths that don't exist", () => {
+      expect(checkBrokerSocketExists("/tmp/never-was-a-broker-here.sock")).toBe(false);
     });
   });
 });
