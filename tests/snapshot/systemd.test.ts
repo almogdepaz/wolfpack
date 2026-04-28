@@ -33,6 +33,12 @@ describe("renderSystemdUnit", () => {
     expect(unit).toContain('Environment="WOLFPACK_DEV_DIR=/home/user/\\"projects\\""');
     expect(unit).toContain('ExecStart="/usr/bin/bun" "/home/user/\\"special\\"/cli.ts"');
   });
+
+  test("declares broker as a hard dependency for systemd start ordering", () => {
+    const unit = renderSystemdUnit(DEFAULT_CONFIG, DEFAULT_ARGS);
+    expect(unit).toContain("Requires=wolfpack-broker.service");
+    expect(unit).toContain("After=network.target wolfpack-broker.service");
+  });
 });
 
 describe("renderBrokerSystemdUnit", () => {
