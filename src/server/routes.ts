@@ -401,6 +401,7 @@ export const routes: Record<
     json(res, {
       default: router.getDefaultBackend(),
       tmuxAvailable: router.isTmuxAvailable(),
+      brokerAvailable: router.isBrokerAvailable(),
       counts,
     });
   },
@@ -547,7 +548,7 @@ export const routes: Record<
 
     const allLoops = [...localLoops, ...peerResults.flat()];
     json(res, { loops: allLoops });
-    checkRalphLoopTransitions(allLoops);
+    checkRalphLoopTransitions(localLoops);
   },
 
   "GET /api/ralph/branches": async (req, res) => {
