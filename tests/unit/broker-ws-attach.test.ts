@@ -154,7 +154,7 @@ let backend: FakeBrokerBackend;
 beforeEach(() => {
   backend = new FakeBrokerBackend();
   backend.alive.add(SESSION);
-  __setTestBackend(backend, "broker");
+  __setTestBackend(backend);
   activePtySessions.clear();
 });
 

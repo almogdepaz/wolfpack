@@ -40,7 +40,7 @@ import pkg from "../../package.json";
 const log = createLogger("routes");
 import { DEV_DIR, isUnderDevDir } from "./dev-dir.js";
 import { RALPH_AGENTS, exec } from "./shell.js";
-import { getBackend, getRouter, type BackendType } from "./backend.js";
+import { getBackend, getRouter } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -279,8 +279,7 @@ export const routes: Record<
           triage = "idle";
         }
 
-        const backend = getRouter().getBackendTypeForSession(name);
-        return { name, lastLine, triage, backend };
+        return { name, lastLine, triage };
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
@@ -395,40 +394,9 @@ export const routes: Record<
     const router = getRouter();
     const counts = await router.getSessionCounts();
     json(res, {
-      default: router.getDefaultBackend(),
       brokerAvailable: router.isBrokerAvailable(),
       counts,
     });
-  },
-
-  "POST /api/backend": async (req, res) => {
-    const body = await parseBody<{ default?: BackendType }>(req, res);
-    if (!body) return;
-    const type = body.default;
-    if (type !== "broker") {
-      return json(res, { error: "invalid backend type — only 'broker' is supported" }, 400);
-    }
-    const router = getRouter();
-    if (!router.isBrokerAvailable()) {
-      return json(res, { error: "broker daemon is not reachable" }, 400);
-    }
-    router.setDefaultBackend(type);
-    // Persist to config so it survives restarts
-    let persisted = false;
-    try {
-      const { loadConfig, saveConfig } = await import("../cli/config.js");
-      const config = loadConfig();
-      if (config) {
-        config.backend = type;
-        saveConfig(config);
-        persisted = true;
-      }
-    } catch (e: unknown) {
-      log.warn("failed to persist backend choice to config", { error: errMsg(e) });
-    }
-    const resp: any = { ok: true, default: type };
-    if (!persisted) resp.warning = "backend changed but could not persist to config";
-    json(res, resp);
   },
 
   "POST /api/kill": async (req, res) => {

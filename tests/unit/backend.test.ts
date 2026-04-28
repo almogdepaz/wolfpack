@@ -2,10 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   initBackend,
   getBackend,
-  getBackendType,
   __resetBackend,
   __setTestBackend,
-  DEFAULT_BACKEND,
 } from "../../src/server/backend";
 import { MockBackend } from "../../src/server/mock-backend";
 
@@ -20,17 +18,12 @@ describe("backend singleton", () => {
     __resetBackend();
   });
 
-  test("DEFAULT_BACKEND is 'broker'", () => {
-    expect(DEFAULT_BACKEND).toBe("broker");
-  });
-
   test("initBackend() returns a backend instance", () => {
     const backend = initBackend();
     expect(backend).toBeDefined();
     expect(typeof backend.list).toBe("function");
     expect(typeof backend.createSession).toBe("function");
     expect(typeof backend.killSession).toBe("function");
-    expect(getBackendType()).toBe("broker");
   });
 
   test("initBackend overwrites previous backend", () => {
@@ -45,9 +38,7 @@ describe("backend singleton", () => {
   });
 
   test("getBackend auto-initializes when no backend set", () => {
-    const backend = getBackend();
-    expect(backend).toBeDefined();
-    expect(getBackendType()).toBe("broker");
+    expect(getBackend()).toBeDefined();
   });
 
   test("getBackend returns same instance after init", () => {
@@ -56,15 +47,10 @@ describe("backend singleton", () => {
     expect(getBackend()).toBe(backend);
   });
 
-  test("getBackendType always returns 'broker'", () => {
-    expect(getBackendType()).toBe("broker");
-  });
-
   test("__resetBackend clears the singleton", () => {
     initBackend();
     __resetBackend();
-    const fresh = getBackend();
-    expect(fresh).toBeDefined();
+    expect(getBackend()).toBeDefined();
   });
 
   test("__resetBackend throws outside test mode", () => {

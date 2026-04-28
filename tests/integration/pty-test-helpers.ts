@@ -35,7 +35,6 @@ export interface PtyTestContext {
 export async function bootTestServer(opts: {
   sessions: string[];
   capturePane?: (session: string) => Promise<string>;
-  backendType?: "broker";
 }): Promise<PtyTestContext> {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
@@ -49,7 +48,7 @@ export async function bootTestServer(opts: {
     sessions: opts.sessions,
     capturePane: opts.capturePane,
   });
-  __setTestBackend(mock, opts.backendType ?? "broker");
+  __setTestBackend(mock);
 
   const { server } = createServerInstance();
 

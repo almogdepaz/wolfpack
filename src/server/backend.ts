@@ -35,11 +35,6 @@ export interface SessionBackend {
   cleanupOrphans(): Promise<void>;
 }
 
-/** Single-variant alias kept for API stability (e.g. `POST /api/backend`). */
-export type BackendType = "broker";
-
-export const DEFAULT_BACKEND: BackendType = "broker";
-
 // ── Broker streaming/attach methods needed by websocket.ts ──
 
 /**
@@ -133,30 +128,10 @@ export class BackendRouter implements SessionBackend {
     this._brokerAvailable = false;
   }
 
-  // ── Routing helpers ──
-
   /** Returns the active broker backend. Throws if the broker is unavailable. */
   private requireBroker(): BrokerBackend {
     if (!this.broker) throw new Error("broker backend unavailable");
     return this.broker;
-  }
-
-  getBackendForSession(_name: string): SessionBackend {
-    return this.requireBroker();
-  }
-
-  getBackendTypeForSession(_name: string): BackendType {
-    return "broker";
-  }
-
-  // ── Default backend management (stub — only "broker" is valid) ──
-
-  getDefaultBackend(): BackendType { return "broker"; }
-
-  setDefaultBackend(type: BackendType): void {
-    if (type !== "broker") throw new Error("only broker is supported");
-    if (!this._brokerAvailable) throw new Error("broker is not available");
-    log.info("default backend changed", { type });
   }
 
   isBrokerAvailable(): boolean { return this._brokerAvailable; }
@@ -309,7 +284,7 @@ let _router: BackendRouter | null = null;
 let _testBackend: SessionBackend | null = null;
 
 /** Initialize the backend router. Call once at server startup. */
-export function initBackend(_type?: BackendType): SessionBackend {
+export function initBackend(): SessionBackend {
   _testBackend = null;
   _router = new BackendRouter();
   return _router;
@@ -328,16 +303,6 @@ export function getRouter(): BackendRouter {
   return _router!;
 }
 
-/** Get the default backend type — always "broker". */
-export function getBackendType(): BackendType {
-  return "broker";
-}
-
-/** Get the backend type that owns a specific session — always "broker". */
-export function getBackendTypeForSession(_name: string): BackendType {
-  return "broker";
-}
-
 /** Test-only: reset singleton for test isolation. */
 export function __resetBackend(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetBackend() is only available in test mode");
@@ -346,10 +311,8 @@ export function __resetBackend(): void {
 }
 
 /** Test-only: inject a custom backend (e.g. MockBackend) as the singleton.
- *  Also creates a router that wraps the mock so getRouter() works in tests.
- *  The optional `_type` parameter is ignored (broker is the only supported
- *  backend) but kept for back-compat with existing test call sites. */
-export function __setTestBackend(backend: SessionBackend, _type?: BackendType): void {
+ *  Also creates a router that wraps the mock so getRouter() works in tests. */
+export function __setTestBackend(backend: SessionBackend): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__setTestBackend() is only available in test mode");
   _testBackend = backend;
   // Construct router (skips broker startup under WOLFPACK_TEST), then inject

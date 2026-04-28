@@ -49,7 +49,7 @@ while (Date.now() < pingDeadline) {
 }
 
 const backend = new BrokerBackend(brokerClient);
-__setTestBackend(backend, "broker");
+__setTestBackend(backend);
 
 const { server } = await import("../../src/server/index.ts");
 

@@ -582,21 +582,18 @@ export function serviceStop() {
       const data = JSON.parse(res);
       if (!data?.counts) {
         // /api/backend returned a non-count payload — likely 401 when JWT auth is configured.
-        // Don't silently skip the warning: pty sessions die on stop, so ask before proceeding.
-        print(dim("\n  Session count unavailable (server may require auth). PTY sessions will be killed."));
+        // Surface the warning anyway: stopping wolfpack won't kill broker sessions, but the user
+        // should still confirm before tearing down the server.
+        print(dim("\n  Session count unavailable (server may require auth)."));
         const answer = ask("  Continue? (y/n) ");
         if (answer.toLowerCase() !== "y") {
           print(dim("  Aborted."));
           return;
         }
       } else {
-        const { pty = 0, tmux = 0, broker = 0 } = data.counts;
-        if (pty > 0 || tmux > 0 || broker > 0) {
-          const parts: string[] = [];
-          if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
-          if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
-          if (broker > 0) parts.push(`${broker} broker session${broker > 1 ? "s" : ""} will persist`);
-          print(dim(`\n  ${parts.join(", ")}.`));
+        const { broker = 0 } = data.counts;
+        if (broker > 0) {
+          print(dim(`\n  ${broker} broker session${broker > 1 ? "s" : ""} will persist (broker daemon is independent).`));
           const answer = ask("  Continue? (y/n) ");
           if (answer.toLowerCase() !== "y") {
             print(dim("  Aborted."));

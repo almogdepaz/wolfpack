@@ -28,7 +28,6 @@ import {
   tailscaleBin,
   type Config,
 } from "./config.js";
-import { DEFAULT_BACKEND, type BackendType } from "../server/backend.js";
 import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
 
@@ -107,12 +106,6 @@ export async function setup() {
 
   print("");
 
-  // Session backend: broker daemon is the default; pty is the fallback when
-  // the broker socket isn't reachable. No interactive choice — the previous
-  // tmux option was removed in favor of the broker.
-  const backend: BackendType = DEFAULT_BACKEND;
-
-  print("");
 
   // ── Install optional missing deps (tailscale only) ──
   if (!hasTailscale) {
@@ -236,7 +229,7 @@ export async function setup() {
     }
   }
 
-  const config: Config = { devDir, port, tailscaleHostname, backend };
+  const config: Config = { devDir, port, tailscaleHostname };
   saveConfig(config);
 
   print("");

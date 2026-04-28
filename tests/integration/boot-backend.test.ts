@@ -11,12 +11,11 @@ import {
   wait,
 } from "./pty-test-helpers";
 
-describe("bootTestServer backendType=broker", () => {
+describe("bootTestServer", () => {
     test("boots server, connects WS, receives attach_ack", async () => {
       const ctx = await bootTestServer({
         sessions: ["test-session"],
         capturePane: async () => "$ mock-prompt\n",
-        backendType: "broker",
       });
 
       try {

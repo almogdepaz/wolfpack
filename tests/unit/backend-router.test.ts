@@ -48,7 +48,6 @@ describe("BackendRouter", () => {
       const { router, brokerMock } = createTestRouter();
       await router.createSession("new-sess", "/tmp", undefined, loadSettings);
       expect(await brokerMock.hasSession("new-sess")).toBe(true);
-      expect(router.getBackendTypeForSession("new-sess")).toBe("broker");
     });
 
     test("rejects duplicate session names", async () => {
@@ -74,19 +73,6 @@ describe("BackendRouter", () => {
       await router.resize("sess", 80, 24);
       await router.killSession("sess");
       expect(await brokerMock.hasSession("sess")).toBe(false);
-    });
-  });
-
-  describe("setDefaultBackend()", () => {
-    test("accepts 'broker' when available", () => {
-      const { router } = createTestRouter();
-      router.setDefaultBackend("broker");
-      expect(router.getDefaultBackend()).toBe("broker");
-    });
-
-    test("throws when broker is unavailable", () => {
-      const router = new BackendRouter();
-      expect(() => router.setDefaultBackend("broker")).toThrow("broker is not available");
     });
   });
 

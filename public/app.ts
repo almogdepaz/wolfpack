@@ -958,16 +958,6 @@ function createPtyTerminalController(opts) {
     if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
-    const isTmuxSession = (() => {
-      const groups = (state as any).lastSessionGroups || [];
-      for (const g of groups) {
-        for (const s of (g?.sessions || [])) {
-          if (s.name === opts.session) return (s.backend ?? "tmux") === "tmux";
-        }
-      }
-      return true; // default-tmux world: assume tmux when session info isn't loaded yet
-    })();
-
     const result = createTerminalInstance({
       fontSize: opts.fontSize,
       scrollback: opts.scrollback,
@@ -977,12 +967,9 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
-      alwaysForwardWheel: isTmuxSession,
+      alwaysForwardWheel: false,
       onWheelScroll: (ev) => {
         if (!_term) return;
-        // Skip scroll-lock when wheel is forwarded to the server — the
-        // viewport doesn't actually move on the client.
-        if (isTmuxSession) return;
         try {
           const hasMouse = _term.getMode(1000) || _term.getMode(1002) || _term.getMode(1003);
           if (hasMouse) return;
@@ -1763,7 +1750,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -3558,7 +3545,7 @@ function sidebarCardHtml(s, machineUrl) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
+      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}

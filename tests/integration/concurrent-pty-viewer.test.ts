@@ -28,7 +28,6 @@ beforeAll(async () => {
   ctx = await bootTestServer({
     sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-concurrent\n",
-    backendType: "broker",
   });
 });
 

@@ -15,8 +15,7 @@ import {
   CLOSE_CODE_DISPLACED,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
-// (legacy tmux helpers removed — broker + pty backends drive everything now)
-import { getBackend, getBackendTypeForSession, getRouter } from "./backend.js";
+import { getBackend, getRouter } from "./backend.js";
 import type { SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
@@ -294,16 +293,12 @@ function setupNewPtyEntry(
   type PrefillMode = typeof VALID_PREFILL_MODES[number];
   let pendingPrefillMode: PrefillMode = "full";
 
-  const backendType = getBackendTypeForSession(session);
-
-  // Both supported backends stream live output via a snapshot prefill +
-  // subscribe loop (PTY in-process, broker via RPC). tmux is no longer a
-  // backend choice — the intermediate `tmux attach-session` path was removed.
+  // Streaming attach path: snapshot prefill + subscribe to broker output stream.
   const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
     getRouter().getStreamingBackendForSession(session);
 
   if (!streamingBackend) {
-    log.warn("ws attach: streaming backend unavailable", { session, backendType });
+    log.warn("ws attach: streaming backend unavailable", { session });
     try { ws.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) {
       log.debug("streaming backend missing close failed", { session, error: errMsg(e) });
     }
@@ -482,7 +477,7 @@ function setupNewPtyEntry(
               resizeTimer = null;
               if (!entry.alive) return;
               streamingBackend.resize(session, cols, rows).catch((e: unknown) => {
-                log.debug(`streaming backend resize failed`, { session, backendType, error: errMsg(e) });
+                log.debug(`streaming backend resize failed`, { session, error: errMsg(e) });
               });
             }, RESIZE_DEBOUNCE_MS);
           }
