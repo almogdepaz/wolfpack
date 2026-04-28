@@ -179,6 +179,64 @@ export function generateSystemdUnit(): string {
   return renderSystemdUnit(loadConfig(), programArgs());
 }
 
+// ── Broker service file renderers ──────────────────────────────────────────
+//
+// The broker daemon owns all PTY sessions and must run before the wolfpack
+// server. macOS uses a separate launchd label; linux uses a systemd unit
+// that wolfpack.service requires (`Requires=` ordering).
+//
+// Service install/uninstall wiring for these files is out of scope for this
+// commit — these renderers are exposed so they can be snapshot-tested and
+// installed by a future service-install pass.
+
+const BROKER_PLIST_LABEL = "com.wolfpack.broker";
+
+export function renderBrokerPlist(brokerBinPath: string, logPath: string): string {
+  const safeLog = xmlEsc(logPath);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEsc(BROKER_PLIST_LABEL)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEsc(brokerBinPath)}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${safeLog}</string>
+  <key>StandardErrorPath</key>
+  <string>${safeLog}</string>
+</dict>
+</plist>`;
+}
+
+export function renderBrokerSystemdUnit(brokerBinPath: string): string {
+  return `[Unit]
+Description=Wolfpack PTY broker daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart="${systemdEsc(brokerBinPath)}"
+Restart=always
+RestartSec=2
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+`;
+}
+
 // launchd domain target for the current user
 const LAUNCHD_DOMAIN = `gui/${process.getuid!()}`;
 const LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/${PLIST_LABEL}`;
@@ -360,11 +418,12 @@ export function serviceStop() {
           return;
         }
       } else {
-        const { pty = 0, tmux = 0 } = data.counts;
-        if (pty > 0 || tmux > 0) {
+        const { pty = 0, tmux = 0, broker = 0 } = data.counts;
+        if (pty > 0 || tmux > 0 || broker > 0) {
           const parts: string[] = [];
           if (pty > 0) parts.push(`${pty} pty session${pty > 1 ? "s" : ""} will be killed`);
           if (tmux > 0) parts.push(`${tmux} tmux session${tmux > 1 ? "s" : ""} will persist`);
+          if (broker > 0) parts.push(`${broker} broker session${broker > 1 ? "s" : ""} will persist`);
           print(dim(`\n  ${parts.join(", ")}.`));
           const answer = ask("  Continue? (y/n) ");
           if (answer.toLowerCase() !== "y") {

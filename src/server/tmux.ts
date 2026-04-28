@@ -12,9 +12,10 @@ import { createLogger, errMsg } from "../log.js";
 const log = createLogger("tmux");
 
 const _realExec = promisify(execFile);
-let _execOverride: typeof _realExec | null = null;
-const exec: typeof _realExec = (...args: Parameters<typeof _realExec>) =>
-  (_execOverride || _realExec)(...args);
+type ExecFn = (file: string, args: readonly string[], options?: { timeout?: number; encoding?: BufferEncoding; maxBuffer?: number }) => Promise<{ stdout: string; stderr: string }>;
+let _execOverride: ExecFn | null = null;
+const exec: ExecFn = ((file, args, options) =>
+  (_execOverride || (_realExec as unknown as ExecFn))(file, args, options)) as ExecFn;
 
 export const TMUX = "tmux";
 export const MOBILE_CAPTURE_HISTORY_LINES = 2000;
@@ -145,7 +146,7 @@ export function __setTestOverrides(overrides: Partial<{
   capturePane: (session: string) => Promise<string>;
   listSessionsRaw: () => Promise<string>;
   showEnvironment: (session: string) => Promise<string>;
-  exec: typeof _realExec;
+  exec: ExecFn;
 }>): void {
   assertTestMode("__setTestOverrides");
   if (overrides.tmuxList) _tmuxListFn = overrides.tmuxList;

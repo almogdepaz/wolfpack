@@ -47,26 +47,6 @@ type CheckFn = () => CheckResult[] | Promise<CheckResult[]>;
 function checkDeps(): CheckResult[] {
   const results: CheckResult[] = [];
 
-  // tmux
-  try {
-    const ver = execFileSync("tmux", ["-V"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    const match = ver.match(/(\d+\.\d+)/);
-    if (match && parseFloat(match[1]) >= 3.0) {
-      results.push({ name: "tmux", group: "Dependencies", status: "pass", detail: ver });
-    } else {
-      results.push({
-        name: "tmux", group: "Dependencies", status: "fail",
-        detail: `${ver} (need >= 3.0)`,
-        fixHint: IS_MACOS ? "brew install tmux" : "sudo apt install tmux",
-      });
-    }
-  } catch {
-    results.push({
-      name: "tmux", group: "Dependencies", status: "fail", detail: "not found",
-      fixHint: IS_MACOS ? "brew install tmux" : "sudo apt install tmux",
-    });
-  }
-
   // tailscale
   const tsBin = tailscaleBin();
   if (tsBin) {
@@ -336,42 +316,42 @@ function checkBinary(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
-// Check group 6: tmux runtime
+// Check group 6: Broker (PTY daemon)
 // ---------------------------------------------------------------------------
 
-function checkTmuxRuntime(): CheckResult[] {
+function checkBroker(): CheckResult[] {
   const results: CheckResult[] = [];
 
-  // list sessions
-  try {
-    const out = execFileSync("tmux", ["list-sessions"], {
-      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const count = out ? out.split("\n").length : 0;
+  // Binary location: ~/.wolfpack/bin/wolfpack-broker (preferred) or co-located
+  // with the main binary.
+  const candidates = [
+    join(WOLFPACK_DIR, "bin", "wolfpack-broker"),
+    join(WOLFPACK_DIR, "wolfpack-broker"),
+  ];
+  const found = candidates.find((p) => existsSync(p));
+  if (found) {
     results.push({
-      name: "tmux sessions", group: "tmux Runtime", status: "pass",
-      detail: `${count} active`,
+      name: "broker binary", group: "Broker", status: "pass", detail: found,
     });
-  } catch {
+  } else {
     results.push({
-      name: "tmux sessions", group: "tmux Runtime", status: "pass",
-      detail: "no sessions (server not running)",
+      name: "broker binary", group: "Broker", status: "fail",
+      detail: "not found in ~/.wolfpack/bin",
+      fixHint: "bun run scripts/build.ts (requires rust toolchain)",
     });
   }
 
-  // create + kill throwaway — unique name avoids clobbering existing sessions
-  const testSession = `_wolfpack_doctor_${Date.now()}`;
-  try {
-    execFileSync("tmux", ["new-session", "-d", "-s", testSession], { stdio: "ignore" });
-    execFileSync("tmux", ["kill-session", "-t", testSession], { stdio: "ignore" });
-    results.push({ name: "tmux create/destroy", group: "tmux Runtime", status: "pass", detail: "ok" });
-  } catch {
+  // Socket: ~/.wolfpack/broker.sock — present means a broker is reachable.
+  const socketPath = join(WOLFPACK_DIR, "broker.sock");
+  if (existsSync(socketPath)) {
     results.push({
-      name: "tmux create/destroy", group: "tmux Runtime", status: "fail",
-      detail: "failed to create test session",
+      name: "broker socket", group: "Broker", status: "pass", detail: socketPath,
     });
-    // cleanup in case creation succeeded but kill failed
-    try { execFileSync("tmux", ["kill-session", "-t", testSession], { stdio: "ignore" }); } catch { /* noop */ }
+  } else {
+    results.push({
+      name: "broker socket", group: "Broker", status: "warn",
+      detail: "no socket — daemon not running",
+    });
   }
 
   return results;
@@ -520,7 +500,7 @@ export async function doctor({ fix: doFix = process.argv.includes("--fix") } = {
     checkService,
     checkConnectivity,
     checkBinary,
-    checkTmuxRuntime,
+    checkBroker,
     checkEnvironment,
     checkLogs,
   ];

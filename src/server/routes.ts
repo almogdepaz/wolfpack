@@ -44,7 +44,7 @@ import {
   isUnderDevDir,
   exec,
 } from "./tmux.js";
-import { getBackend, getRouter } from "./backend.js";
+import { getBackend, getRouter, type BackendType } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -400,9 +400,39 @@ export const routes: Record<
     const counts = await router.getSessionCounts();
     json(res, {
       default: router.getDefaultBackend(),
-      tmuxAvailable: router.isTmuxAvailable(),
+      brokerAvailable: router.isBrokerAvailable(),
       counts,
     });
+  },
+
+  "POST /api/backend": async (req, res) => {
+    const body = await parseBody<{ default?: BackendType }>(req, res);
+    if (!body) return;
+    const type = body.default;
+    if (type !== "pty" && type !== "broker") {
+      return json(res, { error: "invalid backend type — must be 'pty' or 'broker'" }, 400);
+    }
+    const router = getRouter();
+    if (type === "broker" && !router.isBrokerAvailable()) {
+      return json(res, { error: "broker daemon is not reachable" }, 400);
+    }
+    router.setDefaultBackend(type);
+    // Persist to config so it survives restarts
+    let persisted = false;
+    try {
+      const { loadConfig, saveConfig } = await import("../cli/config.js");
+      const config = loadConfig();
+      if (config) {
+        config.backend = type;
+        saveConfig(config);
+        persisted = true;
+      }
+    } catch (e: unknown) {
+      log.warn("failed to persist backend choice to config", { error: errMsg(e) });
+    }
+    const resp: any = { ok: true, default: type };
+    if (!persisted) resp.warning = "backend changed but could not persist to config";
+    json(res, resp);
   },
 
   "POST /api/kill": async (req, res) => {
@@ -441,6 +471,30 @@ export const routes: Record<
     const result = await discoverPeers();
     if (result.error) return json(res, { peers: [], error: result.error });
     json(res, { peers: result.peers });
+  },
+
+  "GET /api/poll": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const pane = await getBackend().capturePane(session);
+    json(res, { pane });
+  },
+
+  "GET /api/copy-text": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const text = await getBackend().capturePane(session);
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(text);
   },
 
   "GET /api/git-status": async (req, res) => {
@@ -506,7 +560,7 @@ export const routes: Record<
 
     const allLoops = [...localLoops, ...peerResults.flat()];
     json(res, { loops: allLoops });
-    checkRalphLoopTransitions(allLoops);
+    checkRalphLoopTransitions(localLoops);
   },
 
   "GET /api/ralph/branches": async (req, res) => {

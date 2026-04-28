@@ -53,16 +53,16 @@ describe("parseConfig", () => {
     });
   });
 
-  test("accepts backend 'tmux'", () => {
+  test("accepts backend 'broker'", () => {
     expect(parseConfig({
       devDir: "/Users/home/Dev",
       port: 18790,
-      backend: "tmux",
+      backend: "broker",
     })).toEqual({
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
-      backend: "tmux",
+      backend: "broker",
     });
   });
 

@@ -26,3 +26,5 @@ PLAN*.md
 .wolfpack/
 public/.DS_Store
 .edc/
+broker/target/
+.playwright-mcp/

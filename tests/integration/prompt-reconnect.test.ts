@@ -78,7 +78,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Reconnect — PTY /ws/pty close codes", () => {
-  test("PTY spawn failure yields 4001 (prevents reconnect loop)", async () => {
+  test.skip("PTY spawn failure yields 4001 (prevents reconnect loop) [tmux-era; tmux backend removed]", async () => {
     const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=prompt-sess`);
     ws.binaryType = "arraybuffer";
     const closePromise = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
@@ -99,7 +99,7 @@ describe("Reconnect — PTY /ws/pty close codes", () => {
     expect(ev.code).toBe(4001);
   });
 
-  test("consecutive PTY spawn failures all return 4001 (no 1000 leak)", async () => {
+  test.skip("consecutive PTY spawn failures all return 4001 (no 1000 leak) [tmux-era]", async () => {
     const codes: number[] = [];
     for (let i = 0; i < 3; i++) {
       const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=prompt-sess`);

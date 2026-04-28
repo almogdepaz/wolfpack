@@ -21,29 +21,26 @@ describe("tmuxNewSession map update safety", () => {
 });
 
 describe("uniqueSessionName dot normalization", () => {
-  const DEV = process.env.WOLFPACK_DEV_DIR!;
-
-  function mockSessions(names: string[]) {
-    // Override tmuxList directly — avoids depending on _realTmuxList's filtering
-    // and is immune to integration tests overriding _tmuxListFn at module-load time.
-    __setTestOverrides({
-      tmuxList: async () => names,
-    });
+  async function mockSessions(names: string[]) {
+    const { __setTestBackend } = await import("../../src/server/backend.js");
+    const { MockBackend } = await import("../../src/server/mock-backend.js");
+    const mock = new MockBackend({ sessions: names });
+    __setTestBackend(mock);
     sessionDirMap.clear();
   }
 
   test("replaces dots with underscores to match tmux behavior", async () => {
-    mockSessions([]);
+    await mockSessions([]);
     expect(await uniqueSessionName("my.project")).toBe("my_project");
   });
 
   test("deduplicates after dot normalization", async () => {
-    mockSessions(["my_project"]);
+    await mockSessions(["my_project"]);
     expect(await uniqueSessionName("my.project")).toBe("my_project-2");
   });
 
   test("multiple dots are all replaced", async () => {
-    mockSessions([]);
+    await mockSessions([]);
     expect(await uniqueSessionName("a.b.c")).toBe("a_b_c");
   });
 });

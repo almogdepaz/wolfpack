@@ -1,5 +1,5 @@
 /**
- * Verify bootTestServer works with both backend types ("tmux" and "pty").
+ * Verify bootTestServer works with the supported backend types ("pty" and "broker").
  * Ensures MockBackend integration is backend-type agnostic.
  */
 import { describe, test, expect } from "bun:test";
@@ -11,7 +11,7 @@ import {
   wait,
 } from "./pty-test-helpers";
 
-for (const backendType of ["tmux", "pty"] as const) {
+for (const backendType of ["pty", "broker"] as const) {
   describe(`bootTestServer backendType=${backendType}`, () => {
     test("boots server, connects WS, receives attach_ack", async () => {
       const ctx = await bootTestServer({

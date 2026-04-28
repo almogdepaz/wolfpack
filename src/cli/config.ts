@@ -63,7 +63,7 @@ export function parseConfig(raw: unknown): Config | null {
       : undefined;
   const rawBackend = candidate.backend;
   const backend: BackendType | undefined =
-    rawBackend === "pty" || rawBackend === "tmux" ? rawBackend : undefined;
+    rawBackend === "pty" || rawBackend === "broker" ? rawBackend : undefined;
   return { devDir, port, tailscaleHostname, backend };
 }
 

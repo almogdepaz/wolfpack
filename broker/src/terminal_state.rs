@@ -1,0 +1,1408 @@
+//! Minimal vte-driven terminal grid emulator for the broker.
+//!
+//! The broker owns canonical terminal state per session. PTY output bytes
+//! flow through `vte::Parser` and into the data structures here, which
+//! preserve a faithful enough screen + scrollback + cursor + mode model to
+//! satisfy reconnect-snapshot fidelity for shells and standard TUIs.
+//!
+//! Scope is intentionally narrow:
+//!   * printable cells with SGR-tracked attrs
+//!   * cursor and CR/LF/BS/HT
+//!   * common CSI cursor moves (CUU/CUD/CUF/CUB/CHA/VPA/CUP/HVP)
+//!   * ED (CSI J) and EL (CSI K)
+//!   * alt screen (DECSET 47/1047/1049)
+//!   * scroll region (DECSTBM, CSI r) with IND/RI/NEL
+//!   * common DEC private modes (1, 6, 7, 25, 47, 1047, 1048, 1049, 2004,
+//!     9/1000/1002/1003/1006 mouse)
+//!
+//! Wider features (sixel, charsets, DECCOLM, tab stops, insert/delete line,
+//! double-width chars) are out of scope here.
+
+use std::collections::VecDeque;
+
+use uuid::Uuid;
+use vte::{Params, Parser, Perform};
+
+use crate::protocol::{
+    CellAttrs, CursorShape, CursorState, MouseMode, ScrollRegion, Snapshot, StyledCell,
+    StyledLine, TerminalModes,
+};
+
+const DEFAULT_SCROLLBACK_LIMIT: usize = 5000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Cell {
+    ch: char,
+    attrs: CellAttrs,
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self::blank()
+    }
+}
+
+impl Cell {
+    fn blank() -> Self {
+        Self { ch: ' ', attrs: CellAttrs::default() }
+    }
+    fn with_attrs(attrs: CellAttrs) -> Self {
+        Self { ch: ' ', attrs }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Grid {
+    cols: usize,
+    rows: usize,
+    lines: Vec<Vec<Cell>>,
+}
+
+impl Grid {
+    fn new(cols: usize, rows: usize) -> Self {
+        Self {
+            cols,
+            rows,
+            lines: (0..rows).map(|_| blank_line(cols)).collect(),
+        }
+    }
+
+    fn resize(&mut self, cols: usize, rows: usize) {
+        self.cols = cols;
+        self.rows = rows;
+        self.lines.resize_with(rows, || blank_line(cols));
+        for line in &mut self.lines {
+            line.resize_with(cols, Cell::blank);
+        }
+    }
+
+    fn clear_with(&mut self, attrs: &CellAttrs) {
+        for line in &mut self.lines {
+            for cell in line.iter_mut() {
+                *cell = Cell::with_attrs(attrs.clone());
+            }
+        }
+    }
+}
+
+fn blank_line(cols: usize) -> Vec<Cell> {
+    vec![Cell::blank(); cols]
+}
+
+fn blank_line_with(cols: usize, attrs: &CellAttrs) -> Vec<Cell> {
+    vec![Cell::with_attrs(attrs.clone()); cols]
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CursorPos {
+    row: usize,
+    col: usize,
+}
+
+#[derive(Clone, Debug)]
+struct SavedCursor {
+    pos: CursorPos,
+    sgr: CellAttrs,
+}
+
+pub struct TerminalState {
+    parser: Parser,
+    inner: Inner,
+}
+
+struct Inner {
+    cols: usize,
+    rows: usize,
+    primary: Grid,
+    alt: Grid,
+    on_alt: bool,
+    scrollback: VecDeque<Vec<Cell>>,
+    scrollback_max: usize,
+    cursor: CursorPos,
+    saved_primary: Option<SavedCursor>,
+    saved_alt: Option<SavedCursor>,
+    pending_wrap: bool,
+    sgr: CellAttrs,
+    scroll_top: usize,
+    scroll_bottom: usize,
+    modes: TerminalModes,
+    cursor_visible: bool,
+    title: Option<String>,
+}
+
+impl TerminalState {
+    pub fn new(cols: u16, rows: u16) -> Self {
+        let cols = cols.max(1) as usize;
+        let rows = rows.max(1) as usize;
+        Self {
+            parser: Parser::new(),
+            inner: Inner {
+                cols,
+                rows,
+                primary: Grid::new(cols, rows),
+                alt: Grid::new(cols, rows),
+                on_alt: false,
+                scrollback: VecDeque::new(),
+                scrollback_max: DEFAULT_SCROLLBACK_LIMIT,
+                cursor: CursorPos { row: 0, col: 0 },
+                saved_primary: None,
+                saved_alt: None,
+                pending_wrap: false,
+                sgr: CellAttrs::default(),
+                scroll_top: 0,
+                scroll_bottom: rows - 1,
+                modes: TerminalModes { auto_wrap: true, ..Default::default() },
+                cursor_visible: true,
+                title: None,
+            },
+        }
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.parser.advance(&mut self.inner, b);
+        }
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        let cols = cols.max(1) as usize;
+        let rows = rows.max(1) as usize;
+        self.inner.resize(cols, rows);
+    }
+
+    pub fn cols(&self) -> u16 {
+        self.inner.cols as u16
+    }
+
+    pub fn rows(&self) -> u16 {
+        self.inner.rows as u16
+    }
+
+    pub fn modes(&self) -> &TerminalModes {
+        &self.inner.modes
+    }
+
+    pub fn on_alt_screen(&self) -> bool {
+        self.inner.on_alt
+    }
+
+    pub fn cursor(&self) -> CursorState {
+        let inner = &self.inner;
+        CursorState {
+            row: inner.cursor.row.min(inner.rows.saturating_sub(1)) as u16,
+            col: inner.cursor.col.min(inner.cols.saturating_sub(1)) as u16,
+            visible: inner.cursor_visible,
+            shape: CursorShape::Block,
+        }
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.inner.title.as_deref()
+    }
+
+    pub fn scroll_region(&self) -> ScrollRegion {
+        ScrollRegion {
+            top: self.inner.scroll_top as u16,
+            bottom: self.inner.scroll_bottom as u16,
+        }
+    }
+
+    pub fn snapshot(&self, session_id: Uuid, seq: u64, captured_at_ms: u64) -> Snapshot {
+        let inner = &self.inner;
+        let active = if inner.on_alt { &inner.alt } else { &inner.primary };
+        let visible_screen = active.lines.iter().map(|l| line_to_styled(l)).collect();
+        let scrollback = inner.scrollback.iter().map(|l| line_to_styled(l)).collect();
+        Snapshot {
+            session_id,
+            seq,
+            cols: inner.cols as u16,
+            rows: inner.rows as u16,
+            visible_screen,
+            scrollback,
+            cursor: self.cursor(),
+            modes: inner.modes.clone(),
+            scroll_region: self.scroll_region(),
+            title: inner.title.clone(),
+            captured_at_ms,
+        }
+    }
+}
+
+fn line_to_styled(line: &[Cell]) -> StyledLine {
+    StyledLine {
+        cells: line
+            .iter()
+            .map(|c| StyledCell {
+                ch: c.ch.to_string(),
+                attrs: c.attrs.clone(),
+            })
+            .collect(),
+    }
+}
+
+impl Inner {
+    fn resize(&mut self, cols: usize, rows: usize) {
+        self.cols = cols;
+        self.rows = rows;
+        self.primary.resize(cols, rows);
+        self.alt.resize(cols, rows);
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
+        self.cursor.row = self.cursor.row.min(rows - 1);
+        self.cursor.col = self.cursor.col.min(cols - 1);
+        self.pending_wrap = false;
+    }
+
+    fn put_char(&mut self, c: char) {
+        if self.modes.auto_wrap && self.pending_wrap {
+            self.cursor.col = 0;
+            self.linefeed();
+            self.pending_wrap = false;
+        }
+        if self.cursor.col >= self.cols {
+            self.cursor.col = self.cols - 1;
+        }
+
+        let row = self.cursor.row;
+        let col = self.cursor.col;
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
+        if let Some(line) = grid.lines.get_mut(row) {
+            if let Some(cell) = line.get_mut(col) {
+                cell.ch = c;
+                cell.attrs = attrs;
+            }
+        }
+
+        if col + 1 >= self.cols {
+            if self.modes.auto_wrap {
+                self.pending_wrap = true;
+            }
+        } else {
+            self.cursor.col += 1;
+            self.pending_wrap = false;
+        }
+    }
+
+    fn carriage_return(&mut self) {
+        self.cursor.col = 0;
+        self.pending_wrap = false;
+    }
+
+    fn linefeed(&mut self) {
+        self.pending_wrap = false;
+        if self.cursor.row == self.scroll_bottom {
+            self.scroll_up(1);
+        } else if self.cursor.row + 1 < self.rows {
+            self.cursor.row += 1;
+        }
+    }
+
+    fn next_line(&mut self) {
+        self.linefeed();
+        self.cursor.col = 0;
+    }
+
+    fn reverse_index(&mut self) {
+        self.pending_wrap = false;
+        if self.cursor.row == self.scroll_top {
+            self.scroll_down(1);
+        } else if self.cursor.row > 0 {
+            self.cursor.row -= 1;
+        }
+    }
+
+    fn backspace(&mut self) {
+        self.pending_wrap = false;
+        if self.cursor.col > 0 {
+            self.cursor.col -= 1;
+        }
+    }
+
+    fn tab(&mut self) {
+        self.pending_wrap = false;
+        let next = ((self.cursor.col / 8) + 1) * 8;
+        self.cursor.col = next.min(self.cols.saturating_sub(1));
+    }
+
+    fn scroll_up(&mut self, n: usize) {
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom;
+        if bottom < top {
+            return;
+        }
+        let region_height = bottom - top + 1;
+        let n = n.min(region_height);
+        let cols = self.cols;
+        let attrs = self.sgr.clone();
+        // Lines that fall off the top of the primary screen's full-height
+        // region (top == 0) flow into scrollback; lines lost from a partial
+        // scroll region or from the alt screen do not.
+        let push_scrollback = !self.on_alt && top == 0;
+
+        let mut removed: Vec<Vec<Cell>> = Vec::with_capacity(n);
+        {
+            let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
+            for _ in 0..n {
+                let line = grid.lines.remove(top);
+                grid.lines.insert(bottom, blank_line_with(cols, &attrs));
+                removed.push(line);
+            }
+        }
+        if push_scrollback {
+            for line in removed {
+                self.push_scrollback(line);
+            }
+        }
+    }
+
+    fn scroll_down(&mut self, n: usize) {
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom;
+        if bottom < top {
+            return;
+        }
+        let region_height = bottom - top + 1;
+        let n = n.min(region_height);
+        let cols = self.cols;
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
+        for _ in 0..n {
+            let _ = grid.lines.remove(bottom);
+            grid.lines.insert(top, blank_line_with(cols, &attrs));
+        }
+    }
+
+    fn push_scrollback(&mut self, line: Vec<Cell>) {
+        self.scrollback.push_back(line);
+        while self.scrollback.len() > self.scrollback_max {
+            self.scrollback.pop_front();
+        }
+    }
+
+    fn cursor_up(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let lower = if self.modes.origin_mode { self.scroll_top } else { 0 };
+        let target = self.cursor.row.saturating_sub(n);
+        self.cursor.row = target.max(lower);
+    }
+
+    fn cursor_down(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let upper = if self.modes.origin_mode {
+            self.scroll_bottom
+        } else {
+            self.rows - 1
+        };
+        self.cursor.row = (self.cursor.row + n).min(upper);
+    }
+
+    fn cursor_forward(&mut self, n: usize) {
+        self.pending_wrap = false;
+        self.cursor.col = (self.cursor.col + n).min(self.cols - 1);
+    }
+
+    fn cursor_backward(&mut self, n: usize) {
+        self.pending_wrap = false;
+        self.cursor.col = self.cursor.col.saturating_sub(n);
+    }
+
+    fn cursor_column(&mut self, col_1based: usize) {
+        self.pending_wrap = false;
+        self.cursor.col = col_1based.saturating_sub(1).min(self.cols - 1);
+    }
+
+    fn cursor_row(&mut self, row_1based: usize) {
+        self.pending_wrap = false;
+        self.cursor.row = row_1based.saturating_sub(1).min(self.rows - 1);
+    }
+
+    fn cursor_position(&mut self, row_1based: usize, col_1based: usize) {
+        self.pending_wrap = false;
+        let row = row_1based.saturating_sub(1);
+        let col = col_1based.saturating_sub(1).min(self.cols - 1);
+        let row = if self.modes.origin_mode {
+            (self.scroll_top + row).min(self.scroll_bottom)
+        } else {
+            row.min(self.rows - 1)
+        };
+        self.cursor.row = row;
+        self.cursor.col = col;
+    }
+
+    fn erase_in_display(&mut self, mode: u16) {
+        let attrs = self.sgr.clone();
+        let cols = self.cols;
+        let rows = self.rows;
+        let row = self.cursor.row;
+        let col = self.cursor.col.min(cols - 1);
+        {
+            let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
+            match mode {
+                0 => {
+                    if let Some(line) = grid.lines.get_mut(row) {
+                        for cell in line.iter_mut().skip(col) {
+                            *cell = Cell::with_attrs(attrs.clone());
+                        }
+                    }
+                    for r in row + 1..rows {
+                        grid.lines[r] = blank_line_with(cols, &attrs);
+                    }
+                }
+                1 => {
+                    for r in 0..row {
+                        grid.lines[r] = blank_line_with(cols, &attrs);
+                    }
+                    if let Some(line) = grid.lines.get_mut(row) {
+                        for cell in line.iter_mut().take(col + 1) {
+                            *cell = Cell::with_attrs(attrs.clone());
+                        }
+                    }
+                }
+                2 | 3 => {
+                    for r in 0..rows {
+                        grid.lines[r] = blank_line_with(cols, &attrs);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if mode == 3 {
+            self.scrollback.clear();
+        }
+    }
+
+    fn erase_in_line(&mut self, mode: u16) {
+        let attrs = self.sgr.clone();
+        let cols = self.cols;
+        let row = self.cursor.row;
+        let col = self.cursor.col.min(cols - 1);
+        let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
+        let line = match grid.lines.get_mut(row) {
+            Some(l) => l,
+            None => return,
+        };
+        match mode {
+            0 => {
+                for cell in line.iter_mut().skip(col) {
+                    *cell = Cell::with_attrs(attrs.clone());
+                }
+            }
+            1 => {
+                for cell in line.iter_mut().take(col + 1) {
+                    *cell = Cell::with_attrs(attrs.clone());
+                }
+            }
+            2 => {
+                *line = blank_line_with(cols, &attrs);
+            }
+            _ => {}
+        }
+    }
+
+    fn set_scroll_region(&mut self, top_1based: u16, bottom_1based: u16) {
+        let top = (top_1based.max(1) as usize).saturating_sub(1);
+        let bottom = (bottom_1based.max(1) as usize)
+            .saturating_sub(1)
+            .min(self.rows - 1);
+        if top >= bottom {
+            return;
+        }
+        self.scroll_top = top;
+        self.scroll_bottom = bottom;
+        let row = if self.modes.origin_mode { self.scroll_top } else { 0 };
+        self.cursor = CursorPos { row, col: 0 };
+        self.pending_wrap = false;
+    }
+
+    fn save_cursor(&mut self) {
+        let saved = SavedCursor {
+            pos: self.cursor.clone(),
+            sgr: self.sgr.clone(),
+        };
+        if self.on_alt {
+            self.saved_alt = Some(saved);
+        } else {
+            self.saved_primary = Some(saved);
+        }
+    }
+
+    fn restore_cursor(&mut self) {
+        let saved = if self.on_alt {
+            self.saved_alt.clone()
+        } else {
+            self.saved_primary.clone()
+        };
+        if let Some(SavedCursor { pos, sgr }) = saved {
+            self.cursor = pos;
+            self.sgr = sgr;
+        } else {
+            self.cursor = CursorPos { row: 0, col: 0 };
+        }
+        self.pending_wrap = false;
+    }
+
+    fn switch_alt(&mut self, enable: bool, save_restore: bool, clear_on_enter: bool) {
+        if enable && !self.on_alt {
+            if save_restore {
+                self.save_cursor();
+            }
+            self.on_alt = true;
+            self.modes.alt_screen = true;
+            if clear_on_enter {
+                let attrs = self.sgr.clone();
+                self.alt.clear_with(&attrs);
+            }
+            self.cursor = CursorPos { row: 0, col: 0 };
+            self.pending_wrap = false;
+        } else if !enable && self.on_alt {
+            self.on_alt = false;
+            self.modes.alt_screen = false;
+            if save_restore {
+                self.restore_cursor();
+            } else {
+                self.pending_wrap = false;
+            }
+        }
+    }
+
+    fn apply_sgr(&mut self, params: &Params) {
+        // Flatten semicolon-separated params + colon-packed sub-params into
+        // one stream so 38;5;n / 38;2;r;g;b / 38:5:n / 38:2:r:g:b all parse
+        // through the same index-based loop.
+        let flat: Vec<u16> = params.iter().flat_map(|p| p.iter().copied()).collect();
+        if flat.is_empty() {
+            self.sgr = CellAttrs::default();
+            return;
+        }
+        let mut i = 0;
+        while i < flat.len() {
+            let code = flat[i];
+            match code {
+                0 => self.sgr = CellAttrs::default(),
+                1 => self.sgr.bold = true,
+                2 => self.sgr.dim = true,
+                3 => self.sgr.italic = true,
+                4 => self.sgr.underline = true,
+                5 | 6 => self.sgr.blink = true,
+                7 => self.sgr.reverse = true,
+                8 => self.sgr.hidden = true,
+                9 => self.sgr.strike = true,
+                22 => {
+                    self.sgr.bold = false;
+                    self.sgr.dim = false;
+                }
+                23 => self.sgr.italic = false,
+                24 => self.sgr.underline = false,
+                25 => self.sgr.blink = false,
+                27 => self.sgr.reverse = false,
+                28 => self.sgr.hidden = false,
+                29 => self.sgr.strike = false,
+                30..=37 => self.sgr.fg = Some(ansi_color((code - 30) as u8)),
+                39 => self.sgr.fg = None,
+                40..=47 => self.sgr.bg = Some(ansi_color((code - 40) as u8)),
+                49 => self.sgr.bg = None,
+                90..=97 => self.sgr.fg = Some(ansi_color((code - 90 + 8) as u8)),
+                100..=107 => self.sgr.bg = Some(ansi_color((code - 100 + 8) as u8)),
+                38 | 48 => {
+                    let is_fg = code == 38;
+                    if let Some(mode) = flat.get(i + 1).copied() {
+                        match mode {
+                            5 => {
+                                if let Some(idx) = flat.get(i + 2).copied() {
+                                    let color = palette_color(idx as u8);
+                                    if is_fg {
+                                        self.sgr.fg = Some(color);
+                                    } else {
+                                        self.sgr.bg = Some(color);
+                                    }
+                                    i += 3;
+                                    continue;
+                                }
+                            }
+                            2 => {
+                                if let (Some(r), Some(g), Some(b)) = (
+                                    flat.get(i + 2).copied(),
+                                    flat.get(i + 3).copied(),
+                                    flat.get(i + 4).copied(),
+                                ) {
+                                    let color = rgb(r, g, b);
+                                    if is_fg {
+                                        self.sgr.fg = Some(color);
+                                    } else {
+                                        self.sgr.bg = Some(color);
+                                    }
+                                    i += 5;
+                                    continue;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    fn set_dec_modes(&mut self, params: &Params, set: bool) {
+        for p in params.iter() {
+            let code = p.first().copied().unwrap_or(0);
+            match code {
+                1 => self.modes.application_cursor = set,
+                6 => {
+                    self.modes.origin_mode = set;
+                    let row = if set { self.scroll_top } else { 0 };
+                    self.cursor = CursorPos { row, col: 0 };
+                    self.pending_wrap = false;
+                }
+                7 => self.modes.auto_wrap = set,
+                25 => self.cursor_visible = set,
+                47 => self.switch_alt(set, false, false),
+                1047 => self.switch_alt(set, false, true),
+                1048 => {
+                    if set {
+                        self.save_cursor();
+                    } else {
+                        self.restore_cursor();
+                    }
+                }
+                1049 => self.switch_alt(set, true, true),
+                2004 => self.modes.bracketed_paste = set,
+                9 => {
+                    self.modes.mouse_mode = if set { MouseMode::X10 } else { MouseMode::Off };
+                }
+                1000 => {
+                    self.modes.mouse_mode = if set { MouseMode::Vt200 } else { MouseMode::Off };
+                }
+                1002 => {
+                    self.modes.mouse_mode = if set {
+                        MouseMode::ButtonEvent
+                    } else {
+                        MouseMode::Off
+                    };
+                }
+                1003 => {
+                    self.modes.mouse_mode = if set {
+                        MouseMode::AnyEvent
+                    } else {
+                        MouseMode::Off
+                    };
+                }
+                1006 => {
+                    if set {
+                        self.modes.mouse_mode = MouseMode::Sgr;
+                    } else if self.modes.mouse_mode == MouseMode::Sgr {
+                        self.modes.mouse_mode = MouseMode::Off;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn set_ansi_modes(&mut self, params: &Params, set: bool) {
+        for p in params.iter() {
+            let code = p.first().copied().unwrap_or(0);
+            if code == 4 {
+                self.modes.insert_mode = set;
+            }
+        }
+    }
+
+    fn full_reset(&mut self) {
+        let attrs = CellAttrs::default();
+        self.primary.clear_with(&attrs);
+        self.alt.clear_with(&attrs);
+        self.scrollback.clear();
+        self.cursor = CursorPos { row: 0, col: 0 };
+        self.sgr = CellAttrs::default();
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows - 1;
+        self.modes = TerminalModes { auto_wrap: true, ..Default::default() };
+        self.on_alt = false;
+        self.cursor_visible = true;
+        self.title = None;
+        self.pending_wrap = false;
+        self.saved_primary = None;
+        self.saved_alt = None;
+    }
+}
+
+fn ansi_color(idx: u8) -> u32 {
+    const PALETTE: [u32; 16] = [
+        0x000000, 0x800000, 0x008000, 0x808000,
+        0x000080, 0x800080, 0x008080, 0xc0c0c0,
+        0x808080, 0xff0000, 0x00ff00, 0xffff00,
+        0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
+    ];
+    PALETTE.get(idx as usize).copied().unwrap_or(0xffffff)
+}
+
+fn palette_color(idx: u8) -> u32 {
+    if (idx as usize) < 16 {
+        return ansi_color(idx);
+    }
+    if idx < 232 {
+        let n = idx - 16;
+        let r = (n / 36) % 6;
+        let g = (n / 6) % 6;
+        let b = n % 6;
+        let map: [u32; 6] = [0, 95, 135, 175, 215, 255];
+        return (map[r as usize] << 16) | (map[g as usize] << 8) | map[b as usize];
+    }
+    let lvl = 8 + 10 * (idx as u32 - 232);
+    (lvl << 16) | (lvl << 8) | lvl
+}
+
+fn rgb(r: u16, g: u16, b: u16) -> u32 {
+    ((r as u32 & 0xff) << 16) | ((g as u32 & 0xff) << 8) | (b as u32 & 0xff)
+}
+
+impl Perform for Inner {
+    fn print(&mut self, c: char) {
+        self.put_char(c);
+    }
+
+    fn execute(&mut self, byte: u8) {
+        match byte {
+            0x07 => {} // BEL
+            0x08 => self.backspace(),
+            0x09 => self.tab(),
+            0x0A | 0x0B | 0x0C => self.linefeed(),
+            0x0D => self.carriage_return(),
+            _ => {}
+        }
+    }
+
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
+        let n_min1 = |idx: usize| -> usize {
+            let v = params
+                .iter()
+                .nth(idx)
+                .and_then(|p| p.first().copied())
+                .unwrap_or(1);
+            if v == 0 { 1 } else { v as usize }
+        };
+        let n_default = |idx: usize, default: u16| -> u16 {
+            params
+                .iter()
+                .nth(idx)
+                .and_then(|p| p.first().copied())
+                .unwrap_or(default)
+        };
+        match (intermediates, action) {
+            ([], 'A') => self.cursor_up(n_min1(0)),
+            ([], 'B') | ([], 'e') => self.cursor_down(n_min1(0)),
+            ([], 'C') | ([], 'a') => self.cursor_forward(n_min1(0)),
+            ([], 'D') => self.cursor_backward(n_min1(0)),
+            ([], 'E') => {
+                let n = n_min1(0);
+                self.cursor_down(n);
+                self.cursor.col = 0;
+            }
+            ([], 'F') => {
+                let n = n_min1(0);
+                self.cursor_up(n);
+                self.cursor.col = 0;
+            }
+            ([], 'G') | ([], '`') => self.cursor_column(n_min1(0)),
+            ([], 'H') | ([], 'f') => {
+                let row = n_min1(0);
+                let col = n_min1(1);
+                self.cursor_position(row, col);
+            }
+            ([], 'J') => self.erase_in_display(n_default(0, 0)),
+            ([], 'K') => self.erase_in_line(n_default(0, 0)),
+            ([], 'd') => self.cursor_row(n_min1(0)),
+            ([], 'm') => self.apply_sgr(params),
+            ([], 'r') => {
+                let top = n_default(0, 1);
+                let bottom = n_default(1, self.rows as u16);
+                self.set_scroll_region(top, bottom);
+            }
+            ([b'?'], 'h') => self.set_dec_modes(params, true),
+            ([b'?'], 'l') => self.set_dec_modes(params, false),
+            ([], 'h') => self.set_ansi_modes(params, true),
+            ([], 'l') => self.set_ansi_modes(params, false),
+            ([], 's') => self.save_cursor(),
+            ([], 'u') => self.restore_cursor(),
+            _ => {}
+        }
+    }
+
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        match byte {
+            b'7' => self.save_cursor(),
+            b'8' => self.restore_cursor(),
+            b'D' => self.linefeed(),
+            b'E' => self.next_line(),
+            b'M' => self.reverse_index(),
+            b'c' => self.full_reset(),
+            _ => {}
+        }
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if params.len() >= 2 {
+            let code = params[0];
+            if code == b"0" || code == b"1" || code == b"2" {
+                if let Ok(s) = std::str::from_utf8(params[1]) {
+                    self.title = Some(s.to_string());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_string(t: &TerminalState, row: usize) -> String {
+        let inner = &t.inner;
+        let active = if inner.on_alt { &inner.alt } else { &inner.primary };
+        active.lines[row].iter().map(|c| c.ch).collect()
+    }
+
+    fn cursor_rc(t: &TerminalState) -> (u16, u16) {
+        let cs = t.cursor();
+        (cs.row, cs.col)
+    }
+
+    #[test]
+    fn print_writes_chars_and_advances_cursor() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"abc");
+        assert_eq!(&line_string(&t, 0)[..3], "abc");
+        assert_eq!(cursor_rc(&t), (0, 3));
+    }
+
+    #[test]
+    fn cr_resets_column_lf_advances_row() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"a\r\nb");
+        assert_eq!(cursor_rc(&t), (1, 1));
+        assert_eq!(line_string(&t, 0).chars().next(), Some('a'));
+        assert_eq!(line_string(&t, 1).chars().next(), Some('b'));
+    }
+
+    #[test]
+    fn lf_at_bottom_scrolls_into_scrollback() {
+        let mut t = TerminalState::new(5, 3);
+        t.feed(b"a\r\nb\r\nc");
+        t.feed(b"\r\nd");
+        assert_eq!(t.inner.scrollback.len(), 1);
+        assert_eq!(t.inner.scrollback[0][0].ch, 'a');
+        assert_eq!(line_string(&t, 0).chars().next(), Some('b'));
+        assert_eq!(line_string(&t, 1).chars().next(), Some('c'));
+        assert_eq!(line_string(&t, 2).chars().next(), Some('d'));
+    }
+
+    #[test]
+    fn auto_wrap_wraps_at_last_column() {
+        let mut t = TerminalState::new(3, 2);
+        t.feed(b"abcd");
+        // 'a' (0,0) 'b' (0,1) 'c' (0,2) → pending wrap
+        // 'd' triggers wrap → (1,0), prints 'd', cursor (1,1)
+        assert_eq!(line_string(&t, 0).chars().take(3).collect::<String>(), "abc");
+        assert_eq!(line_string(&t, 1).chars().next(), Some('d'));
+        assert_eq!(cursor_rc(&t), (1, 1));
+    }
+
+    #[test]
+    fn auto_wrap_disabled_overstrikes_last_column() {
+        let mut t = TerminalState::new(3, 2);
+        t.feed(b"\x1b[?7l"); // disable auto-wrap
+        t.feed(b"abcd");
+        // 'a' (0,0) 'b' (0,1) 'c' (0,2) → pending_wrap not set (auto-wrap off)
+        // 'd' overwrites at (0, 2)
+        assert_eq!(line_string(&t, 0).chars().take(3).collect::<String>(), "abd");
+        assert_eq!(cursor_rc(&t), (0, 2));
+    }
+
+    #[test]
+    fn backspace_moves_cursor_left() {
+        let mut t = TerminalState::new(10, 2);
+        t.feed(b"abc\x08");
+        assert_eq!(cursor_rc(&t), (0, 2));
+        t.feed(b"\x08\x08\x08\x08"); // can't go below 0
+        assert_eq!(cursor_rc(&t), (0, 0));
+    }
+
+    #[test]
+    fn tab_advances_to_next_8col_stop() {
+        let mut t = TerminalState::new(20, 2);
+        t.feed(b"\t");
+        assert_eq!(cursor_rc(&t), (0, 8));
+        t.feed(b"x\t");
+        assert_eq!(cursor_rc(&t), (0, 16));
+    }
+
+    #[test]
+    fn cup_moves_cursor_to_position() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[3;5H");
+        assert_eq!(cursor_rc(&t), (2, 4));
+    }
+
+    #[test]
+    fn cup_default_args_go_home() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[3;5H");
+        t.feed(b"\x1b[H");
+        assert_eq!(cursor_rc(&t), (0, 0));
+    }
+
+    #[test]
+    fn cuu_cud_cuf_cub_basic_moves() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[3;5H");
+        t.feed(b"\x1b[2A");
+        assert_eq!(cursor_rc(&t), (0, 4));
+        t.feed(b"\x1b[1B");
+        assert_eq!(cursor_rc(&t), (1, 4));
+        t.feed(b"\x1b[2C");
+        assert_eq!(cursor_rc(&t), (1, 6));
+        t.feed(b"\x1b[3D");
+        assert_eq!(cursor_rc(&t), (1, 3));
+    }
+
+    #[test]
+    fn cuu_cud_clamp_at_edges() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[1;1H\x1b[10A"); // up past top
+        assert_eq!(cursor_rc(&t), (0, 0));
+        t.feed(b"\x1b[5;5H\x1b[20B"); // down past bottom
+        assert_eq!(cursor_rc(&t), (4, 4));
+    }
+
+    #[test]
+    fn cha_and_vpa_set_absolute_column_and_row() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[3;3H");
+        t.feed(b"\x1b[7G"); // CHA → col = 7-1 = 6
+        assert_eq!(cursor_rc(&t), (2, 6));
+        t.feed(b"\x1b[4d"); // VPA → row = 4-1 = 3
+        assert_eq!(cursor_rc(&t), (3, 6));
+    }
+
+    #[test]
+    fn ed_modes_clear_appropriate_regions() {
+        let mut t = TerminalState::new(5, 3);
+        t.feed(b"abc\r\ndef\r\nghi");
+        // ED 2 — entire screen
+        t.feed(b"\x1b[2J");
+        for r in 0..3 {
+            assert!(line_string(&t, r).chars().all(|c| c == ' '));
+        }
+
+        // Refill, then ED 0 (cursor to end)
+        t.feed(b"\x1b[H");
+        t.feed(b"abc\r\ndef\r\nghi");
+        t.feed(b"\x1b[2;2H"); // (1,1)
+        t.feed(b"\x1b[0J");
+        // row 0 unchanged, row 1 has "d" then blanks, row 2 cleared
+        assert_eq!(line_string(&t, 0).chars().take(3).collect::<String>(), "abc");
+        assert_eq!(line_string(&t, 1).chars().nth(0), Some('d'));
+        assert!(line_string(&t, 1).chars().skip(1).all(|c| c == ' '));
+        assert!(line_string(&t, 2).chars().all(|c| c == ' '));
+    }
+
+    #[test]
+    fn ed_mode_1_clears_top_through_cursor() {
+        let mut t = TerminalState::new(5, 3);
+        t.feed(b"abc\r\ndef\r\nghi");
+        t.feed(b"\x1b[2;2H"); // (1,1)
+        t.feed(b"\x1b[1J");
+        // row 0 cleared, row 1 has blanks then "f", row 2 unchanged
+        assert!(line_string(&t, 0).chars().all(|c| c == ' '));
+        assert_eq!(line_string(&t, 1).chars().take(2).collect::<String>(), "  ");
+        assert_eq!(line_string(&t, 1).chars().nth(2), Some('f'));
+        assert_eq!(line_string(&t, 2).chars().take(3).collect::<String>(), "ghi");
+    }
+
+    #[test]
+    fn el_modes_clear_line_regions() {
+        let mut t = TerminalState::new(5, 1);
+        t.feed(b"abcde\r");
+        t.feed(b"\x1b[K"); // EL 0 from col 0 — clears line
+        assert!(line_string(&t, 0).chars().all(|c| c == ' '));
+
+        let mut t = TerminalState::new(5, 1);
+        t.feed(b"abcde");
+        t.feed(b"\x1b[3G"); // col 3 (0-based 2)
+        t.feed(b"\x1b[1K"); // EL 1 — start to cursor inclusive
+        assert_eq!(line_string(&t, 0).chars().take(3).collect::<String>(), "   ");
+        assert_eq!(line_string(&t, 0).chars().nth(3), Some('d'));
+
+        let mut t = TerminalState::new(5, 1);
+        t.feed(b"abcde\r\x1b[3G");
+        t.feed(b"\x1b[2K"); // EL 2 — entire line
+        assert!(line_string(&t, 0).chars().all(|c| c == ' '));
+    }
+
+    #[test]
+    fn sgr_tracks_bold_and_color() {
+        let mut t = TerminalState::new(10, 1);
+        t.feed(b"\x1b[1;31mR");
+        let cell = &t.inner.primary.lines[0][0];
+        assert!(cell.attrs.bold);
+        assert_eq!(cell.attrs.fg, Some(ansi_color(1)));
+    }
+
+    #[test]
+    fn sgr_reset_clears_attrs() {
+        let mut t = TerminalState::new(10, 1);
+        t.feed(b"\x1b[1;31mA\x1b[0mB");
+        let a = &t.inner.primary.lines[0][0];
+        let b = &t.inner.primary.lines[0][1];
+        assert!(a.attrs.bold);
+        assert_eq!(a.attrs.fg, Some(ansi_color(1)));
+        assert!(!b.attrs.bold);
+        assert_eq!(b.attrs.fg, None);
+    }
+
+    #[test]
+    fn sgr_extended_256_and_truecolor() {
+        let mut t = TerminalState::new(10, 1);
+        t.feed(b"\x1b[38;5;160mP");
+        let cell = &t.inner.primary.lines[0][0];
+        assert_eq!(cell.attrs.fg, Some(palette_color(160)));
+
+        t.feed(b"\x1b[38;2;10;20;30mT");
+        let cell = &t.inner.primary.lines[0][1];
+        assert_eq!(cell.attrs.fg, Some(rgb(10, 20, 30)));
+    }
+
+    #[test]
+    fn sgr_empty_param_resets() {
+        let mut t = TerminalState::new(10, 1);
+        t.feed(b"\x1b[1mB");
+        assert!(t.inner.sgr.bold);
+        t.feed(b"\x1b[m");
+        assert!(!t.inner.sgr.bold);
+    }
+
+    #[test]
+    fn alt_screen_1049_isolates_and_restores() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"primary");
+        let primary_cursor_before = cursor_rc(&t);
+
+        t.feed(b"\x1b[?1049h");
+        assert!(t.modes().alt_screen);
+        assert_eq!(cursor_rc(&t), (0, 0));
+        // alt buffer is independent and starts blank
+        assert!(line_string(&t, 0).chars().all(|c| c == ' '));
+
+        t.feed(b"alt");
+        assert_eq!(line_string(&t, 0).chars().take(3).collect::<String>(), "alt");
+
+        t.feed(b"\x1b[?1049l");
+        assert!(!t.modes().alt_screen);
+        // primary content is intact
+        assert_eq!(line_string(&t, 0).chars().take(7).collect::<String>(), "primary");
+        // cursor restored to where it was on primary before the switch
+        assert_eq!(cursor_rc(&t), primary_cursor_before);
+    }
+
+    #[test]
+    fn alt_screen_47_does_not_clear() {
+        // ?47 switches buffer without saving cursor or clearing on enter.
+        let mut t = TerminalState::new(5, 2);
+        t.feed(b"\x1b[?47h"); // enter alt, buffer not cleared
+        t.feed(b"X");
+        t.feed(b"\x1b[?47l"); // back to primary
+        // Re-enter alt — content must still be there because ?47 doesn't clear.
+        t.feed(b"\x1b[?47h");
+        assert!(t.on_alt_screen());
+        assert_eq!(line_string(&t, 0).chars().next(), Some('X'));
+    }
+
+    #[test]
+    fn scroll_region_constrains_scroll() {
+        let mut t = TerminalState::new(5, 5);
+        t.feed(b"a\r\nb\r\nc\r\nd\r\ne");
+        t.feed(b"\x1b[2;4r"); // region rows 2..4 (0-based 1..3)
+        assert_eq!(t.scroll_region(), ScrollRegion { top: 1, bottom: 3 });
+        // After DECSTBM cursor goes home (origin off → 0,0)
+        assert_eq!(cursor_rc(&t), (0, 0));
+
+        t.feed(b"\x1b[4;1H"); // bottom of region
+        t.feed(b"\nx");
+        // Region scrolled up by 1: row 1 ('b') is dropped (NOT into scrollback
+        // because top != 0), rows 1..3 become c/d/blank, then 'x' overwrites
+        // (3, 0).
+        assert_eq!(line_string(&t, 0).chars().next(), Some('a'));
+        assert_eq!(line_string(&t, 1).chars().next(), Some('c'));
+        assert_eq!(line_string(&t, 2).chars().next(), Some('d'));
+        assert_eq!(line_string(&t, 3).chars().next(), Some('x'));
+        assert_eq!(line_string(&t, 4).chars().next(), Some('e'));
+        // Lines that left a partial region must NOT enter scrollback.
+        assert!(t.inner.scrollback.is_empty());
+    }
+
+    #[test]
+    fn reverse_index_at_top_scrolls_down_in_region() {
+        let mut t = TerminalState::new(5, 4);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.feed(b"\x1b[2;3r"); // region rows 2..3 (0-based 1..2)
+        t.feed(b"\x1b[2;1H"); // top of region
+        t.feed(b"\x1bM"); // RI — should scroll region down by 1
+        // After RI: line 1 is blank, line 2 was 'b' (was line 1), line 3
+        // unchanged ('d' is below region, line 0 'a' unchanged).
+        assert_eq!(line_string(&t, 0).chars().next(), Some('a'));
+        assert!(line_string(&t, 1).chars().all(|c| c == ' '));
+        assert_eq!(line_string(&t, 2).chars().next(), Some('b'));
+        assert_eq!(line_string(&t, 3).chars().next(), Some('d'));
+    }
+
+    #[test]
+    fn dec_private_modes_round_trip() {
+        let mut t = TerminalState::new(10, 3);
+
+        t.feed(b"\x1b[?7l");
+        assert!(!t.modes().auto_wrap);
+        t.feed(b"\x1b[?7h");
+        assert!(t.modes().auto_wrap);
+
+        t.feed(b"\x1b[?25l");
+        assert!(!t.cursor().visible);
+        t.feed(b"\x1b[?25h");
+        assert!(t.cursor().visible);
+
+        t.feed(b"\x1b[?1h");
+        assert!(t.modes().application_cursor);
+
+        t.feed(b"\x1b[?2004h");
+        assert!(t.modes().bracketed_paste);
+        t.feed(b"\x1b[?2004l");
+        assert!(!t.modes().bracketed_paste);
+
+        t.feed(b"\x1b[?1000h");
+        assert_eq!(t.modes().mouse_mode, MouseMode::Vt200);
+        t.feed(b"\x1b[?1006h");
+        assert_eq!(t.modes().mouse_mode, MouseMode::Sgr);
+    }
+
+    #[test]
+    fn origin_mode_constrains_cup_to_region() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[2;4r"); // region rows 2..4 (0-based 1..3)
+        t.feed(b"\x1b[?6h"); // origin mode on → cursor goes to top of region
+        assert_eq!(cursor_rc(&t), (1, 0));
+        // CUP 1;1 in origin mode = top of region
+        t.feed(b"\x1b[1;1H");
+        assert_eq!(cursor_rc(&t), (1, 0));
+        // CUP 99;99 in origin mode clamps to bottom of region
+        t.feed(b"\x1b[99;99H");
+        assert_eq!(cursor_rc(&t).0, 3);
+    }
+
+    #[test]
+    fn save_restore_cursor_via_csi_s_u() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"\x1b[2;3H");
+        t.feed(b"\x1b[s");
+        t.feed(b"\x1b[1;1H");
+        assert_eq!(cursor_rc(&t), (0, 0));
+        t.feed(b"\x1b[u");
+        assert_eq!(cursor_rc(&t), (1, 2));
+    }
+
+    #[test]
+    fn save_restore_cursor_via_esc_7_8_preserves_sgr() {
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"\x1b[1m");
+        t.feed(b"\x1b[2;3H");
+        t.feed(b"\x1b7");
+        t.feed(b"\x1b[0m");
+        t.feed(b"\x1b[1;1H");
+        t.feed(b"\x1b8");
+        assert_eq!(cursor_rc(&t), (1, 2));
+        assert!(t.inner.sgr.bold);
+    }
+
+    #[test]
+    fn osc_sets_title() {
+        let mut t = TerminalState::new(10, 1);
+        t.feed(b"\x1b]0;hello\x07");
+        assert_eq!(t.title(), Some("hello"));
+        t.feed(b"\x1b]2;there\x1b\\");
+        assert_eq!(t.title(), Some("there"));
+    }
+
+    #[test]
+    fn snapshot_serializes_visible_screen_and_cursor() {
+        let mut t = TerminalState::new(5, 2);
+        t.feed(b"hi");
+        let snap = t.snapshot(Uuid::nil(), 1, 2);
+        assert_eq!(snap.cols, 5);
+        assert_eq!(snap.rows, 2);
+        assert_eq!(snap.cursor.col, 2);
+        assert_eq!(snap.cursor.row, 0);
+        assert_eq!(snap.visible_screen.len(), 2);
+        assert_eq!(snap.visible_screen[0].cells[0].ch, "h");
+        assert_eq!(snap.visible_screen[0].cells[1].ch, "i");
+    }
+
+    #[test]
+    fn resize_preserves_cursor_within_bounds() {
+        let mut t = TerminalState::new(10, 5);
+        t.feed(b"\x1b[3;5H");
+        t.resize(4, 2);
+        let (r, c) = cursor_rc(&t);
+        assert!(r < 2 && c < 4);
+        assert_eq!(t.cols(), 4);
+        assert_eq!(t.rows(), 2);
+    }
+
+    #[test]
+    fn scrollback_ring_rotates_at_capacity() {
+        // 2-row terminal so each newline past the second pushes a line into
+        // scrollback. Cap the ring at 3 so we can observe FIFO eviction.
+        let mut t = TerminalState::new(5, 2);
+        t.inner.scrollback_max = 3;
+
+        // Push 6 lines: a, b, c, d, e (then cursor sits on row 1 with 'f' typed
+        // last — visible). Lines a..d scroll off the top of primary; with cap
+        // 3 only the most-recent three (b, c, d) should remain in the ring.
+        t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf");
+
+        assert_eq!(t.inner.scrollback.len(), 3);
+        assert_eq!(t.inner.scrollback[0][0].ch, 'b');
+        assert_eq!(t.inner.scrollback[1][0].ch, 'c');
+        assert_eq!(t.inner.scrollback[2][0].ch, 'd');
+        // Visible screen still shows the trailing two lines.
+        assert_eq!(line_string(&t, 0).chars().next(), Some('e'));
+        assert_eq!(line_string(&t, 1).chars().next(), Some('f'));
+
+        // One more newline evicts 'b' and admits 'e'.
+        t.feed(b"\r\ng");
+        assert_eq!(t.inner.scrollback.len(), 3);
+        assert_eq!(t.inner.scrollback[0][0].ch, 'c');
+        assert_eq!(t.inner.scrollback[1][0].ch, 'd');
+        assert_eq!(t.inner.scrollback[2][0].ch, 'e');
+    }
+
+    #[test]
+    fn scrollback_ring_only_admits_full_height_primary_scrolls() {
+        // Scrolls inside a partial scroll region must NOT enter the ring;
+        // alt-screen scrolls likewise must not. Already covered partially by
+        // scroll_region_constrains_scroll, but lock it in alongside the
+        // ring-rotation contract.
+        let mut t = TerminalState::new(5, 4);
+        t.inner.scrollback_max = 8;
+
+        // Partial region scroll — top != 0.
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        t.feed(b"\x1b[2;4r"); // region rows 2..4
+        t.feed(b"\x1b[4;1H\nx"); // force region scroll
+        assert!(t.inner.scrollback.is_empty());
+
+        // Alt-screen scroll — even with top == 0, must not push.
+        let mut t = TerminalState::new(5, 2);
+        t.inner.scrollback_max = 8;
+        t.feed(b"\x1b[?1049h"); // enter alt
+        t.feed(b"a\r\nb\r\nc\r\nd"); // forces alt to scroll
+        assert!(t.inner.scrollback.is_empty());
+    }
+
+    #[test]
+    fn snapshot_populates_all_protocol_fields() {
+        let mut t = TerminalState::new(6, 3);
+        t.inner.scrollback_max = 4;
+
+        // Build non-trivial state:
+        //  * styled cell on visible screen (bold + red fg)
+        //  * one line in scrollback
+        //  * scroll region narrowed
+        //  * title set via OSC
+        //  * bracketed-paste mode enabled
+        //  * cursor placed at (1, 2)
+        t.feed(b"old\r\n"); // 'old' becomes scrollback once we scroll past it
+        t.feed(b"row2\r\n");
+        t.feed(b"row3\r\n"); // pushes 'old' into scrollback
+        t.feed(b"\x1b]2;hello\x07"); // title
+        t.feed(b"\x1b[?2004h"); // bracketed paste
+        t.feed(b"\x1b[2;4r"); // scroll region rows 2..4 (0-based 1..3, clamped)
+        t.feed(b"\x1b[2;3H"); // cursor to (1, 2)
+        t.feed(b"\x1b[1;31m"); // bold + red
+        t.feed(b"X");
+
+        let sid = Uuid::from_u128(0xdead_beef);
+        let snap = t.snapshot(sid, 17, 1_700_000_000_123);
+
+        // Passthrough fields.
+        assert_eq!(snap.session_id, sid);
+        assert_eq!(snap.seq, 17);
+        assert_eq!(snap.captured_at_ms, 1_700_000_000_123);
+
+        // Geometry.
+        assert_eq!(snap.cols, 6);
+        assert_eq!(snap.rows, 3);
+
+        // Visible screen: shape matches grid; styled cell preserved.
+        assert_eq!(snap.visible_screen.len(), 3);
+        for line in &snap.visible_screen {
+            assert_eq!(line.cells.len(), 6);
+        }
+        let styled = &snap.visible_screen[1].cells[2];
+        assert_eq!(styled.ch, "X");
+        assert!(styled.attrs.bold);
+        assert_eq!(styled.attrs.fg, Some(ansi_color(1)));
+
+        // Scrollback: the single evicted line, in protocol shape.
+        assert_eq!(snap.scrollback.len(), 1);
+        let scroll_line: String = snap.scrollback[0]
+            .cells
+            .iter()
+            .map(|c| c.ch.as_str())
+            .collect();
+        assert!(scroll_line.starts_with("old"));
+
+        // Cursor mirrors live state — printing 'X' at (1,2) advances col to 3.
+        assert_eq!(snap.cursor.row, 1);
+        assert_eq!(snap.cursor.col, 3);
+        assert!(snap.cursor.visible);
+
+        // Modes mirror live state.
+        assert!(snap.modes.bracketed_paste);
+        assert!(snap.modes.auto_wrap);
+
+        // Scroll region matches DECSTBM (clamped to rows-1).
+        assert_eq!(snap.scroll_region.top, 1);
+        assert_eq!(snap.scroll_region.bottom, 2);
+
+        // Title from OSC.
+        assert_eq!(snap.title.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn snapshot_visible_screen_follows_active_buffer() {
+        // On alt screen the visible_screen must reflect the alt grid, and
+        // scrollback must stay empty (alt scrolls don't feed the ring).
+        let mut t = TerminalState::new(4, 2);
+        t.feed(b"primary");
+        t.feed(b"\x1b[?1049h"); // enter alt — cleared
+        t.feed(b"alt!");
+
+        let snap = t.snapshot(Uuid::nil(), 0, 0);
+        let row0: String = snap.visible_screen[0]
+            .cells
+            .iter()
+            .map(|c| c.ch.as_str())
+            .collect();
+        assert_eq!(row0, "alt!");
+        assert!(snap.scrollback.is_empty());
+        assert!(snap.modes.alt_screen);
+    }
+}

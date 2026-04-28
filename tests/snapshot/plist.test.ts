@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderPlist } from "../../src/cli/service.ts";
+import { renderPlist, renderBrokerPlist } from "../../src/cli/service.ts";
 
 const DEFAULT_CONFIG = { devDir: "/Users/home/Dev", port: 18790 };
 const DEFAULT_ARGS = ["/opt/homebrew/bin/bun", "/Users/home/Dev/wolfpack/cli.ts"];
@@ -36,6 +36,26 @@ describe("renderPlist", () => {
       DEFAULT_ARGS,
       '/Users/home/.wolfpack/log & "trace".txt',
     );
+    expect(plist).toContain("&amp;");
+    expect(plist).toContain("&quot;");
+  });
+});
+
+describe("renderBrokerPlist", () => {
+  const BIN = "/Users/home/.wolfpack/bin/wolfpack-broker";
+  const LOG = "/Users/home/.wolfpack/broker.log";
+
+  test("uses broker label and includes binary + log paths", () => {
+    const plist = renderBrokerPlist(BIN, LOG);
+    expect(plist).toContain("<string>com.wolfpack.broker</string>");
+    expect(plist).toContain(`<string>${BIN}</string>`);
+    expect(plist).toContain(`<string>${LOG}</string>`);
+    expect(plist).toContain("<key>KeepAlive</key>");
+    expect(plist).toContain("<true/>");
+  });
+
+  test("escapes XML-sensitive values", () => {
+    const plist = renderBrokerPlist('/dir & "weird"/wolfpack-broker', LOG);
     expect(plist).toContain("&amp;");
     expect(plist).toContain("&quot;");
   });

@@ -28,6 +28,7 @@ import {
   tailscaleBin,
   type Config,
 } from "./config.js";
+import { DEFAULT_BACKEND, type BackendType } from "../server/backend.js";
 import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
 
@@ -96,7 +97,6 @@ export async function setup() {
 
   print(bold("  Checking prerequisites...\n"));
 
-  let hasTmux = check("tmux", "tmux -V");
   const tsBin = tailscaleBin();
   const hasTailscale = !!tsBin;
   if (hasTailscale) {
@@ -107,16 +107,12 @@ export async function setup() {
 
   print("");
 
-  if (!hasTmux) {
-    print(yellow("  tmux is required — installing..."));
-    installPackages(["tmux"]);
-    hasTmux = check("tmux", "tmux -V");
-    if (!hasTmux) {
-      print(red("  tmux installation failed. Install it manually, then re-run 'wolfpack setup'."));
-      process.exit(1);
-    }
-    print("");
-  }
+  // Session backend: broker daemon is the default; pty is the fallback when
+  // the broker socket isn't reachable. No interactive choice — the previous
+  // tmux option was removed in favor of the broker.
+  const backend: BackendType = DEFAULT_BACKEND;
+
+  print("");
 
   // ── Install optional missing deps (tailscale only) ──
   if (!hasTailscale) {
@@ -240,7 +236,7 @@ export async function setup() {
     }
   }
 
-  const config: Config = { devDir, port, tailscaleHostname };
+  const config: Config = { devDir, port, tailscaleHostname, backend };
   saveConfig(config);
 
   print("");

@@ -64,7 +64,22 @@ run("bun run scripts/gen-assets.ts");
 // step 2: ensure dist/ exists
 mkdirSync(DIST, { recursive: true });
 
-// step 3: compile for each target
+// step 3: build the Rust broker daemon and stage it for packaging.
+// The broker owns all PTY sessions in production; releases must ship it
+// alongside the bun-bundled binary.
+console.log("\n=== building wolfpack-broker (cargo release) ===");
+try {
+  run("cargo build --release --manifest-path broker/Cargo.toml --bin wolfpack-broker");
+  const brokerSrc = join(ROOT, "broker", "target", "release", "wolfpack-broker");
+  const brokerDest = join(DIST, "wolfpack-broker");
+  copyFileSync(brokerSrc, brokerDest);
+  console.log(`copied ${brokerSrc} → ${brokerDest}`);
+} catch (e: unknown) {
+  console.error("broker build failed — install rust toolchain (https://rustup.rs) and retry");
+  throw e;
+}
+
+// step 4: compile wolfpack itself for each target
 console.log("\n=== compiling binaries ===");
 for (const target of TARGETS) {
   const name = `wolfpack-${target.replace("bun-", "")}`;
