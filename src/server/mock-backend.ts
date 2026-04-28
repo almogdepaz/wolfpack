@@ -1,8 +1,8 @@
 /**
  * MockBackend — SessionBackend implementation for integration tests.
  *
- * Replaces __setTestOverrides by providing a fully controllable backend
- * that can be injected via __setTestBackend(). No tmux or real PTY needed.
+ * Provides a fully controllable backend that can be injected via
+ * __setTestBackend(). No real broker daemon needed.
  */
 import type { SessionBackend } from "./backend.js";
 import { stripAnsi } from "./strip-ansi.js";
@@ -102,9 +102,9 @@ export class MockBackend implements SessionBackend {
     // no-op in mock
   }
 
-  // ── PtyBackend-compatible methods ──
-  // websocket.ts casts backend to PtyBackend and calls these directly.
-  // MockBackend provides no-op/stub versions so tests don't crash.
+  // ── Streaming attach surface (PtyBackendMethods) ──
+  // websocket.ts casts the streaming backend and calls these directly.
+  // MockBackend provides no-op/stub versions so WS-attach tests don't crash.
 
   isSessionAlive(name: string): boolean {
     return this._sessions.has(name);
