@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 process.env.WOLFPACK_TEST = "1";
 
 const { createServerInstance } = await import("../../src/server/index.ts");
-const { __setTestOverrides } = await import("../../src/test-hooks.ts");
+const { __setTestOverrides } = await import("../../src/server/tmux.js");
 const { server } = createServerInstance();
 
 // ── Fake tmux list (no real tmux needed) ──

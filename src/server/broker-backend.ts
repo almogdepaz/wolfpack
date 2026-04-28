@@ -25,7 +25,7 @@
 import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent } from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
-import { SHELL, injectAgentContext } from "./tmux.js";
+import { SHELL, injectAgentContext } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import {

@@ -1,46 +1,20 @@
 /**
  * tmux helpers — exec wrappers, test hooks, capture-pane.
+ *
+ * Shared utilities (SHELL, exec, injectAgentContext, RALPH_AGENTS, DEV_DIR
+ * family) live in `./shell.ts` and `./dev-dir.ts`. This module is the
+ * tmux-specific surface only.
  */
-import { execFile, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { shellEscape } from "../validation.js";
-import { INTERACTIVE_CONTEXT } from "../wolfpack-context.js";
 import { createLogger, errMsg } from "../log.js";
+import { exec, SHELL, injectAgentContext, __setExecOverride, type ExecFn } from "./shell.js";
+import { isUnderDevDir, sessionDirMap } from "./dev-dir.js";
 
 const log = createLogger("tmux");
-
-const _realExec = promisify(execFile);
-type ExecFn = (file: string, args: readonly string[], options?: { timeout?: number; encoding?: BufferEncoding; maxBuffer?: number }) => Promise<{ stdout: string; stderr: string }>;
-let _execOverride: ExecFn | null = null;
-const exec: ExecFn = ((file, args, options) =>
-  (_execOverride || (_realExec as unknown as ExecFn))(file, args, options)) as ExecFn;
 
 export const TMUX = "tmux";
 export const MOBILE_CAPTURE_HISTORY_LINES = 2000;
 export const DESKTOP_PREFILL_HISTORY_LINES = 5000;
-
-export let DEV_DIR =
-  process.env.WOLFPACK_DEV_DIR || join(homedir(), "Dev");
-
-/** Test-only: override the cached DEV_DIR value. */
-export function __setDevDir(dir: string): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__setDevDir() is only available in test mode");
-  DEV_DIR = dir;
-}
-
-// resolve user's shell — Ubuntu defaults to bash, macOS to zsh
-export const SHELL = (() => {
-  const envShell = process.env.SHELL;
-  if (envShell) {
-    try { execFileSync("test", ["-x", envShell]); return envShell; } catch { /* probe — shell not executable */ }
-  }
-  for (const p of ["/bin/zsh", "/bin/bash", "/bin/sh"]) {
-    try { execFileSync("test", ["-x", p]); return p; } catch { /* probe — shell not found */ }
-  }
-  return "/bin/sh";
-})();
 
 // ── Test mode assertion ──
 
@@ -49,21 +23,6 @@ function assertTestMode(hook: string): void {
 }
 
 // ── tmuxList ──
-
-/** Returns true if dir is DEV_DIR itself or a child of DEV_DIR (proper path boundary).
- *  Reads DEV_DIR at call time so env overrides in tests take effect. */
-export function isUnderDevDir(dir: string): boolean {
-  const normalizePath = (path: string): string =>
-    path.length > 1 ? path.replace(/\/+$/, "") : path;
-  const devDir = process.env.WOLFPACK_DEV_DIR || DEV_DIR;
-  const baseDir = normalizePath(devDir);
-  const candidate = normalizePath(dir);
-  return candidate === baseDir || candidate.startsWith(baseDir + "/");
-}
-
-/** Maps session name → project directory. Set at creation time by tmuxNewSession(),
- *  backfilled by tmuxList() only for pre-existing sessions (never overwrites). */
-export const sessionDirMap = new Map<string, string>();
 
 const WOLFPACK_DIR_ENV = "WOLFPACK_PROJECT_DIR";
 
@@ -154,7 +113,7 @@ export function __setTestOverrides(overrides: Partial<{
   if (overrides.capturePane) _capturePane = overrides.capturePane;
   if (overrides.listSessionsRaw) _listSessionsRaw = overrides.listSessionsRaw;
   if (overrides.showEnvironment) _showEnvironment = overrides.showEnvironment;
-  if (overrides.exec) _execOverride = overrides.exec;
+  if (overrides.exec) __setExecOverride(overrides.exec);
 }
 
 /** Test hook: reset _tmuxListFn back to _realTmuxList.
@@ -229,34 +188,6 @@ export async function capturePaneForTriage(session: string): Promise<string> {
 
 // ── tmuxNewSession ──
 
-const RALPH_AGENTS = new Set(["claude", "codex", "gemini", "cursor"]);
-
-/** Detect which agent an agentCmd refers to */
-export function detectAgent(agentCmd: string): "claude" | "gemini" | "codex" | "cursor" | null {
-  for (const agent of RALPH_AGENTS) {
-    if (new RegExp(`^${agent}\\b`).test(agentCmd)) return agent as "claude" | "gemini" | "codex" | "cursor";
-  }
-  return null;
-}
-
-/**
- * Build the full command with context injection for the detected agent.
- */
-export function injectAgentContext(agentCmd: string): string {
-  const agent = detectAgent(agentCmd);
-  switch (agent) {
-    case "claude": {
-      const withCtx = agentCmd + " --append-system-prompt " + shellEscape(INTERACTIVE_CONTEXT);
-      return withCtx + " || " + agentCmd;
-    }
-    case "gemini": {
-      return agentCmd + " -i " + shellEscape(INTERACTIVE_CONTEXT);
-    }
-    default:
-      return agentCmd;
-  }
-}
-
 export async function tmuxNewSession(
   name: string,
   cwd: string,
@@ -310,5 +241,3 @@ export async function cleanupOrphanPtySessions(): Promise<void> {
     log.warn("cleanupOrphanPtySessions: failed to list sessions", { error: errMsg(e) });
   }
 }
-
-export { exec, RALPH_AGENTS };

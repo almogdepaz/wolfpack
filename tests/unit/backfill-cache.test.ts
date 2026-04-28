@@ -1,15 +1,13 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import {
-  sessionDirMap,
   tmuxList,
   BACKFILL_CACHE_TTL_MS,
-} from "../../src/server/tmux.ts";
-import {
   __setTestOverrides,
   __resetTmuxListFn,
   __clearBackfillCache,
   __getBackfillCacheSize,
-} from "../../src/test-hooks.ts";
+} from "../../src/server/tmux.ts";
+import { sessionDirMap } from "../../src/server/dev-dir.ts";
 
 // set test mode + DEV_DIR so isUnderDevDir() passes
 process.env.WOLFPACK_TEST = "1";

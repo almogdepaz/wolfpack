@@ -7,7 +7,7 @@
  */
 import type { SessionBackend, SessionLifecycleEvent } from "./backend.js";
 import { RingBuffer } from "./ring-buffer.js";
-import { SHELL, injectAgentContext } from "./tmux.js";
+import { SHELL, injectAgentContext } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 

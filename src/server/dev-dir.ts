@@ -1,0 +1,30 @@
+/**
+ * Project-directory trust boundary. DEV_DIR is the root every wolfpack
+ * session must live under; sessionDirMap caches the per-session project root.
+ */
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+export let DEV_DIR =
+  process.env.WOLFPACK_DEV_DIR || join(homedir(), "Dev");
+
+/** Test-only: override the cached DEV_DIR value. */
+export function __setDevDir(dir: string): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__setDevDir() is only available in test mode");
+  DEV_DIR = dir;
+}
+
+/** Returns true if dir is DEV_DIR itself or a child of DEV_DIR (proper path boundary).
+ *  Reads DEV_DIR at call time so env overrides in tests take effect. */
+export function isUnderDevDir(dir: string): boolean {
+  const normalizePath = (path: string): string =>
+    path.length > 1 ? path.replace(/\/+$/, "") : path;
+  const devDir = process.env.WOLFPACK_DEV_DIR || DEV_DIR;
+  const baseDir = normalizePath(devDir);
+  const candidate = normalizePath(dir);
+  return candidate === baseDir || candidate.startsWith(baseDir + "/");
+}
+
+/** Maps session name → project directory. Set at creation time, backfilled
+ *  by tmuxList() only for pre-existing sessions (never overwrites). */
+export const sessionDirMap = new Map<string, string>();

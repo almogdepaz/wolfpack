@@ -2,7 +2,8 @@ process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_DEV_DIR = process.env.WOLFPACK_DEV_DIR || "/tmp/test-dev";
 import { describe, expect, test } from "bun:test";
 import * as configModule from "../../src/cli/config.js";
-import { sessionDirMap, tmuxNewSession, __setTestOverrides } from "../../src/server/tmux.js";
+import { tmuxNewSession, __setTestOverrides } from "../../src/server/tmux.js";
+import { sessionDirMap } from "../../src/server/dev-dir.js";
 import { uniqueSessionName } from "../../src/server/http.js";
 
 describe("tmuxNewSession map update safety", () => {

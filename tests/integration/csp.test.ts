@@ -12,17 +12,14 @@ await mock.module("../../src/public-assets.js", () => ({
   ]),
 }));
 
-// Mock tmux deps
-await mock.module("../../src/server/tmux.js", () => ({
-  tmuxList: mock(async () => []),
+// Stub shell.exec so http.ts's git invocations don't shell out during tests
+await mock.module("../../src/server/shell.js", () => ({
   exec: mock(async () => ({ stdout: "", stderr: "" })),
-  capturePane: mock(async () => ""),
-  tmuxResize: mock(async () => {}),
-  tmuxNewSession: mock(async () => {}),
-  tmuxKillSession: mock(async () => {}),
-  cleanupOrphanPtySessions: mock(() => {}),
   SHELL: "/bin/zsh",
-  TMUX: "tmux",
+  injectAgentContext: (s: string) => s,
+  RALPH_AGENTS: new Set(["claude", "codex", "gemini", "cursor"]),
+  detectAgent: () => null,
+  __setExecOverride: () => {},
 }));
 
 const { serveFile } = await import("../../src/server/http.js");

@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import pkg from "../../package.json";
 import { validateRequestJwt } from "../auth.js";
-import { SHELL } from "./tmux.js";
+import { SHELL } from "./shell.js";
 import { initBackend, getBackend, getRouter, type BackendType } from "./backend.js";
 import { routes } from "./routes.js";
 import {

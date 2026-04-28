@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 // Set DEV_DIR before importing so the module-level constant picks it up.
 // Use trailing slash to verify boundary logic handles normalized equivalence.
 process.env.WOLFPACK_DEV_DIR = "/Users/home/Dev/";
-const { isUnderDevDir } = await import("../../src/server/tmux.js");
+const { isUnderDevDir } = await import("../../src/server/dev-dir.js");
 
 describe("isUnderDevDir — path containment boundary", () => {
   test("exact match on DEV_DIR itself", () => {
