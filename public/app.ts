@@ -3569,6 +3569,9 @@ function initSidebar() {
     sidebar.classList.add("collapsed");
     state.sidebarCollapsed = true;
   }
+  // Body class drives layout: pinned → in flex flow (pushes main); unpinned →
+  // overlay (doesn't affect terminal width).
+  document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
   updatePinButton();
 
   // Pin/unpin button
@@ -3577,6 +3580,7 @@ function initSidebar() {
     localStorage.setItem("wolfpack-sidebar-pinned", state.sidebarPinned ? "1" : "0");
     state.sidebarTransitionIsHover = false;
     if (!state.sidebarResizeDone) hideGridCellsForTransition();
+    document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
     if (state.sidebarPinned) {
       // Pin: ensure visible
       sidebar.classList.remove("collapsed");

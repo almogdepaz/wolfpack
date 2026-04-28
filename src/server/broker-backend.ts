@@ -36,6 +36,11 @@ import {
 const log = createLogger("broker-backend");
 
 const TRIAGE_CACHE_TTL_MS = 500;
+/** Cap on scrollback lines requested per `snapshot` RPC. The broker rejects
+ *  frames >16MB; long-running sessions with styled output (Claude TUI, etc.)
+ *  serialize at ~30 bytes/cell × 120 cols, so 2000 lines ≈ 7MB worst case
+ *  — well under the limit while still giving plenty of scrollback context. */
+const SNAPSHOT_SCROLLBACK_LINES = 2000;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
@@ -279,7 +284,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     if (!id) return "";
     let resp: ControlResponse;
     try {
-      resp = await this.client.request("snapshot", { session_id: id });
+      // Cap scrollback to bound the response size — broker rejects frames >16MB
+      // and triage just needs the recent tail anyway.
+      resp = await this.client.request("snapshot", { session_id: id, scrollback_lines: SNAPSHOT_SCROLLBACK_LINES });
     } catch (e: unknown) {
       log.debug("capturePane: snapshot failed", { name, error: errMsg(e) });
       return "";
@@ -412,7 +419,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     if (!id) return Buffer.alloc(0);
     let resp: ControlResponse;
     try {
-      resp = await this.client.request("snapshot", { session_id: id });
+      // Cap scrollback to ~5000 lines — matches the legacy tmux `-S -5000`
+      // behavior and stays well under broker's MAX_FRAME_PAYLOAD (16MB).
+      resp = await this.client.request("snapshot", { session_id: id, scrollback_lines: SNAPSHOT_SCROLLBACK_LINES });
     } catch (e: unknown) {
       log.debug("getSessionPrefill: snapshot failed", { name, error: errMsg(e) });
       return Buffer.alloc(0);
