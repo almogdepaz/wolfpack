@@ -379,13 +379,17 @@ async function checkBroker(): Promise<CheckResult[]> {
 }
 
 /** Speak the broker's framed-JSON RPC just enough to verify list_sessions
- *  returns `{ status: "ok" }`. Avoids a hard dependency on broker/client.ts. */
+ *  returns `{ status: "ok" }`. Wire format mirrors src/broker/codec.ts:
+ *  `[1 byte kind][4 bytes BE length][payload]`. CONTROL_REQUEST kind = 0x01,
+ *  CONTROL_RESPONSE kind = 0x02. */
 function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: boolean; elapsedMs: number; reason?: string }> {
   return new Promise((resolve) => {
+    const FRAME_KIND_CONTROL_REQUEST = 0x01;
+    const FRAME_KIND_CONTROL_RESPONSE = 0x02;
     const start = Date.now();
     const sock = net.createConnection(socketPath);
     let done = false;
-    const buf: Buffer[] = [];
+    let buf = Buffer.alloc(0);
     const finish = (ok: boolean, reason?: string) => {
       if (done) return;
       done = true;
@@ -397,29 +401,33 @@ function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: b
     sock.once("connect", () => {
       const payload = JSON.stringify({ id: 1, method: "list_sessions", params: {} });
       const body = Buffer.from(payload, "utf-8");
-      const frame = Buffer.alloc(4 + body.length);
-      frame.writeUInt32BE(body.length, 0);
-      body.copy(frame, 4);
+      const frame = Buffer.alloc(5 + body.length);
+      frame[0] = FRAME_KIND_CONTROL_REQUEST;
+      frame.writeUInt32BE(body.length, 1);
+      body.copy(frame, 5);
       sock.write(frame);
     });
     sock.on("data", (chunk: Buffer) => {
-      buf.push(chunk);
-      const all = Buffer.concat(buf);
-      if (all.length < 4) return;
-      const len = all.readUInt32BE(0);
-      if (all.length < 4 + len) return;
-      try {
-        const msg = JSON.parse(all.subarray(4, 4 + len).toString("utf-8"));
-        if (msg?.status === "ok") {
+      buf = Buffer.concat([buf, chunk]);
+      // Frame: kind(1) + len(4) + payload(len). Read frames until we see a
+      // CONTROL_RESPONSE (skip async events that may interleave).
+      while (buf.length >= 5) {
+        const kind = buf[0];
+        const len = buf.readUInt32BE(1);
+        if (buf.length < 5 + len) return;
+        const payload = buf.subarray(5, 5 + len);
+        buf = buf.subarray(5 + len);
+        if (kind !== FRAME_KIND_CONTROL_RESPONSE) continue;
+        try {
+          const msg = JSON.parse(payload.toString("utf-8"));
           clearTimeout(timer);
-          finish(true);
-        } else {
+          if (msg?.status === "ok") finish(true);
+          else finish(false, `broker replied status=${msg?.status}`);
+        } catch (e: unknown) {
           clearTimeout(timer);
-          finish(false, `broker replied status=${msg?.status}`);
+          finish(false, `parse error: ${errMsg(e)}`);
         }
-      } catch (e: unknown) {
-        clearTimeout(timer);
-        finish(false, `parse error: ${errMsg(e)}`);
+        return;
       }
     });
   });
