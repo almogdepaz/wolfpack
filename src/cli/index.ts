@@ -23,6 +23,7 @@ import {
 } from "./service.js";
 import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
+import { lsSessions, killSession } from "./sessions.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
@@ -146,6 +147,10 @@ async function main() {
     }
   } else if (cmd === "doctor") {
     process.exit(await doctor());
+  } else if (cmd === "ls" || cmd === "list") {
+    process.exit(await lsSessions());
+  } else if (cmd === "kill") {
+    process.exit(await killSession(subcmd));
   } else if (cmd === "uninstall") {
     uninstall();
   } else if (cmd === "migrate-plan") {
