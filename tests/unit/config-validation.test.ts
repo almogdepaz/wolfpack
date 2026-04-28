@@ -40,7 +40,7 @@ describe("parseConfig", () => {
     });
   });
 
-  test("accepts backend 'pty'", () => {
+  test("ignores legacy backend 'pty' (no longer supported)", () => {
     expect(parseConfig({
       devDir: "/Users/home/Dev",
       port: 18790,
@@ -49,7 +49,7 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
-      backend: "pty",
+      backend: undefined,
     });
   });
 

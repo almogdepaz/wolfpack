@@ -5,7 +5,7 @@
  * that can be injected via __setTestBackend(). No tmux or real PTY needed.
  */
 import type { SessionBackend } from "./backend.js";
-import { stripAnsi } from "./pty-backend.js";
+import { stripAnsi } from "./strip-ansi.js";
 
 export interface MockBackendOptions {
   sessions?: string[];

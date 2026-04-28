@@ -405,11 +405,11 @@ export const routes: Record<
     const body = await parseBody<{ default?: BackendType }>(req, res);
     if (!body) return;
     const type = body.default;
-    if (type !== "pty" && type !== "broker") {
-      return json(res, { error: "invalid backend type — must be 'pty' or 'broker'" }, 400);
+    if (type !== "broker") {
+      return json(res, { error: "invalid backend type — only 'broker' is supported" }, 400);
     }
     const router = getRouter();
-    if (type === "broker" && !router.isBrokerAvailable()) {
+    if (!router.isBrokerAvailable()) {
       return json(res, { error: "broker daemon is not reachable" }, 400);
     }
     router.setDefaultBackend(type);

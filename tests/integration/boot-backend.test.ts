@@ -1,6 +1,6 @@
 /**
- * Verify bootTestServer works with the supported backend types ("pty" and "broker").
- * Ensures MockBackend integration is backend-type agnostic.
+ * Verify bootTestServer works with the broker backend (the only supported
+ * backend post-S6). Ensures MockBackend integration end-to-end.
  */
 import { describe, test, expect } from "bun:test";
 import {
@@ -11,13 +11,12 @@ import {
   wait,
 } from "./pty-test-helpers";
 
-for (const backendType of ["pty", "broker"] as const) {
-  describe(`bootTestServer backendType=${backendType}`, () => {
+describe("bootTestServer backendType=broker", () => {
     test("boots server, connects WS, receives attach_ack", async () => {
       const ctx = await bootTestServer({
         sessions: ["test-session"],
         capturePane: async () => "$ mock-prompt\n",
-        backendType,
+        backendType: "broker",
       });
 
       try {
@@ -35,5 +34,4 @@ for (const backendType of ["pty", "broker"] as const) {
         ctx.cleanup();
       }
     });
-  });
-}
+});
