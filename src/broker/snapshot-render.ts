@@ -177,3 +177,20 @@ export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
 
   return Buffer.from(parts.join(""), "utf8");
 }
+
+/**
+ * Render a broker snapshot to plain text — scrollback + visible screen with
+ * trailing whitespace trimmed and no ANSI/SGR. Drops trailing blank rows so
+ * a copied transcript ends at the last meaningful line.
+ *
+ * Used by the "Copy session" mobile action where ANSI noise would just hurt
+ * the paste experience.
+ */
+export function renderSnapshotToPlainText(snap: SnapshotForRender): string {
+  const lines: string[] = [];
+  for (const line of snap.scrollback ?? []) lines.push(plainLine(line));
+  for (const line of snap.visible_screen ?? []) lines.push(plainLine(line));
+  // Drop trailing blank rows — visible_screen is always padded to `rows`.
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}

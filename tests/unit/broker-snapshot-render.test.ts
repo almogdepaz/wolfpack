@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   renderSnapshotToAnsi,
+  renderSnapshotToPlainText,
   type SnapshotForRender,
   type StyledLine,
   type CellAttrs,
@@ -196,5 +197,45 @@ describe("renderSnapshotToAnsi: full fixture", () => {
       "\x1b[0m" +
       "\x1b[2;2H\x1b[?25h";
     expect(got).toBe(expected);
+  });
+});
+
+describe("renderSnapshotToPlainText", () => {
+  test("emits scrollback then visible screen as plain LF-separated lines", () => {
+    const snap: SnapshotForRender = {
+      scrollback: [row("history one"), row("history two")],
+      visible_screen: [row("$ echo hi"), row("hi"), row("$ ")],
+      cursor: { row: 2, col: 2 },
+    };
+    const out = renderSnapshotToPlainText(snap);
+    expect(out).toBe(["history one", "history two", "$ echo hi", "hi", "$"].join("\n"));
+  });
+
+  test("strips trailing pad spaces and trailing blank rows", () => {
+    const snap: SnapshotForRender = {
+      scrollback: [],
+      visible_screen: [
+        row("only meaningful   "),
+        row(""),
+        row("       "),
+      ],
+      cursor: { row: 0, col: 0 },
+    };
+    expect(renderSnapshotToPlainText(snap)).toBe("only meaningful");
+  });
+
+  test("contains no ANSI escape sequences", () => {
+    const snap: SnapshotForRender = {
+      scrollback: [],
+      visible_screen: [
+        styledRow([
+          { ch: "h" },
+          { ch: "i", attrs: { fg: 0xffffff, bold: true } },
+        ]),
+      ],
+      cursor: { row: 0, col: 2 },
+    };
+    expect(renderSnapshotToPlainText(snap)).toBe("hi");
+    expect(renderSnapshotToPlainText(snap).indexOf("\x1b")).toBe(-1);
   });
 });

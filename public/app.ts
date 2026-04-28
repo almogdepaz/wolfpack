@@ -229,6 +229,29 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
+async function copySessionToClipboard() {
+  if (!state.currentSession) return;
+  haptic([20]);
+  const overlay = document.getElementById("git-status-overlay");
+  overlay.innerHTML = '<pre>copying...</pre>';
+  overlay.classList.add("visible");
+  try {
+    // /api/copy-text returns text/plain — fetch raw, then write to clipboard.
+    const path = "/api/copy-text?session=" + encodeURIComponent(state.currentSession);
+    const base = (state.currentMachine || "").replace(/\/$/, "");
+    const headers = {};
+    const jwt = localStorage.getItem("wpJwt");
+    if (jwt) headers["Authorization"] = "Bearer " + jwt;
+    const r = await fetch(base + path, { headers });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const text = await r.text();
+    await navigator.clipboard.writeText(text);
+    overlay.innerHTML = `<div><pre>copied ${text.length} chars</pre><div class="overlay-hint">tap to dismiss</div></div>`;
+  } catch (e) {
+    overlay.innerHTML = `<div><pre class="error-pre">copy failed: ${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
+  }
+}
+
 // ── Session Recents ──
 
 function sessionKey(machine, name) {
@@ -3797,6 +3820,8 @@ function bindHtmlEventListeners(): void {
   // Keyboard accessory
   const gitBtn = document.querySelector(".kb-key.kb-git");
   if (gitBtn) gitBtn.addEventListener("click", () => showGitStatus());
+  const copyBtn = document.querySelector(".kb-key.kb-copy");
+  if (copyBtn) copyBtn.addEventListener("click", () => copySessionToClipboard());
 
 
   // Ralph detail

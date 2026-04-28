@@ -485,6 +485,20 @@ export const routes: Record<
     json(res, { pane });
   },
 
+  "GET /api/copy-text": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const text = await getBackend().capturePane(session);
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(text);
+  },
+
   "GET /api/git-status": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
