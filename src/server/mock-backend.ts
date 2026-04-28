@@ -18,6 +18,11 @@ export class MockBackend implements SessionBackend {
   private _sessions: Set<string>;
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
+  /** Per-session alive override — when set, isSessionAlive() returns this
+   *  instead of `_sessions.has(name)`. Used by tests to simulate a session
+   *  that's listed (so WS upgrade passes) but whose backing process has
+   *  already died (so attachStreamingBackend returns 4001). */
+  private _aliveOverride = new Map<string, boolean>();
 
   /** Last arguments passed to createSession (name, cwd, cmd). */
   lastCreateArgs: { name: string; cwd: string; cmd: string | undefined } | null = null;
@@ -107,7 +112,15 @@ export class MockBackend implements SessionBackend {
   // MockBackend provides no-op/stub versions so WS-attach tests don't crash.
 
   isSessionAlive(name: string): boolean {
+    const override = this._aliveOverride.get(name);
+    if (override !== undefined) return override;
     return this._sessions.has(name);
+  }
+
+  /** Force isSessionAlive(name) to return `alive`. Pass `null` to clear. */
+  setSessionAlive(name: string, alive: boolean | null): void {
+    if (alive === null) this._aliveOverride.delete(name);
+    else this._aliveOverride.set(name, alive);
   }
 
   onSessionData(_name: string, _cb: (data: Uint8Array) => void): (() => void) | null {

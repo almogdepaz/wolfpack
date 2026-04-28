@@ -109,18 +109,14 @@ describe("desktop terminal: open (attach handshake)", () => {
     await wait(100);
   });
 
-  test.skip("attach to an existing proc sends pty_ready after attach_ack [tmux-era; broker streaming uses entry.unsubscribe, not entry.proc]", async () => {
+  test("attach to an already-streaming entry sends pty_ready after attach_ack", async () => {
     const ws = await connectPty("desktop-test");
     await wait(10);
     const entry = ctx.activePtySessions.get("desktop-test") as any;
-    entry.proc = {
-      terminal: {
-        write() {},
-        resize() {},
-        close() {},
-      },
-      kill() {},
-    };
+    // Broker streaming uses entry.unsubscribe (the data-listener teardown
+    // function) as the "already attached" marker. Faking it here is enough
+    // for the attach handler to take the existing-stream branch.
+    entry.unsubscribe = () => {};
 
     const msgs = collectJsonMessages(ws);
     ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
@@ -143,14 +139,19 @@ describe("desktop terminal: open (attach handshake)", () => {
     await wait(100);
   });
 
-  test.skip("spawn failure closes WS with 4001 (session unavailable) [tmux-era; tmux backend removed]", async () => {
-    const ws = await connectPty("desktop-test");
-    const closePromise = waitForClose(ws);
-    // Trigger spawn — will fail (no real tmux session)
-    ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
-    const ev = await closePromise;
-    expect(ev.code).toBe(4001);
-    await wait(50);
+  test("attach failure (session not alive) closes WS with 4001", async () => {
+    // Force the broker mock to report the session as dead so attach fails.
+    ctx.mockBackend.setSessionAlive("desktop-test", false);
+    try {
+      const ws = await connectPty("desktop-test");
+      const closePromise = waitForClose(ws);
+      ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
+      const ev = await closePromise;
+      expect(ev.code).toBe(CLOSE_CODE_SESSION_UNAVAILABLE);
+      await wait(50);
+    } finally {
+      ctx.mockBackend.setSessionAlive("desktop-test", null);
+    }
   });
 });
 
@@ -312,14 +313,16 @@ describe("desktop terminal: session lifecycle", () => {
     expect(entry!.alive).toBe(false);
   });
 
-  test.skip("reconnect after spawn failure gets fresh entry + attach_ack [tmux-era]", async () => {
-    // First connection — triggers spawn failure
+  test("reconnect after attach failure gets fresh entry + attach_ack", async () => {
+    // First connection — broker reports session dead, attach yields 4001
+    ctx.mockBackend.setSessionAlive("desktop-test", false);
     const ws1 = await connectPty("desktop-test");
     ws1.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
     await waitForClose(ws1);
     await wait(100);
 
-    // Second connection — should get fresh entry
+    // Clear the override — second connect should succeed cleanly
+    ctx.mockBackend.setSessionAlive("desktop-test", null);
     const ws2 = await connectPty("desktop-test");
     const ackPromise = waitForMessage(ws2, "attach_ack");
     ws2.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
@@ -329,18 +332,24 @@ describe("desktop terminal: session lifecycle", () => {
     await wait(100);
   });
 
-  test.skip("full lifecycle: connect → attach_ack → spawn fail → 4001 close [tmux-era]", async () => {
-    const ws = await connectPty("desktop-test");
-    const msgs = collectJsonMessages(ws);
-    const closePromise = waitForClose(ws);
+  test("full lifecycle: connect → attach → 4001 close on dead session", async () => {
+    // Note: under broker streaming, isSessionAlive is checked synchronously
+    // inside attachStreamingBackend, so the WS is torn down before the
+    // attach_ack send-guard runs. The original tmux-era test asserted
+    // attach_ack arrived before close — that ordering only held because
+    // tmux spawn was async. The 4001 close-code contract is what matters.
+    ctx.mockBackend.setSessionAlive("desktop-test", false);
+    try {
+      const ws = await connectPty("desktop-test");
+      const closePromise = waitForClose(ws);
 
-    ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
+      ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
 
-    const ev = await closePromise;
-    // attach_ack received before close
-    expect(msgs.some(m => m.type === "attach_ack")).toBe(true);
-    // Closed with 4001 (session unavailable — no real tmux)
-    expect(ev.code).toBe(4001);
+      const ev = await closePromise;
+      expect(ev.code).toBe(CLOSE_CODE_SESSION_UNAVAILABLE);
+    } finally {
+      ctx.mockBackend.setSessionAlive("desktop-test", null);
+    }
   });
 
   test("rapid connect/disconnect cycles don't leak entries or crash", async () => {

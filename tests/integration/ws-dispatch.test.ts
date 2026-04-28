@@ -11,7 +11,8 @@ const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { activePtySessions: __activePtySessions, ptySpawnAttempts: __ptySpawnAttempts } = __getTestState();
 
 const FAKE_SESSIONS = ["dispatch-session", "reconnect-session"];
-__setTestBackend(new MockBackend({ sessions: FAKE_SESSIONS }));
+const mockBackend = new MockBackend({ sessions: FAKE_SESSIONS });
+__setTestBackend(mockBackend);
 
 const { server } = createServerInstance();
 
@@ -68,29 +69,34 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ── Close code semantics driving reconnect decisions ──
 
 describe("WS close code semantics (backoff decision drivers)", () => {
-  test.skip("PTY spawn failure yields 4001 (prevents reconnect loop) [tmux-era]", async () => {
+  test("attach failure yields 4001 (prevents reconnect loop)", async () => {
     const ptySessions = __activePtySessions;
     ptySessions.delete("dispatch-session");
+    mockBackend.setSessionAlive("dispatch-session", false);
     await wait(50);
 
-    const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=dispatch-session`);
-    ws.binaryType = "arraybuffer";
-    const closePromise = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
+    try {
+      const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=dispatch-session`);
+      ws.binaryType = "arraybuffer";
+      const closePromise = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
 
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve());
-      ws.addEventListener("error", () => reject(new Error("connect failed")));
-    });
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve());
+        ws.addEventListener("error", () => reject(new Error("connect failed")));
+      });
 
-    // Trigger spawn — will fail (no real tmux session)
-    ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
+      // Trigger attach — broker mock reports session dead, yields 4001.
+      ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
 
-    const ev = await Promise.race([
-      closePromise,
-      wait(5000).then(() => { throw new Error("timeout"); }),
-    ]) as CloseEvent;
-    // 4001 = session unavailable, not 1000 — prevents infinite reconnect
-    expect(ev.code).toBe(4001);
+      const ev = await Promise.race([
+        closePromise,
+        wait(5000).then(() => { throw new Error("timeout"); }),
+      ]) as CloseEvent;
+      // 4001 = session unavailable, not 1000 — prevents infinite reconnect
+      expect(ev.code).toBe(4001);
+    } finally {
+      mockBackend.setSessionAlive("dispatch-session", null);
+    }
   });
 
   test("invalid session on PTY connect gets rejected (not 101)", async () => {

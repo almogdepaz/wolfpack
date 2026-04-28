@@ -7,6 +7,7 @@
  */
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import type { MockBackend } from "../../src/server/mock-backend.ts";
 
 // ── Server setup ──
 
@@ -16,6 +17,9 @@ export interface PtyTestContext {
   server: Server;
   activePtySessions: Map<string, any>;
   ptySpawnAttempts: Map<string, number>;
+  /** The MockBackend injected as the session backend — tests use this to
+   *  toggle isSessionAlive() to simulate broker spawn-failure scenarios. */
+  mockBackend: MockBackend;
   cleanup: () => void;
 }
 
@@ -68,6 +72,7 @@ export async function bootTestServer(opts: {
     server,
     activePtySessions,
     ptySpawnAttempts,
+    mockBackend: mock,
     cleanup: () => {
       console.error = realConsoleError;
       server.close();
