@@ -316,7 +316,49 @@ function checkBinary(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
-// Check group 6: Environment
+// Check group 6: Broker (PTY daemon)
+// ---------------------------------------------------------------------------
+
+function checkBroker(): CheckResult[] {
+  const results: CheckResult[] = [];
+
+  // Binary location: ~/.wolfpack/bin/wolfpack-broker (preferred) or co-located
+  // with the main binary.
+  const candidates = [
+    join(WOLFPACK_DIR, "bin", "wolfpack-broker"),
+    join(WOLFPACK_DIR, "wolfpack-broker"),
+  ];
+  const found = candidates.find((p) => existsSync(p));
+  if (found) {
+    results.push({
+      name: "broker binary", group: "Broker", status: "pass", detail: found,
+    });
+  } else {
+    results.push({
+      name: "broker binary", group: "Broker", status: "fail",
+      detail: "not found in ~/.wolfpack/bin",
+      fixHint: "bun run scripts/build.ts (requires rust toolchain)",
+    });
+  }
+
+  // Socket: ~/.wolfpack/broker.sock — present means a broker is reachable.
+  const socketPath = join(WOLFPACK_DIR, "broker.sock");
+  if (existsSync(socketPath)) {
+    results.push({
+      name: "broker socket", group: "Broker", status: "pass", detail: socketPath,
+    });
+  } else {
+    results.push({
+      name: "broker socket", group: "Broker", status: "warn",
+      detail: "no socket — daemon not running",
+    });
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Check group 7: Environment
 // ---------------------------------------------------------------------------
 
 function checkEnvironment(): CheckResult[] {
@@ -458,6 +500,7 @@ export async function doctor({ fix: doFix = process.argv.includes("--fix") } = {
     checkService,
     checkConnectivity,
     checkBinary,
+    checkBroker,
     checkEnvironment,
     checkLogs,
   ];
