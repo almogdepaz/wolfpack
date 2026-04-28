@@ -1,7 +1,7 @@
 /**
  * `wolfpack doctor` — system health check with optional --fix.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import {
   accessSync,
   chmodSync,
@@ -12,7 +12,11 @@ import {
 } from "node:fs";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { join } from "node:path";
+import * as net from "node:net";
+import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
+
+const log = createLogger("doctor");
 import {
   WOLFPACK_DIR,
   IS_MACOS,
@@ -319,7 +323,7 @@ function checkBinary(): CheckResult[] {
 // Check group 6: Broker (PTY daemon)
 // ---------------------------------------------------------------------------
 
-function checkBroker(): CheckResult[] {
+async function checkBroker(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
 
   // Binary location: ~/.wolfpack/bin/wolfpack-broker (preferred) or co-located
@@ -341,20 +345,92 @@ function checkBroker(): CheckResult[] {
     });
   }
 
-  // Socket: ~/.wolfpack/broker.sock — present means a broker is reachable.
+  // Socket: open it, send list_sessions, expect status === "ok" within 1s.
   const socketPath = join(WOLFPACK_DIR, "broker.sock");
-  if (existsSync(socketPath)) {
+  if (!existsSync(socketPath)) {
+    const fix = found ? () => kickstartBroker() : undefined;
     results.push({
-      name: "broker socket", group: "Broker", status: "pass", detail: socketPath,
+      name: "broker socket", group: "Broker",
+      status: found ? "fail" : "warn",
+      detail: found ? "binary present but no socket — daemon not running" : "no socket — daemon not running",
+      fixHint: found ? (IS_MACOS ? "launchctl kickstart gui/$(id -u)/com.wolfpack.broker" : "systemctl --user start wolfpack-broker") : undefined,
+      fix,
+    });
+    return results;
+  }
+
+  // Probe handshake.
+  const handshake = await brokerHandshake(socketPath, 1000);
+  if (handshake.ok) {
+    results.push({
+      name: "broker handshake", group: "Broker", status: "pass",
+      detail: `list_sessions ok (${handshake.elapsedMs}ms)`,
     });
   } else {
     results.push({
-      name: "broker socket", group: "Broker", status: "warn",
-      detail: "no socket — daemon not running",
+      name: "broker handshake", group: "Broker", status: "fail",
+      detail: handshake.reason ?? "no response",
+      fixHint: IS_MACOS ? "launchctl kickstart gui/$(id -u)/com.wolfpack.broker" : "systemctl --user restart wolfpack-broker",
+      fix: found ? () => kickstartBroker() : undefined,
     });
   }
 
   return results;
+}
+
+/** Speak the broker's framed-JSON RPC just enough to verify list_sessions
+ *  returns `{ status: "ok" }`. Avoids a hard dependency on broker/client.ts. */
+function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: boolean; elapsedMs: number; reason?: string }> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const sock = net.createConnection(socketPath);
+    let done = false;
+    const buf: Buffer[] = [];
+    const finish = (ok: boolean, reason?: string) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (e: unknown) { log.debug("broker probe destroy failed", { error: errMsg(e) }); }
+      resolve({ ok, elapsedMs: Date.now() - start, reason });
+    };
+    const timer = setTimeout(() => finish(false, `timed out after ${timeoutMs}ms`), timeoutMs);
+    sock.once("error", (e) => { clearTimeout(timer); finish(false, errMsg(e)); });
+    sock.once("connect", () => {
+      const payload = JSON.stringify({ id: 1, method: "list_sessions", params: {} });
+      const body = Buffer.from(payload, "utf-8");
+      const frame = Buffer.alloc(4 + body.length);
+      frame.writeUInt32BE(body.length, 0);
+      body.copy(frame, 4);
+      sock.write(frame);
+    });
+    sock.on("data", (chunk: Buffer) => {
+      buf.push(chunk);
+      const all = Buffer.concat(buf);
+      if (all.length < 4) return;
+      const len = all.readUInt32BE(0);
+      if (all.length < 4 + len) return;
+      try {
+        const msg = JSON.parse(all.subarray(4, 4 + len).toString("utf-8"));
+        if (msg?.status === "ok") {
+          clearTimeout(timer);
+          finish(true);
+        } else {
+          clearTimeout(timer);
+          finish(false, `broker replied status=${msg?.status}`);
+        }
+      } catch (e: unknown) {
+        clearTimeout(timer);
+        finish(false, `parse error: ${errMsg(e)}`);
+      }
+    });
+  });
+}
+
+function kickstartBroker(): void {
+  if (IS_MACOS) {
+    execSync(`launchctl kickstart gui/$(id -u)/com.wolfpack.broker`);
+  } else if (IS_LINUX) {
+    execSync(`systemctl --user start wolfpack-broker`);
+  }
 }
 
 // ---------------------------------------------------------------------------

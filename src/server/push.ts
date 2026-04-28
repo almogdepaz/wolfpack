@@ -340,7 +340,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
         TTL: "86400",
         Authorization: `vapid t=${jwt}, k=${vapid.publicKey}`,
       },
-      body,
+      body: new Uint8Array(body),
     });
 
     return { endpoint: sub.endpoint, status: resp.status };

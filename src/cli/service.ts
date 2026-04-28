@@ -51,6 +51,23 @@ const SYSTEMD_PATH = join(
   `${SYSTEMD_SERVICE}.service`,
 );
 
+const BROKER_PLIST_PATH = join(
+  homedir(),
+  "Library",
+  "LaunchAgents",
+  "com.wolfpack.broker.plist",
+);
+const BROKER_SYSTEMD_SERVICE = "wolfpack-broker";
+const BROKER_SYSTEMD_PATH = join(
+  homedir(),
+  ".config",
+  "systemd",
+  "user",
+  `${BROKER_SYSTEMD_SERVICE}.service`,
+);
+const BROKER_SOCKET_PATH = join(WOLFPACK_DIR, "broker.sock");
+const BROKER_LOG_PATH = join(WOLFPACK_DIR, "broker.log");
+
 function programArgs(): string[] {
   const exe = process.execPath;
   const isBunRuntime = exe.endsWith("/bun") || exe.endsWith("/bun.exe");
@@ -69,6 +86,45 @@ function programArgs(): string[] {
     }
   }
   return [exe];
+}
+
+const STABLE_BROKER_PATH = join(WOLFPACK_DIR, "bin", "wolfpack-broker");
+
+/**
+ * Finds the wolfpack-broker binary and stages it at
+ * `~/.wolfpack/bin/wolfpack-broker`. Returns the absolute path to the
+ * staged binary, or null if no source binary could be located.
+ *
+ * Search order:
+ *  1. Already at the stable path → return it.
+ *  2. Co-located with the running wolfpack binary (same directory).
+ *  3. `broker/target/release/wolfpack-broker` under the cwd (dev tree).
+ */
+export function brokerProgramPath(): string | null {
+  if (existsSync(STABLE_BROKER_PATH)) return STABLE_BROKER_PATH;
+
+  const candidates: string[] = [];
+  const exe = process.execPath;
+  if (exe && exe !== "/usr/local/bin/bun" && !exe.endsWith("/bun")) {
+    // Beside the compiled wolfpack binary
+    const dir = exe.substring(0, exe.lastIndexOf("/"));
+    if (dir) candidates.push(join(dir, "wolfpack-broker"));
+  }
+  // Dev tree: cargo build --release output
+  candidates.push(resolve(process.cwd(), "broker", "target", "release", "wolfpack-broker"));
+
+  for (const src of candidates) {
+    if (!existsSync(src)) continue;
+    try {
+      mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
+      copyFileSync(src, STABLE_BROKER_PATH);
+      chmodSync(STABLE_BROKER_PATH, 0o755);
+      return STABLE_BROKER_PATH;
+    } catch (e: unknown) {
+      log.warn("brokerProgramPath: failed to copy", { src, error: errMsg(e) });
+    }
+  }
+  return null;
 }
 
 /**
@@ -161,7 +217,8 @@ export function renderSystemdUnit(config: Config | null, args: string[]): string
   const quotedArgs = args.map(a => `"${systemdEsc(a)}"`).join(" ");
   return `[Unit]
 Description=Wolfpack AI Agent Bridge
-After=network.target
+After=network.target ${BROKER_SYSTEMD_SERVICE}.service
+Requires=${BROKER_SYSTEMD_SERVICE}.service
 
 [Service]
 Type=simple
@@ -240,6 +297,7 @@ WantedBy=default.target
 // launchd domain target for the current user
 const LAUNCHD_DOMAIN = `gui/${process.getuid!()}`;
 const LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/${PLIST_LABEL}`;
+const BROKER_LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/com.wolfpack.broker`;
 
 function launchdBootout() {
   try {
@@ -258,6 +316,114 @@ function launchdBootout() {
 function launchdBootstrap() {
   execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${PLIST_PATH}"`);
   execSync(`launchctl kickstart ${LAUNCHD_TARGET}`);
+}
+
+function launchdBootoutBroker() {
+  try { execSync(`launchctl bootout ${BROKER_LAUNCHD_TARGET} 2>/dev/null`); } catch { /* expected when not loaded */ }
+}
+
+function launchdBootstrapBroker() {
+  execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${BROKER_PLIST_PATH}"`);
+  execSync(`launchctl kickstart ${BROKER_LAUNCHD_TARGET}`);
+}
+
+/** Try to build the broker from source via cargo if a Cargo.toml is reachable.
+ *  Returns the staged binary path on success, null on failure. */
+export function ensureBrokerBinary(): string | null {
+  const found = brokerProgramPath();
+  if (found) return found;
+
+  // Try cargo build from the dev tree as a fallback.
+  const manifest = resolve(process.cwd(), "broker", "Cargo.toml");
+  if (!existsSync(manifest)) return null;
+  try {
+    execFileSync("which", ["cargo"], { stdio: "ignore" });
+  } catch {
+    return null;
+  }
+  print(dim("  Building wolfpack-broker (cargo build --release)..."));
+  try {
+    execSync(`cargo build --release --manifest-path "${manifest}" --bin wolfpack-broker`, {
+      stdio: "inherit",
+    });
+  } catch (e: unknown) {
+    log.warn("ensureBrokerBinary: cargo build failed", { error: errMsg(e) });
+    return null;
+  }
+  return brokerProgramPath();
+}
+
+/** Install the broker as a service (launchd / systemd). Must run before
+ *  the wolfpack server is bootstrapped so the socket is ready. */
+function brokerServiceInstall(): void {
+  const brokerBin = ensureBrokerBinary();
+  if (!brokerBin) {
+    print(red("  Could not locate wolfpack-broker binary."));
+    print(dim("  Expected one of:"));
+    print(dim(`    - ${STABLE_BROKER_PATH} (already-installed)`));
+    print(dim(`    - co-located with the wolfpack binary`));
+    print(dim(`    - ./broker/target/release/wolfpack-broker (dev tree, run \`cargo build --release --manifest-path broker/Cargo.toml\`)`));
+    process.exit(1);
+  }
+
+  if (IS_MACOS) {
+    try {
+      mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
+      writeFileSync(BROKER_PLIST_PATH, renderBrokerPlist(brokerBin, BROKER_LOG_PATH));
+    } catch (e: unknown) {
+      log.error("failed to write broker plist", { error: errMsg(e) });
+      print(red(`  Failed to write broker plist: ${errMsg(e)}`));
+      process.exit(1);
+    }
+    launchdBootoutBroker();
+    try { launchdBootstrapBroker(); } catch (e: unknown) {
+      log.error("broker launchctl bootstrap failed", { error: errMsg(e) });
+      print(red(`  Failed to register broker with launchd: ${errMsg(e)}`));
+      process.exit(1);
+    }
+    print(dim(`  Broker plist: ${BROKER_PLIST_PATH}`));
+  } else if (IS_LINUX) {
+    try {
+      mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
+      writeFileSync(BROKER_SYSTEMD_PATH, renderBrokerSystemdUnit(brokerBin));
+    } catch (e: unknown) {
+      log.error("failed to write broker systemd unit", { error: errMsg(e) });
+      print(red(`  Failed to write broker unit: ${errMsg(e)}`));
+      process.exit(1);
+    }
+    try {
+      execSync("systemctl --user daemon-reload");
+      execSync(`systemctl --user enable ${BROKER_SYSTEMD_SERVICE}`);
+      execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
+    } catch (e: unknown) {
+      log.error("broker systemctl enable/start failed", { error: errMsg(e) });
+      print(red(`  Failed to enable/start broker: ${errMsg(e)}`));
+      process.exit(1);
+    }
+    print(dim(`  Broker unit:  ${BROKER_SYSTEMD_PATH}`));
+  }
+}
+
+function brokerServiceUninstall(): void {
+  if (IS_MACOS) {
+    launchdBootoutBroker();
+    try { unlinkSync(BROKER_PLIST_PATH); } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker plist", { error: errMsg(e) });
+    }
+  } else if (IS_LINUX) {
+    try { execSync(`systemctl --user stop ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not running */ }
+    try { execSync(`systemctl --user disable ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not enabled */ }
+    try { unlinkSync(BROKER_SYSTEMD_PATH); } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker unit", { error: errMsg(e) });
+    }
+    try { execSync("systemctl --user daemon-reload"); } catch (e: unknown) {
+      log.warn("daemon-reload after broker uninstall failed", { error: errMsg(e) });
+    }
+  }
+  // Clean up the socket file (broker recreates on next start).
+  try { unlinkSync(BROKER_SOCKET_PATH); } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker socket", { error: errMsg(e) });
+  }
 }
 
 export function isServiceInstalled(): boolean {
@@ -279,6 +445,10 @@ export function serviceInstall() {
   if (isPortInUse(config.port)) {
     waitForPortFree(config.port);
   }
+
+  // Bootstrap the broker first — wolfpack server fails to start if the
+  // broker socket isn't reachable.
+  brokerServiceInstall();
 
   if (IS_MACOS) {
     const plist = generatePlist();
@@ -394,6 +564,8 @@ export function serviceUninstall() {
       log.warn("serviceUninstall: failed to reload systemd daemon", { error: errMsg(e) });
     }
   }
+  // Tear down the broker after the wolfpack server (server depends on it).
+  brokerServiceUninstall();
   print(green("  Wolfpack service removed."));
 }
 
