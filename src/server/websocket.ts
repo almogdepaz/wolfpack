@@ -22,6 +22,7 @@ import {
   exec,
 } from "./tmux.js";
 import { getBackend, getBackendTypeForSession, getRouter } from "./backend.js";
+import type { SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
 
@@ -35,6 +36,7 @@ export const activePtySessions = new Map<string, {
   proc: ReturnType<typeof Bun.spawn> | null;
   alive: boolean;
   unsubscribe?: (() => void) | null;
+  unsubscribeLifecycle?: (() => void) | null;
 }>();
 
 const ptySpawnAttempts = new Map<string, number>();
@@ -243,6 +245,10 @@ export function teardownPty(session: string): void {
     entry.unsubscribe();
     entry.unsubscribe = null;
   }
+  if (entry.unsubscribeLifecycle) {
+    entry.unsubscribeLifecycle();
+    entry.unsubscribeLifecycle = null;
+  }
   if (entry.viewer) {
     try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
     entry.viewer = null;
@@ -281,6 +287,10 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
       if (existing.unsubscribe) {
         existing.unsubscribe();
         existing.unsubscribe = null;
+      }
+      if (existing.unsubscribeLifecycle) {
+        existing.unsubscribeLifecycle();
+        existing.unsubscribeLifecycle = null;
       }
       const oldProc = existing.proc;
       existing.alive = false;
@@ -382,6 +392,7 @@ function setupNewPtyEntry(
     proc: null as ReturnType<typeof Bun.spawn> | null,
     alive: true,
     unsubscribe: null as (() => void) | null,
+    unsubscribeLifecycle: null as (() => void) | null,
   };
   activePtySessions.set(session, entry as any);
   let spawning = false;
@@ -392,8 +403,26 @@ function setupNewPtyEntry(
 
   const backendType = getBackendTypeForSession(session);
 
-  // ── PTY backend: attach WS directly to session's terminal I/O ──
-  async function attachPtyBackend(
+  // Backends that stream live output to the WS via a snapshot prefill +
+  // subscribe loop (PTY in-process, broker via RPC). For tmux we still spawn
+  // an intermediate `tmux attach-session` PTY.
+  const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
+    backendType === "broker" || backendType === "pty"
+      ? getRouter().getStreamingBackendForSession(session)
+      : null;
+
+  if ((backendType === "broker" || backendType === "pty") && !streamingBackend) {
+    log.warn("ws attach: streaming backend unavailable", { session, backendType });
+    try { ws.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) {
+      log.debug("streaming backend missing close failed", { session, error: errMsg(e) });
+    }
+    activePtySessions.delete(session);
+    return;
+  }
+
+  // ── Snapshot + subscribe attach path (PTY backend in-process, broker over RPC) ──
+  async function attachStreamingBackend(
+    backend: SessionBackend & PtyBackendMethods,
     cols: number,
     rows: number,
     options?: { prefillMode?: PrefillMode },
@@ -407,9 +436,7 @@ function setupNewPtyEntry(
     }
 
     try {
-      const ptyBackend = getRouter().getPtyBackend();
-
-      if (!ptyBackend.isSessionAlive(session)) {
+      if (!backend.isSessionAlive(session)) {
         entry.alive = false;
         activePtySessions.delete(session);
         if (entry.viewer) {
@@ -421,9 +448,9 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Send prefill from ring buffer (snapshot BEFORE resize so content is stable)
+      // Send prefill (snapshot BEFORE resize so content is stable)
       if (prefillMode !== "none") {
-        const prefill = ptyBackend.getSessionPrefill(session);
+        const prefill = await backend.getSessionPrefill(session);
         if (prefill.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
           let sendBuf: Buffer;
           if (prefill.length > DESKTOP_PREFILL_MAX_BYTES) {
@@ -450,19 +477,57 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Subscribe to terminal output BEFORE resize — resize may trigger PTY
+      // Subscribe to terminal output BEFORE resize — resize may trigger
       // redraw output that must be forwarded to the viewer immediately.
-      const unsub = ptyBackend.onSessionData(session, (data: Uint8Array) => {
+      const unsub = backend.onSessionData(session, (data: Uint8Array) => {
         if (!entry.alive) return;
         if (entry.viewer && entry.viewer.readyState === 1) {
           try { entry.viewer.send(data); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
         }
       });
+      if (!unsub) {
+        log.warn("onSessionData returned null — session vanished", { session });
+        entry.alive = false;
+        activePtySessions.delete(session);
+        if (entry.viewer) {
+          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`onSessionData null: viewer close failed`, { session, error: errMsg(e) }); }
+          entry.viewer = null;
+        }
+        return;
+      }
       entry.unsubscribe = unsub;
 
+      // Lifecycle: broker fires `session_exited` when the child reaps.
+      // Close the viewer with 4001 so the client distinguishes a remote-side
+      // session death from a normal disconnect. PtyBackend's stub no-ops.
+      const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
+        if (event.kind !== "exited") return;
+        if (!entry.alive) return;
+        entry.alive = false;
+        if (activePtySessions.get(session) === entry) {
+          activePtySessions.delete(session);
+        }
+        if (entry.unsubscribe) {
+          try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`lifecycle exit: data unsub failed`, { session, error: errMsg(e) }); }
+          entry.unsubscribe = null;
+        }
+        // Don't invoke our own unsub here — broker drops the lifecycle set on
+        // exit anyway, and we're inside the callback. Just null the ref.
+        entry.unsubscribeLifecycle = null;
+        if (entry.viewer) {
+          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`lifecycle exit: viewer close failed`, { session, error: errMsg(e) }); }
+          entry.viewer = null;
+        }
+        if (entry.pendingViewer) {
+          try { entry.pendingViewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`lifecycle exit: pendingViewer close failed`, { session, error: errMsg(e) }); }
+          entry.pendingViewer = null;
+        }
+      });
+      if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
+
       // Resize to client dimensions — now that listener is attached, any
-      // redraw output from the PTY will be forwarded to the viewer.
-      await ptyBackend.resize(session, cols, rows);
+      // redraw output will be forwarded to the viewer.
+      await backend.resize(session, cols, rows);
 
       sendPtyReady(entry);
     } finally {
@@ -486,8 +551,8 @@ function setupNewPtyEntry(
     }
     const prefillMode = pendingPrefillMode;
     pendingPrefillMode = "full";
-    let prefill = Buffer.alloc(0);
-    let pendingAttach = Buffer.alloc(0);
+    let prefill: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let pendingAttach: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let shouldDedupeInitialAttach = false;
 
     try {
@@ -539,7 +604,7 @@ function setupNewPtyEntry(
             ], { timeout: 3000 });
             if (stdout && entry.viewer && entry.viewer.readyState === 1) {
               const rawPrefill = Buffer.from(stdout);
-              let fullPrefill: Buffer;
+              let fullPrefill: Buffer<ArrayBufferLike>;
               if (rawPrefill.length > DESKTOP_PREFILL_MAX_BYTES) {
                 let start = rawPrefill.length - DESKTOP_PREFILL_MAX_BYTES;
                 while (start < rawPrefill.length && rawPrefill[start] !== 0x0a) start++;
@@ -629,7 +694,13 @@ function setupNewPtyEntry(
   }
 
   // Select spawn function based on backend
-  const spawnPty = backendType === "pty" ? attachPtyBackend : spawnTmuxPty;
+  const spawnPty = streamingBackend
+    ? (cols: number, rows: number, options?: { prefillMode?: PrefillMode; skipPrefill?: boolean }) => {
+        let prefillMode: PrefillMode | undefined = options?.prefillMode;
+        if (!prefillMode && options?.skipPrefill === true) prefillMode = "none";
+        return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
+      }
+    : spawnTmuxPty;
 
   const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -647,7 +718,7 @@ function setupNewPtyEntry(
           typeof msg.rows === "number"
         ) {
           latestRequestedSize = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
-          const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
+          const isAttached = streamingBackend ? !!entry.unsubscribe : !!entry.proc;
           if (!isAttached) {
             let prefillMode: PrefillMode = "full";
             if (typeof msg.prefillMode === "string" && VALID_PREFILL_MODES.includes(msg.prefillMode)) {
@@ -670,7 +741,7 @@ function setupNewPtyEntry(
           const cols = clampCols(msg.cols);
           const rows = clampRows(msg.rows);
           latestRequestedSize = { cols, rows };
-          const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
+          const isAttached = streamingBackend ? !!entry.unsubscribe : !!entry.proc;
           if (!isAttached) {
             spawnPty(cols, rows);
           } else {
@@ -678,10 +749,10 @@ function setupNewPtyEntry(
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
               if (!entry.alive) return;
-              if (backendType === "pty") {
-                // Direct resize via backend
-                getBackend().resize(session, cols, rows).catch((e: unknown) => {
-                  log.debug(`pty backend resize failed`, { session, error: errMsg(e) });
+              if (streamingBackend) {
+                // Direct resize via backend (PTY in-process or broker over RPC)
+                streamingBackend.resize(session, cols, rows).catch((e: unknown) => {
+                  log.debug(`streaming backend resize failed`, { session, backendType, error: errMsg(e) });
                 });
               } else {
                 // Tmux: resize both the intermediate PTY and the tmux window
@@ -697,8 +768,8 @@ function setupNewPtyEntry(
       } else {
         // Binary data — write to terminal
         if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;
-        if (backendType === "pty") {
-          getRouter().getPtyBackend().writeToTerminal(session, raw as Buffer);
+        if (streamingBackend) {
+          streamingBackend.writeToTerminal(session, raw as Buffer);
         } else if (entry.proc) {
           entry.proc.terminal!.write(raw as Buffer);
         }
