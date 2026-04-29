@@ -10,9 +10,10 @@
 //! between resolve and insert.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use thiserror::Error;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::protocol::Event;
@@ -105,6 +106,50 @@ impl Registry {
         let inner = self.inner.lock().expect("registry poisoned");
         inner.sessions.len()
     }
+
+    /// Drop a session entry whose process has exited. Frees the name slot so
+    /// the same name can be reused by a future `create`. The anonymous-name
+    /// counter is intentionally NOT rewound — `next_anon` stays monotonic so a
+    /// killed session-N's slot is not silently reused.
+    ///
+    /// Called by the reaper task spawned via [`spawn_exit_reaper`]; safe to
+    /// call repeatedly with the same id (no-op after the first call).
+    pub fn reap(&self, id: Uuid) {
+        let mut guard = self.inner.lock().expect("registry poisoned");
+        let inner = &mut *guard;
+        let Some(session) = inner.sessions.remove(&id) else {
+            return;
+        };
+        let name = session.snapshot().name;
+        if inner.names.get(&name) == Some(&id) {
+            inner.names.remove(&name);
+        }
+    }
+}
+
+/// Subscribe to `SessionExited` events and call `Registry::reap` for each.
+/// Holds a `Weak<Registry>` so the task self-terminates when the registry is
+/// dropped. Lagged receivers are tolerated — a missed event just means the
+/// next `list_sessions` will still show `alive=false` for that id; the slot
+/// will be freed the next time the channel delivers any event for it (which
+/// won't happen, so a lag is a slow leak — but the bus capacity is large
+/// enough that lag is not expected in practice for exit events).
+pub fn spawn_exit_reaper(registry: &Arc<Registry>) {
+    let weak: Weak<Registry> = Arc::downgrade(registry);
+    let mut rx = registry.events.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(Event::SessionExited { session_id, .. }) => {
+                    let Some(reg) = weak.upgrade() else { break };
+                    reg.reap(session_id);
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Pure name resolver. If `requested` is `Some(name)`, validate uniqueness; if
@@ -284,5 +329,39 @@ mod tests {
         }
 
         cleanup(&sess);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exited_session_frees_its_name_for_recreate() {
+        let events = test_events();
+        let reg = Arc::new(Registry::new(events));
+        spawn_exit_reaper(&reg);
+
+        // Use `true` so the child exits immediately and the reaper publishes
+        // SessionExited without us having to send a signal.
+        let sess = reg
+            .create(create_opts(Some("ghost"), &["true"]))
+            .expect("create ghost");
+        let id = sess.id();
+        assert!(sess.wait_for_exit(Duration::from_secs(5)), "child must exit");
+        drop(sess);
+
+        // The reaper runs on the runtime; yield until the registry observes
+        // the removal. Bounded retry so a regression of this fix fails fast.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if reg.get(id).is_none() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "reaper did not drop exited session");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Name slot must be free — recreating with the same name must succeed.
+        let sess2 = reg
+            .create(create_opts(Some("ghost"), &["sleep", "30"]))
+            .expect("recreate after reap");
+        assert_eq!(sess2.snapshot().name, "ghost");
+        cleanup(&sess2);
     }
 }

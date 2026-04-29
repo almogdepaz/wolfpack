@@ -7,7 +7,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use wolfpack_broker::protocol::Event;
-use wolfpack_broker::registry::Registry;
+use wolfpack_broker::registry::{spawn_exit_reaper, Registry};
 use wolfpack_broker::server::{default_socket_path, start, ServerConfig};
 use wolfpack_broker::session_router::{SessionRouter, EVENT_BUS_CAPACITY};
 
@@ -28,6 +28,7 @@ async fn main() {
 
     let (events, _) = broadcast::channel::<Event>(EVENT_BUS_CAPACITY);
     let registry = Arc::new(Registry::new(events.clone()));
+    spawn_exit_reaper(&registry);
     let server = match start(ServerConfig {
         socket_path,
         router: Arc::new(SessionRouter::new(Arc::clone(&registry), events.clone())),
