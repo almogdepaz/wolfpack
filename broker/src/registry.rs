@@ -129,11 +129,11 @@ impl Registry {
 
 /// Subscribe to `SessionExited` events and call `Registry::reap` for each.
 /// Holds a `Weak<Registry>` so the task self-terminates when the registry is
-/// dropped. Lagged receivers are tolerated — a missed event just means the
-/// next `list_sessions` will still show `alive=false` for that id; the slot
-/// will be freed the next time the channel delivers any event for it (which
-/// won't happen, so a lag is a slow leak — but the bus capacity is large
-/// enough that lag is not expected in practice for exit events).
+/// dropped. On `Lagged`, fall back to an authoritative sweep: walk the
+/// registry and reap any session whose process has already exited. Without
+/// this, a dropped exit event would pin the session in the registry forever
+/// (SessionExited fires once per session, so the next event for that id
+/// never arrives).
 pub fn spawn_exit_reaper(registry: &Arc<Registry>) {
     let weak: Weak<Registry> = Arc::downgrade(registry);
     let mut rx = registry.events.subscribe();
@@ -145,7 +145,22 @@ pub fn spawn_exit_reaper(registry: &Arc<Registry>) {
                     reg.reap(session_id);
                 }
                 Ok(_) => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        lagged = n,
+                        "exit reaper lagged events; sweeping registry for dead sessions"
+                    );
+                    let Some(reg) = weak.upgrade() else { break };
+                    let dead: Vec<Uuid> = reg
+                        .list()
+                        .into_iter()
+                        .filter(|s| !s.alive())
+                        .map(|s| s.id())
+                        .collect();
+                    for id in dead {
+                        reg.reap(id);
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }

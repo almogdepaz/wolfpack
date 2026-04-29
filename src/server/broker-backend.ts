@@ -137,7 +137,9 @@ function renderLine(line: StyledLine): string {
   let out = "";
   for (const c of line.cells) out += c.ch ?? "";
   // Trim trailing pad-space columns so plain-text consumers don't see a
-  // wall of right-padding for short lines.
+  // wall of right-padding for short lines. Char class contains both ASCII
+  // space (U+0020) and NBSP (U+00A0) — the broker's VT emulator emits NBSP
+  // for hard-spaced cells in some TUI redraws.
   return out.replace(/[  ]+$/, "");
 }
 
@@ -282,17 +284,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   async capturePane(name: string): Promise<string> {
     const id = await this.resolveId(name);
     if (!id) return "";
-    let resp: ControlResponse;
-    try {
-      // Cap scrollback to bound the response size — broker rejects frames >16MB
-      // and triage just needs the recent tail anyway.
-      resp = await this.client.request("snapshot", { session_id: id, scrollback_lines: SNAPSHOT_SCROLLBACK_LINES });
-    } catch (e: unknown) {
-      log.debug("capturePane: snapshot failed", { name, error: errMsg(e) });
-      return "";
-    }
-    if (resp.status !== "ok" || !resp.payload) return "";
-    const snap = resp.payload.snapshot as SnapshotPayload | undefined;
+    const snap = await this.fetchSnapshot(id, name, "capturePane");
     if (!snap) return "";
     return renderSnapshot(snap);
   }
@@ -417,17 +409,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   async getSessionPrefill(name: string): Promise<Buffer> {
     const id = await this.resolveId(name);
     if (!id) return Buffer.alloc(0);
-    let resp: ControlResponse;
-    try {
-      // Cap scrollback to ~5000 lines — matches the legacy tmux `-S -5000`
-      // behavior and stays well under broker's MAX_FRAME_PAYLOAD (16MB).
-      resp = await this.client.request("snapshot", { session_id: id, scrollback_lines: SNAPSHOT_SCROLLBACK_LINES });
-    } catch (e: unknown) {
-      log.debug("getSessionPrefill: snapshot failed", { name, error: errMsg(e) });
-      return Buffer.alloc(0);
-    }
-    if (resp.status !== "ok" || !resp.payload) return Buffer.alloc(0);
-    const snap = resp.payload.snapshot as SnapshotPayload | undefined;
+    const snap = await this.fetchSnapshot(id, name, "getSessionPrefill");
     if (!snap) return Buffer.alloc(0);
     return renderSnapshotToAnsi(snap);
   }
@@ -511,6 +493,30 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   }
 
   // ── Internals ──
+
+  /**
+   * Issue a `snapshot` RPC capped at SNAPSHOT_SCROLLBACK_LINES. Returns
+   * `undefined` on transport error or non-ok response — callers treat that
+   * as "no snapshot available" and fall back to empty content.
+   */
+  private async fetchSnapshot(
+    id: string,
+    name: string,
+    callsite: string,
+  ): Promise<SnapshotPayload | undefined> {
+    let resp: ControlResponse;
+    try {
+      resp = await this.client.request("snapshot", {
+        session_id: id,
+        scrollback_lines: SNAPSHOT_SCROLLBACK_LINES,
+      });
+    } catch (e: unknown) {
+      log.debug(`${callsite}: snapshot failed`, { name, error: errMsg(e) });
+      return undefined;
+    }
+    if (resp.status !== "ok" || !resp.payload) return undefined;
+    return resp.payload.snapshot as SnapshotPayload | undefined;
+  }
 
   private async resolveId(name: string): Promise<string | undefined> {
     const cached = this.nameToId.get(name);

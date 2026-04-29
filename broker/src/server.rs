@@ -92,6 +92,15 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
+            // Tighten only the ~/.wolfpack fallback dir. XDG_RUNTIME_DIR is
+            // already 0700 per spec; user-supplied custom paths shouldn't have
+            // their permissions silently rewritten.
+            if parent.file_name().and_then(|n| n.to_str()) == Some(".wolfpack") {
+                let _ = std::fs::set_permissions(
+                    parent,
+                    std::fs::Permissions::from_mode(0o700),
+                );
+            }
         }
     }
     // Stale socket files from a previous broker process must be removed before
@@ -314,8 +323,12 @@ async fn dispatch_frame(
             true
         }
         Frame::ControlResponse(_) | Frame::OutputBinary(_) | Frame::Event(_) => {
-            warn!("broker received outbound-only frame from client; ignoring");
-            true
+            // Spec: these flow broker→client only. Receiving one from a client
+            // is a protocol violation. Match the symmetric TS-side behavior
+            // (`src/broker/client.ts` drops the connection on the inverse case)
+            // by signalling the read loop to tear down — reconnect can recover.
+            warn!("broker received outbound-only frame from client; dropping connection");
+            false
         }
     }
 }
