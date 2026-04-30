@@ -1957,15 +1957,6 @@ body.mobile-no-ghost-focus #desktop-terminal-container textarea {
     margin-left: -260px;
   }
 
-  /* Unpinned: sidebar overlays main content instead of pushing it. The
-     terminal's wrapper stays full-width so hover-expand/collapse doesn't
-     resize the canvas — only pin/unpin should reflow the layout. */
-  body:not(.sidebar-pinned) #desktop-sidebar {
-    position: fixed;
-    left: 0;
-    top: 0;
-  }
-
   /* Sidebar header */
   .sidebar-header {
     display: flex;
