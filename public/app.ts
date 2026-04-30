@@ -1239,6 +1239,14 @@ function createPtyTerminalController(opts) {
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
     sendTakeControl: () => { if (_ptyClient) _ptyClient.sendTakeControl(); },
     sendFitResize: () => { if (_ptyClient) _ptyClient.sendFitResize(); },
+    forceRepaint: () => {
+      if (!_term) return;
+      const t = _term as any;
+      // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
+      // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
+      // This is the only way to force a full canvas repaint without changing dimensions.
+      try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch {}
+    },
     send: (data) => { if (_ptyClient) _ptyClient.send(data); },
     resetRetry: () => { if (_ptyClient) _ptyClient.resetRetry(); },
     reconnect: (reconnectOpts?: { takeControl?: boolean }) => { if (_ptyClient) _ptyClient.reconnect(reconnectOpts); },
@@ -2233,11 +2241,11 @@ async function initTerminal(cached) {
     },
     onPtyReady: () => {
       flushMobileKbProxyPendingInput();
-      // Force a fit after prefill+resize so the canvas repaints even when the
-      // terminal element was hidden or the canvas backing store was invalidated
-      // during the session switch. Without this, switching back to a session
-      // that spent time idle shows a black canvas until a window resize event.
-      if (state.terminalController) state.terminalController.sendFitResize();
+      // Force a full canvas repaint after prefill completes. FitAddon.fit() and
+      // Terminal.resize() both no-op when dimensions haven't changed, so sendFitResize
+      // does nothing if the terminal is the same size as before the session switch.
+      // renderer.render(forceAll=true) bypasses both guards and repaints every cell.
+      if (state.terminalController) state.terminalController.forceRepaint();
     },
     onOutput: (data) => {
       if (_cachedPendingReset) {
@@ -2906,6 +2914,17 @@ document.addEventListener("visibilitychange", () => {
         } else if (state.terminalController?.term) {
           state.terminalController.resetRetry();
           state.terminalController.reconnect();
+        }
+      } else {
+        // Short background (<60s): no reconnect needed, but canvas backing store
+        // may have been invalidated by browser compositor (App Nap, power saving).
+        // A forced repaint recovers without re-streaming any data.
+        if (isGridActive()) {
+          for (const gs of state.gridSessions) {
+            if (gs.controller) gs.controller.forceRepaint?.();
+          }
+        } else if (state.terminalController?.term) {
+          state.terminalController.forceRepaint();
         }
       }
     }
