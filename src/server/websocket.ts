@@ -335,17 +335,19 @@ function setupNewPtyEntry(
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
       // Send prefill (snapshot BEFORE resize so content is stable)
+      let prefillSeq: bigint | undefined;
       if (prefillMode !== "none") {
         const prefill = await backend.getSessionPrefill(session);
-        if (prefill.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
+        prefillSeq = prefill.seq;
+        if (prefill.data.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
           let sendBuf: Buffer;
-          if (prefill.length > DESKTOP_PREFILL_MAX_BYTES) {
-            let start = prefill.length - DESKTOP_PREFILL_MAX_BYTES;
-            while (start < prefill.length && prefill[start] !== 0x0a) start++;
-            if (start < prefill.length) start++;
-            sendBuf = prefill.subarray(start);
+          if (prefill.data.length > DESKTOP_PREFILL_MAX_BYTES) {
+            let start = prefill.data.length - DESKTOP_PREFILL_MAX_BYTES;
+            while (start < prefill.data.length && prefill.data[start] !== 0x0a) start++;
+            if (start < prefill.data.length) start++;
+            sendBuf = prefill.data.subarray(start);
           } else {
-            sendBuf = prefill;
+            sendBuf = prefill.data;
           }
 
           if (prefillMode === "viewport") {
@@ -365,12 +367,14 @@ function setupNewPtyEntry(
 
       // Subscribe to terminal output BEFORE resize — resize may trigger
       // redraw output that must be forwarded to the viewer immediately.
+      // Pass prefillSeq so the broker replays bytes emitted between snapshot
+      // capture and subscribe attach (closes the snapshot→subscribe seq gap).
       const unsub = backend.onSessionData(session, (data: Uint8Array) => {
         if (!entry.alive) return;
         if (entry.viewer && entry.viewer.readyState === 1) {
           try { entry.viewer.send(data); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
         }
-      });
+      }, { sinceSeq: prefillSeq });
       if (!unsub) {
         log.warn("onSessionData returned null — session vanished", { session });
         entry.alive = false;

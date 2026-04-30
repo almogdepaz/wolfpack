@@ -34,6 +34,7 @@ async fn main() {
         router: Arc::new(SessionRouter::new(Arc::clone(&registry), events.clone())),
         registry: Arc::clone(&registry),
         events,
+        writer_queue_capacity: None,
     })
     .await
     {

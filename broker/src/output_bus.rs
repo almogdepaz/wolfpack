@@ -76,6 +76,12 @@ pub struct Subscription {
     /// Seq value at the moment of subscription. Populates the
     /// `subscribe` response's `current_seq` field.
     pub current_seq: u64,
+    /// True when the caller asked for `since_seq = S` but the ring's
+    /// oldest retained chunk has a seq > S — some bytes were evicted
+    /// before this subscribe arrived and the ring cannot replay the gap.
+    /// The client should treat this as a signal to re-snapshot before
+    /// consuming the replayed + live stream.
+    pub replay_truncated: bool,
 }
 
 impl OutputBus {
@@ -121,15 +127,25 @@ impl OutputBus {
         let tx = sender_guard.as_ref()?;
         let receiver = tx.subscribe();
         let ring = self.ring.lock().expect("output bus ring poisoned");
-        let replay = match since_seq {
-            Some(s) => ring.replay_since(s),
-            None => Vec::new(),
+        let (replay, replay_truncated) = match since_seq {
+            Some(s) => {
+                let chunks = ring.replay_since(s);
+                // If the caller asked for seq S and the ring's earliest chunk
+                // has a seq > S+1, some chunks were evicted — the replay is
+                // a truncated window, not the complete gap.
+                let truncated = ring
+                    .earliest_seq()
+                    .map_or(false, |earliest| earliest > s.saturating_add(1));
+                (chunks, truncated)
+            }
+            None => (Vec::new(), false),
         };
         let current_seq = self.last_seq.load(Ordering::SeqCst);
         Some(Subscription {
             replay,
             receiver,
             current_seq,
+            replay_truncated,
         })
     }
 

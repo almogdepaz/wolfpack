@@ -205,7 +205,7 @@ pub enum ResponsePayload {
     SessionInfo { session: SessionInfo },
     Snapshot { snapshot: Snapshot },
     Resize { ok: bool },
-    Subscribe { ok: bool, current_seq: u64 },
+    Subscribe { ok: bool, current_seq: u64, replay_truncated: bool },
     Unsubscribe { ok: bool },
 }
 
@@ -314,6 +314,11 @@ pub enum Event {
     },
     SessionResized { session_id: Uuid, cols: u16, rows: u16 },
     SnapshotInvalidated { session_id: Uuid },
+    /// Emitted directly to the connection that had its subscription dropped
+    /// due to broadcast lag. The client should re-snapshot to resync and then
+    /// re-subscribe. This event is NOT broadcast to all clients — it is sent
+    /// only on the writer channel of the affected connection.
+    SubscriptionDropped { session_id: Uuid, lagged: u64 },
 }
 
 #[cfg(test)]
@@ -441,7 +446,7 @@ mod tests {
     fn response_subscribe_payload() {
         let resp = ControlResponse::ok(
             12,
-            ResponsePayload::Subscribe { ok: true, current_seq: 99 },
+            ResponsePayload::Subscribe { ok: true, current_seq: 99, replay_truncated: false },
         );
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["payload"]["kind"], "subscribe");

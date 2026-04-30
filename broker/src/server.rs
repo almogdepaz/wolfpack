@@ -44,6 +44,10 @@ pub struct ServerConfig {
     /// session's reaper, and by the router's resize path — see
     /// [`crate::session::EventSender`].
     pub events: EventSender,
+    /// Override the per-connection writer queue depth. `None` → use the
+    /// production default (1024). Only set this in tests that need a small
+    /// queue to trigger backpressure quickly.
+    pub writer_queue_capacity: Option<usize>,
 }
 
 pub struct Server {
@@ -87,34 +91,49 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
         router,
         registry,
         events,
+        writer_queue_capacity,
     } = config;
+    let writer_queue_capacity = writer_queue_capacity.unwrap_or(WRITER_QUEUE_CAPACITY);
 
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
-            // Tighten only the ~/.wolfpack fallback dir. XDG_RUNTIME_DIR is
-            // already 0700 per spec; user-supplied custom paths shouldn't have
-            // their permissions silently rewritten.
-            if parent.file_name().and_then(|n| n.to_str()) == Some(".wolfpack") {
-                let _ = std::fs::set_permissions(
-                    parent,
-                    std::fs::Permissions::from_mode(0o700),
-                );
-            }
+            // Harden the parent dir so a new socket created there before chmod
+            // runs is not reachable by other local users. XDG_RUNTIME_DIR is
+            // already 0o700 per spec, but for all other paths (e.g. ~/.wolfpack
+            // or any custom path) we set it explicitly. This is belt-and-suspenders
+            // alongside the umask below.
+            let _ = std::fs::set_permissions(
+                parent,
+                std::fs::Permissions::from_mode(0o700),
+            );
         }
     }
     // Stale socket files from a previous broker process must be removed before
     // bind() can succeed. Ignore-not-found is intentional.
     let _ = std::fs::remove_file(&socket_path);
 
-    let listener = UnixListener::bind(&socket_path)?;
-    // 0o600: only the owning user may speak the protocol; the socket is the
-    // auth boundary per docs/broker-protocol.md.
+    // Set umask to 0o077 before bind so the kernel creates the socket file
+    // with mode 0o600 directly, eliminating the TOCTOU window between bind
+    // and the chmod below. Restore umask immediately after bind.
+    let old_umask = unsafe { libc::umask(0o077) };
+    let bind_result = UnixListener::bind(&socket_path);
+    unsafe { libc::umask(old_umask) };
+    let listener = bind_result?;
+    // Belt-and-suspenders: also chmod in case of an unusual kernel that does
+    // not honour umask for Unix sockets.
     std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
     info!(socket = %socket_path.display(), "broker listening");
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let accept_task = tokio::spawn(accept_loop(listener, router, registry, events, shutdown_rx));
+    let accept_task = tokio::spawn(accept_loop(
+        listener,
+        router,
+        registry,
+        events,
+        writer_queue_capacity,
+        shutdown_rx,
+    ));
 
     Ok(Server {
         socket_path,
@@ -128,6 +147,7 @@ async fn accept_loop(
     router: Arc<dyn Router + Send + Sync>,
     registry: Arc<Registry>,
     events: EventSender,
+    writer_queue_capacity: usize,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -155,6 +175,7 @@ async fn accept_loop(
                         r,
                         reg,
                         event_rx,
+                        writer_queue_capacity,
                         conn_shutdown,
                     ));
                 }
@@ -171,6 +192,7 @@ async fn handle_connection(
     router: Arc<dyn Router + Send + Sync>,
     registry: Arc<Registry>,
     event_rx: broadcast::Receiver<Event>,
+    writer_queue_cap: usize,
     mut shutdown: watch::Receiver<bool>,
 ) {
     debug!("broker connection opened");
@@ -180,7 +202,7 @@ async fn handle_connection(
     // frame on this connection — control responses, output_binary live
     // chunks, events — funnels through this queue so writes are
     // serialised on the socket and ordering is preserved.
-    let (writer_tx, writer_rx) = mpsc::channel::<Frame>(WRITER_QUEUE_CAPACITY);
+    let (writer_tx, writer_rx) = mpsc::channel::<Frame>(writer_queue_cap);
     let writer_task = tokio::spawn(connection_writer(write_half, writer_rx));
 
     // Drain async lifecycle events into this connection's writer queue.
@@ -408,6 +430,7 @@ async fn handle_subscribe(
             ResponsePayload::Subscribe {
                 ok: true,
                 current_seq: sub.current_seq,
+                replay_truncated: sub.replay_truncated,
             },
         ),
     )
@@ -503,8 +526,17 @@ async fn forward_output(
                 warn!(
                     %session_id,
                     lagged = n,
-                    "subscription forwarder lagged broadcast; client must re-subscribe to recover"
+                    "subscription forwarder lagged broadcast; notifying client to re-subscribe"
                 );
+                // Notify the client directly on its writer channel so it can
+                // re-snapshot and re-subscribe. This event is NOT broadcast to
+                // all clients — only this connection's writer sees it.
+                let _ = writer_tx
+                    .send(Frame::Event(crate::protocol::Event::SubscriptionDropped {
+                        session_id,
+                        lagged: n,
+                    }))
+                    .await;
                 return;
             }
         }

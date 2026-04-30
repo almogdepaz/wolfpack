@@ -47,14 +47,24 @@ export type SessionLifecycleEvent = {
   signal?: number;
 };
 
+export interface SessionPrefill {
+  data: Buffer;
+  /** Broker output-stream seq at snapshot time; undefined for non-broker backends. */
+  seq?: bigint;
+}
+
 export interface PtyBackendMethods {
-  onSessionData(name: string, cb: (data: Uint8Array) => void): (() => void) | null;
+  onSessionData(
+    name: string,
+    cb: (data: Uint8Array) => void,
+    opts?: { sinceSeq?: bigint },
+  ): (() => void) | null;
   writeToTerminal(name: string, data: Buffer | string): void;
   /**
-   * Returns ANSI bytes the WS attach handler can stream to prefill the
-   * client. Async because the broker sources prefill from a snapshot RPC.
+   * Returns prefill bytes + snapshot seq for the WS attach handler.
+   * Async because the broker sources prefill from a snapshot RPC.
    */
-  getSessionPrefill(name: string): Buffer | Promise<Buffer>;
+  getSessionPrefill(name: string): SessionPrefill | Promise<SessionPrefill>;
   isSessionAlive(name: string): boolean;
   /**
    * Register a lifecycle callback for a session (currently: exit only).

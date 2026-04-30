@@ -2218,7 +2218,7 @@ async function initTerminal(cached) {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "viewport",
+    prefillMode: "full",
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -2231,7 +2231,14 @@ async function initTerminal(cached) {
       removeDesktopConflictOverlay();
       setConnState("live");
     },
-    onPtyReady: () => { flushMobileKbProxyPendingInput(); },
+    onPtyReady: () => {
+      flushMobileKbProxyPendingInput();
+      // Force a fit after prefill+resize so the canvas repaints even when the
+      // terminal element was hidden or the canvas backing store was invalidated
+      // during the session switch. Without this, switching back to a session
+      // that spent time idle shows a black canvas until a window resize event.
+      if (state.terminalController) state.terminalController.sendFitResize();
+    },
     onOutput: (data) => {
       if (_cachedPendingReset) {
         _cachedPendingReset = false;

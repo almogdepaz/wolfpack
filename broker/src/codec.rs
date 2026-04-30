@@ -301,7 +301,7 @@ mod tests {
             method: methods::SUBSCRIBE.into(),
             params: json!({ "session_id": Uuid::nil() }),
         };
-        let resp = ControlResponse::ok(1, ResponsePayload::Subscribe { ok: true, current_seq: 0 });
+        let resp = ControlResponse::ok(1, ResponsePayload::Subscribe { ok: true, current_seq: 0, replay_truncated: false });
         let out = OutputFrame { session_id: nil(), seq: 1, data: b"abc".to_vec() };
         let inp = InputFrame { session_id: nil(), data: b"\r".to_vec() };
         let ev = Event::SnapshotInvalidated { session_id: nil() };

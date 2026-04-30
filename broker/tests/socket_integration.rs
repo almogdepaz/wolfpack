@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +10,9 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use wolfpack_broker::codec::{read_frame_async, write_frame_async, Frame, OutputFrame};
+use wolfpack_broker::codec::{
+    read_frame_async, write_frame_async, Frame, OutputFrame, FRAME_KIND_CONTROL_REQUEST,
+};
 use wolfpack_broker::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ResponsePayload, Status,
 };
@@ -38,6 +41,7 @@ impl Harness {
             router: Arc::new(SessionRouter::new(Arc::clone(&registry), events.clone())),
             registry: Arc::clone(&registry),
             events,
+            writer_queue_capacity: None,
         })
         .await
         .expect("server start");
@@ -653,7 +657,7 @@ async fn subscribe_streams_live_pty_output_to_subscriber() {
     .await;
     assert_eq!(resp.status, Status::Ok);
     match resp.payload.expect("payload") {
-        ResponsePayload::Subscribe { ok, current_seq: _ } => assert!(ok),
+        ResponsePayload::Subscribe { ok, current_seq: _, replay_truncated: _ } => assert!(ok),
         other => panic!("unexpected: {other:?}"),
     }
 
@@ -801,7 +805,7 @@ async fn subscribe_with_since_seq_replays_then_streams_live() {
     .await;
     assert_eq!(resp.status, Status::Ok);
     let current_seq = match resp.payload.expect("payload") {
-        ResponsePayload::Subscribe { ok, current_seq } => {
+        ResponsePayload::Subscribe { ok, current_seq, replay_truncated: _ } => {
             assert!(ok);
             current_seq
         }
@@ -994,6 +998,97 @@ async fn unsubscribe_for_session_not_subscribed_is_idempotent_ok() {
         ResponsePayload::Unsubscribe { ok } => assert!(ok),
         other => panic!("unexpected: {other:?}"),
     }
+
+    drop(stream);
+    h.shutdown().await;
+}
+
+/// After unsubscribing session A and immediately subscribing a new session B
+/// (that happens to be assigned the same UUID — not possible in production
+/// since UUIDs are random, but the re-use scenario is: same session recycled
+/// via kill+create with the same UUID slot in the registry, which cannot
+/// happen with random v4 UUIDs). This test instead verifies the weaker but
+/// testable invariant: unsubscribing A and subscribing B on the same connection
+/// delivers only B's output, not A's. It exercises the idempotent re-subscribe
+/// logic (old forwarder aborted before new one starts).
+#[tokio::test]
+async fn resubscribe_after_unsubscribe_delivers_only_new_session_output() {
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+
+    // Create two sessions — A (fast ticker) and B (also a ticker).
+    let resp_a = round_trip(&mut stream, create_request(1, Some("a"), &["sh", "-c", "while true; do echo a; sleep 0.05; done"])).await;
+    let id_a = match resp_a.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    let resp_b = round_trip(&mut stream, create_request(2, Some("b"), &["sh", "-c", "while true; do echo b; sleep 0.05; done"])).await;
+    let id_b = match resp_b.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    // Subscribe to A.
+    round_trip(&mut stream, ControlRequest {
+        id: 3,
+        method: methods::SUBSCRIBE.into(),
+        params: json!({ "session_id": id_a }),
+    }).await;
+
+    // Drain a few frames from A to confirm it's flowing.
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let (mut r, _w) = stream.split();
+    let mut a_frames = 0u32;
+    while let Ok(Ok(frame)) = timeout(Duration::from_millis(50), read_frame_async(&mut r)).await {
+        if matches!(frame, Frame::OutputBinary(ref f) if f.session_id == id_a) {
+            a_frames += 1;
+        }
+        if a_frames >= 1 { break; }
+    }
+    assert!(a_frames >= 1, "expected at least one output frame from A");
+
+    // Unsubscribe A, then immediately subscribe B.
+    round_trip(&mut stream, ControlRequest {
+        id: 4,
+        method: methods::UNSUBSCRIBE.into(),
+        params: json!({ "session_id": id_a }),
+    }).await;
+    round_trip(&mut stream, ControlRequest {
+        id: 5,
+        method: methods::SUBSCRIBE.into(),
+        params: json!({ "session_id": id_b }),
+    }).await;
+
+    // Collect output frames for 200ms. All must belong to B, not A.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (mut r2, _w2) = stream.split();
+    let mut a_after = 0u32;
+    let mut b_after = 0u32;
+    loop {
+        match timeout(Duration::from_millis(50), read_frame_async(&mut r2)).await {
+            Ok(Ok(Frame::OutputBinary(f))) => {
+                if f.session_id == id_a { a_after += 1; }
+                else if f.session_id == id_b { b_after += 1; }
+            }
+            Ok(Ok(Frame::Event(_))) => {} // lifecycle events are expected
+            _ => break,
+        }
+    }
+    assert!(b_after > 0, "expected output from B after resubscribe");
+    assert_eq!(a_after, 0, "no frames from A should arrive after unsubscribe, got {a_after}");
+
+    // Kill both sessions.
+    let _ = round_trip(&mut stream, ControlRequest {
+        id: 6,
+        method: methods::KILL_SESSION.into(),
+        params: json!({ "session_id": id_a, "signal": libc::SIGKILL }),
+    }).await;
+    let _ = round_trip(&mut stream, ControlRequest {
+        id: 7,
+        method: methods::KILL_SESSION.into(),
+        params: json!({ "session_id": id_b, "signal": libc::SIGKILL }),
+    }).await;
 
     drop(stream);
     h.shutdown().await;
@@ -1215,4 +1310,233 @@ async fn events_fan_out_to_every_connected_client() {
     drop(a);
     drop(b);
     h.shutdown().await;
+}
+
+// ── Socket permission tests ──────────────────────────────────────────────────
+
+/// The socket file must be created with mode 0o600 so that only the owning
+/// user can connect to the broker. No TOCTOU window should allow a second
+/// user to connect before chmod runs (enforced via umask in server::start).
+#[tokio::test]
+async fn socket_file_has_mode_0600() {
+    let h = Harness::boot().await;
+
+    let meta = std::fs::metadata(&h.socket_path).expect("stat socket");
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "socket must have mode 0o600, got 0o{mode:03o}"
+    );
+
+    h.shutdown().await;
+}
+
+/// Using a custom socket path (not ~/.wolfpack) must also produce a 0o600
+/// socket — the umask fix is unconditional, not path-pattern-gated.
+#[tokio::test]
+async fn socket_file_has_mode_0600_custom_path() {
+    // Boot using a deeply nested custom path (not the default ~/.wolfpack name)
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("custom").join("sub").join("broker.sock");
+
+    let (events, _) = tokio::sync::broadcast::channel::<wolfpack_broker::protocol::Event>(
+        wolfpack_broker::session_router::EVENT_BUS_CAPACITY,
+    );
+    let registry = std::sync::Arc::new(Registry::new(events.clone()));
+    let server = start(ServerConfig {
+        socket_path: socket_path.clone(),
+        router: std::sync::Arc::new(wolfpack_broker::session_router::SessionRouter::new(
+            std::sync::Arc::clone(&registry),
+            events.clone(),
+        )),
+        registry: std::sync::Arc::clone(&registry),
+        events,
+        writer_queue_capacity: None,
+    })
+    .await
+    .expect("server start");
+
+    let meta = std::fs::metadata(&socket_path).expect("stat socket");
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "socket must have mode 0o600, got 0o{mode:03o}"
+    );
+
+    // Parent directory must be 0o700
+    let parent = socket_path.parent().unwrap();
+    let parent_meta = std::fs::metadata(parent).expect("stat parent");
+    let parent_mode = parent_meta.permissions().mode() & 0o777;
+    assert_eq!(
+        parent_mode, 0o700,
+        "socket parent dir must have mode 0o700, got 0o{parent_mode:03o}"
+    );
+
+    server.shutdown().await;
+}
+
+// ── Failure-mode tests ────────────────────────────────────────────────────────
+
+/// A frame whose payload is syntactically invalid JSON must cause the server
+/// to drop that connection (codec returns `CodecError::Json`). The server
+/// itself must survive and accept new connections.
+#[tokio::test]
+async fn malformed_json_frame_drops_connection() {
+    let h = Harness::boot().await;
+    let mut bad = connect(&h.socket_path).await;
+
+    let payload = b"{not valid json!";
+    let mut raw = vec![FRAME_KIND_CONTROL_REQUEST];
+    raw.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    raw.extend_from_slice(payload);
+    bad.write_all(&raw).await.expect("write raw frame");
+
+    let (mut r, _w) = bad.split();
+    let res = timeout(TEST_TIMEOUT, read_frame_async(&mut r)).await;
+    match res {
+        Ok(Ok(frame)) => panic!("expected connection drop after malformed JSON, got {frame:?}"),
+        _ => {} // EOF, codec error, or timeout — all mean the connection is gone
+    }
+
+    // Server must still be alive and functional.
+    let mut good = connect(&h.socket_path).await;
+    let resp = round_trip(
+        &mut good,
+        ControlRequest { id: 1, method: methods::LIST_SESSIONS.into(), params: json!({}) },
+    )
+    .await;
+    assert_eq!(resp.status, Status::Ok);
+
+    drop(good);
+    h.shutdown().await;
+}
+
+/// A frame header announcing a payload larger than MAX_FRAME_PAYLOAD (16 MiB)
+/// must cause the server to drop that connection immediately, without reading
+/// the announced payload. Other connections must continue working.
+#[tokio::test]
+async fn oversized_frame_drops_connection_server_survives() {
+    let h = Harness::boot().await;
+    let mut bad = connect(&h.socket_path).await;
+
+    // Send only the 5-byte header with length 0xFFFF_FFFF (>> MAX_FRAME_PAYLOAD).
+    let mut raw = vec![FRAME_KIND_CONTROL_REQUEST];
+    raw.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+    bad.write_all(&raw).await.expect("write oversized header");
+
+    let (mut r, _w) = bad.split();
+    let res = timeout(TEST_TIMEOUT, read_frame_async(&mut r)).await;
+    match res {
+        Ok(Ok(frame)) => panic!("expected connection drop for oversized frame, got {frame:?}"),
+        _ => {}
+    }
+
+    // Server must still be alive.
+    let mut good = connect(&h.socket_path).await;
+    let resp = round_trip(
+        &mut good,
+        ControlRequest { id: 1, method: methods::LIST_SESSIONS.into(), params: json!({}) },
+    )
+    .await;
+    assert_eq!(resp.status, Status::Ok);
+
+    drop(good);
+    h.shutdown().await;
+}
+
+/// When a subscriber cannot keep up with live output — the broadcast channel
+/// fills up while the per-connection writer queue is saturated — the forwarder
+/// detects the lag on the next `recv()` and delivers a `subscription_dropped`
+/// event so the client can re-sync via snapshot + re-subscribe.
+///
+/// We boot a server with writer_queue_capacity=2 so the pipeline backs up
+/// with just a few frames, making the test fast and deterministic regardless
+/// of PTY data rate.
+#[tokio::test]
+async fn slow_consumer_receives_subscription_dropped_event() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("lag-test.sock");
+    let (events, _) =
+        tokio::sync::broadcast::channel::<wolfpack_broker::protocol::Event>(
+            wolfpack_broker::session_router::EVENT_BUS_CAPACITY,
+        );
+    let registry = Arc::new(Registry::new(events.clone()));
+    let server = start(ServerConfig {
+        socket_path: socket_path.clone(),
+        router: Arc::new(SessionRouter::new(Arc::clone(&registry), events.clone())),
+        registry: Arc::clone(&registry),
+        events,
+        // Tiny queue so backpressure builds with a handful of frames.
+        writer_queue_capacity: Some(2),
+    })
+    .await
+    .expect("server start");
+
+    let mut ctrl = connect(&socket_path).await;
+
+    // Fast producer.
+    let resp = round_trip(
+        &mut ctrl,
+        create_request(1, Some("fast-yes"), &["bash", "-c", "yes"]),
+    )
+    .await;
+    let created = match resp.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    // Second connection: subscribe but stop reading to saturate the tiny queue,
+    // then the broadcast ring (256 cap) overflows, triggering Lagged.
+    let slow = connect(&socket_path).await;
+    let (mut r, mut w) = slow.into_split();
+
+    write_frame_async(
+        &mut w,
+        &Frame::ControlRequest(ControlRequest {
+            id: 10,
+            method: methods::SUBSCRIBE.into(),
+            params: json!({ "session_id": created.id }),
+        }),
+    )
+    .await
+    .expect("write subscribe");
+
+    // With a 2-frame queue the pipeline backs up almost immediately.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Drain frames; the forwarder should have detected Lagged and enqueued
+    // SubscriptionDropped once the pipeline had room again.
+    let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
+    let mut got_dropped = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match timeout(remaining, read_frame_async(&mut r)).await {
+            Ok(Ok(Frame::Event(Event::SubscriptionDropped { session_id, .. })))
+                if session_id == created.id =>
+            {
+                got_dropped = true;
+                break;
+            }
+            Ok(Ok(_)) => {}  // subscribe response, output frames, other events
+            _ => break,      // EOF or timeout
+        }
+    }
+
+    assert!(got_dropped, "expected SubscriptionDropped event for slow consumer");
+
+    let _ = round_trip(
+        &mut ctrl,
+        ControlRequest {
+            id: 99,
+            method: methods::KILL_SESSION.into(),
+            params: json!({ "session_id": created.id, "signal": libc::SIGKILL }),
+        },
+    )
+    .await;
+
+    drop(ctrl);
+    server.shutdown().await;
 }

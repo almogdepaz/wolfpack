@@ -165,7 +165,7 @@ D("Broker restart/crash recovery", () => {
     // Prefill (canonical broker-rendered snapshot) must contain the marker —
     // proves reconnect-state survives a wolfpack process bounce.
     const prefill = await backend2.getSessionPrefill(SESSION);
-    const prefillText = prefill.toString("utf8");
+    const prefillText = prefill.data.toString("utf8");
     expect(prefillText, "prefill from new wolfpack contains pre-restart marker")
       .toContain(MARKER);
 

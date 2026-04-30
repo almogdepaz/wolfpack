@@ -215,21 +215,11 @@ impl SessionRouter {
             Some(s) => s,
             None => return unknown_session(id, p.session_id),
         };
-        match sess.resize(p.cols, p.rows) {
+        match sess.resize(p.cols, p.rows, &self.events) {
             Ok(()) => {
-                // Resize changes both PTY dimensions (clients re-flow their
-                // local mirror) and the broker-side terminal grid (clients
-                // SHOULD re-snapshot to pick up the new layout). Fire both
-                // events. Best-effort: Err means no one is currently
-                // subscribed, which is fine.
-                let _ = self.events.send(Event::SessionResized {
-                    session_id: p.session_id,
-                    cols: p.cols,
-                    rows: p.rows,
-                });
-                let _ = self.events.send(Event::SnapshotInvalidated {
-                    session_id: p.session_id,
-                });
+                // session_resized + snapshot_invalidated are now fired inside
+                // Session::resize so the invariant lives with the type that
+                // owns the PTY state. Nothing else to do here.
                 ControlResponse::ok(id, ResponsePayload::Resize { ok: true })
             }
             Err(ResizeError::Pty(msg)) => ControlResponse::err(

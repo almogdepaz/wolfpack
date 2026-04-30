@@ -30,8 +30,12 @@ class FakeBrokerClient implements BrokerClientApi {
   activeSubscriptions = new Set<string>();
   /** Number of distinct subscribe RPCs observed (independent of the active set). */
   subscribeCallCount = 0;
+  /** Last sinceSeq passed to subscribe, per sessionId. */
+  subscribeSeqs = new Map<string, bigint | undefined>();
   /** Number of distinct unsubscribe RPCs observed. */
   unsubscribeCallCount = 0;
+  /** When set, the next subscribe() call rejects with this error then resets to null. */
+  nextSubscribeError: Error | null = null;
   /** Per-session output subscribers registered via subscribeOutput. */
   outputSubs = new Map<string, Set<OutputSubscriber>>();
   /** Keyed by method name; return null/undefined to fall through to default. */
@@ -76,8 +80,14 @@ class FakeBrokerClient implements BrokerClientApi {
     };
   }
 
-  async subscribe(sessionId: string): Promise<ControlResponse> {
+  async subscribe(sessionId: string, opts?: { sinceSeq?: bigint }): Promise<ControlResponse> {
     this.subscribeCallCount++;
+    this.subscribeSeqs.set(sessionId, opts?.sinceSeq);
+    if (this.nextSubscribeError) {
+      const err = this.nextSubscribeError;
+      this.nextSubscribeError = null;
+      throw err;
+    }
     this.activeSubscriptions.add(sessionId);
     return okResp({ kind: "subscribe", ok: true });
   }
@@ -519,6 +529,33 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     client.emit(SESSION_UUID_1, new Uint8Array([2]));
     expect(seen).toEqual([1]);
   });
+
+  test("sinceSeq is forwarded to the broker subscribe RPC", async () => {
+    backend.onSessionData("live", () => {}, { sinceSeq: 42n });
+    await Promise.resolve();
+    expect(client.subscribeSeqs.get(SESSION_UUID_1)).toBe(42n);
+  });
+
+  test("no sinceSeq option passes undefined to broker subscribe", async () => {
+    backend.onSessionData("live", () => {});
+    await Promise.resolve();
+    expect(client.subscribeSeqs.get(SESSION_UUID_1)).toBeUndefined();
+  });
+
+  test("subscribe RPC failure unwinds local subscriber and refcount (no leak)", async () => {
+    client.nextSubscribeError = new Error("transport error");
+    backend.onSessionData("live", () => {});
+    // Allow the fire-and-forget promise to settle through the rejection
+    await new Promise((r) => setTimeout(r, 0));
+    // Output subscriber must have been removed
+    expect(client.outputSubs.has(SESSION_UUID_1)).toBe(false);
+    // The session must no longer be in the active broker subscription set
+    expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
+    // A second onSessionData call must re-issue the subscribe RPC (refcount was cleaned up)
+    backend.onSessionData("live", () => {});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.subscribeCallCount).toBe(2);
+  });
 });
 
 describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
@@ -671,26 +708,44 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
     await backend.list();
   });
 
-  test("returns an empty buffer for unknown session", async () => {
+  test("returns empty data for unknown session", async () => {
     client.setHandler("list_sessions", () => okResp({ sessions: [] }));
-    const buf = await backend.getSessionPrefill("ghost");
-    expect(buf.length).toBe(0);
+    const prefill = await backend.getSessionPrefill("ghost");
+    expect(prefill.data.length).toBe(0);
+    expect(prefill.seq).toBeUndefined();
   });
 
-  test("returns an empty buffer when the broker rejects the snapshot RPC", async () => {
+  test("returns empty data when the broker rejects the snapshot RPC", async () => {
     client.setHandler("snapshot", () => errResp("internal_error"));
-    const buf = await backend.getSessionPrefill("live");
-    expect(buf.length).toBe(0);
+    const prefill = await backend.getSessionPrefill("live");
+    expect(prefill.data.length).toBe(0);
+    expect(prefill.seq).toBeUndefined();
   });
 
   test("renders snapshot to ANSI: clear + scrollback + visible + cursor", async () => {
     client.setHandler("snapshot", () => okResp(styledSnapshot(["hello"], ["older"])));
-    const buf = await backend.getSessionPrefill("live");
-    const text = buf.toString("utf8");
+    const prefill = await backend.getSessionPrefill("live");
+    const text = prefill.data.toString("utf8");
     expect(text.startsWith("\x1b[2J\x1b[3J\x1b[H\x1b[0m")).toBe(true);
     expect(text).toContain("older\r\n");
     expect(text).toContain("hello");
     // Cursor positioning lands at the end (1-based).
     expect(text).toMatch(/\x1b\[1;1H\x1b\[\?25h$/);
+  });
+
+  test("seq from snapshot is returned as bigint", async () => {
+    const snap = styledSnapshot(["line"]);
+    snap.snapshot.seq = 9001;
+    client.setHandler("snapshot", () => okResp(snap));
+    const prefill = await backend.getSessionPrefill("live");
+    expect(prefill.seq).toBe(9001n);
+  });
+
+  test("seq is undefined when snapshot has no seq field", async () => {
+    const snap = styledSnapshot(["line"]);
+    delete (snap.snapshot as { seq?: number }).seq;
+    client.setHandler("snapshot", () => okResp(snap));
+    const prefill = await backend.getSessionPrefill("live");
+    expect(prefill.seq).toBeUndefined();
   });
 });

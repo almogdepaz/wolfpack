@@ -65,6 +65,21 @@ export interface BrokerClientOptions {
    * still propagates errors normally.
    */
   onResubscribeError?: (sessionId: string, err: Error) => void;
+  /**
+   * Called when the broker sends a `subscription_dropped` event because this
+   * connection's forwarder fell too far behind the broadcast channel. The
+   * client auto-reissues `subscribe` (live from current position) before
+   * calling this, so output resumes. Callers that need a visual re-sync
+   * (e.g. snapshot → clear → replay) should trigger it here.
+   */
+  onSubscriptionDropped?: (sessionId: string, lagged: number) => void;
+  /**
+   * Called when a `subscribe` response carries `replay_truncated: true`,
+   * meaning the ring evicted chunks between `sinceSeq` and the earliest
+   * retained entry. Callers should re-snapshot to fill the gap before
+   * consuming the live stream.
+   */
+  onReplayTruncated?: (sessionId: string) => void;
 }
 
 interface PendingRpc {
@@ -106,6 +121,8 @@ export class BrokerClient {
   private readonly onProtocolErrorCb?: (err: Error) => void;
   private readonly onEventCb?: EventSubscriber;
   private readonly onResubscribeErrorCb?: (sessionId: string, err: Error) => void;
+  private readonly onSubscriptionDroppedCb?: (sessionId: string, lagged: number) => void;
+  private readonly onReplayTruncatedCb?: (sessionId: string) => void;
 
   private socket: net.Socket | null = null;
   private parser = new FrameParser();
@@ -130,6 +147,8 @@ export class BrokerClient {
     this.onProtocolErrorCb = opts.onProtocolError;
     this.onEventCb = opts.onEvent;
     this.onResubscribeErrorCb = opts.onResubscribeError;
+    this.onSubscriptionDroppedCb = opts.onSubscriptionDropped;
+    this.onReplayTruncatedCb = opts.onReplayTruncated;
   }
 
   /** Begin connecting. Idempotent if already connecting/connected. */
@@ -271,12 +290,12 @@ export class BrokerClient {
   async unsubscribe(
     sessionId: string,
     opts: { timeoutMs?: number } = {},
-  ): Promise<ControlResponse | null> {
+  ): Promise<void> {
     const wasActive = this.activeSubscriptions.delete(sessionId);
-    if (this.state === "closed") return null;
-    if (!wasActive) return null;
-    if (this.state !== "connected") return null;
-    return this.request("unsubscribe", { session_id: sessionId }, opts);
+    if (this.state === "closed") return;
+    if (!wasActive) return;
+    if (this.state !== "connected") return;
+    await this.request("unsubscribe", { session_id: sessionId }, opts);
   }
 
   /** True iff this session is in the active-subscriptions set. */
@@ -348,7 +367,16 @@ export class BrokerClient {
       const n = Number(opts.sinceSeq);
       if (Number.isFinite(n)) params.since_seq = n;
     }
-    return this.request("subscribe", params, { timeoutMs: opts.timeoutMs });
+    return this.request("subscribe", params, { timeoutMs: opts.timeoutMs }).then((resp) => {
+      if (
+        resp.status === "ok" &&
+        (resp.payload as Record<string, unknown> | undefined)?.replay_truncated === true &&
+        this.onReplayTruncatedCb
+      ) {
+        try { this.onReplayTruncatedCb(sessionId); } catch { /* swallow */ }
+      }
+      return resp;
+    });
   }
 
   private handleData(chunk: Buffer): void {
@@ -406,9 +434,27 @@ export class BrokerClient {
         return;
       }
       case FRAME_KIND_EVENT: {
+        const ev = frame.value;
+        // subscription_dropped is a per-connection signal (not a global event):
+        // auto-resubscribe to get live output flowing again, then notify the caller.
+        if (ev.event === "subscription_dropped" && typeof ev.session_id === "string") {
+          const sessionId = ev.session_id as string;
+          const lagged = typeof ev.lagged === "number" ? ev.lagged as number : 0;
+          if (this.activeSubscriptions.has(sessionId) && this.state === "connected") {
+            this.issueSubscribe(sessionId, {}).catch((err) => {
+              if (this.onResubscribeErrorCb) {
+                try { this.onResubscribeErrorCb(sessionId, toError(err)); } catch { /* swallow */ }
+              }
+            });
+          }
+          if (this.onSubscriptionDroppedCb) {
+            try { this.onSubscriptionDroppedCb(sessionId, lagged); } catch { /* swallow */ }
+          }
+          return;
+        }
         if (!this.onEventCb) return;
         try {
-          this.onEventCb(frame.value);
+          this.onEventCb(ev);
         } catch {
           // swallow
         }

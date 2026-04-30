@@ -123,7 +123,7 @@ export class MockBackend implements SessionBackend {
     else this._aliveOverride.set(name, alive);
   }
 
-  onSessionData(_name: string, _cb: (data: Uint8Array) => void): (() => void) | null {
+  onSessionData(_name: string, _cb: (data: Uint8Array) => void, _opts?: { sinceSeq?: bigint }): (() => void) | null {
     // No real data stream — return a no-op unsubscribe
     return () => {};
   }
@@ -132,8 +132,8 @@ export class MockBackend implements SessionBackend {
     // no-op in mock
   }
 
-  getSessionPrefill(_name: string): Buffer {
-    return Buffer.alloc(0);
+  getSessionPrefill(_name: string): { data: Buffer; seq?: bigint } {
+    return { data: Buffer.alloc(0) };
   }
 
   onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {

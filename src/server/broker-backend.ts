@@ -22,7 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent } from "./backend.js";
+import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent, SessionPrefill } from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
 import { SHELL, injectAgentContext } from "./shell.js";
@@ -107,6 +107,8 @@ interface StyledLine {
 interface SnapshotPayload extends SnapshotForRender {
   visible_screen: StyledLine[];
   scrollback?: StyledLine[];
+  /** Broker output-stream byte offset at capture time. Present on all broker snapshots. */
+  seq?: number;
 }
 
 /** Per-session refcount for output subscribers. Last unref tears down the broker subscribe. */
@@ -357,8 +359,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
    * subscriber issues a broker `subscribe` RPC, the last unsubscribe issues a
    * matching `unsubscribe`. Returns null if the session isn't in the local
    * cache — caller is expected to have run `list()`/`createSession` first.
+   *
+   * `sinceSeq` is forwarded to the broker `subscribe` RPC so bytes between
+   * the snapshot and live-stream attach are replayed from the ring buffer,
+   * closing the snapshot→subscribe gap.
    */
-  onSessionData(name: string, cb: (data: Uint8Array) => void): (() => void) | null {
+  onSessionData(
+    name: string,
+    cb: (data: Uint8Array) => void,
+    opts?: { sinceSeq?: bigint },
+  ): (() => void) | null {
     const id = this.nameToId.get(name);
     if (!id) return null;
     const unsubData = this.client.subscribeOutput(id, (frame) => cb(frame.data));
@@ -366,11 +376,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     if (!ref) {
       ref = { count: 0 };
       this.subscriberRefs.set(id, ref);
-      // Fire-and-forget; reconnect handles retry, and onProtocolError surfaces
-      // anything else. We deliberately don't await: returning a sync unsub fn
-      // is part of the SessionBackend contract.
-      this.client.subscribe(id).catch((e: unknown) => {
-        log.debug("subscribe rpc failed", { name, id, error: errMsg(e) });
+      // Fire-and-forget subscribe RPC. On failure, unwind the local subscriber
+      // state so the refcount doesn't leak and the output sub is cleaned up.
+      this.client.subscribe(id, { sinceSeq: opts?.sinceSeq }).catch((e: unknown) => {
+        log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(e) });
+        try { unsubData(); } catch { /* ignore */ }
+        const r = this.subscriberRefs.get(id);
+        if (r) {
+          r.count = Math.max(0, r.count - 1);
+          if (r.count === 0) this.subscriberRefs.delete(id);
+        }
       });
     }
     ref.count++;
@@ -403,15 +418,19 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
 
   /**
    * Fetch a fresh broker snapshot and render it to ANSI bytes for WS prefill.
-   * Returns an empty Buffer when the session is unknown or the broker rejects
-   * the snapshot — callers treat that as "nothing to prefill".
+   * Returns `{ data: empty, seq: undefined }` when the session is unknown or
+   * the broker rejects the snapshot — callers treat empty data as "no prefill".
+   * `seq` is the broker output-stream byte offset at snapshot capture time;
+   * pass it to `onSessionData` so the broker replays any bytes emitted between
+   * snapshot and subscribe attach.
    */
-  async getSessionPrefill(name: string): Promise<Buffer> {
+  async getSessionPrefill(name: string): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
-    if (!id) return Buffer.alloc(0);
+    if (!id) return { data: Buffer.alloc(0) };
     const snap = await this.fetchSnapshot(id, name, "getSessionPrefill");
-    if (!snap) return Buffer.alloc(0);
-    return renderSnapshotToAnsi(snap);
+    if (!snap) return { data: Buffer.alloc(0) };
+    const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
+    return { data: renderSnapshotToAnsi(snap), seq };
   }
 
   isSessionAlive(name: string): boolean {

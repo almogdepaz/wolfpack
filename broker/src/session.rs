@@ -305,7 +305,12 @@ impl Session {
     /// dimensions. The master lock is held across all three updates so
     /// concurrent resizes can't interleave and leave (master, state, terminal)
     /// disagreeing about the current size.
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), ResizeError> {
+    ///
+    /// Fires `session_resized` and `snapshot_invalidated` on `events` so every
+    /// connected client knows to re-flow its local mirror and re-snapshot.
+    /// Best-effort: send errors (no active subscribers) are silently ignored.
+    pub fn resize(&self, cols: u16, rows: u16, events: &EventSender) -> Result<(), ResizeError> {
+        let id = self.id();
         let master = self.master.lock().expect("master poisoned");
         master
             .resize(PtySize {
@@ -325,6 +330,8 @@ impl Session {
             term.resize(cols, rows);
         }
         drop(master);
+        let _ = events.send(Event::SessionResized { session_id: id, cols, rows });
+        let _ = events.send(Event::SnapshotInvalidated { session_id: id });
         Ok(())
     }
 
@@ -599,7 +606,7 @@ mod tests {
         let before = sess.snapshot();
         assert_eq!((before.cols, before.rows), (80, 24));
 
-        sess.resize(132, 50).expect("resize ok");
+        sess.resize(132, 50, &test_events()).expect("resize ok");
 
         let after = sess.snapshot();
         assert_eq!((after.cols, after.rows), (132, 50));

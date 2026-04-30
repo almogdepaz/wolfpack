@@ -108,10 +108,11 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
 
   // PtyBackendMethods
   isSessionAlive(name: string): boolean { return this.alive.has(name); }
-  getSessionPrefill(name: string): Buffer | Promise<Buffer> {
-    return this.prefill.get(name) ?? Buffer.alloc(0);
+  getSessionPrefill(name: string): { data: Buffer; seq?: bigint } | Promise<{ data: Buffer; seq?: bigint }> {
+    const data = this.prefill.get(name) ?? Buffer.alloc(0);
+    return { data };
   }
-  onSessionData(name: string, cb: (data: Uint8Array) => void): (() => void) | null {
+  onSessionData(name: string, cb: (data: Uint8Array) => void, _opts?: { sinceSeq?: bigint }): (() => void) | null {
     if (!this.alive.has(name)) return null;
     let set = this.dataListeners.get(name);
     if (!set) { set = new Set(); this.dataListeners.set(name, set); }

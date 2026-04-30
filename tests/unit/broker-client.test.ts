@@ -501,8 +501,7 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     };
     await client.subscribe(SAMPLE_UUID);
     expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
-    const u = await client.unsubscribe(SAMPLE_UUID);
-    expect(u?.status).toBe("ok");
+    await client.unsubscribe(SAMPLE_UUID);
     expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
     expect(seen.map((s) => s.method)).toEqual(["subscribe", "unsubscribe"]);
   });
@@ -517,8 +516,7 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
         value: { id: req.id, status: "ok", payload: { kind: req.method } },
       });
     };
-    const u = await client.unsubscribe(SAMPLE_UUID);
-    expect(u).toBeNull();
+    await client.unsubscribe(SAMPLE_UUID);
     expect(calls.length).toBe(0);
   });
 
