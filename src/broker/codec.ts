@@ -16,7 +16,7 @@ export const FRAME_KIND_INPUT_BINARY = 0x04;
 export const FRAME_KIND_EVENT = 0x05;
 
 export const FRAME_HEADER_BYTES = 5;
-export const MAX_FRAME_PAYLOAD = 16 * 1024 * 1024;
+export const MAX_FRAME_PAYLOAD = 64 * 1024 * 1024;
 
 export type FrameKind =
   | typeof FRAME_KIND_CONTROL_REQUEST

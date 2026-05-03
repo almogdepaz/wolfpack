@@ -9,7 +9,7 @@ pub const FRAME_KIND_OUTPUT_BINARY: u8 = 0x03;
 pub const FRAME_KIND_INPUT_BINARY: u8 = 0x04;
 pub const FRAME_KIND_EVENT: u8 = 0x05;
 
-pub const MAX_FRAME_PAYLOAD: u32 = 16 * 1024 * 1024;
+pub const MAX_FRAME_PAYLOAD: u32 = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -285,8 +285,8 @@ mod tests {
 
     #[test]
     fn rejects_oversized_frame() {
-        // length header announces 32MiB which exceeds MAX_FRAME_PAYLOAD
-        let buf = vec![FRAME_KIND_INPUT_BINARY, 0x02, 0x00, 0x00, 0x00];
+        // length header announces 128MiB which exceeds MAX_FRAME_PAYLOAD
+        let buf = vec![FRAME_KIND_INPUT_BINARY, 0x08, 0x00, 0x00, 0x00];
         let mut cur = Cursor::new(buf);
         match read_frame(&mut cur) {
             Err(CodecError::FrameTooLarge(_)) => {}

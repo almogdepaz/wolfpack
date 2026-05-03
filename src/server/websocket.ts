@@ -334,10 +334,18 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Send prefill (snapshot BEFORE resize so content is stable)
+      // Resize FIRST so the snapshot below reflects the client's actual cols.
+      // SIGWINCH-triggered redraws that land before snapshot are embedded in it;
+      // redraws that land after snapshot have seq > prefillSeq and are replayed
+      // by the sinceSeq subscribe below — no gap, no double-paint.
+      await backend.resize(session, cols, rows);
+
+      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Snapshot AFTER resize so scrollback is reflowed to client cols.
       let prefillSeq: bigint | undefined;
       if (prefillMode !== "none") {
-        const prefill = await backend.getSessionPrefill(session);
+        const prefill = await backend.getSessionPrefill(session, cols);
         prefillSeq = prefill.seq;
         if (prefill.data.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
           let sendBuf: Buffer;
@@ -365,10 +373,8 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Subscribe to terminal output BEFORE resize — resize may trigger
-      // redraw output that must be forwarded to the viewer immediately.
-      // Pass prefillSeq so the broker replays bytes emitted between snapshot
-      // capture and subscribe attach (closes the snapshot→subscribe seq gap).
+      // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
+      // (e.g. post-resize redraws) that arrived after the snapshot was taken.
       const unsub = backend.onSessionData(session, (data: Uint8Array) => {
         if (!entry.alive) return;
         if (entry.viewer && entry.viewer.readyState === 1) {
@@ -414,10 +420,6 @@ function setupNewPtyEntry(
         }
       });
       if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
-
-      // Resize to client dimensions — now that listener is attached, any
-      // redraw output will be forwarded to the viewer.
-      await backend.resize(session, cols, rows);
 
       sendPtyReady(entry);
     } finally {

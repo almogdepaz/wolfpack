@@ -51,11 +51,17 @@ impl Cell {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct Row {
+    cells: Vec<Cell>,
+    wrapped: bool,
+}
+
 #[derive(Clone, Debug)]
 struct Grid {
     cols: usize,
     rows: usize,
-    lines: Vec<Vec<Cell>>,
+    lines: Vec<Row>,
 }
 
 impl Grid {
@@ -72,25 +78,25 @@ impl Grid {
         self.rows = rows;
         self.lines.resize_with(rows, || blank_line(cols));
         for line in &mut self.lines {
-            line.resize_with(cols, Cell::blank);
+            line.cells.resize_with(cols, Cell::blank);
         }
     }
 
     fn clear_with(&mut self, attrs: &CellAttrs) {
         for line in &mut self.lines {
-            for cell in line.iter_mut() {
+            for cell in line.cells.iter_mut() {
                 *cell = Cell::with_attrs(attrs.clone());
             }
         }
     }
 }
 
-fn blank_line(cols: usize) -> Vec<Cell> {
-    vec![Cell::blank(); cols]
+fn blank_line(cols: usize) -> Row {
+    Row { cells: vec![Cell::blank(); cols], wrapped: false }
 }
 
-fn blank_line_with(cols: usize, attrs: &CellAttrs) -> Vec<Cell> {
-    vec![Cell::with_attrs(attrs.clone()); cols]
+fn blank_line_with(cols: usize, attrs: &CellAttrs) -> Row {
+    Row { cells: vec![Cell::with_attrs(attrs.clone()); cols], wrapped: false }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -116,7 +122,7 @@ struct Inner {
     primary: Grid,
     alt: Grid,
     on_alt: bool,
-    scrollback: VecDeque<Vec<Cell>>,
+    scrollback: VecDeque<Row>,
     scrollback_max: usize,
     cursor: CursorPos,
     saved_primary: Option<SavedCursor>,
@@ -208,10 +214,37 @@ impl TerminalState {
     }
 
     pub fn snapshot(&self, session_id: Uuid, seq: u64, captured_at_ms: u64) -> Snapshot {
+        self.snapshot_with_reflow(session_id, seq, captured_at_ms, None, None)
+    }
+
+    /// Like `snapshot` but optionally truncates scrollback then reflows to `target_cols`.
+    ///
+    /// `scrollback_limit` truncates to the last N raw rows BEFORE reflow — the
+    /// caller's "how much history" budget. `target_cols` reflowing happens after,
+    /// so the returned row count may differ from `scrollback_limit`.
+    pub fn snapshot_with_reflow(
+        &self,
+        session_id: Uuid,
+        seq: u64,
+        captured_at_ms: u64,
+        scrollback_limit: Option<usize>,
+        target_cols: Option<usize>,
+    ) -> Snapshot {
         let inner = &self.inner;
         let active = if inner.on_alt { &inner.alt } else { &inner.primary };
         let visible_screen = active.lines.iter().map(|l| line_to_styled(l)).collect();
-        let scrollback = inner.scrollback.iter().map(|l| line_to_styled(l)).collect();
+
+        // Truncate first (at raw-row granularity), then reflow.
+        let total = inner.scrollback.len();
+        let start = scrollback_limit
+            .map(|n| total.saturating_sub(n))
+            .unwrap_or(0);
+        let scrollback_rows: Vec<Row> = inner.scrollback.iter().skip(start).cloned().collect();
+        let scrollback_rows = match target_cols {
+            Some(tc) if tc > 0 => reflow_lines(&scrollback_rows, tc),
+            _ => scrollback_rows,
+        };
+        let scrollback = scrollback_rows.iter().map(|l| line_to_styled(l)).collect();
         Snapshot {
             session_id,
             seq,
@@ -228,15 +261,17 @@ impl TerminalState {
     }
 }
 
-fn line_to_styled(line: &[Cell]) -> StyledLine {
+fn line_to_styled(row: &Row) -> StyledLine {
     StyledLine {
-        cells: line
+        cells: row
+            .cells
             .iter()
             .map(|c| StyledCell {
                 ch: c.ch.to_string(),
                 attrs: c.attrs.clone(),
             })
             .collect(),
+        wrapped: row.wrapped,
     }
 }
 
@@ -255,6 +290,16 @@ impl Inner {
 
     fn put_char(&mut self, c: char) {
         if self.modes.auto_wrap && self.pending_wrap {
+            // Mark this row as a wrapped continuation before it scrolls out.
+            // Inner block ensures the mutable borrow of the grid is released
+            // before linefeed() borrows self again.
+            {
+                let row = self.cursor.row;
+                let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
+                if let Some(line) = grid.lines.get_mut(row) {
+                    line.wrapped = true;
+                }
+            }
             self.cursor.col = 0;
             self.linefeed();
             self.pending_wrap = false;
@@ -268,7 +313,7 @@ impl Inner {
         let attrs = self.sgr.clone();
         let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
         if let Some(line) = grid.lines.get_mut(row) {
-            if let Some(cell) = line.get_mut(col) {
+            if let Some(cell) = line.cells.get_mut(col) {
                 cell.ch = c;
                 cell.attrs = attrs;
             }
@@ -340,7 +385,7 @@ impl Inner {
         // scroll region or from the alt screen do not.
         let push_scrollback = !self.on_alt && top == 0;
 
-        let mut removed: Vec<Vec<Cell>> = Vec::with_capacity(n);
+        let mut removed: Vec<Row> = Vec::with_capacity(n);
         {
             let grid = if self.on_alt { &mut self.alt } else { &mut self.primary };
             for _ in 0..n {
@@ -373,7 +418,7 @@ impl Inner {
         }
     }
 
-    fn push_scrollback(&mut self, line: Vec<Cell>) {
+    fn push_scrollback(&mut self, line: Row) {
         self.scrollback.push_back(line);
         while self.scrollback.len() > self.scrollback_max {
             self.scrollback.pop_front();
@@ -441,7 +486,7 @@ impl Inner {
             match mode {
                 0 => {
                     if let Some(line) = grid.lines.get_mut(row) {
-                        for cell in line.iter_mut().skip(col) {
+                        for cell in line.cells.iter_mut().skip(col) {
                             *cell = Cell::with_attrs(attrs.clone());
                         }
                     }
@@ -454,7 +499,7 @@ impl Inner {
                         grid.lines[r] = blank_line_with(cols, &attrs);
                     }
                     if let Some(line) = grid.lines.get_mut(row) {
-                        for cell in line.iter_mut().take(col + 1) {
+                        for cell in line.cells.iter_mut().take(col + 1) {
                             *cell = Cell::with_attrs(attrs.clone());
                         }
                     }
@@ -484,12 +529,12 @@ impl Inner {
         };
         match mode {
             0 => {
-                for cell in line.iter_mut().skip(col) {
+                for cell in line.cells.iter_mut().skip(col) {
                     *cell = Cell::with_attrs(attrs.clone());
                 }
             }
             1 => {
-                for cell in line.iter_mut().take(col + 1) {
+                for cell in line.cells.iter_mut().take(col + 1) {
                     *cell = Cell::with_attrs(attrs.clone());
                 }
             }
@@ -730,6 +775,84 @@ impl Inner {
     }
 }
 
+/// Reflow a slice of scrollback rows to a new column width using wrap markers.
+///
+/// Rows with `wrapped=true` are continuation lines from auto-wrap — they are
+/// coalesced with the next row(s) into a single logical paragraph. Rows with
+/// `wrapped=false` are paragraph terminators. The paragraph is then trimmed of
+/// trailing padding-blank cells (ch==' ' AND default attrs) and re-split into
+/// chunks of `target_cols`, with all chunks except the last marked `wrapped=true`.
+///
+/// The last chunk of each paragraph carries the source paragraph's own terminal
+/// `wrapped` value rather than a hardcoded false. This preserves truth for the
+/// case where the paragraph's last stored row bridged into the visible screen
+/// (a corner case Phase 3 resolves; until then we propagate rather than lie).
+///
+/// Invariant: `target_cols >= 1` (caller is responsible; we clamp defensively).
+fn reflow_lines(rows: &[Row], target_cols: usize) -> Vec<Row> {
+    let target_cols = target_cols.max(1);
+    let mut out: Vec<Row> = Vec::new();
+    let mut para: Vec<Cell> = Vec::new();
+    let mut para_terminal_wrapped = false;
+
+    for row in rows {
+        para.extend_from_slice(&row.cells);
+        para_terminal_wrapped = row.wrapped;
+        if !row.wrapped {
+            flush_paragraph(&mut para, para_terminal_wrapped, target_cols, &mut out);
+        }
+    }
+    // Flush any trailing wrapped paragraph (broken wrap-marker sequence).
+    // Force terminal_wrapped=false: by definition this IS the last paragraph
+    // in this snapshot, so the consumer can rely on "last row never wrapped"
+    // regardless of the input's malformedness.
+    if !para.is_empty() {
+        let _ = para_terminal_wrapped;
+        flush_paragraph(&mut para, false, target_cols, &mut out);
+    }
+
+    out
+}
+
+/// Drain `para`, trim trailing pad-blanks, rechunk into `target_cols`-wide rows.
+/// Appends results to `out`. Always clears `para`.
+fn flush_paragraph(para: &mut Vec<Cell>, terminal_wrapped: bool, target_cols: usize, out: &mut Vec<Row>) {
+    // Trim trailing pad-blank cells: ch==' ' AND default attrs.
+    // A space with non-default bg/fg is real styled content and must be kept.
+    while let Some(last) = para.last() {
+        if last.ch == ' ' && last.attrs == CellAttrs::default() {
+            para.pop();
+        } else {
+            break;
+        }
+    }
+
+    if para.is_empty() {
+        // All-blank paragraph: preserve as one blank row (meaningful vertical spacing).
+        out.push(blank_line(target_cols));
+        return;
+    }
+
+    let mut start = 0;
+    while start < para.len() {
+        let end = (start + target_cols).min(para.len());
+        let mut chunk_cells = para[start..end].to_vec();
+        chunk_cells.resize_with(target_cols, Cell::blank);
+        let is_last = end >= para.len();
+        out.push(Row {
+            cells: chunk_cells,
+            // All non-last chunks are wrapped continuations. The last chunk
+            // propagates the source paragraph's terminal wrapped value —
+            // nearly always false, but true if the paragraph bridged into
+            // the visible screen (Phase 3 resolves this; preserve truth for now).
+            wrapped: if is_last { terminal_wrapped } else { true },
+        });
+        start = end;
+    }
+
+    para.clear();
+}
+
 fn ansi_color(idx: u8) -> u32 {
     const PALETTE: [u32; 16] = [
         0x000000, 0x800000, 0x008000, 0x808000,
@@ -869,7 +992,7 @@ mod tests {
     fn line_string(t: &TerminalState, row: usize) -> String {
         let inner = &t.inner;
         let active = if inner.on_alt { &inner.alt } else { &inner.primary };
-        active.lines[row].iter().map(|c| c.ch).collect()
+        active.lines[row].cells.iter().map(|c| c.ch).collect()
     }
 
     fn cursor_rc(t: &TerminalState) -> (u16, u16) {
@@ -900,7 +1023,7 @@ mod tests {
         t.feed(b"a\r\nb\r\nc");
         t.feed(b"\r\nd");
         assert_eq!(t.inner.scrollback.len(), 1);
-        assert_eq!(t.inner.scrollback[0][0].ch, 'a');
+        assert_eq!(t.inner.scrollback[0].cells[0].ch, 'a');
         assert_eq!(line_string(&t, 0).chars().next(), Some('b'));
         assert_eq!(line_string(&t, 1).chars().next(), Some('c'));
         assert_eq!(line_string(&t, 2).chars().next(), Some('d'));
@@ -1053,7 +1176,7 @@ mod tests {
     fn sgr_tracks_bold_and_color() {
         let mut t = TerminalState::new(10, 1);
         t.feed(b"\x1b[1;31mR");
-        let cell = &t.inner.primary.lines[0][0];
+        let cell = &t.inner.primary.lines[0].cells[0];
         assert!(cell.attrs.bold);
         assert_eq!(cell.attrs.fg, Some(ansi_color(1)));
     }
@@ -1062,8 +1185,8 @@ mod tests {
     fn sgr_reset_clears_attrs() {
         let mut t = TerminalState::new(10, 1);
         t.feed(b"\x1b[1;31mA\x1b[0mB");
-        let a = &t.inner.primary.lines[0][0];
-        let b = &t.inner.primary.lines[0][1];
+        let a = &t.inner.primary.lines[0].cells[0];
+        let b = &t.inner.primary.lines[0].cells[1];
         assert!(a.attrs.bold);
         assert_eq!(a.attrs.fg, Some(ansi_color(1)));
         assert!(!b.attrs.bold);
@@ -1074,11 +1197,11 @@ mod tests {
     fn sgr_extended_256_and_truecolor() {
         let mut t = TerminalState::new(10, 1);
         t.feed(b"\x1b[38;5;160mP");
-        let cell = &t.inner.primary.lines[0][0];
+        let cell = &t.inner.primary.lines[0].cells[0];
         assert_eq!(cell.attrs.fg, Some(palette_color(160)));
 
         t.feed(b"\x1b[38;2;10;20;30mT");
-        let cell = &t.inner.primary.lines[0][1];
+        let cell = &t.inner.primary.lines[0].cells[1];
         assert_eq!(cell.attrs.fg, Some(rgb(10, 20, 30)));
     }
 
@@ -1278,9 +1401,9 @@ mod tests {
         t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf");
 
         assert_eq!(t.inner.scrollback.len(), 3);
-        assert_eq!(t.inner.scrollback[0][0].ch, 'b');
-        assert_eq!(t.inner.scrollback[1][0].ch, 'c');
-        assert_eq!(t.inner.scrollback[2][0].ch, 'd');
+        assert_eq!(t.inner.scrollback[0].cells[0].ch, 'b');
+        assert_eq!(t.inner.scrollback[1].cells[0].ch, 'c');
+        assert_eq!(t.inner.scrollback[2].cells[0].ch, 'd');
         // Visible screen still shows the trailing two lines.
         assert_eq!(line_string(&t, 0).chars().next(), Some('e'));
         assert_eq!(line_string(&t, 1).chars().next(), Some('f'));
@@ -1288,9 +1411,9 @@ mod tests {
         // One more newline evicts 'b' and admits 'e'.
         t.feed(b"\r\ng");
         assert_eq!(t.inner.scrollback.len(), 3);
-        assert_eq!(t.inner.scrollback[0][0].ch, 'c');
-        assert_eq!(t.inner.scrollback[1][0].ch, 'd');
-        assert_eq!(t.inner.scrollback[2][0].ch, 'e');
+        assert_eq!(t.inner.scrollback[0].cells[0].ch, 'c');
+        assert_eq!(t.inner.scrollback[1].cells[0].ch, 'd');
+        assert_eq!(t.inner.scrollback[2].cells[0].ch, 'e');
     }
 
     #[test]
@@ -1404,5 +1527,190 @@ mod tests {
         assert_eq!(row0, "alt!");
         assert!(snap.scrollback.is_empty());
         assert!(snap.modes.alt_screen);
+    }
+
+    #[test]
+    fn auto_wrap_marks_outgoing_row_as_wrapped() {
+        let mut t = TerminalState::new(3, 2);
+        t.feed(b"abcd"); // 'abc' fills row 0 → pending wrap; 'd' triggers it
+        let snap = t.snapshot(Uuid::nil(), 0, 0);
+        assert!(snap.visible_screen[0].wrapped, "auto-wrapped row must be marked");
+        assert!(!snap.visible_screen[1].wrapped, "continuation row must not be marked");
+    }
+
+    #[test]
+    fn explicit_lf_does_not_mark_wrapped() {
+        let mut t = TerminalState::new(10, 2);
+        t.feed(b"abc\r\nde");
+        let snap = t.snapshot(Uuid::nil(), 0, 0);
+        assert!(!snap.visible_screen[0].wrapped, "explicit CR+LF must not mark wrapped");
+        assert!(!snap.visible_screen[1].wrapped);
+    }
+
+    #[test]
+    fn wrapped_flag_survives_scroll_into_scrollback() {
+        // 3-col terminal: 'abc' fills row 0 → wrapped; 'def' fills row 1 → wrapped;
+        // on 'g' row 0 scrolls into scrollback carrying wrapped=true.
+        let mut t = TerminalState::new(3, 2);
+        t.feed(b"abcdefghi");
+        assert!(t.inner.scrollback.len() >= 1);
+        assert!(t.inner.scrollback[0].wrapped, "scrollback row from auto-wrap must carry wrapped=true");
+    }
+
+    // ── reflow_lines unit tests ──────────────────────────────────────────────
+
+    fn make_row(text: &str, cols: usize, wrapped: bool) -> Row {
+        let mut cells: Vec<Cell> = text.chars().map(|c| Cell { ch: c, attrs: CellAttrs::default() }).collect();
+        cells.resize_with(cols, Cell::blank);
+        Row { cells, wrapped }
+    }
+
+    fn row_text(r: &Row) -> String {
+        r.cells.iter().map(|c| c.ch).collect()
+    }
+
+    #[test]
+    fn reflow_empty_input_returns_empty() {
+        assert!(reflow_lines(&[], 80).is_empty());
+    }
+
+    #[test]
+    fn reflow_all_blank_row_preserves_one_blank_row() {
+        // A row with all spaces and default attrs — trimming empties the paragraph;
+        // must produce exactly one blank row (no content collapse).
+        let rows = vec![make_row("     ", 5, false)];
+        let out = reflow_lines(&rows, 8);
+        assert_eq!(out.len(), 1, "all-blank paragraph must produce one row");
+        assert_eq!(out[0].cells.len(), 8);
+        assert!(out[0].cells.iter().all(|c| c.ch == ' '));
+    }
+
+    #[test]
+    fn reflow_short_paragraph_unchanged_content() {
+        // "hi" in a 10-col row → reflowed to 5 cols = still one row, no wrap.
+        let rows = vec![make_row("hi", 10, false)];
+        let out = reflow_lines(&rows, 5);
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].wrapped, "single-row paragraph must not be marked wrapped");
+        let txt = row_text(&out[0]);
+        assert!(txt.starts_with("hi"), "content must be preserved");
+        assert_eq!(out[0].cells.len(), 5);
+    }
+
+    #[test]
+    fn reflow_paragraph_exactly_target_width_no_extra_row() {
+        let rows = vec![make_row("abcde", 5, false)];
+        let out = reflow_lines(&rows, 5);
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].wrapped);
+    }
+
+    #[test]
+    fn reflow_long_paragraph_fans_into_chunks() {
+        // "abcdefghij" (10 chars) → target 3 → "abc"(w), "def"(w), "ghi"(w), "j  "(!)
+        let rows = vec![make_row("abcdefghij", 10, false)];
+        let out = reflow_lines(&rows, 3);
+        assert_eq!(out.len(), 4);
+        // All but the last must be wrapped=true.
+        for r in &out[..3] {
+            assert!(r.wrapped, "non-last chunks must be wrapped");
+        }
+        assert!(!out[3].wrapped, "last chunk must not be wrapped");
+        // Content order preserved.
+        let combined: String = out.iter().flat_map(|r| r.cells.iter().map(|c| c.ch)).collect();
+        assert!(combined.starts_with("abcdefghij"));
+    }
+
+    #[test]
+    fn reflow_multi_row_paragraph_coalesces_and_resplits() {
+        // Two wrapped rows at 3 cols containing "abcdef" → coalesce to "abcdef",
+        // reflow at 4 → "abcd"(w), "ef  "(!)
+        let rows = vec![
+            make_row("abc", 3, true),  // wrapped continuation
+            make_row("def", 3, false), // paragraph end
+        ];
+        let out = reflow_lines(&rows, 4);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].wrapped);
+        assert!(!out[1].wrapped);
+        let text: String = out[0].cells.iter().chain(out[1].cells.iter()).map(|c| c.ch).collect();
+        assert!(text.starts_with("abcdef"));
+    }
+
+    #[test]
+    fn reflow_styled_space_not_trimmed_as_padding() {
+        // A space with non-default attrs (e.g. colored background) is real content;
+        // the trimmer must not eat it.
+        let mut colored_space = Cell { ch: ' ', attrs: CellAttrs::default() };
+        colored_space.attrs.bg = Some(0xff0000); // red background
+        let row = Row {
+            cells: vec![Cell::blank(), colored_space.clone(), Cell::blank()],
+            wrapped: false,
+        };
+        let out = reflow_lines(&[row], 5);
+        assert_eq!(out.len(), 1);
+        // The colored space must survive in the output row.
+        let has_colored = out[0].cells.iter().any(|c| c.attrs.bg == Some(0xff0000));
+        assert!(has_colored, "styled space must not be trimmed as padding");
+    }
+
+    #[test]
+    fn reflow_preserves_multiple_paragraphs() {
+        // Two independent paragraphs (hard line breaks) stay separate.
+        let rows = vec![
+            make_row("ab", 5, false), // paragraph 1 end
+            make_row("cd", 5, false), // paragraph 2 end
+        ];
+        let out = reflow_lines(&rows, 3);
+        assert_eq!(out.len(), 2, "two paragraphs must produce two rows");
+        assert!(row_text(&out[0]).starts_with("ab"));
+        assert!(row_text(&out[1]).starts_with("cd"));
+    }
+
+    #[test]
+    fn reflow_via_snapshot_mixes_widths_uniformly() {
+        // Session wrote text at 3 cols, then we request snapshot at 5 cols.
+        // Visible screen is NOT reflowed; scrollback should be uniform at 5 cols.
+        let mut t = TerminalState::new(3, 2);
+        // Push lines into scrollback: feed 9 chars (3 rows), 2-row terminal forces scrollback.
+        t.feed(b"abcdefghi");
+        // scrollback should have at least 1 line at width 3.
+        assert!(!t.inner.scrollback.is_empty());
+        let snap = t.snapshot_with_reflow(Uuid::nil(), 0, 0, None, Some(5));
+        for line in &snap.scrollback {
+            assert_eq!(line.cells.len(), 5, "reflowed scrollback row must be 5 cols wide");
+        }
+        // Visible screen stays at original 3 cols (Phase 4 scope).
+        for line in &snap.visible_screen {
+            assert_eq!(line.cells.len(), 3);
+        }
+    }
+
+    #[test]
+    fn reflow_target_cols_zero_is_clamped_to_no_reflow() {
+        // target_cols=0 → clamp to 1 inside reflow_lines; via snapshot_with_reflow
+        // the guard `tc > 0` skips reflow entirely (pass-through).
+        let rows = vec![make_row("abcde", 5, false)];
+        let out_raw = reflow_lines(&rows, 5);
+        let out_zero = reflow_lines(&rows, 0);
+        // Both produce one row; zero clamps to 1 col → 5 chunks.
+        // The important invariant: no panic.
+        assert!(!out_zero.is_empty());
+        assert!(!out_raw.is_empty());
+    }
+
+    #[test]
+    fn reflow_trailing_wrapped_row_does_not_leak_wrap_to_output() {
+        // Malformed input: paragraph ends on wrapped:true (no terminator row).
+        // Output's last row MUST be wrapped:false so consumers' structural
+        // invariant "last row in buffer is never wrapped" holds regardless
+        // of input malformedness.
+        let rows = vec![make_row("abc", 3, true)]; // wrapped, no closer
+        let out = reflow_lines(&rows, 5);
+        assert!(!out.is_empty());
+        assert!(
+            !out.last().unwrap().wrapped,
+            "last output row must never be wrapped, even on malformed input"
+        );
     }
 }

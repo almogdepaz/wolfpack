@@ -36,6 +36,7 @@ export interface StyledCell {
 
 export interface StyledLine {
   cells?: StyledCell[];
+  wrapped?: boolean;
 }
 
 export interface CursorState {

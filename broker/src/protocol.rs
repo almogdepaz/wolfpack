@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Session metadata
@@ -61,6 +61,8 @@ pub struct StyledCell {
 pub struct StyledLine {
     #[serde(default)]
     pub cells: Vec<StyledCell>,
+    #[serde(default)]
+    pub wrapped: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,6 +278,10 @@ pub struct SnapshotParams {
     pub session_id: Uuid,
     #[serde(default)]
     pub scrollback_lines: Option<u32>,
+    /// When present, reflow scrollback to this column width before returning.
+    /// Omitting the field skips reflow (back-compat: old callers get raw rows).
+    #[serde(default)]
+    pub target_cols: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -354,6 +360,7 @@ mod tests {
             rows: 24,
             visible_screen: vec![StyledLine {
                 cells: vec![StyledCell { ch: "h".into(), attrs: CellAttrs::default() }],
+                wrapped: false,
             }],
             scrollback: vec![],
             cursor: CursorState { row: 0, col: 1, visible: true, shape: CursorShape::Block },
@@ -413,6 +420,26 @@ mod tests {
         let p: SnapshotParams = serde_json::from_value(v).unwrap();
         assert_eq!(p.session_id, nil());
         assert!(p.scrollback_lines.is_none());
+        assert!(p.target_cols.is_none());
+    }
+
+    #[test]
+    fn snapshot_params_target_cols_roundtrip() {
+        let v = json!({ "session_id": Uuid::nil(), "scrollback_lines": 500, "target_cols": 80 });
+        let p: SnapshotParams = serde_json::from_value(v).unwrap();
+        assert_eq!(p.scrollback_lines, Some(500));
+        assert_eq!(p.target_cols, Some(80));
+        // Serialise and round-trip.
+        let back: SnapshotParams = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.target_cols, Some(80));
+    }
+
+    #[test]
+    fn snapshot_params_old_client_omits_target_cols() {
+        // Old callers that don't send `target_cols` must deserialize to None (no reflow).
+        let v = json!({ "session_id": Uuid::nil(), "scrollback_lines": 200 });
+        let p: SnapshotParams = serde_json::from_value(v).unwrap();
+        assert!(p.target_cols.is_none());
     }
 
     #[test]
@@ -513,7 +540,27 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_one() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+    fn protocol_version_is_two() {
+        assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn styled_line_wrapped_roundtrip() {
+        let line = StyledLine {
+            cells: vec![StyledCell { ch: "x".into(), attrs: CellAttrs::default() }],
+            wrapped: true,
+        };
+        let v = serde_json::to_value(&line).unwrap();
+        assert_eq!(v["wrapped"], true);
+        let back: StyledLine = serde_json::from_value(v).unwrap();
+        assert_eq!(back.wrapped, true);
+    }
+
+    #[test]
+    fn styled_line_wrapped_defaults_false() {
+        // Old clients that omit `wrapped` must deserialize to false.
+        let v = serde_json::json!({ "cells": [] });
+        let line: StyledLine = serde_json::from_value(v).unwrap();
+        assert!(!line.wrapped);
     }
 }

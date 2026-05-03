@@ -275,8 +275,8 @@ describe("rejection paths", () => {
   });
 
   test("rejects oversized declared length", () => {
-    // 32 MiB declared, exceeds 16 MiB cap
-    const buf = new Uint8Array([FRAME_KIND_INPUT_BINARY, 0x02, 0x00, 0x00, 0x00]);
+    // 128 MiB declared, exceeds 64 MiB cap
+    const buf = new Uint8Array([FRAME_KIND_INPUT_BINARY, 0x08, 0x00, 0x00, 0x00]);
     const parser = new FrameParser();
     parser.push(buf);
     let err: unknown;

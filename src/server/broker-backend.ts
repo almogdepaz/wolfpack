@@ -36,11 +36,12 @@ import {
 const log = createLogger("broker-backend");
 
 const TRIAGE_CACHE_TTL_MS = 500;
-/** Cap on scrollback lines requested per `snapshot` RPC. The broker rejects
- *  frames >16MB; long-running sessions with styled output (Claude TUI, etc.)
- *  serialize at ~30 bytes/cell × 120 cols, so 2000 lines ≈ 7MB worst case
- *  — well under the limit while still giving plenty of scrollback context. */
-const SNAPSHOT_SCROLLBACK_LINES = 2000;
+/** Cap on scrollback lines requested per `snapshot` RPC. Heavy TUI sessions
+ *  (Claude, etc.) empirically blew past 16MB on 2000 lines — JSON-encoded
+ *  cells with full attrs run much larger than the rough 30B/cell estimate.
+ *  500 lines keeps frames comfortably small while still giving useful context;
+ *  the codec cap was also bumped to 64MB for defense-in-depth. */
+const SNAPSHOT_SCROLLBACK_LINES = 500;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
@@ -102,6 +103,7 @@ interface StyledCell {
 
 interface StyledLine {
   cells?: StyledCell[];
+  wrapped?: boolean;
 }
 
 interface SnapshotPayload extends SnapshotForRender {
@@ -424,10 +426,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
    * pass it to `onSessionData` so the broker replays any bytes emitted between
    * snapshot and subscribe attach.
    */
-  async getSessionPrefill(name: string): Promise<SessionPrefill> {
+  async getSessionPrefill(name: string, cols?: number): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
     if (!id) return { data: Buffer.alloc(0) };
-    const snap = await this.fetchSnapshot(id, name, "getSessionPrefill");
+    const snap = await this.fetchSnapshot(id, name, "getSessionPrefill", cols);
     if (!snap) return { data: Buffer.alloc(0) };
     const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
     return { data: renderSnapshotToAnsi(snap), seq };
@@ -522,13 +524,18 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     id: string,
     name: string,
     callsite: string,
+    targetCols?: number,
   ): Promise<SnapshotPayload | undefined> {
     let resp: ControlResponse;
+    const params: Record<string, unknown> = {
+      session_id: id,
+      scrollback_lines: SNAPSHOT_SCROLLBACK_LINES,
+    };
+    if (targetCols !== undefined && targetCols > 0) {
+      params.target_cols = targetCols;
+    }
     try {
-      resp = await this.client.request("snapshot", {
-        session_id: id,
-        scrollback_lines: SNAPSHOT_SCROLLBACK_LINES,
-      });
+      resp = await this.client.request("snapshot", params);
     } catch (e: unknown) {
       log.debug(`${callsite}: snapshot failed`, { name, error: errMsg(e) });
       return undefined;

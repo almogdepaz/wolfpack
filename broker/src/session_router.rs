@@ -203,7 +203,7 @@ impl SessionRouter {
             Some(s) => ControlResponse::ok(
                 id,
                 ResponsePayload::Snapshot {
-                    snapshot: s.snapshot_terminal(p.scrollback_lines),
+                    snapshot: s.snapshot_terminal(p.scrollback_lines, p.target_cols),
                 },
             ),
             None => unknown_session(id, p.session_id),

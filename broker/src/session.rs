@@ -343,25 +343,23 @@ impl Session {
     /// Materialise a `protocol::Snapshot` from the session's emulator state.
     ///
     /// `scrollback_lines = Some(n)` truncates the snapshot's scrollback to its
-    /// trailing `n` lines (most recent). `None` returns whatever the emulator
-    /// has retained (already bounded by the emulator's own scrollback cap).
-    pub fn snapshot_terminal(&self, scrollback_lines: Option<u32>) -> Snapshot {
+    /// trailing `n` raw rows before any reflow. `None` returns the full ring.
+    ///
+    /// `target_cols = Some(c)` reflows scrollback to `c` columns using wrap
+    /// markers after truncation. Omit to skip reflow.
+    pub fn snapshot_terminal(&self, scrollback_lines: Option<u32>, target_cols: Option<u16>) -> Snapshot {
         let id = self.id();
-        let mut snap = {
-            let term = self.terminal.lock().expect("terminal poisoned");
-            // Read seq under the same lock the drainer holds while bumping it,
-            // so the returned (state, seq) pair is consistent.
-            let seq = self.seq.load(Ordering::SeqCst);
-            term.snapshot(id, seq, now_ms())
-        };
-        if let Some(n) = scrollback_lines {
-            let n = n as usize;
-            if snap.scrollback.len() > n {
-                let drop_count = snap.scrollback.len() - n;
-                snap.scrollback.drain(0..drop_count);
-            }
-        }
-        snap
+        let term = self.terminal.lock().expect("terminal poisoned");
+        // Read seq under the same lock the drainer holds while bumping it,
+        // so the returned (state, seq) pair is consistent.
+        let seq = self.seq.load(Ordering::SeqCst);
+        term.snapshot_with_reflow(
+            id,
+            seq,
+            now_ms(),
+            scrollback_lines.map(|n| n as usize),
+            target_cols.map(|c| c as usize),
+        )
     }
 
     /// Block (up to `timeout`) until the reaper marks this session not-alive.
@@ -545,7 +543,7 @@ mod tests {
         assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
         assert!(sess.wait_for_exit(Duration::from_secs(5)));
 
-        let snap = sess.snapshot_terminal(None);
+        let snap = sess.snapshot_terminal(None, None);
         assert_eq!(snap.cols, 80);
         assert_eq!(snap.rows, 24);
         assert!(
@@ -568,7 +566,7 @@ mod tests {
         assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
         let _ = sess.wait_for_exit(Duration::from_secs(5));
 
-        let after = sess.snapshot_terminal(None).seq;
+        let after = sess.snapshot_terminal(None, None).seq;
         assert!(after > 0, "seq must advance after drainer ingests output (got {after})");
     }
 
@@ -583,13 +581,13 @@ mod tests {
             *term = TerminalState::new(10, 2);
             term.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
         }
-        let full = sess.snapshot_terminal(None);
+        let full = sess.snapshot_terminal(None, None);
         assert!(
             full.scrollback.len() >= 4,
             "expected >=4 scrollback lines, got {}",
             full.scrollback.len()
         );
-        let trimmed = sess.snapshot_terminal(Some(2));
+        let trimmed = sess.snapshot_terminal(Some(2), None);
         assert_eq!(trimmed.scrollback.len(), 2);
         // Truncation keeps the trailing (most recent) lines.
         let last_full = line_text(full.scrollback.last().unwrap());
@@ -610,7 +608,7 @@ mod tests {
 
         let after = sess.snapshot();
         assert_eq!((after.cols, after.rows), (132, 50));
-        let snap = sess.snapshot_terminal(None);
+        let snap = sess.snapshot_terminal(None, None);
         assert_eq!((snap.cols, snap.rows), (132, 50));
         assert_eq!(snap.visible_screen.len(), 50);
 
@@ -643,9 +641,89 @@ mod tests {
 
         // After close, we can no longer subscribe; instead inspect that
         // current_seq matches snapshot.seq — they share the same numbering.
-        let snap_seq = sess.snapshot_terminal(None).seq;
+        let snap_seq = sess.snapshot_terminal(None, None).seq;
         assert_eq!(sess.output_bus().current_seq(), snap_seq);
         assert!(snap_seq >= 1, "at least one chunk must have been published");
+    }
+
+    /// Verify the "no double-paint after resize" invariant:
+    ///
+    /// Any PTY bytes that arrive AFTER a snapshot (including SIGWINCH-induced
+    /// redraws) are assigned seq > snapshot.seq by the drainer, so
+    /// subscribe(sinceSeq: snapshot.seq) covers them exactly — no hole,
+    /// no duplicate.
+    ///
+    /// Uses `cat` as an echo server to inject post-snapshot bytes without
+    /// relying on a TUI app's SIGWINCH handler. The seq-assignment mechanism
+    /// is identical regardless of whether bytes originate from SIGWINCH or
+    /// stdin echo.
+    #[test]
+    fn subscribe_since_prefill_seq_covers_post_snapshot_bytes() {
+        let sess = spawn_session(opts(vec!["cat"])).expect("spawn");
+
+        // Prime the session: write a marker and wait for it to appear in the
+        // terminal so snapshot.seq > 0 (drainer has ingested at least one chunk).
+        sess.write_stdin(b"INIT\n").expect("write stdin");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "INIT never appeared");
+            if screen_contains(&sess.snapshot_terminal(None, None), "INIT") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Capture prefill seq — the seq a client would record before subscribing.
+        let prefill_seq = sess.snapshot_terminal(None, None).seq;
+        assert!(prefill_seq > 0, "prefill_seq must be > 0 after INIT output");
+
+        // Simulate post-resize redraw bytes arriving after the snapshot.
+        sess.write_stdin(b"REDRAW\n").expect("write stdin");
+
+        // Wait until the bus has processed at least one chunk past prefill_seq.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "REDRAW bytes never arrived in bus"
+            );
+            if sess.output_bus().current_seq() > prefill_seq {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // subscribe(sinceSeq: prefill_seq) — this is what the client calls
+        // after completing its prefill paint.
+        let sub = sess
+            .output_bus()
+            .subscribe(Some(prefill_seq))
+            .expect("bus must still be open");
+
+        // Every replayed chunk must have seq > prefill_seq (the gate works).
+        for chunk in &sub.replay {
+            assert!(
+                chunk.seq > prefill_seq,
+                "chunk seq={} <= prefill_seq={}: double-paint window open",
+                chunk.seq,
+                prefill_seq
+            );
+        }
+
+        // The REDRAW bytes must be present in the replay — no hole.
+        let replay_bytes: Vec<u8> = sub
+            .replay
+            .iter()
+            .flat_map(|c| c.data.iter().copied())
+            .collect();
+        assert!(
+            replay_bytes.windows(6).any(|w| w == b"REDRAW"),
+            "REDRAW not found in subscribe replay (sinceSeq={prefill_seq}): \
+             seq gating left a hole in the post-snapshot byte stream"
+        );
+
+        let _ = sess.kill(libc::SIGKILL);
+        let _ = sess.wait_for_exit(Duration::from_secs(5));
     }
 
     #[test]

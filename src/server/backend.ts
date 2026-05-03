@@ -64,7 +64,7 @@ export interface PtyBackendMethods {
    * Returns prefill bytes + snapshot seq for the WS attach handler.
    * Async because the broker sources prefill from a snapshot RPC.
    */
-  getSessionPrefill(name: string): SessionPrefill | Promise<SessionPrefill>;
+  getSessionPrefill(name: string, cols?: number): SessionPrefill | Promise<SessionPrefill>;
   isSessionAlive(name: string): boolean;
   /**
    * Register a lifecycle callback for a session (currently: exit only).

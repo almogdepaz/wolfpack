@@ -132,7 +132,7 @@ export class MockBackend implements SessionBackend {
     // no-op in mock
   }
 
-  getSessionPrefill(_name: string): { data: Buffer; seq?: bigint } {
+  getSessionPrefill(_name: string, _cols?: number): { data: Buffer; seq?: bigint } {
     return { data: Buffer.alloc(0) };
   }
 
