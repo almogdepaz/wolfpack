@@ -152,6 +152,14 @@ async function mountGridController(gs, cell, idx) {
       gs._displaced = false;
       removeGridCellConflictOverlay(gs);
     },
+    onPtyReady: () => {
+      // Parallel of single-terminal fix in commit 75d6ff3. Without this, the
+      // canvas keeps showing the manual #0a0a0a fillRect from mount() because
+      // the WASM render loop runs with forceAll=false and skips repaint when
+      // dimensions/dirty-cells haven't changed. Fires on every reconnect too,
+      // so post-sleep / long-background recovery also gets a fresh repaint.
+      if (gs.controller) gs.controller.forceRepaint();
+    },
     onOutput: () => {
       if (_gridCachedPending) {
         _gridCachedPending = false;
