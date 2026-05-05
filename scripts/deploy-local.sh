@@ -10,6 +10,14 @@ else
 fi
 cp "dist/$BIN" ~/.wolfpack/bin/wolfpack
 codesign -f -s - ~/.wolfpack/bin/wolfpack
+# Broker is a separate Rust binary spawned by the wolfpack server. Without
+# this copy, server restarts pick up the new wolfpack code but the stale
+# broker stays running (or gets respawned from the stale on-disk binary),
+# silently masking broker-side fixes.
+if [ -f dist/wolfpack-broker ]; then
+  cp dist/wolfpack-broker ~/.wolfpack/bin/wolfpack-broker
+  codesign -f -s - ~/.wolfpack/bin/wolfpack-broker
+fi
 DOMAIN="gui/$(id -u)"
 SERVICE="com.wolfpack.server"
 PLIST="$HOME/Library/LaunchAgents/$SERVICE.plist"

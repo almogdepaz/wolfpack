@@ -90,6 +90,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   lifecycleListeners = new Map<string, Set<(event: SessionLifecycleEvent) => void>>();
   resizeCalls: Array<{ name: string; cols: number; rows: number }> = [];
   writeCalls: Array<{ name: string; data: Uint8Array }> = [];
+  resizeDelayMs = 0;
 
   // SessionBackend
   async list(): Promise<string[]> { return [...this.alive]; }
@@ -99,6 +100,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   async capturePane(): Promise<string> { return ""; }
   async capturePaneForTriage(): Promise<string> { return ""; }
   async resize(name: string, cols: number, rows: number): Promise<void> {
+    if (this.resizeDelayMs > 0) await wait(this.resizeDelayMs);
     this.resizeCalls.push({ name, cols, rows });
   }
   async send(): Promise<void> {}
@@ -233,6 +235,22 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls.length).toBe(0); // debounced
     await wait(150);
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 132, rows: 50 }]);
+  });
+
+  test("resize during attach is reconciled before snapshot subscribe completes", async () => {
+    backend.resizeDelayMs = 30;
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
+    ws.pushJson({ type: "resize", cols: 132, rows: 50 });
+    await wait(140);
+
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 80, rows: 24 },
+      { name: SESSION, cols: 132, rows: 50 },
+    ]);
+    expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
   });
 
   test("session-ended teardown: WS closes with 4001 when broker reports session not alive", async () => {

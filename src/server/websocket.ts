@@ -338,14 +338,26 @@ function setupNewPtyEntry(
       // SIGWINCH-triggered redraws that land before snapshot are embedded in it;
       // redraws that land after snapshot have seq > prefillSeq and are replayed
       // by the sinceSeq subscribe below — no gap, no double-paint.
-      await backend.resize(session, cols, rows);
+      let appliedSize = { cols, rows };
+      await backend.resize(session, appliedSize.cols, appliedSize.rows);
+
+      // A resize can arrive while attach is still spawning/prefilling. Apply
+      // the newest requested dimensions before snapshot so the prefill is
+      // rendered for the client's committed layout, not the initial attach size.
+      if (
+        latestRequestedSize &&
+        (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
+      ) {
+        appliedSize = latestRequestedSize;
+        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      }
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
       // Snapshot AFTER resize so scrollback is reflowed to client cols.
       let prefillSeq: bigint | undefined;
       if (prefillMode !== "none") {
-        const prefill = await backend.getSessionPrefill(session, cols);
+        const prefill = await backend.getSessionPrefill(session, appliedSize.cols);
         prefillSeq = prefill.seq;
         if (prefill.data.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
           let sendBuf: Buffer;
@@ -372,6 +384,20 @@ function setupNewPtyEntry(
       }
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Final reconciliation catches resize frames that arrived while the
+      // snapshot bytes were being fetched/sent. Run BEFORE subscribing so any
+      // SIGWINCH-triggered redraws emitted by this resize land at seq >
+      // prefillSeq and are captured by the subscription's sinceSeq replay —
+      // not delivered at the old size to a viewer already rendering at the new.
+      if (
+        latestRequestedSize &&
+        (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
+      ) {
+        appliedSize = latestRequestedSize;
+        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+        if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+      }
 
       // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
       // (e.g. post-resize redraws) that arrived after the snapshot was taken.

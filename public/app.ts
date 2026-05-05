@@ -631,13 +631,15 @@ function createPtySocketClient(opts) {
   /** Fit terminal + send resize dimensions over the socket (debounced). */
   let _lastSentResize = "";
   let _resizeDebounceTimer = null;
-  function sendFitResize() {
+  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
+    if (options?.fit !== false) {
+      try { opts.fitTerminal(); } catch {}
+    }
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (key === _lastSentResize) return; // same dimensions, skip
+    if (!options?.force && key === _lastSentResize) return; // same dimensions, skip
     // Debounce: collapse rapid resize calls into one
     if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
     _resizeDebounceTimer = setTimeout(() => {
@@ -645,8 +647,10 @@ function createPtySocketClient(opts) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const d = opts.getTermDimensions();
       if (!d) return;
+      const nextKey = d.cols + "x" + d.rows;
+      if (!options?.force && nextKey === _lastSentResize) return;
       const msg = JSON.stringify({ type: "resize", cols: d.cols, rows: d.rows });
-      _lastSentResize = d.cols + "x" + d.rows;
+      _lastSentResize = nextKey;
       ws.send(msg);
     }, 50);
   }
@@ -678,7 +682,7 @@ function createPtySocketClient(opts) {
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
             // Re-check dimensions after layout settles — catches stale
             // initial dims on mobile where layout isn't finalized at connect time.
-            requestAnimationFrame(() => { sendFitResize(); });
+            requestAnimationFrame(() => { sendFitResize({ force: true }); });
           } else if (msg.type === "pty_ready") {
             if (opts.onPtyReady) opts.onPtyReady();
           } else if (msg.type === "prefill_viewport") {
@@ -881,6 +885,9 @@ function createPtyTerminalController(opts) {
   let _userScrolledUp = false;
   let _scrollLockKeydownHandler = null;
   let _browserShortcutKeydownHandler = null;
+  let _resizeObserver = null;
+  let _layoutSyncRaf = null;
+  let _resizeRehydrateTimer = null;
 
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
@@ -930,16 +937,71 @@ function createPtyTerminalController(opts) {
 
   function fitTerminalPreserveScroll() {
     if (!_fitAddon || !_term) return;
-    // ghostty-web: viewportY and getScrollbackLength() are on _term directly
-    // (no buffer.active like xterm.js)
+    // ghostty-web semantics: scrollToLine(A) clamps A to [0, scrollbackLength]
+    // and assigns to viewportY. viewportY === 0 means "at bottom"; increasing
+    // viewportY moves the view up into history. To preserve the visual position
+    // across a refit, we compensate for scrollback length changes (the broker's
+    // reflow can lengthen or shorten scrollback when cols change).
     const vp = _term.viewportY ?? 0;
-    const scrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : 0;
+    const oldScrollback = typeof _term.getScrollbackLength === "function"
+      ? _term.getScrollbackLength() : 0;
     const wasAtBottom = vp === 0;
     _fitAddon.fit();
     if (!wasAtBottom && vp > 0) {
-      const newScrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : scrollback;
-      try { _term.scrollToLine(Math.max(0, newScrollback - (scrollback - vp))); } catch {}
+      const newScrollback = typeof _term.getScrollbackLength === "function"
+        ? _term.getScrollbackLength() : oldScrollback;
+      // Invariant: oldScrollback - oldVp == newScrollback - newVp.
+      const target = Math.max(0, newScrollback - (oldScrollback - vp));
+      try { _term.scrollToLine(target); } catch {}
     }
+  }
+
+  function forceRepaint() {
+    if (!_term) return;
+    const t = _term as any;
+    // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
+    // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
+    // This is the only way to force a full canvas repaint without changing dimensions.
+    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch {}
+  }
+
+  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
+    if (!_fitAddon || !_term || !_container) return;
+    const before = { cols: _term.cols, rows: _term.rows };
+    fitTerminalPreserveScroll();
+    if (options?.repaint !== false) forceRepaint();
+    if (_ptyClient) _ptyClient.sendFitResize({ force: !!options?.forceSend, fit: false });
+    if (before.cols !== _term.cols || before.rows !== _term.rows) {
+      scheduleResizeRehydrate();
+    }
+  }
+
+  function shouldSuppressContainerResize() {
+    return isDesktop() &&
+      !state.sidebarPinned &&
+      !state.sessionsExpanded &&
+      (state.sidebarTransitionIsHover || state.sidebarAutoExpanded);
+  }
+
+  function scheduleResizeRehydrate() {
+    if (opts.prefillMode !== "full") return;
+    if (!_ptyClient || !_ptyClient.isOpen) return;
+    if (shouldSuppressContainerResize()) return;
+    if (_resizeRehydrateTimer) clearTimeout(_resizeRehydrateTimer);
+    _resizeRehydrateTimer = setTimeout(() => {
+      _resizeRehydrateTimer = null;
+      if (!_term || !_ptyClient || !_ptyClient.isOpen) return;
+      if (shouldSuppressContainerResize()) return;
+      _ptyClient.reconnect();
+    }, 350);
+  }
+
+  function scheduleLayoutSync(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
+    if (_layoutSyncRaf) cancelAnimationFrame(_layoutSyncRaf);
+    _layoutSyncRaf = requestAnimationFrame(() => {
+      _layoutSyncRaf = null;
+      syncLayout(options);
+    });
   }
 
   /**
@@ -995,6 +1057,16 @@ function createPtyTerminalController(opts) {
     if (hydrationEl) { hydrationEl.classList.add("hydrating"); hydrationEl.classList.remove("hydrated"); }
 
     _term.open(container);
+    if (typeof ResizeObserver !== "undefined") {
+      _resizeObserver = new ResizeObserver((entries) => {
+        if (!entries.length) return;
+        if (!_container || !_term) return;
+        if (_container.clientWidth === 0 || _container.clientHeight === 0) return;
+        if (shouldSuppressContainerResize()) return;
+        scheduleLayoutSync({ forceSend: true, repaint: true, reason: "container-resize" });
+      });
+      _resizeObserver.observe(container);
+    }
 
     // WORKAROUND: ghostty-web v0.4.0 WASM state retention
     // The WASM allocator reuses freed page memory without zeroing, so new
@@ -1074,7 +1146,7 @@ function createPtyTerminalController(opts) {
       settleMs: 50,
     });
 
-    fitTerminalPreserveScroll();
+    syncLayout({ forceSend: false, repaint: true, reason: "mount" });
     if (mountOpts && mountOpts.cached) {
       _cachedLoaded = true;
       _term.write(mountOpts.cached, () => {
@@ -1191,7 +1263,7 @@ function createPtyTerminalController(opts) {
   }
 
   function resize() {
-    fitTerminalPreserveScroll();
+    syncLayout({ forceSend: true, repaint: true, reason: "resize" });
   }
 
   let _resizeTransitionId = 0;
@@ -1200,7 +1272,7 @@ function createPtyTerminalController(opts) {
     if (!_fitAddon || !_term) return;
     // Refit directly without hiding the canvas — hiding causes a blank frame
     // flicker that's more jarring than the brief reflow ghostty-web does.
-    fitTerminalPreserveScroll();
+    syncLayout({ forceSend: true, repaint: true, reason: "transition" });
   }
 
   /**
@@ -1214,6 +1286,9 @@ function createPtyTerminalController(opts) {
     _hydrationWritesInFlight = 0;
     _reconnectPendingReset = false;
     _postResetBuffer = null;
+    if (_layoutSyncRaf) { cancelAnimationFrame(_layoutSyncRaf); _layoutSyncRaf = null; }
+    if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
+    if (_resizeRehydrateTimer) { clearTimeout(_resizeRehydrateTimer); _resizeRehydrateTimer = null; }
     _mounting = false;
     _cachedLoaded = false;
     _userScrolledUp = false;
@@ -1238,15 +1313,9 @@ function createPtyTerminalController(opts) {
     // Delegation to pty client
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
     sendTakeControl: () => { if (_ptyClient) _ptyClient.sendTakeControl(); },
-    sendFitResize: () => { if (_ptyClient) _ptyClient.sendFitResize(); },
-    forceRepaint: () => {
-      if (!_term) return;
-      const t = _term as any;
-      // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
-      // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
-      // This is the only way to force a full canvas repaint without changing dimensions.
-      try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch {}
-    },
+    sendFitResize: (options?: { force?: boolean; fit?: boolean }) => { if (_ptyClient) _ptyClient.sendFitResize(options); },
+    forceRepaint,
+    syncLayout,
     send: (data) => { if (_ptyClient) _ptyClient.send(data); },
     resetRetry: () => { if (_ptyClient) _ptyClient.resetRetry(); },
     reconnect: (reconnectOpts?: { takeControl?: boolean }) => { if (_ptyClient) _ptyClient.reconnect(reconnectOpts); },
@@ -3684,6 +3753,7 @@ function initSidebar() {
     if (state.sidebarTransitionIsHover) {
       // Hover expand/collapse — reveal without resizing PTY
       revealGridCellsWithoutResize();
+      state.sidebarTransitionIsHover = false;
     } else if (!state.sidebarAutoExpanded) {
       // Pin/unpin — resize PTY to fit new layout, then reveal the canvas.
       // Without the reveal the .transitioning class stays on the container

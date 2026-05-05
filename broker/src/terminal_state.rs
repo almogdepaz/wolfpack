@@ -58,6 +58,14 @@ struct Row {
 }
 
 #[derive(Clone, Debug)]
+struct ReflowedRow {
+    row: Row,
+    para_idx: usize,
+    start_offset: usize,
+    end_offset: usize,
+}
+
+#[derive(Clone, Debug)]
 struct Grid {
     cols: usize,
     rows: usize,
@@ -70,15 +78,6 @@ impl Grid {
             cols,
             rows,
             lines: (0..rows).map(|_| blank_line(cols)).collect(),
-        }
-    }
-
-    fn resize(&mut self, cols: usize, rows: usize) {
-        self.cols = cols;
-        self.rows = rows;
-        self.lines.resize_with(rows, || blank_line(cols));
-        for line in &mut self.lines {
-            line.cells.resize_with(cols, Cell::blank);
         }
     }
 
@@ -277,14 +276,37 @@ fn line_to_styled(row: &Row) -> StyledLine {
 
 impl Inner {
     fn resize(&mut self, cols: usize, rows: usize) {
+        // Capture primary's logical cursor BEFORE mutating the grid. Alt-screen
+        // apps (vim, less, fzf) redraw on SIGWINCH so a simple clamp/pad is
+        // both correct and avoids producing a corrupted-looking transient frame
+        // before the app's own redraw lands.
+        let primary_logical = if !self.on_alt {
+            Some(cursor_to_logical(&self.primary, &self.cursor))
+        } else {
+            None
+        };
+
         self.cols = cols;
         self.rows = rows;
-        self.primary.resize(cols, rows);
-        self.alt.resize(cols, rows);
+
+        let primary_kept = reflow_grid_for_resize(
+            &mut self.primary,
+            cols,
+            rows,
+            Some((&mut self.scrollback, self.scrollback_max)),
+        );
+        simple_resize_grid(&mut self.alt, cols, rows);
+
         self.scroll_top = 0;
         self.scroll_bottom = rows - 1;
-        self.cursor.row = self.cursor.row.min(rows - 1);
-        self.cursor.col = self.cursor.col.min(cols - 1);
+        self.cursor = if let Some((para, offset)) = primary_logical {
+            logical_to_cursor(&primary_kept, para, offset, rows, cols)
+        } else {
+            CursorPos {
+                row: self.cursor.row.min(rows.saturating_sub(1)),
+                col: self.cursor.col.min(cols.saturating_sub(1)),
+            }
+        };
         self.pending_wrap = false;
     }
 
@@ -775,6 +797,111 @@ impl Inner {
     }
 }
 
+fn cursor_to_logical(grid: &Grid, cursor: &CursorPos) -> (usize, usize) {
+    let mut para_idx = 0;
+    let mut offset = 0;
+    let cursor_row = cursor.row.min(grid.rows.saturating_sub(1));
+    for row_idx in 0..cursor_row {
+        if let Some(row) = grid.lines.get(row_idx) {
+            offset += row.cells.len();
+            if !row.wrapped {
+                para_idx += 1;
+                offset = 0;
+            }
+        }
+    }
+    offset += cursor.col.min(grid.cols.saturating_sub(1));
+    (para_idx, offset)
+}
+
+fn logical_to_cursor(
+    rows: &[ReflowedRow],
+    target_para: usize,
+    target_offset: usize,
+    terminal_rows: usize,
+    terminal_cols: usize,
+) -> CursorPos {
+    let max_row = terminal_rows.saturating_sub(1);
+    let max_col = terminal_cols.saturating_sub(1);
+    // Track the last row of the matching paragraph so we can clamp when
+    // target_offset lands past EOL — this happens because cursor_to_logical
+    // sums full row widths but reflow trims trailing pad-blanks, so the
+    // cursor's offset can exceed the trimmed paragraph length.
+    let mut last_in_para: Option<(usize, &ReflowedRow)> = None;
+    for (row_idx, row) in rows.iter().enumerate() {
+        if row.para_idx != target_para {
+            continue;
+        }
+        last_in_para = Some((row_idx, row));
+        let contains = if row.start_offset == row.end_offset {
+            target_offset == row.start_offset
+        } else {
+            target_offset >= row.start_offset && target_offset < row.end_offset
+        };
+        if contains {
+            return CursorPos {
+                row: row_idx.min(max_row),
+                col: target_offset
+                    .saturating_sub(row.start_offset)
+                    .min(max_col),
+            };
+        }
+    }
+    if let Some((row_idx, row)) = last_in_para {
+        return CursorPos {
+            row: row_idx.min(max_row),
+            col: target_offset
+                .saturating_sub(row.start_offset)
+                .min(max_col),
+        };
+    }
+    CursorPos { row: 0, col: 0 }
+}
+
+fn simple_resize_grid(grid: &mut Grid, cols: usize, rows: usize) {
+    grid.cols = cols;
+    grid.rows = rows;
+    grid.lines.resize_with(rows, || blank_line(cols));
+    for line in &mut grid.lines {
+        line.cells.resize_with(cols, Cell::blank);
+    }
+}
+
+fn reflow_grid_for_resize(
+    grid: &mut Grid,
+    cols: usize,
+    rows: usize,
+    scrollback: Option<(&mut VecDeque<Row>, usize)>,
+) -> Vec<ReflowedRow> {
+    let reflowed = reflow_lines_with_meta(&grid.lines, cols);
+    let overflow = reflowed.len().saturating_sub(rows);
+    let mut kept: Vec<ReflowedRow> = Vec::with_capacity(rows);
+
+    grid.cols = cols;
+    grid.rows = rows;
+    grid.lines.clear();
+    if let Some((scrollback, scrollback_max)) = scrollback {
+        for (idx, row) in reflowed.into_iter().enumerate() {
+            if idx < overflow {
+                scrollback.push_back(row.row);
+            } else {
+                grid.lines.push(row.row.clone());
+                kept.push(row);
+            }
+        }
+        while scrollback.len() > scrollback_max {
+            scrollback.pop_front();
+        }
+    } else {
+        for row in reflowed.into_iter().skip(overflow) {
+            grid.lines.push(row.row.clone());
+            kept.push(row);
+        }
+    }
+    grid.lines.resize_with(rows, || blank_line(cols));
+    kept
+}
+
 /// Reflow a slice of scrollback rows to a new column width using wrap markers.
 ///
 /// Rows with `wrapped=true` are continuation lines from auto-wrap — they are
@@ -790,16 +917,25 @@ impl Inner {
 ///
 /// Invariant: `target_cols >= 1` (caller is responsible; we clamp defensively).
 fn reflow_lines(rows: &[Row], target_cols: usize) -> Vec<Row> {
+    reflow_lines_with_meta(rows, target_cols)
+        .into_iter()
+        .map(|r| r.row)
+        .collect()
+}
+
+fn reflow_lines_with_meta(rows: &[Row], target_cols: usize) -> Vec<ReflowedRow> {
     let target_cols = target_cols.max(1);
-    let mut out: Vec<Row> = Vec::new();
+    let mut out: Vec<ReflowedRow> = Vec::new();
     let mut para: Vec<Cell> = Vec::new();
     let mut para_terminal_wrapped = false;
+    let mut para_idx = 0;
 
     for row in rows {
         para.extend_from_slice(&row.cells);
         para_terminal_wrapped = row.wrapped;
         if !row.wrapped {
-            flush_paragraph(&mut para, para_terminal_wrapped, target_cols, &mut out);
+            flush_paragraph(&mut para, para_terminal_wrapped, target_cols, para_idx, &mut out);
+            para_idx += 1;
         }
     }
     // Flush any trailing wrapped paragraph (broken wrap-marker sequence).
@@ -808,7 +944,7 @@ fn reflow_lines(rows: &[Row], target_cols: usize) -> Vec<Row> {
     // regardless of the input's malformedness.
     if !para.is_empty() {
         let _ = para_terminal_wrapped;
-        flush_paragraph(&mut para, false, target_cols, &mut out);
+        flush_paragraph(&mut para, false, target_cols, para_idx, &mut out);
     }
 
     out
@@ -816,7 +952,13 @@ fn reflow_lines(rows: &[Row], target_cols: usize) -> Vec<Row> {
 
 /// Drain `para`, trim trailing pad-blanks, rechunk into `target_cols`-wide rows.
 /// Appends results to `out`. Always clears `para`.
-fn flush_paragraph(para: &mut Vec<Cell>, terminal_wrapped: bool, target_cols: usize, out: &mut Vec<Row>) {
+fn flush_paragraph(
+    para: &mut Vec<Cell>,
+    terminal_wrapped: bool,
+    target_cols: usize,
+    para_idx: usize,
+    out: &mut Vec<ReflowedRow>,
+) {
     // Trim trailing pad-blank cells: ch==' ' AND default attrs.
     // A space with non-default bg/fg is real styled content and must be kept.
     while let Some(last) = para.last() {
@@ -829,7 +971,12 @@ fn flush_paragraph(para: &mut Vec<Cell>, terminal_wrapped: bool, target_cols: us
 
     if para.is_empty() {
         // All-blank paragraph: preserve as one blank row (meaningful vertical spacing).
-        out.push(blank_line(target_cols));
+        out.push(ReflowedRow {
+            row: blank_line(target_cols),
+            para_idx,
+            start_offset: 0,
+            end_offset: 0,
+        });
         return;
     }
 
@@ -839,13 +986,18 @@ fn flush_paragraph(para: &mut Vec<Cell>, terminal_wrapped: bool, target_cols: us
         let mut chunk_cells = para[start..end].to_vec();
         chunk_cells.resize_with(target_cols, Cell::blank);
         let is_last = end >= para.len();
-        out.push(Row {
-            cells: chunk_cells,
-            // All non-last chunks are wrapped continuations. The last chunk
-            // propagates the source paragraph's terminal wrapped value —
-            // nearly always false, but true if the paragraph bridged into
-            // the visible screen (Phase 3 resolves this; preserve truth for now).
-            wrapped: if is_last { terminal_wrapped } else { true },
+        out.push(ReflowedRow {
+            row: Row {
+                cells: chunk_cells,
+                // All non-last chunks are wrapped continuations. The last chunk
+                // propagates the source paragraph's terminal wrapped value —
+                // nearly always false, but true if the paragraph bridged into
+                // the visible screen (Phase 3 resolves this; preserve truth for now).
+                wrapped: if is_last { terminal_wrapped } else { true },
+            },
+            para_idx,
+            start_offset: start,
+            end_offset: end,
         });
         start = end;
     }
@@ -1697,6 +1849,83 @@ mod tests {
         // The important invariant: no panic.
         assert!(!out_zero.is_empty());
         assert!(!out_raw.is_empty());
+    }
+
+    // ── resize cursor remap + alt-screen tests ──────────────────────────────
+
+    #[test]
+    fn resize_narrow_cursor_at_eol_preserves_position() {
+        // Cursor sitting in the trimmed pad-blank region of the last row of a
+        // paragraph — cursor_to_logical computes offset against full row width
+        // but reflow trims trailing blanks. Without the EOL clamp the cursor
+        // would warp to (0, 0).
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"hello"); // cursor at (0, 5), row width 10, trailing 5 blanks
+        t.resize(20, 3);
+        let (r, c) = cursor_rc(&t);
+        // Paragraph "hello" reflows to one row. Cursor lands on that row at the
+        // end of content (col 5) rather than warping to (0, 0).
+        assert_eq!((r, c), (0, 5));
+    }
+
+    #[test]
+    fn resize_wide_to_narrow_with_overflow_pushes_to_scrollback() {
+        // Visible screen has 3 paragraphs at width 10. Narrowing to width 3
+        // splits each paragraph and overflows older content into scrollback.
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"aaaaaaaa\r\nbbbbbbbb\r\nccccc"); // three short paragraphs
+        let prior_sb = t.inner.scrollback.len();
+        t.resize(3, 3);
+        assert_eq!(t.cols(), 3);
+        assert_eq!(t.rows(), 3);
+        assert!(
+            t.inner.scrollback.len() > prior_sb,
+            "narrowing must push reflowed overflow into scrollback"
+        );
+    }
+
+    #[test]
+    fn resize_alt_screen_does_not_reflow_or_touch_scrollback() {
+        // Enter alt screen, write content, resize. Alt-mode apps redraw on
+        // SIGWINCH; broker must NOT reflow alt content (would produce a
+        // corrupted transient frame) and must NOT push alt rows to scrollback.
+        let mut t = TerminalState::new(10, 3);
+        t.feed(b"\x1b[?1049h"); // enter alt screen
+        t.feed(b"alt-content");
+        let pre_sb = t.inner.scrollback.len();
+        t.resize(20, 5);
+        assert_eq!(t.cols(), 20);
+        assert_eq!(t.rows(), 5);
+        assert_eq!(
+            t.inner.scrollback.len(),
+            pre_sb,
+            "alt-screen resize must not push to scrollback"
+        );
+        assert!(t.on_alt_screen());
+    }
+
+    #[test]
+    fn resize_widen_collapses_wrapped_continuation_into_one_row() {
+        // 3-col terminal: 'abcdef' fills two rows (abc | def, first wrapped).
+        // Widening to 10 cols should collapse the paragraph into a single row.
+        let mut t = TerminalState::new(3, 3);
+        t.feed(b"abcdef");
+        t.resize(10, 3);
+        // Row 0 should now contain "abcdef" (followed by blanks).
+        let s = line_string(&t, 0);
+        assert!(s.starts_with("abcdef"), "expected collapsed paragraph, got {:?}", s);
+    }
+
+    #[test]
+    fn resize_cursor_on_wrapped_continuation_remaps() {
+        // Write "abcdef" at width 3 (wraps to two rows). Cursor sits at
+        // (1, 2) on the 'f' with pending_wrap set. Widening to 10 collapses
+        // the paragraph onto row 0; cursor offset = 5 (position of 'f') → (0, 5).
+        let mut t = TerminalState::new(3, 3);
+        t.feed(b"abcdef");
+        t.resize(10, 3);
+        let (r, c) = cursor_rc(&t);
+        assert_eq!((r, c), (0, 5));
     }
 
     #[test]

@@ -216,7 +216,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       shellCmd = SHELL;
     } else {
       const fullCmd = injectAgentContext(agentCmd);
-      shellCmd = `${fullCmd}; exec ${SHELL}`;
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${fullCmd}; exec ${SHELL}`;
     }
 
     const env: Array<[string, string]> = [
