@@ -1713,6 +1713,7 @@ function showView(name, skipAnimation) {
     if (ralphStartBackBtn) ralphStartBackBtn.style.display = effectiveName === "ralph-start" ? "inline-block" : "none";
     if (effectiveName === "settings") {
       renderQuickCmdSettings();
+      loadAgentsSettings();
     } else if (effectiveName === "ralph-detail") {
       refreshRalphDetail();
       state.ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
@@ -1763,6 +1764,7 @@ function showView(name, skipAnimation) {
       title.textContent = "settings";
 
       renderQuickCmdSettings();
+      loadAgentsSettings();
     } else if (name === "terminal") {
       back.style.display = "block";
       back.onclick = () => {
@@ -2120,19 +2122,15 @@ async function showAgentPicker() {
       api("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
     ]);
     nameInput.value = nameData.name || state.selectedProject;
-    const presets = Object.entries(data.presets || {});
-    const customCmds = data.settings?.customCmds || [];
-    let html = presets.map(([label, cmd]) => `
+    // /api/settings now returns { settings, effective } — effective.cmds is
+    // the list to render (already filtered to enabled, with ["shell"] fallback
+    // when nothing's on). Manage which cmds appear via the Settings page.
+    const cmds = data.effective?.cmds || ["shell"];
+    const defaultCmd = data.effective?.agentCmd;
+    const html = cmds.map(cmd => `
       <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
-        <div class="dot brand" title="preset"></div>
-        <div class="card-name">${esc(label)}</div>
-      </div>
-    `).join("");
-    html += customCmds.map(cmd => `
-      <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
-        <div class="dot green" title="custom command"></div>
+        <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
         <div class="card-name">${esc(cmd)}</div>
-        <button class="kill-btn" onclick="deleteCustomCmd('${escAttr(cmd)}', event)" title="Remove command">&times;</button>
       </div>
     `).join("");
     el.innerHTML = html;
@@ -2159,30 +2157,121 @@ async function showAgentPicker() {
   input.addEventListener("focus", () => input.select());
 })();
 
-async function addCustomCmd() {
-  const input = document.getElementById("custom-cmd-input");
-  const cmd = (input.value || "").trim();
-  if (!cmd) return;
+// ── Agents settings panel ──
+//
+// Renders the editable agents list on the Settings page. Distinct from
+// `showAgentPicker` (which renders the read-only picker shown when creating
+// a session). This is where the user toggles enabled/disabled, adds new
+// commands, and removes them. All ops hit /api/settings on the local
+// machine — agent settings are per-machine, not synced across peers.
+async function loadAgentsSettings() {
+  const list = document.getElementById("agents-list");
+  if (!list) return;
+  list.innerHTML = '<div class="empty">Loading...</div>';
   try {
-    await api("/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ addCustomCmd: cmd }),
-    }, state.projectMachine);
-    input.value = "";
-    showAgentPicker();
+    const data = await api("/settings");
+    renderAgentsList(data);
   } catch (e) {
-    alert("Failed to add command: " + errorMessage(e));
+    list.innerHTML = `<div class="empty">Failed to load: ${esc(errorMessage(e))}</div>`;
   }
 }
 
+function renderAgentsList(data) {
+  const list = document.getElementById("agents-list");
+  if (!list) return;
+  const cmds = (data.settings?.cmds || []);
+  const defaultCmd = data.effective?.agentCmd;
+  if (cmds.length === 0) {
+    list.innerHTML = '<div class="empty">No agents — add one below.</div>';
+    return;
+  }
+  list.innerHTML = cmds.map(c => {
+    const isDefault = c.cmd === defaultCmd && c.enabled;
+    return `<div class="agent-row${c.enabled ? "" : " disabled"}">
+      <input type="checkbox" class="agent-row-checkbox"
+        ${c.enabled ? "checked" : ""}
+        onchange="toggleAgentEnabled('${escAttr(c.cmd)}', this.checked)"
+        aria-label="Enable ${escAttr(c.cmd)}">
+      <span class="agent-row-cmd">${esc(c.cmd)}</span>
+      ${isDefault ? '<span class="agent-row-default">default</span>' : ""}
+      <button class="agent-row-delete"
+        onclick="removeAgent('${escAttr(c.cmd)}')"
+        title="Remove" aria-label="Remove ${escAttr(c.cmd)}">&times;</button>
+    </div>`;
+  }).join("");
+}
+
+async function toggleAgentEnabled(cmd, enabled) {
+  try {
+    const data = await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setCmdEnabled: { cmd, enabled } }),
+    });
+    renderAgentsList(data);
+  } catch (e) {
+    showAgentAddError("Failed to toggle: " + errorMessage(e));
+    loadAgentsSettings();  // refetch to undo optimistic checkbox flip
+  }
+}
+
+async function removeAgent(cmd) {
+  try {
+    const data = await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ removeCmd: cmd }),
+    });
+    renderAgentsList(data);
+  } catch (e) {
+    showAgentAddError("Failed to remove: " + errorMessage(e));
+  }
+}
+
+async function addAgent() {
+  const input = document.getElementById("agent-add-input");
+  const cmd = (input.value || "").trim();
+  if (!cmd) return;
+  showAgentAddError("");
+  try {
+    const data = await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ addCmd: cmd }),
+    });
+    input.value = "";
+    renderAgentsList(data);
+  } catch (e) {
+    // Server returns 400 for invalid characters; surface inline rather than alert.
+    showAgentAddError("Could not add: " + errorMessage(e));
+  }
+}
+
+function showAgentAddError(msg) {
+  const el = document.getElementById("agent-add-error");
+  if (el) el.textContent = msg;
+}
+
+// Wire up the add button + enter-to-submit when the settings page first mounts.
+(function bindAgentSettings() {
+  const btn = document.getElementById("agent-add-btn");
+  const input = document.getElementById("agent-add-input");
+  if (btn) btn.addEventListener("click", () => addAgent());
+  if (input) input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addAgent(); }
+  });
+})();
+
+// Legacy compatibility: older versions of the picker used these names.
+// Keep them as no-op aliases so any cached HTML/inline handlers don't crash
+// after upgrade. Safe to remove after a release cycle.
 async function deleteCustomCmd(cmd, e) {
-  e.stopPropagation();
+  if (e) e.stopPropagation();
   try {
     await api("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deleteCustomCmd: cmd }),
+      body: JSON.stringify({ removeCmd: cmd }),
     }, state.projectMachine);
     showAgentPicker();
   } catch (e) {
@@ -3835,13 +3924,9 @@ function bindHtmlEventListeners(): void {
   const createProjectBtn = document.querySelector("#projects-view .new-project-row button");
   if (createProjectBtn) createProjectBtn.addEventListener("click", () => selectNewProject());
 
-  // Agent picker
+  // Agent picker (read-only — add/remove/toggle moved to Settings)
   const agentBackBtn = document.querySelector("#agent-view .picker-cancel-btn");
   if (agentBackBtn) agentBackBtn.addEventListener("click", () => showView("projects"));
-
-  on("custom-cmd-input", "keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") addCustomCmd(); });
-  const addCmdBtn = document.querySelector("#agent-view .custom-cmd-add-btn");
-  if (addCmdBtn) addCmdBtn.addEventListener("click", () => addCustomCmd());
 
   // Settings
   on("settings-back-btn", "click", () => backFromSettings());
@@ -3962,6 +4047,8 @@ Object.assign(window, {
   openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
   createSessionWithAgent, deleteCustomCmd, removeMachineUI,
+  // agent settings onclick handlers (inline in renderAgentsList)
+  toggleAgentEnabled, removeAgent, addAgent,
   // grid + view (used by onclick and e2e page.evaluate)
   toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
   showView, state,
