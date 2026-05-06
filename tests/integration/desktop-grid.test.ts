@@ -178,22 +178,28 @@ describe("desktop grid: session isolation", () => {
     await wait(100);
   });
 
-  test("spawn failure on one session doesn't close others", async () => {
-    const wsA = await connectPty("grid-a");
-    const wsB = await connectPty("grid-b");
+  test("attach failure on one session doesn't close others", async () => {
+    ctx.mockBackend.setSessionAlive("grid-a", false);
+    ctx.mockBackend.setSessionAlive("grid-b", false);
+    try {
+      const wsA = await connectPty("grid-a");
+      const wsB = await connectPty("grid-b");
 
-    // Attach both — both will spawn-fail (no real tmux), but independently
-    wsA.send(JSON.stringify({ type: "attach", cols: 60, rows: 20, skipPrefill: true }));
-    wsB.send(JSON.stringify({ type: "attach", cols: 60, rows: 20, skipPrefill: true }));
+      // Attach both — broker mock reports both dead, both yield 4001 independently.
+      wsA.send(JSON.stringify({ type: "attach", cols: 60, rows: 20, skipPrefill: true }));
+      wsB.send(JSON.stringify({ type: "attach", cols: 60, rows: 20, skipPrefill: true }));
 
-    // Wait for A to close (spawn failure)
-    const closeA = waitForClose(wsA);
-    const closeB = waitForClose(wsB);
+      const closeA = waitForClose(wsA);
+      const closeB = waitForClose(wsB);
 
-    // Both should independently close with 4001
-    const [evA, evB] = await Promise.all([closeA, closeB]);
-    expect(evA.code).toBe(4001);
-    expect(evB.code).toBe(4001);
+      // Both should independently close with 4001
+      const [evA, evB] = await Promise.all([closeA, closeB]);
+      expect(evA.code).toBe(4001);
+      expect(evB.code).toBe(4001);
+    } finally {
+      ctx.mockBackend.setSessionAlive("grid-a", null);
+      ctx.mockBackend.setSessionAlive("grid-b", null);
+    }
   });
 
   test("binary stdin on one session doesn't crash another", async () => {

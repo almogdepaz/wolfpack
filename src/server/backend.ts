@@ -1,14 +1,20 @@
 /**
- * SessionBackend interface — abstraction over tmux vs raw-PTY session management.
+ * SessionBackend interface — abstraction over the broker daemon.
  *
- * BackendRouter holds both backends simultaneously and routes operations
- * to the correct one based on session ownership. New sessions use the
- * current default backend; existing sessions keep their original backend.
+ * BackendRouter is now a thin shim around BrokerBackend. Earlier revisions
+ * supported tmux and an in-process PTY fallback; both have been removed.
+ * The broker is mandatory — wolfpack will not start without one.
  */
-import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createLogger, errMsg } from "../log.js";
+import { defaultBrokerSocketPath } from "../broker/client.js";
+import type { BrokerBackend } from "./broker-backend.js";
+import type { EventBody } from "../broker/codec.js";
 
 const log = createLogger("backend");
+
+const BROKER_HANDSHAKE_TIMEOUT_MS = 1000;
+const BROKER_CONNECT_TIMEOUT_MS = 1500;
 
 export interface SessionBackend {
   list(): Promise<string[]>;
@@ -23,158 +29,208 @@ export interface SessionBackend {
   capturePane(name: string): Promise<string>;
   capturePaneForTriage(name: string): Promise<string>;
   resize(name: string, cols: number, rows: number): Promise<void>;
+  send(name: string, text: string, noEnter?: boolean): Promise<void>;
+  sendKey(name: string, key: string): Promise<void>;
   sessionDir(name: string): string | undefined;
   cleanupOrphans(): Promise<void>;
 }
 
-export type BackendType = "pty" | "tmux";
+// ── Broker streaming/attach methods needed by websocket.ts ──
 
-export const DEFAULT_BACKEND: BackendType = "tmux";
+/**
+ * Lifecycle event delivered to `onSessionLifecycle` subscribers. Currently
+ * only "exited" — the broker fires this when a session's child reaps.
+ */
+export type SessionLifecycleEvent = {
+  kind: "exited";
+  exitCode?: number;
+  signal?: number;
+};
 
-// ── PtyBackend-specific methods needed by websocket.ts ──
+export interface SessionPrefill {
+  data: Buffer;
+  /** Broker output-stream seq at snapshot time; undefined for non-broker backends. */
+  seq?: bigint;
+}
 
 export interface PtyBackendMethods {
-  onSessionData(name: string, cb: (data: Uint8Array) => void): (() => void) | null;
+  onSessionData(
+    name: string,
+    cb: (data: Uint8Array) => void,
+    opts?: { sinceSeq?: bigint },
+  ): (() => void) | null;
   writeToTerminal(name: string, data: Buffer | string): void;
-  getSessionPrefill(name: string): Buffer;
+  /**
+   * Returns prefill bytes + snapshot seq for the WS attach handler.
+   * Async because the broker sources prefill from a snapshot RPC.
+   */
+  getSessionPrefill(name: string, cols?: number): SessionPrefill | Promise<SessionPrefill>;
   isSessionAlive(name: string): boolean;
+  /**
+   * Register a lifecycle callback for a session (currently: exit only).
+   * Returns null when the backend cannot resolve the name (e.g. broker
+   * cache cold or session unknown).
+   */
+  onSessionLifecycle(
+    name: string,
+    cb: (event: SessionLifecycleEvent) => void,
+  ): (() => void) | null;
 }
 
 // ── Backend Router ──
 
-function checkTmuxAvailable(): boolean {
+/** Sync probe: does the broker socket file exist? Cheap; never opens it. */
+export function checkBrokerSocketExists(socketPath: string = defaultBrokerSocketPath()): boolean {
   try {
-    execSync("tmux -V", { stdio: "ignore" });
-    return true;
+    return existsSync(socketPath);
   } catch {
     return false;
   }
 }
 
 export class BackendRouter implements SessionBackend {
-  private pty: SessionBackend & PtyBackendMethods;
-  private tmux: SessionBackend | null;
-  private ownership = new Map<string, BackendType>();
-  private _defaultBackend: BackendType;
-  private _tmuxAvailable: boolean;
+  private broker: BrokerBackend | null;
+  // Reference to the underlying BrokerClient (typed loose to keep
+  // backend.ts free of a hard `BrokerClient` dependency at compile time).
+  private brokerClient: { close(): void; isConnected(): boolean; request: (m: string, p?: unknown, o?: { timeoutMs?: number }) => Promise<unknown>; start(): void } | null;
+  private brokerSocketPath: string;
+  private _brokerAvailable: boolean;
 
-  constructor(defaultBackend: BackendType) {
-    const { PtyBackend } = require("./pty-backend.js");
-    this.pty = new PtyBackend();
+  constructor() {
+    this.brokerSocketPath = defaultBrokerSocketPath();
+    this.broker = null;
+    this.brokerClient = null;
+    this._brokerAvailable = false;
+    // Skip live broker startup under WOLFPACK_TEST so tests that instantiate
+    // a router don't accidentally connect to a real broker socket on the
+    // developer's machine. Test code injects its own mock via `__setTestBackend`.
+    if (process.env.WOLFPACK_TEST) return;
 
-    this._tmuxAvailable = checkTmuxAvailable();
-    if (this._tmuxAvailable) {
-      const { TmuxBackend } = require("./tmux-backend.js");
-      this.tmux = new TmuxBackend();
-    } else {
-      this.tmux = null;
+    if (!checkBrokerSocketExists(this.brokerSocketPath)) {
+      throw new Error(`broker socket missing at ${this.brokerSocketPath}; the broker daemon must be running`);
     }
-
-    // Fall back to pty if tmux requested but unavailable
-    this._defaultBackend = (defaultBackend === "tmux" && !this._tmuxAvailable)
-      ? "pty"
-      : defaultBackend;
+    this.startBrokerClient();
+    this._brokerAvailable = true;
   }
 
-  // ── Routing helpers ──
-
-  private backendFor(name: string): SessionBackend {
-    const type = this.ownership.get(name);
-    if (type === "tmux" && this.tmux) return this.tmux;
-    if (!type) log.debug("no ownership for session, falling back to pty", { session: name });
-    return this.pty;
+  private startBrokerClient(): void {
+    const { BrokerClient } = require("../broker/client.js");
+    const { createBrokerBackend } = require("./broker-backend.js");
+    const client = new BrokerClient({
+      socketPath: this.brokerSocketPath,
+      onEvent: (event: EventBody) => {
+        this.broker?.ingestEvent(event);
+      },
+    });
+    client.start();
+    this.brokerClient = client;
+    this.broker = createBrokerBackend(client);
   }
 
-  getBackendForSession(name: string): SessionBackend {
-    return this.backendFor(name);
-  }
-
-  getBackendTypeForSession(name: string): BackendType {
-    return this.backendFor(name) === this.tmux ? "tmux" : "pty";
-  }
-
-  // ── Default backend management ──
-
-  getDefaultBackend(): BackendType { return this._defaultBackend; }
-
-  setDefaultBackend(type: BackendType): void {
-    if (type === "tmux" && !this._tmuxAvailable) {
-      throw new Error("tmux is not available");
-    }
-    this._defaultBackend = type;
-    log.info("default backend changed", { type });
-  }
-
-  isTmuxAvailable(): boolean { return this._tmuxAvailable; }
-
-  /** Re-check tmux availability (e.g. after install). */
-  recheckTmux(): boolean {
-    const was = this._tmuxAvailable;
-    this._tmuxAvailable = checkTmuxAvailable();
-    if (this._tmuxAvailable && !this.tmux) {
-      const { TmuxBackend } = require("./tmux-backend.js");
-      this.tmux = new TmuxBackend();
-      log.info("tmux backend initialized (now available)");
-    } else if (!this._tmuxAvailable && this.tmux) {
-      // tmux was uninstalled — tear down the stale backend
-      // Log orphaned tmux sessions before nulling the backend
-      const orphaned = [...this.ownership.entries()]
-        .filter(([, t]) => t === "tmux")
-        .map(([n]) => n);
-      if (orphaned.length > 0) {
-        log.warn("tmux sessions orphaned (tmux no longer available)", { sessions: orphaned });
-        for (const name of orphaned) this.ownership.delete(name);
-      }
-      this.tmux = null;
-      if (this._defaultBackend === "tmux") {
-        this._defaultBackend = "pty";
-        log.warn("tmux no longer available, default backend reverted to pty");
+  private teardownBrokerClient(): void {
+    if (this.brokerClient) {
+      try { this.brokerClient.close(); } catch (e: unknown) {
+        log.debug("broker client close failed", { error: errMsg(e) });
       }
     }
-    if (was !== this._tmuxAvailable) {
-      log.info("tmux availability changed", { available: this._tmuxAvailable });
-    }
-    return this._tmuxAvailable;
+    this.brokerClient = null;
+    this.broker = null;
+    this._brokerAvailable = false;
   }
 
-  // ── PtyBackend-specific accessors (for websocket.ts) ──
+  /** Returns the active broker backend. Throws if the broker is unavailable. */
+  private requireBroker(): BrokerBackend {
+    if (!this.broker) throw new Error("broker backend unavailable");
+    return this.broker;
+  }
 
-  getPtyBackend(): SessionBackend & PtyBackendMethods { return this.pty; }
+  isBrokerAvailable(): boolean { return this._brokerAvailable; }
+  getBrokerSocketPath(): string { return this.brokerSocketPath; }
+
+  /** Re-probe the broker socket. Starts the client if it appeared.
+   *  Disappearance is a fatal condition for the broker session pool —
+   *  next operation will surface a 4001 to the client. */
+  recheckBroker(): boolean {
+    const exists = checkBrokerSocketExists(this.brokerSocketPath);
+    if (exists && !this.broker) {
+      try {
+        this.startBrokerClient();
+        this._brokerAvailable = true;
+        log.info("broker backend initialized (socket appeared)");
+      } catch (e: unknown) {
+        log.warn("broker client start failed during recheck", { error: errMsg(e) });
+        this.teardownBrokerClient();
+      }
+    } else if (!exists && this.broker) {
+      log.error("broker socket disappeared", { socketPath: this.brokerSocketPath });
+      this.teardownBrokerClient();
+    }
+    return this._brokerAvailable;
+  }
+
+  /**
+   * Async handshake probe: waits for the broker connection to come up, then
+   * issues `list_sessions` with a tight timeout. On failure, tears the client
+   * down. Returns whether the handshake succeeded.
+   */
+  async verifyBrokerHandshake(): Promise<boolean> {
+    if (!this.brokerClient) return false;
+    const client = this.brokerClient;
+
+    // Wait for socket connect or short timeout. BrokerClient.start() returns
+    // immediately; the connect event fires asynchronously.
+    const connectDeadline = Date.now() + BROKER_CONNECT_TIMEOUT_MS;
+    while (!client.isConnected() && Date.now() < connectDeadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    if (!client.isConnected()) {
+      log.warn("broker handshake: connect timed out", { socketPath: this.brokerSocketPath });
+      this.teardownBrokerClient();
+      return false;
+    }
+
+    try {
+      const resp = (await client.request(
+        "list_sessions",
+        {},
+        { timeoutMs: BROKER_HANDSHAKE_TIMEOUT_MS },
+      )) as { status?: string; error?: { code?: string; message?: string } };
+      if (resp.status !== "ok") {
+        log.warn("broker handshake: list_sessions returned error", {
+          code: resp.error?.code,
+          message: resp.error?.message,
+        });
+        this.teardownBrokerClient();
+        return false;
+      }
+      log.info("broker handshake ok", { socketPath: this.brokerSocketPath });
+      return true;
+    } catch (e: unknown) {
+      log.warn("broker handshake failed", { error: errMsg(e) });
+      this.teardownBrokerClient();
+      return false;
+    }
+  }
+
+  // ── Streaming-backend accessor (for websocket.ts) ──
+
+  /** Streaming backend that can serve a `/ws/pty` attach for the given session. */
+  getStreamingBackendForSession(_name: string): (SessionBackend & PtyBackendMethods) | null {
+    return this.broker;
+  }
 
   // ── Session counts (for daemon stop warning) ──
 
-  async getSessionCounts(): Promise<{ pty: number; tmux: number }> {
-    const ptySessions = await this.pty.list();
-    const tmuxSessions = this.tmux ? await this.tmux.list() : [];
-    return { pty: ptySessions.length, tmux: tmuxSessions.length };
+  async getSessionCounts(): Promise<{ broker: number }> {
+    const sessions = this.broker ? await this.broker.list() : [];
+    return { broker: sessions.length };
   }
 
-  // ── SessionBackend interface ──
+  // ── SessionBackend interface — all routed to broker ──
 
   async list(): Promise<string[]> {
-    const ptySessions = await this.pty.list();
-    const tmuxSessions = this.tmux ? await this.tmux.list() : [];
-
-    // Reconcile ownership map — PTY wins over tmux for same-named sessions
-    // (PTY sessions are in-process and authoritative; tmux may be stale orphans)
-    const all = new Set<string>();
-    const ptySet = new Set(ptySessions);
-    for (const name of ptySessions) {
-      all.add(name);
-      this.ownership.set(name, "pty");
-    }
-    for (const name of tmuxSessions) {
-      all.add(name);
-      if (!ptySet.has(name)) {
-        this.ownership.set(name, "tmux");
-      }
-    }
-    // Prune stale entries
-    for (const name of this.ownership.keys()) {
-      if (!all.has(name)) this.ownership.delete(name);
-    }
-
-    return Array.from(all).sort();
+    const sessions = this.broker ? await this.broker.list() : [];
+    return [...sessions].sort();
   }
 
   async createSession(
@@ -183,63 +239,62 @@ export class BackendRouter implements SessionBackend {
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
   ): Promise<void> {
-    // Check uniqueness across both backends
-    const [ptyList, tmuxList] = await Promise.all([
-      this.pty.list(),
-      this.tmux ? this.tmux.list() : [],
-    ]);
-    if (ptyList.includes(name) || tmuxList.includes(name)) {
+    const broker = this.requireBroker();
+    const existing = await broker.list();
+    if (existing.includes(name)) {
       const err = new Error(`duplicate session: ${name}`);
       (err as any).code = "DUPLICATE_SESSION";
       throw err;
     }
-
-    const backend = this._defaultBackend === "tmux" && this.tmux
-      ? this.tmux
-      : this.pty;
-    const type = backend === this.tmux ? "tmux" : "pty";
-
-    // Set ownership before async create to close TOCTOU window —
-    // getBackendTypeForSession() returns correct type during creation.
-    // Rolled back on failure.
-    this.ownership.set(name, type);
-    try {
-      await backend.createSession(name, cwd, cmd, loadSettings);
-    } catch (e) {
-      this.ownership.delete(name);
-      throw e;
-    }
-    log.info("session created via router", { name, backend: type });
+    await broker.createSession(name, cwd, cmd, loadSettings);
+    log.info("session created via router", { name, backend: "broker" });
   }
 
   async killSession(name: string): Promise<void> {
-    await this.backendFor(name).killSession(name);
-    this.ownership.delete(name);
+    await this.requireBroker().killSession(name);
   }
 
   async hasSession(name: string): Promise<boolean> {
-    return this.backendFor(name).hasSession(name);
+    return this.requireBroker().hasSession(name);
   }
 
   async capturePane(name: string): Promise<string> {
-    return this.backendFor(name).capturePane(name);
+    return this.requireBroker().capturePane(name);
   }
 
   async capturePaneForTriage(name: string): Promise<string> {
-    return this.backendFor(name).capturePaneForTriage(name);
+    return this.requireBroker().capturePaneForTriage(name);
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
-    return this.backendFor(name).resize(name, cols, rows);
+    return this.requireBroker().resize(name, cols, rows);
+  }
+
+  async send(name: string, text: string, noEnter?: boolean): Promise<void> {
+    return this.requireBroker().send(name, text, noEnter);
+  }
+
+  async sendKey(name: string, key: string): Promise<void> {
+    return this.requireBroker().sendKey(name, key);
   }
 
   sessionDir(name: string): string | undefined {
-    return this.backendFor(name).sessionDir(name);
+    return this.broker?.sessionDir(name);
   }
 
   async cleanupOrphans(): Promise<void> {
-    await this.pty.cleanupOrphans();
-    if (this.tmux) await this.tmux.cleanupOrphans();
+    if (this.broker) await this.broker.cleanupOrphans();
+  }
+
+  /** Test-only: inject a backend in place of the broker so getRouter() works
+   *  for routes that drill into broker-specific surfaces. Gated on
+   *  WOLFPACK_TEST so production callers can't hot-swap the broker. */
+  __setBrokerForTest(backend: SessionBackend & Partial<{ ingestEvent: (e: unknown) => void; onSessionLifecycle: (n: string, cb: (e: unknown) => void) => (() => void) | null }>): void {
+    if (!process.env.WOLFPACK_TEST) throw new Error("__setBrokerForTest() is only available in test mode");
+    // Cast through unknown — the test backends (MockBackend) implement enough
+    // of the BrokerBackend surface for streaming-attach paths via duck typing.
+    this.broker = backend as unknown as BrokerBackend;
+    this._brokerAvailable = true;
   }
 }
 
@@ -248,12 +303,11 @@ export class BackendRouter implements SessionBackend {
 let _router: BackendRouter | null = null;
 // Test-mode direct backend override — bypasses router for backward compat
 let _testBackend: SessionBackend | null = null;
-let _testBackendType: BackendType = DEFAULT_BACKEND;
 
 /** Initialize the backend router. Call once at server startup. */
-export function initBackend(type?: BackendType): SessionBackend {
+export function initBackend(): SessionBackend {
   _testBackend = null;
-  _router = new BackendRouter(type ?? DEFAULT_BACKEND);
+  _router = new BackendRouter();
   return _router;
 }
 
@@ -270,39 +324,20 @@ export function getRouter(): BackendRouter {
   return _router!;
 }
 
-/** Get the default backend type (for new sessions). */
-export function getBackendType(): BackendType {
-  if (_testBackend) return _testBackendType;
-  if (!_router) initBackend();
-  return _router!.getDefaultBackend();
-}
-
-/** Get the backend type that owns a specific session. */
-export function getBackendTypeForSession(name: string): BackendType {
-  if (_testBackend) return _testBackendType;
-  if (!_router) initBackend();
-  return _router!.getBackendTypeForSession(name);
-}
-
 /** Test-only: reset singleton for test isolation. */
 export function __resetBackend(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetBackend() is only available in test mode");
   _router = null;
   _testBackend = null;
-  _testBackendType = DEFAULT_BACKEND;
 }
 
 /** Test-only: inject a custom backend (e.g. MockBackend) as the singleton.
- *  Optionally override the backend type (defaults to "tmux" for backward compat with existing tests).
  *  Also creates a router that wraps the mock so getRouter() works in tests. */
-export function __setTestBackend(backend: SessionBackend, type?: BackendType): void {
+export function __setTestBackend(backend: SessionBackend): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__setTestBackend() is only available in test mode");
   _testBackend = backend;
-  _testBackendType = type ?? "tmux";
-  // Create a router and inject the mock as both backends so getRouter() works
-  _router = new BackendRouter(type ?? "pty");
-  (_router as any).pty = backend;
-  (_router as any).tmux = type === "tmux" ? backend : null;
-  (_router as any)._defaultBackend = type ?? "pty";
-  (_router as any)._tmuxAvailable = type === "tmux";
+  // Construct router (skips broker startup under WOLFPACK_TEST), then inject
+  // the mock as the broker backend so getRouter() works.
+  _router = new BackendRouter();
+  _router.__setBrokerForTest(backend);
 }

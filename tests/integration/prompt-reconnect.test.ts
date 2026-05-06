@@ -11,7 +11,8 @@ const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { activePtySessions: __activePtySessions } = __getTestState();
 
 const FAKE_SESSIONS = ["prompt-sess", "reconnect-sess"];
-__setTestBackend(new MockBackend({ sessions: FAKE_SESSIONS }));
+const mockBackend = new MockBackend({ sessions: FAKE_SESSIONS });
+__setTestBackend(mockBackend);
 
 const { server } = createServerInstance();
 
@@ -78,45 +79,58 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Reconnect — PTY /ws/pty close codes", () => {
-  test("PTY spawn failure yields 4001 (prevents reconnect loop)", async () => {
-    const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=prompt-sess`);
-    ws.binaryType = "arraybuffer";
-    const closePromise = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
-
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve());
-      ws.addEventListener("error", () => reject(new Error("connect failed")));
-    });
-
-    // Trigger spawn (will fail — no real tmux)
-    ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
-
-    const ev = await Promise.race([
-      closePromise,
-      wait(5000).then(() => { throw new Error("timeout"); }),
-    ]) as CloseEvent;
-
-    expect(ev.code).toBe(4001);
-  });
-
-  test("consecutive PTY spawn failures all return 4001 (no 1000 leak)", async () => {
-    const codes: number[] = [];
-    for (let i = 0; i < 3; i++) {
+  test("attach failure yields 4001 (prevents reconnect loop)", async () => {
+    mockBackend.setSessionAlive("prompt-sess", false);
+    try {
       const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=prompt-sess`);
       ws.binaryType = "arraybuffer";
-      const cp = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
+      const closePromise = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
+
       await new Promise<void>((resolve, reject) => {
         ws.addEventListener("open", () => resolve());
         ws.addEventListener("error", () => reject(new Error("connect failed")));
       });
+
+      // Trigger attach (resize triggers spawn for older clients) — broker
+      // mock reports session dead, so attach yields 4001.
       ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
+
       const ev = await Promise.race([
-        cp,
+        closePromise,
         wait(5000).then(() => { throw new Error("timeout"); }),
       ]) as CloseEvent;
-      codes.push(ev.code);
+
+      expect(ev.code).toBe(4001);
+    } finally {
+      mockBackend.setSessionAlive("prompt-sess", null);
+      __activePtySessions.delete("prompt-sess");
     }
-    expect(codes).toEqual([4001, 4001, 4001]);
+  });
+
+  test("consecutive attach failures all return 4001 (no 1000 leak)", async () => {
+    mockBackend.setSessionAlive("prompt-sess", false);
+    try {
+      const codes: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=prompt-sess`);
+        ws.binaryType = "arraybuffer";
+        const cp = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
+        await new Promise<void>((resolve, reject) => {
+          ws.addEventListener("open", () => resolve());
+          ws.addEventListener("error", () => reject(new Error("connect failed")));
+        });
+        ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
+        const ev = await Promise.race([
+          cp,
+          wait(5000).then(() => { throw new Error("timeout"); }),
+        ]) as CloseEvent;
+        codes.push(ev.code);
+        __activePtySessions.delete("prompt-sess");
+      }
+      expect(codes).toEqual([4001, 4001, 4001]);
+    } finally {
+      mockBackend.setSessionAlive("prompt-sess", null);
+    }
   });
 });
 

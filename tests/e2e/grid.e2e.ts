@@ -143,13 +143,12 @@ test("backFromRalph restores a suspended grid", async ({ page }) => {
     state.currentSession = "test-project";
     // @ts-ignore
     state.currentMachine = "";
-    // Navigate to ralph-detail without going through terminal (avoid triggering suspend)
+    // Navigate to ralph-detail via showView so the back button display is set
+    // (it's display:none by default; showView toggles inline-block based on
+    // effectiveName). From "sessions" this won't suspend a grid — suspend
+    // only fires when leaving "terminal" with an active grid.
     // @ts-ignore
-    setState({ currentView: "ralph-detail" });
-    const el = document.getElementById("ralph-detail-view");
-    if (el) el.classList.add("visible");
-    const termEl = document.getElementById("terminal-view");
-    if (termEl) termEl.classList.remove("visible");
+    showView("ralph-detail");
   });
 
   // Click the ← Back button in the ralph-detail view
@@ -228,4 +227,144 @@ test("re-adding the remaining preserved session from Ralph reinitializes termina
     const el = document.getElementById("desktop-terminal-container");
     return el ? getComputedStyle(el).display : "none";
   })).toBe("block");
+});
+
+// ── Black-canvas regression: forceRepaint must fire after pty_ready ──────────
+//
+// Bug: grid cells render black until window resize/devtools-open. Single-terminal
+// path was fixed in 75d6ff3 by calling forceRepaint() in onPtyReady. Grid path
+// does not pass onPtyReady to createPtyTerminalController, so the manual
+// #0a0a0a fillRect (app.ts:1006-1011) sticks until something forces a render.
+
+test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }) => {
+  await loadApp(page);
+
+  // Open a single terminal first so addToGrid promotes single→grid (2 cells).
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    initTerminal();
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return !!state.terminalController?.term;
+  }), { timeout: 5000 }).toBe(true);
+
+  // addToGrid synchronously creates both controllers (mountGridController
+  // assigns gs.controller before its first await — see app-grid.ts:135 + 196).
+  // Wrapping forceRepaint immediately after the call wins the race vs the
+  // WS pty_ready round-trip.
+  await page.evaluate(() => {
+    // @ts-ignore
+    addToGrid("another-project", "");
+    // @ts-ignore
+    state.gridSessions.forEach((gs) => {
+      gs._forceRepaintCount = 0;
+      const orig = gs.controller.forceRepaint.bind(gs.controller);
+      gs.controller.forceRepaint = () => { gs._forceRepaintCount++; orig(); };
+    });
+  });
+
+  // Wait for WS handshake + pty_ready on every cell.
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((gs) => !!gs.controller?.isConnected);
+  }), { timeout: 5000 }).toBe(true);
+
+  // After pty_ready settles, every cell should have had ≥1 forced repaint.
+  // Without the fix this stays at 0 and the cell shows the manual blackfill.
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.map((gs) => gs._forceRepaintCount);
+  }), { timeout: 3000 }).toEqual([expect.any(Number), expect.any(Number)]);
+
+  const counts = await page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.map((gs) => gs._forceRepaintCount);
+  });
+  for (const c of counts) expect(c).toBeGreaterThanOrEqual(1);
+});
+
+test("long-background visibilitychange reconnects each grid cell and repaints", async ({ page }) => {
+  await loadApp(page);
+
+  // Build a 2-cell grid first.
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    initTerminal();
+  });
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return !!state.terminalController?.term;
+  }), { timeout: 5000 }).toBe(true);
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((gs) => !!gs.controller?.isConnected);
+  }), { timeout: 5000 }).toBe(true);
+
+  // Reset spy counters AFTER initial connect so we measure only post-reconnect repaints.
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.gridSessions.forEach((gs) => {
+      gs._forceRepaintCount = 0;
+      gs._reconnectCount = 0;
+      const origRepaint = gs.controller.forceRepaint.bind(gs.controller);
+      gs.controller.forceRepaint = () => { gs._forceRepaintCount++; origRepaint(); };
+      const origReconnect = gs.controller.reconnect.bind(gs.controller);
+      gs.controller.reconnect = (...args) => { gs._reconnectCount++; return origReconnect(...args); };
+    });
+  });
+
+  // Simulate >60s background: monkey-patch Date.now so the visibility handler
+  // sees `hiddenDuration > 60_000` between the hidden/visible flip.
+  await page.evaluate(() => {
+    const origNow = Date.now.bind(Date);
+    let offset = 0;
+    Date.now = () => origNow() + offset;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    // Now jump 70s forward so the visible-event sees a long gap.
+    offset = 70_000;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  // Each cell should have been told to reconnect.
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.map((gs) => gs._reconnectCount);
+  }), { timeout: 3000 }).toEqual([
+    expect.any(Number),
+    expect.any(Number),
+  ]);
+
+  const reconnectCounts = await page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.map((gs) => gs._reconnectCount);
+  });
+  for (const r of reconnectCounts) expect(r).toBeGreaterThanOrEqual(1);
+
+  // After reconnect → new pty_ready arrives → forceRepaint should fire (with fix).
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((gs) => gs._forceRepaintCount >= 1);
+  }), { timeout: 5000 }).toBe(true);
 });

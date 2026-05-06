@@ -3,31 +3,23 @@ import { MockBackend } from "../../src/server/mock-backend";
 import {
   BackendRouter,
   __resetBackend,
-  type SessionBackend,
-  type PtyBackendMethods,
+  checkBrokerSocketExists,
 } from "../../src/server/backend";
 
 /**
- * Create a BackendRouter with two MockBackends injected, bypassing
- * the real PtyBackend/TmuxBackend constructors via Object.create.
+ * Construct a BackendRouter with a mock broker injected. Live broker startup
+ * is suppressed by WOLFPACK_TEST=1 (set in beforeEach), so the constructor
+ * leaves `broker` null — we patch it in directly.
  */
-function createTestRouter(opts?: { default?: "pty" | "tmux" }): {
+function createTestRouter(opts?: { brokerMock?: MockBackend }): {
   router: BackendRouter;
-  ptyMock: MockBackend;
-  tmuxMock: MockBackend;
+  brokerMock: MockBackend;
 } {
-  const ptyMock = new MockBackend();
-  const tmuxMock = new MockBackend();
-
-  // Skip constructor entirely — avoids spawning a real PtyBackend
-  const router = Object.create(BackendRouter.prototype) as BackendRouter;
-  (router as any).pty = ptyMock;
-  (router as any).tmux = tmuxMock;
-  (router as any).ownership = new Map();
-  (router as any)._tmuxAvailable = true;
-  (router as any)._defaultBackend = opts?.default ?? "pty";
-
-  return { router, ptyMock, tmuxMock };
+  const brokerMock = opts?.brokerMock ?? new MockBackend();
+  const router = new BackendRouter();
+  (router as any).broker = brokerMock;
+  (router as any)._brokerAvailable = true;
+  return { router, brokerMock };
 }
 
 const loadSettings = () => ({ agentCmd: "shell" });
@@ -38,206 +30,97 @@ describe("BackendRouter", () => {
     __resetBackend();
   });
 
-  // ── list() ownership reconciliation ──
-
   describe("list()", () => {
-    test("merges sessions from both backends", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["pty-1", "pty-2"]);
-      tmuxMock.setSessions(["tmux-1"]);
-
-      const list = await router.list();
-      expect(list).toEqual(["pty-1", "pty-2", "tmux-1"]);
+    test("returns broker sessions sorted", async () => {
+      const { router, brokerMock } = createTestRouter();
+      brokerMock.setSessions(["zebra", "alpha"]);
+      expect(await router.list()).toEqual(["alpha", "zebra"]);
     });
 
-    test("deduplicates same-named sessions, PTY wins ownership", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["shared"]);
-      tmuxMock.setSessions(["shared"]);
-
-      const list = await router.list();
-      expect(list).toEqual(["shared"]);
-      expect(router.getBackendTypeForSession("shared")).toBe("pty");
-    });
-
-    test("prunes stale ownership entries", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["alive", "stale"]);
-      await router.list(); // establishes ownership
-      expect((router as any).ownership.has("stale")).toBe(true);
-
-      ptyMock.setSessions(["alive"]); // "stale" removed
-      tmuxMock.setSessions([]);
-      await router.list();
-
-      // "stale" should be pruned from ownership map (not just falling back to default)
-      expect((router as any).ownership.has("stale")).toBe(false);
-    });
-
-    test("returns sorted list", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["zebra"]);
-      tmuxMock.setSessions(["alpha"]);
-
-      const list = await router.list();
-      expect(list).toEqual(["alpha", "zebra"]);
+    test("returns empty list when broker has no sessions", async () => {
+      const { router } = createTestRouter();
+      expect(await router.list()).toEqual([]);
     });
   });
-
-  // ── createSession() ──
 
   describe("createSession()", () => {
-    test("creates session on default backend (pty)", async () => {
-      const { router, ptyMock } = createTestRouter({ default: "pty" });
+    test("creates session on the broker", async () => {
+      const { router, brokerMock } = createTestRouter();
       await router.createSession("new-sess", "/tmp", undefined, loadSettings);
-
-      expect(await ptyMock.hasSession("new-sess")).toBe(true);
-      expect(router.getBackendTypeForSession("new-sess")).toBe("pty");
+      expect(await brokerMock.hasSession("new-sess")).toBe(true);
     });
 
-    test("creates session on tmux when default is tmux", async () => {
-      const { router, tmuxMock } = createTestRouter({ default: "tmux" });
-      await router.createSession("new-sess", "/tmp", undefined, loadSettings);
-
-      expect(await tmuxMock.hasSession("new-sess")).toBe(true);
-      expect(router.getBackendTypeForSession("new-sess")).toBe("tmux");
-    });
-
-    test("rejects duplicate across pty backend", async () => {
-      const { router, ptyMock } = createTestRouter();
-      ptyMock.setSessions(["existing"]);
-
+    test("rejects duplicate session names", async () => {
+      const { router, brokerMock } = createTestRouter();
+      brokerMock.setSessions(["existing"]);
       await expect(
         router.createSession("existing", "/tmp", undefined, loadSettings),
       ).rejects.toThrow("duplicate session");
-    });
-
-    test("rejects duplicate across tmux backend", async () => {
-      const { router, tmuxMock } = createTestRouter();
-      tmuxMock.setSessions(["existing"]);
-
-      await expect(
-        router.createSession("existing", "/tmp", undefined, loadSettings),
-      ).rejects.toThrow("duplicate session");
-    });
-
-    test("rolls back ownership on creation failure", async () => {
-      const { router, ptyMock } = createTestRouter({ default: "pty" });
-      // Make createSession throw
-      (ptyMock as any).createSession = async () => { throw new Error("spawn failed"); };
-
-      await expect(
-        router.createSession("fail-sess", "/tmp", undefined, loadSettings),
-      ).rejects.toThrow("spawn failed");
-
-      // Ownership entry should be deleted (not just falling back to default)
-      expect((router as any).ownership.has("fail-sess")).toBe(false);
-      const list = await router.list();
-      expect(list).not.toContain("fail-sess");
     });
   });
-
-  // ── routing delegation ──
 
   describe("routing", () => {
-    test("routes operations to correct backend by ownership", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["pty-sess"]);
-      tmuxMock.setSessions(["tmux-sess"]);
-      await router.list(); // reconcile ownership
+    test("routes operations to broker", async () => {
+      const { router, brokerMock } = createTestRouter();
+      brokerMock.setSessions(["sess"]);
+      brokerMock.setCapturePane(async () => "broker-output");
 
-      expect(await router.hasSession("pty-sess")).toBe(true);
-      expect(await router.hasSession("tmux-sess")).toBe(true);
+      expect(await router.hasSession("sess")).toBe(true);
+      expect(await router.capturePane("sess")).toBe("broker-output");
 
-      // Kill from correct backend
-      await router.killSession("tmux-sess");
-      expect(await tmuxMock.hasSession("tmux-sess")).toBe(false);
-      expect(await ptyMock.hasSession("pty-sess")).toBe(true);
-    });
-
-    test("routes resize/capturePane to correct backend", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["pty-sess"]);
-      tmuxMock.setSessions(["tmux-sess"]);
-      await router.list();
-
-      // capturePane routes to owning backend
-      ptyMock.setCapturePane(async (s) => s === "pty-sess" ? "pty-output" : "");
-      tmuxMock.setCapturePane(async (s) => s === "tmux-sess" ? "tmux-output" : "");
-      expect(await router.capturePane("pty-sess")).toBe("pty-output");
-      expect(await router.capturePane("tmux-sess")).toBe("tmux-output");
-
-      // resize doesn't throw for valid sessions
-      await router.resize("pty-sess", 80, 24);
-      await router.resize("tmux-sess", 80, 24);
-    });
-
-    test("unknown session falls back to pty backend", async () => {
-      const { router } = createTestRouter();
-      // No list() call — ownership map empty
-      // Should delegate to pty (default fallback)
-      const result = await router.capturePane("unknown");
-      expect(result).toBe(""); // ptyMock returns "" for unknown sessions
+      await router.send("sess", "hello");
+      await router.sendKey("sess", "Enter");
+      await router.resize("sess", 80, 24);
+      await router.killSession("sess");
+      expect(await brokerMock.hasSession("sess")).toBe(false);
     });
   });
-
-  // ── setDefaultBackend ──
-
-  describe("setDefaultBackend()", () => {
-    test("switches default backend", () => {
-      const { router } = createTestRouter({ default: "pty" });
-      router.setDefaultBackend("tmux");
-      expect(router.getDefaultBackend()).toBe("tmux");
-    });
-
-    test("throws when switching to tmux if unavailable", () => {
-      const { router } = createTestRouter({ default: "pty" });
-      (router as any)._tmuxAvailable = false;
-      expect(() => router.setDefaultBackend("tmux")).toThrow("tmux is not available");
-    });
-
-    test("allows switching to pty always", () => {
-      const { router } = createTestRouter({ default: "tmux" });
-      router.setDefaultBackend("pty");
-      expect(router.getDefaultBackend()).toBe("pty");
-    });
-  });
-
-  // ── getSessionCounts ──
 
   describe("getSessionCounts()", () => {
-    test("returns counts from both backends", async () => {
-      const { router, ptyMock, tmuxMock } = createTestRouter();
-      ptyMock.setSessions(["p1", "p2"]);
-      tmuxMock.setSessions(["t1"]);
-
-      const counts = await router.getSessionCounts();
-      expect(counts).toEqual({ pty: 2, tmux: 1 });
+    test("returns broker session count", async () => {
+      const { router, brokerMock } = createTestRouter();
+      brokerMock.setSessions(["b1", "b2"]);
+      expect(await router.getSessionCounts()).toEqual({ broker: 2 });
     });
 
-    test("returns zero for tmux when unavailable", async () => {
-      const { router, ptyMock } = createTestRouter();
-      (router as any).tmux = null;
-      ptyMock.setSessions(["p1"]);
-
-      const counts = await router.getSessionCounts();
-      expect(counts).toEqual({ pty: 1, tmux: 0 });
+    test("returns zero when broker absent", async () => {
+      const router = new BackendRouter();
+      expect(await router.getSessionCounts()).toEqual({ broker: 0 });
     });
   });
 
-  // ── cleanupOrphans ──
-
   describe("cleanupOrphans()", () => {
-    test("calls cleanup on both backends", async () => {
-      const { router } = createTestRouter();
-      let ptyCalled = false;
-      let tmuxCalled = false;
-      (router as any).pty.cleanupOrphans = async () => { ptyCalled = true; };
-      (router as any).tmux.cleanupOrphans = async () => { tmuxCalled = true; };
-
+    test("calls cleanup on broker", async () => {
+      const { router, brokerMock } = createTestRouter();
+      let called = false;
+      (brokerMock as any).cleanupOrphans = async () => { called = true; };
       await router.cleanupOrphans();
-      expect(ptyCalled).toBe(true);
-      expect(tmuxCalled).toBe(true);
+      expect(called).toBe(true);
+    });
+
+    test("noop when broker absent", async () => {
+      const router = new BackendRouter();
+      await router.cleanupOrphans();
+    });
+  });
+
+  describe("broker availability", () => {
+    test("isBrokerAvailable reflects internal flag", () => {
+      const router = new BackendRouter();
+      expect(router.isBrokerAvailable()).toBe(false);
+      const { router: r2 } = createTestRouter();
+      expect(r2.isBrokerAvailable()).toBe(true);
+    });
+
+    test("verifyBrokerHandshake returns false when no broker client", async () => {
+      const router = new BackendRouter();
+      expect(await router.verifyBrokerHandshake()).toBe(false);
+    });
+  });
+
+  describe("checkBrokerSocketExists", () => {
+    test("returns false for paths that don't exist", () => {
+      expect(checkBrokerSocketExists("/tmp/never-was-a-broker-here.sock")).toBe(false);
     });
   });
 });

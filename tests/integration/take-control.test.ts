@@ -31,7 +31,6 @@ beforeAll(async () => {
   ctx = await bootTestServer({
     sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-take-control\n",
-    backendType: "pty",
   });
 });
 

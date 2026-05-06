@@ -149,7 +149,7 @@ interface AgentConfig {
 const AGENTS: Record<string, AgentConfig> = {
   claude: {
     bin: resolveBin("claude"),
-    args: (prompt) => ["--print", "--dangerously-skip-permissions", "--allowedTools", ALLOWED_TOOLS, "-p", prompt],
+    args: (prompt) => ["--model", "sonnet", "--print", "--dangerously-skip-permissions", "--allowedTools", ALLOWED_TOOLS, "-p", prompt],
   },
   codex: {
     bin: resolveBin("codex"),

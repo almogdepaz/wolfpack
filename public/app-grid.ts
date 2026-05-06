@@ -140,7 +140,7 @@ async function mountGridController(gs, cell, idx) {
     cursorBlink: idx === state.gridFocusIndex,
     disableStdin: idx !== state.gridFocusIndex,
     resetPty: gs._resetPty,
-    prefillMode: "none",
+    prefillMode: "viewport",
     shouldFocus: () => state.gridSessions[state.gridFocusIndex] === gs,
     shouldReconnect: () => state.gridSessions.includes(gs),
     canAcceptInput: () => !!(gs.controller && gs.controller.isConnected && state.gridSessions[state.gridFocusIndex] === gs),
@@ -151,6 +151,14 @@ async function mountGridController(gs, cell, idx) {
       // fires AFTER onOpen and re-shows the overlay.
       gs._displaced = false;
       removeGridCellConflictOverlay(gs);
+    },
+    onPtyReady: () => {
+      // Parallel of single-terminal fix in commit 75d6ff3. Without this, the
+      // canvas keeps showing the manual #0a0a0a fillRect from mount() because
+      // the WASM render loop runs with forceAll=false and skips repaint when
+      // dimensions/dirty-cells haven't changed. Fires on every reconnect too,
+      // so post-sleep / long-background recovery also gets a fresh repaint.
+      if (gs.controller) gs.controller.forceRepaint();
     },
     onOutput: () => {
       if (_gridCachedPending) {
@@ -257,11 +265,6 @@ export function renderGridCells() {
         newCellSessions.forEach(gs => {
           if (gs._needsConnect) {
             delete gs._needsConnect;
-            // Force hydration complete before connecting: grid cells use
-            // prefillMode:"none" so there's no prefill burst to wait for.
-            // Without this, an actively-outputting PTY keeps _hydrationWritesInFlight
-            // non-zero and hydration blocks for up to maxPendingMs (4s).
-            if (gs.controller.hydration) gs.controller.hydration.finish();
             gs.controller.connect();
           }
         });

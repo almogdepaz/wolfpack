@@ -28,7 +28,6 @@ beforeAll(async () => {
   ctx = await bootTestServer({
     sessions: [...FAKE_SESSIONS],
     capturePane: async () => "$ mock-concurrent\n",
-    backendType: "pty",
   });
 });
 
@@ -182,7 +181,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
     const wsA = await connectPty();
     const entry = ctx.activePtySessions.get(SESSION) as any;
 
-    let exitCallback: Function | null = null;
+    const exitCallback = null as (() => void) | null;
     let terminalClosed = false;
     entry.proc = {
       terminal: {
@@ -191,8 +190,11 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
         close() { terminalClosed = true; },
       },
       kill() {
-        // Simulate: kill triggers the exit callback asynchronously
-        if (exitCallback) setTimeout(() => exitCallback!(), 0);
+        // Simulate: kill triggers the exit callback asynchronously.
+        // (Dead code under broker streaming — entry.proc is no longer set
+        // by the broker attach path; preserved for the tmux-era assertion.)
+        const cb = exitCallback;
+        if (cb) setTimeout(() => cb(), 0);
       },
     };
 

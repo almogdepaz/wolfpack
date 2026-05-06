@@ -1,11 +1,11 @@
 /**
  * MockBackend — SessionBackend implementation for integration tests.
  *
- * Replaces __setTestOverrides by providing a fully controllable backend
- * that can be injected via __setTestBackend(). No tmux or real PTY needed.
+ * Provides a fully controllable backend that can be injected via
+ * __setTestBackend(). No real broker daemon needed.
  */
 import type { SessionBackend } from "./backend.js";
-import { stripAnsi } from "./pty-backend.js";
+import { stripAnsi } from "./strip-ansi.js";
 
 export interface MockBackendOptions {
   sessions?: string[];
@@ -18,6 +18,11 @@ export class MockBackend implements SessionBackend {
   private _sessions: Set<string>;
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
+  /** Per-session alive override — when set, isSessionAlive() returns this
+   *  instead of `_sessions.has(name)`. Used by tests to simulate a session
+   *  that's listed (so WS upgrade passes) but whose backing process has
+   *  already died (so attachStreamingBackend returns 4001). */
+  private _aliveOverride = new Map<string, boolean>();
 
   /** Last arguments passed to createSession (name, cwd, cmd). */
   lastCreateArgs: { name: string; cwd: string; cmd: string | undefined } | null = null;
@@ -86,6 +91,14 @@ export class MockBackend implements SessionBackend {
     this.lastResizeArgs = { name, cols, rows };
   }
 
+  async send(): Promise<void> {
+    // no-op in mock
+  }
+
+  async sendKey(): Promise<void> {
+    // no-op in mock
+  }
+
   sessionDir(): string | undefined {
     return undefined;
   }
@@ -94,15 +107,23 @@ export class MockBackend implements SessionBackend {
     // no-op in mock
   }
 
-  // ── PtyBackend-compatible methods ──
-  // websocket.ts casts backend to PtyBackend and calls these directly.
-  // MockBackend provides no-op/stub versions so tests don't crash.
+  // ── Streaming attach surface (PtyBackendMethods) ──
+  // websocket.ts casts the streaming backend and calls these directly.
+  // MockBackend provides no-op/stub versions so WS-attach tests don't crash.
 
   isSessionAlive(name: string): boolean {
+    const override = this._aliveOverride.get(name);
+    if (override !== undefined) return override;
     return this._sessions.has(name);
   }
 
-  onSessionData(_name: string, _cb: (data: Uint8Array) => void): (() => void) | null {
+  /** Force isSessionAlive(name) to return `alive`. Pass `null` to clear. */
+  setSessionAlive(name: string, alive: boolean | null): void {
+    if (alive === null) this._aliveOverride.delete(name);
+    else this._aliveOverride.set(name, alive);
+  }
+
+  onSessionData(_name: string, _cb: (data: Uint8Array) => void, _opts?: { sinceSeq?: bigint }): (() => void) | null {
     // No real data stream — return a no-op unsubscribe
     return () => {};
   }
@@ -111,7 +132,11 @@ export class MockBackend implements SessionBackend {
     // no-op in mock
   }
 
-  getSessionPrefill(_name: string): Buffer {
-    return Buffer.alloc(0);
+  getSessionPrefill(_name: string, _cols?: number): { data: Buffer; seq?: bigint } {
+    return { data: Buffer.alloc(0) };
+  }
+
+  onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {
+    return () => {};
   }
 }

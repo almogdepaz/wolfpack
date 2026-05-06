@@ -220,6 +220,29 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
+async function copySessionToClipboard() {
+  if (!state.currentSession) return;
+  haptic([20]);
+  const overlay = document.getElementById("git-status-overlay");
+  overlay.innerHTML = '<pre>copying...</pre>';
+  overlay.classList.add("visible");
+  try {
+    // /api/copy-text returns text/plain — fetch raw, then write to clipboard.
+    const path = "/api/copy-text?session=" + encodeURIComponent(state.currentSession);
+    const base = (state.currentMachine || "").replace(/\/$/, "");
+    const headers = {};
+    const jwt = localStorage.getItem("wpJwt");
+    if (jwt) headers["Authorization"] = "Bearer " + jwt;
+    const r = await fetch(base + path, { headers });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const text = await r.text();
+    await navigator.clipboard.writeText(text);
+    overlay.innerHTML = `<div><pre>copied ${text.length} chars</pre><div class="overlay-hint">tap to dismiss</div></div>`;
+  } catch (e) {
+    overlay.innerHTML = `<div><pre class="error-pre">copy failed: ${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
+  }
+}
+
 // ── Session Recents ──
 
 function sessionKey(machine, name) {
@@ -608,13 +631,15 @@ function createPtySocketClient(opts) {
   /** Fit terminal + send resize dimensions over the socket (debounced). */
   let _lastSentResize = "";
   let _resizeDebounceTimer = null;
-  function sendFitResize() {
+  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
+    if (options?.fit !== false) {
+      try { opts.fitTerminal(); } catch {}
+    }
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (key === _lastSentResize) return; // same dimensions, skip
+    if (!options?.force && key === _lastSentResize) return; // same dimensions, skip
     // Debounce: collapse rapid resize calls into one
     if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
     _resizeDebounceTimer = setTimeout(() => {
@@ -622,8 +647,10 @@ function createPtySocketClient(opts) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const d = opts.getTermDimensions();
       if (!d) return;
+      const nextKey = d.cols + "x" + d.rows;
+      if (!options?.force && nextKey === _lastSentResize) return;
       const msg = JSON.stringify({ type: "resize", cols: d.cols, rows: d.rows });
-      _lastSentResize = d.cols + "x" + d.rows;
+      _lastSentResize = nextKey;
       ws.send(msg);
     }, 50);
   }
@@ -655,7 +682,7 @@ function createPtySocketClient(opts) {
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
             // Re-check dimensions after layout settles — catches stale
             // initial dims on mobile where layout isn't finalized at connect time.
-            requestAnimationFrame(() => { sendFitResize(); });
+            requestAnimationFrame(() => { sendFitResize({ force: true }); });
           } else if (msg.type === "pty_ready") {
             if (opts.onPtyReady) opts.onPtyReady();
           } else if (msg.type === "prefill_viewport") {
@@ -858,6 +885,9 @@ function createPtyTerminalController(opts) {
   let _userScrolledUp = false;
   let _scrollLockKeydownHandler = null;
   let _browserShortcutKeydownHandler = null;
+  let _resizeObserver = null;
+  let _layoutSyncRaf = null;
+  let _resizeRehydrateTimer = null;
 
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
@@ -907,16 +937,91 @@ function createPtyTerminalController(opts) {
 
   function fitTerminalPreserveScroll() {
     if (!_fitAddon || !_term) return;
-    // ghostty-web: viewportY and getScrollbackLength() are on _term directly
-    // (no buffer.active like xterm.js)
+    // ghostty-web semantics: scrollToLine(A) clamps A to [0, scrollbackLength]
+    // and assigns to viewportY. viewportY === 0 means "at bottom"; increasing
+    // viewportY moves the view up into history. To preserve the visual position
+    // across a refit, we compensate for scrollback length changes (the broker's
+    // reflow can lengthen or shorten scrollback when cols change).
     const vp = _term.viewportY ?? 0;
-    const scrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : 0;
+    const oldScrollback = typeof _term.getScrollbackLength === "function"
+      ? _term.getScrollbackLength() : 0;
     const wasAtBottom = vp === 0;
     _fitAddon.fit();
     if (!wasAtBottom && vp > 0) {
-      const newScrollback = typeof _term.getScrollbackLength === "function" ? _term.getScrollbackLength() : scrollback;
-      try { _term.scrollToLine(Math.max(0, newScrollback - (scrollback - vp))); } catch {}
+      const newScrollback = typeof _term.getScrollbackLength === "function"
+        ? _term.getScrollbackLength() : oldScrollback;
+      // Invariant: oldScrollback - oldVp == newScrollback - newVp.
+      const target = Math.max(0, newScrollback - (oldScrollback - vp));
+      try { _term.scrollToLine(target); } catch {}
     }
+  }
+
+  function forceRepaint() {
+    if (!_term) return;
+    const t = _term as any;
+    // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
+    // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
+    // This is the only way to force a full canvas repaint without changing dimensions.
+    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch {}
+  }
+
+  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
+    if (!_fitAddon || !_term || !_container) return;
+    const before = { cols: _term.cols, rows: _term.rows };
+    fitTerminalPreserveScroll();
+    if (options?.repaint !== false) forceRepaint();
+    if (_ptyClient) _ptyClient.sendFitResize({ force: !!options?.forceSend, fit: false });
+    if (before.cols !== _term.cols || before.rows !== _term.rows) {
+      scheduleResizeRehydrate();
+    }
+  }
+
+  function shouldSuppressContainerResize() {
+    return isDesktop() &&
+      !state.sidebarPinned &&
+      !state.sessionsExpanded &&
+      (state.sidebarTransitionIsHover || state.sidebarAutoExpanded);
+  }
+
+  /**
+   * After a column-count change, the scrollback the client has on screen was
+   * painted from a prefill rendered at the OLD width — line wraps fall at
+   * the wrong columns. The broker reflows scrollback as part of its `resize`
+   * RPC + `snapshot` (with `target_cols`) path, but xterm.js exposes no
+   * "replace scrollback only" API; the only way to apply a re-flowed
+   * scrollback is a full reconnect that re-fetches the snapshot.
+   *
+   * Cost: ~ one snapshot RPC + prefill stream per actual resize event
+   * (350ms debounce collapses bursty resize-during-drag into one). Resizes
+   * are infrequent (sidebar pin/unpin, window drag, mobile rotate) so this
+   * is an acceptable price for correct scrollback wrap geometry.
+   *
+   * Gated on `prefillMode: "full"` because viewport-only attaches don't
+   * paint scrollback at all — there's nothing to re-flow.
+   *
+   * Suppressed while the sidebar is in a hover-driven transient state
+   * (`shouldSuppressContainerResize`) so a mouseover+mouseout doesn't
+   * trigger a reconnect for a layout that's about to revert.
+   */
+  function scheduleResizeRehydrate() {
+    if (opts.prefillMode !== "full") return;
+    if (!_ptyClient || !_ptyClient.isOpen) return;
+    if (shouldSuppressContainerResize()) return;
+    if (_resizeRehydrateTimer) clearTimeout(_resizeRehydrateTimer);
+    _resizeRehydrateTimer = setTimeout(() => {
+      _resizeRehydrateTimer = null;
+      if (!_term || !_ptyClient || !_ptyClient.isOpen) return;
+      if (shouldSuppressContainerResize()) return;
+      _ptyClient.reconnect();
+    }, 350);
+  }
+
+  function scheduleLayoutSync(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
+    if (_layoutSyncRaf) cancelAnimationFrame(_layoutSyncRaf);
+    _layoutSyncRaf = requestAnimationFrame(() => {
+      _layoutSyncRaf = null;
+      syncLayout(options);
+    });
   }
 
   /**
@@ -935,16 +1040,6 @@ function createPtyTerminalController(opts) {
     if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
-    const isTmuxSession = (() => {
-      const groups = (state as any).lastSessionGroups || [];
-      for (const g of groups) {
-        for (const s of (g?.sessions || [])) {
-          if (s.name === opts.session) return (s.backend ?? "tmux") === "tmux";
-        }
-      }
-      return true; // default-tmux world: assume tmux when session info isn't loaded yet
-    })();
-
     const result = createTerminalInstance({
       fontSize: opts.fontSize,
       scrollback: opts.scrollback,
@@ -954,12 +1049,9 @@ function createPtyTerminalController(opts) {
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
-      alwaysForwardWheel: isTmuxSession,
+      alwaysForwardWheel: false,
       onWheelScroll: (ev) => {
         if (!_term) return;
-        // Skip scroll-lock when wheel is forwarded to the server — the
-        // viewport doesn't actually move on the client.
-        if (isTmuxSession) return;
         try {
           const hasMouse = _term.getMode(1000) || _term.getMode(1002) || _term.getMode(1003);
           if (hasMouse) return;
@@ -985,6 +1077,16 @@ function createPtyTerminalController(opts) {
     if (hydrationEl) { hydrationEl.classList.add("hydrating"); hydrationEl.classList.remove("hydrated"); }
 
     _term.open(container);
+    if (typeof ResizeObserver !== "undefined") {
+      _resizeObserver = new ResizeObserver((entries) => {
+        if (!entries.length) return;
+        if (!_container || !_term) return;
+        if (_container.clientWidth === 0 || _container.clientHeight === 0) return;
+        if (shouldSuppressContainerResize()) return;
+        scheduleLayoutSync({ forceSend: true, repaint: true, reason: "container-resize" });
+      });
+      _resizeObserver.observe(container);
+    }
 
     // WORKAROUND: ghostty-web v0.4.0 WASM state retention
     // The WASM allocator reuses freed page memory without zeroing, so new
@@ -1064,7 +1166,7 @@ function createPtyTerminalController(opts) {
       settleMs: 50,
     });
 
-    fitTerminalPreserveScroll();
+    syncLayout({ forceSend: false, repaint: true, reason: "mount" });
     if (mountOpts && mountOpts.cached) {
       _cachedLoaded = true;
       _term.write(mountOpts.cached, () => {
@@ -1181,7 +1283,7 @@ function createPtyTerminalController(opts) {
   }
 
   function resize() {
-    fitTerminalPreserveScroll();
+    syncLayout({ forceSend: true, repaint: true, reason: "resize" });
   }
 
   let _resizeTransitionId = 0;
@@ -1190,7 +1292,7 @@ function createPtyTerminalController(opts) {
     if (!_fitAddon || !_term) return;
     // Refit directly without hiding the canvas — hiding causes a blank frame
     // flicker that's more jarring than the brief reflow ghostty-web does.
-    fitTerminalPreserveScroll();
+    syncLayout({ forceSend: true, repaint: true, reason: "transition" });
   }
 
   /**
@@ -1204,6 +1306,9 @@ function createPtyTerminalController(opts) {
     _hydrationWritesInFlight = 0;
     _reconnectPendingReset = false;
     _postResetBuffer = null;
+    if (_layoutSyncRaf) { cancelAnimationFrame(_layoutSyncRaf); _layoutSyncRaf = null; }
+    if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
+    if (_resizeRehydrateTimer) { clearTimeout(_resizeRehydrateTimer); _resizeRehydrateTimer = null; }
     _mounting = false;
     _cachedLoaded = false;
     _userScrolledUp = false;
@@ -1228,7 +1333,9 @@ function createPtyTerminalController(opts) {
     // Delegation to pty client
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
     sendTakeControl: () => { if (_ptyClient) _ptyClient.sendTakeControl(); },
-    sendFitResize: () => { if (_ptyClient) _ptyClient.sendFitResize(); },
+    sendFitResize: (options?: { force?: boolean; fit?: boolean }) => { if (_ptyClient) _ptyClient.sendFitResize(options); },
+    forceRepaint,
+    syncLayout,
     send: (data) => { if (_ptyClient) _ptyClient.send(data); },
     resetRetry: () => { if (_ptyClient) _ptyClient.resetRetry(); },
     reconnect: (reconnectOpts?: { takeControl?: boolean }) => { if (_ptyClient) _ptyClient.reconnect(reconnectOpts); },
@@ -1740,7 +1847,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -2208,7 +2315,7 @@ async function initTerminal(cached) {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "viewport",
+    prefillMode: "full",
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -2221,7 +2328,14 @@ async function initTerminal(cached) {
       removeDesktopConflictOverlay();
       setConnState("live");
     },
-    onPtyReady: () => { flushMobileKbProxyPendingInput(); },
+    onPtyReady: () => {
+      flushMobileKbProxyPendingInput();
+      // Force a full canvas repaint after prefill completes. FitAddon.fit() and
+      // Terminal.resize() both no-op when dimensions haven't changed, so sendFitResize
+      // does nothing if the terminal is the same size as before the session switch.
+      // renderer.render(forceAll=true) bypasses both guards and repaints every cell.
+      if (state.terminalController) state.terminalController.forceRepaint();
+    },
     onOutput: (data) => {
       if (_cachedPendingReset) {
         _cachedPendingReset = false;
@@ -2890,6 +3004,17 @@ document.addEventListener("visibilitychange", () => {
           state.terminalController.resetRetry();
           state.terminalController.reconnect();
         }
+      } else {
+        // Short background (<60s): no reconnect needed, but canvas backing store
+        // may have been invalidated by browser compositor (App Nap, power saving).
+        // A forced repaint recovers without re-streaming any data.
+        if (isGridActive()) {
+          for (const gs of state.gridSessions) {
+            if (gs.controller) gs.controller.forceRepaint?.();
+          }
+        } else if (state.terminalController?.term) {
+          state.terminalController.forceRepaint();
+        }
       }
     }
   } else {
@@ -3535,7 +3660,7 @@ function sidebarCardHtml(s, machineUrl) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span>${s.backend ? '<span class="backend-badge">' + esc(s.backend) + '</span>' : ''}</div>
+      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
@@ -3559,6 +3684,9 @@ function initSidebar() {
     sidebar.classList.add("collapsed");
     state.sidebarCollapsed = true;
   }
+  // Body class drives layout: pinned → in flex flow (pushes main); unpinned →
+  // overlay (doesn't affect terminal width).
+  document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
   updatePinButton();
 
   // Pin/unpin button
@@ -3567,6 +3695,7 @@ function initSidebar() {
     localStorage.setItem("wolfpack-sidebar-pinned", state.sidebarPinned ? "1" : "0");
     state.sidebarTransitionIsHover = false;
     if (!state.sidebarResizeDone) hideGridCellsForTransition();
+    document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
     if (state.sidebarPinned) {
       // Pin: ensure visible
       sidebar.classList.remove("collapsed");
@@ -3644,6 +3773,7 @@ function initSidebar() {
     if (state.sidebarTransitionIsHover) {
       // Hover expand/collapse — reveal without resizing PTY
       revealGridCellsWithoutResize();
+      state.sidebarTransitionIsHover = false;
     } else if (!state.sidebarAutoExpanded) {
       // Pin/unpin — resize PTY to fit new layout, then reveal the canvas.
       // Without the reveal the .transitioning class stays on the container
@@ -3760,6 +3890,8 @@ function bindHtmlEventListeners(): void {
   // Keyboard accessory
   const gitBtn = document.querySelector(".kb-key.kb-git");
   if (gitBtn) gitBtn.addEventListener("click", () => showGitStatus());
+  const copyBtn = document.querySelector(".kb-key.kb-copy");
+  if (copyBtn) copyBtn.addEventListener("click", () => copySessionToClipboard());
 
 
   // Ralph detail

@@ -96,7 +96,6 @@ export async function setup() {
 
   print(bold("  Checking prerequisites...\n"));
 
-  let hasTmux = check("tmux", "tmux -V");
   const tsBin = tailscaleBin();
   const hasTailscale = !!tsBin;
   if (hasTailscale) {
@@ -107,16 +106,6 @@ export async function setup() {
 
   print("");
 
-  if (!hasTmux) {
-    print(yellow("  tmux is required — installing..."));
-    installPackages(["tmux"]);
-    hasTmux = check("tmux", "tmux -V");
-    if (!hasTmux) {
-      print(red("  tmux installation failed. Install it manually, then re-run 'wolfpack setup'."));
-      process.exit(1);
-    }
-    print("");
-  }
 
   // ── Install optional missing deps (tailscale only) ──
   if (!hasTailscale) {

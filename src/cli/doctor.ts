@@ -1,7 +1,7 @@
 /**
  * `wolfpack doctor` — system health check with optional --fix.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import {
   accessSync,
   chmodSync,
@@ -12,7 +12,11 @@ import {
 } from "node:fs";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { join } from "node:path";
+import * as net from "node:net";
+import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
+
+const log = createLogger("doctor");
 import {
   WOLFPACK_DIR,
   IS_MACOS,
@@ -46,26 +50,6 @@ type CheckFn = () => CheckResult[] | Promise<CheckResult[]>;
 
 function checkDeps(): CheckResult[] {
   const results: CheckResult[] = [];
-
-  // tmux
-  try {
-    const ver = execFileSync("tmux", ["-V"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    const match = ver.match(/(\d+\.\d+)/);
-    if (match && parseFloat(match[1]) >= 3.0) {
-      results.push({ name: "tmux", group: "Dependencies", status: "pass", detail: ver });
-    } else {
-      results.push({
-        name: "tmux", group: "Dependencies", status: "fail",
-        detail: `${ver} (need >= 3.0)`,
-        fixHint: IS_MACOS ? "brew install tmux" : "sudo apt install tmux",
-      });
-    }
-  } catch {
-    results.push({
-      name: "tmux", group: "Dependencies", status: "fail", detail: "not found",
-      fixHint: IS_MACOS ? "brew install tmux" : "sudo apt install tmux",
-    });
-  }
 
   // tailscale
   const tsBin = tailscaleBin();
@@ -336,45 +320,125 @@ function checkBinary(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
-// Check group 6: tmux runtime
+// Check group 6: Broker (PTY daemon)
 // ---------------------------------------------------------------------------
 
-function checkTmuxRuntime(): CheckResult[] {
+async function checkBroker(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
 
-  // list sessions
-  try {
-    const out = execFileSync("tmux", ["list-sessions"], {
-      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const count = out ? out.split("\n").length : 0;
+  // Binary location: ~/.wolfpack/bin/wolfpack-broker (preferred) or co-located
+  // with the main binary.
+  const candidates = [
+    join(WOLFPACK_DIR, "bin", "wolfpack-broker"),
+    join(WOLFPACK_DIR, "wolfpack-broker"),
+  ];
+  const found = candidates.find((p) => existsSync(p));
+  if (found) {
     results.push({
-      name: "tmux sessions", group: "tmux Runtime", status: "pass",
-      detail: `${count} active`,
+      name: "broker binary", group: "Broker", status: "pass", detail: found,
     });
-  } catch {
+  } else {
     results.push({
-      name: "tmux sessions", group: "tmux Runtime", status: "pass",
-      detail: "no sessions (server not running)",
+      name: "broker binary", group: "Broker", status: "fail",
+      detail: "not found in ~/.wolfpack/bin",
+      fixHint: "bun run scripts/build.ts (requires rust toolchain)",
     });
   }
 
-  // create + kill throwaway — unique name avoids clobbering existing sessions
-  const testSession = `_wolfpack_doctor_${Date.now()}`;
-  try {
-    execFileSync("tmux", ["new-session", "-d", "-s", testSession], { stdio: "ignore" });
-    execFileSync("tmux", ["kill-session", "-t", testSession], { stdio: "ignore" });
-    results.push({ name: "tmux create/destroy", group: "tmux Runtime", status: "pass", detail: "ok" });
-  } catch {
+  // Socket: open it, send list_sessions, expect status === "ok" within 1s.
+  const socketPath = join(WOLFPACK_DIR, "broker.sock");
+  if (!existsSync(socketPath)) {
+    const fix = found ? () => kickstartBroker() : undefined;
     results.push({
-      name: "tmux create/destroy", group: "tmux Runtime", status: "fail",
-      detail: "failed to create test session",
+      name: "broker socket", group: "Broker",
+      status: found ? "fail" : "warn",
+      detail: found ? "binary present but no socket — daemon not running" : "no socket — daemon not running",
+      fixHint: found ? (IS_MACOS ? "launchctl kickstart gui/$(id -u)/com.wolfpack.broker" : "systemctl --user start wolfpack-broker") : undefined,
+      fix,
     });
-    // cleanup in case creation succeeded but kill failed
-    try { execFileSync("tmux", ["kill-session", "-t", testSession], { stdio: "ignore" }); } catch { /* noop */ }
+    return results;
+  }
+
+  // Probe handshake.
+  const handshake = await brokerHandshake(socketPath, 1000);
+  if (handshake.ok) {
+    results.push({
+      name: "broker handshake", group: "Broker", status: "pass",
+      detail: `list_sessions ok (${handshake.elapsedMs}ms)`,
+    });
+  } else {
+    results.push({
+      name: "broker handshake", group: "Broker", status: "fail",
+      detail: handshake.reason ?? "no response",
+      fixHint: IS_MACOS ? "launchctl kickstart gui/$(id -u)/com.wolfpack.broker" : "systemctl --user restart wolfpack-broker",
+      fix: found ? () => kickstartBroker() : undefined,
+    });
   }
 
   return results;
+}
+
+/** Speak the broker's framed-JSON RPC just enough to verify list_sessions
+ *  returns `{ status: "ok" }`. Wire format mirrors src/broker/codec.ts:
+ *  `[1 byte kind][4 bytes BE length][payload]`. CONTROL_REQUEST kind = 0x01,
+ *  CONTROL_RESPONSE kind = 0x02. */
+function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: boolean; elapsedMs: number; reason?: string }> {
+  return new Promise((resolve) => {
+    const FRAME_KIND_CONTROL_REQUEST = 0x01;
+    const FRAME_KIND_CONTROL_RESPONSE = 0x02;
+    const start = Date.now();
+    const sock = net.createConnection(socketPath);
+    let done = false;
+    let buf = Buffer.alloc(0);
+    const finish = (ok: boolean, reason?: string) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (e: unknown) { log.debug("broker probe destroy failed", { error: errMsg(e) }); }
+      resolve({ ok, elapsedMs: Date.now() - start, reason });
+    };
+    const timer = setTimeout(() => finish(false, `timed out after ${timeoutMs}ms`), timeoutMs);
+    sock.once("error", (e) => { clearTimeout(timer); finish(false, errMsg(e)); });
+    sock.once("connect", () => {
+      const payload = JSON.stringify({ id: 1, method: "list_sessions", params: {} });
+      const body = Buffer.from(payload, "utf-8");
+      const frame = Buffer.alloc(5 + body.length);
+      frame[0] = FRAME_KIND_CONTROL_REQUEST;
+      frame.writeUInt32BE(body.length, 1);
+      body.copy(frame, 5);
+      sock.write(frame);
+    });
+    sock.on("data", (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      // Frame: kind(1) + len(4) + payload(len). Read frames until we see a
+      // CONTROL_RESPONSE (skip async events that may interleave).
+      while (buf.length >= 5) {
+        const kind = buf[0];
+        const len = buf.readUInt32BE(1);
+        if (buf.length < 5 + len) return;
+        const payload = buf.subarray(5, 5 + len);
+        buf = buf.subarray(5 + len);
+        if (kind !== FRAME_KIND_CONTROL_RESPONSE) continue;
+        try {
+          const msg = JSON.parse(payload.toString("utf-8"));
+          clearTimeout(timer);
+          if (msg?.status === "ok") finish(true);
+          else finish(false, `broker replied status=${msg?.status}`);
+        } catch (e: unknown) {
+          clearTimeout(timer);
+          finish(false, `parse error: ${errMsg(e)}`);
+        }
+        return;
+      }
+    });
+  });
+}
+
+function kickstartBroker(): void {
+  if (IS_MACOS) {
+    execSync(`launchctl kickstart gui/$(id -u)/com.wolfpack.broker`);
+  } else if (IS_LINUX) {
+    execSync(`systemctl --user start wolfpack-broker`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,7 +584,7 @@ export async function doctor({ fix: doFix = process.argv.includes("--fix") } = {
     checkService,
     checkConnectivity,
     checkBinary,
-    checkTmuxRuntime,
+    checkBroker,
     checkEnvironment,
     checkLogs,
   ];

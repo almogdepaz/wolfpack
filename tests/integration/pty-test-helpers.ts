@@ -7,6 +7,7 @@
  */
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import type { MockBackend } from "../../src/server/mock-backend.ts";
 
 // ── Server setup ──
 
@@ -16,6 +17,9 @@ export interface PtyTestContext {
   server: Server;
   activePtySessions: Map<string, any>;
   ptySpawnAttempts: Map<string, number>;
+  /** The MockBackend injected as the session backend — tests use this to
+   *  toggle isSessionAlive() to simulate broker spawn-failure scenarios. */
+  mockBackend: MockBackend;
   cleanup: () => void;
 }
 
@@ -31,7 +35,6 @@ export interface PtyTestContext {
 export async function bootTestServer(opts: {
   sessions: string[];
   capturePane?: (session: string) => Promise<string>;
-  backendType?: "tmux" | "pty";
 }): Promise<PtyTestContext> {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
@@ -45,7 +48,7 @@ export async function bootTestServer(opts: {
     sessions: opts.sessions,
     capturePane: opts.capturePane,
   });
-  __setTestBackend(mock, opts.backendType ?? "tmux");
+  __setTestBackend(mock);
 
   const { server } = createServerInstance();
 
@@ -68,6 +71,7 @@ export async function bootTestServer(opts: {
     server,
     activePtySessions,
     ptySpawnAttempts,
+    mockBackend: mock,
     cleanup: () => {
       console.error = realConsoleError;
       server.close();

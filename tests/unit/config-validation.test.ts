@@ -11,7 +11,6 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: "box.tail123.ts.net",
-      backend: undefined,
     });
   });
 
@@ -24,7 +23,6 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: "box.tail123.ts.net",
-      backend: undefined,
     });
   });
 
@@ -36,46 +34,18 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
-      backend: undefined,
     });
   });
 
-  test("accepts backend 'pty'", () => {
+  test("strips unknown fields like legacy 'backend'", () => {
     expect(parseConfig({
       devDir: "/Users/home/Dev",
       port: 18790,
-      backend: "pty",
+      backend: "broker",  // ignored — not part of Config any longer
     })).toEqual({
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
-      backend: "pty",
-    });
-  });
-
-  test("accepts backend 'tmux'", () => {
-    expect(parseConfig({
-      devDir: "/Users/home/Dev",
-      port: 18790,
-      backend: "tmux",
-    })).toEqual({
-      devDir: "/Users/home/Dev",
-      port: 18790,
-      tailscaleHostname: undefined,
-      backend: "tmux",
-    });
-  });
-
-  test("ignores invalid backend values", () => {
-    expect(parseConfig({
-      devDir: "/Users/home/Dev",
-      port: 18790,
-      backend: "invalid",
-    })).toEqual({
-      devDir: "/Users/home/Dev",
-      port: 18790,
-      tailscaleHostname: undefined,
-      backend: undefined,
     });
   });
 
@@ -109,7 +79,6 @@ describe("loadConfigFromText", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: undefined,
-      backend: undefined,
     });
   });
 

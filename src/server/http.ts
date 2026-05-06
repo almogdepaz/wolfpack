@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { assets } from "../public-assets.js";
-import { exec } from "./tmux.js";
+import { exec } from "./shell.js";
 import { getBackend } from "./backend.js";
 import { createLogger } from "../log.js";
 

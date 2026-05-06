@@ -403,15 +403,13 @@ describe("POST /api/kill", () => {
 });
 
 describe("GET /api/backend", () => {
-  test("returns backend state", async () => {
+  test("returns broker availability and session counts", async () => {
     const res = await get("/api/backend");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.default).toBeDefined();
-    expect(typeof data.tmuxAvailable).toBe("boolean");
+    expect(typeof data.brokerAvailable).toBe("boolean");
     expect(typeof data.counts).toBe("object");
-    expect(typeof data.counts.pty).toBe("number");
-    expect(typeof data.counts.tmux).toBe("number");
+    expect(typeof data.counts.broker).toBe("number");
   });
 });
 

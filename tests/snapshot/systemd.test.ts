@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderSystemdUnit } from "../../src/cli/service.ts";
+import { renderSystemdUnit, renderBrokerSystemdUnit } from "../../src/cli/service.ts";
 
 const DEFAULT_CONFIG = { devDir: "/home/user/Dev", port: 18790 };
 const DEFAULT_ARGS = ["/usr/bin/bun", "/home/user/Dev/wolfpack/cli.ts"];
@@ -32,5 +32,21 @@ describe("renderSystemdUnit", () => {
     );
     expect(unit).toContain('Environment="WOLFPACK_DEV_DIR=/home/user/\\"projects\\""');
     expect(unit).toContain('ExecStart="/usr/bin/bun" "/home/user/\\"special\\"/cli.ts"');
+  });
+
+  test("declares broker as a hard dependency for systemd start ordering", () => {
+    const unit = renderSystemdUnit(DEFAULT_CONFIG, DEFAULT_ARGS);
+    expect(unit).toContain("Requires=wolfpack-broker.service");
+    expect(unit).toContain("After=network.target wolfpack-broker.service");
+  });
+});
+
+describe("renderBrokerSystemdUnit", () => {
+  test("emits a Type=simple unit for the broker binary with Restart=always", () => {
+    const unit = renderBrokerSystemdUnit("/home/user/.wolfpack/bin/wolfpack-broker");
+    expect(unit).toContain("Description=Wolfpack PTY broker daemon");
+    expect(unit).toContain('ExecStart="/home/user/.wolfpack/bin/wolfpack-broker"');
+    expect(unit).toContain("Type=simple");
+    expect(unit).toContain("Restart=always");
   });
 });

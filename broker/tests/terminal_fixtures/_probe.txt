@@ -1,0 +1,1 @@
+retained: Write-tool encoding probe artifact left over from authoring this fixture set; no test consumes this file. Safe to delete.

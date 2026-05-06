@@ -14,8 +14,8 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import pkg from "../../package.json";
 import { validateRequestJwt } from "../auth.js";
-import { SHELL } from "./tmux.js";
-import { initBackend, getBackend, type BackendType } from "./backend.js";
+import { SHELL } from "./shell.js";
+import { initBackend, getBackend, getRouter } from "./backend.js";
 import { routes } from "./routes.js";
 import {
   json,
@@ -223,12 +223,25 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 // Module-level singleton for production
 const { server, wss } = createServerInstance();
 
-export function startServer(port = PORT, host = "127.0.0.1"): void {
-  // Initialize session backend from env (set by CLI) or default
-  const raw = process.env.WOLFPACK_BACKEND;
-  const backendType = (raw === "pty" || raw === "tmux") ? raw : undefined;
-  initBackend(backendType);
-  log.info("backend initialized", { type: backendType ?? "default" });
+export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void> {
+  // Initialize session backend (broker is the only supported backend; the
+  // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
+  initBackend();
+  log.info("backend initialized", { type: "broker" });
+
+  // Verify the broker handshake before listening so we surface a clear error
+  // before any session-create requests land. The router has already done a
+  // sync socket-file probe; this catches the case where the file exists but
+  // the daemon is dead or unresponsive.
+  const router = getRouter();
+  if (router.isBrokerAvailable()) {
+    const ok = await router.verifyBrokerHandshake();
+    if (!ok) {
+      log.error("broker unreachable", { socketPath: router.getBrokerSocketPath() });
+    } else {
+      log.info("broker reachable", { socketPath: router.getBrokerSocketPath() });
+    }
+  }
 
   getBackend().cleanupOrphans();
 
@@ -253,5 +266,8 @@ export { server, wss };
 
 // Auto-start unless in test mode
 if (!process.env.WOLFPACK_TEST) {
-  startServer();
+  startServer().catch((err: unknown) => {
+    log.error("server start failed", { error: err instanceof Error ? err.message : String(err) });
+    process.exit(1);
+  });
 }

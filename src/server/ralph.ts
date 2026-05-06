@@ -11,7 +11,7 @@ import {
 import { createLogger, errMsg } from "../log.js";
 import { join, normalize, isAbsolute } from "node:path";
 import { countTasksInContent, validatePlanFormat } from "../wolfpack-context.js";
-import { DEV_DIR } from "./tmux.js";
+import { DEV_DIR } from "./dev-dir.js";
 
 const log = createLogger("ralph");
 

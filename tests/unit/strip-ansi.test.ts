@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { stripAnsi } from "../../src/server/pty-backend";
+import { stripAnsi } from "../../src/server/strip-ansi";
 
 describe("stripAnsi", () => {
   test("strips basic ANSI color codes", () => {

@@ -38,12 +38,8 @@ import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, valid
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
-import {
-  DEV_DIR,
-  RALPH_AGENTS,
-  isUnderDevDir,
-  exec,
-} from "./tmux.js";
+import { DEV_DIR, isUnderDevDir } from "./dev-dir.js";
+import { RALPH_AGENTS, exec } from "./shell.js";
 import { getBackend, getRouter } from "./backend.js";
 import {
   listDevProjects,
@@ -283,8 +279,7 @@ export const routes: Record<
           triage = "idle";
         }
 
-        const backend = getRouter().getBackendTypeForSession(name);
-        return { name, lastLine, triage, backend };
+        return { name, lastLine, triage };
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
@@ -399,8 +394,7 @@ export const routes: Record<
     const router = getRouter();
     const counts = await router.getSessionCounts();
     json(res, {
-      default: router.getDefaultBackend(),
-      tmuxAvailable: router.isTmuxAvailable(),
+      brokerAvailable: router.isBrokerAvailable(),
       counts,
     });
   },
@@ -441,6 +435,30 @@ export const routes: Record<
     const result = await discoverPeers();
     if (result.error) return json(res, { peers: [], error: result.error });
     json(res, { peers: result.peers });
+  },
+
+  "GET /api/poll": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const pane = await getBackend().capturePane(session);
+    json(res, { pane });
+  },
+
+  "GET /api/copy-text": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session param" }, 400);
+    if (!(await isAllowedSession(session)))
+      return json(res, { error: "session not found" }, 404);
+    const text = await getBackend().capturePane(session);
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(text);
   },
 
   "GET /api/git-status": async (req, res) => {
@@ -506,7 +524,10 @@ export const routes: Record<
 
     const allLoops = [...localLoops, ...peerResults.flat()];
     json(res, { loops: allLoops });
-    checkRalphLoopTransitions(allLoops);
+    // Only fire transitions for LOCAL loops — each peer machine runs its own
+    // /api/ralph poll and fires transitions for its own loops, so feeding
+    // peer loops here would double-notify (once per peer per machine).
+    checkRalphLoopTransitions(localLoops);
   },
 
   "GET /api/ralph/branches": async (req, res) => {

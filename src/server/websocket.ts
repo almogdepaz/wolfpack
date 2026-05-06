@@ -1,5 +1,5 @@
 /**
- * WebSocket handlers — PTY (ghostty-web WASM direct).
+ * WebSocket handlers — PTY (ghostty-web WASM) + classic terminal (text polling).
  *
  * Backend-agnostic: works with both TmuxBackend (spawns `tmux attach-session`)
  * and PtyBackend (pipes WS directly to session terminal I/O).
@@ -15,15 +15,10 @@ import {
   CLOSE_CODE_DISPLACED,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
-import {
-  TMUX,
-  DESKTOP_PREFILL_HISTORY_LINES,
-  exec,
-} from "./tmux.js";
-import { getBackend, getBackendTypeForSession, getRouter } from "./backend.js";
+import { getBackend, getRouter } from "./backend.js";
+import type { SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
-import { stripLeadingPartialEscape } from "./strip-ansi.js";
 
 const log = createLogger("ws");
 
@@ -35,29 +30,18 @@ export const activePtySessions = new Map<string, {
   proc: ReturnType<typeof Bun.spawn> | null;
   alive: boolean;
   unsubscribe?: (() => void) | null;
+  unsubscribeLifecycle?: (() => void) | null;
 }>();
 
 const ptySpawnAttempts = new Map<string, number>();
-
-// Per-session peak viewport size. Tmux scrollback bakes the pane width of the
-// moment it was written; shrinking later (e.g. a phone taking control of a
-// session that was desktop-sized) corrupts the history column alignment. Keep
-// resize requests monotonic — never shrink below the largest size seen.
-const sessionPeakSize = new Map<string, { cols: number; rows: number }>();
-
-function clampToPeak(session: string, cols: number, rows: number): { cols: number; rows: number } {
-  const prev = sessionPeakSize.get(session);
-  const peakCols = prev ? Math.max(prev.cols, cols) : cols;
-  const peakRows = prev ? Math.max(prev.rows, rows) : rows;
-  sessionPeakSize.set(session, { cols: peakCols, rows: peakRows });
-  return { cols: peakCols, rows: peakRows };
-}
 
 // ── Constants ──
 const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
 const PREFILL_CHUNK_SIZE = 32 * 1024;
 const PREFILL_CHUNK_DELAY_MS = 8;
 const PREFILL_OVERLAP_LIMIT = 32 * 1024;
+const POLL_INTERVAL_MS = 50;
+const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
 const RATE_LIMIT_PER_SEC = 60;
@@ -142,17 +126,20 @@ export function __getTestState(): {
   return { activePtySessions, ptySpawnAttempts, sendPrefillChunked, PREFILL_CHUNK_SIZE };
 }
 
-// ── PTY WS handler (ghostty-web WASM direct) ──
+// ── Classic terminal WS handler (text polling for mobile) ──
 
 export function teardownPty(session: string): void {
   const entry = activePtySessions.get(session);
   if (!entry) return;
   entry.alive = false;
   activePtySessions.delete(session);
-  sessionPeakSize.delete(session);
   if (entry.unsubscribe) {
     entry.unsubscribe();
     entry.unsubscribe = null;
+  }
+  if (entry.unsubscribeLifecycle) {
+    entry.unsubscribeLifecycle();
+    entry.unsubscribeLifecycle = null;
   }
   if (entry.viewer) {
     try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
@@ -192,6 +179,10 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
       if (existing.unsubscribe) {
         existing.unsubscribe();
         existing.unsubscribe = null;
+      }
+      if (existing.unsubscribeLifecycle) {
+        existing.unsubscribeLifecycle();
+        existing.unsubscribeLifecycle = null;
       }
       const oldProc = existing.proc;
       existing.alive = false;
@@ -293,6 +284,7 @@ function setupNewPtyEntry(
     proc: null as ReturnType<typeof Bun.spawn> | null,
     alive: true,
     unsubscribe: null as (() => void) | null,
+    unsubscribeLifecycle: null as (() => void) | null,
   };
   activePtySessions.set(session, entry as any);
   let spawning = false;
@@ -301,10 +293,22 @@ function setupNewPtyEntry(
   type PrefillMode = typeof VALID_PREFILL_MODES[number];
   let pendingPrefillMode: PrefillMode = "full";
 
-  const backendType = getBackendTypeForSession(session);
+  // Streaming attach path: snapshot prefill + subscribe to broker output stream.
+  const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
+    getRouter().getStreamingBackendForSession(session);
 
-  // ── PTY backend: attach WS directly to session's terminal I/O ──
-  async function attachPtyBackend(
+  if (!streamingBackend) {
+    log.warn("ws attach: streaming backend unavailable", { session });
+    try { ws.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) {
+      log.debug("streaming backend missing close failed", { session, error: errMsg(e) });
+    }
+    activePtySessions.delete(session);
+    return;
+  }
+
+  // ── Snapshot + subscribe attach path (PTY backend in-process, broker over RPC) ──
+  async function attachStreamingBackend(
+    backend: SessionBackend & PtyBackendMethods,
     cols: number,
     rows: number,
     options?: { prefillMode?: PrefillMode },
@@ -318,9 +322,7 @@ function setupNewPtyEntry(
     }
 
     try {
-      const ptyBackend = getRouter().getPtyBackend();
-
-      if (!ptyBackend.isSessionAlive(session)) {
+      if (!backend.isSessionAlive(session)) {
         entry.alive = false;
         activePtySessions.delete(session);
         if (entry.viewer) {
@@ -332,23 +334,41 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Send prefill from ring buffer (snapshot BEFORE resize so content is stable)
+      // Resize FIRST so the snapshot below reflects the client's actual cols.
+      // SIGWINCH-triggered redraws that land before snapshot are embedded in it;
+      // redraws that land after snapshot have seq > prefillSeq and are replayed
+      // by the sinceSeq subscribe below — no gap, no double-paint.
+      let appliedSize = { cols, rows };
+      await backend.resize(session, appliedSize.cols, appliedSize.rows);
+
+      // A resize can arrive while attach is still spawning/prefilling. Apply
+      // the newest requested dimensions before snapshot so the prefill is
+      // rendered for the client's committed layout, not the initial attach size.
+      if (
+        latestRequestedSize &&
+        (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
+      ) {
+        appliedSize = latestRequestedSize;
+        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      }
+
+      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Snapshot AFTER resize so scrollback is reflowed to client cols.
+      let prefillSeq: bigint | undefined;
       if (prefillMode !== "none") {
-        const prefill = ptyBackend.getSessionPrefill(session);
-        if (prefill.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
+        const prefill = await backend.getSessionPrefill(session, appliedSize.cols);
+        prefillSeq = prefill.seq;
+        if (prefill.data.length > 0 && entry.viewer && entry.viewer.readyState === 1) {
           let sendBuf: Buffer;
-          if (prefill.length > DESKTOP_PREFILL_MAX_BYTES) {
-            let start = prefill.length - DESKTOP_PREFILL_MAX_BYTES;
-            while (start < prefill.length && prefill[start] !== 0x0a) start++;
-            if (start < prefill.length) start++;
-            sendBuf = stripLeadingPartialEscape(prefill.subarray(start));
+          if (prefill.data.length > DESKTOP_PREFILL_MAX_BYTES) {
+            let start = prefill.data.length - DESKTOP_PREFILL_MAX_BYTES;
+            while (start < prefill.data.length && prefill.data[start] !== 0x0a) start++;
+            if (start < prefill.data.length) start++;
+            sendBuf = prefill.data.subarray(start);
           } else {
-            sendBuf = stripLeadingPartialEscape(prefill);
+            sendBuf = prefill.data;
           }
-          // Reset SGR/cursor state before prefill — discarded ring buffer bytes
-          // may have set attributes (bold, color) with no matching reset.
-          const reset = Buffer.from("\x1b[0m\x1b[?25h");
-          sendBuf = Buffer.concat([reset, sendBuf]);
 
           if (prefillMode === "viewport") {
             entry.viewer.send(sendBuf);
@@ -365,191 +385,81 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Subscribe to terminal output BEFORE resize — resize may trigger PTY
-      // redraw output that must be forwarded to the viewer immediately.
-      const unsub = ptyBackend.onSessionData(session, (data: Uint8Array) => {
+      // Final reconciliation catches resize frames that arrived while the
+      // snapshot bytes were being fetched/sent. Run BEFORE subscribing so any
+      // SIGWINCH-triggered redraws emitted by this resize land at seq >
+      // prefillSeq and are captured by the subscription's sinceSeq replay —
+      // not delivered at the old size to a viewer already rendering at the new.
+      if (
+        latestRequestedSize &&
+        (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
+      ) {
+        appliedSize = latestRequestedSize;
+        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+        if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+      }
+
+      // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
+      // (e.g. post-resize redraws) that arrived after the snapshot was taken.
+      const unsub = backend.onSessionData(session, (data: Uint8Array) => {
         if (!entry.alive) return;
         if (entry.viewer && entry.viewer.readyState === 1) {
           try { entry.viewer.send(data); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
         }
-      });
-      entry.unsubscribe = unsub;
-
-      // Resize to client dimensions — now that listener is attached, any
-      // redraw output from the PTY will be forwarded to the viewer.
-      await ptyBackend.resize(session, cols, rows);
-
-      sendPtyReady(entry);
-    } finally {
-      spawning = false;
-    }
-  }
-
-  // ── Tmux backend: spawn `tmux attach-session` as intermediate PTY ──
-  async function spawnTmuxPty(
-    cols: number,
-    rows: number,
-    options?: { prefillMode?: PrefillMode; skipPrefill?: boolean },
-  ) {
-    if (options?.prefillMode) pendingPrefillMode = options.prefillMode;
-    else if (options?.skipPrefill === true) pendingPrefillMode = "none";
-    latestRequestedSize = { cols, rows };
-    if (entry.proc || spawning) return;
-    spawning = true;
-    if (process.env.WOLFPACK_TEST) {
-      ptySpawnAttempts.set(session, (ptySpawnAttempts.get(session) || 0) + 1);
-    }
-    const prefillMode = pendingPrefillMode;
-    pendingPrefillMode = "full";
-    let prefill = Buffer.alloc(0);
-    let pendingAttach = Buffer.alloc(0);
-    let shouldDedupeInitialAttach = false;
-
-    try {
-      try {
-        await exec(TMUX, ["has-session", "-t", session], { timeout: 2000 });
-      } catch { /* expected: tmux session no longer exists */
+      }, { sinceSeq: prefillSeq });
+      if (!unsub) {
+        log.warn("onSessionData returned null — session vanished", { session });
         entry.alive = false;
         activePtySessions.delete(session);
         if (entry.viewer) {
-          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`session unavailable: viewer close failed`, { session, error: errMsg(e) }); }
+          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`onSessionData null: viewer close failed`, { session, error: errMsg(e) }); }
           entry.viewer = null;
         }
         return;
       }
+      entry.unsubscribe = unsub;
 
-      // Override window-size so resize-window works
-      await exec(TMUX, ["set-option", "-t", session, "window-size", "latest"], { timeout: 2000 }).catch((e: unknown) => {
-        log.debug(`tmux set-option window-size failed`, { session, error: errMsg(e) });
-      });
-
-      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
-
-      // Two-phase prefill:
-      // Phase 1 (viewport): Send visible pane content for instant display.
-      // Phase 2 (full only): Send full scrollback history.
-      if (prefillMode !== "none") {
-        // Phase 1: Viewport-only capture (no -S flag = visible pane only)
-        try {
-          const { stdout: viewportStdout } = await exec(TMUX, [
-            "capture-pane", "-t", session, "-p", "-e",
-          ], { timeout: 3000 });
-          if (viewportStdout && entry.viewer && entry.viewer.readyState === 1) {
-            const viewportBuf = Buffer.from(viewportStdout);
-            entry.viewer.send(viewportBuf);
-            entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
-            prefill = viewportBuf;
-            shouldDedupeInitialAttach = true;
-          }
-        } catch (e: unknown) {
-          log.warn("PTY viewport prefill capture failed", { session, error: errMsg(e) });
+      // Lifecycle: broker fires `session_exited` when the child reaps.
+      // Close the viewer with 4001 so the client distinguishes a remote-side
+      // session death from a normal disconnect. PtyBackend's stub no-ops.
+      const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
+        if (event.kind !== "exited") return;
+        if (!entry.alive) return;
+        entry.alive = false;
+        if (activePtySessions.get(session) === entry) {
+          activePtySessions.delete(session);
         }
-
-        // Phase 2: Full scrollback (only if prefillMode === "full")
-        if (prefillMode === "full" && entry.alive && entry.viewer && entry.viewer.readyState === 1) {
-          let phase2Completed = false;
-          try {
-            const { stdout } = await exec(TMUX, [
-              "capture-pane", "-t", session, "-p", "-e", "-S", `-${DESKTOP_PREFILL_HISTORY_LINES}`,
-            ], { timeout: 3000 });
-            if (stdout && entry.viewer && entry.viewer.readyState === 1) {
-              const rawPrefill = Buffer.from(stdout);
-              let fullPrefill: Buffer;
-              if (rawPrefill.length > DESKTOP_PREFILL_MAX_BYTES) {
-                let start = rawPrefill.length - DESKTOP_PREFILL_MAX_BYTES;
-                while (start < rawPrefill.length && rawPrefill[start] !== 0x0a) start++;
-                if (start < rawPrefill.length) start++;
-                fullPrefill = rawPrefill.subarray(start);
-              } else {
-                fullPrefill = rawPrefill;
-              }
-              try {
-                phase2Completed = await sendPrefillChunked(entry, fullPrefill, session);
-                if (phase2Completed) prefill = fullPrefill;
-              } catch (e: unknown) {
-                log.error("PTY scrollback prefill send failed", { session, error: errMsg(e) });
-              }
-            }
-          } catch (e: unknown) {
-            log.warn("PTY scrollback prefill capture failed", { session, error: errMsg(e) });
-          }
-          if (!phase2Completed) sendPrefillDone(entry);
-        } else if (prefillMode !== "full") {
-          if (!sendPrefillDone(entry)) {
-            log.debug("PTY viewport-only prefill_done not sent (WS closed)", { session });
-          }
+        if (entry.unsubscribe) {
+          try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`lifecycle exit: data unsub failed`, { session, error: errMsg(e) }); }
+          entry.unsubscribe = null;
         }
-      }
-
-      if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
-
-      const initialSize = latestRequestedSize || { cols, rows };
-      const spawnedAt = Date.now();
-      // Re-enforce mouse on — heals sessions that were created with it off
-      // (e.g. by older wolfpack builds) so wheel scrollback works on attach.
-      await exec(TMUX, ["set-option", "-t", session, "mouse", "on"]).catch((e: unknown) => {
-        log.debug("attach: failed to re-enforce mouse option", { session, error: errMsg(e) });
-      });
-      entry.proc = Bun.spawn([TMUX, "attach-session", "-t", session], {
-        env: { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
-        terminal: {
-          cols: initialSize.cols,
-          rows: initialSize.rows,
-          data(_terminal: unknown, data: Uint8Array) {
-            if (!entry.alive) return;
-            if (shouldDedupeInitialAttach) {
-              pendingAttach = pendingAttach.length
-                ? Buffer.concat([pendingAttach, data])
-                : Buffer.from(data);
-              const next = __stripInitialPtyOverlap(prefill, pendingAttach);
-              if (next.awaitingMore) return;
-              shouldDedupeInitialAttach = false;
-              pendingAttach = Buffer.alloc(0);
-              data = next.data;
-              if (!data.length) return;
-            }
-            if (entry.viewer && entry.viewer.readyState === 1) {
-              try { entry.viewer.send(data); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
-            }
-          },
-          exit(_terminal: unknown, _code: number, _signal: string | null) {
-            if (!entry.alive) return;
-            entry.alive = false;
-            activePtySessions.delete(session);
-            const rapid = Date.now() - spawnedAt < RAPID_EXIT_THRESHOLD_MS;
-            const code = rapid ? CLOSE_CODE_SESSION_UNAVAILABLE : CLOSE_CODE_NORMAL;
-            const reason = rapid ? WS_CLOSE_REASONS.SESSION_UNAVAILABLE : WS_CLOSE_REASONS.PTY_EXITED;
-            if (entry.viewer) {
-              try { entry.viewer.close(code, reason); } catch (e: unknown) { log.debug(`pty exit: viewer close failed`, { session, error: errMsg(e) }); }
-              entry.viewer = null;
-            }
-            if (entry.pendingViewer) {
-              try { entry.pendingViewer.close(code, reason); } catch (e: unknown) { log.debug(`pty exit: pendingViewer close failed`, { session, error: errMsg(e) }); }
-              entry.pendingViewer = null;
-            }
-          },
+        // Don't invoke our own unsub here — broker drops the lifecycle set on
+        // exit anyway, and we're inside the callback. Just null the ref.
+        entry.unsubscribeLifecycle = null;
+        if (entry.viewer) {
+          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`lifecycle exit: viewer close failed`, { session, error: errMsg(e) }); }
+          entry.viewer = null;
+        }
+        if (entry.pendingViewer) {
+          try { entry.pendingViewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`lifecycle exit: pendingViewer close failed`, { session, error: errMsg(e) }); }
+          entry.pendingViewer = null;
         }
       });
-      activePtySessions.set(session, entry as any);
+      if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
+
       sendPtyReady(entry);
-      setTimeout(async () => {
-        if (!entry.alive || !entry.proc) return;
-        const latestSize = latestRequestedSize || initialSize;
-        try {
-          await exec(TMUX, ["set-option", "-t", session, "window-size", "latest"], { timeout: 2000 });
-          await exec(TMUX, ["resize-window", "-t", session, "-x", String(latestSize.cols), "-y", String(latestSize.rows)], { timeout: 2000 });
-        } catch (e: unknown) { log.debug(`post-spawn tmux resize failed`, { session, error: errMsg(e) }); }
-        try {
-          entry.proc.terminal!.resize(latestSize.cols, latestSize.rows);
-        } catch (e: unknown) { log.debug(`post-spawn terminal resize failed`, { session, error: errMsg(e) }); }
-      }, POST_SPAWN_RESIZE_DELAY_MS);
     } finally {
       spawning = false;
     }
   }
 
-  // Select spawn function based on backend
-  const spawnPty = backendType === "pty" ? attachPtyBackend : spawnTmuxPty;
+
+  // Backend-uniform spawn — both PTY and broker use attachStreamingBackend.
+  const spawnPty = (cols: number, rows: number, options?: { prefillMode?: PrefillMode; skipPrefill?: boolean }) => {
+    let prefillMode: PrefillMode | undefined = options?.prefillMode;
+    if (!prefillMode && options?.skipPrefill === true) prefillMode = "none";
+    return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
+  };
 
   const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -566,8 +476,8 @@ function setupNewPtyEntry(
           typeof msg.cols === "number" &&
           typeof msg.rows === "number"
         ) {
-          latestRequestedSize = clampToPeak(session, clampCols(msg.cols), clampRows(msg.rows));
-          const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
+          latestRequestedSize = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
+          const isAttached = !!entry.unsubscribe;
           if (!isAttached) {
             let prefillMode: PrefillMode = "full";
             if (typeof msg.prefillMode === "string" && VALID_PREFILL_MODES.includes(msg.prefillMode)) {
@@ -587,11 +497,10 @@ function setupNewPtyEntry(
             }
           }
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          const peak = clampToPeak(session, clampCols(msg.cols), clampRows(msg.rows));
-          const cols = peak.cols;
-          const rows = peak.rows;
+          const cols = clampCols(msg.cols);
+          const rows = clampRows(msg.rows);
           latestRequestedSize = { cols, rows };
-          const isAttached = backendType === "pty" ? !!entry.unsubscribe : !!entry.proc;
+          const isAttached = !!entry.unsubscribe;
           if (!isAttached) {
             spawnPty(cols, rows);
           } else {
@@ -599,30 +508,16 @@ function setupNewPtyEntry(
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
               if (!entry.alive) return;
-              if (backendType === "pty") {
-                // Direct resize via backend
-                getBackend().resize(session, cols, rows).catch((e: unknown) => {
-                  log.debug(`pty backend resize failed`, { session, error: errMsg(e) });
-                });
-              } else {
-                // Tmux: resize both the intermediate PTY and the tmux window
-                if (!entry.proc) return;
-                entry.proc.terminal!.resize(cols, rows);
-                exec(TMUX, ["set-option", "-t", session, "window-size", "latest"], { timeout: 2000 })
-                  .then(() => exec(TMUX, ["resize-window", "-t", session, "-x", String(cols), "-y", String(rows)], { timeout: 2000 }))
-                  .catch((e: unknown) => { log.debug(`tmux resize failed`, { session, error: errMsg(e) }); });
-              }
+              streamingBackend.resize(session, cols, rows).catch((e: unknown) => {
+                log.debug(`streaming backend resize failed`, { session, error: errMsg(e) });
+              });
             }, RESIZE_DEBOUNCE_MS);
           }
         }
       } else {
-        // Binary data — write to terminal
+        // Binary data — write to terminal via the streaming backend.
         if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;
-        if (backendType === "pty") {
-          getRouter().getPtyBackend().writeToTerminal(session, raw as Buffer);
-        } else if (entry.proc) {
-          entry.proc.terminal!.write(raw as Buffer);
-        }
+        streamingBackend.writeToTerminal(session, raw as Buffer);
       }
     } catch (e: unknown) {
       if (e instanceof SyntaxError) return;
@@ -652,7 +547,7 @@ function setupNewPtyEntry(
     if (typeof initialDims.prefillMode === "string" && VALID_PREFILL_MODES.includes(initialDims.prefillMode as PrefillMode)) {
       prefillMode = initialDims.prefillMode as PrefillMode;
     }
-    latestRequestedSize = clampToPeak(session, clampCols(initialDims.cols), clampRows(initialDims.rows));
+    latestRequestedSize = { cols: clampCols(initialDims.cols), rows: clampRows(initialDims.rows) };
     spawnPty(latestRequestedSize.cols, latestRequestedSize.rows, { prefillMode });
     if (entry.viewer && entry.viewer.readyState === 1) {
       try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`immediate attach_ack send failed`, { session, error: errMsg(e) }); }

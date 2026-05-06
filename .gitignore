@@ -26,3 +26,8 @@ PLAN*.md
 .wolfpack/
 public/.DS_Store
 .edc/
+broker/target/
+.playwright-mcp/
+.context/
+docs/broker-protocol.md
+docs/ralph-broker-plan.md
