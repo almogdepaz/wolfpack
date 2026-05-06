@@ -1,22 +1,25 @@
-use crate::protocol::{
-    methods, ControlRequest, ControlResponse, ErrorCode, ListSessionsParams, ProtocolError,
-    ResponsePayload,
-};
+use crate::protocol::{ControlRequest, ControlResponse};
 
-/// Routes a `ControlRequest` to a `ControlResponse`. The skeleton uses
-/// `StubRouter`; later checkpoints replace it with a session-aware router.
+/// Routes a `ControlRequest` to a `ControlResponse`. Implemented by
+/// [`crate::session_router::SessionRouter`] in production and by `StubRouter`
+/// in transport-only unit tests.
 pub trait Router: Send + Sync + 'static {
     fn handle(&self, req: ControlRequest) -> ControlResponse;
 }
 
-/// Skeleton router: implements only `list_sessions` (always empty) and reports
-/// every other known method as `unsupported`. Unknown methods produce
-/// `unknown_method`. Malformed envelopes for `list_sessions` produce
-/// `invalid_request`. Used to validate transport plumbing before session
-/// semantics land in checkpoint 3.
+#[cfg(test)]
+use crate::protocol::{
+    methods, ErrorCode, ListSessionsParams, ProtocolError, ResponsePayload,
+};
+
+/// Test-only router that exercises framing + dispatch without any session
+/// state. Implements `list_sessions` (always empty), reports every other known
+/// method as `unsupported`, and emits `unknown_method` for anything else.
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StubRouter;
 
+#[cfg(test)]
 impl Router for StubRouter {
     fn handle(&self, req: ControlRequest) -> ControlResponse {
         let id = req.id;
@@ -46,6 +49,7 @@ impl Router for StubRouter {
     }
 }
 
+#[cfg(test)]
 fn invalid_request(id: u64, msg: impl Into<String>) -> ControlResponse {
     ControlResponse::err(
         id,
@@ -56,12 +60,13 @@ fn invalid_request(id: u64, msg: impl Into<String>) -> ControlResponse {
     )
 }
 
+#[cfg(test)]
 fn unsupported(id: u64, method: &str) -> ControlResponse {
     ControlResponse::err(
         id,
         ProtocolError {
             code: ErrorCode::Unsupported,
-            message: format!("method {method} not implemented in broker skeleton"),
+            message: format!("method {method} not implemented in test stub router"),
         },
     )
 }

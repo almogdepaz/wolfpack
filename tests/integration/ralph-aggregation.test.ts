@@ -6,12 +6,13 @@ import type { AddressInfo } from "node:net";
 process.env.WOLFPACK_TEST = "1";
 
 const { createServerInstance } = await import("../../src/server/index.ts");
-const { __setTestOverrides } = await import("../../src/server/tmux.js");
+const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { server } = createServerInstance();
 
-// ── Fake tmux list (no real tmux needed) ──
-
-__setTestOverrides({ tmuxList: async () => [] });
+// Empty session list — this test only exercises peer aggregation, so the
+// local backend has nothing to contribute.
+__setTestBackend(new MockBackend({ sessions: [] }));
 
 // ── Fake peer server (simulates a remote wolfpack instance) ──
 

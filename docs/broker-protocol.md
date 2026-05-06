@@ -43,7 +43,10 @@ Every frame on the wire has a 5-byte header:
 - `kind`: frame kind discriminator (see table below).
 - `payload length`: number of payload bytes that follow, big-endian unsigned 32.
 - A receiver MUST reject any frame whose declared payload length exceeds
-  `MAX_FRAME_PAYLOAD` (16 MiB). This caps a misbehaving peer's blast radius.
+  `MAX_FRAME_PAYLOAD` (64 MiB). This caps a misbehaving peer's blast radius.
+  The cap was raised from the original 16 MiB once heavy TUI snapshots
+  (Claude with full scrollback + per-cell SGR) were observed to exceed
+  16 MiB on the wire.
 
 ### Frame kinds
 
@@ -397,7 +400,7 @@ long as deserializers default-fill unknown fields.
 ## Versioning
 
 - The crate exposes `wolfpack_broker::protocol::PROTOCOL_VERSION` (currently
-  `1`).
+  `2`).
 - Breaking changes (renaming methods, removing fields, changing frame layout,
   changing length-prefix encoding) bump the version.
 - Additive changes (new methods, new payload kinds, new optional fields, new

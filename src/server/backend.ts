@@ -285,6 +285,17 @@ export class BackendRouter implements SessionBackend {
   async cleanupOrphans(): Promise<void> {
     if (this.broker) await this.broker.cleanupOrphans();
   }
+
+  /** Test-only: inject a backend in place of the broker so getRouter() works
+   *  for routes that drill into broker-specific surfaces. Gated on
+   *  WOLFPACK_TEST so production callers can't hot-swap the broker. */
+  __setBrokerForTest(backend: SessionBackend & Partial<{ ingestEvent: (e: unknown) => void; onSessionLifecycle: (n: string, cb: (e: unknown) => void) => (() => void) | null }>): void {
+    if (!process.env.WOLFPACK_TEST) throw new Error("__setBrokerForTest() is only available in test mode");
+    // Cast through unknown — the test backends (MockBackend) implement enough
+    // of the BrokerBackend surface for streaming-attach paths via duck typing.
+    this.broker = backend as unknown as BrokerBackend;
+    this._brokerAvailable = true;
+  }
 }
 
 // ── Module-level singleton ──
@@ -328,6 +339,5 @@ export function __setTestBackend(backend: SessionBackend): void {
   // Construct router (skips broker startup under WOLFPACK_TEST), then inject
   // the mock as the broker backend so getRouter() works.
   _router = new BackendRouter();
-  (_router as any).broker = backend;
-  (_router as any)._brokerAvailable = true;
+  _router.__setBrokerForTest(backend);
 }

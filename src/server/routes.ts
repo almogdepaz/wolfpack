@@ -524,6 +524,9 @@ export const routes: Record<
 
     const allLoops = [...localLoops, ...peerResults.flat()];
     json(res, { loops: allLoops });
+    // Only fire transitions for LOCAL loops — each peer machine runs its own
+    // /api/ralph poll and fires transitions for its own loops, so feeding
+    // peer loops here would double-notify (once per peer per machine).
     checkRalphLoopTransitions(localLoops);
   },
 

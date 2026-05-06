@@ -1,5 +1,5 @@
 /**
- * BrokerBackend — SessionBackend implementation that delegates every PTY
+ * BrokerBackend - SessionBackend implementation that delegates every PTY
  * operation to the Rust broker via `BrokerClient` RPC.
  *
  * Identity bridging:
@@ -9,7 +9,7 @@
  *   and updated on `createSession` / `killSession`.
  *
  * capturePane is derived from the `snapshot` RPC by concatenating the
- * `ch` field of each StyledCell — the broker emulator already produces
+ * `ch` field of each StyledCell - the broker emulator already produces
  * graphemes, so no ANSI stripping is needed.
  *
  * send/sendKey/writeToTerminal go through the binary `input_binary` plane
@@ -29,6 +29,7 @@ import { SHELL, injectAgentContext } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import {
+  plainLine,
   renderSnapshotToAnsi,
   type SnapshotForRender,
 } from "../broker/snapshot-render.js";
@@ -37,7 +38,7 @@ const log = createLogger("broker-backend");
 
 const TRIAGE_CACHE_TTL_MS = 500;
 /** Cap on scrollback lines requested per `snapshot` RPC. Heavy TUI sessions
- *  (Claude, etc.) empirically blew past 16MB on 2000 lines — JSON-encoded
+ *  (Claude, etc.) empirically blew past 16MB on 2000 lines - JSON-encoded
  *  cells with full attrs run much larger than the rough 30B/cell estimate.
  *  500 lines keeps frames comfortably small while still giving useful context;
  *  the codec cap was also bumped to 64MB for defense-in-depth. */
@@ -136,21 +137,10 @@ function unwrap(resp: ControlResponse): Record<string, unknown> {
   throw new BrokerRpcError(code, msg);
 }
 
-function renderLine(line: StyledLine): string {
-  if (!line.cells || line.cells.length === 0) return "";
-  let out = "";
-  for (const c of line.cells) out += c.ch ?? "";
-  // Trim trailing pad-space columns so plain-text consumers don't see a
-  // wall of right-padding for short lines. Char class contains both ASCII
-  // space (U+0020) and NBSP (U+00A0) — the broker's VT emulator emits NBSP
-  // for hard-spaced cells in some TUI redraws.
-  return out.replace(/[  ]+$/, "");
-}
-
 function renderSnapshot(snap: SnapshotPayload): string {
   const lines: string[] = [];
-  for (const l of snap.scrollback ?? []) lines.push(renderLine(l));
-  for (const l of snap.visible_screen ?? []) lines.push(renderLine(l));
+  for (const l of snap.scrollback ?? []) lines.push(plainLine(l));
+  for (const l of snap.visible_screen ?? []) lines.push(plainLine(l));
   return lines.join("\n");
 }
 
@@ -261,7 +251,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     const id = await this.resolveId(name);
     if (!id) return;
     try {
-      // SIGHUP (1) — interactive bash ignores SIGTERM, but SIGHUP propagates to
+      // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
       // the foreground process group via the controlling PTY and reliably tears
       // down nested shells (e.g. `bash -lic /bin/zsh`).
       const resp = await this.client.request("kill_session", { session_id: id, signal: 1 });
@@ -360,7 +350,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
    * Register an output callback for a session. Refcounted per UUID: the first
    * subscriber issues a broker `subscribe` RPC, the last unsubscribe issues a
    * matching `unsubscribe`. Returns null if the session isn't in the local
-   * cache — caller is expected to have run `list()`/`createSession` first.
+   * cache - caller is expected to have run `list()`/`createSession` first.
    *
    * `sinceSeq` is forwarded to the broker `subscribe` RPC so bytes between
    * the snapshot and live-stream attach are replayed from the ring buffer,
@@ -395,7 +385,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     return () => {
       if (released) return;
       released = true;
-      try { unsubData(); } catch { /* swallow — sub teardown must not throw */ }
+      try { unsubData(); } catch { /* swallow - sub teardown must not throw */ }
       const r = this.subscriberRefs.get(id);
       if (!r) return;
       r.count--;
@@ -421,7 +411,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   /**
    * Fetch a fresh broker snapshot and render it to ANSI bytes for WS prefill.
    * Returns `{ data: empty, seq: undefined }` when the session is unknown or
-   * the broker rejects the snapshot — callers treat empty data as "no prefill".
+   * the broker rejects the snapshot - callers treat empty data as "no prefill".
    * `seq` is the broker output-stream byte offset at snapshot capture time;
    * pass it to `onSessionData` so the broker replays any bytes emitted between
    * snapshot and subscribe attach.
@@ -443,7 +433,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
 
   /**
    * Register a lifecycle callback for a session. Currently only "exited" fires.
-   * Returns null when the session is unknown to the local cache — caller must
+   * Returns null when the session is unknown to the local cache - caller must
    * have run `list()` / `createSession` first. Idempotent unsub.
    */
   onSessionLifecycle(name: string, cb: LifecycleSubscriber): (() => void) | null {
@@ -468,7 +458,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
 
   /**
    * Apply a broker event to local state. Wired by `BackendRouter` via
-   * `BrokerClient.onEvent`. Unknown event names are ignored — additive
+   * `BrokerClient.onEvent`. Unknown event names are ignored - additive
    * protocol changes must not crash the client (per docs/broker-protocol.md).
    */
   ingestEvent(event: EventBody): void {
@@ -517,7 +507,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
 
   /**
    * Issue a `snapshot` RPC capped at SNAPSHOT_SCROLLBACK_LINES. Returns
-   * `undefined` on transport error or non-ok response — callers treat that
+   * `undefined` on transport error or non-ok response - callers treat that
    * as "no snapshot available" and fall back to empty content.
    */
   private async fetchSnapshot(

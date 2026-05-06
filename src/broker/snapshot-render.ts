@@ -116,12 +116,17 @@ function sgrFor(attrs: CellAttrs): string {
   return `${CSI}${params.join(";")}m`;
 }
 
-function plainLine(line: StyledLine): string {
+/**
+ * Render one StyledLine to plain text with trailing pad-space columns
+ * trimmed. Char class includes both ASCII space (U+0020) and NBSP (U+00A0)
+ * — the broker's VT emulator emits NBSP for hard-spaced cells in some TUI
+ * redraws. Exported so other broker-side renderers can share one
+ * trim-and-flatten implementation.
+ */
+export function plainLine(line: StyledLine): string {
   if (!line.cells || line.cells.length === 0) return "";
   let out = "";
   for (const c of line.cells) out += c.ch ?? "";
-  // Strip trailing pad spaces (regular + non-breaking) so transcripts copied
-  // out of scrollback don't carry a wall of right-padding.
   return out.replace(/[  ]+$/, "");
 }
 
