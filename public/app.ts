@@ -983,6 +983,26 @@ function createPtyTerminalController(opts) {
       (state.sidebarTransitionIsHover || state.sidebarAutoExpanded);
   }
 
+  /**
+   * After a column-count change, the scrollback the client has on screen was
+   * painted from a prefill rendered at the OLD width — line wraps fall at
+   * the wrong columns. The broker reflows scrollback as part of its `resize`
+   * RPC + `snapshot` (with `target_cols`) path, but xterm.js exposes no
+   * "replace scrollback only" API; the only way to apply a re-flowed
+   * scrollback is a full reconnect that re-fetches the snapshot.
+   *
+   * Cost: ~ one snapshot RPC + prefill stream per actual resize event
+   * (350ms debounce collapses bursty resize-during-drag into one). Resizes
+   * are infrequent (sidebar pin/unpin, window drag, mobile rotate) so this
+   * is an acceptable price for correct scrollback wrap geometry.
+   *
+   * Gated on `prefillMode: "full"` because viewport-only attaches don't
+   * paint scrollback at all — there's nothing to re-flow.
+   *
+   * Suppressed while the sidebar is in a hover-driven transient state
+   * (`shouldSuppressContainerResize`) so a mouseover+mouseout doesn't
+   * trigger a reconnect for a layout that's about to revert.
+   */
   function scheduleResizeRehydrate() {
     if (opts.prefillMode !== "full") return;
     if (!_ptyClient || !_ptyClient.isOpen) return;

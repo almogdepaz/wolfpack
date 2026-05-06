@@ -169,6 +169,160 @@ describe("renderSnapshotToAnsi: cursor positioning", () => {
   });
 });
 
+describe("renderSnapshotToAnsi: alt-screen handling", () => {
+  test("omits CSI ?1049h when modes.alt_screen is unset/false", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("primary")],
+      scrollback: [row("history")],
+      cursor: { row: 0, col: 0 },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    expect(out.includes("\x1b[?1049h")).toBe(false);
+  });
+
+  test("emits CSI ?1049h after scrollback, before visible cells, when on alt screen", () => {
+    // Captured on alt: scrollback is the primary's history (painted first on
+    // primary), then we switch into alt and paint visible cells there.
+    const snap: SnapshotForRender = {
+      scrollback: [row("primary history line 1")],
+      visible_screen: [row("alt screen contents")],
+      cursor: { row: 0, col: 0 },
+      modes: { alt_screen: true },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    const idxScrollback = out.indexOf("primary history line 1");
+    const idxAltSwitch = out.indexOf("\x1b[?1049h");
+    const idxVisible = out.indexOf("alt screen contents");
+    expect(idxScrollback).toBeGreaterThanOrEqual(0);
+    expect(idxAltSwitch).toBeGreaterThan(idxScrollback);
+    expect(idxVisible).toBeGreaterThan(idxAltSwitch);
+  });
+
+  test("alt-screen snapshot with empty scrollback still switches to alt before painting", () => {
+    const snap: SnapshotForRender = {
+      scrollback: [],
+      visible_screen: [row("alt-only")],
+      cursor: { row: 0, col: 0 },
+      modes: { alt_screen: true },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    const idxAltSwitch = out.indexOf("\x1b[?1049h");
+    const idxVisible = out.indexOf("alt-only");
+    expect(idxAltSwitch).toBeGreaterThan(0);
+    expect(idxVisible).toBeGreaterThan(idxAltSwitch);
+  });
+});
+
+describe("renderSnapshotToAnsi: DEC mode preamble", () => {
+  test("omits all mode escapes when modes block is absent", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    // No application-cursor / mouse / bracketed-paste / keypad escapes.
+    expect(out.includes("\x1b[?1h")).toBe(false);
+    expect(out.includes("\x1b[?1000h")).toBe(false);
+    expect(out.includes("\x1b[?1006h")).toBe(false);
+    expect(out.includes("\x1b[?2004h")).toBe(false);
+    expect(out.includes("\x1b=")).toBe(false);
+  });
+
+  test("emits DECCKM (?1h) when application_cursor is true", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { application_cursor: true },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    const idxMode = out.indexOf("\x1b[?1h");
+    const idxCursor = out.indexOf("\x1b[1;1H");
+    expect(idxMode).toBeGreaterThan(0);
+    expect(idxCursor).toBeGreaterThan(idxMode);
+  });
+
+  test("emits bracketed-paste (?2004h) when bracketed_paste is true", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { bracketed_paste: true },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    expect(out.includes("\x1b[?2004h")).toBe(true);
+  });
+
+  test("emits SGR mouse pair (?1000h + ?1006h) when mouse_mode is sgr", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { mouse_mode: "sgr" },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    expect(out.includes("\x1b[?1000h")).toBe(true);
+    expect(out.includes("\x1b[?1006h")).toBe(true);
+  });
+
+  test("emits button-event mouse (?1002h) when mouse_mode is button_event", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { mouse_mode: "button_event" },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    expect(out.includes("\x1b[?1002h")).toBe(true);
+    // Should not redundantly emit ?1000h or ?1006h.
+    expect(out.includes("\x1b[?1000h")).toBe(false);
+    expect(out.includes("\x1b[?1006h")).toBe(false);
+  });
+
+  test("emits application-keypad (ESC =) when application_keypad is true", () => {
+    const snap: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { application_keypad: true },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    expect(out.includes("\x1b=")).toBe(true);
+  });
+
+  test("emits CSI ?7l only when auto_wrap is explicitly false (default-true is silent)", () => {
+    const enabled: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { auto_wrap: true },
+    };
+    expect(decode(renderSnapshotToAnsi(enabled)).includes("\x1b[?7l")).toBe(false);
+
+    const disabled: SnapshotForRender = {
+      visible_screen: [row("x")],
+      cursor: { row: 0, col: 0 },
+      modes: { auto_wrap: false },
+    };
+    expect(decode(renderSnapshotToAnsi(disabled)).includes("\x1b[?7l")).toBe(true);
+  });
+
+  test("mode preamble is emitted between visible cells and cursor positioning", () => {
+    // Origin mode affects cursor placement, so DECOM must be set BEFORE the
+    // final CUP. Mouse / paste / keypad don't affect rendering but must land
+    // before the cursor sequence too so they're stable when live bytes arrive.
+    const snap: SnapshotForRender = {
+      visible_screen: [row("hello")],
+      cursor: { row: 1, col: 2 },
+      modes: { origin_mode: true, bracketed_paste: true },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    const idxVisible = out.indexOf("hello");
+    const idxOrigin = out.indexOf("\x1b[?6h");
+    const idxPaste = out.indexOf("\x1b[?2004h");
+    const idxCursor = out.indexOf("\x1b[2;3H");
+    expect(idxVisible).toBeGreaterThan(0);
+    expect(idxOrigin).toBeGreaterThan(idxVisible);
+    expect(idxPaste).toBeGreaterThan(idxVisible);
+    expect(idxCursor).toBeGreaterThan(idxOrigin);
+    expect(idxCursor).toBeGreaterThan(idxPaste);
+  });
+});
+
 describe("renderSnapshotToAnsi: full fixture", () => {
   test("scrollback + styled visible + cursor reconstruction", () => {
     const snap: SnapshotForRender = {

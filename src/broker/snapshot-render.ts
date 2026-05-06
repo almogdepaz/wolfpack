@@ -6,10 +6,18 @@
  * the whole time. This module emits the byte stream that, when fed into a
  * fresh terminal emulator (xterm.js, VTE, etc.), reconstructs the snapshot:
  *
- *   1. clear visible + scrollback + reset SGR + cursor home
+ *   1. clear visible + scrollback + reset SGR + cursor home (on primary)
  *   2. scrollback as plain text (oldest first), one line per `\r\n`
- *   3. visible_screen with per-cell SGR transitions, lines separated by `\r\n`
- *   4. SGR reset, then explicit cursor positioning, then cursor visibility
+ *      — always painted on the primary screen because the broker emulator
+ *      only accumulates scrollback while NOT on alt screen, so this is the
+ *      primary's true history regardless of where the live cursor sits
+ *   3. if the snapshot was captured on alt screen, switch into alt with
+ *      `CSI ?1049h` BEFORE painting visible cells, so the alt buffer
+ *      contents land on the alt buffer (not on top of primary scrollback)
+ *   4. visible_screen with per-cell SGR transitions, lines separated by `\r\n`
+ *   5. SGR reset, mode preamble for non-default DEC modes (DECCKM, mouse,
+ *      bracketed paste, application keypad, auto-wrap, origin mode),
+ *      explicit cursor positioning, then cursor visibility
  *
  * Per-cell SGR is emitted only when the cell's attrs differ from the last
  * cell we rendered. Each transition is a full `CSI 0;…m` so the receiver
@@ -46,12 +54,30 @@ export interface CursorState {
   shape?: "block" | "underline" | "bar";
 }
 
+/** Mirror of `broker::protocol::TerminalModes`. All fields optional so
+ *  older snapshots without a `modes` block still render. `auto_wrap` defaults
+ *  to true on the wire (matches DECAWM default); other booleans default false. */
+export type MouseMode = "off" | "x10" | "vt200" | "button_event" | "any_event" | "sgr";
+
+export interface TerminalModes {
+  alt_screen?: boolean;
+  application_cursor?: boolean;
+  application_keypad?: boolean;
+  bracketed_paste?: boolean;
+  mouse_mode?: MouseMode;
+  origin_mode?: boolean;
+  /** DECAWM. Default true; emit `CSI ?7l` only when explicitly false. */
+  auto_wrap?: boolean;
+  insert_mode?: boolean;
+}
+
 export interface SnapshotForRender {
   cols?: number;
   rows?: number;
   visible_screen?: StyledLine[];
   scrollback?: StyledLine[];
   cursor?: CursorState;
+  modes?: TerminalModes;
 }
 
 const CSI = "\x1b[";
@@ -130,6 +156,39 @@ export function plainLine(line: StyledLine): string {
   return out.replace(/[  ]+$/, "");
 }
 
+/** Build the trailing DEC-mode preamble that brings the receiving emulator
+ *  into the same mode set the broker had at snapshot time. `alt_screen` is
+ *  handled separately upstream because it must be emitted BEFORE
+ *  visible_screen paints. Other modes don't affect rendering, only behavior
+ *  (arrow-key encoding, mouse reporting, paste delimiting) — still required
+ *  for reconnect to feel identical to a continuous attach. */
+function modePreamble(modes: TerminalModes | undefined): string {
+  if (!modes) return "";
+  const out: string[] = [];
+  // DECCKM — application cursor keys (vim/less/etc rely on this for arrows).
+  if (modes.application_cursor) out.push(`${CSI}?1h`);
+  // DECOM — origin mode.
+  if (modes.origin_mode) out.push(`${CSI}?6h`);
+  // DECAWM — default is on; only emit a disable if the broker had it off.
+  if (modes.auto_wrap === false) out.push(`${CSI}?7l`);
+  // Mouse reporting — each mode is mutually exclusive on the wire side, but
+  // SGR extended (1006) layers on top of any reporting mode.
+  switch (modes.mouse_mode) {
+    case "x10":          out.push(`${CSI}?9h`); break;
+    case "vt200":        out.push(`${CSI}?1000h`); break;
+    case "button_event": out.push(`${CSI}?1002h`); break;
+    case "any_event":    out.push(`${CSI}?1003h`); break;
+    case "sgr":          out.push(`${CSI}?1000h`, `${CSI}?1006h`); break;
+    default: break; // "off" or undefined
+  }
+  if (modes.bracketed_paste) out.push(`${CSI}?2004h`);
+  // Application keypad — ESC =, not a CSI.
+  if (modes.application_keypad) out.push("\x1b=");
+  // IRM — ANSI insert mode (CSI 4h, no `?`).
+  if (modes.insert_mode) out.push(`${CSI}4h`);
+  return out.join("");
+}
+
 /**
  * Render a broker snapshot to the byte sequence a terminal emulator can
  * replay to reach the same visual state. Output is a UTF-8 Buffer suitable
@@ -139,14 +198,24 @@ export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
   const parts: string[] = [];
   parts.push(CLEAR_AND_HOME);
 
-  // Scrollback as plain text — task spec: scrollback rendered as plain lines.
-  // Style fidelity for scrollback is intentionally dropped to keep the
-  // prefill payload bounded and reconnect-fast.
+  // Scrollback as plain text — always painted on the primary screen because
+  // the broker only accumulates scrollback while NOT on alt screen, so the
+  // bytes here represent the primary's true history. Style fidelity for
+  // scrollback is intentionally dropped to keep the prefill payload bounded.
   const scrollback = snap.scrollback ?? [];
   for (const line of scrollback) {
     parts.push(plainLine(line));
     parts.push("\r\n");
   }
+
+  // If the snapshot was captured on the alt screen, switch into alt BEFORE
+  // painting visible cells. CSI ?1049h saves the primary cursor and clears
+  // the alt buffer on entry, so the visible_screen contents land on a clean
+  // alt buffer instead of being painted on top of the primary scrollback.
+  // Without this, a TUI reconnect renders the alt buffer onto primary and
+  // the next SIGWINCH-triggered redraw produces visual confusion.
+  const onAlt = snap.modes?.alt_screen === true;
+  if (onAlt) parts.push(`${CSI}?1049h`);
 
   // Visible screen with per-cell SGR transitions.
   const visible = snap.visible_screen ?? [];
@@ -171,6 +240,13 @@ export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
 
   // Cap the styled run with a reset before we emit cursor controls.
   if (!inDefault) parts.push(SGR_RESET);
+
+  // Restore non-default DEC modes so subsequent live-stream bytes (arrow
+  // keys, mouse events, pastes) are interpreted the same way they would be
+  // on a continuous attach. Emitted AFTER visible-screen paint and BEFORE
+  // cursor position so a mode that affects cursor placement (origin mode)
+  // applies to the final CUP.
+  parts.push(modePreamble(snap.modes));
 
   // Position cursor (broker uses 0-based; CSI H is 1-based).
   const cur = snap.cursor;
