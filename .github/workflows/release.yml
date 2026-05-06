@@ -145,11 +145,19 @@ jobs:
         run: |
           # Include both the bun-compiled wolfpack binaries and the
           # rust-compiled broker binaries so users verifying a download
-          # have one canonical sha256 list per release.
+          # have one canonical sha256 list per release. Enumerate the
+          # exact set we upload so we don't accidentally include
+          # dist/wolfpack-broker (the host-arch staging copy used by
+          # deploy-local.sh, not a release asset).
           for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
             cp "broker/bun-${target}/wolfpack-broker" "wolfpack-broker-${target}"
           done
-          sha256sum wolfpack-* > checksums-sha256.txt
+          sha256sum \
+            wolfpack-linux-x64 wolfpack-linux-arm64 \
+            wolfpack-darwin-x64 wolfpack-darwin-arm64 \
+            wolfpack-broker-linux-x64 wolfpack-broker-linux-arm64 \
+            wolfpack-broker-darwin-x64 wolfpack-broker-darwin-arm64 \
+            > checksums-sha256.txt
       # TODO: add GitHub attestations (gh attestation) or code signing for release binaries
 
       - name: Create GitHub Release
