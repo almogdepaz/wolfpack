@@ -9,7 +9,98 @@ permissions:
   contents: write
 
 jobs:
+  # ── Broker cross-builds ────────────────────────────────────────────────
+  #
+  # The wolfpack-broker is a rust binary that owns every PTY session in
+  # production. It must ship in each platform npm package + each gh release
+  # asset. We split the build across two runners so each target builds with
+  # the cleanest available toolchain:
+  #
+  #   - macOS targets: native rustup target add on a darwin-arm64 runner.
+  #     `cargo build --target x86_64-apple-darwin` works without docker or
+  #     extra linkers because Apple's clang ships both arches.
+  #
+  #   - Linux targets: `cross` (https://github.com/cross-rs/cross). It
+  #     uses per-target docker images preconfigured with the right glibc /
+  #     gcc-cross / linker, which avoids the apt-get-gcc-aarch64-linux-gnu
+  #     dance and produces consistent binaries regardless of the runner's
+  #     base image.
+  #
+  # Both jobs publish their broker binaries as artifacts named after the
+  # bun-target the main `build` job uses (`broker-bun-<plat>-<arch>`).
+
+  broker-darwin:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build broker (darwin-arm64)
+        run: cargo build --release --manifest-path broker/Cargo.toml --target aarch64-apple-darwin --bin wolfpack-broker
+
+      - name: Build broker (darwin-x64)
+        run: cargo build --release --manifest-path broker/Cargo.toml --target x86_64-apple-darwin --bin wolfpack-broker
+
+      - name: Stage broker binaries
+        run: |
+          mkdir -p staging/bun-darwin-arm64 staging/bun-darwin-x64
+          cp broker/target/aarch64-apple-darwin/release/wolfpack-broker staging/bun-darwin-arm64/
+          cp broker/target/x86_64-apple-darwin/release/wolfpack-broker staging/bun-darwin-x64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: broker-bun-darwin-arm64
+          path: staging/bun-darwin-arm64/wolfpack-broker
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: broker-bun-darwin-x64
+          path: staging/bun-darwin-x64/wolfpack-broker
+          if-no-files-found: error
+
+  broker-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        # Pin to a known version so a future `cross` release that breaks
+        # something doesn't surprise us at tag-push time.
+        run: cargo install cross --version 0.2.5 --locked
+
+      - name: Build broker (linux-x64)
+        run: cross build --release --manifest-path broker/Cargo.toml --target x86_64-unknown-linux-gnu --bin wolfpack-broker
+
+      - name: Build broker (linux-arm64)
+        run: cross build --release --manifest-path broker/Cargo.toml --target aarch64-unknown-linux-gnu --bin wolfpack-broker
+
+      - name: Stage broker binaries
+        run: |
+          mkdir -p staging/bun-linux-x64 staging/bun-linux-arm64
+          cp broker/target/x86_64-unknown-linux-gnu/release/wolfpack-broker staging/bun-linux-x64/
+          cp broker/target/aarch64-unknown-linux-gnu/release/wolfpack-broker staging/bun-linux-arm64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: broker-bun-linux-x64
+          path: staging/bun-linux-x64/wolfpack-broker
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: broker-bun-linux-arm64
+          path: staging/bun-linux-arm64/wolfpack-broker
+          if-no-files-found: error
+
+  # ── Main build / package / publish ─────────────────────────────────────
   build:
+    needs: [broker-darwin, broker-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +112,44 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Download broker artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Each artifact lands at dist/broker/<name>/wolfpack-broker, which
+          # matches the layout scripts/build.ts looks for. The artifact names
+          # already start with "broker-" so we strip that prefix via pattern.
+          path: dist/broker
+          pattern: broker-*
+          merge-multiple: false
+
+      - name: Normalize broker artifact layout
+        # actions/download-artifact lays them out as
+        # `dist/broker/broker-bun-<target>/wolfpack-broker`. Strip the
+        # "broker-" prefix so they match scripts/build.ts's expected
+        # `dist/broker/bun-<target>/wolfpack-broker`.
+        run: |
+          set -e
+          cd dist/broker
+          for d in broker-*; do
+            [ -d "$d" ] || continue
+            mv "$d" "${d#broker-}"
+          done
+          ls -la
+          chmod +x bun-*/wolfpack-broker
+
       - name: Build all targets
         run: bun run scripts/build.ts
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum wolfpack-* > checksums-sha256.txt
+        run: |
+          # Include both the bun-compiled wolfpack binaries and the
+          # rust-compiled broker binaries so users verifying a download
+          # have one canonical sha256 list per release.
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            cp "broker/bun-${target}/wolfpack-broker" "wolfpack-broker-${target}"
+          done
+          sha256sum wolfpack-* > checksums-sha256.txt
       # TODO: add GitHub attestations (gh attestation) or code signing for release binaries
 
       - name: Create GitHub Release
@@ -38,6 +161,10 @@ jobs:
             dist/wolfpack-linux-arm64
             dist/wolfpack-darwin-x64
             dist/wolfpack-darwin-arm64
+            dist/wolfpack-broker-linux-x64
+            dist/wolfpack-broker-linux-arm64
+            dist/wolfpack-broker-darwin-x64
+            dist/wolfpack-broker-darwin-arm64
             dist/checksums-sha256.txt
 
       - name: Configure npm auth
