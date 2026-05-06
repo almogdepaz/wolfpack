@@ -21,11 +21,17 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # `--locked` makes cargo refuse to build when Cargo.lock would need
+      # updating, catching a stale lockfile (forgotten `cargo update`,
+      # hand-edited Cargo.toml without lock refresh, etc.) instead of
+      # silently drifting at build time. CI is the only place we enforce
+      # this; `bun run scripts/build.ts` in dev mode stays unlocked so
+      # local rebuilds Just Work.
       - name: Build wolfpack-broker (required by integration + e2e tests)
-        run: cargo build --release --manifest-path broker/Cargo.toml --bin wolfpack-broker
+        run: cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker
 
       - name: Run broker tests
-        run: cargo test --manifest-path broker/Cargo.toml --all
+        run: cargo test --locked --manifest-path broker/Cargo.toml --all
 
       - name: Audit dependencies
         run: |

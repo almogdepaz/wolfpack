@@ -38,11 +38,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # `--locked` ensures release builds use the exact dependency versions
+      # in Cargo.lock; if the lockfile is stale CI fails loudly instead of
+      # picking up a newer dep at tag-push time.
       - name: Build broker (darwin-arm64)
-        run: cargo build --release --manifest-path broker/Cargo.toml --target aarch64-apple-darwin --bin wolfpack-broker
+        run: cargo build --release --locked --manifest-path broker/Cargo.toml --target aarch64-apple-darwin --bin wolfpack-broker
 
       - name: Build broker (darwin-x64)
-        run: cargo build --release --manifest-path broker/Cargo.toml --target x86_64-apple-darwin --bin wolfpack-broker
+        run: cargo build --release --locked --manifest-path broker/Cargo.toml --target x86_64-apple-darwin --bin wolfpack-broker
 
       - name: Stage broker binaries
         run: |
@@ -74,11 +77,13 @@ jobs:
         # something doesn't surprise us at tag-push time.
         run: cargo install cross --version 0.2.5 --locked
 
+      # `--locked` for the same reason as the darwin job above. cross is
+      # a thin wrapper around cargo, so it passes the flag through.
       - name: Build broker (linux-x64)
-        run: cross build --release --manifest-path broker/Cargo.toml --target x86_64-unknown-linux-gnu --bin wolfpack-broker
+        run: cross build --release --locked --manifest-path broker/Cargo.toml --target x86_64-unknown-linux-gnu --bin wolfpack-broker
 
       - name: Build broker (linux-arm64)
-        run: cross build --release --manifest-path broker/Cargo.toml --target aarch64-unknown-linux-gnu --bin wolfpack-broker
+        run: cross build --release --locked --manifest-path broker/Cargo.toml --target aarch64-unknown-linux-gnu --bin wolfpack-broker
 
       - name: Stage broker binaries
         run: |
