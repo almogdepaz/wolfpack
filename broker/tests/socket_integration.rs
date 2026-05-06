@@ -1501,8 +1501,27 @@ async fn slow_consumer_receives_subscription_dropped_event() {
     .await
     .expect("write subscribe");
 
-    // With a 2-frame queue the pipeline backs up almost immediately.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The forwarder needs to be blocked long enough for the broadcast
+    // channel (cap = DEFAULT_BROADCAST_CAPACITY = 256) to overflow. The
+    // sequence:
+    //   1. forwarder pushes frames to writer_tx (cap=2)
+    //   2. writer task pushes them onto the unix-socket send buffer
+    //   3. slow consumer doesn't read → kernel send buffer fills (linux
+    //      default ~64–256 KB) → writer task blocks on socket write
+    //   4. writer_tx fills → forwarder blocks on send().await
+    //   5. broadcast keeps publishing for as long as the forwarder is
+    //      blocked; once 256 chunks have been published-and-dropped, the
+    //      next forwarder rx.recv() (after unblocking) will return Lagged
+    //
+    // 500 ms was empirically too tight on slower x86 linux CI runners:
+    // `yes` over a PTY produces ~10s of MB/s locally but a few MB/s on
+    // CI, so the broadcast didn't overflow within the window and the
+    // forwarder resumed cleanly without ever seeing Lagged. 3 s gives
+    // a comfortable safety margin (>=3 MB of dropped chunks at even 1
+    // MB/s) without making the test feel slow on healthy machines
+    // because we break out of the read loop as soon as we see
+    // SubscriptionDropped.
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Drain frames; the forwarder should have detected Lagged and enqueued
     // SubscriptionDropped once the pipeline had room again.
