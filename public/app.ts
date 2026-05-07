@@ -1190,12 +1190,10 @@ function createPtyTerminalController(opts) {
       _hydrationStarted = true;
     }
 
-    // If cached snapshot was written during mount(), replace the cached
-    // buffer with live data on first output (tmux attach redraws the pane).
-    if (_cachedLoaded && opts.prefillMode !== "full") {
-      _reconnectPendingReset = true;
-      _cachedLoaded = false;
-    }
+    // _cachedLoaded handling is now subsumed by onOpen, which unconditionally
+    // sets _reconnectPendingReset — first binary chunk triggers the deferred
+    // reset, replacing any cached snapshot in place.
+    if (_cachedLoaded) _cachedLoaded = false;
 
     // Capture reference to detect stale callbacks from replaced ptyClients
     let thisClient = null;
@@ -1213,26 +1211,22 @@ function createPtyTerminalController(opts) {
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
-        // Always reset on first connect — ghostty-web's WASM retains the
-        // previous terminal's screen buffer across Terminal instances.
-        // Without this, new sessions with sparse prefill show stale content.
-        // shouldRehydrate skips the reset for viewport prefill mode, but
-        // the WASM buffer must be cleared regardless.
-        if (!wasReconnect && _term) {
-          _term.reset();
+        // Defer terminal reset until first data arrives via onBinaryData →
+        // _scheduleBufferedClear (rAF gap between reset and write). ghostty-web's
+        // WASM crashes with "memory access out of bounds" if write() follows
+        // reset() in the same tick — a race that's intermittent on single-pane
+        // (one connect, one prefill RTT) but reliably triggers in grid mode where
+        // 4 cells handshake + flush prefill in the same task. Unifying first-connect
+        // and reconnect through the same deferred path eliminates the race class
+        // and also lets cached snapshots stay visible until live data replaces them.
+        if (_term) {
+          _reconnectPendingReset = true;
         }
-        // On reconnect, clear stale content and restart hydration —
-        // server sends fresh prefill scrollback on the new connection.
         const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "full");
         if (rehydrate && _term) {
           _hydrationWritesInFlight = 0;
-          if (wasReconnect) {
-            // Defer terminal reset until first data arrives — keeps old
-            // content visible so there's no blank flash during reconnect.
-            _reconnectPendingReset = true;
-            if (_hydration) _hydration.start();
-          } else {
-            if (_hydration) _hydration.start();
+          if (_hydration) _hydration.start();
+          if (!wasReconnect) {
             const el = _getHydrationElement();
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
