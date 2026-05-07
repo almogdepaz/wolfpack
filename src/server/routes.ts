@@ -165,38 +165,109 @@ function resolveProjectDir(res: ServerResponse, project: string | null | undefin
 }
 
 const VERSION: string = pkg.version;
-const SETTINGS_PATH = join(homedir(), ".wolfpack", "bridge-settings.json");
+/** Tests override this with WOLFPACK_SETTINGS_PATH so loadSettings/saveSettings
+ *  hit a temp file instead of the user's real ~/.wolfpack/bridge-settings.json.
+ *  Resolved at every call so test setup that mutates env mid-process is honored. */
+function settingsPath(): string {
+  return process.env.WOLFPACK_SETTINGS_PATH || join(homedir(), ".wolfpack", "bridge-settings.json");
+}
 
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
-const AGENT_PRESETS: Record<string, string> = {
-  shell: "shell",
-  claude: "claude",
-  "claude --dangerously-skip-permissions":
-    "claude --dangerously-skip-permissions",
-  codex: "codex",
-  agent: "agent",
-};
+/**
+ * Default agent commands shown in a fresh install. Order matters — it's
+ * the order they appear in the settings list and the session-create picker.
+ * `shell` is the always-on fallback when nothing is enabled, so it sits
+ * first.
+ */
+const DEFAULT_CMDS: ReadonlyArray<{ cmd: string; enabled: boolean }> = [
+  { cmd: "shell",  enabled: true },
+  { cmd: "claude", enabled: true },
+  { cmd: "pi",     enabled: true },
+  { cmd: "codex",  enabled: true },
+];
+
+interface CmdEntry {
+  cmd: string;
+  enabled: boolean;
+}
 
 interface Settings {
+  /** User's selected default agent for new sessions. May be disabled or absent
+   *  from `cmds`; `effectiveAgentCmd()` resolves the actual fallback. */
   agentCmd: string;
-  customCmds?: string[];
+  /** Full list of known commands. Each toggleable independently. */
+  cmds: CmdEntry[];
+}
+
+/** A command is valid if it's literally `"shell"` or matches CMD_REGEX. */
+function isValidCmd(cmd: string): boolean {
+  return cmd === "shell" || CMD_REGEX.test(cmd);
 }
 
 export function loadSettings(): Settings {
+  let raw: Record<string, unknown> = {};
   try {
-    const s = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
-    const agentCmd = s.agentCmd && CMD_REGEX.test(s.agentCmd) ? s.agentCmd : "claude";
-    const customCmds = (s.customCmds || []).filter((c: string) => CMD_REGEX.test(c));
-    return { agentCmd, customCmds };
-  } catch { /* expected: settings file doesn't exist yet */
-    return { agentCmd: "claude", customCmds: [] };
+    raw = JSON.parse(readFileSync(settingsPath(), "utf-8")) as Record<string, unknown>;
+  } catch { /* expected: settings file doesn't exist yet */ }
+
+  const agentCmd =
+    typeof raw.agentCmd === "string" && isValidCmd(raw.agentCmd) ? raw.agentCmd : "shell";
+
+  // New shape: `cmds: [{cmd, enabled}, ...]` — normalize and drop bad entries.
+  if (Array.isArray(raw.cmds)) {
+    const cmds: CmdEntry[] = [];
+    const seen = new Set<string>();
+    for (const e of raw.cmds as unknown[]) {
+      if (!e || typeof e !== "object") continue;
+      const obj = e as Record<string, unknown>;
+      if (typeof obj.cmd !== "string" || !isValidCmd(obj.cmd)) continue;
+      if (seen.has(obj.cmd)) continue;
+      seen.add(obj.cmd);
+      cmds.push({ cmd: obj.cmd, enabled: obj.enabled !== false });
+    }
+    if (cmds.length === 0) return { agentCmd, cmds: DEFAULT_CMDS.map(c => ({ ...c })) };
+    return { agentCmd, cmds };
   }
+
+  // Legacy shape (pre-PR): `customCmds: string[]`. Merge with the new defaults
+  // so users keep their custom additions without losing the new presets.
+  // Migration runs once per settings file — the next saveSettings() rewrites
+  // it in the new shape and the legacy branch is never hit again.
+  const cmds: CmdEntry[] = DEFAULT_CMDS.map(c => ({ ...c }));
+  const seen = new Set(cmds.map(c => c.cmd));
+  if (Array.isArray(raw.customCmds)) {
+    for (const c of raw.customCmds as unknown[]) {
+      if (typeof c !== "string" || !isValidCmd(c) || seen.has(c)) continue;
+      seen.add(c);
+      cmds.push({ cmd: c, enabled: true });
+    }
+  }
+  return { agentCmd, cmds };
 }
 
 function saveSettings(s: Settings): void {
-  writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
+  // Persist exactly what we expose in the API response — a clean { agentCmd, cmds }
+  // object. Drop any legacy keys (customCmds) that may still be in the file.
+  writeFileSync(settingsPath(), JSON.stringify({ agentCmd: s.agentCmd, cmds: s.cmds }, null, 2));
+}
+
+/** Resolve the agent that should actually run for a new session.
+ *  Priority: settings.agentCmd if it's enabled → first enabled cmd → "shell". */
+export function effectiveAgentCmd(s: Settings): string {
+  const enabled = s.cmds.filter(c => c.enabled);
+  const requested = enabled.find(c => c.cmd === s.agentCmd);
+  if (requested) return requested.cmd;
+  if (enabled.length > 0) return enabled[0].cmd;
+  return "shell";
+}
+
+/** What the session-create picker should show: enabled cmds, or ["shell"] if
+ *  the user has disabled everything (always-on fallback). */
+export function effectiveCmds(s: Settings): string[] {
+  const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
+  return enabled.length > 0 ? enabled : ["shell"];
 }
 
 // Ralph worker is invoked as a subcommand: `wolfpack worker --plan ...`
@@ -339,7 +410,11 @@ export const routes: Record<
     if (!validateProjectDir(res, projectDir)) return;
     const finalName = customName || await uniqueSessionName(folderName);
     try {
-      await getBackend().createSession(finalName, projectDir, cmd, loadSettings);
+      // Backends accept a `loadSettings` thunk that returns the agent to spawn.
+      // Resolve the effective agent (respecting enabled-state + fallbacks) here
+      // so the backend never sees a disabled or missing agentCmd.
+      const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
+      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver);
     } catch (e: any) {
       if (e.code === "DUPLICATE_SESSION") {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
@@ -351,43 +426,78 @@ export const routes: Record<
 
   "GET /api/settings": async (_req, res) => {
     const settings = loadSettings();
-    json(res, { settings, presets: AGENT_PRESETS });
+    // Surface the effective values so the frontend doesn't reimplement the
+    // fallback rules. `effective.cmds` is what the picker should render;
+    // `effective.agentCmd` is the pre-selected default.
+    json(res, {
+      settings,
+      effective: {
+        cmds: effectiveCmds(settings),
+        agentCmd: effectiveAgentCmd(settings),
+      },
+    });
   },
 
   "POST /api/settings": async (req, res) => {
+    // Single endpoint, multiple ops — each is independently optional and
+    // applied in order. agentCmd is applied last so it can target a cmd added
+    // in the same request. All ops validate strict inputs and reject quietly
+    // with 400 on malformed bodies; on success the full settings + effective
+    // values are echoed back so the frontend can re-render without a refetch.
     const body = await parseBody<{
       agentCmd?: string;
-      addCustomCmd?: string;
-      deleteCustomCmd?: string;
+      addCmd?: string;
+      removeCmd?: string;
+      setCmdEnabled?: { cmd: string; enabled: boolean };
     }>(req, res);
     if (!body) return;
     const settings = loadSettings();
+
+    if (body.addCmd != null) {
+      const cmd = body.addCmd.trim();
+      if (!isValidCmd(cmd)) {
+        return json(res, { error: "invalid characters in command" }, 400);
+      }
+      if (!settings.cmds.some(c => c.cmd === cmd)) {
+        settings.cmds.push({ cmd, enabled: true });
+      }
+    }
+
+    if (body.removeCmd != null) {
+      const cmd = body.removeCmd;
+      settings.cmds = settings.cmds.filter(c => c.cmd !== cmd);
+      // If we removed the current default, drop it back to whatever
+      // effectiveAgentCmd would resolve next time — setting it to "" lets the
+      // resolver fall through to first-enabled → "shell".
+      if (settings.agentCmd === cmd) settings.agentCmd = "";
+    }
+
+    if (body.setCmdEnabled != null) {
+      const target = body.setCmdEnabled;
+      if (typeof target.cmd !== "string" || typeof target.enabled !== "boolean") {
+        return json(res, { error: "setCmdEnabled requires { cmd: string; enabled: boolean }" }, 400);
+      }
+      const entry = settings.cmds.find(c => c.cmd === target.cmd);
+      if (entry) entry.enabled = target.enabled;
+    }
+
     if (body.agentCmd != null) {
       const cmd = body.agentCmd.trim();
-      if (cmd !== "shell" && !CMD_REGEX.test(cmd)) {
+      if (!isValidCmd(cmd)) {
         return json(res, { error: "invalid characters in agent command" }, 400);
       }
       settings.agentCmd = cmd;
     }
-    if (body.addCustomCmd != null) {
-      const cmd = body.addCustomCmd.trim();
-      if (!CMD_REGEX.test(cmd)) {
-        return json(res, { error: "invalid characters in command" }, 400);
-      }
-      if (!settings.customCmds) settings.customCmds = [];
-      if (!settings.customCmds.includes(cmd) && !AGENT_PRESETS[cmd]) {
-        settings.customCmds.push(cmd);
-      }
-      settings.agentCmd = cmd;
-    }
-    if (body.deleteCustomCmd != null) {
-      settings.customCmds = (settings.customCmds || []).filter(c => c !== body.deleteCustomCmd);
-      if (settings.agentCmd === body.deleteCustomCmd) {
-        settings.agentCmd = "claude";
-      }
-    }
+
     saveSettings(settings);
-    json(res, { ok: true, settings });
+    json(res, {
+      ok: true,
+      settings,
+      effective: {
+        cmds: effectiveCmds(settings),
+        agentCmd: effectiveAgentCmd(settings),
+      },
+    });
   },
 
   "GET /api/backend": async (_req, res) => {

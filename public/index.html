@@ -105,11 +105,6 @@
         <div class="session-name-error" id="session-name-error"></div>
       </div>
       <div id="agent-list" class="list"></div>
-      <div class="custom-cmd-row">
-        <input id="custom-cmd-input" type="text" placeholder="custom command…"
-          class="custom-cmd-input">
-        <button class="custom-cmd-add-btn">+ Add</button>
-      </div>
     </div>
 
     <!-- Settings view -->
@@ -176,6 +171,18 @@
           <div class="settings-description">
             Ralph is an autonomous agent loop that works through a plan file task-by-task. It spawns AI agents (Claude, Codex, Gemini) as detached processes, each completing one task before handing off to the next. Progress is tracked via strikethrough headers or checkboxes in your plan file. Enable this to show Ralph controls throughout the UI.
           </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-label">Agents</div>
+          <div class="settings-description">
+            Commands shown when creating a session. Toggle to enable, × to remove. If you disable everything, the picker falls back to <code>shell</code>.
+          </div>
+          <div id="agents-list" class="agents-list"></div>
+          <div class="agent-add-row">
+            <input type="text" id="agent-add-input" class="agent-add-input" placeholder="e.g. claude, gemini --context…" autocomplete="off">
+            <button id="agent-add-btn" class="add-cmd-btn">+ Add</button>
+          </div>
+          <div id="agent-add-error" class="agent-add-error"></div>
         </div>
         <div class="settings-section">
           <div class="settings-label">Quick Commands</div>

@@ -16,6 +16,11 @@ const _rawTmpDir = join(tmpdir(), `wolfpack-api-test-${process.pid}`);
 mkdirSync(_rawTmpDir, { recursive: true });
 const TEST_DEV_DIR = realpathSync(_rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+// Isolate the settings file so the /api/settings tests don't mutate the
+// developer's real ~/.wolfpack/bridge-settings.json. The path is read at
+// every loadSettings/saveSettings call so this works as long as it's set
+// before the first request.
+process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
 
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
@@ -399,6 +404,154 @@ describe("POST /api/kill", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe("missing session");
+  });
+});
+
+// ─── /api/settings ───────────────────────────────────────────────────────────
+//
+// These tests run with the production-default settings file (no override),
+// which means each test mutates real state in ~/.wolfpack/bridge-settings.json.
+// To keep them isolated and idempotent, every test starts by issuing the
+// requests it needs and asserting on the deltas in the response (don't read
+// the file directly). beforeEach restores the 4 baseline cmds via a sequence
+// of remove → add ops so the order is predictable.
+async function resetSettingsToDefaults() {
+  // Remove every non-default entry, re-add+enable the four defaults.
+  const cur = await (await get("/api/settings")).json();
+  const knownDefaults = new Set(["shell", "claude", "pi", "codex"]);
+  for (const c of cur.settings.cmds as Array<{ cmd: string }>) {
+    if (!knownDefaults.has(c.cmd)) {
+      await post("/api/settings", { removeCmd: c.cmd });
+    }
+  }
+  // addCmd is idempotent (no-op when present) so this safely re-adds any
+  // default a prior test deleted, then setCmdEnabled flips them back on.
+  for (const cmd of ["shell", "claude", "pi", "codex"]) {
+    await post("/api/settings", { addCmd: cmd });
+    await post("/api/settings", { setCmdEnabled: { cmd, enabled: true } });
+  }
+  await post("/api/settings", { agentCmd: "shell" });
+}
+
+describe("GET /api/settings", () => {
+  beforeEach(async () => { await resetSettingsToDefaults(); });
+
+  test("returns settings + effective values", async () => {
+    const res = await get("/api/settings");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data.settings.cmds)).toBe(true);
+    // The 4 baseline defaults must be present after reset.
+    const cmdNames = data.settings.cmds.map((c: { cmd: string }) => c.cmd);
+    expect(cmdNames).toEqual(expect.arrayContaining(["shell", "claude", "pi", "codex"]));
+    expect(data.effective.cmds).toEqual(expect.arrayContaining(["shell", "claude", "pi", "codex"]));
+    expect(data.effective.agentCmd).toBe("shell");
+  });
+
+  test("does NOT include the legacy `presets` key", async () => {
+    const data = await (await get("/api/settings")).json();
+    expect(data.presets).toBeUndefined();
+  });
+});
+
+describe("POST /api/settings — addCmd", () => {
+  beforeEach(async () => { await resetSettingsToDefaults(); });
+
+  test("adds a new cmd as enabled", async () => {
+    const res = await post("/api/settings", { addCmd: "my-cool-tool" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const entry = data.settings.cmds.find((c: { cmd: string }) => c.cmd === "my-cool-tool");
+    expect(entry).toBeDefined();
+    expect(entry.enabled).toBe(true);
+    expect(data.effective.cmds).toContain("my-cool-tool");
+    await post("/api/settings", { removeCmd: "my-cool-tool" });
+  });
+
+  test("adding a duplicate is a no-op (does not reset enabled state)", async () => {
+    await post("/api/settings", { setCmdEnabled: { cmd: "claude", enabled: false } });
+    const res = await post("/api/settings", { addCmd: "claude" });
+    const claude = (await res.json()).settings.cmds.find((c: { cmd: string }) => c.cmd === "claude");
+    expect(claude.enabled).toBe(false);
+  });
+
+  test("rejects malformed cmd with 400", async () => {
+    const res = await post("/api/settings", { addCmd: "rm -rf /; echo pwn" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/settings — removeCmd", () => {
+  beforeEach(async () => { await resetSettingsToDefaults(); });
+
+  test("removes the entry from cmds", async () => {
+    await post("/api/settings", { addCmd: "throwaway" });
+    const res = await post("/api/settings", { removeCmd: "throwaway" });
+    expect(res.status).toBe(200);
+    const cmdNames = (await res.json()).settings.cmds.map((c: { cmd: string }) => c.cmd);
+    expect(cmdNames).not.toContain("throwaway");
+  });
+
+  test("removing the current agentCmd falls through to first enabled", async () => {
+    await post("/api/settings", { agentCmd: "claude" });
+    const res = await post("/api/settings", { removeCmd: "claude" });
+    const data = await res.json();
+    // settings.agentCmd was cleared; effective should resolve to first enabled.
+    expect(["shell", "pi", "codex"]).toContain(data.effective.agentCmd);
+  });
+});
+
+describe("POST /api/settings — setCmdEnabled", () => {
+  beforeEach(async () => { await resetSettingsToDefaults(); });
+
+  test("toggles enabled state without removing", async () => {
+    const res = await post("/api/settings", { setCmdEnabled: { cmd: "claude", enabled: false } });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const claude = data.settings.cmds.find((c: { cmd: string }) => c.cmd === "claude");
+    expect(claude.enabled).toBe(false);
+    expect(data.effective.cmds).not.toContain("claude");
+  });
+
+  test("disabling all cmds → effective.cmds is [\"shell\"] fallback", async () => {
+    for (const cmd of ["shell", "claude", "pi", "codex"]) {
+      await post("/api/settings", { setCmdEnabled: { cmd, enabled: false } });
+    }
+    const data = await (await get("/api/settings")).json();
+    expect(data.effective.cmds).toEqual(["shell"]);
+    expect(data.effective.agentCmd).toBe("shell");
+  });
+
+  test("rejects malformed payload with 400", async () => {
+    const res = await post("/api/settings", { setCmdEnabled: { cmd: "claude" } });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/settings — agentCmd", () => {
+  beforeEach(async () => { await resetSettingsToDefaults(); });
+
+  test("changes the default agent", async () => {
+    const res = await post("/api/settings", { agentCmd: "pi" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.settings.agentCmd).toBe("pi");
+    expect(data.effective.agentCmd).toBe("pi");
+  });
+
+  test("setting a disabled cmd as agent still records it; effective falls through", async () => {
+    // The endpoint is permissive about agentCmd — it can point at any valid
+    // cmd string. Effective resolution decides what actually runs.
+    await post("/api/settings", { setCmdEnabled: { cmd: "pi", enabled: false } });
+    const res = await post("/api/settings", { agentCmd: "pi" });
+    const data = await res.json();
+    expect(data.settings.agentCmd).toBe("pi");
+    expect(data.effective.agentCmd).not.toBe("pi");
+  });
+
+  test("rejects malformed agentCmd with 400", async () => {
+    const res = await post("/api/settings", { agentCmd: "rm -rf /; echo pwn" });
+    expect(res.status).toBe(400);
   });
 });
 
