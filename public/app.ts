@@ -485,7 +485,15 @@ const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
  * Owns: pending state, timeout fallback, visibility reveal, scrollToBottom,
  * optional focus, and a short quiet-period debounce so initial history bursts
  * can settle before the terminal becomes visible.
- * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number }} opts
+ *
+ * `minPendingMs` floor: workaround for the post-attach resize-redraw flash
+ * (see comment at the call site for the full root-cause writeup). When set,
+ * `finish()` won't reveal the canvas until at least this many ms have
+ * elapsed since `start()`, even if the settle/canFinish conditions are met.
+ * This keeps the canvas hidden during the gap between prefill_done and the
+ * arrival of the resize-induced redraw stream that follows it.
+ *
+ * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number }} opts
  */
 function createInitialHydrationController(opts) {
   let _pending = false;
@@ -495,11 +503,20 @@ function createInitialHydrationController(opts) {
   const timeoutMs = opts.timeoutMs || DESKTOP_INITIAL_PREFILL_TIMEOUT_MS;
   const settleMs = opts.settleMs || 80;
   const maxPendingMs = opts.maxPendingMs || 4000;
+  const minPendingMs = opts.minPendingMs || 0;
 
   function finish() {
     if (!_pending) return;
+    // minPendingMs floor: keep canvas hidden through the post-prefill
+    // resize-redraw burst (~150-300ms after prefill_done). See call site.
+    const elapsed = Date.now() - _startedAt;
+    if (minPendingMs > 0 && elapsed < minPendingMs) {
+      if (_settleTimer) clearTimeout(_settleTimer);
+      _settleTimer = setTimeout(finish, Math.max(settleMs, minPendingMs - elapsed));
+      return;
+    }
     if (opts.canFinish && !opts.canFinish()) {
-      if (Date.now() - _startedAt >= maxPendingMs) {
+      if (elapsed >= maxPendingMs) {
         // Safety valve: avoid infinite loader on very high-throughput sessions.
       } else {
         if (_settleTimer) clearTimeout(_settleTimer);
@@ -1196,6 +1213,44 @@ function createPtyTerminalController(opts) {
     container.addEventListener("keydown", _browserShortcutKeydownHandler, true);
 
     // Create hydration controller (started in connect())
+    //
+    // ─── WHY minPendingMs=800 ────────────────────────────────────────────────
+    // Symptom: when opening a session, user briefly sees scrollback streaming
+    // upward through the visible viewport (~50-500ms) before the terminal
+    // settles on the cursor. NOT prefill itself — prefill is now flushed
+    // atomically as a single buffered write. The flash is from the
+    // *post-attach resize-redraw burst*:
+    //
+    //   1. WS opens → attach handshake sent at initial dims
+    //   2. server snapshots broker state at handshake-time dims
+    //   3. attach_ack arrives → client schedules a force-resize next rAF
+    //      (line ~688: catches stale initial dims on mobile where layout
+    //       isn't finalized at connect time)
+    //   4. prefill arrives + flushes atomically  (~t=200ms)
+    //   5. force-resize fires → broker reflows scrollback at new dims →
+    //      emits redraw stream over the live subscription
+    //   6. ~200ms later, broker streams hundreds of 1KB chunks (the redraw)
+    //   7. each chunk = separate WS macrotask → ghostty's rAF render loop
+    //      paints intermediate states between them → visible flash
+    //
+    // The settle timer (50ms) finishes hydration during the gap between (4)
+    // and (5), revealing the canvas just before the redraw burst hits.
+    // minPendingMs=800 forces the canvas to stay hidden through the typical
+    // redraw window. Measured timings (playwright): attach_ack → prefill_done
+    // ~125ms, then resize-redraw burst starts ~270ms post-attach, lasts ~150ms
+    // (1300+ chunks). So the burst ends ~420ms post-attach. Adding the click
+    // → attach_ack delay (~100-200ms) and a 100ms cushion: 800ms covers it.
+    //
+    // PROPER FIX (deferred): server should snapshot at the *final* client
+    // dims so step (5) doesn't fire — either by deferring the snapshot until
+    // after the first resize message arrives, or by the client sending its
+    // settled dims in the attach handshake (instead of just cols/rows it
+    // happens to have at WS open). I tried `force:false` on the post-attach
+    // sendFitResize — didn't help because dims genuinely DO change between
+    // initial handshake and post-rAF fit() (CSS layout settles measurably).
+    // Clean fix needs server protocol changes; for now this 800ms hide is
+    // the cheap workaround. See PLAN.md phase 3 and NOTES-bug-summary.md.
+    // ─────────────────────────────────────────────────────────────────────────
     _hydration = createInitialHydrationController({
       getElement: _getHydrationElement,
       getTerm: () => _term,
@@ -1203,6 +1258,7 @@ function createPtyTerminalController(opts) {
       canFinish: () => _hydrationWritesInFlight === 0,
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
+      minPendingMs: 800,
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
@@ -2468,8 +2524,14 @@ async function initTerminal(cached) {
       if (_cachedPendingReset) {
         _cachedPendingReset = false;
         if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
+        // Drop cached-visible on first live data, but DO NOT add `hydrated`
+        // here — that's the hydration controller's job, gated on minPendingMs.
+        // Adding `hydrated` here used to bypass hydration's hide window and
+        // exposed the canvas during the post-prefill resize-redraw burst (the
+        // "scrollback flash"). Without `hydrated` the canvas falls back to
+        // its default hidden state until hydration finish() runs.
         const el = document.getElementById("desktop-terminal-container");
-        if (el) { el.classList.remove("cached-visible"); el.classList.add("hydrated"); }
+        if (el) el.classList.remove("cached-visible");
       }
       if (state.enterRetryTimer) { clearTimeout(state.enterRetryTimer); state.enterRetryTimer = null; }
       wpMetrics.wsMessagesReceived++;
