@@ -163,8 +163,19 @@ async function mountGridController(gs, cell, idx) {
     onOutput: () => {
       if (_gridCachedPending) {
         _gridCachedPending = false;
+        // Drop cached-visible on first live data, but DO NOT add `hydrated`
+        // here — that's the hydration controller's job (gated on minPendingMs;
+        // see comment in createPtyTerminalController/createInitialHydrationController).
+        //
+        // History: this used to also `add("hydrated")` to bypass hydration
+        // and reveal the canvas as soon as live data arrived. That bypass
+        // exposed the canvas during the post-attach resize-redraw burst (or
+        // the new-shell startup burst on `&reset=1` paths), producing the
+        // "scrollback flash" on cells that had a cached snapshot. Without
+        // `hydrated` here the canvas falls back to hidden until hydration
+        // finish() runs (after minPendingMs floor + writes settle). Mirrors
+        // the same fix in public/app.ts onOutput for single-pane.
         cell.classList.remove("cached-visible");
-        cell.classList.add("hydrated");
       }
     },
     onViewerConflict: () => {
