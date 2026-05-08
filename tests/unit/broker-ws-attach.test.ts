@@ -202,6 +202,9 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     ws.frames.length = 0;
 
     backend.emitData(SESSION, new Uint8Array([0x41, 0x42, 0x43]));
+    // Output is coalesced server-side (~16ms flush window) before forwarding,
+    // so wait briefly for the flush. See COALESCE_FLUSH_MS in websocket.ts.
+    await wait(25);
     const bin = ws.binaryFrames();
     expect(bin.length).toBe(1);
     expect(Array.from(bin[0])).toEqual([0x41, 0x42, 0x43]);
