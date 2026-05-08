@@ -1214,42 +1214,34 @@ function createPtyTerminalController(opts) {
 
     // Create hydration controller (started in connect())
     //
-    // ─── WHY minPendingMs=800 ────────────────────────────────────────────────
-    // Symptom: when opening a session, user briefly sees scrollback streaming
-    // upward through the visible viewport (~50-500ms) before the terminal
-    // settles on the cursor. NOT prefill itself — prefill is now flushed
-    // atomically as a single buffered write. The flash is from the
-    // *post-attach resize-redraw burst*:
+    // ─── WHY minPendingMs=200 ────────────────────────────────────────────────
+    // Background: when opening a session, the user could briefly see
+    // scrollback streaming upward through the viewport before the cursor
+    // settled. The flash was from the post-attach resize-redraw burst:
     //
-    //   1. WS opens → attach handshake sent at initial dims
-    //   2. server snapshots broker state at handshake-time dims
-    //   3. attach_ack arrives → client schedules a force-resize next rAF
-    //      (line ~688: catches stale initial dims on mobile where layout
-    //       isn't finalized at connect time)
-    //   4. prefill arrives + flushes atomically  (~t=200ms)
-    //   5. force-resize fires → broker reflows scrollback at new dims →
-    //      emits redraw stream over the live subscription
-    //   6. ~200ms later, broker streams hundreds of 1KB chunks (the redraw)
-    //   7. each chunk = separate WS macrotask → ghostty's rAF render loop
-    //      paints intermediate states between them → visible flash
+    //   - WS opens → attach handshake at initial dims
+    //   - server snapshotted broker state immediately at those dims
+    //   - attach_ack → client schedules force-resize next rAF
+    //   - by then CSS layout had settled to different dims (sidebar
+    //     transition 200ms, view transform 280ms)
+    //   - broker reflowed scrollback at new dims → emitted streaming
+    //     redraw burst (1000+ chunks over ~150ms)
+    //   - each chunk = separate WS macrotask → ghostty rAF rendered
+    //     intermediate states between them = visible flash
     //
-    // The settle timer (50ms) finishes hydration during the gap between (4)
-    // and (5), revealing the canvas just before the redraw burst hits.
-    // minPendingMs=800 forces the canvas to stay hidden through the typical
-    // redraw window. Measured timings (playwright): attach_ack → prefill_done
-    // ~125ms, then resize-redraw burst starts ~270ms post-attach, lasts ~150ms
-    // (1300+ chunks). So the burst ends ~420ms post-attach. Adding the click
-    // → attach_ack delay (~100-200ms) and a 100ms cushion: 800ms covers it.
+    // PROPER FIX (now in place): src/server/websocket.ts holds the snapshot
+    // until client resizes settle (PRE_SNAPSHOT_RESIZE_SETTLE_MS=100ms quiet
+    // window, 400ms hard cap). Snapshot now happens at the FINAL dims so the
+    // post-attach refit becomes a no-op and the redraw burst doesn't fire.
     //
-    // PROPER FIX (deferred): server should snapshot at the *final* client
-    // dims so step (5) doesn't fire — either by deferring the snapshot until
-    // after the first resize message arrives, or by the client sending its
-    // settled dims in the attach handshake (instead of just cols/rows it
-    // happens to have at WS open). I tried `force:false` on the post-attach
-    // sendFitResize — didn't help because dims genuinely DO change between
-    // initial handshake and post-rAF fit() (CSS layout settles measurably).
-    // Clean fix needs server protocol changes; for now this 800ms hide is
-    // the cheap workaround. See PLAN.md phase 3 and NOTES-bug-summary.md.
+    // Why minPendingMs is still non-zero: server settle isn't perfect.
+    // Scenarios that can still produce a small post-prefill burst:
+    //   - mobile keyboard slide-in causes a late layout shift > settle window
+    //   - subscription replay (sinceSeq) catches output that arrived during
+    //     the settle wait — typically tiny but can paint as a tail of writes
+    //   - rAF jitter between writes
+    // 200ms is a small cushion to absorb these without revealing mid-burst.
+    // Total cost on desktop: ~200ms reveal time (down from 800ms).
     // ─────────────────────────────────────────────────────────────────────────
     _hydration = createInitialHydrationController({
       getElement: _getHydrationElement,
@@ -1258,7 +1250,7 @@ function createPtyTerminalController(opts) {
       canFinish: () => _hydrationWritesInFlight === 0,
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
-      minPendingMs: 800,
+      minPendingMs: 200,
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });

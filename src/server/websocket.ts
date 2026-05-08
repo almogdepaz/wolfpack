@@ -49,6 +49,23 @@ const MAX_PTY_BINARY_BYTES = 16_384;
 const RESIZE_DEBOUNCE_MS = 80;
 const RAPID_EXIT_THRESHOLD_MS = 3_000;
 const POST_SPAWN_RESIZE_DELAY_MS = 100;
+// Pre-snapshot resize-settle wait: avoids the "scrollback flash" where each
+// of the client's resize messages causes the shell (e.g. claude) to redraw
+// its full screen on SIGWINCH — those redraws are then replayed via
+// subscription as a streaming burst onto an already-revealed canvas.
+//
+// Strategy: defer ALL backend resizes until dims settle, then apply once at
+// final dims. The shell sees one SIGWINCH and emits one redraw, captured by
+// the snapshot. Cost: ~100-200ms of latency before prefill arrives. Worth
+// it — eliminates the burst entirely instead of just hiding it on client.
+const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
+// Wait this long for the FIRST resize before assuming none is coming.
+// Covers session-open CSS transitions (~200ms total) + WS jitter.
+const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 200;
+const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
+// After applying the settled resize, wait briefly for the shell's SIGWINCH
+// redraw to land in broker output stream so it's captured in the snapshot.
+const POST_RESIZE_SETTLE_MS = 60;
 
 function bufferStartsWithPrefillSuffix(prefillTail: Buffer, attachPrefix: Buffer, overlap: number): boolean {
   const prefillStart = prefillTail.length - overlap;
@@ -334,25 +351,79 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Resize FIRST so the snapshot below reflects the client's actual cols.
-      // SIGWINCH-triggered redraws that land before snapshot are embedded in it;
-      // redraws that land after snapshot have seq > prefillSeq and are replayed
-      // by the sinceSeq subscribe below — no gap, no double-paint.
-      let appliedSize = { cols, rows };
-      await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      // Skip settle wait when there's no snapshot to take — the only purpose
+      // of waiting is to capture the SIGWINCH redraw in the snapshot, but
+      // prefillMode:"none" means we don't snapshot.
+      const skipSettle = prefillMode === "none";
 
-      // A resize can arrive while attach is still spawning/prefilling. Apply
-      // the newest requested dimensions before snapshot so the prefill is
-      // rendered for the client's committed layout, not the initial attach size.
-      if (
-        latestRequestedSize &&
-        (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
-      ) {
-        appliedSize = latestRequestedSize;
-        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      // Wait for client's resize messages to settle before applying any
+      // resize to the backend, so the SHELL only sees ONE SIGWINCH at the
+      // final settled dims.
+      //
+      // The common case: clicking a session triggers CSS layout transitions
+      // (sidebar margin-left 200ms + view transform 280ms) and the terminal
+      // container width shifts over ~200ms. The client sends a resize per
+      // animation frame during that window (typically 3-4 resizes).
+      //
+      // Naive approach (one backend.resize per client resize) creates two
+      // problems:
+      //   1. Each backend.resize forwards SIGWINCH to the PTY child. TUI
+      //      apps like claude redraw their full screen on every SIGWINCH —
+      //      so 4 resizes → 4 full redraws sent to the broker output stream.
+      //   2. Once we subscribe with sinceSeq, broker replays those redraws
+      //      to the client, who paints them sequentially → visible streaming.
+      //
+      // Better: don't apply ANY resize until dims settle. Then apply once
+      // at final dims. SIGWINCH fires once → one redraw → one snapshot capture.
+      //
+      // Loop until either:
+      //   (a) we've seen at least one resize AND PRE_SNAPSHOT_RESIZE_SETTLE_MS
+      //       has passed since the most recent one — dims have settled.
+      //   (b) we've seen NO resize but waited PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS
+      //       — client probably has no resize coming.
+      //   (c) PRE_SNAPSHOT_RESIZE_TIMEOUT_MS hard cap.
+      let pendingSize = { cols, rows };
+      if (!skipSettle) {
+        const settleStart = Date.now();
+        let lastChangeAt = -1;
+        while (true) {
+          if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+          const elapsedTotal = Date.now() - settleStart;
+          if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_TIMEOUT_MS) break;
+          if (lastChangeAt < 0) {
+            if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS) break;
+          } else {
+            const elapsedSinceChange = Date.now() - lastChangeAt;
+            if (elapsedSinceChange >= PRE_SNAPSHOT_RESIZE_SETTLE_MS) break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 16));
+          if (
+            latestRequestedSize &&
+            (latestRequestedSize.cols !== pendingSize.cols || latestRequestedSize.rows !== pendingSize.rows)
+          ) {
+            pendingSize = latestRequestedSize;
+            lastChangeAt = Date.now();
+          }
+        }
       }
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Apply settled dims once. SIGWINCH-triggered redraws land in the
+      // broker output stream BEFORE snapshot is captured below, so they're
+      // embedded in the prefill. The post-attach refit on the client (if it
+      // re-fires) will see the same dims and be a no-op.
+      let appliedSize = pendingSize;
+      await backend.resize(session, appliedSize.cols, appliedSize.rows);
+
+      // Brief pause so SIGWINCH redraws land in broker before snapshot.
+      // The PTY shell takes a few ms to react to SIGWINCH and emit redraw
+      // bytes; if we snapshot too soon, those bytes arrive AFTER snapshot
+      // and stream as post-prefill subscription replay (visible flash).
+      // Skip when not snapshotting.
+      if (!skipSettle) {
+        await new Promise(resolve => setTimeout(resolve, POST_RESIZE_SETTLE_MS));
+      }
 
       // Snapshot AFTER resize so scrollback is reflowed to client cols.
       let prefillSeq: bigint | undefined;
