@@ -24,6 +24,23 @@ For tests, pass a Ghostty instance directly:
 // Expose xterm.js-compatible globals
 window.Terminal = GhosttyWeb.Terminal;
 window.FitAddon = GhosttyWeb.FitAddon;
+window.Ghostty = GhosttyWeb.Ghostty;
+
+// Per-Terminal WASM isolation. ghostty-web 0.4.0 ships a module-level singleton
+// (the 'S' var inside the umd bundle) shared across all Terminal instances.
+// Two Terminals → two handles in ONE WebAssembly.Memory → zig parser globals
+// leak between them → wasm trap ("memory access out of bounds" at offset 0xf837)
+// when adding a 2nd grid cell. createIsolatedGhostty() returns a Ghostty backed
+// by its OWN WASM Instance (fresh Memory) so terminals can't corrupt each other.
+//
+// Each call recompiles+instantiates (~50ms). Acceptable for grid mode (handful of
+// cells); not in any hot path.
+window.createIsolatedGhostty = function() {
+  // Reuse Ghostty.load()'s logic: it tries the embedded data: URL, file paths,
+  // and ./ghostty-vt.wasm. Each call returns a brand-new Ghostty wrapping a
+  // fresh WebAssembly.Instance — exactly what we want for per-terminal isolation.
+  return GhosttyWeb.Ghostty.load();
+};
 
 // Auto-init WASM — consumers await window.ghosttyReady before creating terminals
 window.wasmFailed = false;

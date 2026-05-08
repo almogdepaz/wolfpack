@@ -347,12 +347,21 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false }) {
+async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
     ? '"JetBrains Mono", "Fira Code", "Source Code Pro", "Cascadia Code", monospace'
     : '"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono", monospace';
+  // Per-Terminal WASM isolation — each Terminal gets its own Ghostty instance
+  // (separate WebAssembly.Memory) to avoid shared-allocator OOB across grid cells.
+  // See scripts/bundle-ghostty.ts for context. Falls back to shared singleton if
+  // createIsolatedGhostty isn't available (e.g. older bundle).
+  let isolatedGhostty = null;
+  if (typeof (window as any).createIsolatedGhostty === "function") {
+    try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
+    catch (e) { console.warn("[wf] createIsolatedGhostty failed, falling back to shared:", e); }
+  }
   const term = new Terminal({
     cursorBlink,
     disableStdin,
@@ -360,6 +369,7 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
     fontSize: fontSize != null ? fontSize : tp.fontSize,
     lineHeight: tp.lineHeight,
     fontFamily: termFontFamily,
+    ...(isolatedGhostty ? { ghostty: isolatedGhostty } : {}),
     theme: {
       background: "#0a0a0a",
       foreground: "#e0e0e0",
@@ -1062,7 +1072,7 @@ function createPtyTerminalController(opts) {
     if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
-    const result = createTerminalInstance({
+    const result = await createTerminalInstance({
       fontSize: opts.fontSize,
       scrollback: opts.scrollback,
       cursorBlink: opts.cursorBlink,
@@ -1091,6 +1101,13 @@ function createPtyTerminalController(opts) {
         }
       },
     });
+    // Guard: dispose() may have run during the createTerminalInstance() await
+    // (isolated WASM load is async). If so, drop the freshly-created terminal.
+    if (!_mounting || _term) {
+      try { result.term && result.term.dispose && result.term.dispose(); } catch {}
+      _mounting = false;
+      return;
+    }
     _term = result.term;
     _fitAddon = result.fitAddon;
 
