@@ -493,7 +493,7 @@ const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
  * This keeps the canvas hidden during the gap between prefill_done and the
  * arrival of the resize-induced redraw stream that follows it.
  *
- * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number }} opts
+ * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number, beforeFinish?: () => void }} opts
  */
 function createInitialHydrationController(opts) {
   let _pending = false;
@@ -527,6 +527,10 @@ function createInitialHydrationController(opts) {
     _pending = false;
     if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
     if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
+    // Hook for callers to flush any coalesce buffer before reveal.
+    if (opts.beforeFinish) {
+      try { opts.beforeFinish(); } catch (e) { console.warn("[hydration] beforeFinish failed:", e); }
+    }
     const term = opts.getTerm();
     if (term) {
       // Keep terminal hidden while positioning to avoid visible top->bottom jump.
@@ -905,6 +909,7 @@ function createPtyTerminalController(opts) {
   let _ptyClient = null;
   let _hydrationStarted = false;
   let _hydrationWritesInFlight = 0;
+  let _hydrationCoalesceBuffer: Uint8Array[] | null = null;
   let _reconnectPendingReset = false;
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
@@ -1251,6 +1256,25 @@ function createPtyTerminalController(opts) {
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
       minPendingMs: 200,
+      beforeFinish: () => {
+        // Flush any coalesced post-prefill writes as one atomic write so the
+        // canvas reveals the FINAL state — not an intermediate one. Without
+        // this, heavy TUI repaints (e.g. claude on dim-change reattach)
+        // stream as 1000+ small chunks across rAFs, producing visible
+        // "scrolldown" / line-by-line painting on grid transitions.
+        if (_hydrationCoalesceBuffer && _hydrationCoalesceBuffer.length && _term) {
+          // Concat buffered chunks into one Uint8Array.
+          let total = 0;
+          for (const c of _hydrationCoalesceBuffer) total += c.length;
+          const merged = new Uint8Array(total);
+          let off = 0;
+          for (const c of _hydrationCoalesceBuffer) { merged.set(c, off); off += c.length; }
+          _hydrationCoalesceBuffer = null;
+          _writeTermData(merged);
+        } else {
+          _hydrationCoalesceBuffer = null;
+        }
+      },
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
@@ -1354,6 +1378,22 @@ function createPtyTerminalController(opts) {
           _scheduleBufferedClear();
           return;
         }
+        // Coalesce post-prefill writes during hydration window. Without this,
+        // a heavy TUI repaint (e.g. claude on dim-change reattach) streams
+        // 1000+ small chunks across multiple rAFs → user sees the canvas
+        // painting incrementally (the "scrolldown" effect on grid transitions).
+        // Buffering during hydration lets all chunks land in one ghostty.write
+        // when hydration finishes, so the canvas reveal shows the FINAL state.
+        if (_hydration && _hydration.pending) {
+          if (!_hydrationCoalesceBuffer) _hydrationCoalesceBuffer = [];
+          _hydrationCoalesceBuffer.push(data);
+          // Reset hydration's settle timer on every new chunk. This keeps
+          // the canvas hidden as long as data is still streaming — so a
+          // long TUI repaint (e.g. claude on dim-change) doesn't reveal
+          // mid-paint. Settle fires after settleMs of true quiet.
+          if (_hydration.scheduleFinish) _hydration.scheduleFinish();
+          return;
+        }
         _writeTermData(data);
       },
       onViewerConflict: () => { if (isCurrent() && opts.onViewerConflict) opts.onViewerConflict(); },
@@ -1408,6 +1448,7 @@ function createPtyTerminalController(opts) {
     if (_hydration) { _hydration.cancel(); _hydration = null; }
     _hydrationStarted = false;
     _hydrationWritesInFlight = 0;
+    _hydrationCoalesceBuffer = null;
     _reconnectPendingReset = false;
     _postResetBuffer = null;
     if (_layoutSyncRaf) { cancelAnimationFrame(_layoutSyncRaf); _layoutSyncRaf = null; }
