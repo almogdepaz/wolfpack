@@ -922,16 +922,38 @@ function createPtyTerminalController(opts) {
 
   function _writeTermData(data: Uint8Array) {
     if (!_term) return;
-    if (_hydration && _hydration.pending) {
-      _hydrationWritesInFlight++;
-      _term.write(data, () => {
-        _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
-        if (_hydration) _hydration.scheduleFinish();
+    // Diag: capture wasm OOB on first crash so we can inspect bytes/dims
+    // post-mortem via window.__wf_lastCrash. No behavioral change.
+    try {
+      if (_hydration && _hydration.pending) {
+        _hydrationWritesInFlight++;
+        _term.write(data, () => {
+          _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
+          if (_hydration) _hydration.scheduleFinish();
+          if (opts.onOutput) opts.onOutput(data);
+        });
+      } else {
+        _term.write(data);
         if (opts.onOutput) opts.onOutput(data);
-      });
-    } else {
-      _term.write(data);
-      if (opts.onOutput) opts.onOutput(data);
+      }
+    } catch (err) {
+      try {
+        if (!(window as any).__wf_lastCrash) {
+          (window as any).__wf_lastCrash = {
+            session: opts.session,
+            cols: _term && _term.cols,
+            rows: _term && _term.rows,
+            len: data.length,
+            head: Array.from(data.slice(0, 64)),
+            tail: Array.from(data.slice(Math.max(0, data.length - 64))),
+            err: String(err),
+            stack: (err as any) && (err as any).stack,
+            ts: Date.now(),
+          };
+          console.error("[wf-crash]", opts.session, err, "— captured to window.__wf_lastCrash");
+        }
+      } catch {}
+      throw err;
     }
   }
 
@@ -1190,10 +1212,12 @@ function createPtyTerminalController(opts) {
       _hydrationStarted = true;
     }
 
-    // _cachedLoaded handling is now subsumed by onOpen, which unconditionally
-    // sets _reconnectPendingReset — first binary chunk triggers the deferred
-    // reset, replacing any cached snapshot in place.
-    if (_cachedLoaded) _cachedLoaded = false;
+    // If cached snapshot was written during mount(), replace the cached
+    // buffer with live data on first output (tmux attach redraws the pane).
+    if (_cachedLoaded && opts.prefillMode !== "full") {
+      _reconnectPendingReset = true;
+      _cachedLoaded = false;
+    }
 
     // Capture reference to detect stale callbacks from replaced ptyClients
     let thisClient = null;
@@ -1211,22 +1235,26 @@ function createPtyTerminalController(opts) {
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
-        // Defer terminal reset until first data arrives via onBinaryData →
-        // _scheduleBufferedClear (rAF gap between reset and write). ghostty-web's
-        // WASM crashes with "memory access out of bounds" if write() follows
-        // reset() in the same tick — a race that's intermittent on single-pane
-        // (one connect, one prefill RTT) but reliably triggers in grid mode where
-        // 4 cells handshake + flush prefill in the same task. Unifying first-connect
-        // and reconnect through the same deferred path eliminates the race class
-        // and also lets cached snapshots stay visible until live data replaces them.
-        if (_term) {
-          _reconnectPendingReset = true;
+        // Always reset on first connect — ghostty-web's WASM retains the
+        // previous terminal's screen buffer across Terminal instances.
+        // Without this, new sessions with sparse prefill show stale content.
+        // shouldRehydrate skips the reset for viewport prefill mode, but
+        // the WASM buffer must be cleared regardless.
+        if (!wasReconnect && _term) {
+          _term.reset();
         }
+        // On reconnect, clear stale content and restart hydration —
+        // server sends fresh prefill scrollback on the new connection.
         const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "full");
         if (rehydrate && _term) {
           _hydrationWritesInFlight = 0;
-          if (_hydration) _hydration.start();
-          if (!wasReconnect) {
+          if (wasReconnect) {
+            // Defer terminal reset until first data arrives — keeps old
+            // content visible so there's no blank flash during reconnect.
+            _reconnectPendingReset = true;
+            if (_hydration) _hydration.start();
+          } else {
+            if (_hydration) _hydration.start();
             const el = _getHydrationElement();
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
