@@ -1365,7 +1365,24 @@ function createPtyTerminalController(opts) {
         _writeTermData(data);
       },
       onViewerConflict: () => { if (isCurrent() && opts.onViewerConflict) opts.onViewerConflict(); },
-      onControlGranted: () => { if (isCurrent() && opts.onControlGranted) opts.onControlGranted(); },
+      onControlGranted: () => {
+        if (!isCurrent()) return;
+        // control_granted triggers a fresh attach handshake over the existing
+        // socket (sendAttachHandshake() in the ws-client control_granted
+        // handler). That's another full prefill + post-attach resize-redraw
+        // burst — same shape as initial connect. Without restarting hydration
+        // here, the canvas is already `hydrated` from the original mount, so
+        // those writes paint live and the user sees the scrollback flash.
+        // Restart hydration so the minPendingMs floor hides the burst window.
+        if (_hydration && _term) {
+          _hydrationWritesInFlight = 0;
+          _reconnectPendingReset = true;
+          _hydration.start();
+          const el = _getHydrationElement();
+          if (el) { el.classList.remove("hydrated"); el.classList.add("hydrating"); }
+        }
+        if (opts.onControlGranted) opts.onControlGranted();
+      },
       onDisconnected: (code, reason) => { if (isCurrent() && opts.onDisconnected) opts.onDisconnected(code, reason); },
       onReconnecting: () => { if (isCurrent() && opts.onReconnecting) opts.onReconnecting(); },
       onReconnectExhausted: () => { if (isCurrent() && opts.onReconnectExhausted) opts.onReconnectExhausted(); },
