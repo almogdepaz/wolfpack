@@ -3432,6 +3432,42 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+// ── Canvas backing-store recovery ──
+//
+// macOS App Nap and Chrome's tab-freeze can reclaim the 2D canvas backing
+// store while the tab is technically "visible" (window unfocused, switched
+// to another app). visibilitychange does NOT fire for these cases. Ghostty's
+// render loop only repaints dirty rows, so cells written before the freeze
+// stay invisible after resume — user sees stale/black backgrounds where
+// SGR-styled cells used to be.
+//
+// Fix: trigger forceRepaint on additional events that catch the resume
+// without requiring a full reconnect.
+//   - window focus: user alt-tabs back to the browser window
+//   - pageshow with persisted=true: bfcache restore (e.g. iOS swipe-back)
+//   - periodic heartbeat (30s): catches App Nap that doesn't fire any event
+function _wfRepaintAllTerminals() {
+  if (state.currentView !== "terminal") return;
+  if (isGridActive()) {
+    for (const gs of state.gridSessions) {
+      if (gs.controller && !gs._displaced) gs.controller.forceRepaint?.();
+    }
+  } else if (state.terminalController?.term) {
+    state.terminalController.forceRepaint();
+  }
+}
+
+window.addEventListener("focus", _wfRepaintAllTerminals);
+window.addEventListener("pageshow", (e: any) => {
+  if (e.persisted) _wfRepaintAllTerminals();
+});
+// 30s heartbeat: cheap (one canvas draw call) and only runs while visible.
+// Cleared/recreated by the visibilitychange handler isn't necessary because
+// background tabs throttle setInterval anyway — no wasted work.
+setInterval(() => {
+  if (document.visibilityState === "visible") _wfRepaintAllTerminals();
+}, 30_000);
+
 // Dismiss preview when tapping terminal area
 document.getElementById("desktop-terminal-container").addEventListener("click", () => {
   document.getElementById("msg-preview").style.display = "none";
