@@ -361,11 +361,17 @@ export class BrokerClient {
   ): Promise<ControlResponse> {
     const params: Record<string, unknown> = { session_id: sessionId };
     if (opts.sinceSeq !== undefined) {
-      // The protocol carries since_seq as a JSON number; bigint is the wire
-      // contract for output_binary seqs but JSON requires a Number here.
-      // 2^53-1 covers any plausible byte count for a single session.
-      const n = Number(opts.sinceSeq);
-      if (Number.isFinite(n)) params.since_seq = n;
+      // Protocol field is JSON number (broker expects u64). Guard against
+      // bigint→Number precision loss past MAX_SAFE_INTEGER.
+      const maxSafeSeq = BigInt(Number.MAX_SAFE_INTEGER);
+      if (opts.sinceSeq > maxSafeSeq) {
+        process.emitWarning(
+          `[broker-client] sinceSeq=${opts.sinceSeq} exceeds Number.MAX_SAFE_INTEGER; clamping subscribe.since_seq to ${Number.MAX_SAFE_INTEGER}`,
+        );
+        params.since_seq = Number.MAX_SAFE_INTEGER;
+      } else {
+        params.since_seq = Number(opts.sinceSeq);
+      }
     }
     return this.request("subscribe", params, { timeoutMs: opts.timeoutMs }).then((resp) => {
       if (
