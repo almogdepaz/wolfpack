@@ -9,6 +9,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { createLogger, errMsg } from "../log.js";
+import { isProcessAlive } from "../shared/process-cleanup.js";
 import { join, normalize, isAbsolute } from "node:path";
 import { countTasksInContent, validatePlanFormat } from "../wolfpack-context.js";
 import { DEV_DIR } from "./dev-dir.js";
@@ -186,10 +187,6 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
         }
       } catch { /* expected: process exited — mark inactive */
         status.active = false;
-        const lockPath = join(projectDir, ".ralph.lock");
-        try { if (existsSync(lockPath)) unlinkSync(lockPath); } catch (e: unknown) {
-          log.warn("parseRalphLog: failed to remove stale lock", { error: e instanceof Error ? e.message : String(e) });
-        }
       }
     }
 
@@ -230,6 +227,22 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
   } catch (e: unknown) {
     log.warn("failed to parse ralph log", { dir: projectDir, error: errMsg(e) });
     return null;
+  }
+}
+
+/**
+ * Write-path stale-lock cleanup.
+ *
+ * Intentionally NOT called from parseRalphLog/read endpoints: callers decide
+ * when mutating the filesystem is appropriate.
+ */
+export function pruneStaleRalphLock(projectDir: string, pid: number): void {
+  if (pid <= 1 || isProcessAlive(pid)) return;
+  const lockPath = join(projectDir, ".ralph.lock");
+  try {
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch (e: unknown) {
+    log.warn("pruneStaleRalphLock: failed to remove stale lock", { error: errMsg(e) });
   }
 }
 

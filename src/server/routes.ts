@@ -45,6 +45,7 @@ import { getBackend, getRouter } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
+  pruneStaleRalphLock,
   scanRalphLoops,
   countPlanTasks,
 } from "./ralph.js";
@@ -742,6 +743,9 @@ export const routes: Record<
     const existing = parseRalphLog(projectDir);
     if (existing?.active) {
       return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
+    }
+    if (existing && existing.pid > 1) {
+      pruneStaleRalphLock(projectDir, existing.pid);
     }
 
     const lockPath = join(projectDir, ".ralph.lock");
