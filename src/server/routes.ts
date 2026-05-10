@@ -21,6 +21,7 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
+import { isProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
   BRANCH_REGEX,
@@ -754,18 +755,17 @@ export const routes: Record<
       // Lock exists — check if it's stale
       let lockPid = 0;
       try { lockPid = Number(readFileSync(lockPath, "utf-8").trim()); } catch { /* lock may have been removed between wx and read */ }
-      if (lockPid > 1) {
+      if (lockPid > 1 && isProcessAlive(lockPid)) {
+        // PID is alive — verify it's actually a ralph process (not a reused PID)
         try {
-          process.kill(lockPid, 0);
-          // PID is alive — verify it's actually a ralph process (not a reused PID)
-          try {
-            const cmdline = execFileSync("ps", ["-p", String(lockPid), "-o", "command="], { encoding: "utf-8", timeout: 3000 });
-            if (cmdline.includes("ralph-macchio") || cmdline.includes("worker")) {
-              return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
-            }
-            log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid, command: cmdline.trim() });
-          } catch { /* ps failed — process may have exited between kill(0) and ps, treat as stale */ }
-        } catch { /* expected: process dead — stale lock */ }
+          const cmdline = execFileSync("ps", ["-p", String(lockPid), "-o", "command="], { encoding: "utf-8", timeout: 3000 });
+          if (cmdline.includes("ralph-macchio") || cmdline.includes("worker")) {
+            return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
+          }
+          log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid, command: cmdline.trim() });
+        } catch {
+          // ps failed even though kill(0) says alive — treat lock as stale.
+        }
       }
       // Stale lock — remove and retry atomic create
       try { unlinkSync(lockPath); } catch (e2: unknown) {
