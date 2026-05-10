@@ -124,8 +124,14 @@ function resolveBin(name: string): string {
 const SRT_BIN = SANDBOX_ENABLED ? resolveBin("srt") : "";
 const SRT_AVAILABLE = SANDBOX_ENABLED && SRT_BIN !== "srt"; // resolveBin returns the bare name if not found
 
-/** Path to the per-run srt settings file (cleaned up on exit). */
-const SRT_SETTINGS_PATH = join(PROJECT_DIR, ".ralph-srt-settings.json");
+/**
+ * Path to this worker's srt settings file (cleaned up on exit).
+ *
+ * MEDIUM finding from .context/reports/issues.md: fixed filename caused
+ * concurrent ralph workers on the same project to overwrite each other's
+ * sandbox config. Include pid so each worker owns its own file.
+ */
+const SRT_SETTINGS_PATH = join(PROJECT_DIR, `.ralph-srt-settings-${process.pid}.json`);
 
 /** Write srt settings file and return the path. */
 function writeSrtSettings(allowedWriteDir: string): string {
