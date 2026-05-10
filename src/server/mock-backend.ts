@@ -123,7 +123,11 @@ export class MockBackend implements SessionBackend {
     else this._aliveOverride.set(name, alive);
   }
 
-  onSessionData(_name: string, _cb: (data: Uint8Array) => void, _opts?: { sinceSeq?: bigint }): (() => void) | null {
+  onSessionData(
+    _name: string,
+    _cb: (data: Uint8Array) => void,
+    _opts?: { sinceSeq?: bigint; onSubscribeError?: (err: unknown) => void },
+  ): (() => void) | null {
     // No real data stream — return a no-op unsubscribe
     return () => {};
   }

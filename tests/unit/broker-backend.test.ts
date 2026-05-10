@@ -556,6 +556,63 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(client.subscribeCallCount).toBe(2);
   });
+
+  // Regression: HIGH finding from .context/reports/issues.md
+  // "subscribe-RPC failure leaves WS open with no data stream".
+  // The fix: broker-backend invokes opts.onSubscribeError so the WS layer
+  // can tear down the viewer instead of leaving it idle.
+  test("subscribe RPC failure invokes opts.onSubscribeError exactly once", async () => {
+    const errors: unknown[] = [];
+    client.nextSubscribeError = new Error("broker exploded");
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => errors.push(e),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("broker exploded");
+  });
+
+  test("onSubscribeError is NOT invoked on successful subscribe", async () => {
+    const errors: unknown[] = [];
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => errors.push(e),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toEqual([]);
+  });
+
+  test("onSubscribeError is only invoked for the first subscriber (the one that issued the RPC)", async () => {
+    // The subscribe RPC is issued only by the first subscriber. If a second
+    // subscriber attaches while the RPC is still in flight and the RPC fails,
+    // only the first subscriber's onSubscribeError should fire — a second
+    // subscriber is reusing an existing (in-flight, eventually failed) RPC,
+    // not issuing its own. The current implementation invokes the callback
+    // attached to the first subscriber; second subscriber gets nothing.
+    client.nextSubscribeError = new Error("broker exploded");
+    const firstErrors: unknown[] = [];
+    const secondErrors: unknown[] = [];
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => firstErrors.push(e),
+    });
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => secondErrors.push(e),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(firstErrors).toHaveLength(1);
+    expect(secondErrors).toHaveLength(0);
+  });
+
+  test("a throwing onSubscribeError callback does not crash the unwind path", async () => {
+    client.nextSubscribeError = new Error("transport error");
+    expect(() => {
+      backend.onSessionData("live", () => {}, {
+        onSubscribeError: () => { throw new Error("callback threw"); },
+      });
+    }).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    // Refcount must still have been unwound despite the callback throwing
+    expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
+  });
 });
 
 describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {

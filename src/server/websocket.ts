@@ -11,6 +11,7 @@ import {
 } from "../validation.js";
 import {
   CLOSE_CODE_NORMAL,
+  CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   CLOSE_CODE_DISPLACED,
   WS_CLOSE_REASONS,
@@ -580,7 +581,24 @@ function setupNewPtyEntry(
         }
         if (_coalesceTimer) clearTimeout(_coalesceTimer);
         _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
-      }, { sinceSeq: prefillSeq });
+      }, {
+        sinceSeq: prefillSeq,
+        // HIGH finding from .context/reports/issues.md: when the broker
+        // `subscribe` RPC fails after onSessionData returns, the backend
+        // unwinds locally but the WS would otherwise stay open with no
+        // data stream. Tear down so the client gets a 1011 close and can
+        // surface an error / retry, instead of staring at a dead viewer.
+        onSubscribeError: (err: unknown) => {
+          log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
+          if (!entry.alive) return;
+          if (entry.viewer && entry.viewer.readyState === 1) {
+            try { entry.viewer.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED); } catch (e: unknown) {
+              log.debug("subscribe-error: viewer close failed", { session, error: errMsg(e) });
+            }
+          }
+          teardownPty(session);
+        },
+      });
       if (!unsub) {
         log.warn("onSessionData returned null — session vanished", { session });
         entry.alive = false;
