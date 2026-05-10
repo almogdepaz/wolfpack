@@ -277,7 +277,14 @@ export class BrokerClient {
     }
     this.activeSubscriptions.add(sessionId);
     if (opts.sinceSeq !== undefined) {
-      this.activeSubscriptionSeq.set(sessionId, opts.sinceSeq);
+      // Take max(prev, sinceSeq): never lower the floor below what we've
+      // already observed via OUTPUT_BINARY frames. A caller passing a stale
+      // sinceSeq would otherwise force redundant replay on reconnect (LOW-1
+      // in review-tasks/report-broker.md). The broker handles redundancy
+      // gracefully but the duplicate bytes are wasted work.
+      const prev = this.activeSubscriptionSeq.get(sessionId);
+      const next = prev !== undefined && prev > opts.sinceSeq ? prev : opts.sinceSeq;
+      this.activeSubscriptionSeq.set(sessionId, next);
     } else if (!this.activeSubscriptionSeq.has(sessionId)) {
       this.activeSubscriptionSeq.set(sessionId, undefined);
     }

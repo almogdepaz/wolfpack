@@ -57,7 +57,7 @@ export interface PtyBackendMethods {
   onSessionData(
     name: string,
     cb: (data: Uint8Array) => void,
-    opts?: {
+    opts: {
       sinceSeq?: bigint;
       /**
        * Async-failure escape hatch. The broker `subscribe` RPC is fire-and-
@@ -65,10 +65,12 @@ export interface PtyBackendMethods {
        * is returned immediately. If the RPC later rejects, the backend has
        * unwound its local refcount but the WS layer's reference to the
        * (now dead) callback is still in `entry.unsubscribe`, leaving the
-       * viewer connected with no data stream forever. Pass this callback
-       * to be notified so you can tear down the viewer with a 1011 close.
+       * viewer connected with no data stream forever. The callback is
+       * REQUIRED so callers can't silently regress the dead-viewer fix
+       * (LOW-2 in review-tasks/report-server.md); pass `() => {}` for
+       * fire-and-forget probe paths that don't care about teardown.
        */
-      onSubscribeError?: (err: unknown) => void;
+      onSubscribeError: (err: unknown) => void;
     },
   ): (() => void) | null;
   writeToTerminal(name: string, data: Buffer | string): void;

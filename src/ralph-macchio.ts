@@ -127,7 +127,7 @@ const SRT_AVAILABLE = SANDBOX_ENABLED && SRT_BIN !== "srt"; // resolveBin return
 /**
  * Path to this worker's srt settings file (cleaned up on exit).
  *
- * MEDIUM finding from .context/reports/issues.md: fixed filename caused
+ * MEDIUM finding from edc-context/reports/issues.md: fixed filename caused
  * concurrent ralph workers on the same project to overwrite each other's
  * sandbox config. Include pid so each worker owns its own file.
  */
@@ -554,7 +554,7 @@ process.on("exit", () => { removeLock(); cleanupSrtSettings(); });
 /**
  * Graceful shutdown shared by SIGTERM and SIGINT.
  *
- * Resolves HIGH finding from .context/reports/issues.md: previously only
+ * Resolves HIGH finding from edc-context/reports/issues.md: previously only
  * SIGTERM was handled, so Ctrl+C (SIGINT) from a terminal or `kill -INT`
  * left `.ralph.lock` and any in-progress git worktrees behind. The next
  * `POST /api/ralph/start` would hit the stale lock and reject with 409
@@ -569,6 +569,13 @@ process.on("exit", () => { removeLock(); cleanupSrtSettings(); });
  *   6. force-exit after 3.5s in case any of the above hangs
  */
 function shutdownHandler(signal: "SIGTERM" | "SIGINT"): void {
+  // Re-entry guard: if both SIGTERM and SIGINT arrive (parent sends TERM,
+  // operator follows with Ctrl+C), the second invocation must not duplicate
+  // killProcessTreeSync, lock unlinks, or the 3.5s force-exit timer.
+  if (stopping) {
+    appendFileSync(LOG_FILE, `=== ignoring ${signal}, shutdown already in progress ===\n`);
+    return;
+  }
   stopping = true;
   appendFileSync(LOG_FILE, `\n=== 🛑 Received ${signal} — cleaning up ===\n`);
   if (activeChild?.pid) {

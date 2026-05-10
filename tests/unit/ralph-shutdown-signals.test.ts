@@ -1,5 +1,5 @@
 /**
- * Regression test for HIGH finding from .context/reports/issues.md:
+ * Regression test for HIGH finding from edc-context/reports/issues.md:
  * "SIGINT unhandled in ralph worker — orphan lock and worktrees".
  *
  * Why a source-level test instead of a subprocess test:
@@ -23,20 +23,23 @@ const SOURCE = readFileSync(
 );
 
 describe("ralph-macchio shutdown signal registration", () => {
+  // Quote class is `["']` to tolerate either single or double quotes
+  // (LOW-3 in review-tasks/report-tests.md): a formatter switch should
+  // not produce a false negative.
   test("registers a SIGTERM handler", () => {
-    expect(SOURCE).toMatch(/process\.on\(\s*"SIGTERM"/);
+    expect(SOURCE).toMatch(/process\.on\(\s*["']SIGTERM["']/);
   });
 
   test("registers a SIGINT handler (regression for issues.md HIGH)", () => {
-    expect(SOURCE).toMatch(/process\.on\(\s*"SIGINT"/);
+    expect(SOURCE).toMatch(/process\.on\(\s*["']SIGINT["']/);
   });
 
   test("both signals route through the same shutdownHandler", () => {
     // Loose match — we don't care about the arrow-fn shape, only that both
     // signals reach a function named shutdownHandler. The body of that
     // handler is the single source of truth for cleanup.
-    const sigterm = /process\.on\(\s*"SIGTERM"\s*,[\s\S]*?shutdownHandler/.test(SOURCE);
-    const sigint = /process\.on\(\s*"SIGINT"\s*,[\s\S]*?shutdownHandler/.test(SOURCE);
+    const sigterm = /process\.on\(\s*["']SIGTERM["']\s*,[\s\S]*?shutdownHandler/.test(SOURCE);
+    const sigint = /process\.on\(\s*["']SIGINT["']\s*,[\s\S]*?shutdownHandler/.test(SOURCE);
     expect(sigterm).toBe(true);
     expect(sigint).toBe(true);
   });
@@ -46,7 +49,21 @@ describe("ralph-macchio shutdown signal registration", () => {
     // — these are what unblock the next `POST /api/ralph/start`.
     const start = SOURCE.indexOf("function shutdownHandler(");
     expect(start).toBeGreaterThan(-1);
-    const body = SOURCE.slice(start, SOURCE.indexOf("\n}\n", start));
+    // Find the function body terminator. Prefer the canonical `\n}\n`
+    // (closing brace on its own line followed by a blank line). If a
+    // formatter ever emits `}` without a trailing blank line, fall back
+    // to the next `\n}` so we don't over-capture the rest of the file
+    // and silently mask a removeLock() removal (LOW-3 in
+    // review-tasks/report-tests.md).
+    let end = SOURCE.indexOf("\n}\n", start);
+    if (end === -1) end = SOURCE.indexOf("\n}", start);
+    expect(end).toBeGreaterThan(start);
+    const body = SOURCE.slice(start, end);
+    // Sanity cap: shutdownHandler is intentionally small. If the slice is
+    // huge, we've over-captured (formatter changed the closing brace
+    // pattern) and the toContain assertions below would silently pass
+    // against unrelated code.
+    expect(body.length).toBeLessThan(2000);
     expect(body).toContain("removeLock()");
     expect(body).toContain("cleanupSrtSettings()");
   });

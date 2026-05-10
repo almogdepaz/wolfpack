@@ -305,7 +305,7 @@ export class FrameParser {
   /**
    * Ensure chunks[0] holds at least `n` bytes (or the remainder of the buffer if smaller).
    *
-   * Allocation characteristic (known LOW tradeoff in .context/reports/issues.md):
+   * Allocation characteristic (known LOW tradeoff in edc-context/reports/issues.md):
    * when data spans multiple chunks, coalesce() allocates a new Uint8Array and
    * copies bytes. Under high-throughput + fragmented input this increases GC
    * pressure, but keeps parser logic simple/obvious for current scale.

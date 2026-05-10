@@ -126,7 +126,7 @@ export class MockBackend implements SessionBackend {
   onSessionData(
     _name: string,
     _cb: (data: Uint8Array) => void,
-    _opts?: { sinceSeq?: bigint; onSubscribeError?: (err: unknown) => void },
+    _opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void },
   ): (() => void) | null {
     // No real data stream — return a no-op unsubscribe
     return () => {};

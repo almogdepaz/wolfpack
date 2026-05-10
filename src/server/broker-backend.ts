@@ -359,9 +359,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   onSessionData(
     name: string,
     cb: (data: Uint8Array) => void,
-    opts?: {
+    opts: {
       sinceSeq?: bigint;
-      onSubscribeError?: (err: unknown) => void;
+      onSubscribeError: (err: unknown) => void;
     },
   ): (() => void) | null {
     const id = this.nameToId.get(name);
@@ -375,8 +375,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       // state so the refcount doesn't leak and the output sub is cleaned up.
       // ALSO notify the caller via opts.onSubscribeError so the WS layer can
       // tear down the viewer (otherwise it sits idle forever — see HIGH
-      // finding in .context/reports/issues.md).
-      this.client.subscribe(id, { sinceSeq: opts?.sinceSeq }).catch((e: unknown) => {
+      // finding in edc-context/reports/issues.md).
+      this.client.subscribe(id, { sinceSeq: opts.sinceSeq }).catch((e: unknown) => {
         log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(e) });
         try { unsubData(); } catch { /* ignore */ }
         const r = this.subscriberRefs.get(id);
@@ -384,10 +384,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
           r.count = Math.max(0, r.count - 1);
           if (r.count === 0) this.subscriberRefs.delete(id);
         }
-        if (opts?.onSubscribeError) {
-          try { opts.onSubscribeError(e); } catch (cbErr: unknown) {
-            log.debug("onSubscribeError callback threw", { name, id, error: errMsg(cbErr) });
-          }
+        try { opts.onSubscribeError(e); } catch (cbErr: unknown) {
+          log.debug("onSubscribeError callback threw", { name, id, error: errMsg(cbErr) });
         }
       });
     }

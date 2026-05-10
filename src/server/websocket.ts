@@ -457,6 +457,15 @@ function setupNewPtyEntry(
         const samples: Array<{ t: number; bytes: number }> = [];
         const observe = backend.onSessionData(session, (data: Uint8Array) => {
           samples.push({ t: Date.now(), bytes: data.length });
+        }, {
+          // Probe-only observer for the resize-settle window. If the
+          // subscribe RPC fails here, the main per-viewer subscription
+          // (registered after settle) carries its own teardown handler;
+          // this probe just stops collecting samples — settle will time
+          // out naturally and we move on.
+          onSubscribeError: (err: unknown) => {
+            log.debug("resize-settle observer subscribe failed", { session, error: errMsg(err) });
+          },
         });
         try {
           await backend.resize(session, appliedSize.cols, appliedSize.rows);
@@ -583,7 +592,7 @@ function setupNewPtyEntry(
         _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
       }, {
         sinceSeq: prefillSeq,
-        // HIGH finding from .context/reports/issues.md: when the broker
+        // HIGH finding from edc-context/reports/issues.md: when the broker
         // `subscribe` RPC fails after onSessionData returns, the backend
         // unwinds locally but the WS would otherwise stay open with no
         // data stream. Tear down so the client gets a 1011 close and can
