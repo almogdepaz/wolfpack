@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import pkg from "../../package.json";
-import { validateRequestJwt } from "../auth.js";
+import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
 import { initBackend, getBackend, getRouter } from "./backend.js";
 import { routes } from "./routes.js";
@@ -224,6 +224,25 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 const { server, wss } = createServerInstance();
 
 export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void> {
+  // Verify JWT auth configuration BEFORE any listeners are bound. We fail
+  // hard on misconfiguration (secret set but rejected) so a typo can never
+  // silently disable authentication. Missing secret is logged loudly but
+  // permitted (matches install.sh behavior — auth is opt-in).
+  const authCfg = getCachedJwtAuthConfig();
+  const authStatus = verifyJwtAuthAtStartup(authCfg);
+  if (authStatus === "invalid") {
+    log.error("refusing to start: WOLFPACK_JWT_SECRET is set but invalid", {
+      reason: authCfg.invalidReason,
+      hint: "unset WOLFPACK_JWT_SECRET to run without auth, or use a 32+ char value",
+    });
+    process.exit(1);
+  }
+  if (authStatus === "missing") {
+    log.error("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
+      hint: "set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication",
+    });
+  }
+
   // Initialize session backend (broker is the only supported backend; the
   // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
   initBackend();
