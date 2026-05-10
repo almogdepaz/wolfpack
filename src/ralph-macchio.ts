@@ -545,10 +545,26 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
 // last-resort lock + srt settings cleanup on any exit (covers unhandled exceptions, SIGINT, etc.)
 process.on("exit", () => { removeLock(); cleanupSrtSettings(); });
 
-// clean up child process, worktrees, and lock on SIGTERM
-process.on("SIGTERM", () => {
+/**
+ * Graceful shutdown shared by SIGTERM and SIGINT.
+ *
+ * Resolves HIGH finding from .context/reports/issues.md: previously only
+ * SIGTERM was handled, so Ctrl+C (SIGINT) from a terminal or `kill -INT`
+ * left `.ralph.lock` and any in-progress git worktrees behind. The next
+ * `POST /api/ralph/start` would hit the stale lock and reject with 409
+ * until manually cleaned up.
+ *
+ * Both signals share the same teardown:
+ *   1. set `stopping` so the iterate loop can short-circuit
+ *   2. SIGTERM the child process tree (claude/cursor/etc.)
+ *   3. tear down per-iteration worktrees (plan/task mode only)
+ *   4. flush plan back to PROJECT_DIR so the UI sees the final state
+ *   5. release the lock + per-PID srt-settings file
+ *   6. force-exit after 3.5s in case any of the above hangs
+ */
+function shutdownHandler(signal: "SIGTERM" | "SIGINT"): void {
   stopping = true;
-  appendFileSync(LOG_FILE, `\n=== 🛑 Received SIGTERM — cleaning up ===\n`);
+  appendFileSync(LOG_FILE, `\n=== 🛑 Received ${signal} — cleaning up ===\n`);
   if (activeChild?.pid) {
     killProcessTreeSync(activeChild.pid);
   }
@@ -568,7 +584,10 @@ process.on("SIGTERM", () => {
   removeLock();
   cleanupSrtSettings();
   setTimeout(() => process.exit(0), 3500);
-});
+}
+
+process.on("SIGTERM", () => shutdownHandler("SIGTERM"));
+process.on("SIGINT", () => shutdownHandler("SIGINT"));
 
 function logSummary(tasksCompleted: number, subtasksAdded: number): void {
   const startMatch = readFileSync(LOG_FILE, "utf-8").match(/^started: (.+)$/m);

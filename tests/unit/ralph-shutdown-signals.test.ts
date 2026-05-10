@@ -1,0 +1,53 @@
+/**
+ * Regression test for HIGH finding from .context/reports/issues.md:
+ * "SIGINT unhandled in ralph worker — orphan lock and worktrees".
+ *
+ * Why a source-level test instead of a subprocess test:
+ *   ralph-macchio.ts has top-level side effects (parses argv, calls main()
+ *   on import). Driving real cleanup requires a project fixture, a written
+ *   lock, a spawned bun subprocess, and an OS signal — far heavier than the
+ *   bug warrants. The actual cleanup logic is shared between SIGTERM and
+ *   SIGINT via `shutdownHandler`, so the test we need is "both signals are
+ *   wired to the same handler". A grep is enough.
+ *
+ * If anyone deletes the SIGINT line again (or wires it to a different
+ * handler), this test fails.
+ */
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const SOURCE = readFileSync(
+  join(import.meta.dir, "..", "..", "src", "ralph-macchio.ts"),
+  "utf-8",
+);
+
+describe("ralph-macchio shutdown signal registration", () => {
+  test("registers a SIGTERM handler", () => {
+    expect(SOURCE).toMatch(/process\.on\(\s*"SIGTERM"/);
+  });
+
+  test("registers a SIGINT handler (regression for issues.md HIGH)", () => {
+    expect(SOURCE).toMatch(/process\.on\(\s*"SIGINT"/);
+  });
+
+  test("both signals route through the same shutdownHandler", () => {
+    // Loose match — we don't care about the arrow-fn shape, only that both
+    // signals reach a function named shutdownHandler. The body of that
+    // handler is the single source of truth for cleanup.
+    const sigterm = /process\.on\(\s*"SIGTERM"\s*,[\s\S]*?shutdownHandler/.test(SOURCE);
+    const sigint = /process\.on\(\s*"SIGINT"\s*,[\s\S]*?shutdownHandler/.test(SOURCE);
+    expect(sigterm).toBe(true);
+    expect(sigint).toBe(true);
+  });
+
+  test("shutdownHandler removes the lock and cleans srt settings", () => {
+    // The handler itself must call removeLock() and cleanupSrtSettings()
+    // — these are what unblock the next `POST /api/ralph/start`.
+    const start = SOURCE.indexOf("function shutdownHandler(");
+    expect(start).toBeGreaterThan(-1);
+    const body = SOURCE.slice(start, SOURCE.indexOf("\n}\n", start));
+    expect(body).toContain("removeLock()");
+    expect(body).toContain("cleanupSrtSettings()");
+  });
+});
