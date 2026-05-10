@@ -1098,6 +1098,7 @@ function createPtyTerminalController(opts) {
   let _ptyClient = null;
   let _hydrationStarted = false;
   let _hydrationWritesInFlight = 0;
+  let _connectEpoch = 0;
   let _reconnectPendingReset = false;
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
@@ -1152,8 +1153,11 @@ function createPtyTerminalController(opts) {
     if (_hydration) _hydration.notifyData();
     try {
       if (_hydration && _hydration.pending) {
+        const writeEpoch = _connectEpoch;
         _hydrationWritesInFlight++;
         _term.write(data, () => {
+          // Ignore stale callbacks from a prior connect/dispose epoch.
+          if (writeEpoch !== _connectEpoch) return;
           _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
           __wfTraceEvent(_diagTrace, "term.writeDone", { size: data.length, inFlight: _hydrationWritesInFlight });
           if (_hydration) _hydration.scheduleFinish();
@@ -1480,6 +1484,7 @@ function createPtyTerminalController(opts) {
   function connect(connectOpts?: { takeControl?: boolean }) {
     if (_ptyClient && _ptyClient.isOpen) return;
     if (_ptyClient) _ptyClient.close();
+    _connectEpoch++;
 
     // Start hydration on first connect
     if (!_hydrationStarted && _hydration) {
@@ -1614,6 +1619,7 @@ function createPtyTerminalController(opts) {
    * Removes keydown listeners from container before disposing terminal.
    */
   function dispose() {
+    _connectEpoch++;
     if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
     if (_hydration) { _hydration.cancel(); _hydration = null; }
     _hydrationStarted = false;
