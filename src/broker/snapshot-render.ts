@@ -198,13 +198,48 @@ export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
   const parts: string[] = [];
   parts.push(CLEAR_AND_HOME);
 
-  // Scrollback as plain text — always painted on the primary screen because
-  // the broker only accumulates scrollback while NOT on alt screen, so the
-  // bytes here represent the primary's true history. Style fidelity for
-  // scrollback is intentionally dropped to keep the prefill payload bounded.
+  // Helper: emit one StyledLine with per-cell SGR transitions, tracking
+  // last-emitted attrs across the whole render so SGR state carries
+  // through scrollback → visible_screen seamlessly. Trailing default-bg
+  // padding is trimmed to avoid emitting hundreds of trailing spaces per
+  // line for sessions with mostly-empty rows.
+  let lastAttrs: CellAttrs = DEFAULT_ATTRS;
+  let inDefault = true;
+  const emitStyledLine = (line: StyledLine) => {
+    const cells = line.cells ?? [];
+    // Find last non-blank-default cell so we can trim trailing pad.
+    let lastNonBlank = -1;
+    for (let i = cells.length - 1; i >= 0; i--) {
+      const c = cells[i];
+      const isBlank = (c.ch === " " || c.ch === "\u00a0" || !c.ch);
+      const a = c.attrs ?? DEFAULT_ATTRS;
+      if (!isBlank || !isDefault(a)) { lastNonBlank = i; break; }
+    }
+    const upTo = lastNonBlank + 1;
+    for (let i = 0; i < upTo; i++) {
+      const cell = cells[i];
+      const attrs = cell.attrs ?? DEFAULT_ATTRS;
+      if (!attrsEqual(attrs, lastAttrs)) {
+        if (!(inDefault && isDefault(attrs))) {
+          parts.push(sgrFor(attrs));
+          inDefault = isDefault(attrs);
+        }
+        lastAttrs = attrs;
+      }
+      parts.push(cell.ch ?? "");
+    }
+  };
+
+  // Scrollback with per-cell SGR. Always painted on the primary screen
+  // because the broker only accumulates scrollback while NOT on alt screen,
+  // so the bytes here represent the primary's true history. SGR is
+  // preserved so colored agent output (e.g. pi sessions where the entire
+  // visible content has scrolled into history) renders correctly on
+  // attach — without this, the cells write as plain text and the canvas
+  // shows default-bg/fg until the next SIGWINCH triggers a live redraw.
   const scrollback = snap.scrollback ?? [];
   for (const line of scrollback) {
-    parts.push(plainLine(line));
+    emitStyledLine(line);
     parts.push("\r\n");
   }
 
@@ -217,24 +252,11 @@ export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
   const onAlt = snap.modes?.alt_screen === true;
   if (onAlt) parts.push(`${CSI}?1049h`);
 
-  // Visible screen with per-cell SGR transitions.
+  // Visible screen, sharing the same SGR-tracking state as scrollback so
+  // we don't re-emit attrs already in effect.
   const visible = snap.visible_screen ?? [];
-  let lastAttrs: CellAttrs = DEFAULT_ATTRS;
-  let inDefault = true;
   for (let r = 0; r < visible.length; r++) {
-    const cells = visible[r].cells ?? [];
-    for (const cell of cells) {
-      const attrs = cell.attrs ?? DEFAULT_ATTRS;
-      if (!attrsEqual(attrs, lastAttrs)) {
-        // Skip a no-op SGR if we're already in default and this cell is too.
-        if (!(inDefault && isDefault(attrs))) {
-          parts.push(sgrFor(attrs));
-          inDefault = isDefault(attrs);
-        }
-        lastAttrs = attrs;
-      }
-      parts.push(cell.ch ?? "");
-    }
+    emitStyledLine(visible[r]);
     if (r < visible.length - 1) parts.push("\r\n");
   }
 

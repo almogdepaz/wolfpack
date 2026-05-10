@@ -35,19 +35,35 @@ describe("renderSnapshotToAnsi: preamble", () => {
 });
 
 describe("renderSnapshotToAnsi: scrollback rendering", () => {
-  test("emits scrollback as plain lines with CRLF (no SGR)", () => {
+  test("emits default-attrs scrollback as plain lines with CRLF and no extra SGR", () => {
     const snap: SnapshotForRender = {
       scrollback: [row("first"), row("second")],
       visible_screen: [],
       cursor: { row: 0, col: 0 },
     };
     const out = decode(renderSnapshotToAnsi(snap));
-    // Scrollback section should be plaintext, separated by \r\n.
+    // Default-attrs scrollback should appear unstyled, separated by \r\n.
     expect(out).toContain("first\r\nsecond\r\n");
-    // No SGR escape sequences except the leading reset and the trailing
-    // cursor-shape sequence.
+    // Default-attrs cells must not emit SGR transitions.
     const ansiBetween = out.split("\x1b[0m")[1] ?? "";
     expect(ansiBetween.indexOf("\x1b[0;")).toBe(-1);
+  });
+
+  test("emits SGR for styled scrollback cells (preserves color through history)", () => {
+    const snap: SnapshotForRender = {
+      scrollback: [
+        styledRow([
+          { ch: "g", attrs: { fg: 0x00ff00 } },
+          { ch: "r", attrs: { fg: 0x00ff00 } },
+          { ch: "n", attrs: { fg: 0x00ff00 } },
+        ]),
+      ],
+      visible_screen: [],
+      cursor: { row: 0, col: 0 },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    // SGR transition for the green fg before the chars
+    expect(out).toContain("\x1b[0;38;2;0;255;0mgrn");
   });
 
   test("trims trailing pad-spaces in scrollback lines", () => {

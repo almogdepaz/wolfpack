@@ -177,7 +177,10 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     const ws = new FakeWs();
     attachWs(ws);
     ws.pushJson({ type: "attach", cols: 100, rows: 30 });
-    await wait(40);
+    // Attach flow waits PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS=200ms for first
+    // resize to settle, then QUIESCE_MIN_WAIT_MS=80ms floor before snapshot,
+    // plus broker IO. 350ms covers the whole flow with margin.
+    await wait(350);
 
     expect(ws.hasJsonType("attach_ack")).toBe(true);
     expect(ws.hasJsonType("prefill_viewport")).toBe(true);
@@ -202,6 +205,9 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     ws.frames.length = 0;
 
     backend.emitData(SESSION, new Uint8Array([0x41, 0x42, 0x43]));
+    // Output is coalesced server-side (~16ms flush window) before forwarding,
+    // so wait briefly for the flush. See COALESCE_FLUSH_MS in websocket.ts.
+    await wait(25);
     const bin = ws.binaryFrames();
     expect(bin.length).toBe(1);
     expect(Array.from(bin[0])).toEqual([0x41, 0x42, 0x43]);
@@ -237,17 +243,21 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 132, rows: 50 }]);
   });
 
-  test("resize during attach is reconciled before snapshot subscribe completes", async () => {
+  test("resize during attach uses settled dims for the single backend resize", async () => {
     backend.resizeDelayMs = 30;
     const ws = new FakeWs();
     attachWs(ws);
 
     ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
     ws.pushJson({ type: "resize", cols: 132, rows: 50 });
-    await wait(140);
+    // PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS=200ms settle window absorbs the
+    // 132x50 message before any backend.resize fires; the quiescence loop
+    // then issues ONE resize at the settled dims. This intentionally avoids
+    // the old behavior of resizing twice (which caused two SIGWINCH redraws
+    // and the post-attach scrolldown burst).
+    await wait(400);
 
     expect(backend.resizeCalls).toEqual([
-      { name: SESSION, cols: 80, rows: 24 },
       { name: SESSION, cols: 132, rows: 50 },
     ]);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
@@ -268,7 +278,9 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     const wsA = new FakeWs();
     attachWs(wsA);
     wsA.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
-    await wait(30);
+    // prefillMode:"none" skips the quiescence settle, but PRE_SNAPSHOT_RESIZE_*
+    // wait still runs before the (skipped) snapshot. 250ms covers it.
+    await wait(250);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
 
     const wsB = new FakeWs();
@@ -280,7 +292,10 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     backend.resizeCalls.length = 0;
     wsB.pushJson({ type: "take_control" });
-    await wait(40);
+    // performImmediateTakeover spawns a fresh attach which goes through the
+    // full settle + quiescence flow before subscribing. 350ms covers the
+    // 200ms initial wait + 80ms quiesce floor + broker IO + margin.
+    await wait(350);
 
     expect(wsA.closeCode).toBe(4002); // displaced
     expect(wsB.hasJsonType("control_granted")).toBe(true);

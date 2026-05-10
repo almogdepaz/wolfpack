@@ -49,6 +49,46 @@ const MAX_PTY_BINARY_BYTES = 16_384;
 const RESIZE_DEBOUNCE_MS = 80;
 const RAPID_EXIT_THRESHOLD_MS = 3_000;
 const POST_SPAWN_RESIZE_DELAY_MS = 100;
+// Pre-snapshot resize-settle wait: avoids the "scrollback flash" where each
+// of the client's resize messages causes the shell (e.g. claude) to redraw
+// its full screen on SIGWINCH — those redraws are then replayed via
+// subscription as a streaming burst onto an already-revealed canvas.
+//
+// Strategy: defer ALL backend resizes until dims settle, then apply once at
+// final dims. The shell sees one SIGWINCH and emits one redraw, captured by
+// the snapshot. Cost: ~100-200ms of latency before prefill arrives. Worth
+// it — eliminates the burst entirely instead of just hiding it on client.
+const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
+// Wait this long for the FIRST resize before assuming none is coming.
+// Covers session-open CSS transitions (~200ms total) + WS jitter.
+const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 200;
+const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
+// After applying the settled resize, wait for the shell's SIGWINCH-triggered
+// redraw to fully land in the broker output stream so it's captured in the
+// snapshot — NOT replayed via `sinceSeq` to a viewer whose canvas is already
+// revealed.
+//
+// The naive 60ms blind sleep was wrong for heavy TUIs: claude's full-screen
+// repaint takes 200-600ms wall-clock and emits 1000+ kernel-rate output
+// chunks. With the old 60ms wait, the snapshot captured ~partial state and
+// the rest streamed as 1.5MB of post-snapshot replay frames, painting
+// mid-redraw fragments on the visible canvas (the "scrolldown" symptom).
+//
+// New strategy: observe broker output bytes via a temporary subscription and
+// snapshot only when we see <QUIESCE_BYTE_THRESHOLD bytes in a rolling
+// QUIESCE_WINDOW_MS window. Cap at QUIESCE_TIMEOUT_MS so a never-quiet
+// session (animated spinner, log tail) still gets a snapshot in bounded
+// time. Floor at QUIESCE_MIN_WAIT_MS so SIGWINCH has time to actually
+// trigger redraws — if we snapshot before bytes start, we'd capture
+// pre-redraw state and the redraw would still arrive as replay.
+const QUIESCE_WINDOW_MS = 100;
+const QUIESCE_BYTE_THRESHOLD = 1024;
+const QUIESCE_TIMEOUT_MS = 800;
+const QUIESCE_MIN_WAIT_MS = 80;
+// Adaptive coalescing of broker output frames before forwarding to viewer.
+// See call site for full reasoning.
+const COALESCE_FLUSH_MS = 16;
+const COALESCE_HARD_MS = 150;
 
 function bufferStartsWithPrefillSuffix(prefillTail: Buffer, attachPrefix: Buffer, overlap: number): boolean {
   const prefillStart = prefillTail.length - overlap;
@@ -334,25 +374,122 @@ function setupNewPtyEntry(
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
-      // Resize FIRST so the snapshot below reflects the client's actual cols.
-      // SIGWINCH-triggered redraws that land before snapshot are embedded in it;
-      // redraws that land after snapshot have seq > prefillSeq and are replayed
-      // by the sinceSeq subscribe below — no gap, no double-paint.
-      let appliedSize = { cols, rows };
-      await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      // Skip settle wait when there's no snapshot to take — the only purpose
+      // of waiting is to capture the SIGWINCH redraw in the snapshot, but
+      // prefillMode:"none" means we don't snapshot.
+      const skipSettle = prefillMode === "none";
 
-      // A resize can arrive while attach is still spawning/prefilling. Apply
-      // the newest requested dimensions before snapshot so the prefill is
-      // rendered for the client's committed layout, not the initial attach size.
-      if (
-        latestRequestedSize &&
-        (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
-      ) {
-        appliedSize = latestRequestedSize;
-        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      // Wait for client's resize messages to settle before applying any
+      // resize to the backend, so the SHELL only sees ONE SIGWINCH at the
+      // final settled dims.
+      //
+      // The common case: clicking a session triggers CSS layout transitions
+      // (sidebar margin-left 200ms + view transform 280ms) and the terminal
+      // container width shifts over ~200ms. The client sends a resize per
+      // animation frame during that window (typically 3-4 resizes).
+      //
+      // Naive approach (one backend.resize per client resize) creates two
+      // problems:
+      //   1. Each backend.resize forwards SIGWINCH to the PTY child. TUI
+      //      apps like claude redraw their full screen on every SIGWINCH —
+      //      so 4 resizes → 4 full redraws sent to the broker output stream.
+      //   2. Once we subscribe with sinceSeq, broker replays those redraws
+      //      to the client, who paints them sequentially → visible streaming.
+      //
+      // Better: don't apply ANY resize until dims settle. Then apply once
+      // at final dims. SIGWINCH fires once → one redraw → one snapshot capture.
+      //
+      // Loop until either:
+      //   (a) we've seen at least one resize AND PRE_SNAPSHOT_RESIZE_SETTLE_MS
+      //       has passed since the most recent one — dims have settled.
+      //   (b) we've seen NO resize but waited PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS
+      //       — client probably has no resize coming.
+      //   (c) PRE_SNAPSHOT_RESIZE_TIMEOUT_MS hard cap.
+      let pendingSize = { cols, rows };
+      if (!skipSettle) {
+        const settleStart = Date.now();
+        let lastChangeAt = -1;
+        while (true) {
+          if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+          const elapsedTotal = Date.now() - settleStart;
+          if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_TIMEOUT_MS) break;
+          if (lastChangeAt < 0) {
+            if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS) break;
+          } else {
+            const elapsedSinceChange = Date.now() - lastChangeAt;
+            if (elapsedSinceChange >= PRE_SNAPSHOT_RESIZE_SETTLE_MS) break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 16));
+          if (
+            latestRequestedSize &&
+            (latestRequestedSize.cols !== pendingSize.cols || latestRequestedSize.rows !== pendingSize.rows)
+          ) {
+            pendingSize = latestRequestedSize;
+            lastChangeAt = Date.now();
+          }
+        }
       }
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
+
+      // Apply settled dims and wait for the SIGWINCH-triggered redraw to
+      // fully land in the broker output stream BEFORE snapshotting.
+      //
+      // CRITICAL: this loop also handles dim changes that arrive AFTER our
+      // initial resize. The client commonly sends a forced refit on
+      // attach_ack (one rAF after we ack the attach) — if that arrives
+      // after we resize but before we snapshot, the snapshot captures dims
+      // and partial redraw; then the post-snapshot reconciliation resize
+      // would trigger ANOTHER full SIGWINCH redraw which streams as 1MB+
+      // of mid-redraw replay (the visible scrolldown).
+      //
+      // Strategy: every time `latestRequestedSize` differs from what we
+      // last applied, resize and reset the quiescence clock. Only exit
+      // when dims are stable AND broker has been quiet for one window.
+      // The temporary observer subscription does NOT forward bytes to the
+      // client — those bytes are captured by the snapshot.
+      //
+      // Skip when not snapshotting (prefillMode="none"): no snapshot, no
+      // replay window, no scrolldown surface.
+      let appliedSize = pendingSize;
+      if (!skipSettle) {
+        const samples: Array<{ t: number; bytes: number }> = [];
+        const observe = backend.onSessionData(session, (data: Uint8Array) => {
+          samples.push({ t: Date.now(), bytes: data.length });
+        });
+        try {
+          await backend.resize(session, appliedSize.cols, appliedSize.rows);
+          let lastResizeAt = Date.now();
+          const settleStart = lastResizeAt;
+          while (true) {
+            if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) break;
+            // Dim changed since we last applied? Re-resize and restart the
+            // quiescence clock so we capture this redraw too.
+            if (
+              latestRequestedSize &&
+              (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
+            ) {
+              appliedSize = latestRequestedSize;
+              await backend.resize(session, appliedSize.cols, appliedSize.rows);
+              lastResizeAt = Date.now();
+            }
+            const elapsedTotal = Date.now() - settleStart;
+            if (elapsedTotal >= QUIESCE_TIMEOUT_MS) break;
+            const elapsedSinceResize = Date.now() - lastResizeAt;
+            if (elapsedSinceResize >= QUIESCE_MIN_WAIT_MS) {
+              const cutoff = Date.now() - QUIESCE_WINDOW_MS;
+              while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
+              const recentBytes = samples.reduce((s, x) => s + x.bytes, 0);
+              if (recentBytes < QUIESCE_BYTE_THRESHOLD) break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 16));
+          }
+        } finally {
+          if (observe) observe();
+        }
+      } else {
+        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+      }
 
       // Snapshot AFTER resize so scrollback is reflowed to client cols.
       let prefillSeq: bigint | undefined;
@@ -386,10 +523,10 @@ function setupNewPtyEntry(
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
 
       // Final reconciliation catches resize frames that arrived while the
-      // snapshot bytes were being fetched/sent. Run BEFORE subscribing so any
-      // SIGWINCH-triggered redraws emitted by this resize land at seq >
-      // prefillSeq and are captured by the subscription's sinceSeq replay —
-      // not delivered at the old size to a viewer already rendering at the new.
+      // snapshot bytes were being fetched/sent. The resulting SIGWINCH
+      // redraw lands in the live stream with seq > prefillSeq; the coalesce
+      // logic below holds it through ghostty's render cycle so it never
+      // paints as mid-redraw fragments.
       if (
         latestRequestedSize &&
         (latestRequestedSize.cols !== appliedSize.cols || latestRequestedSize.rows !== appliedSize.rows)
@@ -401,11 +538,48 @@ function setupNewPtyEntry(
 
       // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
       // (e.g. post-resize redraws) that arrived after the snapshot was taken.
+      //
+      // ── Adaptive coalescing ──
+      // Broker forwards every PTY-read chunk as a separate output frame.
+      // macOS PTY delivers ~1KB clusters during heavy TUI redraws (claude
+      // SIGWINCH repaint = 1500 chunks @ 1024 bytes). Without coalescing,
+      // each chunk = one ws.send = one browser macrotask = one ghostty parse
+      // pass; ghostty paints between chunks as rAF fires, so the user sees
+      // mid-redraw fragments scrolling/painting incrementally.
+      //
+      // Strategy: append to a buffer + arm a flush timer for COALESCE_FLUSH_MS
+      // (one rAF). Each new chunk resets the timer. Hard cap at
+      // COALESCE_HARD_MS so continuous streams don't stall. Result: ghostty
+      // sees one larger atomic write per logical TUI frame, never mid-redraw.
+      //
+      // Latency cost: ~16ms on output (single keystroke echo: 25 → ~41ms).
+      // Imperceptible vs the visual mess of mid-redraw scrolldown.
+      let _coalesceBuf: Buffer[] = [];
+      let _coalesceTimer: NodeJS.Timeout | null = null;
+      let _coalesceFirstPushAt = 0;
+      const flushCoalesce = () => {
+        if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
+        if (!_coalesceBuf.length) return;
+        const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf);
+        _coalesceBuf = [];
+        _coalesceFirstPushAt = 0;
+        if (entry.viewer && entry.viewer.readyState === 1) {
+          try { entry.viewer.send(merged); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
+        }
+      };
       const unsub = backend.onSessionData(session, (data: Uint8Array) => {
         if (!entry.alive) return;
-        if (entry.viewer && entry.viewer.readyState === 1) {
-          try { entry.viewer.send(data); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
+        if (!entry.viewer || entry.viewer.readyState !== 1) return;
+        const now = Date.now();
+        if (_coalesceBuf.length === 0) _coalesceFirstPushAt = now;
+        _coalesceBuf.push(Buffer.from(data));
+        const heldFor = now - _coalesceFirstPushAt;
+        if (heldFor >= COALESCE_HARD_MS) {
+          flushCoalesce();
+          return;
         }
+        if (_coalesceTimer) clearTimeout(_coalesceTimer);
+        _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
       }, { sinceSeq: prefillSeq });
       if (!unsub) {
         log.warn("onSessionData returned null — session vanished", { session });
@@ -417,7 +591,13 @@ function setupNewPtyEntry(
         }
         return;
       }
-      entry.unsubscribe = unsub;
+      // Wrap unsub so the coalesce timer + buffer don't leak past detach.
+      // Drop the buffer rather than flushing: viewer is gone, no point.
+      entry.unsubscribe = () => {
+        if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
+        _coalesceBuf = [];
+        unsub();
+      };
 
       // Lifecycle: broker fires `session_exited` when the child reaps.
       // Close the viewer with 4001 so the client distinguishes a remote-side

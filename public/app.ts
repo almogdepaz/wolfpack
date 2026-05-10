@@ -73,6 +73,112 @@ const wpMetrics = {
   }
 };
 
+// ── Diagnostic Tracer (scrolldown investigation) ──
+//
+// Captures timestamped events per (session@machine) attach so we can
+// reconstruct the WS frame timing, prefill vs replay byte distribution,
+// _writeTermData call shape, and rAF cadence during the hydration window.
+//
+// PURE DIAGNOSTIC. Zero behavioral change. Lives on `window.__wfTrace`.
+// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`.
+//
+// Each trace is a flat append-only array of events:
+//   { t: ms_since_attach_start, kind: string, ...fields }
+// plus a `_meta` block with start wall-clock and key markers.
+const __wfTraceMaxEvents = 5000;
+(window as any).__wfTrace = (window as any).__wfTrace || {};
+
+function __wfTraceKey(session, machine) {
+  return (session || "?") + "@" + (machine || "");
+}
+
+function __wfTraceStart(session, machine, extra?: any) {
+  const key = __wfTraceKey(session, machine);
+  const trace: any = {
+    _meta: {
+      session,
+      machine: machine || "",
+      startWall: Date.now(),
+      startPerf: performance.now(),
+      ...(extra || {}),
+    },
+    events: [],
+    _rafCount: 0,
+    _rafActive: false,
+  };
+  (window as any).__wfTrace[key] = trace;
+  return trace;
+}
+
+function __wfTraceGet(session, machine) {
+  const key = __wfTraceKey(session, machine);
+  return (window as any).__wfTrace[key];
+}
+
+function __wfTraceEvent(trace, kind, fields?: any) {
+  if (!trace) return;
+  if (trace.events.length >= __wfTraceMaxEvents) return;
+  trace.events.push({
+    t: +(performance.now() - trace._meta.startPerf).toFixed(3),
+    kind,
+    ...(fields || {}),
+  });
+}
+
+// Start a rAF counter loop while hydration is pending. Each frame increments
+// _rafCount and records a tick if it lands during a noteworthy window.
+function __wfTraceRafStart(trace) {
+  if (!trace || trace._rafActive) return;
+  trace._rafActive = true;
+  function tick() {
+    if (!trace._rafActive) return;
+    trace._rafCount++;
+    __wfTraceEvent(trace, "raf", { n: trace._rafCount });
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+function __wfTraceRafStop(trace) {
+  if (!trace) return;
+  trace._rafActive = false;
+}
+
+(window as any).__wf_dumpTrace = function (sessionFilter?: string) {
+  const all = (window as any).__wfTrace || {};
+  const keys = Object.keys(all).filter(k => !sessionFilter || k.indexOf(sessionFilter) >= 0);
+  for (const key of keys) {
+    const trace = all[key];
+    const ev = trace.events;
+    const meta = trace._meta;
+    const sumByKind: any = {};
+    let prefillBytes = 0, replayBytes = 0, prefillFrames = 0, replayFrames = 0;
+    let firstPrefillT = -1, prefillDoneT = -1, firstReplayT = -1, hydratedT = -1;
+    for (const e of ev) {
+      sumByKind[e.kind] = (sumByKind[e.kind] || 0) + 1;
+      if (e.kind === "ws.binary") {
+        if (e.bucket === "prefill") { prefillBytes += e.size; prefillFrames++; if (firstPrefillT < 0) firstPrefillT = e.t; }
+        else { replayBytes += e.size; replayFrames++; if (firstReplayT < 0) firstReplayT = e.t; }
+      }
+      if (e.kind === "prefill_done") prefillDoneT = e.t;
+      if (e.kind === "hydration.finish") hydratedT = e.t;
+    }
+    console.group("[wf-trace] " + key);
+    console.log("meta:", meta);
+    console.log("counts:", sumByKind);
+    console.log("prefill: " + prefillFrames + " frames, " + prefillBytes + " bytes, first @ " + firstPrefillT + "ms, prefill_done @ " + prefillDoneT + "ms");
+    console.log("replay (post-prefill_done): " + replayFrames + " frames, " + replayBytes + " bytes, first @ " + firstReplayT + "ms");
+    console.log("hydrated @ " + hydratedT + "ms; rAFs during attach: " + trace._rafCount);
+    console.log("events:", ev);
+    console.groupEnd();
+  }
+  return all;
+};
+
+(window as any).__wf_clearTrace = function () {
+  (window as any).__wfTrace = {};
+};
+
 let debugPanelTimer = null;
 
 function toggleDebugPanel() {
@@ -347,12 +453,21 @@ function createReconnector(opts = {}) {
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false }) {
+async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
     ? '"JetBrains Mono", "Fira Code", "Source Code Pro", "Cascadia Code", monospace'
     : '"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono", monospace';
+  // Per-Terminal WASM isolation — each Terminal gets its own Ghostty instance
+  // (separate WebAssembly.Memory) to avoid shared-allocator OOB across grid cells.
+  // See scripts/bundle-ghostty.ts for context. Falls back to shared singleton if
+  // createIsolatedGhostty isn't available (e.g. older bundle).
+  let isolatedGhostty = null;
+  if (typeof (window as any).createIsolatedGhostty === "function") {
+    try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
+    catch (e) { console.warn("[wf] createIsolatedGhostty failed, falling back to shared:", e); }
+  }
   const term = new Terminal({
     cursorBlink,
     disableStdin,
@@ -360,6 +475,7 @@ function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disa
     fontSize: fontSize != null ? fontSize : tp.fontSize,
     lineHeight: tp.lineHeight,
     fontFamily: termFontFamily,
+    ...(isolatedGhostty ? { ghostty: isolatedGhostty } : {}),
     theme: {
       background: "#0a0a0a",
       foreground: "#e0e0e0",
@@ -475,25 +591,74 @@ const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
  * Owns: pending state, timeout fallback, visibility reveal, scrollToBottom,
  * optional focus, and a short quiet-period debounce so initial history bursts
  * can settle before the terminal becomes visible.
- * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number }} opts
+ *
+ * `minPendingMs` floor: workaround for the post-attach resize-redraw flash
+ * (see comment at the call site for the full root-cause writeup). When set,
+ * `finish()` won't reveal the canvas until at least this many ms have
+ * elapsed since `start()`, even if the settle/canFinish conditions are met.
+ * This keeps the canvas hidden during the gap between prefill_done and the
+ * arrival of the resize-induced redraw stream that follows it.
+ *
+ * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number }} opts
  */
 function createInitialHydrationController(opts) {
   let _pending = false;
   let _fallbackTimer = null;
   let _settleTimer = null;
   let _startedAt = 0;
+  // Last time data arrived at the terminal. Reveal is gated on N ms of
+  // silence after the most recent write — catches late-arriving SIGWINCH
+  // redraws after grid attach (server coalesces these into single big
+  // writes; without the silence gate, canvas reveals BEFORE the redraw
+  // arrives and the user sees the post-snapshot burst paint).
+  let _lastDataAt = 0;
   const timeoutMs = opts.timeoutMs || DESKTOP_INITIAL_PREFILL_TIMEOUT_MS;
   const settleMs = opts.settleMs || 80;
   const maxPendingMs = opts.maxPendingMs || 4000;
+  const minPendingMs = opts.minPendingMs || 0;
+  // Min silence (no data writes) before reveal. 0 = disabled (legacy behavior).
+  const silenceMs = opts.silenceMs || 0;
+  // Diag: trace key for emitting hydration milestones into the per-attach
+  // event log. Pure-passthrough; falsy when caller didn't wire it up.
+  const _diagSession = opts.session || null;
+  const _diagMachine = opts.machine || "";
+  function _diagEvent(kind, fields?: any) {
+    if (!_diagSession) return;
+    __wfTraceEvent(__wfTraceGet(_diagSession, _diagMachine), kind, fields);
+  }
 
   function finish() {
     if (!_pending) return;
+    // minPendingMs floor: keep canvas hidden through the post-prefill
+    // resize-redraw burst (~150-300ms after prefill_done). See call site.
+    const elapsed = Date.now() - _startedAt;
+    if (minPendingMs > 0 && elapsed < minPendingMs) {
+      if (_settleTimer) clearTimeout(_settleTimer);
+      _settleTimer = setTimeout(finish, Math.max(settleMs, minPendingMs - elapsed));
+      _diagEvent("hydration.holdMinPending", { elapsed, minPendingMs });
+      return;
+    }
+    // silenceMs: stay hidden until last data write was at least silenceMs ago.
+    // Captures the post-attach SIGWINCH redraw burst (server coalesces it into
+    // ~1 ws frame, but it can arrive 100-300ms AFTER prefill_done). Without
+    // this, canvas reveals empty/partial and the burst paints visibly.
+    if (silenceMs > 0 && _lastDataAt > 0) {
+      const sinceLastData = Date.now() - _lastDataAt;
+      if (sinceLastData < silenceMs && elapsed < maxPendingMs) {
+        if (_settleTimer) clearTimeout(_settleTimer);
+        _settleTimer = setTimeout(finish, silenceMs - sinceLastData);
+        _diagEvent("hydration.holdSilence", { sinceLastData, silenceMs });
+        return;
+      }
+    }
     if (opts.canFinish && !opts.canFinish()) {
-      if (Date.now() - _startedAt >= maxPendingMs) {
+      if (elapsed >= maxPendingMs) {
         // Safety valve: avoid infinite loader on very high-throughput sessions.
+        _diagEvent("hydration.maxPendingHit", { elapsed });
       } else {
         if (_settleTimer) clearTimeout(_settleTimer);
         _settleTimer = setTimeout(finish, settleMs);
+        _diagEvent("hydration.holdCanFinish", { elapsed });
         return;
       }
     }
@@ -505,6 +670,7 @@ function createInitialHydrationController(opts) {
       // Keep terminal hidden while positioning to avoid visible top->bottom jump.
       try { term.scrollToBottom(); } catch {}
     }
+    _diagEvent("hydration.finish", { elapsed });
     requestAnimationFrame(() => {
       if (!_pending) {
         const el = opts.getElement();
@@ -513,6 +679,7 @@ function createInitialHydrationController(opts) {
           el.classList.add("hydrated");
         }
         if (term && opts.shouldFocus()) term.focus();
+        _diagEvent("hydration.reveal");
       }
     });
   }
@@ -523,12 +690,24 @@ function createInitialHydrationController(opts) {
     if (_fallbackTimer) clearTimeout(_fallbackTimer);
     if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
     _fallbackTimer = setTimeout(finish, timeoutMs);
+    _diagEvent("hydration.start", { minPendingMs, timeoutMs });
   }
 
   function scheduleFinish() {
     if (!_pending) return;
     if (_settleTimer) clearTimeout(_settleTimer);
     _settleTimer = setTimeout(finish, settleMs);
+  }
+
+  // Notify the controller that data arrived (resets silence clock). Caller
+  // wires this to onBinaryData so even non-hydrating writes (which don't
+  // bump _hydrationWritesInFlight) keep the canvas hidden until quiet.
+  function notifyData() {
+    _lastDataAt = Date.now();
+    if (_pending && _settleTimer) {
+      clearTimeout(_settleTimer);
+      _settleTimer = setTimeout(finish, settleMs);
+    }
   }
 
   function cancel() {
@@ -541,6 +720,7 @@ function createInitialHydrationController(opts) {
     get pending() { return _pending; },
     start,
     scheduleFinish,
+    notifyData,
     finish,
     cancel,
   };
@@ -584,6 +764,9 @@ function createPtySocketClient(opts) {
   let _awaitingPrefillDone = false;
   let _sawViewportPrefill = false;
   let _prefillDoneTimeout = null;
+  // Diagnostic tracer (scrolldown investigation). Created per attach in
+  // sendAttachHandshake. Read via window.__wf_dumpTrace().
+  let _trace: any = null;
 
   function buildUrl() {
     const resetSuffix = consumeReset ? "&reset=1" : "";
@@ -615,6 +798,14 @@ function createPtySocketClient(opts) {
     _sawViewportPrefill = false;
     const msg: any = { type: "attach", cols: dims.cols, rows: dims.rows, prefillMode };
     if (_takeControlOnAttach) { msg.takeControl = true; _takeControlOnAttach = false; }
+    // Diag: start a fresh trace per attach so reconnects/take-controls show up
+    // as separate sessions in the dump.
+    _trace = __wfTraceStart(opts.session, opts.machine || "", {
+      cols: dims.cols, rows: dims.rows, prefillMode,
+      takeControl: !!msg.takeControl, reset: !!opts.resetPty,
+    });
+    __wfTraceEvent(_trace, "attach.send", { cols: dims.cols, rows: dims.rows, prefillMode });
+    __wfTraceRafStart(_trace);
     ws.send(JSON.stringify(msg));
     if (_attachAckTimer) clearTimeout(_attachAckTimer);
     // Compatibility fallback: older servers don't implement attach_ack.
@@ -669,6 +860,8 @@ function createPtySocketClient(opts) {
       hasConnected = true;
       _rc.connected();
       sendAttachHandshake();
+      // attach trace was created inside sendAttachHandshake above
+      __wfTraceEvent(_trace, "ws.open", { wasReconnect });
       if (opts.onOpen) opts.onOpen(wasReconnect);
     };
 
@@ -677,6 +870,7 @@ function createPtySocketClient(opts) {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "attach_ack") {
+            __wfTraceEvent(_trace, "attach_ack");
             _attachAckReceived = true;
             _awaitingAttachAck = false;
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
@@ -684,12 +878,17 @@ function createPtySocketClient(opts) {
             // initial dims on mobile where layout isn't finalized at connect time.
             requestAnimationFrame(() => { sendFitResize({ force: true }); });
           } else if (msg.type === "pty_ready") {
+            __wfTraceEvent(_trace, "pty_ready");
             if (opts.onPtyReady) opts.onPtyReady();
           } else if (msg.type === "prefill_viewport") {
             // Phase 1 complete: viewport content already written as binary.
             // Flush any buffered viewport chunks immediately for fast first paint.
             const viewportChunks = _prefillChunks;
             _prefillChunks = [];
+            const _vpBytes = viewportChunks.reduce((s, c) => s + c.length, 0);
+            __wfTraceEvent(_trace, "prefill_viewport", {
+              viewportFrames: viewportChunks.length, viewportBytes: _vpBytes,
+            });
             if (opts.onBinaryData) {
               for (const chunk of viewportChunks) opts.onBinaryData(chunk);
             }
@@ -722,6 +921,11 @@ function createPtySocketClient(opts) {
             if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
             const chunks = _prefillChunks;
             _prefillChunks = [];
+            const _bufferedBytes = chunks.reduce((s, c) => s + c.length, 0);
+            __wfTraceEvent(_trace, "prefill_done", {
+              bufferedFrames: chunks.length, bufferedBytes: _bufferedBytes,
+              sawViewportPrefill: _sawViewportPrefill,
+            });
             if (_sawViewportPrefill && chunks.length && opts.onReplacePrefill) {
               opts.onReplacePrefill();
             }
@@ -730,6 +934,7 @@ function createPtySocketClient(opts) {
               for (const chunk of chunks) opts.onBinaryData(chunk);
             }
           } else if (msg.type === "viewer_conflict") {
+            __wfTraceEvent(_trace, "viewer_conflict");
             console.log("[pty-ws]", opts.session, "viewer_conflict");
             _awaitingAttachAck = false;
             _awaitingPrefillDone = false;
@@ -739,6 +944,7 @@ function createPtySocketClient(opts) {
             if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
             if (opts.onViewerConflict) opts.onViewerConflict();
           } else if (msg.type === "control_granted") {
+            __wfTraceEvent(_trace, "control_granted");
             console.log("[pty-ws]", opts.session, "control_granted — sending re-attach");
             // Fresh viewer takeover needs a fresh attach bootstrap.
             sendAttachHandshake();
@@ -748,15 +954,21 @@ function createPtySocketClient(opts) {
         return;
       }
       if (_awaitingPrefillDone) {
-        _prefillChunks.push(new Uint8Array(ev.data));
+        const u8 = new Uint8Array(ev.data);
+        __wfTraceEvent(_trace, "ws.binary", { bucket: "prefill", size: u8.length, buffered: _prefillChunks.length + 1 });
+        _prefillChunks.push(u8);
         return;
       }
-      if (opts.onBinaryData) opts.onBinaryData(new Uint8Array(ev.data));
+      const u8 = new Uint8Array(ev.data);
+      __wfTraceEvent(_trace, "ws.binary", { bucket: "replay", size: u8.length });
+      if (opts.onBinaryData) opts.onBinaryData(u8);
     };
 
     sock.onclose = (ev) => {
       // Ignore stale close events from sockets replaced by reconnect().
       if (ws !== sock) return;
+      __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
+      __wfTraceRafStop(_trace);
       ws = null;
       _awaitingAttachAck = false;
       _awaitingPrefillDone = false;
@@ -922,16 +1134,45 @@ function createPtyTerminalController(opts) {
 
   function _writeTermData(data: Uint8Array) {
     if (!_term) return;
-    if (_hydration && _hydration.pending) {
-      _hydrationWritesInFlight++;
-      _term.write(data, () => {
-        _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
-        if (_hydration) _hydration.scheduleFinish();
+    // Diag: capture wasm OOB on first crash so we can inspect bytes/dims
+    // post-mortem via window.__wf_lastCrash. No behavioral change.
+    const _diagTrace = __wfTraceGet(opts.session, opts.machine || "");
+    const _diagPending = !!(_hydration && _hydration.pending);
+    __wfTraceEvent(_diagTrace, "_writeTermData", { size: data.length, hydrating: _diagPending });
+    // Notify hydration controller so the silenceMs gate sees this write
+    // even when we're not in the hydrating-with-callback branch.
+    if (_hydration) _hydration.notifyData();
+    try {
+      if (_hydration && _hydration.pending) {
+        _hydrationWritesInFlight++;
+        _term.write(data, () => {
+          _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
+          __wfTraceEvent(_diagTrace, "term.writeDone", { size: data.length, inFlight: _hydrationWritesInFlight });
+          if (_hydration) _hydration.scheduleFinish();
+          if (opts.onOutput) opts.onOutput(data);
+        });
+      } else {
+        _term.write(data);
         if (opts.onOutput) opts.onOutput(data);
-      });
-    } else {
-      _term.write(data);
-      if (opts.onOutput) opts.onOutput(data);
+      }
+    } catch (err) {
+      try {
+        if (!(window as any).__wf_lastCrash) {
+          (window as any).__wf_lastCrash = {
+            session: opts.session,
+            cols: _term && _term.cols,
+            rows: _term && _term.rows,
+            len: data.length,
+            head: Array.from(data.slice(0, 64)),
+            tail: Array.from(data.slice(Math.max(0, data.length - 64))),
+            err: String(err),
+            stack: (err as any) && (err as any).stack,
+            ts: Date.now(),
+          };
+          console.error("[wf-crash]", opts.session, err, "— captured to window.__wf_lastCrash");
+        }
+      } catch {}
+      throw err;
     }
   }
 
@@ -1040,7 +1281,7 @@ function createPtyTerminalController(opts) {
     if (_term || !_mounting) { _mounting = false; return; } // double-mount or disposed during async gap
     _container = container;
 
-    const result = createTerminalInstance({
+    const result = await createTerminalInstance({
       fontSize: opts.fontSize,
       scrollback: opts.scrollback,
       cursorBlink: opts.cursorBlink,
@@ -1069,6 +1310,13 @@ function createPtyTerminalController(opts) {
         }
       },
     });
+    // Guard: dispose() may have run during the createTerminalInstance() await
+    // (isolated WASM load is async). If so, drop the freshly-created terminal.
+    if (!_mounting || _term) {
+      try { result.term && result.term.dispose && result.term.dispose(); } catch {}
+      _mounting = false;
+      return;
+    }
     _term = result.term;
     _fitAddon = result.fitAddon;
 
@@ -1157,6 +1405,36 @@ function createPtyTerminalController(opts) {
     container.addEventListener("keydown", _browserShortcutKeydownHandler, true);
 
     // Create hydration controller (started in connect())
+    //
+    // ─── WHY minPendingMs=200 ────────────────────────────────────────────────
+    // Background: when opening a session, the user could briefly see
+    // scrollback streaming upward through the viewport before the cursor
+    // settled. The flash was from the post-attach resize-redraw burst:
+    //
+    //   - WS opens → attach handshake at initial dims
+    //   - server snapshotted broker state immediately at those dims
+    //   - attach_ack → client schedules force-resize next rAF
+    //   - by then CSS layout had settled to different dims (sidebar
+    //     transition 200ms, view transform 280ms)
+    //   - broker reflowed scrollback at new dims → emitted streaming
+    //     redraw burst (1000+ chunks over ~150ms)
+    //   - each chunk = separate WS macrotask → ghostty rAF rendered
+    //     intermediate states between them = visible flash
+    //
+    // PROPER FIX (now in place): src/server/websocket.ts holds the snapshot
+    // until client resizes settle (PRE_SNAPSHOT_RESIZE_SETTLE_MS=100ms quiet
+    // window, 400ms hard cap). Snapshot now happens at the FINAL dims so the
+    // post-attach refit becomes a no-op and the redraw burst doesn't fire.
+    //
+    // Why minPendingMs is still non-zero: server settle isn't perfect.
+    // Scenarios that can still produce a small post-prefill burst:
+    //   - mobile keyboard slide-in causes a late layout shift > settle window
+    //   - subscription replay (sinceSeq) catches output that arrived during
+    //     the settle wait — typically tiny but can paint as a tail of writes
+    //   - rAF jitter between writes
+    // 200ms is a small cushion to absorb these without revealing mid-burst.
+    // Total cost on desktop: ~200ms reveal time (down from 800ms).
+    // ─────────────────────────────────────────────────────────────────────────
     _hydration = createInitialHydrationController({
       getElement: _getHydrationElement,
       getTerm: () => _term,
@@ -1164,6 +1442,17 @@ function createPtyTerminalController(opts) {
       canFinish: () => _hydrationWritesInFlight === 0,
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
+      minPendingMs: 200,
+      // silenceMs: stay hidden until 150ms have passed since the LAST data
+      // write. Catches the post-attach SIGWINCH redraw on grid cells (server
+      // coalesces it into one big write, but it can arrive 100-300ms AFTER
+      // prefill_done). Without this, the canvas reveals before the redraw
+      // lands and the user sees the post-prefill burst paint visibly. Capped
+      // by maxPendingMs=4000 for never-quiet sessions.
+      silenceMs: 150,
+      // Diag-only: lets the controller emit milestones into the per-attach trace.
+      session: opts.session,
+      machine: opts.machine || "",
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
@@ -1270,7 +1559,24 @@ function createPtyTerminalController(opts) {
         _writeTermData(data);
       },
       onViewerConflict: () => { if (isCurrent() && opts.onViewerConflict) opts.onViewerConflict(); },
-      onControlGranted: () => { if (isCurrent() && opts.onControlGranted) opts.onControlGranted(); },
+      onControlGranted: () => {
+        if (!isCurrent()) return;
+        // control_granted triggers a fresh attach handshake over the existing
+        // socket (sendAttachHandshake() in the ws-client control_granted
+        // handler). That's another full prefill + post-attach resize-redraw
+        // burst — same shape as initial connect. Without restarting hydration
+        // here, the canvas is already `hydrated` from the original mount, so
+        // those writes paint live and the user sees the scrollback flash.
+        // Restart hydration so the minPendingMs floor hides the burst window.
+        if (_hydration && _term) {
+          _hydrationWritesInFlight = 0;
+          _reconnectPendingReset = true;
+          _hydration.start();
+          const el = _getHydrationElement();
+          if (el) { el.classList.remove("hydrated"); el.classList.add("hydrating"); }
+        }
+        if (opts.onControlGranted) opts.onControlGranted();
+      },
       onDisconnected: (code, reason) => { if (isCurrent() && opts.onDisconnected) opts.onDisconnected(code, reason); },
       onReconnecting: () => { if (isCurrent() && opts.onReconnecting) opts.onReconnecting(); },
       onReconnectExhausted: () => { if (isCurrent() && opts.onReconnectExhausted) opts.onReconnectExhausted(); },
@@ -2429,8 +2735,14 @@ async function initTerminal(cached) {
       if (_cachedPendingReset) {
         _cachedPendingReset = false;
         if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
+        // Drop cached-visible on first live data, but DO NOT add `hydrated`
+        // here — that's the hydration controller's job, gated on minPendingMs.
+        // Adding `hydrated` here used to bypass hydration's hide window and
+        // exposed the canvas during the post-prefill resize-redraw burst (the
+        // "scrollback flash"). Without `hydrated` the canvas falls back to
+        // its default hidden state until hydration finish() runs.
         const el = document.getElementById("desktop-terminal-container");
-        if (el) { el.classList.remove("cached-visible"); el.classList.add("hydrated"); }
+        if (el) el.classList.remove("cached-visible");
       }
       if (state.enterRetryTimer) { clearTimeout(state.enterRetryTimer); state.enterRetryTimer = null; }
       wpMetrics.wsMessagesReceived++;
@@ -3119,6 +3431,42 @@ document.addEventListener("visibilitychange", () => {
     }
   }
 });
+
+// ── Canvas backing-store recovery ──
+//
+// macOS App Nap and Chrome's tab-freeze can reclaim the 2D canvas backing
+// store while the tab is technically "visible" (window unfocused, switched
+// to another app). visibilitychange does NOT fire for these cases. Ghostty's
+// render loop only repaints dirty rows, so cells written before the freeze
+// stay invisible after resume — user sees stale/black backgrounds where
+// SGR-styled cells used to be.
+//
+// Fix: trigger forceRepaint on additional events that catch the resume
+// without requiring a full reconnect.
+//   - window focus: user alt-tabs back to the browser window
+//   - pageshow with persisted=true: bfcache restore (e.g. iOS swipe-back)
+//   - periodic heartbeat (30s): catches App Nap that doesn't fire any event
+function _wfRepaintAllTerminals() {
+  if (state.currentView !== "terminal") return;
+  if (isGridActive()) {
+    for (const gs of state.gridSessions) {
+      if (gs.controller && !gs._displaced) gs.controller.forceRepaint?.();
+    }
+  } else if (state.terminalController?.term) {
+    state.terminalController.forceRepaint();
+  }
+}
+
+window.addEventListener("focus", _wfRepaintAllTerminals);
+window.addEventListener("pageshow", (e: any) => {
+  if (e.persisted) _wfRepaintAllTerminals();
+});
+// 30s heartbeat: cheap (one canvas draw call) and only runs while visible.
+// Cleared/recreated by the visibilitychange handler isn't necessary because
+// background tabs throttle setInterval anyway — no wasted work.
+setInterval(() => {
+  if (document.visibilityState === "visible") _wfRepaintAllTerminals();
+}, 30_000);
 
 // Dismiss preview when tapping terminal area
 document.getElementById("desktop-terminal-container").addEventListener("click", () => {
