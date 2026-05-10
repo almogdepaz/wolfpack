@@ -368,8 +368,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     if (!id) return null;
     const unsubData = this.client.subscribeOutput(id, (frame) => cb(frame.data));
     let ref = this.subscriberRefs.get(id);
-    const isFirstSubscriber = !ref;
-    if (isFirstSubscriber) {
+    if (!ref) {
       ref = { count: 0 };
       this.subscriberRefs.set(id, ref);
       // Fire-and-forget subscribe RPC. On failure, unwind the local subscriber

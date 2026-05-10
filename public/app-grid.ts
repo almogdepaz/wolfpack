@@ -479,9 +479,8 @@ export function addToGrid(session, machine) {
   // isolation, all grid cells share one WebAssembly.Memory. Concurrent
   // fit()/write() across cells produce out-of-bounds memory accesses that
   // crash every terminal in the tab. Refuse to enter grid mode in that
-  // state and surface a visible warning. Predicate lives in src/grid-logic
-  // for unit-test coverage.
-  if (!WP.canEnterGridMode((window as any).createIsolatedGhostty)) {
+  // state and surface a visible warning.
+  if (typeof (window as any).createIsolatedGhostty !== "function") {
     console.error("[grid] createIsolatedGhostty unavailable — grid mode disabled to prevent WASM OOB crash. Reload to pick up a newer ghostty-web bundle.");
     if (typeof window !== "undefined" && typeof (window as any).alert === "function") {
       (window as any).alert(

@@ -52,7 +52,6 @@ const REQUIRED_EXPORTS = [
   "captureScrollState", "scrollTargetAfterResize", "serializeBufferTail",
   "shouldInterceptCopy", "encodeTerminalBinary", "shouldRehydrate",
   "addToGridState", "removeFromGridState", "suspendGridState", "resumeGridState",
-  "canEnterGridMode",
   "classifyDisconnect", "handleViewerConflict", "handleControlGranted",
   "handleDisplaced", "prepareAutoTakeControl", "handleTakeControlClick",
   "CLOSE_CODE_DISPLACED", "CLOSE_CODE_SESSION_UNAVAILABLE", "CLOSE_CODE_NORMAL",

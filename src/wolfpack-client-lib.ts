@@ -23,7 +23,6 @@ export {
   removeFromGridState,
   suspendGridState,
   resumeGridState,
-  canEnterGridMode,
   type GridSession,
 } from "./grid-logic";
 

@@ -38,9 +38,6 @@ function shouldRehydrate(wasReconnect, hydrationStarted, prefillDisabled) {
 }
 // src/grid-logic.ts
 var MAX_GRID_CELLS = 6;
-function canEnterGridMode(createIsolatedGhostty) {
-  return typeof createIsolatedGhostty === "function";
-}
 function addToGridState(gridSessions, session, machine, currentSession, currentMachine) {
   if (gridSessions.length >= MAX_GRID_CELLS)
     return null;
@@ -158,6 +155,6 @@ function handleDisplaced(state) {
 function prepareAutoTakeControl(state) {
   return { ...state, autoTakeControl: true };
 }
-var WP = {suspendGridState, shouldRehydrate, shouldInterceptCopy, serializeBufferTail, scrollTargetAfterResize, resumeGridState, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, canEnterGridMode, addToGridState, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
+var WP = {suspendGridState, shouldRehydrate, shouldInterceptCopy, serializeBufferTail, scrollTargetAfterResize, resumeGridState, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
 window.WP = WP;
 })();
