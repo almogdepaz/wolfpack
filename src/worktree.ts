@@ -81,6 +81,10 @@ export function removeWorktree(worktreePath: string, projectDir?: string): void 
   try {
     execFileSync("git", ["worktree", "remove", worktreePath], opts);
   } catch (gracefulErr: any) {
+    log.warn("removeWorktree: graceful remove failed; forcing worktree removal (uncommitted changes may be lost)", {
+      worktreePath,
+      error: errMsg(gracefulErr),
+    });
     try {
       execFileSync("git", ["worktree", "remove", worktreePath, "--force"], opts);
     } catch (forceErr: any) {
