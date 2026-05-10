@@ -12,6 +12,7 @@ import {
   canAcceptInput,
   canSendResize,
   canAcceptInputDefault,
+  canEnterGridMode,
   computeInputGate,
   type GridSession,
   type InputGateState,
@@ -30,6 +31,36 @@ describe("gridLayoutClass", () => {
     expect(gridLayoutClass(0)).toBe("grid-2");
     expect(gridLayoutClass(1)).toBe("grid-2");
     expect(gridLayoutClass(7)).toBe("grid-2");
+  });
+});
+
+/**
+ * Regression for HIGH finding in .context/reports/issues.md:
+ * "WASM shared-allocator OOB in grid mode on older bundles".
+ *
+ * Without per-Terminal isolation (`createIsolatedGhostty`), all grid cells
+ * share one WebAssembly.Memory and concurrent fit/write calls OOB. The
+ * predicate must refuse grid entry whenever the factory is unavailable.
+ */
+describe("canEnterGridMode", () => {
+  test("returns true when factory is a function", () => {
+    expect(canEnterGridMode(() => ({}))).toBe(true);
+  });
+
+  test("returns false when factory is undefined", () => {
+    expect(canEnterGridMode(undefined)).toBe(false);
+  });
+
+  test("returns false when factory is null", () => {
+    expect(canEnterGridMode(null)).toBe(false);
+  });
+
+  test("returns false when factory is a non-function value", () => {
+    // Defensive: an older bundle could plausibly stash a sentinel object.
+    expect(canEnterGridMode({})).toBe(false);
+    expect(canEnterGridMode("function")).toBe(false);
+    expect(canEnterGridMode(42)).toBe(false);
+    expect(canEnterGridMode(true)).toBe(false);
   });
 });
 

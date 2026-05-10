@@ -16,6 +16,22 @@ export function gridLayoutClass(count: number): string {
   return "grid-2";
 }
 
+/**
+ * Gate predicate for entering grid mode. Without per-Terminal WASM isolation,
+ * all grid cells share one WebAssembly.Memory; concurrent fit()/write()
+ * across cells produce out-of-bounds memory accesses that crash every
+ * terminal in the tab. Older ghostty-web bundles lack the
+ * `createIsolatedGhostty` factory — this predicate detects that.
+ *
+ * Resolves HIGH finding from .context/reports/issues.md.
+ *
+ * @param createIsolatedGhostty - the bundle-exposed factory, or undefined
+ * @returns `true` when grid mode is safe; `false` when it must be refused
+ */
+export function canEnterGridMode(createIsolatedGhostty: unknown): boolean {
+  return typeof createIsolatedGhostty === "function";
+}
+
 export function isGridActive(sessions: GridSession[]): boolean {
   return sessions.length >= 2;
 }

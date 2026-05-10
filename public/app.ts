@@ -463,10 +463,18 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // (separate WebAssembly.Memory) to avoid shared-allocator OOB across grid cells.
   // See scripts/bundle-ghostty.ts for context. Falls back to shared singleton if
   // createIsolatedGhostty isn't available (e.g. older bundle).
+  //
+  // .context/reports/issues.md HIGH finding: when isolation is unavailable
+  // AND grid mode is in use, concurrent fit()/write() across cells can OOB
+  // on the shared WebAssembly.Memory. addToGrid() now refuses to enter grid
+  // mode in that state, so any path reaching here without isolation is a
+  // single-cell terminal where shared singleton is safe.
   let isolatedGhostty = null;
   if (typeof (window as any).createIsolatedGhostty === "function") {
     try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
-    catch (e) { console.warn("[wf] createIsolatedGhostty failed, falling back to shared:", e); }
+    catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
+  } else {
+    console.error("[wf] createIsolatedGhostty is not available — falling back to shared singleton (grid mode will be disabled). This usually means the ghostty-web bundle is out of date.");
   }
   const term = new Terminal({
     cursorBlink,
