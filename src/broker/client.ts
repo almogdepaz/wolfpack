@@ -134,6 +134,8 @@ export class BrokerClient {
   private readonly outputSubs = new Map<string, Set<OutputSubscriber>>();
   /** Sessions the caller has asked us to subscribe to. Re-issued on reconnect. */
   private readonly activeSubscriptions = new Set<string>();
+  /** Last observed output seq per active session (used for reconnect replay). */
+  private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
 
   private state: "idle" | "connecting" | "connected" | "closed" = "idle";
 
@@ -168,6 +170,7 @@ export class BrokerClient {
     }
     this.failPending(new BrokerNotConnectedError("broker client closed"));
     this.activeSubscriptions.clear();
+    this.activeSubscriptionSeq.clear();
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
@@ -273,6 +276,11 @@ export class BrokerClient {
       throw new BrokerNotConnectedError("broker client closed");
     }
     this.activeSubscriptions.add(sessionId);
+    if (opts.sinceSeq !== undefined) {
+      this.activeSubscriptionSeq.set(sessionId, opts.sinceSeq);
+    } else if (!this.activeSubscriptionSeq.has(sessionId)) {
+      this.activeSubscriptionSeq.set(sessionId, undefined);
+    }
     if (this.state !== "connected") {
       // Caller asked for a subscribe while offline; the request will be
       // re-issued automatically on the next handleConnect. Surface the
@@ -292,6 +300,7 @@ export class BrokerClient {
     opts: { timeoutMs?: number } = {},
   ): Promise<void> {
     const wasActive = this.activeSubscriptions.delete(sessionId);
+    this.activeSubscriptionSeq.delete(sessionId);
     if (this.state === "closed") return;
     if (!wasActive) return;
     if (this.state !== "connected") return;
@@ -342,7 +351,8 @@ export class BrokerClient {
     if (this.activeSubscriptions.size > 0) {
       const ids = Array.from(this.activeSubscriptions);
       for (const sessionId of ids) {
-        this.issueSubscribe(sessionId, {}).catch((err) => {
+        const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
+        this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
           if (this.onResubscribeErrorCb) {
             try {
               this.onResubscribeErrorCb(sessionId, toError(err));
@@ -428,7 +438,14 @@ export class BrokerClient {
         return;
       }
       case FRAME_KIND_OUTPUT_BINARY: {
-        const subs = this.outputSubs.get(frame.value.sessionId);
+        const sessionId = frame.value.sessionId;
+        if (this.activeSubscriptions.has(sessionId)) {
+          const prev = this.activeSubscriptionSeq.get(sessionId);
+          if (prev === undefined || frame.value.seq > prev) {
+            this.activeSubscriptionSeq.set(sessionId, frame.value.seq);
+          }
+        }
+        const subs = this.outputSubs.get(sessionId);
         if (!subs) return;
         for (const cb of subs) {
           try {
@@ -447,7 +464,8 @@ export class BrokerClient {
           const sessionId = ev.session_id as string;
           const lagged = typeof ev.lagged === "number" ? ev.lagged as number : 0;
           if (this.activeSubscriptions.has(sessionId) && this.state === "connected") {
-            this.issueSubscribe(sessionId, {}).catch((err) => {
+            const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
+            this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
               if (this.onResubscribeErrorCb) {
                 try { this.onResubscribeErrorCb(sessionId, toError(err)); } catch { /* swallow */ }
               }

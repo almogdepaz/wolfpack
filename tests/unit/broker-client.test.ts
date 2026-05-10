@@ -592,6 +592,61 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(new Set(subscribesByConnection[1])).toEqual(new Set([SAMPLE_UUID, otherUuid]));
   });
 
+  test("reconnect re-subscribe includes last observed since_seq", async () => {
+    const socketPath = makeSocketPath();
+    const server1 = await startMockServer(socketPath);
+    activeServer = server1;
+    let connects = 0;
+    const reissuedSinceSeq: Array<number | undefined> = [];
+
+    server1.onRequest = (req, sock) => {
+      server1.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+      });
+    };
+
+    const client = new BrokerClient({
+      socketPath,
+      reconnectInitialDelayMs: 20,
+      reconnectMaxDelayMs: 100,
+      requestTimeoutMs: 1000,
+      onConnect: () => { connects++; },
+    });
+    activeClient = client;
+    client.start();
+
+    await waitFor(() => connects === 1);
+    await client.subscribe(SAMPLE_UUID, { sinceSeq: 10n });
+    const unsub = client.subscribeOutput(SAMPLE_UUID, () => {});
+    // Simulate live output advancing seq before disconnect.
+    server1.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 42n, data: new Uint8Array([1]) },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    await server1.close();
+    activeServer = null;
+
+    const server2 = await startMockServer(socketPath);
+    activeServer = server2;
+    server2.onRequest = (req, sock) => {
+      if (req.method === "subscribe") {
+        reissuedSinceSeq.push((req.params as { since_seq?: number }).since_seq);
+      }
+      server2.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+      });
+    };
+
+    await waitFor(() => connects === 2, 3000);
+    await waitFor(() => reissuedSinceSeq.length >= 1, 2000);
+    expect(reissuedSinceSeq[0]).toBe(42);
+    unsub();
+  });
+
   test("unsubscribe drops a session so reconnect does not re-subscribe it", async () => {
     const otherUuid = "22222222-2222-2222-2222-222222222222";
     const socketPath = makeSocketPath();
