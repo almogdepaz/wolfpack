@@ -35,7 +35,7 @@
              :+**++++++*++*+=-:: .. ...... ..   .:..::
 ```
 
-Mobile & desktop command center for AI coding agents. Control agent sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Two session backends: **pty** (lightweight, no dependencies) or **tmux** (persistent, survives restarts). Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
+Mobile & desktop command center for AI coding agents. Control agent sessions (Claude, Codex, Gemini, or any custom command) across multiple machines from your phone or browser. Sessions live in a dedicated Rust PTY broker daemon, so they survive wolfpack server restarts and redeploys. Secured by [Tailscale](https://tailscale.com/) — zero-config encrypted access, no ports to open.
 
 Install on your phone's home screen for a native app experience — scan the QR code after setup and tap **"Add to Home Screen"**.
 
@@ -53,32 +53,30 @@ Install on your phone's home screen for a native app experience — scan the QR 
   <img src="docs/mobile-sessions.png" width="250" alt="Mobile — session list with multi-machine support" />
 </p>
 <p align="center">
-  <kbd>Classic</kbd>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<kbd>Ghostty (WASM)</kbd>
-</p>
-<p align="center">
-  <img src="docs/mobile-terminal.png" width="300" alt="Mobile — classic terminal mode" />
-  <img src="docs/mobile-ghostty.png" width="300" alt="Mobile — ghostty WASM terminal mode" />
+  <img src="docs/mobile-ghostty.png" width="300" alt="Mobile — ghostty-web terminal" />
 </p>
 
 ## Architecture
 
 ```
-┌─────────────┐      ┌───────────┐      ┌──────────────────────────────────┐
-│   Phone /   │      │ Tailscale │      │          Your Machine            │
-│   Browser   │◄────►│  (HTTPS)  │◄────►│                                  │
-│   (PWA)     │      │  mesh VPN │      │  ┌──────────┐ ┌──────┐ ┌─────┐  │
-└─────────────┘      └───────────┘      │  │ wolfpack │ │pty or│ │Agent│  │
-                                        │  │  server  │◄│ tmux │◄│(any)│  │
-                                        │  │ HTTP/WS  │ │      │ │     │  │
-                                        │  └──────────┘ └──────┘ └─────┘  │
-                                        └──────────────────────────────────┘
+┌─────────────┐    ┌───────────┐    ┌──────────────────────────────────────────┐
+│   Phone /   │    │ Tailscale │    │              Your Machine                │
+│   Browser   │◄──►│  (HTTPS)  │◄──►│                                          │
+│   (PWA)     │    │  mesh VPN │    │  ┌──────────┐  unix   ┌──────────────┐  │
+└─────────────┘    └───────────┘    │  │ wolfpack │ socket  │  wolfpack-   │  │
+                                    │  │  server  │◄───────►│   broker     │  │
+                                    │  │ (Bun)    │         │  (Rust, PTY) │  │
+                                    │  │ HTTP/WS  │         │  owns agents │  │
+                                    │  └──────────┘         └──────────────┘  │
+                                    └──────────────────────────────────────────┘
 ```
 
 **Components:**
-- **PWA** — single-file vanilla JS app (~90KB), no framework. Mobile-optimized touch UI + desktop ANSI terminal
-- **Server** — Bun HTTP + WebSocket. Serves embedded assets, manages sessions via pty (default) or tmux backend
-- **Ralph** — detached subprocess that iterates through a markdown plan file, invoking agents per-task
-- **Agents** — Claude, Codex, Gemini, or any shell command. Agent-agnostic by design
+- **PWA** — vanilla JS, no framework. ghostty-web (WASM) renders the terminal on both mobile and desktop. Settings + multi-machine list persist in localStorage.
+- **Server** — Bun HTTP + WebSocket. Serves embedded assets, exposes `/api/*` and the `/ws/pty` binary stream. Pure broker client — owns no PTYs.
+- **Broker** — `wolfpack-broker`, a Rust daemon. Owns every PTY, keeps per-session output rings, and survives wolfpack server restarts. One Unix-domain socket per host (`$XDG_RUNTIME_DIR/wolfpack-broker.sock`, fallback `~/.wolfpack/broker.sock`). Wire format documented in [docs/broker-protocol.md](docs/broker-protocol.md).
+- **Ralph** — detached subprocess that iterates through a markdown plan file, invoking agents per-task. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
+- **Agents** — Claude, Codex, Gemini, or any shell command. Agent-agnostic by design.
 
 ## Quick Install
 
@@ -100,94 +98,76 @@ curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
 
 This will download the pre-built binary for your platform, run the setup wizard, and optionally install as a login service.
 
-Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64).
+Supported platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64). Each platform package ships both `wolfpack` (the Bun binary) and `wolfpack-broker` (the Rust daemon).
 
 ### Prerequisites
 
 - **Tailscale** *(optional)* — install from [tailscale.com/download](https://tailscale.com/download), sign in, and make sure both your computer and phone are on the same tailnet. Required for remote access.
-- **tmux** *(optional)* — only needed if you choose the tmux backend. The default **pty** backend has no external dependencies.
 
-### Session Backends
+No other runtime dependencies. The broker is bundled.
 
-Wolfpack supports two backends for managing terminal sessions. You choose during setup and can switch at runtime from Settings.
+### Session Persistence
 
-| | **PTY** (default) | **tmux** |
-|---|---|---|
-| **Dependencies** | None | Requires tmux installed |
-| **Session persistence** | In-memory — sessions lost on server crash/restart | tmux server is a separate process — sessions survive wolfpack restarts, deploys, and crashes |
-| **Terminal streaming** | Direct binary WebSocket (`/ws/pty`) — low latency | Capture-pane polling (`/ws/terminal`) |
-| **Desktop terminal** | ghostty-web with full scrollback | ghostty-web with full scrollback |
-| **Best for** | Quick setup, no-dependency environments | Long-running agent sessions where persistence matters |
+The `wolfpack-broker` daemon owns every PTY and runs independently of the wolfpack server. If the server crashes, gets redeployed, or restarts (e.g. `launchctl kickstart`), agent sessions keep running. When the server comes back up, it reconnects to the existing broker over the Unix socket and re-attaches to live sessions automatically.
 
-**Why tmux is more robust:** tmux runs as an independent server process. Your agent sessions live inside tmux, not inside wolfpack. If wolfpack crashes, gets redeployed, or restarts (e.g. `launchctl kickstart`), tmux sessions keep running untouched. When wolfpack comes back up, it reconnects to the existing tmux sessions automatically. With the PTY backend, a wolfpack restart kills all running sessions — any in-progress agent work is lost.
-
-**Why PTY is the default:** zero dependencies, simpler setup, and lower latency terminal streaming. For most users running short agent tasks, the convenience outweighs the persistence tradeoff.
-
-Both backends can run simultaneously — the backend router tracks which backend owns each session. You can have tmux sessions and PTY sessions active at the same time.
-
-### tmux History
-
-Wolfpack can only hydrate history that tmux still retains. Desktop terminal sessions prefill the latest 5,000 lines on connect, so if you want deeper scrollback, raise tmux's history limit:
-
-```tmux
-set -g history-limit 50000
-```
-
-Reload tmux or restart your sessions after changing it.
+The broker is started by `wolfpack service install` (alongside the server) and is checked by `wolfpack doctor`.
 
 ## Usage
 
 ```bash
 wolfpack                    # Start the server (runs setup on first launch)
 wolfpack setup              # Re-run the setup wizard
-wolfpack service install    # Auto-start on login (launchd / systemd)
+wolfpack ls                 # List active broker sessions
+wolfpack kill <session>     # Kill a session by name
+wolfpack doctor             # Diagnose broker socket, binaries, JWT, Tailscale
+wolfpack migrate-plan FILE  # Convert old-format plan headers to ## N. Title
+wolfpack service install    # Auto-start on login (launchd / systemd) — installs broker too
 wolfpack service stop       # Stop the background service
 wolfpack service start      # Start the background service
 wolfpack service status     # Check if running
 wolfpack service uninstall  # Remove the launch agent
-wolfpack uninstall          # Remove everything (service, config, global command)
+wolfpack uninstall --yes    # Remove everything (service, config, ~/.wolfpack, global command)
 ```
 
 ### Setup Wizard
 
 On first run, `wolfpack` walks you through:
 
-1. Checking prerequisites (tmux, Tailscale — both optional)
-2. Choosing a session backend (pty or tmux, default: pty)
-3. Setting your projects directory (default: `~/Dev`)
-4. Choosing a port (default: `18790`)
-5. Enabling Tailscale HTTPS access
-6. Optionally installing as a login service
-7. Displaying a QR code to scan with your phone
+1. Checking prerequisites (Tailscale — optional)
+2. Setting your projects directory (default: `~/Dev`)
+3. Choosing a port (default: `18790`)
+4. Detecting/configuring Tailscale HTTPS access
+5. Optionally installing as a login service (which also installs the broker)
+6. Displaying a QR code to scan with your phone
+7. Printing JWT setup instructions
 
 ## Features
 
 ### Session Management
-- Create, view, and kill agent sessions (pty or tmux backend)
-- Agent picker — Claude, Codex, Gemini, or custom commands per session
+- Create, view, and kill agent sessions — all owned by the broker daemon
+- Agent picker — Claude, Codex, Gemini, or custom commands per session (configurable in Settings → Agents)
 - Session triage — running, idle, and needs-input states with color-coded indicators
 - Live terminal output preview on session cards
 
 ### Desktop
-- **Multi-terminal grid** — view 2-6 sessions side-by-side in a CSS grid layout. Click `+` on any sidebar card to add it to the grid, `×` to remove. Focused cell highlighted with green glow.
+- **Multi-terminal grid** — view multiple sessions side-by-side in a CSS grid layout. Click `+` on any sidebar card to add it to the grid, `×` to remove. Focused cell highlighted.
 - **Collapsible sidebar** — pin or auto-hide. Shows all sessions across machines with status badges, output preview, and grid/kill buttons.
-- **xterm.js PTY** — full terminal emulator with direct PTY connection (not capture-pane polling)
+- **ghostty-web terminal** — full WASM terminal emulator with direct binary `/ws/pty` connection. Per-instance isolation lets each grid cell run its own emulator.
 - **Keyboard shortcuts:**
   - `Cmd/Ctrl + ArrowUp/Down` — cycle between sessions
   - `Cmd/Ctrl + ArrowLeft/Right` — navigate grid cells
   - `Cmd/Ctrl + T` — new session (project picker)
-  - `Cmd/Ctrl + K` — clear terminal
+  - `Cmd/Ctrl + K` — clear focused terminal
 
 ### Mobile
-- **Two terminal modes** — choose in Settings:
-  - **Classic** (default) — lightweight capture-pane polling. No WASM, works on all devices. Best for quick monitoring and input.
-  - **Ghostty (WASM)** — full terminal emulator via [ghostty-web](https://github.com/ghostty-org/ghostty). Richer output (colors, cursor, scrollback) but heavier on battery. Keyboard is suppressed by default — tap the keyboard button to open it.
-- **Keyboard accessory** — quick-action bar with Enter, Esc, arrow keys, Ctrl combos, and git status
-- **Touch scrolling** — momentum physics, long-press to select text and copy
-- **Haptic feedback** — vibration on key actions (toggleable)
-- **PWA** — install as a standalone app on your phone's home screen
+- **ghostty-web terminal** — same WASM emulator as desktop, with the on-screen keyboard suppressed until you tap the keyboard button (prevents accidental focus steals).
+- **Keyboard accessory** — quick-action bar with Enter, Esc, arrow keys, a `git` shortcut, and copy/keyboard buttons.
+- **Quick commands** — user-defined command chips, configurable in Settings.
+- **Touch scrolling** — momentum physics, long-press to select text and copy.
+- **Haptic feedback** — vibration on key actions (toggleable).
+- **PWA** — install as a standalone app on your phone's home screen.
 
-All settings (terminal mode, font size, haptics, etc.) persist in localStorage across sessions.
+All settings (font size, haptics, enter-sends, snapshot TTL, etc.) persist in localStorage across sessions.
 
 ### Multi-Machine
 - One phone connects to multiple Wolfpack servers
@@ -197,7 +177,6 @@ All settings (terminal mode, font size, haptics, etc.) persist in localStorage a
 
 ### Other
 - **Notifications** — browser notifications + vibration when sessions need attention
-- **Search** — find text in terminal output with match navigation
 - **Reconnect handling** — auto-recovers on connection drop with status indicator
 - **Auto-resize** — terminal resizes to match your screen/grid cell
 
@@ -205,7 +184,7 @@ All settings (terminal mode, font size, haptics, etc.) persist in localStorage a
 
 1. Install [Tailscale](https://tailscale.com/download) on both your computer and phone
 2. Sign in to the same Tailscale account on both devices
-3. Run `wolfpack setup` and say **y** to "Enable Tailscale HTTPS access?"
+3. Run `wolfpack setup` — it auto-detects your Tailscale hostname and runs `tailscale serve` to expose the port over HTTPS
 4. Scan the QR code with your phone
 5. Tap **"Add to Home Screen"** for the native app experience
 
@@ -215,7 +194,7 @@ Tailscale's encrypted mesh network handles auth and routing — no ports to open
 
 **Always use the Tailscale hostname** (e.g. `https://mybox.tail1234.ts.net`) — not raw IPs. The QR code from setup already points to the correct URL. Raw IP access (LAN or Tailscale `100.x.x.x`) bypasses Tailscale's DNS-based routing and may not be protected by CORS.
 
-**JWT authentication** adds a second layer of protection. Without it, anyone who can reach the server port has full access to your tmux sessions. To enable:
+**JWT authentication** adds a second layer of protection. Without it, anyone who can reach the server port has full access to your sessions. To enable:
 
 1. Generate a secret (minimum 32 characters):
    ```bash
@@ -242,61 +221,69 @@ Autonomous task runner. Write a markdown plan file, pick an agent, set iteration
 
 ## Config
 
-Stored in `~/.wolfpack/config.json`:
+Stored in `~/.wolfpack/config.json` (mode 0600):
 
 ```json
 {
   "devDir": "/Users/you/Dev",
   "port": 18790,
-  "backend": "pty",
   "tailscaleHostname": "your-machine.tailnet-name.ts.net"
 }
 ```
 
-Agent command and settings stored in `~/.wolfpack/bridge-settings.json`.
+Agent list and per-server settings stored in `~/.wolfpack/bridge-settings.json`.
+
+The broker socket lives at `$XDG_RUNTIME_DIR/wolfpack-broker.sock` (or `~/.wolfpack/broker.sock`) and is owned by the user (filesystem permissions are the auth boundary).
 
 ## Contributing
 
 ### Dev Setup
 
-Requires [Bun](https://bun.sh/) (v1.2+).
+Requires [Bun](https://bun.sh/) (v1.2+) and a [Rust toolchain](https://rustup.rs/) (for building the broker).
 
 ```bash
 git clone https://github.com/almogdepaz/wolfpack.git
 cd wolfpack
 bun install
-bun run scripts/gen-assets.ts   # generate embedded assets (required once)
-bun run cli.ts                  # start the server locally
+bun run scripts/gen-assets.ts          # generate embedded assets (required once)
+cargo build --release --manifest-path broker/Cargo.toml  # build the broker
+bun run src/cli/index.ts                # start the server locally
 ```
+
+For an end-to-end local install (build + service install + restart), use `scripts/deploy-local.sh`.
 
 ### Testing
 
 ```bash
-bun test                             # all tests
-bun test tests/unit/                 # unit tests only
-bun test tests/unit/plan-parsing.test.ts  # single file
+bun test                                 # all bun tests
+bun test tests/unit/                     # unit tests only
+bun test tests/unit/plan-parsing.test.ts # single file
+bunx playwright test                     # e2e (uses test-server harness)
 ```
 
-Tests use Bun's built-in runner. Three categories:
-- `tests/unit/` — plan parsing, ralph log parsing, escaping, validation, grid logic
+Test layout:
+- `tests/unit/` — pure-logic tests (plan parsing, ralph log parsing, escaping, validation, grid logic, broker codec, etc.)
+- `tests/integration/` — API routes, broker backend, ralph loop endpoints, WS dispatch
 - `tests/snapshot/` — launchd plist and systemd unit generation
-- `tests/integration/` — API routes, ralph loop endpoints
+- `tests/e2e/` — Playwright end-to-end (`test:e2e` / `test:e2e:headed` scripts)
+
+The Rust broker has its own tests under `broker/tests/` (`cargo test` from `broker/`).
 
 ### Asset Pipeline
 
 Frontend files live in `public/`. The server doesn't serve from disk — everything is embedded:
 
-1. Edit files in `public/` (HTML, PNG, manifest, etc.)
-2. Run `bun run scripts/gen-assets.ts` — embeds them into `public-assets.ts` (binary→base64, text→string)
-3. **Do NOT edit `public-assets.ts` manually** — it's auto-generated
+1. Edit files in `public/` (HTML, TS, CSS, manifest, etc.)
+2. Run `bun run scripts/gen-assets.ts` — bundles `public/app.ts` and ghostty-web, then embeds every file from `public/` into `src/public-assets.ts` (binary→base64, text→string)
+3. **Do NOT edit `src/public-assets.ts` manually** — it's auto-generated
 
 ### Building Binaries
 
 ```bash
-bun run scripts/build.ts    # assets + 4 platform binaries in dist/
+bun run scripts/build.ts    # assets + broker + 4 platform binaries + npm pkg dirs in dist/
 ```
 
-Compiles for: linux-x64, linux-arm64, darwin-x64, darwin-arm64.
+Compiles `wolfpack` for: linux-x64, linux-arm64, darwin-x64, darwin-arm64. The script also stages `wolfpack-broker` per platform — in CI it expects pre-built broker binaries under `dist/broker/<target>/`; locally it falls back to a host-arch-only `cargo build --release`.
 
 ### PR Conventions
 

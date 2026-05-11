@@ -127,9 +127,8 @@ const SRT_AVAILABLE = SANDBOX_ENABLED && SRT_BIN !== "srt"; // resolveBin return
 /**
  * Path to this worker's srt settings file (cleaned up on exit).
  *
- * MEDIUM finding from edc-context/reports/issues.md: fixed filename caused
- * concurrent ralph workers on the same project to overwrite each other's
- * sandbox config. Include pid so each worker owns its own file.
+ * Filename includes pid so concurrent ralph workers on the same project
+ * don't overwrite each other's sandbox config.
  */
 const SRT_SETTINGS_PATH = join(PROJECT_DIR, `.ralph-srt-settings-${process.pid}.json`);
 
@@ -554,11 +553,10 @@ process.on("exit", () => { removeLock(); cleanupSrtSettings(); });
 /**
  * Graceful shutdown shared by SIGTERM and SIGINT.
  *
- * Resolves HIGH finding from edc-context/reports/issues.md: previously only
- * SIGTERM was handled, so Ctrl+C (SIGINT) from a terminal or `kill -INT`
- * left `.ralph.lock` and any in-progress git worktrees behind. The next
- * `POST /api/ralph/start` would hit the stale lock and reject with 409
- * until manually cleaned up.
+ * Both signals must be handled — with only SIGTERM, Ctrl+C from a
+ * terminal or `kill -INT` would leave `.ralph.lock` and in-progress git
+ * worktrees behind, and the next `POST /api/ralph/start` would hit the
+ * stale lock and reject with 409 until manually cleaned up.
  *
  * Both signals share the same teardown:
  *   1. set `stopping` so the iterate loop can short-circuit

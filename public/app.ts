@@ -79,11 +79,11 @@ const wpMetrics = {
 // reconstruct the WS frame timing, prefill vs replay byte distribution,
 // _writeTermData call shape, and rAF cadence during the hydration window.
 //
-// PURE DIAGNOSTIC. Gated behind `localStorage.wolfpackDebug = "1"`
-// (issues.md L3) — previously this was always-on and exposed per-session
-// attach metadata to any JS in the page context (XSS, extension,
-// bookmarklet). When disabled, all helpers are no-ops and `__wfTrace` /
-// `__wf_dumpTrace` / `__wf_clearTrace` are NOT installed on `window`.
+// PURE DIAGNOSTIC. Gated behind `localStorage.wolfpackDebug = "1"` so it
+// doesn't expose per-session attach metadata to any JS in the page context
+// (XSS, extension, bookmarklet). When disabled, all helpers are no-ops and
+// `__wfTrace` / `__wf_dumpTrace` / `__wf_clearTrace` are NOT installed on
+// `window`.
 //
 // Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
 // after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
@@ -472,11 +472,11 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // See scripts/bundle-ghostty.ts for context. Falls back to shared singleton if
   // createIsolatedGhostty isn't available (e.g. older bundle).
   //
-  // edc-context/reports/issues.md HIGH finding: when isolation is unavailable
-  // AND grid mode is in use, concurrent fit()/write() across cells can OOB
-  // on the shared WebAssembly.Memory. addToGrid() now refuses to enter grid
-  // mode in that state, so any path reaching here without isolation is a
-  // single-cell terminal where shared singleton is safe.
+  // When isolation is unavailable AND grid mode is in use, concurrent
+  // fit()/write() across cells can OOB on the shared WebAssembly.Memory.
+  // addToGrid() refuses to enter grid mode in that state, so any path
+  // reaching here without isolation is a single-cell terminal where the
+  // shared singleton is safe.
   let isolatedGhostty = null;
   if (typeof (window as any).createIsolatedGhostty === "function") {
     try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
@@ -1837,9 +1837,9 @@ function flushGridSnapshots() {
 
 /**
  * Validate a peer URL before any code uses it for `fetch` / WS construction.
- * (issues.md M12) An XSS payload could write attacker-controlled URLs into
- * localStorage; without this guard those URLs would receive every API call
- * and the bearer JWT in the next page session.
+ * An XSS payload could write attacker-controlled URLs into localStorage;
+ * without this guard those URLs would receive every API call and the
+ * bearer JWT in the next page session.
  *
  * Accept only http(s) URLs whose hostname looks tailnet-shaped
  * (`*.ts.net`), is a literal IP, or is localhost. Port is NOT pinned —
@@ -3069,7 +3069,7 @@ function sendMsg() {
     // duplicate Enter on any command that took >800ms to produce output
     // (slow grep, network request, interactive prompt waiting for input),
     // potentially triggering an unintended second command or corrupting
-    // TUI confirm prompts (issues.md M11). The send-success branch trusts
+    // TUI confirm prompts. The send-success branch trusts
     // _sendTerminalInput's return: if the WS layer reports success, the
     // bytes are queued; broker drops surface as reconnects, not silent
     // input loss. enterRetryTimer is still cleared on output dispatch in

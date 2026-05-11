@@ -6,7 +6,7 @@ import { parseRalphLog } from "../../src/server/ralph.ts";
 import { startFakeRalph, stopFakeRalph, type FakeRalph } from "../helpers/fake-ralph-pid.js";
 
 // PID stand-in for fixtures that need parseRalphLog active=true under the
-// PID-reuse-safe filter (issues.md H6). See tests/helpers/fake-ralph-pid.ts.
+// PID-reuse-safe filter. See tests/helpers/fake-ralph-pid.ts.
 let fakeRalphPid: number = process.pid;
 let fakeRalph: FakeRalph | null = null;
 beforeAll(() => { fakeRalph = startFakeRalph(); fakeRalphPid = fakeRalph.pid; });

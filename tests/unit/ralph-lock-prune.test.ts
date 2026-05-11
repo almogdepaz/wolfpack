@@ -7,9 +7,9 @@ import { parseRalphLog, pruneStaleRalphLock } from "../../src/server/ralph.js";
 /**
  * Returns a PID that is known to be dead at call time. Spawns `true`,
  * waits for it to exit, then verifies via `kill(pid, 0)` that the kernel
- * agrees. Avoids the LOW-2 flakiness from review-tasks/report-tests.md
- * where a hard-coded `999999` becomes valid on hosts with a raised
- * `kernel.pid_max` (large containers / big servers).
+ * agrees. Avoids the flakiness of hard-coding e.g. `999999`, which becomes
+ * a valid PID on hosts with a raised `kernel.pid_max` (large containers /
+ * big servers).
  */
 function deadPid(): number {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

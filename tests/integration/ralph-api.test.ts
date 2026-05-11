@@ -30,8 +30,8 @@ import { startFakeRalph, stopFakeRalph, type FakeRalph } from "../helpers/fake-r
 
 const TEST_DEV_DIR = join(tmpdir(), `wolfpack-ralph-test-${Date.now()}`);
 
-// Stand-in PID for fixtures that expect parseRalphLog active=true
-// (issues.md H6). See tests/helpers/fake-ralph-pid.ts.
+// Stand-in PID for fixtures that expect parseRalphLog active=true.
+// See tests/helpers/fake-ralph-pid.ts.
 let fakeRalphPid: number = process.pid;
 let fakeRalph: FakeRalph | null = null;
 

@@ -96,7 +96,7 @@ export interface SrtSettings {
 }
 
 /**
- * Cached `rg` resolution (issues.md L4). Previously this ran a sync
+ * Cached `rg` resolution. Previously this ran a sync
  * `which rg` on every ralph iteration via buildSrtSettings → a hang in
  * `which` (slow PATH, NFS, broken `which` shim) would block iteration
  * startup, and the cost was paid N times per loop. PATH doesn't change

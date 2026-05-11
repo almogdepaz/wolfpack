@@ -135,7 +135,7 @@ export function uuidFromBytes(buf: Uint8Array, off = 0): string {
 // ---------------------------------------------------------------------------
 
 const TEXT_ENCODER = new TextEncoder();
-// fatal:true (issues.md L9) — reject malformed UTF-8 in JSON control
+// fatal:true — reject malformed UTF-8 in JSON control
 // frames instead of replacing bytes with U+FFFD. Silent replacement
 // could parse-as-clean a corrupted field (mojibake in session names
 // etc.), misrouting events. The TypeError is caught by `decodeJson`
@@ -311,10 +311,10 @@ export class FrameParser {
   /**
    * Ensure chunks[0] holds at least `n` bytes (or the remainder of the buffer if smaller).
    *
-   * Allocation characteristic (known LOW tradeoff in edc-context/reports/issues.md):
-   * when data spans multiple chunks, coalesce() allocates a new Uint8Array and
-   * copies bytes. Under high-throughput + fragmented input this increases GC
-   * pressure, but keeps parser logic simple/obvious for current scale.
+   * Allocation tradeoff: when data spans multiple chunks, coalesce()
+   * allocates a new Uint8Array and copies bytes. Under high-throughput +
+   * fragmented input this increases GC pressure, but keeps parser logic
+   * simple/obvious for current scale.
    */
   private coalesce(n: number): void {
     if (this.chunks.length === 0) return;

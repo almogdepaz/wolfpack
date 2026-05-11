@@ -44,7 +44,7 @@ export interface SessionBackend {
  *    `subscribe` response (ring overrun during the lag window).
  *    Subscribers should force a re-snapshot — in practice the WS layer
  *    closes the viewer with 1011 so the client reconnects and re-prefills
- *    instead of sitting on out-of-sync output (issues.md M7 / L14).
+ *    instead of sitting on out-of-sync output.
  */
 export type SessionLifecycleEvent =
   | { kind: "exited"; exitCode?: number; signal?: number }
@@ -69,9 +69,9 @@ export interface PtyBackendMethods {
        * unwound its local refcount but the WS layer's reference to the
        * (now dead) callback is still in `entry.unsubscribe`, leaving the
        * viewer connected with no data stream forever. The callback is
-       * REQUIRED so callers can't silently regress the dead-viewer fix
-       * (LOW-2 in review-tasks/report-server.md); pass `() => {}` for
-       * fire-and-forget probe paths that don't care about teardown.
+       * REQUIRED so callers can't silently regress the dead-viewer fix;
+       * pass `() => {}` for fire-and-forget probe paths that don't care
+       * about teardown.
        */
       onSubscribeError: (err: unknown) => void;
     },
@@ -142,7 +142,7 @@ export class BackendRouter implements SessionBackend {
       // and replay would skip bytes), fan it out to that session's
       // lifecycle subscribers as a `replay_truncated` event. The WS layer
       // turns it into a 1011 close so the client reconnects with a fresh
-      // snapshot — closing the issues.md M7/L14 stale-prefill gap.
+      // snapshot — closing the stale-prefill gap.
       onReplayTruncated: (sessionId: string) => {
         this.broker?.handleReplayTruncated(sessionId);
       },

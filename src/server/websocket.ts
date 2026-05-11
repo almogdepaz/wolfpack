@@ -1,8 +1,10 @@
 /**
- * WebSocket handlers — PTY (ghostty-web WASM) + classic terminal (text polling).
+ * WebSocket handler for `/ws/pty` — binary PTY stream backed by the broker.
  *
- * Backend-agnostic: works with both TmuxBackend (spawns `tmux attach-session`)
- * and PtyBackend (pipes WS directly to session terminal I/O).
+ * Forwards broker output bytes to the viewer and viewer input back to
+ * the broker. Handles takeover (a new viewer displaces the old one with
+ * close code 4002), prefill replay from snapshot, and replay-truncated
+ * resets when the broker's per-session ring overflows.
  */
 import type { WebSocket } from "ws";
 import {
@@ -167,17 +169,15 @@ export function __getTestState(): {
   return { activePtySessions, ptySpawnAttempts, sendPrefillChunked, PREFILL_CHUNK_SIZE };
 }
 
-// ── Classic terminal WS handler (text polling for mobile) ──
-
 export function teardownPty(session: string): void {
   const entry = activePtySessions.get(session);
   if (!entry) return;
   entry.alive = false;
   // Tear down sub/proc state BEFORE deleting from the map. Kill failures
   // are logged at warn (not debug) so an orphan PTY surfaces in the log
-  // stream rather than silently accumulating (issues.md M6). The map
-  // delete still happens unconditionally in finally so a thrown kill
-  // never strands the entry — a re-attach is always possible.
+  // stream rather than silently accumulating. The map delete still happens
+  // unconditionally in finally so a thrown kill never strands the entry —
+  // a re-attach is always possible.
   try {
     if (entry.unsubscribe) {
       try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribe failed`, { session, error: errMsg(e) }); }
@@ -379,10 +379,10 @@ function setupNewPtyEntry(
       if (!backend.isSessionAlive(session)) {
         // Cache may be stale: BrokerBackend's isSessionAlive() only consults
         // the in-memory nameToId map, which lags behind broker truth after
-        // a broker restart or out-of-band session creation (issues.md H5).
-        // Refresh once via list() and re-check before closing 4001 —
-        // legitimate live sessions should not be rejected just because the
-        // local cache hasn't seen them yet.
+        // a broker restart or out-of-band session creation. Refresh once
+        // via list() and re-check before closing 4001 — legitimate live
+        // sessions should not be rejected just because the local cache
+        // hasn't seen them yet.
         try { await backend.list(); } catch (e: unknown) {
           log.debug("isSessionAlive miss: list() refresh failed", { session, error: errMsg(e) });
         }
@@ -616,11 +616,11 @@ function setupNewPtyEntry(
         _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
       }, {
         sinceSeq: prefillSeq,
-        // HIGH finding from edc-context/reports/issues.md: when the broker
-        // `subscribe` RPC fails after onSessionData returns, the backend
-        // unwinds locally but the WS would otherwise stay open with no
-        // data stream. Tear down so the client gets a 1011 close and can
-        // surface an error / retry, instead of staring at a dead viewer.
+        // When the broker `subscribe` RPC fails after onSessionData
+        // returns, the backend unwinds locally but the WS would otherwise
+        // stay open with no data stream. Tear down so the client gets a
+        // 1011 close and can surface an error / retry, instead of staring
+        // at a dead viewer.
         onSubscribeError: (err: unknown) => {
           log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
           if (!entry.alive) return;
@@ -656,10 +656,10 @@ function setupNewPtyEntry(
       const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
         if (event.kind === "replay_truncated") {
           // Broker ring overran during a lag window — our cached prefill
-          // and any bytes since are out of sync with broker truth
-          // (issues.md M7 / L14). Tear the viewer down with 1011 so the
-          // client reconnects and re-prefills from a fresh snapshot,
-          // instead of staring at stale terminal content.
+          // and any bytes since are out of sync with broker truth. Tear
+          // the viewer down with 1011 so the client reconnects and
+          // re-prefills from a fresh snapshot, instead of staring at stale
+          // terminal content.
           if (!entry.alive) return;
           log.warn("replay_truncated — forcing client reconnect for fresh snapshot", { session });
           if (entry.viewer && entry.viewer.readyState === 1) {
