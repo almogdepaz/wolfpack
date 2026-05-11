@@ -173,26 +173,39 @@ export function teardownPty(session: string): void {
   const entry = activePtySessions.get(session);
   if (!entry) return;
   entry.alive = false;
-  activePtySessions.delete(session);
-  if (entry.unsubscribe) {
-    entry.unsubscribe();
-    entry.unsubscribe = null;
-  }
-  if (entry.unsubscribeLifecycle) {
-    entry.unsubscribeLifecycle();
-    entry.unsubscribeLifecycle = null;
-  }
-  if (entry.viewer) {
-    try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
-    entry.viewer = null;
-  }
-  if (entry.pendingViewer) {
-    try { entry.pendingViewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: pendingViewer close failed`, { session, error: errMsg(e) }); }
-    entry.pendingViewer = null;
-  }
-  if (entry.proc) {
-    try { entry.proc.terminal!.close(); } catch (e: unknown) { log.debug(`teardownPty: terminal close failed`, { session, error: errMsg(e) }); }
-    try { entry.proc.kill(); } catch (e: unknown) { log.debug(`teardownPty: proc kill failed`, { session, error: errMsg(e) }); }
+  // Tear down sub/proc state BEFORE deleting from the map. Kill failures
+  // are logged at warn (not debug) so an orphan PTY surfaces in the log
+  // stream rather than silently accumulating (issues.md M6). The map
+  // delete still happens unconditionally in finally so a thrown kill
+  // never strands the entry — a re-attach is always possible.
+  try {
+    if (entry.unsubscribe) {
+      try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribe failed`, { session, error: errMsg(e) }); }
+      entry.unsubscribe = null;
+    }
+    if (entry.unsubscribeLifecycle) {
+      try { entry.unsubscribeLifecycle(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribeLifecycle failed`, { session, error: errMsg(e) }); }
+      entry.unsubscribeLifecycle = null;
+    }
+    if (entry.viewer) {
+      try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
+      entry.viewer = null;
+    }
+    if (entry.pendingViewer) {
+      try { entry.pendingViewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: pendingViewer close failed`, { session, error: errMsg(e) }); }
+      entry.pendingViewer = null;
+    }
+    if (entry.proc) {
+      try { entry.proc.terminal!.close(); } catch (e: unknown) { log.debug(`teardownPty: terminal close failed`, { session, error: errMsg(e) }); }
+      try { entry.proc.kill(); } catch (e: unknown) {
+        // Warn (not debug): a swallowed kill failure means a zombie PTY
+        // process is still running with no map reference — the operator
+        // needs to see this to chase it down.
+        log.warn(`teardownPty: proc kill failed; PTY may be orphaned`, { session, pid: entry.proc.pid, error: errMsg(e) });
+      }
+    }
+  } finally {
+    activePtySessions.delete(session);
   }
 }
 
@@ -641,6 +654,22 @@ function setupNewPtyEntry(
       // Close the viewer with 4001 so the client distinguishes a remote-side
       // session death from a normal disconnect. PtyBackend's stub no-ops.
       const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
+        if (event.kind === "replay_truncated") {
+          // Broker ring overran during a lag window — our cached prefill
+          // and any bytes since are out of sync with broker truth
+          // (issues.md M7 / L14). Tear the viewer down with 1011 so the
+          // client reconnects and re-prefills from a fresh snapshot,
+          // instead of staring at stale terminal content.
+          if (!entry.alive) return;
+          log.warn("replay_truncated — forcing client reconnect for fresh snapshot", { session });
+          if (entry.viewer && entry.viewer.readyState === 1) {
+            try { entry.viewer.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED); } catch (e: unknown) {
+              log.debug(`replay_truncated: viewer close failed`, { session, error: errMsg(e) });
+            }
+          }
+          teardownPty(session);
+          return;
+        }
         if (event.kind !== "exited") return;
         if (!entry.alive) return;
         entry.alive = false;

@@ -464,7 +464,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // See scripts/bundle-ghostty.ts for context. Falls back to shared singleton if
   // createIsolatedGhostty isn't available (e.g. older bundle).
   //
-  // .context/reports/issues.md HIGH finding: when isolation is unavailable
+  // edc-context/reports/issues.md HIGH finding: when isolation is unavailable
   // AND grid mode is in use, concurrent fit()/write() across cells can OOB
   // on the shared WebAssembly.Memory. addToGrid() now refuses to enter grid
   // mode in that state, so any path reaching here without isolation is a
@@ -1827,13 +1827,53 @@ function flushGridSnapshots() {
 
 // ── Machine registry ──
 
+/**
+ * Validate a peer URL before any code uses it for `fetch` / WS construction.
+ * (issues.md M12) An XSS payload could write attacker-controlled URLs into
+ * localStorage; without this guard those URLs would receive every API call
+ * and the bearer JWT in the next page session.
+ *
+ * Accept only http(s) URLs whose hostname looks tailnet-shaped
+ * (`*.ts.net`) or is a literal IP, and only standard ports (none, 18790,
+ * or 443/80). Reject opaque schemes, userinfo, and weird ports outright.
+ */
+function isValidMachineUrl(u) {
+  if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
+  let parsed;
+  try { parsed = new URL(u); } catch { return false; }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  if (parsed.username || parsed.password) return false;
+  // Allow tailnet host suffix or bare IPv4 (peer discovery uses both forms).
+  const host = parsed.hostname;
+  const isTailnet = /\.ts\.net$/i.test(host);
+  const isIPv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+  const isLocal = host === "localhost" || host === "127.0.0.1";
+  if (!isTailnet && !isIPv4 && !isLocal) return false;
+  // Permitted ports: empty (default), 18790 (wolfpack), 443, 80.
+  const port = parsed.port;
+  if (port && port !== "18790" && port !== "443" && port !== "80") return false;
+  return true;
+}
+
 function getMachines() {
-  try { return JSON.parse(localStorage.getItem("wolfpack-machines") || "[]"); }
-  catch { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem("wolfpack-machines") || "[]");
+    if (!Array.isArray(raw)) return [];
+    // Drop any entry whose URL fails validation. Names are echoed into the
+    // UI; clamp length and strip control chars so an XSS payload in name
+    // can't widen the blast radius via DOM injection.
+    return raw.filter((m) => m && isValidMachineUrl(m.url)).map((m) => ({
+      url: m.url,
+      name: typeof m.name === "string" ? m.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128) : "",
+    }));
+  } catch { return []; }
 }
 
 function saveMachines(list) {
-  localStorage.setItem("wolfpack-machines", JSON.stringify(list));
+  // Mirror getMachines() validation on the write side so future code paths
+  // that bypass the discover-source can't poison localStorage either.
+  const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
+  localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
 }
 
 function removeMachine(url) {
@@ -3007,20 +3047,15 @@ function sendMsg() {
 
   wpMetrics.sendCount++;
   if (_sendTerminalInput(_textEncoder.encode(text.replace(/\n/g, " ") + "\r"))) {
-    // Enter retry: if output hasn't changed within 800ms, Enter may have been dropped.
-    // Timer is cleared on any output, so this only fires if truly stuck.
-    // Skip in grid mode — grid cells have their own controllers and onOutput won't clear this timer.
-    if (!isGridActive()) {
-      if (state.enterRetryTimer) clearTimeout(state.enterRetryTimer);
-      const retrySession = state.currentSession;
-      const retryMachine = state.currentMachine;
-      state.enterRetryTimer = setTimeout(() => {
-        if (state.currentSession === retrySession && state.currentMachine === retryMachine) {
-          sendKey("Enter");
-        }
-        state.enterRetryTimer = null;
-      }, 800);
-    }
+    // No Enter-retry timer here. The previous 800ms retry submitted a
+    // duplicate Enter on any command that took >800ms to produce output
+    // (slow grep, network request, interactive prompt waiting for input),
+    // potentially triggering an unintended second command or corrupting
+    // TUI confirm prompts (issues.md M11). The send-success branch trusts
+    // _sendTerminalInput's return: if the WS layer reports success, the
+    // bytes are queued; broker drops surface as reconnects, not silent
+    // input loss. enterRetryTimer is still cleared on output dispatch in
+    // case any older path schedules one.
   } else {
     wpMetrics.sendFailCount++;
     input.value = saved;

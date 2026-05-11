@@ -38,14 +38,17 @@ export interface SessionBackend {
 // ── Broker streaming/attach methods needed by websocket.ts ──
 
 /**
- * Lifecycle event delivered to `onSessionLifecycle` subscribers. Currently
- * only "exited" — the broker fires this when a session's child reaps.
+ * Lifecycle event delivered to `onSessionLifecycle` subscribers.
+ *  - `exited`: the broker fires this when a session's child reaps.
+ *  - `replay_truncated`: the broker reported `replay_truncated: true` on a
+ *    `subscribe` response (ring overrun during the lag window).
+ *    Subscribers should force a re-snapshot — in practice the WS layer
+ *    closes the viewer with 1011 so the client reconnects and re-prefills
+ *    instead of sitting on out-of-sync output (issues.md M7 / L14).
  */
-export type SessionLifecycleEvent = {
-  kind: "exited";
-  exitCode?: number;
-  signal?: number;
-};
+export type SessionLifecycleEvent =
+  | { kind: "exited"; exitCode?: number; signal?: number }
+  | { kind: "replay_truncated" };
 
 export interface SessionPrefill {
   data: Buffer;
@@ -134,6 +137,14 @@ export class BackendRouter implements SessionBackend {
       socketPath: this.brokerSocketPath,
       onEvent: (event: EventBody) => {
         this.broker?.ingestEvent(event);
+      },
+      // When the broker rings a session out (overrun during a lag window
+      // and replay would skip bytes), fan it out to that session's
+      // lifecycle subscribers as a `replay_truncated` event. The WS layer
+      // turns it into a 1011 close so the client reconnects with a fresh
+      // snapshot — closing the issues.md M7/L14 stale-prefill gap.
+      onReplayTruncated: (sessionId: string) => {
+        this.broker?.handleReplayTruncated(sessionId);
       },
     });
     client.start();

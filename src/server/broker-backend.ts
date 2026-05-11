@@ -512,6 +512,25 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     }
   }
 
+  /**
+   * Fan out a `replay_truncated` lifecycle event to subscribers of the
+   * given session id. Wired by `BackendRouter` via
+   * `BrokerClient.onReplayTruncated`. The WS layer translates this into a
+   * 1011 close so the client reconnects with a fresh snapshot, closing
+   * the issues.md M7 / L14 stale-prefill window.
+   */
+  handleReplayTruncated(id: string): void {
+    const subs = this.lifecycleSubs.get(id);
+    if (!subs) return;
+    for (const cb of Array.from(subs)) {
+      try {
+        cb({ kind: "replay_truncated" });
+      } catch (e: unknown) {
+        log.debug("lifecycle replay_truncated callback threw", { id, error: errMsg(e) });
+      }
+    }
+  }
+
   // ── Internals ──
 
   /**

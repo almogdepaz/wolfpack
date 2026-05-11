@@ -475,7 +475,7 @@ export function addToGrid(session, machine) {
     console.warn("[grid] WebAssembly unavailable — cannot open grid terminal");
     return;
   }
-  // HIGH finding from .context/reports/issues.md: without per-Terminal WASM
+  // HIGH finding from edc-context/reports/issues.md: without per-Terminal WASM
   // isolation, all grid cells share one WebAssembly.Memory. Concurrent
   // fit()/write() across cells produce out-of-bounds memory accesses that
   // crash every terminal in the tab. Refuse to enter grid mode in that

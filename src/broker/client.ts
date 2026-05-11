@@ -522,15 +522,21 @@ export class BrokerClient {
   private scheduleReconnect(): void {
     if (this.state === "closed") return;
     if (this.reconnectTimer) return;
-    const next =
+    const base =
       this.currentReconnectDelay === 0
         ? this.reconnectInitialDelayMs
         : Math.min(this.currentReconnectDelay * 2, this.reconnectMaxDelayMs);
-    this.currentReconnectDelay = next;
+    this.currentReconnectDelay = base;
+    // ±20% jitter to avoid thundering-herd reconnect spikes when many
+    // wolfpack server instances restart simultaneously and target the same
+    // broker (issues.md M3). Base value still drives exponential growth
+    // for predictable testing; jitter is applied only at scheduling time.
+    const jitter = base * 0.2 * (Math.random() * 2 - 1);
+    const delay = Math.max(0, Math.round(base + jitter));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, next);
+    }, delay);
   }
 
   private reportProtocolError(err: Error): void {

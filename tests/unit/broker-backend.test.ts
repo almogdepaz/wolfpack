@@ -770,6 +770,31 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
     backend.ingestEvent(exitedEvent(SESSION_UUID_1));
     expect(seen.sort()).toEqual(["a", "b"]);
   });
+
+  // Regression: issues.md M7 / L14 — onReplayTruncated must reach
+  // lifecycle subscribers as a `replay_truncated` event so the WS layer
+  // can force a viewer reconnect for fresh prefill.
+  test("handleReplayTruncated fires a replay_truncated event to subscribers", () => {
+    const seen: SessionLifecycleEvent[] = [];
+    backend.onSessionLifecycle("live", (e) => seen.push(e));
+    backend.handleReplayTruncated(SESSION_UUID_1);
+    expect(seen).toEqual([{ kind: "replay_truncated" }]);
+  });
+
+  test("handleReplayTruncated for unknown id is a silent no-op", () => {
+    const seen: SessionLifecycleEvent[] = [];
+    backend.onSessionLifecycle("live", (e) => seen.push(e));
+    backend.handleReplayTruncated(SESSION_UUID_2);
+    expect(seen).toEqual([]);
+  });
+
+  test("handleReplayTruncated does NOT touch alive state (cache stays valid)", () => {
+    expect(backend.isSessionAlive("live")).toBe(true);
+    backend.handleReplayTruncated(SESSION_UUID_1);
+    // The session is still alive in the broker — only its replay window
+    // overran. Liveness must not flip; only the WS reconnect is forced.
+    expect(backend.isSessionAlive("live")).toBe(true);
+  });
 });
 
 describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
