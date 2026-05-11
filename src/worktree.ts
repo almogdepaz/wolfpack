@@ -6,7 +6,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { realpathSync, existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { realpathSync, existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { createLogger, errMsg } from "./log.js";
 
 const log = createLogger("worktree");
@@ -93,6 +93,15 @@ export function removeWorktree(worktreePath: string, projectDir?: string): void 
       );
     }
   }
+}
+
+/**
+ * Best-effort directory mtime; returns 0 if stat fails so the caller's
+ * sort treats inaccessible entries as oldest. Used as the L6 fallback
+ * for cleanupAllExceptFinal when the explicit order file is unavailable.
+ */
+function mtimeOrZero(path: string): number {
+  try { return statSync(path).mtimeMs; } catch { return 0; }
 }
 
 /**
@@ -193,18 +202,26 @@ function _cleanupAllExceptFinalImpl(
   if (orderedPaths && orderedPaths.length > 0) {
     // Order managed worktrees by creation order
     const pathOrder = new Map(orderedPaths.map((p, i) => [p, i]));
-    // Unrecorded worktrees sort after all recorded ones, ordered by path
+    // Unrecorded worktrees sort after all recorded ones, ordered by mtime
+    // (see fallback below for why mtime beats path sort).
     managed.sort((a, b) => {
       const aInOrder = pathOrder.has(a.path);
       const bInOrder = pathOrder.has(b.path);
       if (aInOrder && bInOrder) return pathOrder.get(a.path)! - pathOrder.get(b.path)!;
       if (aInOrder && !bInOrder) return -1;
       if (!aInOrder && bInOrder) return 1;
-      return a.path.localeCompare(b.path, undefined, { numeric: true });
+      return mtimeOrZero(a.path) - mtimeOrZero(b.path);
     });
   } else {
-    // Fallback: numeric-aware path sort
-    managed.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+    // Fallback when the order file is missing or unreadable (issues.md L6):
+    // sort by directory mtime instead of numeric path sort. Path sort
+    // breaks when slug names collide and get timestamp suffixes — the
+    // "final" worktree picked for preservation may not be the most recent
+    // and `cleanupAllExceptFinal` would discard the latest agent work.
+    // mtime is creation-time-ish (writes during the agent run keep the
+    // most recent worktree's directory mtime newest).
+    log.warn("cleanupAllExceptFinal: worktree-order file missing or empty; falling back to mtime sort", { orderFile });
+    managed.sort((a, b) => mtimeOrZero(a.path) - mtimeOrZero(b.path));
   }
 
   const final = managed[managed.length - 1];

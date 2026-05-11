@@ -8,6 +8,8 @@
 > Resolved in commit batch 3: M1 CLI short-secret warning, M3 broker reconnect jitter, M6 PTY teardown order (kill before delete), M7 / L14 onReplayTruncated wiring (forces re-prefill on ring overrun), M8 config.json mode 0600, M11 Enter retry duplicate (timer dropped), M12 localStorage URL validation.
 >
 > Resolved in commit batch 4: L1 icon-192.png embedded as 192×192 PNG asset, L3 _wfTrace gated behind localStorage.wolfpackDebug, L9 broker JSON TextDecoder switched to fatal:true (corruption surfaces as CodecError), L11 server-side peer-fetch now uses peer-health adaptive timeouts, L13 GET /api/settings normalizes raw agentCmd when disabled.
+>
+> Resolved in commit batch 5: L2 sw-push.js renamed to sw.js (dedicated route dropped, generic asset handler now sets Service-Worker-Allowed), L4 resolveRipgrepBin memoized at first call (no per-iteration sync exec), L6 cleanupAllExceptFinal falls back to mtime sort when worktree-order file is missing (path sort breaks on slug collisions), L8 setup detects non-interactive stdin/stdout and announces silent-skip behavior up-front.
 
 ---
 
@@ -43,38 +45,10 @@
 
 ## Low Severity
 
-### L2. Service worker registered as `/sw.js` but source is `sw-push.js`
-**Location:** `public/app-state.ts:158`, `src/server/routes.ts:306–310`
-**Description:** The frontend registers `navigator.serviceWorker.register("/sw.js")`. The server has an explicit `GET /sw.js` route that reads the `sw-push.js` asset and serves it. This works but is a non-obvious naming indirection: editing `sw-push.js` works, editing a hypothetical `sw.js` in `public/` would have no effect.
-**Impact:** Developer confusion; low breakage risk, but the indirection is undocumented.
-
----
-
-### L4. `resolveRipgrepBin` executes `which rg` at call time (per-iteration)
-**Location:** `src/validation.ts:99–109`
-**Description:** `resolveRipgrepBin()` calls `execFileSync("which", ["rg"])` synchronously. This is called from `buildSrtSettings` → `writeSrtSettings` → `runIteration` — once per ralph iteration, not at module load as previously noted. In stripped containers without `which`, falls back silently. If `which` hangs (NFS PATH, etc.), the entire iteration startup hangs.
-**Impact:** Blocking sync exec on each ralph iteration. In containers without `which`, falls back silently. Hang risk on unusual PATH configurations.
-
----
-
 ### L5. Peer health state not persisted across page reloads
 **Location:** `src/peer-health.ts`, `public/app.ts`
 **Description:** `peerHealth` is in-memory state reset on every page reload. Dead peers get a fresh `5000ms` timeout immediately after reload, causing slow initial polls when a peer is down.
 **Impact:** Page reload on a network with unreachable peers causes 5s hangs per dead peer before adaptive timeout kicks in. Minor UX annoyance.
-
----
-
-### L6. `worktree.ts` order-file write failure is non-fatal but silently degrades cleanup
-**Location:** `src/worktree.ts:63–69`
-**Description:** If `.wolfpack/worktree-order.txt` cannot be written (disk full, permission denied), the worktree is still created but `cleanupAllExceptFinal` falls back to numeric path sort. If paths don't sort in creation order (slug collisions with timestamp suffixes), the "final" worktree selected for preservation may be wrong.
-**Impact:** Wrong worktree preserved after ralph cleanup, potentially discarding the most-recent work.
-
----
-
-### L8. `hasTTY` is a mutable module-level global set as a side effect
-**Location:** `src/cli/config.ts:38–40`
-**Description:** Opening `/dev/tty` in `ask()` sets `hasTTY = false` as a side effect if the open fails. This global controls whether all subsequent interactive prompts in setup are shown. Non-interactive environments (CI, pipes) skip all prompts silently with no indication.
-**Impact:** Silent setup skipping in non-interactive environments. Callers cannot distinguish "user declined" from "non-interactive skip".
 
 ---
 

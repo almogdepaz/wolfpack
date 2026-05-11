@@ -95,16 +95,39 @@ export interface SrtSettings {
   };
 }
 
+/**
+ * Cached `rg` resolution (issues.md L4). Previously this ran a sync
+ * `which rg` on every ralph iteration via buildSrtSettings → a hang in
+ * `which` (slow PATH, NFS, broken `which` shim) would block iteration
+ * startup, and the cost was paid N times per loop. PATH doesn't change
+ * within a process lifetime; one resolve per process is enough.
+ *
+ * `null` = explicitly resolved-and-not-found (don't re-probe). Use the
+ * `__resetResolveRipgrepBinCache` helper from tests if you need a fresh
+ * lookup (we don't currently expose it; PATH is stable enough that the
+ * cache is fine for the test suite).
+ */
+let _cachedRgBin: { command: string; argv0?: string } | null | undefined;
+
 /** Resolve a real binary path for rg (shell functions/aliases don't work in child processes). */
 function resolveRipgrepBin(): { command: string; argv0?: string } | undefined {
+  if (_cachedRgBin !== undefined) return _cachedRgBin ?? undefined;
   // Prefer a real rg binary on PATH
   try {
     const rgPath = execFileSync("which", ["rg"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    if (rgPath && !rgPath.includes("not found")) return { command: rgPath };
+    if (rgPath && !rgPath.includes("not found")) {
+      _cachedRgBin = { command: rgPath };
+      return _cachedRgBin;
+    }
   } catch { /* not on PATH */ }
   // Fallback: claude bundles rg as a multicall binary (ARGV0=rg)
   const claudeBin = join(homedir(), ".local/bin/claude");
-  try { statSync(claudeBin); return { command: claudeBin, argv0: "rg" }; } catch { /* nope */ }
+  try {
+    statSync(claudeBin);
+    _cachedRgBin = { command: claudeBin, argv0: "rg" };
+    return _cachedRgBin;
+  } catch { /* nope */ }
+  _cachedRgBin = null;
   return undefined;
 }
 

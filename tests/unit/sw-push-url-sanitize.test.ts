@@ -1,12 +1,13 @@
 /**
- * Regression test for HIGH finding in .context/reports/issues.md:
- * "sw-push.js open-redirect bypass via protocol-relative URL".
+ * Regression test for HIGH finding in edc-context/reports/issues.md:
+ * "sw.js open-redirect bypass via protocol-relative URL" (file was named
+ * sw-push.js prior to L2 rename).
  *
  * The previous guard `if (url.startsWith("/"))` treated `//evil.com` as a
  * safe relative URL because it literally starts with `/`. Resolved against
  * the page origin, the browser navigates to `https://evil.com/`.
  *
- * Strategy here: load sw-push.js as CommonJS via the test-only export and
+ * Strategy here: load sw.js as CommonJS via the test-only export and
  * exercise sanitizeNotificationUrl against a battery of attack inputs.
  */
 import { describe, expect, test } from "bun:test";
@@ -19,7 +20,7 @@ import { createContext, runInContext } from "node:vm";
 // `self` global the SW expects at top-level. We don't dispatch any events
 // here — we just want the function reference.
 const swSource = readFileSync(
-  join(import.meta.dir, "..", "..", "public", "sw-push.js"),
+  join(import.meta.dir, "..", "..", "public", "sw.js"),
   "utf-8",
 );
 const exportsObj: Record<string, unknown> = {};
@@ -30,7 +31,7 @@ const sandbox: Record<string, unknown> = {
   URL,
   console,
 };
-runInContext(swSource, createContext(sandbox), { filename: "sw-push.js" });
+runInContext(swSource, createContext(sandbox), { filename: "sw.js" });
 const { sanitizeNotificationUrl } = (sandbox.module as { exports: { sanitizeNotificationUrl: (u: string, o: string) => string } }).exports;
 
 const ORIGIN = "https://wolfpack.example.com";

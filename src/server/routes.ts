@@ -321,16 +321,6 @@ export const routes: Record<
     res.writeHead(200, { "Content-Type": "application/manifest+json" });
     res.end(JSON.stringify(manifest, null, 2));
   },
-  "GET /sw.js": (_req, res) => {
-    const sw = assets.get("sw-push.js");
-    if (sw) {
-      res.writeHead(200, { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/" });
-      res.end(sw);
-    } else {
-      res.writeHead(404);
-      res.end("Not Found");
-    }
-  },
 
   "GET /api/info": (_req, res) => {
     const name = hostname()
