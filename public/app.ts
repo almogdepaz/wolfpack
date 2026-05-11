@@ -1834,8 +1834,11 @@ function flushGridSnapshots() {
  * and the bearer JWT in the next page session.
  *
  * Accept only http(s) URLs whose hostname looks tailnet-shaped
- * (`*.ts.net`) or is a literal IP, and only standard ports (none, 18790,
- * or 443/80). Reject opaque schemes, userinfo, and weird ports outright.
+ * (`*.ts.net`), is a literal IP, or is localhost. Port is NOT pinned —
+ * the wolfpack server port is operator-configurable; we only require it
+ * to be numeric and in 1–65535. Reject opaque schemes (javascript:,
+ * data:, etc.), userinfo (creds smuggling), and non-numeric/out-of-range
+ * ports.
  */
 function isValidMachineUrl(u) {
   if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
@@ -1843,15 +1846,22 @@ function isValidMachineUrl(u) {
   try { parsed = new URL(u); } catch { return false; }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
   if (parsed.username || parsed.password) return false;
-  // Allow tailnet host suffix or bare IPv4 (peer discovery uses both forms).
+  // Allow tailnet host suffix, bare IPv4, or localhost (peer discovery
+  // and dev setups all show up as one of these).
   const host = parsed.hostname;
   const isTailnet = /\.ts\.net$/i.test(host);
   const isIPv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
   const isLocal = host === "localhost" || host === "127.0.0.1";
   if (!isTailnet && !isIPv4 && !isLocal) return false;
-  // Permitted ports: empty (default), 18790 (wolfpack), 443, 80.
+  // Port: empty (scheme default) is fine. Otherwise must be a positive
+  // integer in the legal TCP range. URL constructor already rejects most
+  // garbage but be explicit.
   const port = parsed.port;
-  if (port && port !== "18790" && port !== "443" && port !== "80") return false;
+  if (port) {
+    if (!/^\d+$/.test(port)) return false;
+    const n = Number(port);
+    if (n < 1 || n > 65535) return false;
+  }
   return true;
 }
 
