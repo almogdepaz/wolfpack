@@ -23,8 +23,13 @@ export function startFakeRalph(): FakeRalph {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   let pid = process.pid; // safe fallback; tests will fail loudly rather than silently
   try {
+    // Use /bin/bash explicitly: `exec -a NAME` is a bash builtin, NOT in
+    // POSIX sh. On most Linux distros /bin/sh → dash which silently
+    // ignores `-a NAME` and exec's `sleep 3600` with its own argv — the
+    // pgrep below would then never match "ralph-macchio worker" and
+    // every dependent test would fail.
     proc = Bun.spawn({
-      cmd: ["/bin/sh", "-c", `exec -a "ralph-macchio worker" sleep 3600`],
+      cmd: ["/bin/bash", "-c", `exec -a "ralph-macchio worker" sleep 3600`],
       stdout: "ignore",
       stderr: "ignore",
     });
