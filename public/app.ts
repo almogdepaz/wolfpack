@@ -4,7 +4,7 @@ import {
   wpDefaults, wpSettings, TERM_PRESETS, toggleSetting, applySetting,
   applyTermToXterm, initSettings, haptic, requestNotifications,
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
-  state, setState, persistPeerHealth,
+  state, setState,
   SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL,
   DESKTOP_TERMINAL_SCROLLBACK, GRID_TERMINAL_SCROLLBACK,
 } from "./app-state";
@@ -2256,20 +2256,14 @@ function fetchMachine(machineUrl, machineMeta) {
   const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
   return Promise.all([api("/sessions", remoteOpts, machineUrl || undefined), api("/info", remoteOpts, machineUrl || undefined), ralphFetch])
     .then(([d, info, ralph]) => {
-      if (machineUrl) {
-        state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
-        persistPeerHealth();
-      }
+      if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
       return {
         machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
         sessions: d.sessions || [], loops: ralph.loops || [], online: true, pending: false,
       };
     })
     .catch(() => {
-      if (machineUrl) {
-        state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
-        persistPeerHealth();
-      }
+      if (machineUrl) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
       return {
         machine: { ...machineMeta, url: machineUrl, version: "" },
         sessions: [], loops: [], online: false, pending: false,

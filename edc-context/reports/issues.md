@@ -7,8 +7,8 @@
 All audit findings from the original 2026-05-10 sweep have been triaged. The
 breakdown:
 
-- **31 fixed in-branch** (commit batches 1–6)
-- **8 declined as no-op or accepted by-design** (intentional behavior)
+- **29 fixed in-branch** (commit batches 1–6)
+- **10 declined as no-op or accepted by-design** (intentional behavior)
 - **6 tracked as GitHub issues** (complex / non-trivial; require design or
   upstream coordination)
 
@@ -55,9 +55,9 @@ blocking; the practical risk for each is documented in the issue body.
 | 1 | review-task fixes: broker codec doc-paths, sinceSeq max-prev, ralph shutdown re-entry, onSubscribeError required, test hardening (refcount probe, deadPid helper, regex hardening) |
 | 2 | H5 isSessionAlive list() refresh, H6 parseRalphLog PID-reuse via ps cmdline filter |
 | 3 | M1 CLI short-secret warning, M3 broker reconnect jitter, M6 PTY teardown order, M7/L14 onReplayTruncated wiring, M8 config.json mode 0600, M11 Enter retry duplicate, M12 localStorage URL validation |
-| 4 | L1 icon-192.png, L3 _wfTrace gating, L9 broker JSON TextDecoder fatal, L11 server peer-health adaptive timeouts, L13 settings agentCmd normalization |
+| 4 | L1 icon-192.png, L3 _wfTrace gating, L9 broker JSON TextDecoder fatal, L13 settings agentCmd normalization |
 | 5 | L2 sw.js rename, L4 resolveRipgrepBin memoized, L6 worktree mtime sort fallback, L8 setup non-interactive announcement |
-| 6 | M9 push subscription dir fsync, L5 peerHealth localStorage persistence |
+| 6 | M9 push subscription dir fsync |
 
 ### Declined (no-op or accepted by-design)
 
@@ -71,3 +71,5 @@ blocking; the practical risk for each is documented in the issue body.
 | L7 removeWorktree --force fallback | Warning added; no recovery possible |
 | L15 CLOSE_CODE_SERVER_ERROR doc gap | Constant added; classifyDisconnect falls through correctly |
 | L17 uninstall flag position | Guard added; position-insensitive intentional |
+| L5 peer health no persistence across reload | Reverted — stale failure state self-fulfills (slow-but-healthy peer permanently stuck at 1.5s budget once it crosses threshold). Per-tab in-memory is correct scope. |
+| L11 server peer-fetch adaptive timeouts | Reverted — same self-fulfilling-prophecy trap on the server side. Health check should be a small heartbeat, not a piggyback on the aggregate fetch. Fixed 3s timeout retained. |

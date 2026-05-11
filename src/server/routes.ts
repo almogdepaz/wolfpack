@@ -23,12 +23,6 @@ import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
-  recordFailure as recordPeerFailure,
-  recordSuccess as recordPeerSuccess,
-  fetchTimeoutMs as peerFetchTimeoutMs,
-  type PeerHealthMap,
-} from "../peer-health.js";
-import {
   CMD_REGEX,
   BRANCH_REGEX,
   isValidProjectName,
@@ -57,17 +51,7 @@ import {
 } from "./ralph.js";
 
 // ── Constants ──
-/** Healthy-peer baseline. Adaptive timeout (issues.md L11) shortens this
- *  to ~1500ms after FAILURE_THRESHOLD consecutive failures via the
- *  `peer-health` helpers — a dead peer no longer holds up an aggregate
- *  /api/ralph response by the full window. */
 const PEER_FETCH_TIMEOUT_MS = 3_000;
-
-/** Server-scope adaptive peer-timeout state. Mirrors the frontend's use
- *  of the same helpers (already wired via wolfpack-lib.js); previously the
- *  server-side aggregation always paid PEER_FETCH_TIMEOUT_MS regardless of
- *  peer liveness. */
-let peerHealth: PeerHealthMap = {};
 const RALPH_LOG_MAX_TAIL_BYTES = 128 * 1024;
 const RALPH_LOG_MAX_LINES = 500;
 
@@ -631,12 +615,7 @@ export const routes: Record<
       remotePeers.map(async (peer) => {
         try {
           const ctrl = new AbortController();
-          // Adaptive timeout (issues.md L11): a peer with ≥FAILURE_THRESHOLD
-          // consecutive failures gets the FAILING_TIMEOUT_MS budget instead
-          // of the full PEER_FETCH_TIMEOUT_MS. Falls back to the constant
-          // for healthy / unknown peers via the helper.
-          const timeoutMs = Math.min(PEER_FETCH_TIMEOUT_MS, peerFetchTimeoutMs(peerHealth, peer.url));
-          const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+          const timer = setTimeout(() => ctrl.abort(), PEER_FETCH_TIMEOUT_MS);
           const authHeader = Array.isArray(req.headers.authorization)
             ? req.headers.authorization[0]
             : req.headers.authorization;
@@ -648,11 +627,9 @@ export const routes: Record<
           clearTimeout(timer);
           const data = await r.json();
           const loops = validatePeerLoops(peer.name, data);
-          peerHealth = recordPeerSuccess(peerHealth, peer.url);
           if (!loops) return [];
           return loops.map(l => ({ ...l, machineName: peer.name, machineUrl: peer.url }));
         } catch { /* expected: peer unreachable or non-wolfpack — skip silently */
-          peerHealth = recordPeerFailure(peerHealth, peer.url);
           return [];
         }
       })
