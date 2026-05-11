@@ -457,10 +457,9 @@ describe("BrokerBackend.isSessionAlive", () => {
 
 describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   // Tests below that don't care about subscribe-error semantics still need
-  // to satisfy the now-required onSubscribeError contract (LOW-2 from
-  // review-tasks/report-server.md). This noop is fine because these tests
-  // exercise the success path or assert on the FakeBrokerClient state
-  // directly, not the callback.
+  // to satisfy the now-required onSubscribeError contract. This noop is
+  // fine because these tests exercise the success path or assert on the
+  // FakeBrokerClient state directly, not the callback.
   const noopErr = { onSubscribeError: () => {} };
 
   beforeEach(async () => {
@@ -564,10 +563,9 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     expect(client.subscribeCallCount).toBe(2);
   });
 
-  // Regression: HIGH finding from .context/reports/issues.md
-  // "subscribe-RPC failure leaves WS open with no data stream".
-  // The fix: broker-backend invokes opts.onSubscribeError so the WS layer
-  // can tear down the viewer instead of leaving it idle.
+  // Regression: subscribe-RPC failure must not leave the WS open with no
+  // data stream. broker-backend invokes opts.onSubscribeError so the WS
+  // layer can tear down the viewer instead of leaving it idle.
   test("subscribe RPC failure invokes opts.onSubscribeError exactly once", async () => {
     const errors: unknown[] = [];
     client.nextSubscribeError = new Error("broker exploded");
@@ -618,11 +616,11 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     }).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     // Real refcount probe: FakeBrokerClient.subscribe rejects BEFORE
-    // activeSubscriptions.add runs, so checking that set is tautological
-    // (LOW-1 in review-tasks/report-tests.md). Instead, verify the
-    // BrokerBackend.subscriberRefs map was unwound by issuing a follow-up
-    // subscribe — if the prior ref leaked, this call would reuse it and
-    // subscribeCallCount would stay at 1. A clean unwind => fresh RPC.
+    // activeSubscriptions.add runs, so checking that set is tautological.
+    // Instead, verify the BrokerBackend.subscriberRefs map was unwound by
+    // issuing a follow-up subscribe — if the prior ref leaked, this call
+    // would reuse it and subscribeCallCount would stay at 1. A clean
+    // unwind => fresh RPC.
     expect(client.subscribeCallCount).toBe(1);
     backend.onSessionData("live", () => {}, noopErr);
     await new Promise((r) => setTimeout(r, 0));
@@ -771,9 +769,9 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
     expect(seen.sort()).toEqual(["a", "b"]);
   });
 
-  // Regression: issues.md M7 / L14 — onReplayTruncated must reach
-  // lifecycle subscribers as a `replay_truncated` event so the WS layer
-  // can force a viewer reconnect for fresh prefill.
+  // Regression: onReplayTruncated must reach lifecycle subscribers as a
+  // `replay_truncated` event so the WS layer can force a viewer reconnect
+  // for fresh prefill.
   test("handleReplayTruncated fires a replay_truncated event to subscribers", () => {
     const seen: SessionLifecycleEvent[] = [];
     backend.onSessionLifecycle("live", (e) => seen.push(e));

@@ -97,8 +97,8 @@ export function removeWorktree(worktreePath: string, projectDir?: string): void 
 
 /**
  * Best-effort directory mtime; returns 0 if stat fails so the caller's
- * sort treats inaccessible entries as oldest. Used as the L6 fallback
- * for cleanupAllExceptFinal when the explicit order file is unavailable.
+ * sort treats inaccessible entries as oldest. Used as the fallback for
+ * cleanupAllExceptFinal when the explicit order file is unavailable.
  */
 function mtimeOrZero(path: string): number {
   try { return statSync(path).mtimeMs; } catch { return 0; }
@@ -213,8 +213,8 @@ function _cleanupAllExceptFinalImpl(
       return mtimeOrZero(a.path) - mtimeOrZero(b.path);
     });
   } else {
-    // Fallback when the order file is missing or unreadable (issues.md L6):
-    // sort by directory mtime instead of numeric path sort. Path sort
+    // Fallback when the order file is missing or unreadable: sort by
+    // directory mtime instead of numeric path sort. Path sort
     // breaks when slug names collide and get timestamp suffixes — the
     // "final" worktree picked for preservation may not be the most recent
     // and `cleanupAllExceptFinal` would discard the latest agent work.

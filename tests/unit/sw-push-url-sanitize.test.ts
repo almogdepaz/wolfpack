@@ -1,7 +1,5 @@
 /**
- * Regression test for HIGH finding in edc-context/reports/issues.md:
- * "sw.js open-redirect bypass via protocol-relative URL" (file was named
- * sw-push.js prior to L2 rename).
+ * Regression: sw.js open-redirect bypass via protocol-relative URL.
  *
  * The previous guard `if (url.startsWith("/"))` treated `//evil.com` as a
  * safe relative URL because it literally starts with `/`. Resolved against

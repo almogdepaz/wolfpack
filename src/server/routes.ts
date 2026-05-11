@@ -422,12 +422,12 @@ export const routes: Record<
     // fallback rules. `effective.cmds` is what the picker should render;
     // `effective.agentCmd` is the pre-selected default.
     //
-    // (issues.md L13) If the stored `settings.agentCmd` points to a
-    // disabled command, the runtime already resolves correctly via
-    // effectiveAgentCmd(). Normalize the raw field in the response so a
-    // future settings-UI consumer that reads `settings.agentCmd` directly
-    // doesn't surface a stale/disabled selection. We don't mutate the
-    // on-disk settings — just the returned view.
+    // If the stored `settings.agentCmd` points to a disabled command, the
+    // runtime already resolves correctly via effectiveAgentCmd(). Normalize
+    // the raw field in the response so a future settings-UI consumer that
+    // reads `settings.agentCmd` directly doesn't surface a stale/disabled
+    // selection. We don't mutate the on-disk settings — just the returned
+    // view.
     const enabled = new Set((settings.cmds ?? []).filter((c) => c.enabled).map((c) => c.cmd));
     const view = settings.agentCmd && !enabled.has(settings.agentCmd)
       ? { ...settings, agentCmd: "" }
@@ -925,9 +925,9 @@ export const routes: Record<
     if (!status?.active || !status.pid || status.pid <= 1) {
       return json(res, { error: "no active ralph loop found" }, 404);
     }
-    // Reuse the same filter parseRalphLog now applies (issues.md H6) so
-    // the cancel and the active-detection paths agree. ps -o command=
-    // confirms it's actually a ralph worker, not a reused PID slot.
+    // Reuse the same PID-reuse-safe filter parseRalphLog applies so the
+    // cancel and active-detection paths agree. ps -o command= confirms
+    // it's actually a ralph worker, not a reused PID slot.
     if (!isRalphProcessAlive(status.pid)) {
       return json(res, { error: "PID does not belong to a ralph process or process not found" }, 404);
     }

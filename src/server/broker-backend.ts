@@ -374,8 +374,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       // Fire-and-forget subscribe RPC. On failure, unwind the local subscriber
       // state so the refcount doesn't leak and the output sub is cleaned up.
       // ALSO notify the caller via opts.onSubscribeError so the WS layer can
-      // tear down the viewer (otherwise it sits idle forever — see HIGH
-      // finding in edc-context/reports/issues.md).
+      // tear down the viewer (otherwise it sits idle forever).
       this.client.subscribe(id, { sinceSeq: opts.sinceSeq }).catch((e: unknown) => {
         log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(e) });
         try { unsubData(); } catch { /* ignore */ }
@@ -517,7 +516,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
    * given session id. Wired by `BackendRouter` via
    * `BrokerClient.onReplayTruncated`. The WS layer translates this into a
    * 1011 close so the client reconnects with a fresh snapshot, closing
-   * the issues.md M7 / L14 stale-prefill window.
+   * the stale-prefill window.
    */
   handleReplayTruncated(id: string): void {
     const subs = this.lifecycleSubs.get(id);

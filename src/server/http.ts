@@ -169,7 +169,7 @@ export function serveFile(res: ServerResponse, filename: string): void {
   // (without it the scope is restricted to the directory containing the
   // SW script). Previously a dedicated `GET /sw.js` route set this; now
   // that the file is served by the generic asset handler we set the
-  // header here for the single SW path. (issues.md L2)
+  // header here for the single SW path.
   if (filename === "sw.js") {
     headers["Service-Worker-Allowed"] = "/";
   }

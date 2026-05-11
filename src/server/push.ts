@@ -122,7 +122,7 @@ function saveSubscriptions(subs: PushSubscription[]): void {
   // fsync the containing directory so the rename is durable across an
   // ungraceful shutdown on non-CoW filesystems (ext4 without
   // data=ordered would otherwise be free to reorder the dir-entry write
-  // and silently revert the subscription file). issues.md M9.
+  // and silently revert the subscription file).
   try {
     const dirFd = openSync(dirname(SUBS_PATH), "r");
     try { fsyncSync(dirFd); } finally { closeSync(dirFd); }

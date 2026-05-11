@@ -19,7 +19,7 @@ function baseUrl(): string {
 }
 
 /** Track a one-shot warning so a too-short JWT secret is surfaced once
- *  per CLI invocation rather than spammed on every API call. (issues.md M1) */
+ *  per CLI invocation rather than spammed on every API call. */
 let _warnedShortSecret = false;
 
 /** Mint a short-lived HS256 JWT if WOLFPACK_JWT_SECRET is set. Matches the

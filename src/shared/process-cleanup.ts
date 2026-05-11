@@ -32,8 +32,7 @@ export function isProcessAlive(pid: number): boolean {
  * PID-reuse-safe liveness check for a ralph worker. `kill(pid, 0)` alone
  * returns true for ANY process at that PID, so a recycled PID (the OS
  * reusing the slot for an unrelated process after the ralph worker
- * exited) makes parseRalphLog report `active: true` for a dead loop
- * (issues.md H6).
+ * exited) would make parseRalphLog report `active: true` for a dead loop.
  *
  * Uses `ps -o command=` to confirm the process at `pid` is actually a
  * ralph-macchio worker. Returns false on:

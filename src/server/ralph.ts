@@ -173,12 +173,12 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
       status.finished = finishedMatch[1].trim();
     }
 
-    // detect active: PID-reuse-safe liveness via `ps -o command=` filter
-    // (issues.md H6). `kill(pid, 0)` alone would report "active" for any
-    // unrelated process the kernel happened to assign the recycled PID to
-    // after the ralph worker reaped — leaving the UI showing a dead loop
-    // as live and the cancel button as a no-op (the cancel endpoint
-    // applies the same filter and would refuse to kill).
+    // detect active: PID-reuse-safe liveness via `ps -o command=` filter.
+    // `kill(pid, 0)` alone would report "active" for any unrelated process
+    // the kernel happened to assign the recycled PID to after the ralph
+    // worker reaped — leaving the UI showing a dead loop as live and the
+    // cancel button as a no-op (the cancel endpoint applies the same filter
+    // and would refuse to kill).
     if (status.pid > 1 && isRalphProcessAlive(status.pid)) {
       status.active = true;
       status.completed = false;

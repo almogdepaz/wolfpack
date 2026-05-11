@@ -279,9 +279,9 @@ export class BrokerClient {
     if (opts.sinceSeq !== undefined) {
       // Take max(prev, sinceSeq): never lower the floor below what we've
       // already observed via OUTPUT_BINARY frames. A caller passing a stale
-      // sinceSeq would otherwise force redundant replay on reconnect (LOW-1
-      // in review-tasks/report-broker.md). The broker handles redundancy
-      // gracefully but the duplicate bytes are wasted work.
+      // sinceSeq would otherwise force redundant replay on reconnect.
+      // The broker handles redundancy gracefully but the duplicate bytes
+      // are wasted work.
       const prev = this.activeSubscriptionSeq.get(sessionId);
       const next = prev !== undefined && prev > opts.sinceSeq ? prev : opts.sinceSeq;
       this.activeSubscriptionSeq.set(sessionId, next);
@@ -529,8 +529,8 @@ export class BrokerClient {
     this.currentReconnectDelay = base;
     // ±20% jitter to avoid thundering-herd reconnect spikes when many
     // wolfpack server instances restart simultaneously and target the same
-    // broker (issues.md M3). Base value still drives exponential growth
-    // for predictable testing; jitter is applied only at scheduling time.
+    // broker. Base value still drives exponential growth for predictable
+    // testing; jitter is applied only at scheduling time.
     const jitter = base * 0.2 * (Math.random() * 2 - 1);
     const delay = Math.max(0, Math.round(base + jitter));
     this.reconnectTimer = setTimeout(() => {

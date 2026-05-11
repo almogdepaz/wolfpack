@@ -1,6 +1,6 @@
 /**
- * Regression tests for the JWT auth startup contract (issues.md CRITICAL —
- * "JWT auth fails open when secret is absent or short").
+ * Regression tests for the JWT auth startup contract — must not fail open
+ * when the secret is absent or too short.
  *
  * Contract:
  *   - WOLFPACK_JWT_SECRET set, ≥32 chars  →  enforce auth ("ok")

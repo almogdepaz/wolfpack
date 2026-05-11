@@ -1,6 +1,7 @@
 /**
- * Regression test for HIGH finding from edc-context/reports/issues.md:
- * "SIGINT unhandled in ralph worker — orphan lock and worktrees".
+ * Regression: ralph worker must handle BOTH SIGTERM and SIGINT, otherwise
+ * Ctrl+C from a terminal leaves `.ralph.lock` and in-progress worktrees
+ * behind, and the next `POST /api/ralph/start` rejects with 409.
  *
  * Why a source-level test instead of a subprocess test:
  *   ralph-macchio.ts has top-level side effects (parses argv, calls main()
@@ -9,9 +10,6 @@
  *   bug warrants. The actual cleanup logic is shared between SIGTERM and
  *   SIGINT via `shutdownHandler`, so the test we need is "both signals are
  *   wired to the same handler". A grep is enough.
- *
- * If anyone deletes the SIGINT line again (or wires it to a different
- * handler), this test fails.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -23,14 +21,13 @@ const SOURCE = readFileSync(
 );
 
 describe("ralph-macchio shutdown signal registration", () => {
-  // Quote class is `["']` to tolerate either single or double quotes
-  // (LOW-3 in review-tasks/report-tests.md): a formatter switch should
-  // not produce a false negative.
+  // Quote class is `["']` to tolerate either single or double quotes —
+  // a formatter switch should not produce a false negative.
   test("registers a SIGTERM handler", () => {
     expect(SOURCE).toMatch(/process\.on\(\s*["']SIGTERM["']/);
   });
 
-  test("registers a SIGINT handler (regression for issues.md HIGH)", () => {
+  test("registers a SIGINT handler", () => {
     expect(SOURCE).toMatch(/process\.on\(\s*["']SIGINT["']/);
   });
 
@@ -53,8 +50,7 @@ describe("ralph-macchio shutdown signal registration", () => {
     // (closing brace on its own line followed by a blank line). If a
     // formatter ever emits `}` without a trailing blank line, fall back
     // to the next `\n}` so we don't over-capture the rest of the file
-    // and silently mask a removeLock() removal (LOW-3 in
-    // review-tasks/report-tests.md).
+    // and silently mask a removeLock() removal.
     let end = SOURCE.indexOf("\n}\n", start);
     if (end === -1) end = SOURCE.indexOf("\n}", start);
     expect(end).toBeGreaterThan(start);

@@ -1,11 +1,10 @@
 /**
  * Test helper: spawn a long-lived stand-in process whose argv[0] contains
  * "ralph-macchio" so `parseRalphLog`'s PID-reuse-safe filter
- * (`isRalphProcessAlive` — issues.md H6 in edc-context/reports/issues.md)
- * treats it as a live ralph worker. Use the returned PID in fixture log
- * lines `pid: ${fakeRalphPid}` instead of `process.pid`, which would (now
- * correctly) be rejected because the bun test runner's argv does not
- * contain "ralph-macchio".
+ * (`isRalphProcessAlive`) treats it as a live ralph worker. Use the
+ * returned PID in fixture log lines `pid: ${fakeRalphPid}` instead of
+ * `process.pid`, which would (correctly) be rejected because the bun test
+ * runner's argv does not contain "ralph-macchio".
  *
  * Lifecycle: call `startFakeRalph()` from `beforeAll`, store the pid,
  * call `stopFakeRalph()` from `afterAll`. The shell exec replaces argv[0]

@@ -95,9 +95,9 @@ export async function setup() {
   print("");
 
   // Detect non-interactive shells (CI, piped stdin, redirected stdout)
-  // and announce up-front (issues.md L8). Without this, every prompt
-  // silently no-ops via the hasTTY=false flip in `ask()`, leaving
-  // operators wondering why setup "just finished" with nothing changed.
+  // and announce up-front. Without this, every prompt silently no-ops via
+  // the hasTTY=false flip in `ask()`, leaving operators wondering why
+  // setup "just finished" with nothing changed.
   // process.stdin.isTTY is undefined when not a TTY — treat any non-true
   // value as non-interactive.
   const interactive = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
