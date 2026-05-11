@@ -9,6 +9,7 @@ CLAUDE.md
 !docs/*.gif
 *.png
 !docs/*.png
+!public/icon-192.png
 *.jpeg
 *.jpg
 *.svg

@@ -135,7 +135,13 @@ export function uuidFromBytes(buf: Uint8Array, off = 0): string {
 // ---------------------------------------------------------------------------
 
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
+// fatal:true (issues.md L9) — reject malformed UTF-8 in JSON control
+// frames instead of replacing bytes with U+FFFD. Silent replacement
+// could parse-as-clean a corrupted field (mojibake in session names
+// etc.), misrouting events. The TypeError is caught by `decodeJson`
+// below and rethrown as a CodecError so the caller drops the frame and
+// the broker reconnect path takes over.
+const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 export function encodeFrame(frame: Frame): Uint8Array {
   switch (frame.kind) {

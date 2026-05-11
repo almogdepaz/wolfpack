@@ -6,6 +6,8 @@
 > Removed as no-op or accepted by-design: H1 dev-mode auth bypass (intentional — JWT enforced only when configured), H2 Tailscale-User-Login trust (intentional — assumes Tailscale ingress), H3 broker socket per-conn auth (declined — 0600 + same-UID threat model), H4 ralph sandbox optional (intentional — opt-in), M4 since_seq protocol gap (clamped; residual unfixable without protocol change), L7 removeWorktree --force fallback (warning added; no recovery possible), L15 CLOSE_CODE_SERVER_ERROR doc gap (constant added), L17 uninstall flag position (guard added; position-insensitive intentional).
 >
 > Resolved in commit batch 3: M1 CLI short-secret warning, M3 broker reconnect jitter, M6 PTY teardown order (kill before delete), M7 / L14 onReplayTruncated wiring (forces re-prefill on ring overrun), M8 config.json mode 0600, M11 Enter retry duplicate (timer dropped), M12 localStorage URL validation.
+>
+> Resolved in commit batch 4: L1 icon-192.png embedded as 192×192 PNG asset, L3 _wfTrace gated behind localStorage.wolfpackDebug, L9 broker JSON TextDecoder switched to fatal:true (corruption surfaces as CodecError), L11 server-side peer-fetch now uses peer-health adaptive timeouts, L13 GET /api/settings normalizes raw agentCmd when disabled.
 
 ---
 
@@ -41,24 +43,10 @@
 
 ## Low Severity
 
-### L1. Notification icon `/icon-192.png` does not exist
-**Location:** `public/sw-push.js:42`
-**Description:** The service worker hardcodes `icon: "/icon-192.png"` in `showNotification()`. The `public/` directory only contains `wolfpack-icon.svg`; no 192×192 PNG is generated or embedded. The server serves only assets in the embedded `assets` Map, so a request for `/icon-192.png` 404s.
-**Impact:** Push notifications display with no icon (browser shows default placeholder). Cosmetic but visible to all notification recipients.
-
----
-
 ### L2. Service worker registered as `/sw.js` but source is `sw-push.js`
 **Location:** `public/app-state.ts:158`, `src/server/routes.ts:306–310`
 **Description:** The frontend registers `navigator.serviceWorker.register("/sw.js")`. The server has an explicit `GET /sw.js` route that reads the `sw-push.js` asset and serves it. This works but is a non-obvious naming indirection: editing `sw-push.js` works, editing a hypothetical `sw.js` in `public/` would have no effect.
 **Impact:** Developer confusion; low breakage risk, but the indirection is undocumented.
-
----
-
-### L3. `_wfTrace` diagnostic state exposed to any JS in page context
-**Location:** `public/app.ts:89`
-**Description:** `window.__wf_dumpTrace()` exposes per-session attach metadata (cols, rows, prefillMode, takeControl, reset) for every connection since page load. This runs always (not gated on a debug flag). Any JavaScript in the page context (XSS, extension, bookmarklet) can call this.
-**Impact:** Leaks terminal configuration metadata. Not a secret, but increases XSS blast radius.
 
 ---
 
@@ -90,13 +78,6 @@
 
 ---
 
-### L9. `TextDecoder` with `fatal: false` on JSON control frames
-**Location:** `src/broker/codec.ts:138`
-**Description:** Malformed UTF-8 in broker JSON control frames is replaced with U+FFFD rather than rejected. The JSON parse can still fail, but corrupted field values may silently parse to wrong strings, producing misattributed session events.
-**Impact:** In pathological broker output (e.g., mojibake in session names), events may be silently misrouted rather than raising a codec error. Very low probability in practice.
-
----
-
 ### L10. Broker `WRITER_QUEUE_CAPACITY` can backpressure the read loop
 **Location:** `broker/src/server.rs:28`
 **Description:** Each connection's writer queue is capped at 1024 entries. A slow WebSocket consumer fills the queue, backpressuring the read loop, which eventually stalls the TCP window. The PTY is not directly blocked, but the connection stops processing incoming control frames (input, resize) while the queue is full.
@@ -104,24 +85,10 @@
 
 ---
 
-### L11. `peer-health.ts` adaptive timeouts not wired into server peer fetches
-**Location:** `src/peer-health.ts`, `src/server/http.ts`
-**Description:** `src/peer-health.ts` exports `recordFailure`, `recordSuccess`, `fetchTimeoutMs` for adaptive peer timeouts. None of these are imported or called from `discoverPeers()` or the peer ralph aggregation fetch in `routes.ts`. The state machine exists and is tested (`peer-health.test.ts`) but the server never applies adaptive timeouts to peer discovery or aggregation calls. Dead server-side code; the frontend uses these functions correctly via `wolfpack-lib.js`.
-**Impact:** Peer discovery and ralph aggregation always use a fixed timeout (no adaptation to dead peers on the server side). The adaptive timeout benefit is only realized in the PWA frontend, not the server-to-peer fetch path.
-
----
-
 ### L12. `injectAgentContext` silent fallback on `--append-system-prompt` rejection
 **Location:** `src/server/shell.ts:47–50`
 **Description:** For claude, context injection uses `agentCmd + " --append-system-prompt " + shellEscape(ctx) + " || " + agentCmd`. If `--append-system-prompt` is rejected by a future claude version (flag removed), the `|| agentCmd` fallback runs claude without any context injection. This is silent degradation rather than an error; no alarm path exists.
 **Impact:** Ralph context (subtask protocol, push notification endpoint) is silently omitted from all claude invocations if the flag is ever removed. Agents proceed without system context.
-
----
-
-### L13. Settings `agentCmd` can be set to a disabled command
-**Location:** `src/server/routes.ts:486–492`
-**Description:** `POST /api/settings` accepts `agentCmd` without checking whether the referenced command is enabled. `effectiveAgentCmd()` resolves past this correctly (falls through to first-enabled or shell), but `GET /api/settings` returns `settings.agentCmd` which may be a disabled command, potentially confusing the frontend settings display.
-**Impact:** Cosmetic inconsistency in settings UI; no functional harm since `effectiveAgentCmd` is always used at runtime.
 
 ---
 

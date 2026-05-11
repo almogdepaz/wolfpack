@@ -23,6 +23,12 @@ import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
+  recordFailure as recordPeerFailure,
+  recordSuccess as recordPeerSuccess,
+  fetchTimeoutMs as peerFetchTimeoutMs,
+  type PeerHealthMap,
+} from "../peer-health.js";
+import {
   CMD_REGEX,
   BRANCH_REGEX,
   isValidProjectName,
@@ -51,7 +57,17 @@ import {
 } from "./ralph.js";
 
 // ── Constants ──
+/** Healthy-peer baseline. Adaptive timeout (issues.md L11) shortens this
+ *  to ~1500ms after FAILURE_THRESHOLD consecutive failures via the
+ *  `peer-health` helpers — a dead peer no longer holds up an aggregate
+ *  /api/ralph response by the full window. */
 const PEER_FETCH_TIMEOUT_MS = 3_000;
+
+/** Server-scope adaptive peer-timeout state. Mirrors the frontend's use
+ *  of the same helpers (already wired via wolfpack-lib.js); previously the
+ *  server-side aggregation always paid PEER_FETCH_TIMEOUT_MS regardless of
+ *  peer liveness. */
+let peerHealth: PeerHealthMap = {};
 const RALPH_LOG_MAX_TAIL_BYTES = 128 * 1024;
 const RALPH_LOG_MAX_LINES = 500;
 
@@ -431,8 +447,19 @@ export const routes: Record<
     // Surface the effective values so the frontend doesn't reimplement the
     // fallback rules. `effective.cmds` is what the picker should render;
     // `effective.agentCmd` is the pre-selected default.
+    //
+    // (issues.md L13) If the stored `settings.agentCmd` points to a
+    // disabled command, the runtime already resolves correctly via
+    // effectiveAgentCmd(). Normalize the raw field in the response so a
+    // future settings-UI consumer that reads `settings.agentCmd` directly
+    // doesn't surface a stale/disabled selection. We don't mutate the
+    // on-disk settings — just the returned view.
+    const enabled = new Set((settings.cmds ?? []).filter((c) => c.enabled).map((c) => c.cmd));
+    const view = settings.agentCmd && !enabled.has(settings.agentCmd)
+      ? { ...settings, agentCmd: "" }
+      : settings;
     json(res, {
-      settings,
+      settings: view,
       effective: {
         cmds: effectiveCmds(settings),
         agentCmd: effectiveAgentCmd(settings),
@@ -614,7 +641,12 @@ export const routes: Record<
       remotePeers.map(async (peer) => {
         try {
           const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), PEER_FETCH_TIMEOUT_MS);
+          // Adaptive timeout (issues.md L11): a peer with ≥FAILURE_THRESHOLD
+          // consecutive failures gets the FAILING_TIMEOUT_MS budget instead
+          // of the full PEER_FETCH_TIMEOUT_MS. Falls back to the constant
+          // for healthy / unknown peers via the helper.
+          const timeoutMs = Math.min(PEER_FETCH_TIMEOUT_MS, peerFetchTimeoutMs(peerHealth, peer.url));
+          const timer = setTimeout(() => ctrl.abort(), timeoutMs);
           const authHeader = Array.isArray(req.headers.authorization)
             ? req.headers.authorization[0]
             : req.headers.authorization;
@@ -626,9 +658,11 @@ export const routes: Record<
           clearTimeout(timer);
           const data = await r.json();
           const loops = validatePeerLoops(peer.name, data);
+          peerHealth = recordPeerSuccess(peerHealth, peer.url);
           if (!loops) return [];
           return loops.map(l => ({ ...l, machineName: peer.name, machineUrl: peer.url }));
         } catch { /* expected: peer unreachable or non-wolfpack — skip silently */
+          peerHealth = recordPeerFailure(peerHealth, peer.url);
           return [];
         }
       })

@@ -79,20 +79,27 @@ const wpMetrics = {
 // reconstruct the WS frame timing, prefill vs replay byte distribution,
 // _writeTermData call shape, and rAF cadence during the hydration window.
 //
-// PURE DIAGNOSTIC. Zero behavioral change. Lives on `window.__wfTrace`.
-// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`.
+// PURE DIAGNOSTIC. Gated behind `localStorage.wolfpackDebug = "1"`
+// (issues.md L3) — previously this was always-on and exposed per-session
+// attach metadata to any JS in the page context (XSS, extension,
+// bookmarklet). When disabled, all helpers are no-ops and `__wfTrace` /
+// `__wf_dumpTrace` / `__wf_clearTrace` are NOT installed on `window`.
 //
-// Each trace is a flat append-only array of events:
-//   { t: ms_since_attach_start, kind: string, ...fields }
-// plus a `_meta` block with start wall-clock and key markers.
+// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
+// after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
+const __wfTraceEnabled = (() => {
+  try { return localStorage.getItem("wolfpackDebug") === "1"; }
+  catch { return false; }
+})();
 const __wfTraceMaxEvents = 5000;
-(window as any).__wfTrace = (window as any).__wfTrace || {};
+if (__wfTraceEnabled) (window as any).__wfTrace = (window as any).__wfTrace || {};
 
 function __wfTraceKey(session, machine) {
   return (session || "?") + "@" + (machine || "");
 }
 
 function __wfTraceStart(session, machine, extra?: any) {
+  if (!__wfTraceEnabled) return null;
   const key = __wfTraceKey(session, machine);
   const trace: any = {
     _meta: {
@@ -111,6 +118,7 @@ function __wfTraceStart(session, machine, extra?: any) {
 }
 
 function __wfTraceGet(session, machine) {
+  if (!__wfTraceEnabled) return null;
   const key = __wfTraceKey(session, machine);
   return (window as any).__wfTrace[key];
 }
@@ -144,7 +152,7 @@ function __wfTraceRafStop(trace) {
   trace._rafActive = false;
 }
 
-(window as any).__wf_dumpTrace = function (sessionFilter?: string) {
+if (__wfTraceEnabled) (window as any).__wf_dumpTrace = function (sessionFilter?: string) {
   const all = (window as any).__wfTrace || {};
   const keys = Object.keys(all).filter(k => !sessionFilter || k.indexOf(sessionFilter) >= 0);
   for (const key of keys) {
@@ -175,7 +183,7 @@ function __wfTraceRafStop(trace) {
   return all;
 };
 
-(window as any).__wf_clearTrace = function () {
+if (__wfTraceEnabled) (window as any).__wf_clearTrace = function () {
   (window as any).__wfTrace = {};
 };
 
