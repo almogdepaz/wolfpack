@@ -3,8 +3,8 @@
  * Zero external dependencies, uses node:crypto only.
  */
 import { createECDH, createSign, createPrivateKey, createHmac, createCipheriv, randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
 import type { TriageStatus } from "../triage.js";
@@ -119,6 +119,20 @@ function saveSubscriptions(subs: PushSubscription[]): void {
   const tmp = SUBS_PATH + ".tmp";
   writeFileSync(tmp, JSON.stringify(subs, null, 2), { mode: 0o600 });
   renameSync(tmp, SUBS_PATH);
+  // fsync the containing directory so the rename is durable across an
+  // ungraceful shutdown on non-CoW filesystems (ext4 without
+  // data=ordered would otherwise be free to reorder the dir-entry write
+  // and silently revert the subscription file). issues.md M9.
+  try {
+    const dirFd = openSync(dirname(SUBS_PATH), "r");
+    try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+  } catch (e: unknown) {
+    // macOS APFS rejects directory fsync with EINVAL/EISDIR — that's fine
+    // because APFS already gives us atomic rename durability. Linux and
+    // FreeBSD support it; if it fails there, log debug and continue (the
+    // rename itself succeeded; durability is best-effort).
+    log.debug("saveSubscriptions: dir fsync skipped", { error: errMsg(e) });
+  }
 }
 
 /** Validate subscription keys have correct decoded lengths. Returns error string or null. */

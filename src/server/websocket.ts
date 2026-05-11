@@ -11,6 +11,7 @@ import {
 } from "../validation.js";
 import {
   CLOSE_CODE_NORMAL,
+  CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   CLOSE_CODE_DISPLACED,
   WS_CLOSE_REASONS,
@@ -172,26 +173,39 @@ export function teardownPty(session: string): void {
   const entry = activePtySessions.get(session);
   if (!entry) return;
   entry.alive = false;
-  activePtySessions.delete(session);
-  if (entry.unsubscribe) {
-    entry.unsubscribe();
-    entry.unsubscribe = null;
-  }
-  if (entry.unsubscribeLifecycle) {
-    entry.unsubscribeLifecycle();
-    entry.unsubscribeLifecycle = null;
-  }
-  if (entry.viewer) {
-    try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
-    entry.viewer = null;
-  }
-  if (entry.pendingViewer) {
-    try { entry.pendingViewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: pendingViewer close failed`, { session, error: errMsg(e) }); }
-    entry.pendingViewer = null;
-  }
-  if (entry.proc) {
-    try { entry.proc.terminal!.close(); } catch (e: unknown) { log.debug(`teardownPty: terminal close failed`, { session, error: errMsg(e) }); }
-    try { entry.proc.kill(); } catch (e: unknown) { log.debug(`teardownPty: proc kill failed`, { session, error: errMsg(e) }); }
+  // Tear down sub/proc state BEFORE deleting from the map. Kill failures
+  // are logged at warn (not debug) so an orphan PTY surfaces in the log
+  // stream rather than silently accumulating (issues.md M6). The map
+  // delete still happens unconditionally in finally so a thrown kill
+  // never strands the entry — a re-attach is always possible.
+  try {
+    if (entry.unsubscribe) {
+      try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribe failed`, { session, error: errMsg(e) }); }
+      entry.unsubscribe = null;
+    }
+    if (entry.unsubscribeLifecycle) {
+      try { entry.unsubscribeLifecycle(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribeLifecycle failed`, { session, error: errMsg(e) }); }
+      entry.unsubscribeLifecycle = null;
+    }
+    if (entry.viewer) {
+      try { entry.viewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: viewer close failed`, { session, error: errMsg(e) }); }
+      entry.viewer = null;
+    }
+    if (entry.pendingViewer) {
+      try { entry.pendingViewer.close(CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN); } catch (e: unknown) { log.debug(`teardownPty: pendingViewer close failed`, { session, error: errMsg(e) }); }
+      entry.pendingViewer = null;
+    }
+    if (entry.proc) {
+      try { entry.proc.terminal!.close(); } catch (e: unknown) { log.debug(`teardownPty: terminal close failed`, { session, error: errMsg(e) }); }
+      try { entry.proc.kill(); } catch (e: unknown) {
+        // Warn (not debug): a swallowed kill failure means a zombie PTY
+        // process is still running with no map reference — the operator
+        // needs to see this to chase it down.
+        log.warn(`teardownPty: proc kill failed; PTY may be orphaned`, { session, pid: entry.proc.pid, error: errMsg(e) });
+      }
+    }
+  } finally {
+    activePtySessions.delete(session);
   }
 }
 
@@ -363,13 +377,24 @@ function setupNewPtyEntry(
 
     try {
       if (!backend.isSessionAlive(session)) {
-        entry.alive = false;
-        activePtySessions.delete(session);
-        if (entry.viewer) {
-          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`session unavailable: viewer close failed`, { session, error: errMsg(e) }); }
-          entry.viewer = null;
+        // Cache may be stale: BrokerBackend's isSessionAlive() only consults
+        // the in-memory nameToId map, which lags behind broker truth after
+        // a broker restart or out-of-band session creation (issues.md H5).
+        // Refresh once via list() and re-check before closing 4001 —
+        // legitimate live sessions should not be rejected just because the
+        // local cache hasn't seen them yet.
+        try { await backend.list(); } catch (e: unknown) {
+          log.debug("isSessionAlive miss: list() refresh failed", { session, error: errMsg(e) });
         }
-        return;
+        if (!backend.isSessionAlive(session)) {
+          entry.alive = false;
+          activePtySessions.delete(session);
+          if (entry.viewer) {
+            try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`session unavailable: viewer close failed`, { session, error: errMsg(e) }); }
+            entry.viewer = null;
+          }
+          return;
+        }
       }
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;
@@ -456,6 +481,15 @@ function setupNewPtyEntry(
         const samples: Array<{ t: number; bytes: number }> = [];
         const observe = backend.onSessionData(session, (data: Uint8Array) => {
           samples.push({ t: Date.now(), bytes: data.length });
+        }, {
+          // Probe-only observer for the resize-settle window. If the
+          // subscribe RPC fails here, the main per-viewer subscription
+          // (registered after settle) carries its own teardown handler;
+          // this probe just stops collecting samples — settle will time
+          // out naturally and we move on.
+          onSubscribeError: (err: unknown) => {
+            log.debug("resize-settle observer subscribe failed", { session, error: errMsg(err) });
+          },
         });
         try {
           await backend.resize(session, appliedSize.cols, appliedSize.rows);
@@ -580,7 +614,24 @@ function setupNewPtyEntry(
         }
         if (_coalesceTimer) clearTimeout(_coalesceTimer);
         _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
-      }, { sinceSeq: prefillSeq });
+      }, {
+        sinceSeq: prefillSeq,
+        // HIGH finding from edc-context/reports/issues.md: when the broker
+        // `subscribe` RPC fails after onSessionData returns, the backend
+        // unwinds locally but the WS would otherwise stay open with no
+        // data stream. Tear down so the client gets a 1011 close and can
+        // surface an error / retry, instead of staring at a dead viewer.
+        onSubscribeError: (err: unknown) => {
+          log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
+          if (!entry.alive) return;
+          if (entry.viewer && entry.viewer.readyState === 1) {
+            try { entry.viewer.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED); } catch (e: unknown) {
+              log.debug("subscribe-error: viewer close failed", { session, error: errMsg(e) });
+            }
+          }
+          teardownPty(session);
+        },
+      });
       if (!unsub) {
         log.warn("onSessionData returned null — session vanished", { session });
         entry.alive = false;
@@ -603,6 +654,22 @@ function setupNewPtyEntry(
       // Close the viewer with 4001 so the client distinguishes a remote-side
       // session death from a normal disconnect. PtyBackend's stub no-ops.
       const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
+        if (event.kind === "replay_truncated") {
+          // Broker ring overran during a lag window — our cached prefill
+          // and any bytes since are out of sync with broker truth
+          // (issues.md M7 / L14). Tear the viewer down with 1011 so the
+          // client reconnects and re-prefills from a fresh snapshot,
+          // instead of staring at stale terminal content.
+          if (!entry.alive) return;
+          log.warn("replay_truncated — forcing client reconnect for fresh snapshot", { session });
+          if (entry.viewer && entry.viewer.readyState === 1) {
+            try { entry.viewer.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED); } catch (e: unknown) {
+              log.debug(`replay_truncated: viewer close failed`, { session, error: errMsg(e) });
+            }
+          }
+          teardownPty(session);
+          return;
+        }
         if (event.kind !== "exited") return;
         if (!entry.alive) return;
         entry.alive = false;

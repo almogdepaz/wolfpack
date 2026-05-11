@@ -45,6 +45,10 @@ export function planServiceEnsureAction(
   return installed ? "start" : "install";
 }
 
+export function hasUninstallConfirmationFlag(argv: string[]): boolean {
+  return argv.includes("--yes") || argv.includes("--force");
+}
+
 async function start() {
   const serviceMode = process.env.WOLFPACK_SERVICE === "1";
   const config = loadConfig();
@@ -152,6 +156,12 @@ async function main() {
   } else if (cmd === "kill") {
     process.exit(await killSession(subcmd));
   } else if (cmd === "uninstall") {
+    if (!hasUninstallConfirmationFlag(process.argv.slice(3))) {
+      print(red("  Refusing to uninstall without confirmation."));
+      print(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
+      print(dim("  Re-run with: wolfpack uninstall --yes"));
+      process.exit(1);
+    }
     uninstall();
   } else if (cmd === "migrate-plan") {
     migratePlan(subcmd);

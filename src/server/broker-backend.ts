@@ -359,7 +359,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   onSessionData(
     name: string,
     cb: (data: Uint8Array) => void,
-    opts?: { sinceSeq?: bigint },
+    opts: {
+      sinceSeq?: bigint;
+      onSubscribeError: (err: unknown) => void;
+    },
   ): (() => void) | null {
     const id = this.nameToId.get(name);
     if (!id) return null;
@@ -370,13 +373,19 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       this.subscriberRefs.set(id, ref);
       // Fire-and-forget subscribe RPC. On failure, unwind the local subscriber
       // state so the refcount doesn't leak and the output sub is cleaned up.
-      this.client.subscribe(id, { sinceSeq: opts?.sinceSeq }).catch((e: unknown) => {
+      // ALSO notify the caller via opts.onSubscribeError so the WS layer can
+      // tear down the viewer (otherwise it sits idle forever — see HIGH
+      // finding in edc-context/reports/issues.md).
+      this.client.subscribe(id, { sinceSeq: opts.sinceSeq }).catch((e: unknown) => {
         log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(e) });
         try { unsubData(); } catch { /* ignore */ }
         const r = this.subscriberRefs.get(id);
         if (r) {
           r.count = Math.max(0, r.count - 1);
           if (r.count === 0) this.subscriberRefs.delete(id);
+        }
+        try { opts.onSubscribeError(e); } catch (cbErr: unknown) {
+          log.debug("onSubscribeError callback threw", { name, id, error: errMsg(cbErr) });
         }
       });
     }
@@ -499,6 +508,25 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
         const info = this.idToInfo.get(id);
         if (info) this.triageCache.delete(info.name);
         return;
+      }
+    }
+  }
+
+  /**
+   * Fan out a `replay_truncated` lifecycle event to subscribers of the
+   * given session id. Wired by `BackendRouter` via
+   * `BrokerClient.onReplayTruncated`. The WS layer translates this into a
+   * 1011 close so the client reconnects with a fresh snapshot, closing
+   * the issues.md M7 / L14 stale-prefill window.
+   */
+  handleReplayTruncated(id: string): void {
+    const subs = this.lifecycleSubs.get(id);
+    if (!subs) return;
+    for (const cb of Array.from(subs)) {
+      try {
+        cb({ kind: "replay_truncated" });
+      } catch (e: unknown) {
+        log.debug("lifecycle replay_truncated callback threw", { id, error: errMsg(e) });
       }
     }
   }

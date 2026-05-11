@@ -8,6 +8,10 @@
 // ── Close codes ──
 
 export const CLOSE_CODE_NORMAL = 1000;
+/** RFC 6455 1011 — "server error". Used when the broker subscribe RPC fails
+ * after the WS is open: the viewer would otherwise sit idle with no data
+ * stream forever. */
+export const CLOSE_CODE_SERVER_ERROR = 1011;
 export const CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
 export const CLOSE_CODE_DISPLACED = 4002;
 
@@ -19,4 +23,5 @@ export const WS_CLOSE_REASONS = {
   DISPLACED: "displaced",
   PTY_TEARDOWN: "pty teardown",
   SESSION_ENDED: "session ended",
+  SUBSCRIBE_FAILED: "subscribe rpc failed",
 } as const;

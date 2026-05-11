@@ -21,12 +21,22 @@ export interface JwtValidationResult {
 
 export interface JwtAuthConfig {
   enabled: boolean;
+  /** True if WOLFPACK_JWT_SECRET was set (regardless of length). Distinguishes
+   * "misconfigured" (set but rejected — e.g. too short) from "unset" (no
+   * secret at all). Used by startup checks to fail hard on misconfiguration. */
+  present: boolean;
   secret: string;
   issuer?: string;
   audience?: string;
   clockToleranceSec: number;
-  warning?: string;
+  /** Human-readable explanation when `present && !enabled` (i.e. secret was
+   * set but rejected). Surfaced as a fatal startup error. */
+  invalidReason?: string;
 }
+
+/** Result of {@link verifyJwtAuthAtStartup}. Used by the server bootstrap to
+ * decide whether to abort, warn, or proceed silently. */
+export type JwtStartupStatus = "ok" | "missing" | "invalid";
 
 const BASE64URL_SEGMENT = /^[A-Za-z0-9\-_]+$/;
 const DEFAULT_CLOCK_TOLERANCE_SEC = 30;
@@ -88,20 +98,33 @@ export function getJwtAuthConfig(env: NodeJS.ProcessEnv = process.env): JwtAuthC
       ? parsedTolerance
       : DEFAULT_CLOCK_TOLERANCE_SEC;
 
-  const enabled = secret.length > 0;
-  let warning: string | undefined;
-  if (enabled && secret.length < MIN_SECRET_LENGTH) {
-    warning = `WOLFPACK_JWT_SECRET is too short (${secret.length} chars, minimum ${MIN_SECRET_LENGTH}). JWT auth disabled.`;
+  const present = secret.length > 0;
+  const enabled = present && secret.length >= MIN_SECRET_LENGTH;
+  let invalidReason: string | undefined;
+  if (present && !enabled) {
+    invalidReason = `WOLFPACK_JWT_SECRET is too short (${secret.length} chars, minimum ${MIN_SECRET_LENGTH}).`;
   }
 
   return {
-    enabled: enabled && secret.length >= MIN_SECRET_LENGTH,
+    enabled,
+    present,
     secret,
     issuer,
     audience,
     clockToleranceSec,
-    warning,
+    invalidReason,
   };
+}
+
+/** Pure classifier for startup decisions. Returns:
+ *  - `"invalid"` — secret was set but rejected; caller MUST refuse to start.
+ *  - `"missing"` — no secret at all; caller SHOULD log an ERROR and continue.
+ *  - `"ok"` — secret valid and JWT enforcement is on.
+ */
+export function verifyJwtAuthAtStartup(cfg: JwtAuthConfig): JwtStartupStatus {
+  if (cfg.present && !cfg.enabled) return "invalid";
+  if (!cfg.present) return "missing";
+  return "ok";
 }
 
 export function getRequestToken(
@@ -184,9 +207,6 @@ let _cachedConfig: JwtAuthConfig | null = null;
 export function getCachedJwtAuthConfig(): JwtAuthConfig {
   if (!_cachedConfig) {
     _cachedConfig = getJwtAuthConfig();
-    if (_cachedConfig.warning) {
-      log.warn(_cachedConfig.warning);
-    }
   }
   return _cachedConfig;
 }

@@ -18,12 +18,26 @@ function baseUrl(): string {
   return `http://127.0.0.1:${port}`;
 }
 
+/** Track a one-shot warning so a too-short JWT secret is surfaced once
+ *  per CLI invocation rather than spammed on every API call. (issues.md M1) */
+let _warnedShortSecret = false;
+
 /** Mint a short-lived HS256 JWT if WOLFPACK_JWT_SECRET is set. Matches the
  *  format src/auth.ts validates. iss/aud filled in if the matching env vars
  *  are configured server-side. */
 function issueJwt(): string | null {
   const secret = process.env.WOLFPACK_JWT_SECRET;
-  if (!secret || secret.length < 32) return null;
+  if (!secret) return null;
+  if (secret.length < 32) {
+    if (!_warnedShortSecret) {
+      _warnedShortSecret = true;
+      // Match the server's startup gate (auth.ts requires ≥32 chars).
+      // Without this warning the CLI silently sends unauthenticated
+      // requests and the user sees only generic 401s.
+      print(yellow(`  WOLFPACK_JWT_SECRET is set but only ${secret.length} chars; ≥32 required. Sending unauthenticated; expect 401.`));
+    }
+    return null;
+  }
   const now = Math.floor(Date.now() / 1000);
   const payload: Record<string, unknown> = { iat: now, exp: now + 60, jti: randomBytes(8).toString("hex") };
   const iss = process.env.WOLFPACK_JWT_ISSUER?.trim();

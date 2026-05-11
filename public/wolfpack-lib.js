@@ -117,7 +117,8 @@ var WS_CLOSE_REASONS = {
   SESSION_UNAVAILABLE: "session unavailable",
   DISPLACED: "displaced",
   PTY_TEARDOWN: "pty teardown",
-  SESSION_ENDED: "session ended"
+  SESSION_ENDED: "session ended",
+  SUBSCRIBE_FAILED: "subscribe rpc failed"
 };
 
 // src/take-control-logic.ts

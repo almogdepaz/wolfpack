@@ -306,6 +306,11 @@ export const state = {
   _ghostInputObserver: null,
   // peer health: { [machineUrl]: { failures } }. A peer that fails repeatedly
   // drops to a shorter fetch timeout so it doesn't dominate UI refresh time.
+  // Intentionally NOT persisted across page reloads — stale failure state
+  // is a self-fulfilling prophecy: a peer that was slow yesterday gets the
+  // 1.5s failing-timeout today, fails again because legit cold fetches
+  // sometimes take longer than that, and never recovers. Per-tab in-memory
+  // is the right scope. (issues.md L5 left open by design.)
   peerHealth: {} as Record<string, { failures: number }>,
 };
 

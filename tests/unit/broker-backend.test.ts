@@ -456,6 +456,13 @@ describe("BrokerBackend.isSessionAlive", () => {
 });
 
 describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
+  // Tests below that don't care about subscribe-error semantics still need
+  // to satisfy the now-required onSubscribeError contract (LOW-2 from
+  // review-tasks/report-server.md). This noop is fine because these tests
+  // exercise the success path or assert on the FakeBrokerClient state
+  // directly, not the callback.
+  const noopErr = { onSubscribeError: () => {} };
+
   beforeEach(async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })],
@@ -464,27 +471,27 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   });
 
   test("returns null for unknown session", () => {
-    expect(backend.onSessionData("ghost", () => {})).toBeNull();
+    expect(backend.onSessionData("ghost", () => {}, noopErr)).toBeNull();
   });
 
   test("first onSessionData call issues exactly one subscribe RPC", async () => {
-    backend.onSessionData("live", () => {});
+    backend.onSessionData("live", () => {}, noopErr);
     await Promise.resolve(); // let the fire-and-forget subscribe settle
     expect(client.subscribeCallCount).toBe(1);
     expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(true);
   });
 
   test("a second subscriber for the same session reuses the broker subscribe", async () => {
-    backend.onSessionData("live", () => {});
-    backend.onSessionData("live", () => {});
+    backend.onSessionData("live", () => {}, noopErr);
+    backend.onSessionData("live", () => {}, noopErr);
     await Promise.resolve();
     expect(client.subscribeCallCount).toBe(1);
     expect(client.unsubscribeCallCount).toBe(0);
   });
 
   test("releases the broker subscribe only when the last subscriber detaches", async () => {
-    const unsubA = backend.onSessionData("live", () => {})!;
-    const unsubB = backend.onSessionData("live", () => {})!;
+    const unsubA = backend.onSessionData("live", () => {}, noopErr)!;
+    const unsubB = backend.onSessionData("live", () => {}, noopErr)!;
     await Promise.resolve();
     expect(client.subscribeCallCount).toBe(1);
 
@@ -502,8 +509,8 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   test("subscribers see broker output frames as raw Uint8Array data", async () => {
     const seenA: number[] = [];
     const seenB: number[] = [];
-    backend.onSessionData("live", (d) => seenA.push(d[0]));
-    backend.onSessionData("live", (d) => seenB.push(d[0]));
+    backend.onSessionData("live", (d) => seenA.push(d[0]), noopErr);
+    backend.onSessionData("live", (d) => seenB.push(d[0]), noopErr);
     await Promise.resolve();
     client.emit(SESSION_UUID_1, new Uint8Array([0x41]));
     client.emit(SESSION_UUID_1, new Uint8Array([0x42]));
@@ -512,7 +519,7 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   });
 
   test("calling the returned unsubscribe twice is a no-op (idempotent)", async () => {
-    const unsub = backend.onSessionData("live", () => {})!;
+    const unsub = backend.onSessionData("live", () => {}, noopErr)!;
     await Promise.resolve();
     unsub();
     unsub();
@@ -522,7 +529,7 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
 
   test("unsubscribe stops further frames reaching the callback", async () => {
     const seen: number[] = [];
-    const unsub = backend.onSessionData("live", (d) => seen.push(d[0]))!;
+    const unsub = backend.onSessionData("live", (d) => seen.push(d[0]), noopErr)!;
     await Promise.resolve();
     client.emit(SESSION_UUID_1, new Uint8Array([1]));
     unsub();
@@ -531,20 +538,20 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   });
 
   test("sinceSeq is forwarded to the broker subscribe RPC", async () => {
-    backend.onSessionData("live", () => {}, { sinceSeq: 42n });
+    backend.onSessionData("live", () => {}, { sinceSeq: 42n, onSubscribeError: () => {} });
     await Promise.resolve();
     expect(client.subscribeSeqs.get(SESSION_UUID_1)).toBe(42n);
   });
 
   test("no sinceSeq option passes undefined to broker subscribe", async () => {
-    backend.onSessionData("live", () => {});
+    backend.onSessionData("live", () => {}, noopErr);
     await Promise.resolve();
     expect(client.subscribeSeqs.get(SESSION_UUID_1)).toBeUndefined();
   });
 
   test("subscribe RPC failure unwinds local subscriber and refcount (no leak)", async () => {
     client.nextSubscribeError = new Error("transport error");
-    backend.onSessionData("live", () => {});
+    backend.onSessionData("live", () => {}, noopErr);
     // Allow the fire-and-forget promise to settle through the rejection
     await new Promise((r) => setTimeout(r, 0));
     // Output subscriber must have been removed
@@ -552,7 +559,72 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     // The session must no longer be in the active broker subscription set
     expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
     // A second onSessionData call must re-issue the subscribe RPC (refcount was cleaned up)
-    backend.onSessionData("live", () => {});
+    backend.onSessionData("live", () => {}, noopErr);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.subscribeCallCount).toBe(2);
+  });
+
+  // Regression: HIGH finding from .context/reports/issues.md
+  // "subscribe-RPC failure leaves WS open with no data stream".
+  // The fix: broker-backend invokes opts.onSubscribeError so the WS layer
+  // can tear down the viewer instead of leaving it idle.
+  test("subscribe RPC failure invokes opts.onSubscribeError exactly once", async () => {
+    const errors: unknown[] = [];
+    client.nextSubscribeError = new Error("broker exploded");
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => errors.push(e),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("broker exploded");
+  });
+
+  test("onSubscribeError is NOT invoked on successful subscribe", async () => {
+    const errors: unknown[] = [];
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => errors.push(e),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toEqual([]);
+  });
+
+  test("onSubscribeError is only invoked for the first subscriber (the one that issued the RPC)", async () => {
+    // The subscribe RPC is issued only by the first subscriber. If a second
+    // subscriber attaches while the RPC is still in flight and the RPC fails,
+    // only the first subscriber's onSubscribeError should fire — a second
+    // subscriber is reusing an existing (in-flight, eventually failed) RPC,
+    // not issuing its own. The current implementation invokes the callback
+    // attached to the first subscriber; second subscriber gets nothing.
+    client.nextSubscribeError = new Error("broker exploded");
+    const firstErrors: unknown[] = [];
+    const secondErrors: unknown[] = [];
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => firstErrors.push(e),
+    });
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (e) => secondErrors.push(e),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(firstErrors).toHaveLength(1);
+    expect(secondErrors).toHaveLength(0);
+  });
+
+  test("a throwing onSubscribeError callback does not crash the unwind path", async () => {
+    client.nextSubscribeError = new Error("transport error");
+    expect(() => {
+      backend.onSessionData("live", () => {}, {
+        onSubscribeError: () => { throw new Error("callback threw"); },
+      });
+    }).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    // Real refcount probe: FakeBrokerClient.subscribe rejects BEFORE
+    // activeSubscriptions.add runs, so checking that set is tautological
+    // (LOW-1 in review-tasks/report-tests.md). Instead, verify the
+    // BrokerBackend.subscriberRefs map was unwound by issuing a follow-up
+    // subscribe — if the prior ref leaked, this call would reuse it and
+    // subscribeCallCount would stay at 1. A clean unwind => fresh RPC.
+    expect(client.subscribeCallCount).toBe(1);
+    backend.onSessionData("live", () => {}, noopErr);
     await new Promise((r) => setTimeout(r, 0));
     expect(client.subscribeCallCount).toBe(2);
   });
@@ -697,6 +769,31 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
     backend.onSessionLifecycle("live", () => seen.push("b"));
     backend.ingestEvent(exitedEvent(SESSION_UUID_1));
     expect(seen.sort()).toEqual(["a", "b"]);
+  });
+
+  // Regression: issues.md M7 / L14 — onReplayTruncated must reach
+  // lifecycle subscribers as a `replay_truncated` event so the WS layer
+  // can force a viewer reconnect for fresh prefill.
+  test("handleReplayTruncated fires a replay_truncated event to subscribers", () => {
+    const seen: SessionLifecycleEvent[] = [];
+    backend.onSessionLifecycle("live", (e) => seen.push(e));
+    backend.handleReplayTruncated(SESSION_UUID_1);
+    expect(seen).toEqual([{ kind: "replay_truncated" }]);
+  });
+
+  test("handleReplayTruncated for unknown id is a silent no-op", () => {
+    const seen: SessionLifecycleEvent[] = [];
+    backend.onSessionLifecycle("live", (e) => seen.push(e));
+    backend.handleReplayTruncated(SESSION_UUID_2);
+    expect(seen).toEqual([]);
+  });
+
+  test("handleReplayTruncated does NOT touch alive state (cache stays valid)", () => {
+    expect(backend.isSessionAlive("live")).toBe(true);
+    backend.handleReplayTruncated(SESSION_UUID_1);
+    // The session is still alive in the broker — only its replay window
+    // overran. Liveness must not flip; only the WS reconnect is forced.
+    expect(backend.isSessionAlive("live")).toBe(true);
   });
 });
 

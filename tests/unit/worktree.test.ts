@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync, existsSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
@@ -209,5 +209,25 @@ describe("worktree lifecycle", () => {
 
     const wts = listWorktrees(repoDir);
     expect(wts.find(w => w.branch === "ralph/31-graceful")).toBeUndefined();
+  });
+
+  test("removeWorktree logs a warning when it falls back to --force", () => {
+    const wtPath = createWorktree(repoDir, "ralph/32-force", "HEAD");
+    writeFileSync(join(wtPath, "DIRTY.txt"), "unsaved work\n", "utf-8");
+
+    const logs: string[] = [];
+    const spy = spyOn(process.stdout, "write").mockImplementation((chunk: any) => {
+      logs.push(String(chunk));
+      return true;
+    });
+    try {
+      removeWorktree(wtPath, repoDir);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(logs.join("")).toContain("removeWorktree: graceful remove failed; forcing worktree removal");
+    const wts = listWorktrees(repoDir);
+    expect(wts.find(w => w.branch === "ralph/32-force")).toBeUndefined();
   });
 });

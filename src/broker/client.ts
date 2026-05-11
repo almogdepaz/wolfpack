@@ -134,6 +134,8 @@ export class BrokerClient {
   private readonly outputSubs = new Map<string, Set<OutputSubscriber>>();
   /** Sessions the caller has asked us to subscribe to. Re-issued on reconnect. */
   private readonly activeSubscriptions = new Set<string>();
+  /** Last observed output seq per active session (used for reconnect replay). */
+  private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
 
   private state: "idle" | "connecting" | "connected" | "closed" = "idle";
 
@@ -168,6 +170,7 @@ export class BrokerClient {
     }
     this.failPending(new BrokerNotConnectedError("broker client closed"));
     this.activeSubscriptions.clear();
+    this.activeSubscriptionSeq.clear();
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
@@ -273,6 +276,18 @@ export class BrokerClient {
       throw new BrokerNotConnectedError("broker client closed");
     }
     this.activeSubscriptions.add(sessionId);
+    if (opts.sinceSeq !== undefined) {
+      // Take max(prev, sinceSeq): never lower the floor below what we've
+      // already observed via OUTPUT_BINARY frames. A caller passing a stale
+      // sinceSeq would otherwise force redundant replay on reconnect (LOW-1
+      // in review-tasks/report-broker.md). The broker handles redundancy
+      // gracefully but the duplicate bytes are wasted work.
+      const prev = this.activeSubscriptionSeq.get(sessionId);
+      const next = prev !== undefined && prev > opts.sinceSeq ? prev : opts.sinceSeq;
+      this.activeSubscriptionSeq.set(sessionId, next);
+    } else if (!this.activeSubscriptionSeq.has(sessionId)) {
+      this.activeSubscriptionSeq.set(sessionId, undefined);
+    }
     if (this.state !== "connected") {
       // Caller asked for a subscribe while offline; the request will be
       // re-issued automatically on the next handleConnect. Surface the
@@ -292,6 +307,7 @@ export class BrokerClient {
     opts: { timeoutMs?: number } = {},
   ): Promise<void> {
     const wasActive = this.activeSubscriptions.delete(sessionId);
+    this.activeSubscriptionSeq.delete(sessionId);
     if (this.state === "closed") return;
     if (!wasActive) return;
     if (this.state !== "connected") return;
@@ -342,7 +358,8 @@ export class BrokerClient {
     if (this.activeSubscriptions.size > 0) {
       const ids = Array.from(this.activeSubscriptions);
       for (const sessionId of ids) {
-        this.issueSubscribe(sessionId, {}).catch((err) => {
+        const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
+        this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
           if (this.onResubscribeErrorCb) {
             try {
               this.onResubscribeErrorCb(sessionId, toError(err));
@@ -361,11 +378,17 @@ export class BrokerClient {
   ): Promise<ControlResponse> {
     const params: Record<string, unknown> = { session_id: sessionId };
     if (opts.sinceSeq !== undefined) {
-      // The protocol carries since_seq as a JSON number; bigint is the wire
-      // contract for output_binary seqs but JSON requires a Number here.
-      // 2^53-1 covers any plausible byte count for a single session.
-      const n = Number(opts.sinceSeq);
-      if (Number.isFinite(n)) params.since_seq = n;
+      // Protocol field is JSON number (broker expects u64). Guard against
+      // bigint→Number precision loss past MAX_SAFE_INTEGER.
+      const maxSafeSeq = BigInt(Number.MAX_SAFE_INTEGER);
+      if (opts.sinceSeq > maxSafeSeq) {
+        process.emitWarning(
+          `[broker-client] sinceSeq=${opts.sinceSeq} exceeds Number.MAX_SAFE_INTEGER; clamping subscribe.since_seq to ${Number.MAX_SAFE_INTEGER}`,
+        );
+        params.since_seq = Number.MAX_SAFE_INTEGER;
+      } else {
+        params.since_seq = Number(opts.sinceSeq);
+      }
     }
     return this.request("subscribe", params, { timeoutMs: opts.timeoutMs }).then((resp) => {
       if (
@@ -422,7 +445,14 @@ export class BrokerClient {
         return;
       }
       case FRAME_KIND_OUTPUT_BINARY: {
-        const subs = this.outputSubs.get(frame.value.sessionId);
+        const sessionId = frame.value.sessionId;
+        if (this.activeSubscriptions.has(sessionId)) {
+          const prev = this.activeSubscriptionSeq.get(sessionId);
+          if (prev === undefined || frame.value.seq > prev) {
+            this.activeSubscriptionSeq.set(sessionId, frame.value.seq);
+          }
+        }
+        const subs = this.outputSubs.get(sessionId);
         if (!subs) return;
         for (const cb of subs) {
           try {
@@ -441,7 +471,8 @@ export class BrokerClient {
           const sessionId = ev.session_id as string;
           const lagged = typeof ev.lagged === "number" ? ev.lagged as number : 0;
           if (this.activeSubscriptions.has(sessionId) && this.state === "connected") {
-            this.issueSubscribe(sessionId, {}).catch((err) => {
+            const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
+            this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
               if (this.onResubscribeErrorCb) {
                 try { this.onResubscribeErrorCb(sessionId, toError(err)); } catch { /* swallow */ }
               }
@@ -491,15 +522,21 @@ export class BrokerClient {
   private scheduleReconnect(): void {
     if (this.state === "closed") return;
     if (this.reconnectTimer) return;
-    const next =
+    const base =
       this.currentReconnectDelay === 0
         ? this.reconnectInitialDelayMs
         : Math.min(this.currentReconnectDelay * 2, this.reconnectMaxDelayMs);
-    this.currentReconnectDelay = next;
+    this.currentReconnectDelay = base;
+    // ±20% jitter to avoid thundering-herd reconnect spikes when many
+    // wolfpack server instances restart simultaneously and target the same
+    // broker (issues.md M3). Base value still drives exponential growth
+    // for predictable testing; jitter is applied only at scheduling time.
+    const jitter = base * 0.2 * (Math.random() * 2 - 1);
+    const delay = Math.max(0, Math.round(base + jitter));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, next);
+    }, delay);
   }
 
   private reportProtocolError(err: Error): void {

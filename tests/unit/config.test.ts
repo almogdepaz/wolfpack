@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { remoteUrl, type Config } from "../../src/cli/config.ts";
-import { planServiceEnsureAction } from "../../src/cli/index.ts";
+import { planServiceEnsureAction, hasUninstallConfirmationFlag } from "../../src/cli/index.ts";
 
 describe("remoteUrl", () => {
   const base: Config = { devDir: "/home/dev", port: 18790 };
@@ -36,5 +36,20 @@ describe("planServiceEnsureAction", () => {
 
   test("installs the service when it is not yet installed", () => {
     expect(planServiceEnsureAction(false, false)).toBe("install");
+  });
+});
+
+describe("hasUninstallConfirmationFlag", () => {
+  test("accepts --yes", () => {
+    expect(hasUninstallConfirmationFlag(["--yes"])).toBe(true);
+  });
+
+  test("accepts --force", () => {
+    expect(hasUninstallConfirmationFlag(["--force"])).toBe(true);
+  });
+
+  test("rejects missing confirmation flag", () => {
+    expect(hasUninstallConfirmationFlag([])).toBe(false);
+    expect(hasUninstallConfirmationFlag(["--dry-run"])).toBe(false);
   });
 });

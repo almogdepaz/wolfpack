@@ -16,10 +16,34 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 3,
 };
 
-function currentLevel(): LogLevel {
+let _cachedLevel: LogLevel | null = null;
+
+function resolveLevelFromEnv(): LogLevel {
   const env = process.env.WOLFPACK_LOG_LEVEL?.toLowerCase();
   if (env && env in LEVEL_ORDER) return env as LogLevel;
   return "info";
+}
+
+function currentLevel(): LogLevel {
+  if (_cachedLevel === null) {
+    _cachedLevel = resolveLevelFromEnv();
+  }
+  return _cachedLevel;
+}
+
+// Runtime invalidation hook: `kill -HUP <pid>` re-reads WOLFPACK_LOG_LEVEL.
+try {
+  process.on("SIGHUP", () => {
+    _cachedLevel = resolveLevelFromEnv();
+  });
+} catch {
+  // Ignore if signals are unavailable in this runtime.
+}
+
+/** Test-only helper to clear cached log level after env mutation. */
+export function __resetLogLevelCache(): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__resetLogLevelCache() is only available in test mode");
+  _cachedLevel = null;
 }
 
 function shouldLog(level: LogLevel): boolean {

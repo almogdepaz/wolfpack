@@ -21,6 +21,7 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
+import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
   BRANCH_REGEX,
@@ -39,11 +40,12 @@ import pkg from "../../package.json";
 
 const log = createLogger("routes");
 import { DEV_DIR, isUnderDevDir } from "./dev-dir.js";
-import { RALPH_AGENTS, exec } from "./shell.js";
+import { RALPH_AGENTS } from "./shell.js";
 import { getBackend, getRouter } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
+  pruneStaleRalphLock,
   scanRalphLoops,
   countPlanTasks,
 } from "./ralph.js";
@@ -303,16 +305,6 @@ export const routes: Record<
     res.writeHead(200, { "Content-Type": "application/manifest+json" });
     res.end(JSON.stringify(manifest, null, 2));
   },
-  "GET /sw.js": (_req, res) => {
-    const sw = assets.get("sw-push.js");
-    if (sw) {
-      res.writeHead(200, { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/" });
-      res.end(sw);
-    } else {
-      res.writeHead(404);
-      res.end("Not Found");
-    }
-  },
 
   "GET /api/info": (_req, res) => {
     const name = hostname()
@@ -429,8 +421,19 @@ export const routes: Record<
     // Surface the effective values so the frontend doesn't reimplement the
     // fallback rules. `effective.cmds` is what the picker should render;
     // `effective.agentCmd` is the pre-selected default.
+    //
+    // (issues.md L13) If the stored `settings.agentCmd` points to a
+    // disabled command, the runtime already resolves correctly via
+    // effectiveAgentCmd(). Normalize the raw field in the response so a
+    // future settings-UI consumer that reads `settings.agentCmd` directly
+    // doesn't surface a stale/disabled selection. We don't mutate the
+    // on-disk settings — just the returned view.
+    const enabled = new Set((settings.cmds ?? []).filter((c) => c.enabled).map((c) => c.cmd));
+    const view = settings.agentCmd && !enabled.has(settings.agentCmd)
+      ? { ...settings, agentCmd: "" }
+      : settings;
     json(res, {
-      settings,
+      settings: view,
       effective: {
         cmds: effectiveCmds(settings),
         agentCmd: effectiveAgentCmd(settings),
@@ -742,6 +745,9 @@ export const routes: Record<
     if (existing?.active) {
       return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
     }
+    if (existing && existing.pid > 1) {
+      pruneStaleRalphLock(projectDir, existing.pid);
+    }
 
     const lockPath = join(projectDir, ".ralph.lock");
     // Try atomic create first — avoids TOCTOU between stale-check and create
@@ -754,18 +760,13 @@ export const routes: Record<
       // Lock exists — check if it's stale
       let lockPid = 0;
       try { lockPid = Number(readFileSync(lockPath, "utf-8").trim()); } catch { /* lock may have been removed between wx and read */ }
-      if (lockPid > 1) {
-        try {
-          process.kill(lockPid, 0);
-          // PID is alive — verify it's actually a ralph process (not a reused PID)
-          try {
-            const cmdline = execFileSync("ps", ["-p", String(lockPid), "-o", "command="], { encoding: "utf-8", timeout: 3000 });
-            if (cmdline.includes("ralph-macchio") || cmdline.includes("worker")) {
-              return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
-            }
-            log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid, command: cmdline.trim() });
-          } catch { /* ps failed — process may have exited between kill(0) and ps, treat as stale */ }
-        } catch { /* expected: process dead — stale lock */ }
+      if (isRalphProcessAlive(lockPid)) {
+        return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
+      }
+      if (lockPid > 1 && isProcessAlive(lockPid)) {
+        // Process at PID exists but is not ralph (PID reuse / unrelated
+        // proc). Lock is stale; fall through to remove + retry.
+        log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid });
       }
       // Stale lock — remove and retry atomic create
       try { unlinkSync(lockPath); } catch (e2: unknown) {
@@ -924,13 +925,11 @@ export const routes: Record<
     if (!status?.active || !status.pid || status.pid <= 1) {
       return json(res, { error: "no active ralph loop found" }, 404);
     }
-    try {
-      const { stdout: cmdline } = await exec("ps", ["-p", String(status.pid), "-o", "command="]);
-      if (!cmdline.includes("ralph-macchio") && !cmdline.includes("worker")) {
-        return json(res, { error: "PID does not belong to a ralph process" }, 400);
-      }
-    } catch { /* expected: process already exited */
-      return json(res, { error: "process not found" }, 404);
+    // Reuse the same filter parseRalphLog now applies (issues.md H6) so
+    // the cancel and the active-detection paths agree. ps -o command=
+    // confirms it's actually a ralph worker, not a reused PID slot.
+    if (!isRalphProcessAlive(status.pid)) {
+      return json(res, { error: "PID does not belong to a ralph process or process not found" }, 404);
     }
     try {
       process.kill(status.pid, "SIGTERM");

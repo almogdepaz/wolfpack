@@ -3,7 +3,7 @@
  * Covers status derivation, lock management, strict completion detection,
  * and the continue-from-cancel flow per docs/ralph-behavior.md.
  */
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import {
   writeFileSync, readFileSync, appendFileSync,
   mkdtempSync, rmSync, existsSync, unlinkSync,
@@ -12,6 +12,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TASK_HEADER, countTasksInContent } from "../../src/wolfpack-context.js";
 import { parseRalphLog, countProgressDone } from "../../src/server/ralph.js";
+import { startFakeRalph, stopFakeRalph, type FakeRalph } from "../helpers/fake-ralph-pid.js";
+
+// PID stand-in for fixtures that need parseRalphLog active=true under the
+// PID-reuse-safe filter (issues.md H6). See tests/helpers/fake-ralph-pid.ts.
+let fakeRalphPid: number = process.pid;
+let fakeRalph: FakeRalph | null = null;
+beforeAll(() => { fakeRalph = startFakeRalph(); fakeRalphPid = fakeRalph.pid; });
+afterAll(() => { if (fakeRalph) stopFakeRalph(fakeRalph); });
 
 // ── Replicated worker logic (same pattern as plan-mutation.test.ts) ──
 
@@ -371,7 +379,7 @@ describe("strict all-done detection", () => {
     writePlan("- [ ] A\n");
     writeProgress("DONE: checkbox: A\n");
     writeLog(
-      buildLogHeader({ pid: process.pid, plan: "PLAN.md", progress: "progress.txt" }) +
+      buildLogHeader({ pid: fakeRalphPid, plan: "PLAN.md", progress: "progress.txt" }) +
       "all_tasks_done: true\n"
     );
 
@@ -432,7 +440,7 @@ describe("parseRalphLog completed status (strict)", () => {
     writePlan("- [ ] Task A\n");
     writeProgress("DONE: checkbox: Task A\n");
     writeLog(
-      buildLogHeader({ pid: process.pid, plan: "PLAN.md", progress: "progress.txt" }) +
+      buildLogHeader({ pid: fakeRalphPid, plan: "PLAN.md", progress: "progress.txt" }) +
       "all_tasks_done: true\n"
     );
 

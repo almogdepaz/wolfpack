@@ -80,7 +80,10 @@ export function loadConfig(): Config | null {
 
 export function saveConfig(c: Config) {
   mkdirSync(WOLFPACK_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
+  // 0600 — config holds Tailscale hostname and port; on shared machines
+  // a default-umask 0644 would leak the network address to other local
+  // users. (issues.md M8)
+  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), { mode: 0o600 });
 }
 
 export function sleepSync(ms: number) {

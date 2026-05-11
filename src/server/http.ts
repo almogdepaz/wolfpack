@@ -164,6 +164,15 @@ export function serveFile(res: ServerResponse, filename: string): void {
     "Content-Type": asset.mime,
     "Cache-Control": "no-cache",
   };
+  // The PWA registers /sw.js as the service worker. Browsers require
+  // `Service-Worker-Allowed` to widen the SW's controllable scope to /
+  // (without it the scope is restricted to the directory containing the
+  // SW script). Previously a dedicated `GET /sw.js` route set this; now
+  // that the file is served by the generic asset handler we set the
+  // header here for the single SW path. (issues.md L2)
+  if (filename === "sw.js") {
+    headers["Service-Worker-Allowed"] = "/";
+  }
   if (asset.mime === "text/html") {
     const nonce = generateCspNonce();
     headers["Content-Security-Policy"] = buildCsp(nonce);

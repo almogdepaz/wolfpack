@@ -488,6 +488,23 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(captured!.since_seq).toBe(1234);
   });
 
+  test("subscribe clamps since_seq above Number.MAX_SAFE_INTEGER", async () => {
+    const { server, client } = await bootClientToServer();
+    let captured: Record<string, unknown> | null = null;
+    server.onRequest = (req, sock) => {
+      if (req.method === "subscribe") captured = req.params as Record<string, unknown>;
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+      });
+    };
+
+    await client.subscribe(SAMPLE_UUID, { sinceSeq: BigInt(Number.MAX_SAFE_INTEGER) + 123n });
+
+    expect(captured).not.toBeNull();
+    expect(captured!.since_seq).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   test("unsubscribe issues an unsubscribe RPC and drops from the active set", async () => {
     const { server, client } = await bootClientToServer();
     const seen: Array<{ method: string; sessionId: string }> = [];
@@ -573,6 +590,61 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     await waitFor(() => connects === 2, 3000);
     await waitFor(() => subscribesByConnection[1].length === 2, 2000);
     expect(new Set(subscribesByConnection[1])).toEqual(new Set([SAMPLE_UUID, otherUuid]));
+  });
+
+  test("reconnect re-subscribe includes last observed since_seq", async () => {
+    const socketPath = makeSocketPath();
+    const server1 = await startMockServer(socketPath);
+    activeServer = server1;
+    let connects = 0;
+    const reissuedSinceSeq: Array<number | undefined> = [];
+
+    server1.onRequest = (req, sock) => {
+      server1.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+      });
+    };
+
+    const client = new BrokerClient({
+      socketPath,
+      reconnectInitialDelayMs: 20,
+      reconnectMaxDelayMs: 100,
+      requestTimeoutMs: 1000,
+      onConnect: () => { connects++; },
+    });
+    activeClient = client;
+    client.start();
+
+    await waitFor(() => connects === 1);
+    await client.subscribe(SAMPLE_UUID, { sinceSeq: 10n });
+    const unsub = client.subscribeOutput(SAMPLE_UUID, () => {});
+    // Simulate live output advancing seq before disconnect.
+    server1.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 42n, data: new Uint8Array([1]) },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    await server1.close();
+    activeServer = null;
+
+    const server2 = await startMockServer(socketPath);
+    activeServer = server2;
+    server2.onRequest = (req, sock) => {
+      if (req.method === "subscribe") {
+        reissuedSinceSeq.push((req.params as { since_seq?: number }).since_seq);
+      }
+      server2.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+      });
+    };
+
+    await waitFor(() => connects === 2, 3000);
+    await waitFor(() => reissuedSinceSeq.length >= 1, 2000);
+    expect(reissuedSinceSeq[0]).toBe(42);
+    unsub();
   });
 
   test("unsubscribe drops a session so reconnect does not re-subscribe it", async () => {

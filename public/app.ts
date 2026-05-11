@@ -79,20 +79,27 @@ const wpMetrics = {
 // reconstruct the WS frame timing, prefill vs replay byte distribution,
 // _writeTermData call shape, and rAF cadence during the hydration window.
 //
-// PURE DIAGNOSTIC. Zero behavioral change. Lives on `window.__wfTrace`.
-// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`.
+// PURE DIAGNOSTIC. Gated behind `localStorage.wolfpackDebug = "1"`
+// (issues.md L3) — previously this was always-on and exposed per-session
+// attach metadata to any JS in the page context (XSS, extension,
+// bookmarklet). When disabled, all helpers are no-ops and `__wfTrace` /
+// `__wf_dumpTrace` / `__wf_clearTrace` are NOT installed on `window`.
 //
-// Each trace is a flat append-only array of events:
-//   { t: ms_since_attach_start, kind: string, ...fields }
-// plus a `_meta` block with start wall-clock and key markers.
+// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
+// after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
+const __wfTraceEnabled = (() => {
+  try { return localStorage.getItem("wolfpackDebug") === "1"; }
+  catch { return false; }
+})();
 const __wfTraceMaxEvents = 5000;
-(window as any).__wfTrace = (window as any).__wfTrace || {};
+if (__wfTraceEnabled) (window as any).__wfTrace = (window as any).__wfTrace || {};
 
 function __wfTraceKey(session, machine) {
   return (session || "?") + "@" + (machine || "");
 }
 
 function __wfTraceStart(session, machine, extra?: any) {
+  if (!__wfTraceEnabled) return null;
   const key = __wfTraceKey(session, machine);
   const trace: any = {
     _meta: {
@@ -111,6 +118,7 @@ function __wfTraceStart(session, machine, extra?: any) {
 }
 
 function __wfTraceGet(session, machine) {
+  if (!__wfTraceEnabled) return null;
   const key = __wfTraceKey(session, machine);
   return (window as any).__wfTrace[key];
 }
@@ -144,7 +152,7 @@ function __wfTraceRafStop(trace) {
   trace._rafActive = false;
 }
 
-(window as any).__wf_dumpTrace = function (sessionFilter?: string) {
+if (__wfTraceEnabled) (window as any).__wf_dumpTrace = function (sessionFilter?: string) {
   const all = (window as any).__wfTrace || {};
   const keys = Object.keys(all).filter(k => !sessionFilter || k.indexOf(sessionFilter) >= 0);
   for (const key of keys) {
@@ -175,7 +183,7 @@ function __wfTraceRafStop(trace) {
   return all;
 };
 
-(window as any).__wf_clearTrace = function () {
+if (__wfTraceEnabled) (window as any).__wf_clearTrace = function () {
   (window as any).__wfTrace = {};
 };
 
@@ -463,10 +471,18 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // (separate WebAssembly.Memory) to avoid shared-allocator OOB across grid cells.
   // See scripts/bundle-ghostty.ts for context. Falls back to shared singleton if
   // createIsolatedGhostty isn't available (e.g. older bundle).
+  //
+  // edc-context/reports/issues.md HIGH finding: when isolation is unavailable
+  // AND grid mode is in use, concurrent fit()/write() across cells can OOB
+  // on the shared WebAssembly.Memory. addToGrid() now refuses to enter grid
+  // mode in that state, so any path reaching here without isolation is a
+  // single-cell terminal where shared singleton is safe.
   let isolatedGhostty = null;
   if (typeof (window as any).createIsolatedGhostty === "function") {
     try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
-    catch (e) { console.warn("[wf] createIsolatedGhostty failed, falling back to shared:", e); }
+    catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
+  } else {
+    console.error("[wf] createIsolatedGhostty is not available — falling back to shared singleton (grid mode will be disabled). This usually means the ghostty-web bundle is out of date.");
   }
   const term = new Terminal({
     cursorBlink,
@@ -1090,6 +1106,7 @@ function createPtyTerminalController(opts) {
   let _ptyClient = null;
   let _hydrationStarted = false;
   let _hydrationWritesInFlight = 0;
+  let _connectEpoch = 0;
   let _reconnectPendingReset = false;
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
@@ -1144,8 +1161,11 @@ function createPtyTerminalController(opts) {
     if (_hydration) _hydration.notifyData();
     try {
       if (_hydration && _hydration.pending) {
+        const writeEpoch = _connectEpoch;
         _hydrationWritesInFlight++;
         _term.write(data, () => {
+          // Ignore stale callbacks from a prior connect/dispose epoch.
+          if (writeEpoch !== _connectEpoch) return;
           _hydrationWritesInFlight = Math.max(0, _hydrationWritesInFlight - 1);
           __wfTraceEvent(_diagTrace, "term.writeDone", { size: data.length, inFlight: _hydrationWritesInFlight });
           if (_hydration) _hydration.scheduleFinish();
@@ -1472,6 +1492,7 @@ function createPtyTerminalController(opts) {
   function connect(connectOpts?: { takeControl?: boolean }) {
     if (_ptyClient && _ptyClient.isOpen) return;
     if (_ptyClient) _ptyClient.close();
+    _connectEpoch++;
 
     // Start hydration on first connect
     if (!_hydrationStarted && _hydration) {
@@ -1606,6 +1627,7 @@ function createPtyTerminalController(opts) {
    * Removes keydown listeners from container before disposing terminal.
    */
   function dispose() {
+    _connectEpoch++;
     if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
     if (_hydration) { _hydration.cancel(); _hydration = null; }
     _hydrationStarted = false;
@@ -1813,13 +1835,63 @@ function flushGridSnapshots() {
 
 // ── Machine registry ──
 
+/**
+ * Validate a peer URL before any code uses it for `fetch` / WS construction.
+ * (issues.md M12) An XSS payload could write attacker-controlled URLs into
+ * localStorage; without this guard those URLs would receive every API call
+ * and the bearer JWT in the next page session.
+ *
+ * Accept only http(s) URLs whose hostname looks tailnet-shaped
+ * (`*.ts.net`), is a literal IP, or is localhost. Port is NOT pinned —
+ * the wolfpack server port is operator-configurable; we only require it
+ * to be numeric and in 1–65535. Reject opaque schemes (javascript:,
+ * data:, etc.), userinfo (creds smuggling), and non-numeric/out-of-range
+ * ports.
+ */
+function isValidMachineUrl(u) {
+  if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
+  let parsed;
+  try { parsed = new URL(u); } catch { return false; }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  if (parsed.username || parsed.password) return false;
+  // Allow tailnet host suffix, bare IPv4, or localhost (peer discovery
+  // and dev setups all show up as one of these).
+  const host = parsed.hostname;
+  const isTailnet = /\.ts\.net$/i.test(host);
+  const isIPv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+  const isLocal = host === "localhost" || host === "127.0.0.1";
+  if (!isTailnet && !isIPv4 && !isLocal) return false;
+  // Port: empty (scheme default) is fine. Otherwise must be a positive
+  // integer in the legal TCP range. URL constructor already rejects most
+  // garbage but be explicit.
+  const port = parsed.port;
+  if (port) {
+    if (!/^\d+$/.test(port)) return false;
+    const n = Number(port);
+    if (n < 1 || n > 65535) return false;
+  }
+  return true;
+}
+
 function getMachines() {
-  try { return JSON.parse(localStorage.getItem("wolfpack-machines") || "[]"); }
-  catch { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem("wolfpack-machines") || "[]");
+    if (!Array.isArray(raw)) return [];
+    // Drop any entry whose URL fails validation. Names are echoed into the
+    // UI; clamp length and strip control chars so an XSS payload in name
+    // can't widen the blast radius via DOM injection.
+    return raw.filter((m) => m && isValidMachineUrl(m.url)).map((m) => ({
+      url: m.url,
+      name: typeof m.name === "string" ? m.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128) : "",
+    }));
+  } catch { return []; }
 }
 
 function saveMachines(list) {
-  localStorage.setItem("wolfpack-machines", JSON.stringify(list));
+  // Mirror getMachines() validation on the write side so future code paths
+  // that bypass the discover-source can't poison localStorage either.
+  const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
+  localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
 }
 
 function removeMachine(url) {
@@ -2993,20 +3065,15 @@ function sendMsg() {
 
   wpMetrics.sendCount++;
   if (_sendTerminalInput(_textEncoder.encode(text.replace(/\n/g, " ") + "\r"))) {
-    // Enter retry: if output hasn't changed within 800ms, Enter may have been dropped.
-    // Timer is cleared on any output, so this only fires if truly stuck.
-    // Skip in grid mode — grid cells have their own controllers and onOutput won't clear this timer.
-    if (!isGridActive()) {
-      if (state.enterRetryTimer) clearTimeout(state.enterRetryTimer);
-      const retrySession = state.currentSession;
-      const retryMachine = state.currentMachine;
-      state.enterRetryTimer = setTimeout(() => {
-        if (state.currentSession === retrySession && state.currentMachine === retryMachine) {
-          sendKey("Enter");
-        }
-        state.enterRetryTimer = null;
-      }, 800);
-    }
+    // No Enter-retry timer here. The previous 800ms retry submitted a
+    // duplicate Enter on any command that took >800ms to produce output
+    // (slow grep, network request, interactive prompt waiting for input),
+    // potentially triggering an unintended second command or corrupting
+    // TUI confirm prompts (issues.md M11). The send-success branch trusts
+    // _sendTerminalInput's return: if the WS layer reports success, the
+    // bytes are queued; broker drops surface as reconnects, not silent
+    // input loss. enterRetryTimer is still cleared on output dispatch in
+    // case any older path schedules one.
   } else {
     wpMetrics.sendFailCount++;
     input.value = saved;
