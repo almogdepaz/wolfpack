@@ -306,8 +306,37 @@ export const state = {
   _ghostInputObserver: null,
   // peer health: { [machineUrl]: { failures } }. A peer that fails repeatedly
   // drops to a shorter fetch timeout so it doesn't dominate UI refresh time.
-  peerHealth: {} as Record<string, { failures: number }>,
+  // Persisted across reloads (issues.md L5) so a known-dead peer doesn't get
+  // a fresh 5s healthy-baseline budget after every page refresh.
+  peerHealth: loadPersistedPeerHealth(),
 };
+
+function loadPersistedPeerHealth(): Record<string, { failures: number }> {
+  try {
+    const raw = JSON.parse(localStorage.getItem("wolfpack-peer-health") || "{}");
+    if (!raw || typeof raw !== "object") return {};
+    const out: Record<string, { failures: number }> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof k !== "string" || k.length > 256) continue;
+      const failures = (v as { failures?: number })?.failures;
+      if (typeof failures === "number" && failures >= 0 && failures < 1000) {
+        out[k] = { failures };
+      }
+    }
+    return out;
+  } catch { return {}; }
+}
+
+/**
+ * Persist peerHealth to localStorage. Called from the WP.peerHealthRecord*
+ * call sites in app.ts so dead peers stay penalized across page reloads.
+ * Throttled by virtue of being called only on real fetch transitions.
+ */
+export function persistPeerHealth(): void {
+  try {
+    localStorage.setItem("wolfpack-peer-health", JSON.stringify(state.peerHealth));
+  } catch { /* localStorage quota or unavailable — best effort */ }
+}
 
 export function setState(patch) { Object.assign(state, patch); }
 
