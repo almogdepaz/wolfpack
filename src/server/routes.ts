@@ -21,7 +21,7 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
-import { isProcessAlive } from "../shared/process-cleanup.js";
+import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
   BRANCH_REGEX,
@@ -40,7 +40,7 @@ import pkg from "../../package.json";
 
 const log = createLogger("routes");
 import { DEV_DIR, isUnderDevDir } from "./dev-dir.js";
-import { RALPH_AGENTS, exec } from "./shell.js";
+import { RALPH_AGENTS } from "./shell.js";
 import { getBackend, getRouter } from "./backend.js";
 import {
   listDevProjects,
@@ -759,17 +759,13 @@ export const routes: Record<
       // Lock exists — check if it's stale
       let lockPid = 0;
       try { lockPid = Number(readFileSync(lockPath, "utf-8").trim()); } catch { /* lock may have been removed between wx and read */ }
+      if (isRalphProcessAlive(lockPid)) {
+        return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
+      }
       if (lockPid > 1 && isProcessAlive(lockPid)) {
-        // PID is alive — verify it's actually a ralph process (not a reused PID)
-        try {
-          const cmdline = execFileSync("ps", ["-p", String(lockPid), "-o", "command="], { encoding: "utf-8", timeout: 3000 });
-          if (cmdline.includes("ralph-macchio") || cmdline.includes("worker")) {
-            return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
-          }
-          log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid, command: cmdline.trim() });
-        } catch {
-          // ps failed even though kill(0) says alive — treat lock as stale.
-        }
+        // Process at PID exists but is not ralph (PID reuse / unrelated
+        // proc). Lock is stale; fall through to remove + retry.
+        log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid });
       }
       // Stale lock — remove and retry atomic create
       try { unlinkSync(lockPath); } catch (e2: unknown) {
@@ -928,13 +924,11 @@ export const routes: Record<
     if (!status?.active || !status.pid || status.pid <= 1) {
       return json(res, { error: "no active ralph loop found" }, 404);
     }
-    try {
-      const { stdout: cmdline } = await exec("ps", ["-p", String(status.pid), "-o", "command="]);
-      if (!cmdline.includes("ralph-macchio") && !cmdline.includes("worker")) {
-        return json(res, { error: "PID does not belong to a ralph process" }, 400);
-      }
-    } catch { /* expected: process already exited */
-      return json(res, { error: "process not found" }, 404);
+    // Reuse the same filter parseRalphLog now applies (issues.md H6) so
+    // the cancel and the active-detection paths agree. ps -o command=
+    // confirms it's actually a ralph worker, not a reused PID slot.
+    if (!isRalphProcessAlive(status.pid)) {
+      return json(res, { error: "PID does not belong to a ralph process or process not found" }, 404);
     }
     try {
       process.kill(status.pid, "SIGTERM");

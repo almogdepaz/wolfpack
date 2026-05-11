@@ -364,13 +364,24 @@ function setupNewPtyEntry(
 
     try {
       if (!backend.isSessionAlive(session)) {
-        entry.alive = false;
-        activePtySessions.delete(session);
-        if (entry.viewer) {
-          try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`session unavailable: viewer close failed`, { session, error: errMsg(e) }); }
-          entry.viewer = null;
+        // Cache may be stale: BrokerBackend's isSessionAlive() only consults
+        // the in-memory nameToId map, which lags behind broker truth after
+        // a broker restart or out-of-band session creation (issues.md H5).
+        // Refresh once via list() and re-check before closing 4001 —
+        // legitimate live sessions should not be rejected just because the
+        // local cache hasn't seen them yet.
+        try { await backend.list(); } catch (e: unknown) {
+          log.debug("isSessionAlive miss: list() refresh failed", { session, error: errMsg(e) });
         }
-        return;
+        if (!backend.isSessionAlive(session)) {
+          entry.alive = false;
+          activePtySessions.delete(session);
+          if (entry.viewer) {
+            try { entry.viewer.close(CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE); } catch (e: unknown) { log.debug(`session unavailable: viewer close failed`, { session, error: errMsg(e) }); }
+            entry.viewer = null;
+          }
+          return;
+        }
       }
 
       if (!entry.alive || activePtySessions.get(session) !== entry || entry.viewer !== ws) return;

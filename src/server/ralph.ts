@@ -9,7 +9,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { createLogger, errMsg } from "../log.js";
-import { isProcessAlive } from "../shared/process-cleanup.js";
+import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import { join, normalize, isAbsolute } from "node:path";
 import { countTasksInContent, validatePlanFormat } from "../wolfpack-context.js";
 import { DEV_DIR } from "./dev-dir.js";
@@ -173,20 +173,20 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
       status.finished = finishedMatch[1].trim();
     }
 
-    // detect active: pid alive check
-    if (status.pid > 1) {
-      try {
-        process.kill(status.pid, 0);
-        status.active = true;
-        status.completed = false;
-        if (content.includes("=== 🥋 Wax Inspect —") && !content.includes("Wax Inspect complete") && !content.includes("Wax Inspect FAILED")) {
-          status.audit = true;
-        }
-        if (content.includes("=== 🥋 Wax Off —") && !content.includes("Wax Off complete") && !content.includes("Wax Off FAILED")) {
-          status.cleanup = true;
-        }
-      } catch { /* expected: process exited — mark inactive */
-        status.active = false;
+    // detect active: PID-reuse-safe liveness via `ps -o command=` filter
+    // (issues.md H6). `kill(pid, 0)` alone would report "active" for any
+    // unrelated process the kernel happened to assign the recycled PID to
+    // after the ralph worker reaped — leaving the UI showing a dead loop
+    // as live and the cancel button as a no-op (the cancel endpoint
+    // applies the same filter and would refuse to kill).
+    if (status.pid > 1 && isRalphProcessAlive(status.pid)) {
+      status.active = true;
+      status.completed = false;
+      if (content.includes("=== 🥋 Wax Inspect —") && !content.includes("Wax Inspect complete") && !content.includes("Wax Inspect FAILED")) {
+        status.audit = true;
+      }
+      if (content.includes("=== 🥋 Wax Off —") && !content.includes("Wax Off complete") && !content.includes("Wax Off FAILED")) {
+        status.cleanup = true;
       }
     }
 

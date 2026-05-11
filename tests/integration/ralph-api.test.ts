@@ -24,16 +24,25 @@ import { parseRalphLog, countPlanTasks, type RalphStatus } from "../../src/serve
 import { isValidPlanFile } from "../../src/validation.ts";
 import { execFileSync } from "node:child_process";
 import { cleanupAllExceptFinal, createWorktree, listWorktrees, removeWorktree } from "../../src/worktree.js";
+import { startFakeRalph, stopFakeRalph, type FakeRalph } from "../helpers/fake-ralph-pid.js";
 
 // ─── Temp directory for fake DEV_DIR ─────────────────────────────────────────
 
 const TEST_DEV_DIR = join(tmpdir(), `wolfpack-ralph-test-${Date.now()}`);
 
+// Stand-in PID for fixtures that expect parseRalphLog active=true
+// (issues.md H6). See tests/helpers/fake-ralph-pid.ts.
+let fakeRalphPid: number = process.pid;
+let fakeRalph: FakeRalph | null = null;
+
 beforeAll(() => {
   mkdirSync(TEST_DEV_DIR, { recursive: true });
+  fakeRalph = startFakeRalph();
+  fakeRalphPid = fakeRalph.pid;
 });
 
 afterAll(() => {
+  if (fakeRalph) stopFakeRalph(fakeRalph);
   try { rmSync(TEST_DEV_DIR, { recursive: true, force: true }); } catch {}
 });
 
@@ -724,14 +733,14 @@ describe("POST /api/ralph/start", () => {
     // Create a log with the test process's own PID so it appears active
     setupProject("start-active", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
 
     const res = await post("/api/ralph/start", { project: "start-active" });
     expect(res.status).toBe(409);
     const data = await res.json();
     expect(data.error).toBe("ralph loop already running");
-    expect(data.pid).toBe(process.pid);
+    expect(data.pid).toBe(fakeRalphPid);
   });
 
   test("worktree plan mode — passes --worktree plan and returns mode", async () => {
@@ -1044,7 +1053,7 @@ describe("POST /api/ralph/cancel", () => {
   test("PID verification — calls ps with correct PID", async () => {
     setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     fakeExecResult = { stdout: `bun ralph-macchio.ts --plan PLAN.md` };
 
@@ -1052,18 +1061,18 @@ describe("POST /api/ralph/cancel", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
-    expect(data.killed).toBe(process.pid);
+    expect(data.killed).toBe(fakeRalphPid);
 
     // verify ps was called with the right PID
     expect(lastExecArgs).not.toBeNull();
     expect(lastExecArgs!.cmd).toBe("ps");
-    expect(lastExecArgs!.args).toContain(String(process.pid));
+    expect(lastExecArgs!.args).toContain(String(fakeRalphPid));
   });
 
   test("sends SIGTERM to process and process group", async () => {
     setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     fakeExecResult = { stdout: `bun ralph-macchio.ts --plan PLAN.md` };
 
@@ -1072,14 +1081,14 @@ describe("POST /api/ralph/cancel", () => {
 
     // verify both SIGTERM calls
     expect(processKillCalls).toHaveLength(2);
-    expect(processKillCalls[0]).toEqual({ pid: process.pid, signal: "SIGTERM" });
-    expect(processKillCalls[1]).toEqual({ pid: -process.pid, signal: "SIGTERM" });
+    expect(processKillCalls[0]).toEqual({ pid: fakeRalphPid, signal: "SIGTERM" });
+    expect(processKillCalls[1]).toEqual({ pid: -fakeRalphPid, signal: "SIGTERM" });
   });
 
   test("rejects when PID doesn't belong to ralph process", async () => {
     setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     fakeExecResult = { stdout: `vim somefile.txt` }; // not ralph-macchio
 
@@ -1092,7 +1101,7 @@ describe("POST /api/ralph/cancel", () => {
   test("process not found (ps throws) → 404", async () => {
     setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     fakeExecShouldThrow = true;
 
@@ -1132,7 +1141,7 @@ describe("POST /api/ralph/cancel", () => {
   test("cancel deletes progress file", async () => {
     const dir = setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: progress.txt\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: progress.txt\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     writeFileSync(join(dir, "progress.txt"), "iteration 1 done\niteration 2 done\n");
     fakeExecResult = { stdout: `bun ralph-macchio.ts --plan PLAN.md` };
@@ -1146,7 +1155,7 @@ describe("POST /api/ralph/cancel", () => {
   test("cancel without progress file does not error", async () => {
     setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: progress.txt\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: progress.txt\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     // no progress.txt file on disk
     fakeExecResult = { stdout: `bun ralph-macchio.ts --plan PLAN.md` };
@@ -1160,7 +1169,7 @@ describe("POST /api/ralph/cancel", () => {
   test("cancel preserves plan file and log", async () => {
     const dir = setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [x] done\n- [ ] pending\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: progress.txt\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: progress.txt\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     writeFileSync(join(dir, "progress.txt"), "iteration 1");
     fakeExecResult = { stdout: `bun ralph-macchio.ts --plan PLAN.md` };
@@ -1174,7 +1183,7 @@ describe("POST /api/ralph/cancel", () => {
   test("cancel ignores unsafe progress file names", async () => {
     const dir = setupProject("cancel-test", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: ../../../etc/passwd\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\nprogress: ../../../etc/passwd\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
     fakeExecResult = { stdout: `bun ralph-macchio.ts --plan PLAN.md` };
 
@@ -1246,7 +1255,7 @@ describe("POST /api/ralph/dismiss", () => {
   test("active loop → rejected with 409", async () => {
     setupProject("dismiss-active", {
       plan: { name: "PLAN.md", content: "- [ ] task\n" },
-      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${process.pid}\nstarted: 2025-01-01\n`,
+      log: `ralph — 5 iterations\nagent: claude\nplan: PLAN.md\npid: ${fakeRalphPid}\nstarted: 2025-01-01\n`,
     });
 
     const res = await post("/api/ralph/dismiss", { project: "dismiss-active" });

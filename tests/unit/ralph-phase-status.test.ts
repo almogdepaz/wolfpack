@@ -1,8 +1,16 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseRalphLog } from "../../src/server/ralph.ts";
+import { startFakeRalph, stopFakeRalph, type FakeRalph } from "../helpers/fake-ralph-pid.js";
+
+// PID stand-in for fixtures that need parseRalphLog active=true under the
+// PID-reuse-safe filter (issues.md H6). See tests/helpers/fake-ralph-pid.ts.
+let fakeRalphPid: number = process.pid;
+let fakeRalph: FakeRalph | null = null;
+beforeAll(() => { fakeRalph = startFakeRalph(); fakeRalphPid = fakeRalph.pid; });
+afterAll(() => { if (fakeRalph) stopFakeRalph(fakeRalph); });
 
 let tmpProjectDir: string;
 
@@ -63,7 +71,7 @@ describe("parseRalphLog phase status and config", () => {
 
   test("audit=true while Wax Inspect is running", () => {
     writeLog(
-      buildHeader(process.pid)
+      buildHeader(fakeRalphPid)
       + "\n=== 🥋 Wax Inspect — starting audit+fix — now ===\n"
       + "checking files...\n",
     );
@@ -77,7 +85,7 @@ describe("parseRalphLog phase status and config", () => {
 
   test("audit=false once Wax Inspect completes", () => {
     writeLog(
-      buildHeader(process.pid)
+      buildHeader(fakeRalphPid)
       + "\n=== 🥋 Wax Inspect — starting audit+fix — now ===\n"
       + "checking files...\n"
       + "=== ✅ Wax Inspect complete — now ===\n",
