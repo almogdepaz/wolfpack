@@ -17,7 +17,7 @@ import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { RALPH_AGENT_CONTEXT, TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
+import { TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
 import { buildCleanupPrompt } from "./ralph-skill-cleanup.js";
@@ -344,12 +344,11 @@ INSTRUCTIONS:
 BEGIN.`;
 }
 
-/** Build the per-iteration prompt. RALPH_AGENT_CONTEXT is prepended so the agent
- *  knows subtask protocol and task conventions (see wolfpack-context.ts). */
+/** Build the per-iteration prompt. Plan-format and subtask conventions are
+ *  not injected — if the user wants them, they can install the
+ *  `.claude/skills/wolfpack-{ralph,plan}` skills into their project. */
 function buildPrompt(taskDesc: string): string {
-  return `${RALPH_AGENT_CONTEXT}
-
-You may ONLY create/edit/delete files under ${workingDir}. Do NOT touch files outside this directory.
+  return `You may ONLY create/edit/delete files under ${workingDir}. Do NOT touch files outside this directory.
 
 YOUR TASK:
 ${taskDesc}

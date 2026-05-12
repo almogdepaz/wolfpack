@@ -25,7 +25,7 @@
 import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent, SessionPrefill } from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
-import { SHELL, injectAgentContext } from "./shell.js";
+import { SHELL } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import {
@@ -205,8 +205,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     if (agentCmd === "shell") {
       shellCmd = SHELL;
     } else {
-      const fullCmd = injectAgentContext(agentCmd);
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${fullCmd}; exec ${SHELL}`;
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}; exec ${SHELL}`;
     }
 
     const env: Array<[string, string]> = [

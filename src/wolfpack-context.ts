@@ -1,39 +1,18 @@
 /**
- * Shared context injected into AI agent sessions spawned by wolfpack.
+ * Plan-format helpers shared between the ralph worker and the server.
  *
- * Two focused contexts replace the old monolithic WOLFPACK_CONTEXT:
- *  - RALPH_AGENT_CONTEXT:  ralph-macchio.ts prepends to the `-p` prompt
- *  - INTERACTIVE_CONTEXT:  serve.ts appends via `claude --append-system-prompt`
- *
- * The two context strings are sourced from skill files under
- * `.claude/skills/{wolfpack-ralph,wolfpack-plan}/SKILL.md`, embedded at
- * build time via bun's text imports so the prompt content survives
- * `bun build --compile`. YAML frontmatter is stripped at module load.
- *
- * Plus a validatePlanFormat() helper for checking plan file structure.
+ * Note: prior versions of this module also exported `RALPH_AGENT_CONTEXT`
+ * and `INTERACTIVE_CONTEXT` prompt strings that were auto-injected into
+ * agent commands. That injection was removed — the content now lives at
+ * `.claude/skills/wolfpack-{ralph,plan}/SKILL.md` for anyone who wants
+ * to opt in by installing the skills into their own project.
  */
-import ralphSkill from "../.claude/skills/wolfpack-ralph/SKILL.md" with { type: "text" };
-import planSkill from "../.claude/skills/wolfpack-plan/SKILL.md" with { type: "text" };
-
-/** Strip YAML frontmatter (--- ... ---) from a skill markdown file. */
-function stripFrontmatter(md: string): string {
-  const m = md.match(/^---\n[\s\S]*?\n---\n+/);
-  return m ? md.slice(m[0].length) : md;
-}
 
 /** Matches plan task headers: ## 1. Title, ### 2a. Title, ## ~~3. Title~~, ## Phase 1. Title */
 export const TASK_HEADER = /^#{2,3} (?:~~)?(?:\w+ )?\d+[a-z]?[\.\):]\s+/;
 
 /** Checkbox task pattern: - [ ] or - [x] */
 const CHECKBOX = /^- \[[ x]\] /;
-
-/** Context for ralph iterations — subtask output protocol + granularity only.
- *  Source: .claude/skills/wolfpack-ralph/SKILL.md */
-export const RALPH_AGENT_CONTEXT = stripFrontmatter(ralphSkill).trimEnd();
-
-/** Context for interactive claude sessions — plan format + granularity.
- *  Source: .claude/skills/wolfpack-plan/SKILL.md */
-export const INTERACTIVE_CONTEXT = stripFrontmatter(planSkill).trimEnd();
 
 /** Ambiguous header patterns that look like tasks but don't match TASK_HEADER */
 const AMBIGUOUS_HEADERS = [
