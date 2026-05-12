@@ -1,6 +1,6 @@
 # Issues Report — Wolfpack Codebase
 
-> Last updated: 2026-05-11. Branch: fix/audit-findings-2026-05-10.
+> Last updated: 2026-05-12. Branch: fix/broker-zombie-recovery.
 
 ## Status
 
@@ -30,6 +30,27 @@ carry the residual work.
 
 Each issue includes location, impact, and concrete fix candidates. None are
 blocking; the practical risk for each is documented in the issue body.
+
+---
+
+## Open follow-ups from broker zombie/wedge investigation
+
+Commit `f27d436` addressed the TS client side of the 8h broker zombie via two
+defensive layers (`BrokerClient` request-timeout circuit breaker + `BackendRouter`
+recovery watchdog). Broker-side root causes documented in `broker_stall.md` are
+deferred:
+
+| # | Severity | Title | Location |
+|---|---|---|---|
+| BS1 | MEDIUM | Peers keep re-entering EPIPE every few hours — eviction on write error already happens (`server.rs:307` breaks on first failure); open question is *why* peers reach this state so often (likely TS circuit-breaker reconnects from `f27d436` racing peer close). Diagnostic, not mechanical. | `broker/src/server.rs` writer task |
+| BS2 | MEDIUM | Chronic-lag subscribers — `subscription_dropped` is emitted but no policy prevents immediate re-lag (potential busy loop) | `broker/src/output_bus.rs`, `broker/src/server.rs` |
+| BS3 | MEDIUM | Handshake / request path fate-sharing — `list_sessions` can succeed while later request-handler tasks are starved/stuck (the root-cause shape of the 8h zombie) | `broker/src/server.rs` per-conn dispatcher |
+| BS4 | LOW | Potential RSS leak — 686 MB observed after 5 days uptime; source (ring buffer, broadcast backlog, or elsewhere) not yet identified | `broker/src/` (broad) |
+
+Suggested next actions: request-path liveness probe in addition to handshake,
+investigate the EPIPE-reconnect cadence (correlate with TS circuit-breaker
+trips), lag-subscriber policy (force-disconnect or drop backlog). None
+promoted to GitHub issues yet.
 
 ---
 

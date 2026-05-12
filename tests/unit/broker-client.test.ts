@@ -849,8 +849,11 @@ describe("BrokerClient: request-timeout circuit breaker", () => {
     // run is only 2 < threshold(3) — breaker must NOT trip.
     await expect(client.request("d", {})).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
     await expect(client.request("e", {})).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
-    // Give any pending breaker logic a beat to (not) fire.
-    await new Promise((r) => setTimeout(r, 50));
+    // Deterministic proof the breaker won't trip: counter is at 2 (< threshold 3)
+    // because r3's successful reply reset it. The reset path in
+    // handleControlResponse is synchronous, so by the time we get here every
+    // increment/reset has already happened — no need to wait on a fixed sleep.
+    expect((client as unknown as { consecutiveRequestTimeouts: number }).consecutiveRequestTimeouts).toBe(2);
     expect(trips).toBe(0);
     expect(connects).toBe(1);
   });

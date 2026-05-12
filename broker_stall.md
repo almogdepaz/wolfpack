@@ -32,8 +32,15 @@ Server log (snippet):
 
 1. **Handshake and request paths don't share fate.** Broker passes liveness
    checks (handshake reply) while the request handler task is stuck or starved.
-2. **No connection eviction on repeated broken-pipe writes.** A half-dead
-   client keeps the broker busy logging `os error 32` indefinitely.
+2. **Peers keep re-entering the EPIPE state.** Connection eviction on write
+   error already happens — `broker/src/server.rs:307` breaks the writer loop
+   on the first failure and the connection unwinds. The "every few hours"
+   cadence in the log is therefore a *new* peer reaching this state each
+   time, not one wedged forever. Open question is why: candidates include
+   the RPC dispatcher task blocking long enough that the kernel buffer
+   drains and the next `write` races a peer close (yielding EPIPE), or the
+   TS `BrokerClient` reconnecting after a circuit-breaker trip
+   (`f27d436`).
 3. **Subscription forwarder lag loop.** When a subscriber falls behind on the
    broadcast channel, broker logs `lagged broadcast` and tries to re-notify,
    but nothing actually drains or evicts the slow subscriber — so it lags
@@ -61,8 +68,10 @@ re-handshakes cleanly, `/api/sessions` returns 200.
 
 - [ ] Add a request-path liveness probe (current handshake-only check is
       insufficient).
-- [ ] Evict client connection after N consecutive write errors instead of
-      logging every one forever.
+- [ ] Investigate why peers re-enter the EPIPE state every few hours.
+      Eviction on write error already happens (`server.rs:307`); the gap is
+      diagnostic, not mechanical. Cross-reference timestamps with TS-side
+      circuit-breaker trips from `f27d436`.
 - [ ] Decide a policy for chronically-lagging subscribers: force-disconnect or
       drop their backlog. Continuous "notify to re-subscribe" with no
       enforcement is a busy loop.
