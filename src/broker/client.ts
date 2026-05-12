@@ -51,6 +51,19 @@ export interface BrokerClientOptions {
   reconnectMaxDelayMs?: number;
   /** Default per-request timeout in ms (default 10000ms). */
   requestTimeoutMs?: number;
+  /**
+   * Force-disconnect the socket after this many consecutive RPCs reject with
+   * `BrokerRequestTimeoutError`. Defaults to 3. Set to 0 to disable.
+   *
+   * Rationale: a wedged broker that accepts the socket and answers the
+   * initial handshake but never replies to subsequent RPCs looks healthy to
+   * TCP — connect/disconnect events never fire, so the existing reconnect
+   * path never runs. The TS server then loops forever on 10s request
+   * timeouts (observed: 8h zombie state, 2026-05-11). The circuit breaker
+   * tears the socket down after N timeouts so the standard reconnect +
+   * resubscribe path can recover the next time the broker is healthy.
+   */
+  requestTimeoutCircuitBreakerThreshold?: number;
   /** Called every time a connection is established (initial + each reconnect). */
   onConnect?: () => void;
   /** Called when an established connection dies. */
@@ -65,6 +78,13 @@ export interface BrokerClientOptions {
    * still propagates errors normally.
    */
   onResubscribeError?: (sessionId: string, err: Error) => void;
+  /**
+   * Called when the circuit breaker trips and the client force-disconnects
+   * because too many RPCs in a row timed out. `consecutive` is the count at
+   * the moment the breaker fired. The client then runs its usual reconnect
+   * sequence; this callback is purely observational (e.g. for logging).
+   */
+  onCircuitBreak?: (consecutive: number) => void;
   /**
    * Called when the broker sends a `subscription_dropped` event because this
    * connection's forwarder fell too far behind the broadcast channel. The
@@ -116,6 +136,7 @@ export class BrokerClient {
   private readonly reconnectInitialDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly requestTimeoutCircuitBreakerThreshold: number;
   private readonly onConnectCb?: () => void;
   private readonly onDisconnectCb?: (err?: Error) => void;
   private readonly onProtocolErrorCb?: (err: Error) => void;
@@ -123,6 +144,11 @@ export class BrokerClient {
   private readonly onResubscribeErrorCb?: (sessionId: string, err: Error) => void;
   private readonly onSubscriptionDroppedCb?: (sessionId: string, lagged: number) => void;
   private readonly onReplayTruncatedCb?: (sessionId: string) => void;
+  private readonly onCircuitBreakCb?: (consecutive: number) => void;
+  /** Consecutive request timeouts since the last successful response.
+   *  Drives the circuit breaker that tears down a wedged-but-handshaking
+   *  connection. Reset on every non-timeout outcome (ok or other error). */
+  private consecutiveRequestTimeouts = 0;
 
   private socket: net.Socket | null = null;
   private parser = new FrameParser();
@@ -144,6 +170,8 @@ export class BrokerClient {
     this.reconnectInitialDelayMs = opts.reconnectInitialDelayMs ?? 100;
     this.reconnectMaxDelayMs = opts.reconnectMaxDelayMs ?? 5000;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 10_000;
+    this.requestTimeoutCircuitBreakerThreshold =
+      opts.requestTimeoutCircuitBreakerThreshold ?? 3;
     this.onConnectCb = opts.onConnect;
     this.onDisconnectCb = opts.onDisconnect;
     this.onProtocolErrorCb = opts.onProtocolError;
@@ -151,6 +179,7 @@ export class BrokerClient {
     this.onResubscribeErrorCb = opts.onResubscribeError;
     this.onSubscriptionDroppedCb = opts.onSubscriptionDropped;
     this.onReplayTruncatedCb = opts.onReplayTruncated;
+    this.onCircuitBreakCb = opts.onCircuitBreak;
   }
 
   /** Begin connecting. Idempotent if already connecting/connected. */
@@ -207,6 +236,7 @@ export class BrokerClient {
               if (!p) return;
               this.pending.delete(id);
               p.reject(new BrokerRequestTimeoutError(method, timeoutMs));
+              this.recordRequestTimeout();
             }, timeoutMs)
           : null;
       this.pending.set(id, { resolve, reject, timer, method });
@@ -219,6 +249,36 @@ export class BrokerClient {
         p.reject(writeErr);
       });
     });
+  }
+
+  /**
+   * Bump the consecutive-timeout counter and, if it crosses the threshold,
+   * tear down the socket so the standard reconnect path can recover. The
+   * threshold of 0 disables the breaker entirely (used by tests that
+   * exercise the legacy timeout behaviour in isolation).
+   */
+  private recordRequestTimeout(): void {
+    const threshold = this.requestTimeoutCircuitBreakerThreshold;
+    if (threshold <= 0) return;
+    this.consecutiveRequestTimeouts++;
+    if (this.consecutiveRequestTimeouts < threshold) return;
+    if (this.state !== "connected" || !this.socket) {
+      // Already torn down; nothing to do — handleClose will reset state.
+      return;
+    }
+    const consecutive = this.consecutiveRequestTimeouts;
+    // Reset BEFORE destroy so handleClose → scheduleReconnect → reconnect
+    // path doesn't immediately re-trip on stale state.
+    this.consecutiveRequestTimeouts = 0;
+    if (this.onCircuitBreakCb) {
+      try { this.onCircuitBreakCb(consecutive); } catch { /* swallow */ }
+    }
+    // destroy triggers 'close' → handleClose → reconnect.
+    this.socket.destroy(
+      new Error(
+        `broker circuit breaker tripped: ${consecutive} consecutive request timeouts`,
+      ),
+    );
   }
 
   /** Send an input_binary frame for the given session. */
@@ -346,6 +406,9 @@ export class BrokerClient {
     if (this.state !== "connecting") return;
     this.state = "connected";
     this.currentReconnectDelay = 0;
+    // Fresh connection starts with a clean breaker counter — stale timeouts
+    // from the previous (now dead) socket must not bias this one.
+    this.consecutiveRequestTimeouts = 0;
     try {
       this.onConnectCb?.();
     } catch (e) {
@@ -441,6 +504,10 @@ export class BrokerClient {
         if (!p) return;
         this.pending.delete(id);
         if (p.timer) clearTimeout(p.timer);
+        // Any reply (ok OR error) proves the broker is alive on the request
+        // path. Reset the breaker so a transient slow burst doesn't tip us
+        // into a force-disconnect.
+        this.consecutiveRequestTimeouts = 0;
         p.resolve(frame.value);
         return;
       }

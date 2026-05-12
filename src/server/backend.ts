@@ -15,6 +15,10 @@ const log = createLogger("backend");
 
 const BROKER_HANDSHAKE_TIMEOUT_MS = 1000;
 const BROKER_CONNECT_TIMEOUT_MS = 1500;
+/** How often the recovery watchdog re-probes a broker that previously failed.
+ *  5s is short enough to recover well within a session-start attempt timeout
+ *  and long enough to avoid hot-looping when the broker is genuinely dead. */
+const BROKER_WATCHDOG_INTERVAL_MS = 5000;
 
 export interface SessionBackend {
   list(): Promise<string[]>;
@@ -112,6 +116,10 @@ export class BackendRouter implements SessionBackend {
   private brokerClient: { close(): void; isConnected(): boolean; request: (m: string, p?: unknown, o?: { timeoutMs?: number }) => Promise<unknown>; start(): void } | null;
   private brokerSocketPath: string;
   private _brokerAvailable: boolean;
+  /** Recovery-watchdog timer handle; null when not running. */
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Re-entrancy guard — a slow handshake must not stack on top of itself. */
+  private watchdogInFlight = false;
 
   constructor() {
     this.brokerSocketPath = defaultBrokerSocketPath();
@@ -128,6 +136,10 @@ export class BackendRouter implements SessionBackend {
     }
     this.startBrokerClient();
     this._brokerAvailable = true;
+    // Watchdog runs for the lifetime of the router so we recover from a
+    // mid-life broker wedge (verifyBrokerHandshake tears the client down,
+    // and the next tick brings it back).
+    this.startWatchdog();
   }
 
   private startBrokerClient(): void {
@@ -146,10 +158,87 @@ export class BackendRouter implements SessionBackend {
       onReplayTruncated: (sessionId: string) => {
         this.broker?.handleReplayTruncated(sessionId);
       },
+      // Surface circuit-breaker trips at warn level so a zombie-broker
+      // recovery is visible in the server log. The breaker has already
+      // destroyed the socket by the time this fires; reconnect is queued.
+      onCircuitBreak: (consecutive: number) => {
+        log.warn("broker circuit breaker tripped; forcing reconnect", {
+          consecutiveTimeouts: consecutive,
+          socketPath: this.brokerSocketPath,
+        });
+      },
     });
     client.start();
     this.brokerClient = client;
     this.broker = createBrokerBackend(client);
+  }
+
+  /**
+   * Periodically re-probe the broker when it is marked unavailable so the
+   * server self-heals after the daemon comes back. Without this, a wedge
+   * that flips `_brokerAvailable` to false at startup or after a circuit-
+   * breaker trip keeps the server returning "broker backend unavailable"
+   * until the next manual restart — the 8-hour zombie state observed
+   * 2026-05-11. See broker_stall.md.
+   */
+  private startWatchdog(intervalMs: number = BROKER_WATCHDOG_INTERVAL_MS): void {
+    if (this.watchdogTimer) return;
+    this.watchdogTimer = setInterval(() => {
+      this.watchdogTick().catch((e: unknown) => {
+        log.debug("broker watchdog tick failed", { error: errMsg(e) });
+      });
+    }, intervalMs);
+    // Don't keep the event loop alive just for the watchdog; the server's
+    // listener is the canonical liveness anchor.
+    if (typeof this.watchdogTimer.unref === "function") this.watchdogTimer.unref();
+  }
+
+  /** Test-only: drive a single watchdog cycle without waiting for the timer. */
+  async _watchdogTickForTest(): Promise<void> {
+    if (!process.env.WOLFPACK_TEST) throw new Error("_watchdogTickForTest is test-only");
+    await this.watchdogTick();
+  }
+
+  /** Test-only: install the watchdog (with optional fast interval). */
+  _startWatchdogForTest(intervalMs: number = BROKER_WATCHDOG_INTERVAL_MS): void {
+    if (!process.env.WOLFPACK_TEST) throw new Error("_startWatchdogForTest is test-only");
+    this.startWatchdog(intervalMs);
+  }
+
+  private async watchdogTick(): Promise<void> {
+    if (this._brokerAvailable) return;
+    if (this.watchdogInFlight) return;
+    if (!checkBrokerSocketExists(this.brokerSocketPath)) return;
+    this.watchdogInFlight = true;
+    try {
+      // recheckBroker starts the client if the socket appeared. If the
+      // socket was already present (the wedge case: file exists, daemon
+      // unresponsive) but `_brokerAvailable` is false because a previous
+      // handshake tore the client down, we need to restart the client
+      // ourselves so verifyBrokerHandshake has something to probe.
+      if (!this.brokerClient) {
+        try {
+          this.startBrokerClient();
+        } catch (e: unknown) {
+          log.debug("broker watchdog: client start failed", { error: errMsg(e) });
+          this.teardownBrokerClient();
+          return;
+        }
+      }
+      const ok = await this.verifyBrokerHandshake();
+      if (ok) {
+        this._brokerAvailable = true;
+        log.info("broker recovered", { socketPath: this.brokerSocketPath });
+      }
+    } finally {
+      this.watchdogInFlight = false;
+    }
+  }
+
+  private stopWatchdog(): void {
+    if (!this.watchdogTimer) return;
+    clearInterval(this.watchdogTimer);
+    this.watchdogTimer = null;
   }
 
   private teardownBrokerClient(): void {
