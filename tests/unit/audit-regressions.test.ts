@@ -39,56 +39,47 @@ describe("isUnderDevDir — path containment boundary", () => {
 });
 
 // ── 1b. validateProjectDir realpath containment ──
+// Imports the real `validateProjectDir` from src/ so this test cannot drift
+// from production. `isUnderDevDir` resolves DEV_DIR from process.env.WOLFPACK_DEV_DIR
+// at call time (set at top of file to /Users/home/Dev/).
 
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, lstatSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-
-/**
- * Mirrors the core logic of routes.ts validateProjectDir():
- * rejects symlinks, rejects dirs whose realpath escapes DEV_DIR.
- */
-function validateProjectDir(projectDir: string, devDir: string): "ok" | "not_dir" | "not_found" {
-  try {
-    if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory()) return "not_dir";
-    if (!isUnderDevDir(realpathSync(projectDir))) return "not_dir";
-  } catch {
-    return "not_found";
-  }
-  return "ok";
-}
+const { validateProjectDir } = await import("../../src/server/validate-project-dir.js");
 
 describe("validateProjectDir — realpath containment", () => {
-  let testDevDir: string;
-  let outsideDir: string;
-
-  test("accepts real directory under DEV_DIR", () => {
-    testDevDir = mkdtempSync(join(tmpdir(), "wolfpack-devdir-"));
+  test("rejects directory whose realpath escapes DEV_DIR", () => {
+    const testDevDir = mkdtempSync(join(tmpdir(), "wolfpack-devdir-"));
     const project = join(testDevDir, "legit-project");
     mkdirSync(project);
-    // isUnderDevDir checks against process.env.WOLFPACK_DEV_DIR which is /Users/home/Dev/
-    // so we test the realpathSync + isUnderDevDir logic directly
+    // testDevDir is under /tmp (or macOS equivalent), not under DEV_DIR (/Users/home/Dev/),
+    // so containment must fail.
     const real = realpathSync(project);
-    // the project's realpath is under testDevDir (not under DEV_DIR), so isUnderDevDir returns false
-    // This verifies the containment check works
     expect(isUnderDevDir(real)).toBe(false);
-    expect(validateProjectDir(project, testDevDir)).toBe("not_dir");
+    const result = validateProjectDir(project);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("not_dir");
     rmSync(testDevDir, { recursive: true, force: true });
   });
 
-  test("rejects symlink pointing outside DEV_DIR", () => {
-    testDevDir = mkdtempSync(join(tmpdir(), "wolfpack-devdir-"));
-    outsideDir = mkdtempSync(join(tmpdir(), "wolfpack-outside-"));
+  test("rejects symlink even when target would otherwise be valid", () => {
+    const testDevDir = mkdtempSync(join(tmpdir(), "wolfpack-devdir-"));
+    const outsideDir = mkdtempSync(join(tmpdir(), "wolfpack-outside-"));
     const symlink = join(testDevDir, "sneaky-link");
     symlinkSync(outsideDir, symlink);
-    // lstatSync catches the symlink before realpath even runs
-    expect(validateProjectDir(symlink, testDevDir)).toBe("not_dir");
+    // lstat catches the symlink before realpath even runs.
+    const result = validateProjectDir(symlink);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("not_dir");
     rmSync(testDevDir, { recursive: true, force: true });
     rmSync(outsideDir, { recursive: true, force: true });
   });
 
   test("rejects nonexistent directory", () => {
-    expect(validateProjectDir("/nonexistent/path/xyz", "/tmp")).toBe("not_found");
+    const result = validateProjectDir("/nonexistent/path/xyz");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("not_found");
   });
 });
 

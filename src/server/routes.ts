@@ -8,8 +8,6 @@ import {
   readdirSync,
   mkdirSync,
   statSync,
-  lstatSync,
-  realpathSync,
   existsSync,
   unlinkSync,
   openSync,
@@ -39,7 +37,8 @@ import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, valid
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
-import { DEV_DIR, isUnderDevDir } from "./dev-dir.js";
+import { DEV_DIR } from "./dev-dir.js";
+import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
 import { RALPH_AGENTS } from "./shell.js";
 import { getBackend, getRouter } from "./backend.js";
 import {
@@ -128,23 +127,14 @@ function validateProject(res: ServerResponse, project: string | null | undefined
   return true;
 }
 
-/** Validate project directory exists, is not a symlink, and resolves under DEV_DIR. */
+/** Validate project directory exists, is not a symlink, and resolves under DEV_DIR.
+ *  Thin HTTP wrapper around the pure `validateProjectDirPure` so the security-sensitive
+ *  containment logic lives in one tested place. */
 function validateProjectDir(res: ServerResponse, projectDir: string): boolean {
-  try {
-    if (lstatSync(projectDir).isSymbolicLink() || !statSync(projectDir).isDirectory()) {
-      json(res, { error: "not a directory" }, 400);
-      return false;
-    }
-    // defense-in-depth: verify realpath is contained under DEV_DIR
-    if (!isUnderDevDir(realpathSync(projectDir))) {
-      json(res, { error: "not a directory" }, 400);
-      return false;
-    }
-  } catch { /* expected: stat fails when project dir doesn't exist */
-    json(res, { error: "project directory not found" }, 404);
-    return false;
-  }
-  return true;
+  const result = validateProjectDirPure(projectDir);
+  if (result.ok) return true;
+  json(res, { error: result.error }, result.code === "not_found" ? 404 : 400);
+  return false;
 }
 
 import {
