@@ -4,8 +4,6 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { shellEscape } from "../validation.js";
-import { INTERACTIVE_CONTEXT } from "../wolfpack-context.js";
 
 const _realExec = promisify(execFile);
 type ExecFn = (file: string, args: readonly string[], options?: { timeout?: number; encoding?: BufferEncoding; maxBuffer?: number }) => Promise<{ stdout: string; stderr: string }>;
@@ -38,22 +36,6 @@ export function detectAgent(agentCmd: string): "claude" | "gemini" | "codex" | "
     if (new RegExp(`^${agent}\\b`).test(agentCmd)) return agent as "claude" | "gemini" | "codex" | "cursor";
   }
   return null;
-}
-
-/** Build the full command with context injection for the detected agent. */
-export function injectAgentContext(agentCmd: string): string {
-  const agent = detectAgent(agentCmd);
-  switch (agent) {
-    case "claude": {
-      const withCtx = agentCmd + " --append-system-prompt " + shellEscape(INTERACTIVE_CONTEXT);
-      return withCtx + " || " + agentCmd;
-    }
-    case "gemini": {
-      return agentCmd + " -i " + shellEscape(INTERACTIVE_CONTEXT);
-    }
-    default:
-      return agentCmd;
-  }
 }
 
 export type { ExecFn };
