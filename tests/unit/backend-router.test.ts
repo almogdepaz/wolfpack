@@ -123,4 +123,87 @@ describe("BackendRouter", () => {
       expect(checkBrokerSocketExists("/tmp/never-was-a-broker-here.sock")).toBe(false);
     });
   });
+
+  describe("recovery watchdog", () => {
+    // The watchdog uses `checkBrokerSocketExists` (existsSync). To avoid
+    // touching real filesystem state, we point `brokerSocketPath` at /tmp
+    // for the "socket present" branch (existsSync("/tmp") is always true)
+    // and at a guaranteed-missing path for the "socket gone" branch. The
+    // expensive parts (BrokerClient startup, real handshake) are stubbed.
+
+    test("watchdog no-ops while broker is healthy", async () => {
+      const { router, brokerMock } = createTestRouter();
+      // `_brokerAvailable=true` was set by createTestRouter; verify the
+      // watchdog tick exits early without touching anything.
+      let verifyCalls = 0;
+      (router as any).verifyBrokerHandshake = async () => { verifyCalls++; return true; };
+      await router._watchdogTickForTest();
+      expect(verifyCalls).toBe(0);
+      expect(router.isBrokerAvailable()).toBe(true);
+      void brokerMock;
+    });
+
+    test("watchdog flips broker back to available when handshake succeeds", async () => {
+      const router = new BackendRouter();
+      // Pretend we just had a wedge: socket exists, client torn down,
+      // availability flag is false.
+      (router as any).brokerSocketPath = "/tmp"; // exists
+      (router as any).brokerClient = null;
+      (router as any).broker = null;
+      (router as any)._brokerAvailable = false;
+
+      let starts = 0;
+      let verifies = 0;
+      (router as any).startBrokerClient = function fakeStart() {
+        starts++;
+        (this as any).brokerClient = { close() {}, isConnected() { return true; }, request: async () => ({ status: "ok" }), start() {} };
+        (this as any).broker = {};
+      };
+      (router as any).verifyBrokerHandshake = async () => { verifies++; return true; };
+
+      await router._watchdogTickForTest();
+      expect(starts).toBe(1);
+      expect(verifies).toBe(1);
+      expect(router.isBrokerAvailable()).toBe(true);
+
+      // Second tick is a no-op because broker is healthy again.
+      await router._watchdogTickForTest();
+      expect(verifies).toBe(1);
+    });
+
+    test("watchdog keeps retrying while handshake fails", async () => {
+      const router = new BackendRouter();
+      (router as any).brokerSocketPath = "/tmp";
+      (router as any)._brokerAvailable = false;
+      (router as any).brokerClient = null;
+      let verifies = 0;
+      (router as any).startBrokerClient = function fakeStart() {
+        (this as any).brokerClient = { close() {}, isConnected() { return true; }, request: async () => ({ status: "ok" }), start() {} };
+        (this as any).broker = {};
+      };
+      (router as any).verifyBrokerHandshake = async () => {
+        verifies++;
+        // Real verify tears client down on fail.
+        (router as any).brokerClient = null;
+        (router as any).broker = null;
+        return false;
+      };
+
+      await router._watchdogTickForTest();
+      await router._watchdogTickForTest();
+      await router._watchdogTickForTest();
+      expect(verifies).toBe(3);
+      expect(router.isBrokerAvailable()).toBe(false);
+    });
+
+    test("watchdog is a no-op when the socket file is missing", async () => {
+      const router = new BackendRouter();
+      (router as any).brokerSocketPath = "/tmp/wp-definitely-missing-watchdog.sock";
+      (router as any)._brokerAvailable = false;
+      let verifies = 0;
+      (router as any).verifyBrokerHandshake = async () => { verifies++; return true; };
+      await router._watchdogTickForTest();
+      expect(verifies).toBe(0);
+    });
+  });
 });

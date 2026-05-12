@@ -657,6 +657,35 @@ mod tests {
     /// relying on a TUI app's SIGWINCH handler. The seq-assignment mechanism
     /// is identical regardless of whether bytes originate from SIGWINCH or
     /// stdin echo.
+    /// Block until `output_bus.current_seq()` stops advancing for at least
+    /// `quiet` and is non-zero, or the overall `timeout` elapses. Used in
+    /// PTY-echo-based tests to make sure both the tty-driver echo chunk AND
+    /// the child's stdout chunk have landed before sampling state — they
+    /// arrive as separate read()s under load and naively waiting on "first
+    /// chunk" picks up only the echo, racing with the child's output.
+    fn wait_for_bus_quiet(sess: &Session, quiet: Duration, timeout: Duration) {
+        let bus = sess.output_bus();
+        let deadline = std::time::Instant::now() + timeout;
+        let mut last_seq = bus.current_seq();
+        let mut last_change = std::time::Instant::now();
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bus never went quiet (last_seq={last_seq})"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+            let now_seq = bus.current_seq();
+            if now_seq != last_seq {
+                last_seq = now_seq;
+                last_change = std::time::Instant::now();
+                continue;
+            }
+            if now_seq > 0 && last_change.elapsed() >= quiet {
+                return;
+            }
+        }
+    }
+
     #[test]
     fn subscribe_since_prefill_seq_covers_post_snapshot_bytes() {
         let sess = spawn_session(opts(vec!["cat"])).expect("spawn");
@@ -673,6 +702,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        // PTY runs in cooked mode with echo enabled by default, so writing
+        // "INIT\n" to the master produces TWO chunks: the tty-driver echo
+        // and `cat`'s stdout. Under load these arrive as separate read()s.
+        // If we sampled prefill_seq right after seeing INIT in the screen,
+        // we'd capture only the echo chunk — the cat-output chunk would
+        // race against REDRAW below and end up in the subscribe replay
+        // instead of REDRAW. Wait for the bus to go quiet so prefill_seq
+        // covers every INIT-related chunk.
+        wait_for_bus_quiet(&sess, Duration::from_millis(100), Duration::from_secs(5));
+
         // Capture prefill seq — the seq a client would record before subscribing.
         let prefill_seq = sess.snapshot_terminal(None, None).seq;
         assert!(prefill_seq > 0, "prefill_seq must be > 0 after INIT output");
@@ -680,18 +719,14 @@ mod tests {
         // Simulate post-resize redraw bytes arriving after the snapshot.
         sess.write_stdin(b"REDRAW\n").expect("write stdin");
 
-        // Wait until the bus has processed at least one chunk past prefill_seq.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "REDRAW bytes never arrived in bus"
-            );
-            if sess.output_bus().current_seq() > prefill_seq {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // Same reasoning: REDRAW also produces echo + cat-output. Wait for
+        // BOTH to land (bus quiet again) before sampling so we don't read
+        // the ring between the two chunks.
+        wait_for_bus_quiet(&sess, Duration::from_millis(100), Duration::from_secs(5));
+        assert!(
+            sess.output_bus().current_seq() > prefill_seq,
+            "REDRAW bytes never arrived past prefill_seq"
+        );
 
         // subscribe(sinceSeq: prefill_seq) — this is what the client calls
         // after completing its prefill paint.

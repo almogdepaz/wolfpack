@@ -762,3 +762,128 @@ describe("BrokerClient: protocol violation handling", () => {
     expect(() => client.start()).toThrow();
   });
 });
+
+describe("BrokerClient: request-timeout circuit breaker", () => {
+  test("force-disconnects after N consecutive request timeouts", async () => {
+    const socketPath = makeSocketPath();
+    const server = await startMockServer(socketPath);
+    activeServer = server;
+    // Silent server: every request will hit its timeout.
+    server.onRequest = () => { /* never reply */ };
+
+    let connects = 0;
+    let disconnects = 0;
+    let trips = 0;
+    const client = new BrokerClient({
+      socketPath,
+      reconnectInitialDelayMs: 20,
+      reconnectMaxDelayMs: 100,
+      requestTimeoutMs: 30,
+      requestTimeoutCircuitBreakerThreshold: 3,
+      onConnect: () => { connects++; },
+      onDisconnect: () => { disconnects++; },
+      onCircuitBreak: () => { trips++; },
+    });
+    activeClient = client;
+    client.start();
+    await waitFor(() => connects === 1);
+
+    // Fire three back-to-back requests; each will time out, the third
+    // should trip the breaker and force a disconnect.
+    const results = await Promise.allSettled([
+      client.request("a", {}),
+      client.request("b", {}),
+      client.request("c", {}),
+    ]);
+    for (const r of results) expect(r.status).toBe("rejected");
+
+    await waitFor(() => trips === 1, 2000);
+    await waitFor(() => disconnects >= 1, 2000);
+    // Reconnect runs against the same (still-silent) server.
+    await waitFor(() => connects >= 2, 3000);
+  });
+
+  test("a successful response resets the breaker counter", async () => {
+    const socketPath = makeSocketPath();
+    const server = await startMockServer(socketPath);
+    activeServer = server;
+
+    let connects = 0;
+    let trips = 0;
+    // First two requests are dropped; third gets a reply; fourth + fifth
+    // dropped. With threshold=3, we expect NO trip — the successful reply
+    // resets the counter so the new run-up is only length 2.
+    let req = 0;
+    server.onRequest = (r, sock) => {
+      req++;
+      if (req === 3) {
+        server.send(sock, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: r.id, status: "ok", payload: { kind: r.method } },
+        });
+      }
+    };
+
+    const client = new BrokerClient({
+      socketPath,
+      reconnectInitialDelayMs: 20,
+      reconnectMaxDelayMs: 100,
+      requestTimeoutMs: 30,
+      requestTimeoutCircuitBreakerThreshold: 3,
+      onConnect: () => { connects++; },
+      onCircuitBreak: () => { trips++; },
+    });
+    activeClient = client;
+    client.start();
+    await waitFor(() => connects === 1);
+
+    // Issue sequentially so the reply on r3 is observed AFTER r1/r2 have
+    // already incremented the counter. Concurrent issue would let r3's
+    // reset race ahead of the timeouts and defeat the point of the test.
+    await expect(client.request("a", {})).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
+    await expect(client.request("b", {})).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
+    const ok = await client.request("c", {});
+    expect(ok.status).toBe("ok");
+
+    // Two more timeouts (4 + 5). Counter reset by r3 reply, so consecutive
+    // run is only 2 < threshold(3) — breaker must NOT trip.
+    await expect(client.request("d", {})).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
+    await expect(client.request("e", {})).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
+    // Deterministic proof the breaker won't trip: counter is at 2 (< threshold 3)
+    // because r3's successful reply reset it. The reset path in
+    // handleControlResponse is synchronous, so by the time we get here every
+    // increment/reset has already happened — no need to wait on a fixed sleep.
+    expect((client as unknown as { consecutiveRequestTimeouts: number }).consecutiveRequestTimeouts).toBe(2);
+    expect(trips).toBe(0);
+    expect(connects).toBe(1);
+  });
+
+  test("threshold=0 disables the breaker entirely", async () => {
+    const socketPath = makeSocketPath();
+    const server = await startMockServer(socketPath);
+    activeServer = server;
+    server.onRequest = () => { /* never reply */ };
+
+    let connects = 0;
+    let trips = 0;
+    const client = new BrokerClient({
+      socketPath,
+      reconnectInitialDelayMs: 20,
+      reconnectMaxDelayMs: 100,
+      requestTimeoutMs: 25,
+      requestTimeoutCircuitBreakerThreshold: 0,
+      onConnect: () => { connects++; },
+      onCircuitBreak: () => { trips++; },
+    });
+    activeClient = client;
+    client.start();
+    await waitFor(() => connects === 1);
+
+    for (let i = 0; i < 5; i++) {
+      await client.request("x", {}).catch(() => {});
+    }
+    expect(trips).toBe(0);
+    expect(connects).toBe(1);
+    expect(client.isConnected()).toBe(true);
+  });
+});
