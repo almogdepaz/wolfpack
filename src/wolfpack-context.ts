@@ -5,8 +5,21 @@
  *  - RALPH_AGENT_CONTEXT:  ralph-macchio.ts prepends to the `-p` prompt
  *  - INTERACTIVE_CONTEXT:  serve.ts appends via `claude --append-system-prompt`
  *
+ * The two context strings are sourced from skill files under
+ * `.claude/skills/{wolfpack-ralph,wolfpack-plan}/SKILL.md`, embedded at
+ * build time via bun's text imports so the prompt content survives
+ * `bun build --compile`. YAML frontmatter is stripped at module load.
+ *
  * Plus a validatePlanFormat() helper for checking plan file structure.
  */
+import ralphSkill from "../.claude/skills/wolfpack-ralph/SKILL.md" with { type: "text" };
+import planSkill from "../.claude/skills/wolfpack-plan/SKILL.md" with { type: "text" };
+
+/** Strip YAML frontmatter (--- ... ---) from a skill markdown file. */
+function stripFrontmatter(md: string): string {
+  const m = md.match(/^---\n[\s\S]*?\n---\n+/);
+  return m ? md.slice(m[0].length) : md;
+}
 
 /** Matches plan task headers: ## 1. Title, ### 2a. Title, ## ~~3. Title~~, ## Phase 1. Title */
 export const TASK_HEADER = /^#{2,3} (?:~~)?(?:\w+ )?\d+[a-z]?[\.\):]\s+/;
@@ -14,27 +27,13 @@ export const TASK_HEADER = /^#{2,3} (?:~~)?(?:\w+ )?\d+[a-z]?[\.\):]\s+/;
 /** Checkbox task pattern: - [ ] or - [x] */
 const CHECKBOX = /^- \[[ x]\] /;
 
-/** Context for ralph iterations — subtask output protocol + granularity only. */
-export const RALPH_AGENT_CONTEXT = `## Ralph Agent Context
+/** Context for ralph iterations — subtask output protocol + granularity only.
+ *  Source: .claude/skills/wolfpack-ralph/SKILL.md */
+export const RALPH_AGENT_CONTEXT = stripFrontmatter(ralphSkill).trimEnd();
 
-When a task is too large to implement directly, output a <subtasks> block instead of making changes:
-\`\`\`
-<subtasks>
-Implement auth middleware with JWT validation
-Add integration tests for auth endpoints
-</subtasks>
-\`\`\`
-Each subtask = a meaningful deliverable (3-5 per breakdown). NOT single lines of code or imports — a unit of work a senior dev would recognize as coherent.
-
-To notify the user (push notification to their phone/desktop):
-curl -s http://localhost:18790/api/notify -H 'Content-Type: application/json' -d '{"message": "your message"}'`;
-
-/** Context for interactive claude sessions — plan format + granularity. */
-export const INTERACTIVE_CONTEXT = `## Wolfpack Plan Conventions
-
-Plan task headers MUST use: \`## N. Title\` (e.g. \`## 1. Add auth\`), subtasks: \`## Na. Title\` (e.g. \`## 1a. Tests\`). Completed: wrap in \`~~\` (e.g. \`## ~~1. Done~~\`). No other header styles — the task extractor only recognizes this pattern.
-
-Each task = a meaningful deliverable (3-5 per feature). NOT individual lines of code — a unit of work a senior dev would recognize. Subtask breakdowns follow the same rule: 3-5 max, each coherent.`;
+/** Context for interactive claude sessions — plan format + granularity.
+ *  Source: .claude/skills/wolfpack-plan/SKILL.md */
+export const INTERACTIVE_CONTEXT = stripFrontmatter(planSkill).trimEnd();
 
 /** Ambiguous header patterns that look like tasks but don't match TASK_HEADER */
 const AMBIGUOUS_HEADERS = [
