@@ -88,6 +88,49 @@ const QUIESCE_WINDOW_MS = 100;
 const QUIESCE_BYTE_THRESHOLD = 1024;
 const QUIESCE_TIMEOUT_MS = 800;
 const QUIESCE_MIN_WAIT_MS = 80;
+// Hard cap for sessions that never quiesce (animated TUIs: spinners,
+// progress bars, htop, watch). Without this, an always-busy session waits
+// the full QUIESCE_TIMEOUT_MS (800ms) before snapshotting, producing a
+// visibly garbled mid-redraw prefill that the live stream then has to
+// overwrite. Capping at 200ms cuts the worst-case prefill-garble window
+// by 4x for animated sessions while leaving the common quiet-path
+// behavior unchanged: real apps quiet inside QUIESCE_WINDOW_MS well
+// before this cap is reached. Issue #129.
+const QUIESCE_ANIMATED_CAP_MS = 200;
+
+/**
+ * Pure decision for the quiescence loop. Returns one of:
+ *  - "continue" — keep observing
+ *  - "quiet"     — recent byte rate below threshold, safe to snapshot
+ *  - "animated_cap" — byte rate stayed high through the animated-cap
+ *    window; we snapshot a (potentially mid-redraw) frame rather than
+ *    wait the full timeout
+ *  - "timeout"  — absolute settle timeout reached
+ *
+ * Exported for unit tests. The loop's setTimeout(16) wait and the resize
+ * side-effects live at the call site.
+ */
+export function quiescenceDecision(args: {
+  samples: Array<{ t: number; bytes: number }>;
+  now: number;
+  lastResizeAt: number;
+  settleStart: number;
+}): "continue" | "quiet" | "animated_cap" | "timeout" {
+  const { samples, now, lastResizeAt, settleStart } = args;
+  const elapsedTotal = now - settleStart;
+  if (elapsedTotal >= QUIESCE_TIMEOUT_MS) return "timeout";
+  const elapsedSinceResize = now - lastResizeAt;
+  if (elapsedSinceResize < QUIESCE_MIN_WAIT_MS) return "continue";
+  const cutoff = now - QUIESCE_WINDOW_MS;
+  let recentBytes = 0;
+  for (const s of samples) if (s.t >= cutoff) recentBytes += s.bytes;
+  if (recentBytes < QUIESCE_BYTE_THRESHOLD) return "quiet";
+  // Byte rate stayed high through the entire animated-cap window measured
+  // from settle start. This is the always-busy TUI signature — don't wait
+  // out the full 800ms timeout.
+  if (elapsedTotal >= QUIESCE_ANIMATED_CAP_MS) return "animated_cap";
+  return "continue";
+}
 // Adaptive coalescing of broker output frames before forwarding to viewer.
 // See call site for full reasoning.
 const COALESCE_FLUSH_MS = 16;
@@ -507,14 +550,17 @@ function setupNewPtyEntry(
               await backend.resize(session, appliedSize.cols, appliedSize.rows);
               lastResizeAt = Date.now();
             }
-            const elapsedTotal = Date.now() - settleStart;
-            if (elapsedTotal >= QUIESCE_TIMEOUT_MS) break;
-            const elapsedSinceResize = Date.now() - lastResizeAt;
-            if (elapsedSinceResize >= QUIESCE_MIN_WAIT_MS) {
-              const cutoff = Date.now() - QUIESCE_WINDOW_MS;
-              while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
-              const recentBytes = samples.reduce((s, x) => s + x.bytes, 0);
-              if (recentBytes < QUIESCE_BYTE_THRESHOLD) break;
+            const now = Date.now();
+            // Trim samples outside the rolling window so the array stays
+            // bounded across long never-quiet sessions.
+            const cutoff = now - QUIESCE_WINDOW_MS;
+            while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
+            const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
+            if (decision !== "continue") {
+              if (decision === "animated_cap" || decision === "timeout") {
+                log.debug("quiescence loop exited without quiet", { session, reason: decision, elapsedMs: now - settleStart });
+              }
+              break;
             }
             await new Promise(resolve => setTimeout(resolve, 16));
           }
