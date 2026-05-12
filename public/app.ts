@@ -8,6 +8,7 @@ import {
   SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL,
   DESKTOP_TERMINAL_SCROLLBACK, GRID_TERMINAL_SCROLLBACK,
 } from "./app-state";
+import { hasGhosttyRepaintHook } from "./terminal-repaint";
 
 import {
   initRalphDeps,
@@ -1217,13 +1218,31 @@ function createPtyTerminalController(opts) {
     }
   }
 
+  // Tracks whether we've already warned about a broken ghostty-web private
+  // repaint hook. If the internals shape changes in a future ghostty-web
+  // upgrade we emit a single console.warn so silent degradation is at least
+  // diagnosable (issue #130).
+  let _forceRepaintWarned = false;
   function forceRepaint() {
     if (!_term) return;
     const t = _term as any;
+    const available = hasGhosttyRepaintHook(t);
+    if (!available) {
+      if (!_forceRepaintWarned) {
+        _forceRepaintWarned = true;
+        console.warn(
+          "[wolfpack] forceRepaint: ghostty-web internals not detected" +
+          " (renderer/wasmTerm/viewportY). Terminal may show stale frames" +
+          " after attach until ghostty-web is updated or a stable repaint" +
+          " API is wired in."
+        );
+      }
+      return;
+    }
     // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
     // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
     // This is the only way to force a full canvas repaint without changing dimensions.
-    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch {}
+    try { t.renderer.render(t.wasmTerm, true, t.viewportY, t); } catch {}
   }
 
   function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
