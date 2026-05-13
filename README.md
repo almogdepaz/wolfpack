@@ -74,20 +74,6 @@ Supported: macOS (arm64/x64), Linux (x64/arm64).
 
 Scan the QR with your phone, tap **Add to Home Screen**, done.
 
-## Secure It
-
-Anyone who can reach the server has full session access. Tailscale gates network reachability; **JWT** gates auth on the server itself. You want both.
-
-```bash
-export WOLFPACK_JWT_SECRET="$(openssl rand -base64 48)"
-```
-
-Set this before starting wolfpack (or in your service environment). Tokens are HS256; the server validates, it does not issue — sign them with any JWT library using the same secret.
-
-Optional env vars: `WOLFPACK_JWT_AUDIENCE`, `WOLFPACK_JWT_ISSUER`, `WOLFPACK_JWT_CLOCK_TOLERANCE_SEC` (default 30s).
-
-If `WOLFPACK_JWT_SECRET` is unset, auth is disabled — fine for localhost-only, **not** fine on a tailnet.
-
 ## What It Does
 
 - **Multi-machine** — one phone manages sessions on every machine on your tailnet. Online/offline status per machine, cross-machine session list.
@@ -129,6 +115,18 @@ wolfpack uninstall --yes Remove everything
 - **PWA** — vanilla JS, no framework. ghostty-web renders the terminal.
 - **Server** — Bun HTTP + WebSocket. Pure broker client; owns no PTYs.
 - **Broker** — `wolfpack-broker`, Rust daemon. Owns every PTY, keeps per-session output rings. One Unix-domain socket per host (`$XDG_RUNTIME_DIR/wolfpack-broker.sock`, fallback `~/.wolfpack/broker.sock`). Wire protocol in [docs/broker-protocol.md](docs/broker-protocol.md).
+
+## Optional: JWT Auth
+
+Tailscale already gates who can reach the server. If you want an extra auth layer on top — useful if you share your tailnet with others, or for defense-in-depth — set a JWT secret:
+
+```bash
+export WOLFPACK_JWT_SECRET="$(openssl rand -base64 48)"
+```
+
+Tokens are HS256; the server validates, it does not issue — sign them with any JWT library using the same secret.
+
+Optional: `WOLFPACK_JWT_AUDIENCE`, `WOLFPACK_JWT_ISSUER`, `WOLFPACK_JWT_CLOCK_TOLERANCE_SEC` (default 30s).
 
 ## Config
 
