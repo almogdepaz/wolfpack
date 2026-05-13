@@ -179,7 +179,7 @@ export class BackendRouter implements SessionBackend {
    * that flips `_brokerAvailable` to false at startup or after a circuit-
    * breaker trip keeps the server returning "broker backend unavailable"
    * until the next manual restart — the 8-hour zombie state observed
-   * 2026-05-11. See broker_stall.md.
+   * 2026-05-11. See issue #141 for the wedge-itself investigation.
    */
   private startWatchdog(intervalMs: number = BROKER_WATCHDOG_INTERVAL_MS): void {
     if (this.watchdogTimer) return;
