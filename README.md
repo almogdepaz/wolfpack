@@ -37,9 +37,6 @@
 Drive AI coding agents (Claude, Codex, Gemini, any shell command) from your phone or browser. Sessions live in a Rust PTY broker that outlives the web server, so restarts don't kill your agents. Designed to ride on top of [Tailscale](https://tailscale.com/) — no ports to open, no DNS to wire up.
 
 <p align="center">
-  <img src="docs/desktop-terminal.png" width="700" alt="Desktop — terminal with collapsible sidebar" />
-</p>
-<p align="center">
   <img src="docs/desktop-grid.png" width="700" alt="Desktop — multi-terminal grid view" />
 </p>
 <p align="center">
