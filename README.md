@@ -40,6 +40,9 @@ Drive AI coding agents (Claude, Codex, Gemini, any shell command) from your phon
   <img src="docs/desktop-terminal.png" width="700" alt="Desktop — terminal with collapsible sidebar" />
 </p>
 <p align="center">
+  <img src="docs/desktop-grid.png" width="700" alt="Desktop — multi-terminal grid view" />
+</p>
+<p align="center">
   <img src="docs/mobile-sessions.png" width="250" alt="Mobile — session list across machines" />
 </p>
 
