@@ -249,7 +249,7 @@ function renderCmdPalette() {
   el.classList.toggle("visible", state.kbAccessoryOpen);
 }
 
-function sendQuickCmd(index) {
+function sendQuickCmd(index: number): void {
   const cmd = state.quickCmds[index];
   if (!cmd || !state.currentSession) return;
   haptic([30]);
@@ -285,7 +285,7 @@ function addQuickCmd() {
   renderCmdPalette();
 }
 
-function editQuickCmd(index) {
+function editQuickCmd(index: number): void {
   const c = state.quickCmds[index];
   if (!c) return;
   const label = prompt("Label:", c.label);
@@ -298,14 +298,14 @@ function editQuickCmd(index) {
   renderCmdPalette();
 }
 
-function deleteQuickCmd(index) {
+function deleteQuickCmd(index: number): void {
   state.quickCmds.splice(index, 1);
   saveQuickCmds();
   renderQuickCmdSettings();
   renderCmdPalette();
 }
 
-function moveQuickCmd(index, direction) {
+function moveQuickCmd(index: number, direction: 1 | -1): void {
   const target = index + direction;
   if (target < 0 || target >= state.quickCmds.length) return;
   const tmp = state.quickCmds[index];
@@ -359,7 +359,7 @@ async function copySessionToClipboard() {
 
 // ── Session Recents ──
 
-function sessionKey(machine, name) {
+function sessionKey(machine: string | null | undefined, name: string): string {
   return (machine || "") + "|" + name;
 }
 
@@ -367,7 +367,7 @@ function saveRecents() {
   localStorage.setItem(RECENTS_STORAGE_KEY, JSON.stringify(state.sessionRecents));
 }
 
-function recordRecent(machine, name) {
+function recordRecent(machine: string | null | undefined, name: string): void {
   const key = sessionKey(machine, name);
   state.sessionRecents = state.sessionRecents.filter(r => r.key !== key);
   state.sessionRecents.unshift({ key, name, machine: machine || "", ts: Date.now() });
@@ -1848,7 +1848,7 @@ function flushGridSnapshots() {
  * data:, etc.), userinfo (creds smuggling), and non-numeric/out-of-range
  * ports.
  */
-function isValidMachineUrl(u) {
+function isValidMachineUrl(u: unknown): boolean {
   if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
   let parsed;
   try { parsed = new URL(u); } catch { return false; }
@@ -1887,14 +1887,14 @@ function getMachines() {
   } catch { return []; }
 }
 
-function saveMachines(list) {
+function saveMachines(list: Array<{ url: string; name: string }>): void {
   // Mirror getMachines() validation on the write side so future code paths
   // that bypass the discover-source can't poison localStorage either.
   const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
   localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
 }
 
-function removeMachine(url) {
+function removeMachine(url: string): Array<{ url: string; name: string }> {
   const machines = getMachines().filter(m => m.url !== url);
   saveMachines(machines);
   return machines;
@@ -1940,7 +1940,7 @@ function removeMachine(url) {
   } catch { /* peer discovery is best-effort; no connectivity is fine */ }
 })();
 
-function errorMessage(err) {
+function errorMessage(err: unknown): string {
   if (err && typeof err.message === "string" && err.message) return err.message;
   return String(err || "unknown error");
 }
@@ -2202,7 +2202,7 @@ function safeTriage(v: string): string {
   return VALID_TRIAGE.has(v) ? v : "idle";
 }
 
-function triageUi(triage) {
+function triageUi(triage: string | null | undefined): string {
   return TRIAGE_MAP[triage] || TRIAGE_MAP["idle"];
 }
 
@@ -2462,7 +2462,7 @@ async function showProjectPicker(machineUrl) {
   }
 }
 
-function showTerminalLoading(label) {
+function showTerminalLoading(label: string): void {
   clearPreservedGrid();
   showView("terminal");
   const dtc = document.getElementById("desktop-terminal-container");
@@ -2470,7 +2470,7 @@ function showTerminalLoading(label) {
   dtc.innerHTML = '<span class="loading-text">Starting session in ' + esc(label) + '\u2026</span>';
 }
 
-function selectProject(project) {
+function selectProject(project: string): void {
   state.selectedProject = project;
   state.isNewProject = false;
   showAgentPicker();
@@ -2625,7 +2625,7 @@ async function addAgent() {
   }
 }
 
-function showAgentAddError(msg) {
+function showAgentAddError(msg: string): void {
   const el = document.getElementById("agent-add-error");
   if (el) el.textContent = msg;
 }
@@ -3003,7 +3003,7 @@ function terminalSessionKey() {
   return (state.currentMachine || "") + "|" + (state.currentSession || "");
 }
 
-function setConnState(connState) {
+function setConnState(connState: "live" | "reconnecting" | "disconnected" | string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
   const active = !!state.terminalController?.term;
@@ -3094,7 +3094,7 @@ function updatePreview() {
   }
 }
 
-function sendKey(key) {
+function sendKey(key: string): void {
   if (!state.currentSession) return;
   const esc = KEY_TO_ESCAPE[key];
   if (!esc) return;
@@ -3204,7 +3204,7 @@ function openDrawer() {
   haptic(5);
 }
 
-function closeDrawer(instant) {
+function closeDrawer(instant: boolean): void {
   if (!state.drawerOpen) return;
   state.drawerOpen = false;
   const drawer = document.getElementById("session-drawer");
@@ -3885,7 +3885,7 @@ async function renderMachinesList() {
   }).join("");
 }
 
-function removeMachineUI(url) {
+function removeMachineUI(url: string): void {
   removeMachine(url);
   renderMachinesList();
 }
