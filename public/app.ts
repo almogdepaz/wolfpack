@@ -30,6 +30,11 @@ import {
 
 import { setupTouchScrollHandler } from "./app-touch";
 
+import {
+  __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
+  captureLastCrash,
+} from "./app-debug";
+
 // ── WASM capability guard ──
 
 function canUseWasmTerminal() {
@@ -71,120 +76,6 @@ const wpMetrics = {
     this.sessionOpenedAt = Date.now();
     this.lastUpdateAt = 0;
   }
-};
-
-// ── Diagnostic Tracer (scrolldown investigation) ──
-//
-// Captures timestamped events per (session@machine) attach so we can
-// reconstruct the WS frame timing, prefill vs replay byte distribution,
-// _writeTermData call shape, and rAF cadence during the hydration window.
-//
-// PURE DIAGNOSTIC. Gated behind `localStorage.wolfpackDebug = "1"` so it
-// doesn't expose per-session attach metadata to any JS in the page context
-// (XSS, extension, bookmarklet). When disabled, all helpers are no-ops and
-// `__wfTrace` / `__wf_dumpTrace` / `__wf_clearTrace` are NOT installed on
-// `window`.
-//
-// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
-// after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
-const __wfTraceEnabled = (() => {
-  try { return localStorage.getItem("wolfpackDebug") === "1"; }
-  catch { return false; }
-})();
-const __wfTraceMaxEvents = 5000;
-if (__wfTraceEnabled) (window as any).__wfTrace = (window as any).__wfTrace || {};
-
-function __wfTraceKey(session, machine) {
-  return (session || "?") + "@" + (machine || "");
-}
-
-function __wfTraceStart(session, machine, extra?: any) {
-  if (!__wfTraceEnabled) return null;
-  const key = __wfTraceKey(session, machine);
-  const trace: any = {
-    _meta: {
-      session,
-      machine: machine || "",
-      startWall: Date.now(),
-      startPerf: performance.now(),
-      ...(extra || {}),
-    },
-    events: [],
-    _rafCount: 0,
-    _rafActive: false,
-  };
-  (window as any).__wfTrace[key] = trace;
-  return trace;
-}
-
-function __wfTraceGet(session, machine) {
-  if (!__wfTraceEnabled) return null;
-  const key = __wfTraceKey(session, machine);
-  return (window as any).__wfTrace[key];
-}
-
-function __wfTraceEvent(trace, kind, fields?: any) {
-  if (!trace) return;
-  if (trace.events.length >= __wfTraceMaxEvents) return;
-  trace.events.push({
-    t: +(performance.now() - trace._meta.startPerf).toFixed(3),
-    kind,
-    ...(fields || {}),
-  });
-}
-
-// Start a rAF counter loop while hydration is pending. Each frame increments
-// _rafCount and records a tick if it lands during a noteworthy window.
-function __wfTraceRafStart(trace) {
-  if (!trace || trace._rafActive) return;
-  trace._rafActive = true;
-  function tick() {
-    if (!trace._rafActive) return;
-    trace._rafCount++;
-    __wfTraceEvent(trace, "raf", { n: trace._rafCount });
-    requestAnimationFrame(tick);
-  }
-  requestAnimationFrame(tick);
-}
-
-function __wfTraceRafStop(trace) {
-  if (!trace) return;
-  trace._rafActive = false;
-}
-
-if (__wfTraceEnabled) (window as any).__wf_dumpTrace = function (sessionFilter?: string) {
-  const all = (window as any).__wfTrace || {};
-  const keys = Object.keys(all).filter(k => !sessionFilter || k.indexOf(sessionFilter) >= 0);
-  for (const key of keys) {
-    const trace = all[key];
-    const ev = trace.events;
-    const meta = trace._meta;
-    const sumByKind: any = {};
-    let prefillBytes = 0, replayBytes = 0, prefillFrames = 0, replayFrames = 0;
-    let firstPrefillT = -1, prefillDoneT = -1, firstReplayT = -1, hydratedT = -1;
-    for (const e of ev) {
-      sumByKind[e.kind] = (sumByKind[e.kind] || 0) + 1;
-      if (e.kind === "ws.binary") {
-        if (e.bucket === "prefill") { prefillBytes += e.size; prefillFrames++; if (firstPrefillT < 0) firstPrefillT = e.t; }
-        else { replayBytes += e.size; replayFrames++; if (firstReplayT < 0) firstReplayT = e.t; }
-      }
-      if (e.kind === "prefill_done") prefillDoneT = e.t;
-      if (e.kind === "hydration.finish") hydratedT = e.t;
-    }
-    console.group("[wf-trace] " + key);
-    console.log("meta:", meta);
-    console.log("counts:", sumByKind);
-    console.log("prefill: " + prefillFrames + " frames, " + prefillBytes + " bytes, first @ " + firstPrefillT + "ms, prefill_done @ " + prefillDoneT + "ms");
-    console.log("replay (post-prefill_done): " + replayFrames + " frames, " + replayBytes + " bytes, first @ " + firstReplayT + "ms");
-    console.log("hydrated @ " + hydratedT + "ms; rAFs during attach: " + trace._rafCount);
-    console.log("events:", ev);
-    console.groupEnd();
-  }
-  return all;
-};
-
-if (__wfTraceEnabled) (window as any).__wf_clearTrace = function () {
-  (window as any).__wfTrace = {};
 };
 
 let debugPanelTimer = null;
@@ -1176,22 +1067,13 @@ function createPtyTerminalController(opts) {
         if (opts.onOutput) opts.onOutput(data);
       }
     } catch (err) {
-      try {
-        if (!(window as any).__wf_lastCrash) {
-          (window as any).__wf_lastCrash = {
-            session: opts.session,
-            cols: _term && _term.cols,
-            rows: _term && _term.rows,
-            len: data.length,
-            head: Array.from(data.slice(0, 64)),
-            tail: Array.from(data.slice(Math.max(0, data.length - 64))),
-            err: String(err),
-            stack: (err as any) && (err as any).stack,
-            ts: Date.now(),
-          };
-          console.error("[wf-crash]", opts.session, err, "— captured to window.__wf_lastCrash");
-        }
-      } catch { /* crash-capture must never mask the original throw */ }
+      captureLastCrash({
+        session: opts.session,
+        cols: _term ? _term.cols : null,
+        rows: _term ? _term.rows : null,
+        data,
+        err,
+      });
       throw err;
     }
   }
