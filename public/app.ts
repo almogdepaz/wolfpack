@@ -2900,14 +2900,6 @@ function setConnState(connState: "live" | "reconnecting" | "disconnected" | stri
     statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
     return;
   }
-  if (connState === "displaced") {
-    statusEl.style.display = "block";
-    statusEl.style.background = "#8a5a00";
-    statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">taken over by another viewer \u2014 <button type="button" id="conn-retry-btn" class="conn-retry-btn">Take Control</button>';
-    const retryBtn = document.getElementById("conn-retry-btn");
-    if (retryBtn) retryBtn.onclick = takeBackControl;
-    return;
-  }
   if (connState === "offline") {
     statusEl.style.display = "block";
     statusEl.style.background = "#cc3333";
