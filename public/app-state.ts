@@ -76,7 +76,7 @@ export function applySetting(key, val) {
   if (key === "termFontSize") {
     document.body.classList.remove("term-size-small", "term-size-medium", "term-size-large");
     document.body.classList.add("term-size-" + val);
-    document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", b.dataset.size === val));
+    document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.size === val));
     applyTermToXterm();
   }
   if (key === "ralphEnabled") {
@@ -84,7 +84,7 @@ export function applySetting(key, val) {
   }
   if (key === "termFont") {
     document.body.classList.toggle("term-font-alt", val === "alt");
-    document.querySelectorAll(".term-font-btn").forEach(b => b.classList.toggle("active", b.dataset.font === val));
+    document.querySelectorAll(".term-font-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.font === val));
     applyTermToXterm();
   }
 }
@@ -112,8 +112,11 @@ export function initSettings() {
     applySetting(k, v);
     const el = document.getElementById("setting-" + k) as HTMLInputElement | null;
     if (!el) return;
-    if (el.type === "checkbox") el.checked = v;
-    else el.value = v;
+    // wpSettings values flow through Object.entries() as `unknown` even
+    // though the values are known to be boolean | string | number by
+    // wpDefaults shape — cast at the DOM-write boundary.
+    if (el.type === "checkbox") el.checked = v as boolean;
+    else el.value = v as string;
   });
   const ttlLabel = document.getElementById("snapshot-ttl-val");
   if (ttlLabel) ttlLabel.textContent = formatSnapshotTtl(wpSettings.snapshotTtl);
@@ -161,7 +164,7 @@ export async function requestNotifications() {
     // Subscribe to push
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(publicKey),
+      applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
     });
 
     // Send subscription to server

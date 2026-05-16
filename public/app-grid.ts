@@ -111,7 +111,8 @@ function createGridCell(gs, idx) {
   cell.dataset.gridIndex = idx;
   cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
   cell.addEventListener("click", (e) => {
-    if (e.target.classList.contains("grid-cell-close")) return;
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && tgt.classList.contains("grid-cell-close")) return;
     const sel = window.getSelection ? window.getSelection() : null;
     if (sel && !sel.isCollapsed) return;
     const i = parseInt(cell.dataset.gridIndex, 10);
@@ -232,7 +233,7 @@ export function renderGridCells() {
   const existingCells = container.querySelectorAll(".grid-cell");
   const existingMap = new Map();
   existingCells.forEach(cell => {
-    const idx = parseInt(cell.dataset.gridIndex, 10);
+    const idx = parseInt((cell as HTMLElement).dataset.gridIndex || "0", 10);
     existingMap.set(idx, cell);
   });
   // Track which sessions need new cells vs reuse

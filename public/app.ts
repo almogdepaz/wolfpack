@@ -100,12 +100,12 @@ function renderDebugPanel() {
   const p50 = el("dbg-p50"); if (p50) p50.textContent = fmt(wpMetrics.percentile(50));
   const p95 = el("dbg-p95"); if (p95) p95.textContent = fmt(wpMetrics.percentile(95));
   const avg = el("dbg-avg"); if (avg) avg.textContent = fmt(wpMetrics.avg());
-  const samples = el("dbg-samples"); if (samples) samples.textContent = wpMetrics.latencySamples.length;
-  const wsMsgs = el("dbg-ws-msgs"); if (wsMsgs) wsMsgs.textContent = wpMetrics.wsMessagesReceived;
-  const reconnects = el("dbg-reconnects"); if (reconnects) reconnects.textContent = wpMetrics.reconnectCount;
-  const sends = el("dbg-sends"); if (sends) sends.textContent = wpMetrics.sendCount;
+  const samples = el("dbg-samples"); if (samples) samples.textContent = String(wpMetrics.latencySamples.length);
+  const wsMsgs = el("dbg-ws-msgs"); if (wsMsgs) wsMsgs.textContent = String(wpMetrics.wsMessagesReceived);
+  const reconnects = el("dbg-reconnects"); if (reconnects) reconnects.textContent = String(wpMetrics.reconnectCount);
+  const sends = el("dbg-sends"); if (sends) sends.textContent = String(wpMetrics.sendCount);
   const fails = el("dbg-send-fails"); if (fails) {
-    fails.textContent = wpMetrics.sendFailCount;
+    fails.textContent = String(wpMetrics.sendFailCount);
     fails.style.color = wpMetrics.sendFailCount > 0 ? "#ff4444" : "#00ff41";
   }
   const uptime = el("dbg-uptime");
@@ -277,7 +277,13 @@ const RECONNECT_MAX_DELAY_MS = 5000;
  * @param {() => void} [opts.onExhausted] - called when the retry budget is spent
  * @returns {{ schedule, cancel, reset, block, connected, isBlocked: boolean, pending: boolean }}
  */
-function createReconnector(opts = {}) {
+interface ReconnectorOpts {
+  shouldReconnect?: () => boolean;
+  onReconnecting?: () => void;
+  onExhausted?: () => void;
+}
+
+function createReconnector(opts: ReconnectorOpts = {}) {
   let _timer = null;
   let _delay = RECONNECT_BASE_DELAY_MS;
   let _startedAt = 0;
@@ -1823,7 +1829,9 @@ function removeMachine(url: string): Array<{ url: string; name: string }> {
 })();
 
 function errorMessage(err: unknown): string {
-  if (err && typeof err.message === "string" && err.message) return err.message;
+  if (err && typeof err === "object" && "message" in err && typeof (err as { message: unknown }).message === "string" && (err as { message: string }).message) {
+    return (err as { message: string }).message;
+  }
   return String(err || "unknown error");
 }
 
@@ -1831,7 +1839,8 @@ async function api(path: string, opts?: RequestInit, machineUrl?: string): Promi
   const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
-  let data = {};
+  // API response shape varies per endpoint — caller narrows via `any`.
+  let data: any = {};
   if (body) {
     try { data = JSON.parse(body); } catch { /* non-JSON response (HTML error page, plain text) handled below */ }
   }
@@ -1839,7 +1848,8 @@ async function api(path: string, opts?: RequestInit, machineUrl?: string): Promi
     const message = data && typeof data.error === "string"
       ? data.error
       : (body ? body.slice(0, 200) : `HTTP ${res.status}`);
-    const err = new Error(message);
+    // Augmented Error: server callers read .status/.data from the rejected promise.
+    const err = new Error(message) as Error & { status: number; data: any };
     err.status = res.status;
     err.data = data;
     throw err;
@@ -2084,8 +2094,9 @@ function safeTriage(v: string): string {
   return VALID_TRIAGE.has(v) ? v : "idle";
 }
 
-function triageUi(triage: string | null | undefined): string {
-  return TRIAGE_MAP[triage] || TRIAGE_MAP["idle"];
+function triageUi(triage: string | null | undefined): { dot: string; card: string; label: string; title: string } {
+  const key = triage && triage in TRIAGE_MAP ? (triage as keyof typeof TRIAGE_MAP) : "idle";
+  return TRIAGE_MAP[key];
 }
 
 // Shared session groups cache for switcher reuse
@@ -2766,9 +2777,10 @@ async function initTerminal(cached?: string): Promise<void> {
       if (container.getAttribute("contenteditable") && !container.getAttribute("inputmode")) {
         container.setAttribute("inputmode", "none");
       }
-      container.querySelectorAll("textarea, input").forEach((el: HTMLElement) => {
-        if (!el.hasAttribute("readonly")) {
-          el.setAttribute("tabindex", "-1");
+      container.querySelectorAll("textarea, input").forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        if (!htmlEl.hasAttribute("readonly")) {
+          htmlEl.setAttribute("tabindex", "-1");
           el.setAttribute("inputmode", "none");
           el.setAttribute("readonly", "");
         }
@@ -3022,8 +3034,9 @@ function renderDrawerList() {
 
   list.innerHTML = html;
   list.querySelectorAll(".drawer-item").forEach(el => {
-    el.onclick = () => {
-      switchSession(el.dataset.val); closeDrawer();
+    const item = el as HTMLElement;
+    item.onclick = () => {
+      switchSession(item.dataset.val); closeDrawer();
     };
   });
   const chipLabel = document.getElementById("chip-label");
@@ -3528,7 +3541,7 @@ function toggleKbAccessory() {
 
   // Wire up all keys — prevent blur with mousedown/touchstart preventDefault
   acc.querySelectorAll(".kb-key").forEach((btn) => {
-    const key = btn.dataset.key;
+    const key = (btn as HTMLElement).dataset.key;
     // Skip buttons with their own onclick (e.g. git button)
     if (!key) return;
     let touchFired = false;
@@ -3867,7 +3880,7 @@ if (!isDesktop()) {
         fgEl = document.getElementById(state.currentView + "-view");
         bgEl = document.getElementById(backTarget + "-view");
       } else if (dx < 0) {
-        const card = e.target.closest(".card, .ralph-card");
+        const card = (e.target as Element | null)?.closest(".card, .ralph-card") ?? null;
         if (!card) { scrolling = true; return; }
         swipeCard = card;
         isBack = false;
@@ -3940,7 +3953,10 @@ if (!isDesktop()) {
           // event handler call — forge a synthetic MouseEvent so the
           // DOM type signature is satisfied. Most handlers in this file
           // ignore the event arg.
-          if (backBtn && backBtn.onclick) backBtn.onclick(new MouseEvent("click"));
+          // onclick's signature here is `(this: GlobalEventHandlers, ev: PointerEvent) => any`
+          // — dispatch a synthetic PointerEvent to satisfy the strict
+          // overload. Handlers in this file ignore the event arg.
+          if (backBtn && backBtn.onclick) backBtn.onclick(new PointerEvent("click"));
         } else {
           showView(backView, true);
         }
