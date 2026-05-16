@@ -70,7 +70,7 @@ export function applySetting(key, val) {
     else unsubscribeNotifications();
   }
   if (key === "enterSends") {
-    const el = document.getElementById("msg-input");
+    const el = document.getElementById("msg-input") as HTMLTextAreaElement | null;
     if (el) el.placeholder = val ? "$ (Enter to send)" : "$ (⚡ to send)";
   }
   if (key === "termFontSize") {
@@ -110,7 +110,7 @@ export function applyTermToXterm() {
 export function initSettings() {
   Object.entries(wpSettings).forEach(([k, v]) => {
     applySetting(k, v);
-    const el = document.getElementById("setting-" + k);
+    const el = document.getElementById("setting-" + k) as HTMLInputElement | null;
     if (!el) return;
     if (el.type === "checkbox") el.checked = v;
     else el.value = v;
@@ -270,6 +270,11 @@ export const state = {
   currentRalphWorktreeMode: "false",
   currentRalphWorktreeBranch: "",
   currentRalphAgent: "",
+  // Per-launch toggle state set when the user submits the ralph start
+  // form, read on form mount to restore prior selections. Optional:
+  // `undefined` means "use default" (cleanup=true, auditFix=false).
+  currentRalphCleanup: undefined as boolean | undefined,
+  currentRalphAuditFix: undefined as boolean | undefined,
   // desktop/grid terminal state
   terminalController: null,
   desktopResizeHandler: null,

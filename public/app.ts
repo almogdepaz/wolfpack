@@ -1605,7 +1605,7 @@ function sendMobileProxyText(proxy, text) {
 }
 
 function flushMobileKbProxyPendingInput() {
-  const proxy = document.getElementById("mobile-kb-proxy");
+  const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
   if (!proxy) return false;
   return sendMobileProxyText(proxy, proxy.value);
 }
@@ -1629,7 +1629,7 @@ function draftKey(machine, session) {
 }
 function saveDraft() {
   if (!state.currentSession) return;
-  const val = document.getElementById("msg-input").value;
+  const val = (document.getElementById("msg-input") as HTMLTextAreaElement).value;
   const key = draftKey(state.currentMachine, state.currentSession);
   if (val) localStorage.setItem(key, val);
   else localStorage.removeItem(key);
@@ -1637,7 +1637,7 @@ function saveDraft() {
 function restoreDraft() {
   if (!state.currentSession) return;
   const val = localStorage.getItem(draftKey(state.currentMachine, state.currentSession)) || "";
-  const input = document.getElementById("msg-input");
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   input.value = val;
   autoResizeInput();
 }
@@ -2319,7 +2319,7 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
-  document.getElementById("new-project-name").value = "";
+  (document.getElementById("new-project-name") as HTMLInputElement).value = "";
   const el = document.getElementById("project-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
 
@@ -2359,7 +2359,7 @@ function selectProject(project: string): void {
 }
 
 function selectNewProject() {
-  const input = document.getElementById("new-project-name");
+  const input = document.getElementById("new-project-name") as HTMLInputElement;
   const name = input.value.trim();
   if (!name) return;
   state.selectedProject = name;
@@ -2371,7 +2371,7 @@ async function showAgentPicker() {
   showView("agent");
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
-  const nameInput = document.getElementById("session-name-input");
+  const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const nameError = document.getElementById("session-name-error");
   nameInput.value = "";
   nameInput.classList.remove("invalid");
@@ -2401,7 +2401,7 @@ async function showAgentPicker() {
 
 // Session name input validation
 (function() {
-  const input = document.getElementById("session-name-input");
+  const input = document.getElementById("session-name-input") as HTMLInputElement;
   const error = document.getElementById("session-name-error");
   input.addEventListener("input", () => {
     const val = input.value.trim();
@@ -2489,7 +2489,7 @@ async function removeAgent(cmd) {
 }
 
 async function addAgent() {
-  const input = document.getElementById("agent-add-input");
+  const input = document.getElementById("agent-add-input") as HTMLInputElement;
   const cmd = (input.value || "").trim();
   if (!cmd) return;
   showAgentAddError("");
@@ -2540,7 +2540,7 @@ async function deleteCustomCmd(cmd, e) {
 }
 
 async function createSessionWithAgent(cmd) {
-  const nameInput = document.getElementById("session-name-input");
+  const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const sessionName = (nameInput.value || "").trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
@@ -2716,7 +2716,7 @@ async function initTerminal(cached?: string): Promise<void> {
       removeDesktopConflictOverlay();
       if (state.terminalController) state.terminalController.focus();
       if (isMobile) {
-        const proxy = document.getElementById("mobile-kb-proxy");
+        const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
         if (proxy && proxy.style.display !== "none") proxy.focus({ preventScroll: true });
       }
     },
@@ -2922,7 +2922,7 @@ function retryConnection() {
 }
 
 function sendMsg() {
-  const input = document.getElementById("msg-input");
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   const text = input.value.trim();
   if (!text || !state.currentSession) return;
   const saved = text;
@@ -2958,7 +2958,7 @@ function sendMsg() {
 }
 
 function updatePreview() {
-  const input = document.getElementById("msg-input");
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   const preview = document.getElementById("msg-preview");
   if (input.scrollWidth > input.clientWidth) {
     preview.textContent = input.value;
@@ -3416,12 +3416,12 @@ document.getElementById("desktop-terminal-container").addEventListener("click", 
 
 // Auto-resize textarea as content grows
 function autoResizeInput() {
-  const ta = document.getElementById("msg-input");
+  const ta = document.getElementById("msg-input") as HTMLTextAreaElement;
   ta.style.height = "auto";
   ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
 }
 
-const msgInput = document.getElementById("msg-input");
+const msgInput = document.getElementById("msg-input") as HTMLTextAreaElement;
 msgInput.addEventListener("input", () => {
   autoResizeInput();
   updatePreview();
@@ -3469,7 +3469,7 @@ msgInput.addEventListener("keydown", (e) => {
 
   function needsHold() {
     if (!wpSettings.holdToSend) return false;
-    const text = document.getElementById("msg-input").value.trim();
+    const text = (document.getElementById("msg-input") as HTMLTextAreaElement).value.trim();
     return text.length > LARGE_THRESHOLD;
   }
 
@@ -3555,7 +3555,7 @@ function toggleKbAccessory() {
 })();
 
 (function setupMobileKbProxy() {
-  const proxy = document.getElementById("mobile-kb-proxy");
+  const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
   if (!proxy) return;
   let _composing = false;
   let _skipNextInput = false;
