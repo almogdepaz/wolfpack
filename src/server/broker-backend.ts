@@ -62,11 +62,14 @@ export interface BrokerClientApi {
     sessionId: string,
     opts?: { sinceSeq?: bigint; timeoutMs?: number },
   ): Promise<ControlResponse>;
-  /** Issue an `unsubscribe` RPC and drop the session from the active set. */
+  /** Issue an `unsubscribe` RPC and drop the session from the active set.
+   *  Returns void — the RPC response is intentionally discarded by all
+   *  callers (single call site at broker-backend.ts ~L400 only awaits via
+   *  .catch() to log failures). */
   unsubscribe(
     sessionId: string,
     opts?: { timeoutMs?: number },
-  ): Promise<ControlResponse | null>;
+  ): Promise<void>;
 }
 
 /** Tmux-style key names → raw byte sequences (mirrors PtyBackend's KEY_MAP). */

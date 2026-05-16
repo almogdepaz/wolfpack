@@ -329,7 +329,7 @@ test("long-background visibilitychange reconnects each grid cell and repaints", 
       const origRepaint = gs.controller.forceRepaint.bind(gs.controller);
       gs.controller.forceRepaint = () => { gs._forceRepaintCount++; origRepaint(); };
       const origReconnect = gs.controller.reconnect.bind(gs.controller);
-      gs.controller.reconnect = (...args) => { gs._reconnectCount++; return origReconnect(...args); };
+      gs.controller.reconnect = (...args: unknown[]) => { gs._reconnectCount++; return origReconnect(...args); };
     });
   });
 
