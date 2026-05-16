@@ -1827,7 +1827,7 @@ function errorMessage(err: unknown): string {
   return String(err || "unknown error");
 }
 
-async function api(path, opts, machineUrl) {
+async function api(path: string, opts?: RequestInit, machineUrl?: string): Promise<any> {
   const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
@@ -1860,7 +1860,7 @@ const VIEW_DEPTH = {
   "ralph-start": 1,
 };
 
-function showView(name, skipAnimation) {
+function showView(name: string, skipAnimation?: boolean): void {
   const prevView = state.currentView;
   const prevEl = document.getElementById(prevView + "-view");
   const isMobile = !isDesktop();
@@ -2315,7 +2315,7 @@ async function openSession(name, machineUrl) {
 
 // ── Project picker ──
 
-async function showProjectPicker(machineUrl) {
+async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
@@ -2613,7 +2613,7 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-async function initTerminal(cached) {
+async function initTerminal(cached?: string): Promise<void> {
   if (state.terminalController) return;
   // Defensive: clear stale timer from a prior session that wasn't properly destroyed
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
@@ -3078,7 +3078,7 @@ function openDrawer() {
   haptic(5);
 }
 
-function closeDrawer(instant: boolean): void {
+function closeDrawer(instant?: boolean): void {
   if (!state.drawerOpen) return;
   state.drawerOpen = false;
   const drawer = document.getElementById("session-drawer");
@@ -3936,7 +3936,11 @@ if (!isDesktop()) {
         const backView = BACK_TARGET[state.currentView];
         if (backView === "sessions") {
           const backBtn = document.getElementById("back-btn");
-          if (backBtn && backBtn.onclick) backBtn.onclick();
+          // backBtn.onclick is a programmatic invocation here, not a real
+          // event handler call — forge a synthetic MouseEvent so the
+          // DOM type signature is satisfied. Most handlers in this file
+          // ignore the event arg.
+          if (backBtn && backBtn.onclick) backBtn.onclick(new MouseEvent("click"));
         } else {
           showView(backView, true);
         }
