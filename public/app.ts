@@ -581,7 +581,7 @@ function createInitialHydrationController(opts) {
     const term = opts.getTerm();
     if (term) {
       // Keep terminal hidden while positioning to avoid visible top->bottom jump.
-      try { term.scrollToBottom(); } catch { /* term may be disposed mid-hydration */ }
+      try { term.scrollToBottom(); } catch {}
     }
     _diagEvent("hydration.finish", { elapsed });
     requestAnimationFrame(() => {
@@ -699,7 +699,7 @@ function createPtySocketClient(opts) {
 
   function sendAttachHandshake() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch { /* fit before measurement; pre-mount races are harmless */ }
+    try { opts.fitTerminal(); } catch {}
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const prefillMode = _initialPrefillMode;
@@ -738,7 +738,7 @@ function createPtySocketClient(opts) {
   function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (options?.fit !== false) {
-      try { opts.fitTerminal(); } catch { /* fit may run pre-mount during reconnect; harmless */ }
+      try { opts.fitTerminal(); } catch {}
     }
     const dims = opts.getTermDimensions();
     if (!dims) return;
@@ -945,7 +945,7 @@ function createPtySocketClient(opts) {
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
-    if (ws) { try { ws.close(); } catch { /* ws may already be closing */ } ws = null; }
+    if (ws) { try { ws.close(); } catch {} ws = null; }
     connect();
   }
 
@@ -1101,7 +1101,7 @@ function createPtyTerminalController(opts) {
         ? _term.getScrollbackLength() : oldScrollback;
       // Invariant: oldScrollback - oldVp == newScrollback - newVp.
       const target = Math.max(0, newScrollback - (oldScrollback - vp));
-      try { _term.scrollToLine(target); } catch { /* term may be disposed between fit and scroll */ }
+      try { _term.scrollToLine(target); } catch {}
     }
   }
 
@@ -1111,7 +1111,7 @@ function createPtyTerminalController(opts) {
     // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
     // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
     // This is the only way to force a full canvas repaint without changing dimensions.
-    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch { /* internal renderer surface is private; tolerate API drift */ }
+    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch { /* private API — may drift between ghostty versions */ }
   }
 
   function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
@@ -1221,7 +1221,7 @@ function createPtyTerminalController(opts) {
     // Guard: dispose() may have run during the createTerminalInstance() await
     // (isolated WASM load is async). If so, drop the freshly-created terminal.
     if (!_mounting || _term) {
-      try { result.term && result.term.dispose && result.term.dispose(); } catch { /* discarding a half-built terminal; ignore disposal errors */ }
+      try { result.term && result.term.dispose && result.term.dispose(); } catch {}
       _mounting = false;
       return;
     }
@@ -1367,7 +1367,7 @@ function createPtyTerminalController(opts) {
     if (mountOpts && mountOpts.cached) {
       _cachedLoaded = true;
       _term.write(mountOpts.cached, () => {
-        try { _term.scrollToBottom(); } catch { /* term may be disposed by the time the write callback fires */ }
+        try { _term.scrollToBottom(); } catch {}
       });
     }
     _mounting = false;
@@ -1523,7 +1523,7 @@ function createPtyTerminalController(opts) {
     _reconnectPendingReset = false;
     _postResetBuffer = null;
     if (_layoutSyncRaf) { cancelAnimationFrame(_layoutSyncRaf); _layoutSyncRaf = null; }
-    if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch { /* observer may already be detached from the container */ } _resizeObserver = null; }
+    if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
     if (_resizeRehydrateTimer) { clearTimeout(_resizeRehydrateTimer); _resizeRehydrateTimer = null; }
     _mounting = false;
     _cachedLoaded = false;
@@ -1534,7 +1534,7 @@ function createPtyTerminalController(opts) {
     }
     _scrollLockKeydownHandler = null;
     _browserShortcutKeydownHandler = null;
-    if (_term) { try { _term.dispose(); } catch { /* tolerate double-dispose during teardown */ } _term = null; }
+    if (_term) { try { _term.dispose(); } catch {} _term = null; }
     _fitAddon = null;
     _container = null;
   }
@@ -1662,7 +1662,7 @@ function snapshotKey(machine, session) {
 function saveSnapshot(machine, session, text) {
   if (!session || !text) return;
   const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
-  try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch { /* quota exceeded or private mode — snapshot is best-effort */ }
+  try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch { /* quota/private-mode */ }
 }
 function loadSnapshot(machine, session) {
   if (!session) return null;
@@ -1825,7 +1825,7 @@ function removeMachine(url: string): Array<{ url: string; name: string }> {
       }
       if (changed) { saveMachines(machines); loadSessions(); }
     }
-  } catch { /* peer discovery is best-effort; no connectivity is fine */ }
+  } catch {}
 })();
 
 function errorMessage(err: unknown): string {
@@ -1840,16 +1840,14 @@ async function api(path: string, opts?: RequestInit, machineUrl?: string): Promi
   const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
-  // API response shape varies per endpoint — caller narrows via `any`.
   let data: any = {};
   if (body) {
-    try { data = JSON.parse(body); } catch { /* non-JSON response (HTML error page, plain text) handled below */ }
+    try { data = JSON.parse(body); } catch {}
   }
   if (!res.ok) {
     const message = data && typeof data.error === "string"
       ? data.error
       : (body ? body.slice(0, 200) : `HTTP ${res.status}`);
-    // Augmented Error: server callers read .status/.data from the rejected promise.
     const err = new Error(message) as Error & { status: number; data: any };
     err.status = res.status;
     err.data = data;
@@ -3950,13 +3948,6 @@ if (!isDesktop()) {
         const backView = BACK_TARGET[state.currentView];
         if (backView === "sessions") {
           const backBtn = document.getElementById("back-btn");
-          // backBtn.onclick is a programmatic invocation here, not a real
-          // event handler call — forge a synthetic MouseEvent so the
-          // DOM type signature is satisfied. Most handlers in this file
-          // ignore the event arg.
-          // onclick's signature here is `(this: GlobalEventHandlers, ev: PointerEvent) => any`
-          // — dispatch a synthetic PointerEvent to satisfy the strict
-          // overload. Handlers in this file ignore the event arg.
           if (backBtn && backBtn.onclick) backBtn.onclick(new PointerEvent("click"));
         } else {
           showView(backView, true);

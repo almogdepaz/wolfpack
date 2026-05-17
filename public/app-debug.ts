@@ -13,9 +13,6 @@
 // Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
 // after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
 
-// ── Window typing for the debug surface ──
-// All globals this module installs go through this interface so callers
-// outside this file never have to use `(window as any)`.
 declare global {
   interface Window {
     __wfTrace?: Record<string, TraceState>;
@@ -65,7 +62,6 @@ const __wfTraceEnabled = (() => {
 
 const __wfTraceMaxEvents = 5000;
 
-/** True iff the localStorage gate is set; tracer helpers are otherwise no-ops. */
 export const wfTraceEnabled: boolean = __wfTraceEnabled;
 
 if (__wfTraceEnabled) window.__wfTrace = window.__wfTrace || {};
@@ -93,8 +89,6 @@ export function __wfTraceStart(
     _rafCount: 0,
     _rafActive: false,
   };
-  // window.__wfTrace is initialized at module load when the gate is on, so the
-  // non-null assertion is safe inside `__wfTraceEnabled`-gated callers.
   window.__wfTrace![key] = trace;
   return trace;
 }
@@ -122,8 +116,6 @@ export function __wfTraceEvent(
   });
 }
 
-// Start a rAF counter loop while hydration is pending. Each frame increments
-// _rafCount and records a tick if it lands during a noteworthy window.
 export function __wfTraceRafStart(trace: TraceState | null): void {
   if (!trace || trace._rafActive) return;
   trace._rafActive = true;
@@ -179,14 +171,7 @@ if (__wfTraceEnabled) {
   };
 }
 
-// ── Crash capture (separate concern from the tracer) ──
-
-/**
- * Capture the first WASM `_term.write` crash to `window.__wf_lastCrash` for
- * post-mortem inspection. No-ops on subsequent calls so the first crash is
- * preserved. Must NEVER throw — wraps its own body in try/catch so a capture
- * failure can't mask the original error being thrown by the caller.
- */
+/** Capture first WASM _term.write crash. Must NEVER throw — caller re-throws the original error. */
 export function captureLastCrash(snapshot: {
   session: string;
   cols: number | null;
@@ -210,6 +195,6 @@ export function captureLastCrash(snapshot: {
     };
     console.error("[wf-crash]", snapshot.session, err, "— captured to window.__wf_lastCrash");
   } catch {
-    // crash-capture must never mask the original throw
+
   }
 }

@@ -112,9 +112,6 @@ export function initSettings() {
     applySetting(k, v);
     const el = document.getElementById("setting-" + k) as HTMLInputElement | null;
     if (!el) return;
-    // wpSettings values flow through Object.entries() as `unknown` even
-    // though the values are known to be boolean | string | number by
-    // wpDefaults shape — cast at the DOM-write boundary.
     if (el.type === "checkbox") el.checked = v as boolean;
     else el.value = v as string;
   });
@@ -273,9 +270,6 @@ export const state = {
   currentRalphWorktreeMode: "false",
   currentRalphWorktreeBranch: "",
   currentRalphAgent: "",
-  // Per-launch toggle state set when the user submits the ralph start
-  // form, read on form mount to restore prior selections. Optional:
-  // `undefined` means "use default" (cleanup=true, auditFix=false).
   currentRalphCleanup: undefined as boolean | undefined,
   currentRalphAuditFix: undefined as boolean | undefined,
   // desktop/grid terminal state
