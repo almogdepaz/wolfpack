@@ -603,6 +603,10 @@ function createInitialHydrationController(opts): InitialHydrationController {
           el.classList.add("hydrated");
         }
         if (term && opts.shouldFocus()) term.focus();
+        // ghostty-web's dirty-cell tracking may think it already painted while
+        // the canvas was hidden (opacity:0 during hydration). Force a full
+        // canvas repaint so the revealed terminal isn't stale/blank.
+        if (opts.onReveal) opts.onReveal();
         _diagEvent("hydration.reveal");
       }
     });
@@ -1431,6 +1435,7 @@ function createPtyTerminalController(opts): PtyTerminalController {
       getTerm: () => _term,
       shouldFocus: opts.shouldFocus || (() => true),
       canFinish: () => _hydrationWritesInFlight === 0,
+      onReveal: () => forceRepaint(),
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
       minPendingMs: 200,
