@@ -523,9 +523,24 @@ const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
  * This keeps the canvas hidden during the gap between prefill_done and the
  * arrival of the resize-induced redraw stream that follows it.
  *
- * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number }} opts
  */
-function createInitialHydrationController(opts): InitialHydrationController {
+
+interface InitialHydrationControllerOpts {
+  getElement: () => HTMLElement | null;
+  getTerm: () => GhosttyTerminal | null;
+  shouldFocus: () => boolean;
+  canFinish?: () => boolean;
+  onReveal?: () => void;
+  timeoutMs?: number;
+  settleMs?: number;
+  maxPendingMs?: number;
+  minPendingMs?: number;
+  silenceMs?: number;
+  session?: string | null;
+  machine?: string;
+}
+
+function createInitialHydrationController(opts: InitialHydrationControllerOpts): InitialHydrationController {
   let _pending = false;
   let _fallbackTimer = null;
   let _settleTimer = null;
@@ -1040,16 +1055,32 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
  * @param {() => boolean} [opts.canAcceptInput] - override stdin guard (default: ptyClient.isOpen)
  * @param {() => boolean} [opts.canSendResize] - override resize guard (default: canAcceptInput)
  * @param {(Uint8Array) => void} [opts.onOutput] - called after data written to term
- * @param {(boolean) => void} [opts.onOpen] - WebSocket opened (wasReconnect)
- * @param {() => void} [opts.onPtyReady]
- * @param {() => void} [opts.onViewerConflict]
- * @param {() => void} [opts.onControlGranted]
- * @param {() => void} [opts.onReplacePrefill]
- * @param {(number, string) => void} [opts.onDisconnected]
- * @param {() => void} [opts.onReconnecting]
- * @param {() => void} [opts.onReconnectExhausted]
- * @returns {{ mount, connect, focus, resize, dispose, scheduleReconnect, sendTakeControl, sendFitResize, send, resetRetry, term, fitAddon, ptyClient, hydration, isConnected, retryBlocked }}
  */
+
+interface PtyTerminalControllerOpts {
+  readonly session: string;
+  readonly machine?: string;
+  readonly fontSize?: number;
+  readonly scrollback?: number;
+  readonly cursorBlink?: boolean;
+  readonly disableStdin?: boolean;
+  readonly resetPty?: boolean;
+  readonly prefillMode?: string;
+  readonly hydrationTimeoutMs?: number;
+  readonly shouldFocus?: () => boolean;
+  readonly shouldReconnect?: () => boolean;
+  readonly canAcceptInput?: () => boolean;
+  readonly canSendResize?: () => boolean;
+  readonly getHydrationElement?: () => HTMLElement | null;
+  readonly onOpen?: (wasReconnect: boolean) => void;
+  readonly onPtyReady?: () => void;
+  readonly onOutput?: (data: Uint8Array) => void;
+  readonly onViewerConflict?: () => void;
+  readonly onControlGranted?: () => void;
+  readonly onDisconnected?: (code: number, reason: string) => void;
+  readonly onReconnecting?: () => void;
+  readonly onReconnectExhausted?: () => void;
+}
 interface InitialHydrationController {
   readonly pending: boolean;
   start(): void;
@@ -1082,7 +1113,7 @@ interface PtyTerminalController {
   readonly retryBlocked: boolean;
 }
 
-function createPtyTerminalController(opts): PtyTerminalController {
+function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTerminalController {
   let _container = null;
   let _term = null;
   let _fitAddon = null;
@@ -4386,7 +4417,7 @@ function bindHtmlEventListeners(): void {
   on("setting-snapshotTtl", "input", function(this: HTMLInputElement) {
     toggleSetting("snapshotTtl", +this.value);
     const val = $("snapshot-ttl-val");
-    if (val) val.textContent = formatSnapshotTtl(this.value);
+    if (val) val.textContent = formatSnapshotTtl(+this.value);
   });
 
   // Term font size buttons

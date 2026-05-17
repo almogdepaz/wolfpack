@@ -42,7 +42,7 @@ interface GridDeps {
   initTerminal: (cached?: string | null) => void;
   backToSessions: () => void;
   renderSidebar: () => void;
-  createPtyTerminalController: (opts: Record<string, unknown>) => GridTerminalController;
+  createPtyTerminalController: (opts: { session: string; machine?: string; [k: string]: unknown }) => GridTerminalController;
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   canUseWasmTerminal?: () => boolean;
   saveGridCellSnapshot?: (gs: GridSession) => void;

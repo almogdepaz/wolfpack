@@ -38,10 +38,10 @@ export function isDesktop() {
   return window.innerWidth > 768;
 }
 
-export function formatSnapshotTtl(seconds) {
-  seconds = +seconds;
-  if (seconds < 60) return seconds + 's';
-  return Math.floor(seconds / 60) + 'm';
+export function formatSnapshotTtl(seconds: number | string): string {
+  const s = +seconds;
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm';
 }
 
 export function getTerminalFontFamily() {
