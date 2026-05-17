@@ -14,6 +14,7 @@
     "test": "bun test",
     "test:e2e": "bunx playwright test",
     "test:e2e:headed": "bunx playwright test --headed",
+    "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/",
     "postinstall": "node bin/install.cjs"
   },
   "optionalDependencies": {
@@ -46,6 +47,7 @@
     "@playwright/test": "^1.58.2",
     "@types/ws": "^8.18.1",
     "bun-types": "^1.3.10",
-    "playwright": "^1.58.2"
+    "playwright": "^1.58.2",
+    "typescript": "^6.0.3"
   }
 }

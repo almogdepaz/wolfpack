@@ -30,10 +30,16 @@ import {
 
 import { setupTouchScrollHandler } from "./app-touch";
 
+import {
+  __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
+  captureLastCrash,
+} from "./app-debug";
+import type { TraceState } from "./app-debug";
+
 // ── WASM capability guard ──
 
-function canUseWasmTerminal() {
-  return !(window as any).wasmFailed;
+function canUseWasmTerminal(): boolean {
+  return !window.wasmFailed;
 }
 
 // ── Performance Metrics (UX-16) ──
@@ -73,120 +79,6 @@ const wpMetrics = {
   }
 };
 
-// ── Diagnostic Tracer (scrolldown investigation) ──
-//
-// Captures timestamped events per (session@machine) attach so we can
-// reconstruct the WS frame timing, prefill vs replay byte distribution,
-// _writeTermData call shape, and rAF cadence during the hydration window.
-//
-// PURE DIAGNOSTIC. Gated behind `localStorage.wolfpackDebug = "1"` so it
-// doesn't expose per-session attach metadata to any JS in the page context
-// (XSS, extension, bookmarklet). When disabled, all helpers are no-ops and
-// `__wfTrace` / `__wf_dumpTrace` / `__wf_clearTrace` are NOT installed on
-// `window`.
-//
-// Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
-// after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
-const __wfTraceEnabled = (() => {
-  try { return localStorage.getItem("wolfpackDebug") === "1"; }
-  catch { return false; }
-})();
-const __wfTraceMaxEvents = 5000;
-if (__wfTraceEnabled) (window as any).__wfTrace = (window as any).__wfTrace || {};
-
-function __wfTraceKey(session, machine) {
-  return (session || "?") + "@" + (machine || "");
-}
-
-function __wfTraceStart(session, machine, extra?: any) {
-  if (!__wfTraceEnabled) return null;
-  const key = __wfTraceKey(session, machine);
-  const trace: any = {
-    _meta: {
-      session,
-      machine: machine || "",
-      startWall: Date.now(),
-      startPerf: performance.now(),
-      ...(extra || {}),
-    },
-    events: [],
-    _rafCount: 0,
-    _rafActive: false,
-  };
-  (window as any).__wfTrace[key] = trace;
-  return trace;
-}
-
-function __wfTraceGet(session, machine) {
-  if (!__wfTraceEnabled) return null;
-  const key = __wfTraceKey(session, machine);
-  return (window as any).__wfTrace[key];
-}
-
-function __wfTraceEvent(trace, kind, fields?: any) {
-  if (!trace) return;
-  if (trace.events.length >= __wfTraceMaxEvents) return;
-  trace.events.push({
-    t: +(performance.now() - trace._meta.startPerf).toFixed(3),
-    kind,
-    ...(fields || {}),
-  });
-}
-
-// Start a rAF counter loop while hydration is pending. Each frame increments
-// _rafCount and records a tick if it lands during a noteworthy window.
-function __wfTraceRafStart(trace) {
-  if (!trace || trace._rafActive) return;
-  trace._rafActive = true;
-  function tick() {
-    if (!trace._rafActive) return;
-    trace._rafCount++;
-    __wfTraceEvent(trace, "raf", { n: trace._rafCount });
-    requestAnimationFrame(tick);
-  }
-  requestAnimationFrame(tick);
-}
-
-function __wfTraceRafStop(trace) {
-  if (!trace) return;
-  trace._rafActive = false;
-}
-
-if (__wfTraceEnabled) (window as any).__wf_dumpTrace = function (sessionFilter?: string) {
-  const all = (window as any).__wfTrace || {};
-  const keys = Object.keys(all).filter(k => !sessionFilter || k.indexOf(sessionFilter) >= 0);
-  for (const key of keys) {
-    const trace = all[key];
-    const ev = trace.events;
-    const meta = trace._meta;
-    const sumByKind: any = {};
-    let prefillBytes = 0, replayBytes = 0, prefillFrames = 0, replayFrames = 0;
-    let firstPrefillT = -1, prefillDoneT = -1, firstReplayT = -1, hydratedT = -1;
-    for (const e of ev) {
-      sumByKind[e.kind] = (sumByKind[e.kind] || 0) + 1;
-      if (e.kind === "ws.binary") {
-        if (e.bucket === "prefill") { prefillBytes += e.size; prefillFrames++; if (firstPrefillT < 0) firstPrefillT = e.t; }
-        else { replayBytes += e.size; replayFrames++; if (firstReplayT < 0) firstReplayT = e.t; }
-      }
-      if (e.kind === "prefill_done") prefillDoneT = e.t;
-      if (e.kind === "hydration.finish") hydratedT = e.t;
-    }
-    console.group("[wf-trace] " + key);
-    console.log("meta:", meta);
-    console.log("counts:", sumByKind);
-    console.log("prefill: " + prefillFrames + " frames, " + prefillBytes + " bytes, first @ " + firstPrefillT + "ms, prefill_done @ " + prefillDoneT + "ms");
-    console.log("replay (post-prefill_done): " + replayFrames + " frames, " + replayBytes + " bytes, first @ " + firstReplayT + "ms");
-    console.log("hydrated @ " + hydratedT + "ms; rAFs during attach: " + trace._rafCount);
-    console.log("events:", ev);
-    console.groupEnd();
-  }
-  return all;
-};
-
-if (__wfTraceEnabled) (window as any).__wf_clearTrace = function () {
-  (window as any).__wfTrace = {};
-};
-
 let debugPanelTimer = null;
 
 function toggleDebugPanel() {
@@ -209,12 +101,12 @@ function renderDebugPanel() {
   const p50 = el("dbg-p50"); if (p50) p50.textContent = fmt(wpMetrics.percentile(50));
   const p95 = el("dbg-p95"); if (p95) p95.textContent = fmt(wpMetrics.percentile(95));
   const avg = el("dbg-avg"); if (avg) avg.textContent = fmt(wpMetrics.avg());
-  const samples = el("dbg-samples"); if (samples) samples.textContent = wpMetrics.latencySamples.length;
-  const wsMsgs = el("dbg-ws-msgs"); if (wsMsgs) wsMsgs.textContent = wpMetrics.wsMessagesReceived;
-  const reconnects = el("dbg-reconnects"); if (reconnects) reconnects.textContent = wpMetrics.reconnectCount;
-  const sends = el("dbg-sends"); if (sends) sends.textContent = wpMetrics.sendCount;
+  const samples = el("dbg-samples"); if (samples) samples.textContent = String(wpMetrics.latencySamples.length);
+  const wsMsgs = el("dbg-ws-msgs"); if (wsMsgs) wsMsgs.textContent = String(wpMetrics.wsMessagesReceived);
+  const reconnects = el("dbg-reconnects"); if (reconnects) reconnects.textContent = String(wpMetrics.reconnectCount);
+  const sends = el("dbg-sends"); if (sends) sends.textContent = String(wpMetrics.sendCount);
   const fails = el("dbg-send-fails"); if (fails) {
-    fails.textContent = wpMetrics.sendFailCount;
+    fails.textContent = String(wpMetrics.sendFailCount);
     fails.style.color = wpMetrics.sendFailCount > 0 ? "#ff4444" : "#00ff41";
   }
   const uptime = el("dbg-uptime");
@@ -249,7 +141,7 @@ function renderCmdPalette() {
   el.classList.toggle("visible", state.kbAccessoryOpen);
 }
 
-function sendQuickCmd(index) {
+function sendQuickCmd(index: number): void {
   const cmd = state.quickCmds[index];
   if (!cmd || !state.currentSession) return;
   haptic([30]);
@@ -285,7 +177,7 @@ function addQuickCmd() {
   renderCmdPalette();
 }
 
-function editQuickCmd(index) {
+function editQuickCmd(index: number): void {
   const c = state.quickCmds[index];
   if (!c) return;
   const label = prompt("Label:", c.label);
@@ -298,14 +190,14 @@ function editQuickCmd(index) {
   renderCmdPalette();
 }
 
-function deleteQuickCmd(index) {
+function deleteQuickCmd(index: number): void {
   state.quickCmds.splice(index, 1);
   saveQuickCmds();
   renderQuickCmdSettings();
   renderCmdPalette();
 }
 
-function moveQuickCmd(index, direction) {
+function moveQuickCmd(index: number, direction: 1 | -1): void {
   const target = index + direction;
   if (target < 0 || target >= state.quickCmds.length) return;
   const tmp = state.quickCmds[index];
@@ -316,14 +208,14 @@ function moveQuickCmd(index, direction) {
   renderCmdPalette();
 }
 
-async function showGitStatus() {
+async function showGitStatus(): Promise<void> {
   if (!state.currentSession) return;
   haptic([30]);
   const overlay = document.getElementById("git-status-overlay");
   overlay.innerHTML = '<pre>loading...</pre>';
   overlay.classList.add("visible");
   try {
-    const data = await api("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
+    const data = await api<{ readonly status?: string }>("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
     overlay.innerHTML = `<div><pre>${esc(data.status || "(clean)")}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
   } catch (e) {
     overlay.innerHTML = `<div><pre class="error-pre">${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
@@ -334,7 +226,7 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
-async function copySessionToClipboard() {
+async function copySessionToClipboard(): Promise<void> {
   if (!state.currentSession) return;
   haptic([20]);
   const overlay = document.getElementById("git-status-overlay");
@@ -344,7 +236,7 @@ async function copySessionToClipboard() {
     // /api/copy-text returns text/plain — fetch raw, then write to clipboard.
     const path = "/api/copy-text?session=" + encodeURIComponent(state.currentSession);
     const base = (state.currentMachine || "").replace(/\/$/, "");
-    const headers = {};
+    const headers: Record<string, string> = {};
     const jwt = localStorage.getItem("wpJwt");
     if (jwt) headers["Authorization"] = "Bearer " + jwt;
     const r = await fetch(base + path, { headers });
@@ -359,7 +251,7 @@ async function copySessionToClipboard() {
 
 // ── Session Recents ──
 
-function sessionKey(machine, name) {
+function sessionKey(machine: string | null | undefined, name: string): string {
   return (machine || "") + "|" + name;
 }
 
@@ -367,7 +259,7 @@ function saveRecents() {
   localStorage.setItem(RECENTS_STORAGE_KEY, JSON.stringify(state.sessionRecents));
 }
 
-function recordRecent(machine, name) {
+function recordRecent(machine: string | null | undefined, name: string): void {
   const key = sessionKey(machine, name);
   state.sessionRecents = state.sessionRecents.filter(r => r.key !== key);
   state.sessionRecents.unshift({ key, name, machine: machine || "", ts: Date.now() });
@@ -386,13 +278,29 @@ const RECONNECT_MAX_DELAY_MS = 5000;
  * @param {() => void} [opts.onExhausted] - called when the retry budget is spent
  * @returns {{ schedule, cancel, reset, block, connected, isBlocked: boolean, pending: boolean }}
  */
-function createReconnector(opts = {}) {
-  let _timer = null;
+interface ReconnectorOpts {
+  shouldReconnect?: () => boolean;
+  onReconnecting?: () => void;
+  onExhausted?: () => void;
+}
+
+interface Reconnector {
+  schedule(connectFn: () => void): void;
+  cancel(): void;
+  reset(): void;
+  block(): void;
+  connected(): void;
+  readonly isBlocked: boolean;
+  readonly pending: boolean;
+}
+
+function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
+  let _timer: ReturnType<typeof setTimeout> | null = null;
   let _delay = RECONNECT_BASE_DELAY_MS;
   let _startedAt = 0;
   let _blocked = false;
 
-  function schedule(connectFn) {
+  function schedule(connectFn: () => void): void {
     if (_timer) return;
     if (_blocked) return;
     if (opts.shouldReconnect && !opts.shouldReconnect()) return;
@@ -477,9 +385,9 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // addToGrid() refuses to enter grid mode in that state, so any path
   // reaching here without isolation is a single-cell terminal where the
   // shared singleton is safe.
-  let isolatedGhostty = null;
-  if (typeof (window as any).createIsolatedGhostty === "function") {
-    try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
+  let isolatedGhostty: unknown = null;
+  if (typeof window.createIsolatedGhostty === "function") {
+    try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
   } else {
     console.error("[wf] createIsolatedGhostty is not available — falling back to shared singleton (grid mode will be disabled). This usually means the ghostty-web bundle is out of date.");
@@ -615,9 +523,24 @@ const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
  * This keeps the canvas hidden during the gap between prefill_done and the
  * arrival of the resize-induced redraw stream that follows it.
  *
- * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number }} opts
  */
-function createInitialHydrationController(opts) {
+
+interface InitialHydrationControllerOpts {
+  getElement: () => HTMLElement | null;
+  getTerm: () => GhosttyTerminal | null;
+  shouldFocus: () => boolean;
+  canFinish?: () => boolean;
+  onReveal?: () => void;
+  timeoutMs?: number;
+  settleMs?: number;
+  maxPendingMs?: number;
+  minPendingMs?: number;
+  silenceMs?: number;
+  session?: string | null;
+  machine?: string;
+}
+
+function createInitialHydrationController(opts: InitialHydrationControllerOpts): InitialHydrationController {
   let _pending = false;
   let _fallbackTimer = null;
   let _settleTimer = null;
@@ -638,7 +561,7 @@ function createInitialHydrationController(opts) {
   // event log. Pure-passthrough; falsy when caller didn't wire it up.
   const _diagSession = opts.session || null;
   const _diagMachine = opts.machine || "";
-  function _diagEvent(kind, fields?: any) {
+  function _diagEvent(kind: string, fields?: Record<string, unknown>): void {
     if (!_diagSession) return;
     __wfTraceEvent(__wfTraceGet(_diagSession, _diagMachine), kind, fields);
   }
@@ -695,6 +618,10 @@ function createInitialHydrationController(opts) {
           el.classList.add("hydrated");
         }
         if (term && opts.shouldFocus()) term.focus();
+        // ghostty-web's dirty-cell tracking may think it already painted while
+        // the canvas was hidden (opacity:0 during hydration). Force a full
+        // canvas repaint so the revealed terminal isn't stale/blank.
+        if (opts.onReveal) opts.onReveal();
         _diagEvent("hydration.reveal");
       }
     });
@@ -763,8 +690,48 @@ function createInitialHydrationController(opts) {
  * @param {() => void} [opts.onReconnectExhausted]
  * @param {() => boolean} [opts.shouldReconnect]
  */
-function createPtySocketClient(opts) {
-  let ws = null;
+interface TermDimensions {
+  readonly cols: number;
+  readonly rows: number;
+}
+
+interface PtySocketClientOpts {
+  readonly session: string;
+  readonly machine?: string;
+  readonly resetPty?: boolean;
+  readonly prefillMode?: string;
+  readonly takeControlOnAttach?: boolean;
+  readonly getTermDimensions: () => TermDimensions | null;
+  readonly fitTerminal: () => void;
+  readonly onBinaryData?: (data: Uint8Array) => void;
+  readonly onOpen?: (wasReconnect: boolean) => void;
+  readonly onPtyReady?: () => void;
+  readonly onViewerConflict?: () => void;
+  readonly onControlGranted?: () => void;
+  readonly onReplacePrefill?: () => void;
+  readonly onDisconnected?: (code: number, reason: string) => void;
+  readonly onReconnecting?: () => void;
+  readonly onReconnectExhausted?: () => void;
+  readonly shouldReconnect?: () => boolean;
+}
+
+interface PtySocketClient {
+  connect(): void;
+  reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
+  scheduleReconnect(): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  sendResize(cols: number, rows: number): void;
+  sendTakeControl(): void;
+  send(data: string | Blob | BufferSource): void;
+  close(): void;
+  resetRetry(): void;
+  readonly ws: WebSocket | null;
+  readonly isOpen: boolean;
+  readonly retryBlocked: boolean;
+}
+
+function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
+  let ws: WebSocket | null = null;
   const _rc = createReconnector({
     shouldReconnect: opts.shouldReconnect,
     onReconnecting: opts.onReconnecting,
@@ -782,7 +749,7 @@ function createPtySocketClient(opts) {
   let _prefillDoneTimeout = null;
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
-  let _trace: any = null;
+  let _trace: TraceState | null = null;
 
   function buildUrl() {
     const resetSuffix = consumeReset ? "&reset=1" : "";
@@ -812,7 +779,7 @@ function createPtySocketClient(opts) {
     _prefillChunks = [];
     _awaitingPrefillDone = prefillMode !== "none";
     _sawViewportPrefill = false;
-    const msg: any = { type: "attach", cols: dims.cols, rows: dims.rows, prefillMode };
+    const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; takeControl?: true } = { type: "attach", cols: dims.cols, rows: dims.rows, prefillMode };
     if (_takeControlOnAttach) { msg.takeControl = true; _takeControlOnAttach = false; }
     // Diag: start a fresh trace per attach so reconnects/take-controls show up
     // as separate sessions in the dump.
@@ -1004,7 +971,7 @@ function createPtySocketClient(opts) {
     });
   }
 
-  function sendResize(cols, rows) {
+  function sendResize(cols: number, rows: number): void {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "resize", cols, rows }));
     }
@@ -1016,7 +983,7 @@ function createPtySocketClient(opts) {
     }
   }
 
-  function send(data) {
+  function send(data: string | Blob | BufferSource): void {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 
@@ -1088,17 +1055,65 @@ function createPtySocketClient(opts) {
  * @param {() => boolean} [opts.canAcceptInput] - override stdin guard (default: ptyClient.isOpen)
  * @param {() => boolean} [opts.canSendResize] - override resize guard (default: canAcceptInput)
  * @param {(Uint8Array) => void} [opts.onOutput] - called after data written to term
- * @param {(boolean) => void} [opts.onOpen] - WebSocket opened (wasReconnect)
- * @param {() => void} [opts.onPtyReady]
- * @param {() => void} [opts.onViewerConflict]
- * @param {() => void} [opts.onControlGranted]
- * @param {() => void} [opts.onReplacePrefill]
- * @param {(number, string) => void} [opts.onDisconnected]
- * @param {() => void} [opts.onReconnecting]
- * @param {() => void} [opts.onReconnectExhausted]
- * @returns {{ mount, connect, focus, resize, dispose, scheduleReconnect, sendTakeControl, sendFitResize, send, resetRetry, term, fitAddon, ptyClient, hydration, isConnected, retryBlocked }}
  */
-function createPtyTerminalController(opts) {
+
+interface PtyTerminalControllerOpts {
+  readonly session: string;
+  readonly machine?: string;
+  readonly fontSize?: number;
+  readonly scrollback?: number;
+  readonly cursorBlink?: boolean;
+  readonly disableStdin?: boolean;
+  readonly resetPty?: boolean;
+  readonly prefillMode?: string;
+  readonly hydrationTimeoutMs?: number;
+  readonly shouldFocus?: () => boolean;
+  readonly shouldReconnect?: () => boolean;
+  readonly canAcceptInput?: () => boolean;
+  readonly canSendResize?: () => boolean;
+  readonly getHydrationElement?: () => HTMLElement | null;
+  readonly onOpen?: (wasReconnect: boolean) => void;
+  readonly onPtyReady?: () => void;
+  readonly onOutput?: (data: Uint8Array) => void;
+  readonly onViewerConflict?: () => void;
+  readonly onControlGranted?: () => void;
+  readonly onDisconnected?: (code: number, reason: string) => void;
+  readonly onReconnecting?: () => void;
+  readonly onReconnectExhausted?: () => void;
+}
+interface InitialHydrationController {
+  readonly pending: boolean;
+  start(): void;
+  scheduleFinish(): void;
+  notifyData(): void;
+  finish(): void;
+  cancel(): void;
+}
+
+interface PtyTerminalController {
+  mount(container: HTMLElement, mountOpts?: { readonly cached?: string | null }): Promise<void>;
+  connect(connectOpts?: { readonly takeControl?: boolean }): void;
+  focus(): void;
+  resize(): void;
+  resizeWithTransition(): void;
+  dispose(): void;
+  scheduleReconnect(): void;
+  sendTakeControl(): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  forceRepaint(): void;
+  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): void;
+  send(data: string | Blob | BufferSource): void;
+  resetRetry(): void;
+  reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
+  readonly term: GhosttyTerminal | null;
+  readonly fitAddon: GhosttyFitAddon | null;
+  readonly ptyClient: PtySocketClient | null;
+  readonly hydration: InitialHydrationController | null;
+  readonly isConnected: boolean;
+  readonly retryBlocked: boolean;
+}
+
+function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTerminalController {
   let _container = null;
   let _term = null;
   let _fitAddon = null;
@@ -1176,22 +1191,13 @@ function createPtyTerminalController(opts) {
         if (opts.onOutput) opts.onOutput(data);
       }
     } catch (err) {
-      try {
-        if (!(window as any).__wf_lastCrash) {
-          (window as any).__wf_lastCrash = {
-            session: opts.session,
-            cols: _term && _term.cols,
-            rows: _term && _term.rows,
-            len: data.length,
-            head: Array.from(data.slice(0, 64)),
-            tail: Array.from(data.slice(Math.max(0, data.length - 64))),
-            err: String(err),
-            stack: (err as any) && (err as any).stack,
-            ts: Date.now(),
-          };
-          console.error("[wf-crash]", opts.session, err, "— captured to window.__wf_lastCrash");
-        }
-      } catch {}
+      captureLastCrash({
+        session: opts.session,
+        cols: _term ? _term.cols : null,
+        rows: _term ? _term.rows : null,
+        data,
+        err,
+      });
       throw err;
     }
   }
@@ -1219,11 +1225,11 @@ function createPtyTerminalController(opts) {
 
   function forceRepaint() {
     if (!_term) return;
-    const t = _term as any;
+    const t = _term as GhosttyTerminal;
     // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
     // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
     // This is the only way to force a full canvas repaint without changing dimensions.
-    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch {}
+    try { t.renderer?.render?.(t.wasmTerm, true, t.viewportY, t); } catch { /* private API — may drift between ghostty versions */ }
   }
 
   function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
@@ -1460,6 +1466,7 @@ function createPtyTerminalController(opts) {
       getTerm: () => _term,
       shouldFocus: opts.shouldFocus || (() => true),
       canFinish: () => _hydrationWritesInFlight === 0,
+      onReveal: () => forceRepaint(),
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
       minPendingMs: 200,
@@ -1723,7 +1730,7 @@ function sendMobileProxyText(proxy, text) {
 }
 
 function flushMobileKbProxyPendingInput() {
-  const proxy = document.getElementById("mobile-kb-proxy");
+  const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
   if (!proxy) return false;
   return sendMobileProxyText(proxy, proxy.value);
 }
@@ -1747,7 +1754,7 @@ function draftKey(machine, session) {
 }
 function saveDraft() {
   if (!state.currentSession) return;
-  const val = document.getElementById("msg-input").value;
+  const val = (document.getElementById("msg-input") as HTMLTextAreaElement).value;
   const key = draftKey(state.currentMachine, state.currentSession);
   if (val) localStorage.setItem(key, val);
   else localStorage.removeItem(key);
@@ -1755,7 +1762,7 @@ function saveDraft() {
 function restoreDraft() {
   if (!state.currentSession) return;
   const val = localStorage.getItem(draftKey(state.currentMachine, state.currentSession)) || "";
-  const input = document.getElementById("msg-input");
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   input.value = val;
   autoResizeInput();
 }
@@ -1774,7 +1781,7 @@ function snapshotKey(machine, session) {
 function saveSnapshot(machine, session, text) {
   if (!session || !text) return;
   const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
-  try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch {}
+  try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch { /* quota/private-mode */ }
 }
 function loadSnapshot(machine, session) {
   if (!session) return null;
@@ -1848,7 +1855,7 @@ function flushGridSnapshots() {
  * data:, etc.), userinfo (creds smuggling), and non-numeric/out-of-range
  * ports.
  */
-function isValidMachineUrl(u) {
+function isValidMachineUrl(u: unknown): boolean {
   if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
   let parsed;
   try { parsed = new URL(u); } catch { return false; }
@@ -1887,14 +1894,14 @@ function getMachines() {
   } catch { return []; }
 }
 
-function saveMachines(list) {
+function saveMachines(list: Array<{ url: string; name: string }>): void {
   // Mirror getMachines() validation on the write side so future code paths
   // that bypass the discover-source can't poison localStorage either.
   const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
   localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
 }
 
-function removeMachine(url) {
+function removeMachine(url: string): Array<{ url: string; name: string }> {
   const machines = getMachines().filter(m => m.url !== url);
   saveMachines(machines);
   return machines;
@@ -1913,7 +1920,7 @@ function removeMachine(url) {
   } catch { state.selfName = "this machine"; }
   // Auto-discover wolfpack peers on tailnet
   try {
-    const d = await api("/discover");
+    const d = await api<DiscoverResponse>("/discover");
     const peers = d.peers || [];
     if (peers.length) {
       const peerUrls = new Set(peers.map(p => p.url));
@@ -1940,29 +1947,85 @@ function removeMachine(url) {
   } catch {}
 })();
 
-function errorMessage(err) {
-  if (err && typeof err.message === "string" && err.message) return err.message;
+function errorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg) return msg;
+  }
   return String(err || "unknown error");
 }
 
-async function api(path, opts, machineUrl) {
+interface DiscoverPeer {
+  readonly url: string;
+  readonly name?: string;
+  readonly hostname?: string;
+}
+
+interface DiscoverResponse {
+  readonly peers?: readonly DiscoverPeer[];
+}
+
+interface InfoResponse {
+  readonly version?: string;
+  readonly name?: string;
+}
+
+interface SessionsResponse {
+  readonly sessions?: Array<Record<string, unknown>>;
+}
+
+interface RalphResponse {
+  readonly loops?: Array<Record<string, unknown>>;
+}
+
+interface ProjectsResponse {
+  readonly projects?: string[];
+}
+
+interface AgentCommandSetting {
+  readonly cmd: string;
+  readonly enabled: boolean;
+}
+
+interface SettingsResponse {
+  readonly settings?: {
+    readonly cmds?: AgentCommandSetting[];
+  };
+  readonly effective?: {
+    readonly cmds?: string[];
+    readonly agentCmd?: string;
+  };
+}
+
+interface NextSessionNameResponse {
+  readonly name?: string;
+}
+
+interface CreateSessionResponse {
+  readonly session?: string;
+}
+
+async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineUrl?: string): Promise<TResponse> {
   const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
-  let data = {};
+  let data: unknown = {};
   if (body) {
-    try { data = JSON.parse(body); } catch {}
+    try { data = JSON.parse(body); } catch { /* non-json response body */ }
   }
   if (!res.ok) {
-    const message = data && typeof data.error === "string"
-      ? data.error
+    const errorText = data && typeof data === "object" && "error" in data
+      ? (data as Record<string, unknown>).error
+      : undefined;
+    const message = typeof errorText === "string"
+      ? errorText
       : (body ? body.slice(0, 200) : `HTTP ${res.status}`);
-    const err = new Error(message);
+    const err = new Error(message) as Error & { status: number; data: unknown };
     err.status = res.status;
     err.data = data;
     throw err;
   }
-  return data;
+  return data as TResponse;
 }
 
 // set by swipe engine so showView() skips animation after gesture already handled it
@@ -1978,7 +2041,7 @@ const VIEW_DEPTH = {
   "ralph-start": 1,
 };
 
-function showView(name, skipAnimation) {
+function showView(name: string, skipAnimation?: boolean): void {
   const prevView = state.currentView;
   const prevEl = document.getElementById(prevView + "-view");
   const isMobile = !isDesktop();
@@ -2202,8 +2265,9 @@ function safeTriage(v: string): string {
   return VALID_TRIAGE.has(v) ? v : "idle";
 }
 
-function triageUi(triage) {
-  return TRIAGE_MAP[triage] || TRIAGE_MAP["idle"];
+function triageUi(triage: string | null | undefined): { dot: string; card: string; label: string; title: string } {
+  const key = triage && triage in TRIAGE_MAP ? (triage as keyof typeof TRIAGE_MAP) : "idle";
+  return TRIAGE_MAP[key];
 }
 
 // Shared session groups cache for switcher reuse
@@ -2253,8 +2317,8 @@ function fetchMachine(machineUrl, machineMeta) {
   // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
   const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
   const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-  const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
-  return Promise.all([api("/sessions", remoteOpts, machineUrl || undefined), api("/info", remoteOpts, machineUrl || undefined), ralphFetch])
+  const ralphFetch = wpSettings.ralphEnabled ? api<RalphResponse>("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
+  return Promise.all([api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined), api<InfoResponse>("/info", remoteOpts, machineUrl || undefined), ralphFetch])
     .then(([d, info, ralph]) => {
       if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
       return {
@@ -2433,16 +2497,16 @@ async function openSession(name, machineUrl) {
 
 // ── Project picker ──
 
-async function showProjectPicker(machineUrl) {
+async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
-  document.getElementById("new-project-name").value = "";
+  (document.getElementById("new-project-name") as HTMLInputElement).value = "";
   const el = document.getElementById("project-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
 
   try {
-    const data = await api("/projects", undefined, state.projectMachine);
+    const data = await api<ProjectsResponse>("/projects", undefined, state.projectMachine);
     if (!data.projects?.length) {
       el.innerHTML = '<div class="empty">No projects in ~/Dev</div>';
       return;
@@ -2462,7 +2526,7 @@ async function showProjectPicker(machineUrl) {
   }
 }
 
-function showTerminalLoading(label) {
+function showTerminalLoading(label: string): void {
   clearPreservedGrid();
   showView("terminal");
   const dtc = document.getElementById("desktop-terminal-container");
@@ -2470,14 +2534,14 @@ function showTerminalLoading(label) {
   dtc.innerHTML = '<span class="loading-text">Starting session in ' + esc(label) + '\u2026</span>';
 }
 
-function selectProject(project) {
+function selectProject(project: string): void {
   state.selectedProject = project;
   state.isNewProject = false;
   showAgentPicker();
 }
 
 function selectNewProject() {
-  const input = document.getElementById("new-project-name");
+  const input = document.getElementById("new-project-name") as HTMLInputElement;
   const name = input.value.trim();
   if (!name) return;
   state.selectedProject = name;
@@ -2489,15 +2553,15 @@ async function showAgentPicker() {
   showView("agent");
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
-  const nameInput = document.getElementById("session-name-input");
+  const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const nameError = document.getElementById("session-name-error");
   nameInput.value = "";
   nameInput.classList.remove("invalid");
   nameError.classList.remove("visible");
   try {
     const [data, nameData] = await Promise.all([
-      api("/settings", undefined, state.projectMachine),
-      api("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
+      api<SettingsResponse>("/settings", undefined, state.projectMachine),
+      api<NextSessionNameResponse>("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
     ]);
     nameInput.value = nameData.name || state.selectedProject;
     // /api/settings now returns { settings, effective } — effective.cmds is
@@ -2519,7 +2583,7 @@ async function showAgentPicker() {
 
 // Session name input validation
 (function() {
-  const input = document.getElementById("session-name-input");
+  const input = document.getElementById("session-name-input") as HTMLInputElement;
   const error = document.getElementById("session-name-error");
   input.addEventListener("input", () => {
     const val = input.value.trim();
@@ -2547,7 +2611,7 @@ async function loadAgentsSettings() {
   if (!list) return;
   list.innerHTML = '<div class="empty">Loading...</div>';
   try {
-    const data = await api("/settings");
+    const data = await api<SettingsResponse>("/settings");
     renderAgentsList(data);
   } catch (e) {
     list.innerHTML = `<div class="empty">Failed to load: ${esc(errorMessage(e))}</div>`;
@@ -2581,7 +2645,7 @@ function renderAgentsList(data) {
 
 async function toggleAgentEnabled(cmd, enabled) {
   try {
-    const data = await api("/settings", {
+    const data = await api<SettingsResponse>("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ setCmdEnabled: { cmd, enabled } }),
@@ -2595,7 +2659,7 @@ async function toggleAgentEnabled(cmd, enabled) {
 
 async function removeAgent(cmd) {
   try {
-    const data = await api("/settings", {
+    const data = await api<SettingsResponse>("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ removeCmd: cmd }),
@@ -2607,12 +2671,12 @@ async function removeAgent(cmd) {
 }
 
 async function addAgent() {
-  const input = document.getElementById("agent-add-input");
+  const input = document.getElementById("agent-add-input") as HTMLInputElement;
   const cmd = (input.value || "").trim();
   if (!cmd) return;
   showAgentAddError("");
   try {
-    const data = await api("/settings", {
+    const data = await api<SettingsResponse>("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ addCmd: cmd }),
@@ -2625,7 +2689,7 @@ async function addAgent() {
   }
 }
 
-function showAgentAddError(msg) {
+function showAgentAddError(msg: string): void {
   const el = document.getElementById("agent-add-error");
   if (el) el.textContent = msg;
 }
@@ -2658,7 +2722,7 @@ async function deleteCustomCmd(cmd, e) {
 }
 
 async function createSessionWithAgent(cmd) {
-  const nameInput = document.getElementById("session-name-input");
+  const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const sessionName = (nameInput.value || "").trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
@@ -2667,7 +2731,7 @@ async function createSessionWithAgent(cmd) {
     const body = state.isNewProject
       ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined }
       : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
-    const data = await api("/create", {
+    const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -2731,7 +2795,7 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-async function initTerminal(cached) {
+async function initTerminal(cached?: string): Promise<void> {
   if (state.terminalController) return;
   // Defensive: clear stale timer from a prior session that wasn't properly destroyed
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
@@ -2834,7 +2898,7 @@ async function initTerminal(cached) {
       removeDesktopConflictOverlay();
       if (state.terminalController) state.terminalController.focus();
       if (isMobile) {
-        const proxy = document.getElementById("mobile-kb-proxy");
+        const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
         if (proxy && proxy.style.display !== "none") proxy.focus({ preventScroll: true });
       }
     },
@@ -2884,9 +2948,10 @@ async function initTerminal(cached) {
       if (container.getAttribute("contenteditable") && !container.getAttribute("inputmode")) {
         container.setAttribute("inputmode", "none");
       }
-      container.querySelectorAll("textarea, input").forEach((el: HTMLElement) => {
-        if (!el.hasAttribute("readonly")) {
-          el.setAttribute("tabindex", "-1");
+      container.querySelectorAll("textarea, input").forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        if (!htmlEl.hasAttribute("readonly")) {
+          htmlEl.setAttribute("tabindex", "-1");
           el.setAttribute("inputmode", "none");
           el.setAttribute("readonly", "");
         }
@@ -3003,7 +3068,7 @@ function terminalSessionKey() {
   return (state.currentMachine || "") + "|" + (state.currentSession || "");
 }
 
-function setConnState(connState) {
+function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
   const active = !!state.terminalController?.term;
@@ -3016,14 +3081,6 @@ function setConnState(connState) {
     statusEl.style.display = "block";
     statusEl.style.background = "#8a5a00";
     statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
-    return;
-  }
-  if (connState === "displaced") {
-    statusEl.style.display = "block";
-    statusEl.style.background = "#8a5a00";
-    statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">taken over by another viewer \u2014 <button type="button" id="conn-retry-btn" class="conn-retry-btn">Take Control</button>';
-    const retryBtn = document.getElementById("conn-retry-btn");
-    if (retryBtn) retryBtn.onclick = takeBackControl;
     return;
   }
   if (connState === "offline") {
@@ -3048,7 +3105,7 @@ function retryConnection() {
 }
 
 function sendMsg() {
-  const input = document.getElementById("msg-input");
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   const text = input.value.trim();
   if (!text || !state.currentSession) return;
   const saved = text;
@@ -3084,7 +3141,7 @@ function sendMsg() {
 }
 
 function updatePreview() {
-  const input = document.getElementById("msg-input");
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   const preview = document.getElementById("msg-preview");
   if (input.scrollWidth > input.clientWidth) {
     preview.textContent = input.value;
@@ -3094,7 +3151,7 @@ function updatePreview() {
   }
 }
 
-function sendKey(key) {
+function sendKey(key: string): void {
   if (!state.currentSession) return;
   const esc = KEY_TO_ESCAPE[key];
   if (!esc) return;
@@ -3148,8 +3205,9 @@ function renderDrawerList() {
 
   list.innerHTML = html;
   list.querySelectorAll(".drawer-item").forEach(el => {
-    el.onclick = () => {
-      switchSession(el.dataset.val); closeDrawer();
+    const item = el as HTMLElement;
+    item.onclick = () => {
+      switchSession(item.dataset.val); closeDrawer();
     };
   });
   const chipLabel = document.getElementById("chip-label");
@@ -3204,7 +3262,7 @@ function openDrawer() {
   haptic(5);
 }
 
-function closeDrawer(instant) {
+function closeDrawer(instant?: boolean): void {
   if (!state.drawerOpen) return;
   state.drawerOpen = false;
   const drawer = document.getElementById("session-drawer");
@@ -3525,7 +3583,7 @@ function _wfRepaintAllTerminals() {
 }
 
 window.addEventListener("focus", _wfRepaintAllTerminals);
-window.addEventListener("pageshow", (e: any) => {
+window.addEventListener("pageshow", (e: PageTransitionEvent) => {
   if (e.persisted) _wfRepaintAllTerminals();
 });
 // 30s heartbeat: cheap (one canvas draw call) and only runs while visible.
@@ -3542,12 +3600,12 @@ document.getElementById("desktop-terminal-container").addEventListener("click", 
 
 // Auto-resize textarea as content grows
 function autoResizeInput() {
-  const ta = document.getElementById("msg-input");
+  const ta = document.getElementById("msg-input") as HTMLTextAreaElement;
   ta.style.height = "auto";
   ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
 }
 
-const msgInput = document.getElementById("msg-input");
+const msgInput = document.getElementById("msg-input") as HTMLTextAreaElement;
 msgInput.addEventListener("input", () => {
   autoResizeInput();
   updatePreview();
@@ -3595,7 +3653,7 @@ msgInput.addEventListener("keydown", (e) => {
 
   function needsHold() {
     if (!wpSettings.holdToSend) return false;
-    const text = document.getElementById("msg-input").value.trim();
+    const text = (document.getElementById("msg-input") as HTMLTextAreaElement).value.trim();
     return text.length > LARGE_THRESHOLD;
   }
 
@@ -3654,7 +3712,7 @@ function toggleKbAccessory() {
 
   // Wire up all keys — prevent blur with mousedown/touchstart preventDefault
   acc.querySelectorAll(".kb-key").forEach((btn) => {
-    const key = btn.dataset.key;
+    const key = (btn as HTMLElement).dataset.key;
     // Skip buttons with their own onclick (e.g. git button)
     if (!key) return;
     let touchFired = false;
@@ -3681,7 +3739,7 @@ function toggleKbAccessory() {
 })();
 
 (function setupMobileKbProxy() {
-  const proxy = document.getElementById("mobile-kb-proxy");
+  const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
   if (!proxy) return;
   let _composing = false;
   let _skipNextInput = false;
@@ -3885,7 +3943,7 @@ async function renderMachinesList() {
   }).join("");
 }
 
-function removeMachineUI(url) {
+function removeMachineUI(url: string): void {
   removeMachine(url);
   renderMachinesList();
 }
@@ -3895,7 +3953,7 @@ async function discoverMachines() {
   statusEl.textContent = "Scanning tailnet...";
   statusEl.style.color = "#555";
   try {
-    const data = await api("/discover");
+    const data = await api<DiscoverResponse>("/discover");
     const peers = data.peers || [];
     if (!peers.length) {
       statusEl.textContent = "No wolfpack instances found on tailnet";
@@ -3993,7 +4051,7 @@ if (!isDesktop()) {
         fgEl = document.getElementById(state.currentView + "-view");
         bgEl = document.getElementById(backTarget + "-view");
       } else if (dx < 0) {
-        const card = e.target.closest(".card, .ralph-card");
+        const card = (e.target as Element | null)?.closest(".card, .ralph-card") ?? null;
         if (!card) { scrolling = true; return; }
         swipeCard = card;
         isBack = false;
@@ -4062,7 +4120,7 @@ if (!isDesktop()) {
         const backView = BACK_TARGET[state.currentView];
         if (backView === "sessions") {
           const backBtn = document.getElementById("back-btn");
-          if (backBtn && backBtn.onclick) backBtn.onclick();
+          if (backBtn && backBtn.onclick) backBtn.onclick(new PointerEvent("click"));
         } else {
           showView(backView, true);
         }
@@ -4349,17 +4407,17 @@ function bindHtmlEventListeners(): void {
   if (discoverBtn) discoverBtn.addEventListener("click", () => discoverMachines());
 
   // Settings toggles
-  on("setting-animations", "change", function(this: any) { toggleSetting("animations", this.checked); });
-  on("setting-haptics", "change", function(this: any) { toggleSetting("haptics", this.checked); });
-  on("setting-notifications", "change", function(this: any) { toggleSetting("notifications", this.checked); });
-  on("setting-enterSends", "change", function(this: any) { toggleSetting("enterSends", this.checked); });
-  on("setting-holdToSend", "change", function(this: any) { toggleSetting("holdToSend", this.checked); });
-  on("setting-ralphEnabled", "change", function(this: any) { toggleSetting("ralphEnabled", this.checked); });
-  on("setting-debugPanel", "change", function(this: any) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
-  on("setting-snapshotTtl", "input", function(this: any) {
+  on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });
+  on("setting-haptics", "change", function(this: HTMLInputElement) { toggleSetting("haptics", this.checked); });
+  on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
+  on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
+  on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
+  on("setting-ralphEnabled", "change", function(this: HTMLInputElement) { toggleSetting("ralphEnabled", this.checked); });
+  on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
+  on("setting-snapshotTtl", "input", function(this: HTMLInputElement) {
     toggleSetting("snapshotTtl", +this.value);
     const val = $("snapshot-ttl-val");
-    if (val) val.textContent = formatSnapshotTtl(this.value);
+    if (val) val.textContent = formatSnapshotTtl(+this.value);
   });
 
   // Term font size buttons

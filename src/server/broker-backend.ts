@@ -66,7 +66,7 @@ export interface BrokerClientApi {
   unsubscribe(
     sessionId: string,
     opts?: { timeoutMs?: number },
-  ): Promise<ControlResponse | null>;
+  ): Promise<void>;
 }
 
 /** Tmux-style key names → raw byte sequences (mirrors PtyBackend's KEY_MAP). */

@@ -9,17 +9,43 @@ import {
 
 // ── Dependency injection ──
 
+interface GridTerminalController {
+  readonly isConnected: boolean;
+  readonly hydration?: { finish(): void };
+  readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
+  mount(cell: HTMLElement, opts: { readonly cached?: string | null }): Promise<void>;
+  connect(opts?: { readonly takeControl?: boolean }): void;
+  reconnect(opts?: { readonly takeControl?: boolean }): void;
+  scheduleReconnect(): void;
+  sendTakeControl(): void;
+  forceRepaint(): void;
+  focus(): void;
+  resize(): void;
+  resizeWithTransition(): void;
+  dispose(): void;
+}
+
+interface GridSession {
+  readonly session: string;
+  readonly machine: string;
+  controller?: GridTerminalController | null;
+  _cellElement?: HTMLElement | null;
+  _displaced?: boolean;
+  _autoTakeControl?: boolean;
+  [field: string]: unknown;
+}
+
 interface GridDeps {
   showView: (name: string, skipAnimation?: boolean) => void;
   openSession: (name: string, machineUrl?: string) => void;
   destroyTerminal: () => void;
-  initTerminal: (cached?: any) => void;
+  initTerminal: (cached?: string | null) => void;
   backToSessions: () => void;
   renderSidebar: () => void;
-  createPtyTerminalController: (opts: any) => any;
-  createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: any) => void) => HTMLElement;
+  createPtyTerminalController: (opts: { session: string; machine?: string; [k: string]: unknown }) => GridTerminalController;
+  createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   canUseWasmTerminal?: () => boolean;
-  saveGridCellSnapshot?: (gs: any) => void;
+  saveGridCellSnapshot?: (gs: GridSession) => void;
   flushGridSnapshots?: () => void;
   loadSnapshot?: (machine: string, session: string) => string | null;
 }
@@ -111,7 +137,8 @@ function createGridCell(gs, idx) {
   cell.dataset.gridIndex = idx;
   cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
   cell.addEventListener("click", (e) => {
-    if (e.target.classList.contains("grid-cell-close")) return;
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && tgt.classList.contains("grid-cell-close")) return;
     const sel = window.getSelection ? window.getSelection() : null;
     if (sel && !sel.isCollapsed) return;
     const i = parseInt(cell.dataset.gridIndex, 10);
@@ -232,7 +259,7 @@ export function renderGridCells() {
   const existingCells = container.querySelectorAll(".grid-cell");
   const existingMap = new Map();
   existingCells.forEach(cell => {
-    const idx = parseInt(cell.dataset.gridIndex, 10);
+    const idx = parseInt((cell as HTMLElement).dataset.gridIndex || "0", 10);
     existingMap.set(idx, cell);
   });
   // Track which sessions need new cells vs reuse
@@ -470,7 +497,7 @@ export function backFromSettings() {
   deps.showView(state.viewBeforeSettings || "sessions");
 }
 
-export function addToGrid(session, machine) {
+export function addToGrid(session: string, machine?: string): void {
   if (!(deps.canUseWasmTerminal ? deps.canUseWasmTerminal() : isDesktop())) {
     console.warn("[grid] WebAssembly unavailable — cannot open grid terminal");
     return;
@@ -479,10 +506,10 @@ export function addToGrid(session, machine) {
   // WebAssembly.Memory. Concurrent fit()/write() across cells produce
   // out-of-bounds memory accesses that crash every terminal in the tab.
   // Refuse to enter grid mode in that state and surface a visible warning.
-  if (typeof (window as any).createIsolatedGhostty !== "function") {
+  if (typeof window.createIsolatedGhostty !== "function") {
     console.error("[grid] createIsolatedGhostty unavailable — grid mode disabled to prevent WASM OOB crash. Reload to pick up a newer ghostty-web bundle.");
-    if (typeof window !== "undefined" && typeof (window as any).alert === "function") {
-      (window as any).alert(
+    if (typeof window !== "undefined" && typeof window.alert === "function") {
+      window.alert(
         "Grid mode is disabled in this tab.\n\n" +
         "The terminal WASM bundle does not support per-cell isolation, which is required " +
         "to safely show multiple terminals at once. (Older versions of ghostty-web are " +

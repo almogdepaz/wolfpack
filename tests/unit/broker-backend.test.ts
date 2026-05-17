@@ -92,10 +92,9 @@ class FakeBrokerClient implements BrokerClientApi {
     return okResp({ kind: "subscribe", ok: true });
   }
 
-  async unsubscribe(sessionId: string): Promise<ControlResponse | null> {
+  async unsubscribe(sessionId: string): Promise<void> {
     this.unsubscribeCallCount++;
     this.activeSubscriptions.delete(sessionId);
-    return okResp({ kind: "unsubscribe", ok: true });
   }
 
   /** Push an output_binary frame to every subscriber for `sessionId`. */

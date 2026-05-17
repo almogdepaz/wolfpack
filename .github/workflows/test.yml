@@ -45,6 +45,9 @@ jobs:
       - name: Check public-assets.ts is in sync with public/
         run: git diff --exit-code src/public-assets.ts public/wolfpack-lib.js
 
+      - name: Typecheck (root + public/)
+        run: bun run typecheck
+
       - name: Run tests
         run: bun test tests/unit/ tests/snapshot/ tests/integration/api.test.ts tests/integration/ralph-api.test.ts tests/integration/ralph-aggregation.test.ts tests/integration/ws-dispatch.test.ts tests/integration/ws-terminal.test.ts tests/integration/prompt-reconnect.test.ts
 
