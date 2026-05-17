@@ -1829,8 +1829,9 @@ function removeMachine(url: string): Array<{ url: string; name: string }> {
 })();
 
 function errorMessage(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err && typeof (err as { message: unknown }).message === "string" && (err as { message: string }).message) {
-    return (err as { message: string }).message;
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg) return msg;
   }
   return String(err || "unknown error");
 }
@@ -2897,7 +2898,7 @@ function terminalSessionKey() {
   return (state.currentMachine || "") + "|" + (state.currentSession || "");
 }
 
-function setConnState(connState: "live" | "reconnecting" | "disconnected" | string): void {
+function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
   const active = !!state.terminalController?.term;
