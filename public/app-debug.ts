@@ -23,36 +23,36 @@ declare global {
 }
 
 export interface TraceMeta {
-  session: string;
-  machine: string;
-  startWall: number;
-  startPerf: number;
-  [extra: string]: unknown;
+  readonly session: string;
+  readonly machine: string;
+  readonly startWall: number;
+  readonly startPerf: number;
+  readonly [extra: string]: unknown;
 }
 
 export interface TraceEvent {
-  t: number;
-  kind: string;
-  [field: string]: unknown;
+  readonly t: number;
+  readonly kind: string;
+  readonly [field: string]: unknown;
 }
 
 export interface TraceState {
-  _meta: TraceMeta;
-  events: TraceEvent[];
+  readonly _meta: TraceMeta;
+  readonly events: TraceEvent[];
   _rafCount: number;
   _rafActive: boolean;
 }
 
 export interface CrashCapture {
-  session: string;
-  cols: number | null;
-  rows: number | null;
-  len: number;
-  head: number[];
-  tail: number[];
-  err: string;
-  stack: string | undefined;
-  ts: number;
+  readonly session: string;
+  readonly cols: number | null;
+  readonly rows: number | null;
+  readonly len: number;
+  readonly head: readonly number[];
+  readonly tail: readonly number[];
+  readonly err: string;
+  readonly stack: string | undefined;
+  readonly ts: number;
 }
 
 const __wfTraceEnabled = (() => {
@@ -195,6 +195,6 @@ export function captureLastCrash(snapshot: {
     };
     console.error("[wf-crash]", snapshot.session, err, "— captured to window.__wf_lastCrash");
   } catch {
-
+    // Best-effort crash capture must never mask the original terminal error.
   }
 }

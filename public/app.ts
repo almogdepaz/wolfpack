@@ -34,11 +34,12 @@ import {
   __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
   captureLastCrash,
 } from "./app-debug";
+import type { TraceState } from "./app-debug";
 
 // ── WASM capability guard ──
 
-function canUseWasmTerminal() {
-  return !(window as any).wasmFailed;
+function canUseWasmTerminal(): boolean {
+  return !window.wasmFailed;
 }
 
 // ── Performance Metrics (UX-16) ──
@@ -207,14 +208,14 @@ function moveQuickCmd(index: number, direction: 1 | -1): void {
   renderCmdPalette();
 }
 
-async function showGitStatus() {
+async function showGitStatus(): Promise<void> {
   if (!state.currentSession) return;
   haptic([30]);
   const overlay = document.getElementById("git-status-overlay");
   overlay.innerHTML = '<pre>loading...</pre>';
   overlay.classList.add("visible");
   try {
-    const data = await api("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
+    const data = await api<{ readonly status?: string }>("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
     overlay.innerHTML = `<div><pre>${esc(data.status || "(clean)")}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
   } catch (e) {
     overlay.innerHTML = `<div><pre class="error-pre">${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
@@ -225,7 +226,7 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
-async function copySessionToClipboard() {
+async function copySessionToClipboard(): Promise<void> {
   if (!state.currentSession) return;
   haptic([20]);
   const overlay = document.getElementById("git-status-overlay");
@@ -235,7 +236,7 @@ async function copySessionToClipboard() {
     // /api/copy-text returns text/plain — fetch raw, then write to clipboard.
     const path = "/api/copy-text?session=" + encodeURIComponent(state.currentSession);
     const base = (state.currentMachine || "").replace(/\/$/, "");
-    const headers = {};
+    const headers: Record<string, string> = {};
     const jwt = localStorage.getItem("wpJwt");
     if (jwt) headers["Authorization"] = "Bearer " + jwt;
     const r = await fetch(base + path, { headers });
@@ -283,13 +284,23 @@ interface ReconnectorOpts {
   onExhausted?: () => void;
 }
 
-function createReconnector(opts: ReconnectorOpts = {}) {
-  let _timer = null;
+interface Reconnector {
+  schedule(connectFn: () => void): void;
+  cancel(): void;
+  reset(): void;
+  block(): void;
+  connected(): void;
+  readonly isBlocked: boolean;
+  readonly pending: boolean;
+}
+
+function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
+  let _timer: ReturnType<typeof setTimeout> | null = null;
   let _delay = RECONNECT_BASE_DELAY_MS;
   let _startedAt = 0;
   let _blocked = false;
 
-  function schedule(connectFn) {
+  function schedule(connectFn: () => void): void {
     if (_timer) return;
     if (_blocked) return;
     if (opts.shouldReconnect && !opts.shouldReconnect()) return;
@@ -374,9 +385,9 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // addToGrid() refuses to enter grid mode in that state, so any path
   // reaching here without isolation is a single-cell terminal where the
   // shared singleton is safe.
-  let isolatedGhostty = null;
-  if (typeof (window as any).createIsolatedGhostty === "function") {
-    try { isolatedGhostty = await (window as any).createIsolatedGhostty(); }
+  let isolatedGhostty: unknown = null;
+  if (typeof window.createIsolatedGhostty === "function") {
+    try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
   } else {
     console.error("[wf] createIsolatedGhostty is not available — falling back to shared singleton (grid mode will be disabled). This usually means the ghostty-web bundle is out of date.");
@@ -514,7 +525,7 @@ const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
  *
  * @param {{ getElement: () => HTMLElement|null, getTerm: () => Terminal|null, shouldFocus: () => boolean, canFinish?: () => boolean, timeoutMs?: number, settleMs?: number, maxPendingMs?: number, minPendingMs?: number }} opts
  */
-function createInitialHydrationController(opts) {
+function createInitialHydrationController(opts): InitialHydrationController {
   let _pending = false;
   let _fallbackTimer = null;
   let _settleTimer = null;
@@ -535,7 +546,7 @@ function createInitialHydrationController(opts) {
   // event log. Pure-passthrough; falsy when caller didn't wire it up.
   const _diagSession = opts.session || null;
   const _diagMachine = opts.machine || "";
-  function _diagEvent(kind, fields?: any) {
+  function _diagEvent(kind: string, fields?: Record<string, unknown>): void {
     if (!_diagSession) return;
     __wfTraceEvent(__wfTraceGet(_diagSession, _diagMachine), kind, fields);
   }
@@ -660,8 +671,48 @@ function createInitialHydrationController(opts) {
  * @param {() => void} [opts.onReconnectExhausted]
  * @param {() => boolean} [opts.shouldReconnect]
  */
-function createPtySocketClient(opts) {
-  let ws = null;
+interface TermDimensions {
+  readonly cols: number;
+  readonly rows: number;
+}
+
+interface PtySocketClientOpts {
+  readonly session: string;
+  readonly machine?: string;
+  readonly resetPty?: boolean;
+  readonly prefillMode?: string;
+  readonly takeControlOnAttach?: boolean;
+  readonly getTermDimensions: () => TermDimensions | null;
+  readonly fitTerminal: () => void;
+  readonly onBinaryData?: (data: Uint8Array) => void;
+  readonly onOpen?: (wasReconnect: boolean) => void;
+  readonly onPtyReady?: () => void;
+  readonly onViewerConflict?: () => void;
+  readonly onControlGranted?: () => void;
+  readonly onReplacePrefill?: () => void;
+  readonly onDisconnected?: (code: number, reason: string) => void;
+  readonly onReconnecting?: () => void;
+  readonly onReconnectExhausted?: () => void;
+  readonly shouldReconnect?: () => boolean;
+}
+
+interface PtySocketClient {
+  connect(): void;
+  reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
+  scheduleReconnect(): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  sendResize(cols: number, rows: number): void;
+  sendTakeControl(): void;
+  send(data: string | Blob | BufferSource): void;
+  close(): void;
+  resetRetry(): void;
+  readonly ws: WebSocket | null;
+  readonly isOpen: boolean;
+  readonly retryBlocked: boolean;
+}
+
+function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
+  let ws: WebSocket | null = null;
   const _rc = createReconnector({
     shouldReconnect: opts.shouldReconnect,
     onReconnecting: opts.onReconnecting,
@@ -679,7 +730,7 @@ function createPtySocketClient(opts) {
   let _prefillDoneTimeout = null;
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
-  let _trace: any = null;
+  let _trace: TraceState | null = null;
 
   function buildUrl() {
     const resetSuffix = consumeReset ? "&reset=1" : "";
@@ -709,7 +760,7 @@ function createPtySocketClient(opts) {
     _prefillChunks = [];
     _awaitingPrefillDone = prefillMode !== "none";
     _sawViewportPrefill = false;
-    const msg: any = { type: "attach", cols: dims.cols, rows: dims.rows, prefillMode };
+    const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; takeControl?: true } = { type: "attach", cols: dims.cols, rows: dims.rows, prefillMode };
     if (_takeControlOnAttach) { msg.takeControl = true; _takeControlOnAttach = false; }
     // Diag: start a fresh trace per attach so reconnects/take-controls show up
     // as separate sessions in the dump.
@@ -901,7 +952,7 @@ function createPtySocketClient(opts) {
     });
   }
 
-  function sendResize(cols, rows) {
+  function sendResize(cols: number, rows: number): void {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "resize", cols, rows }));
     }
@@ -913,7 +964,7 @@ function createPtySocketClient(opts) {
     }
   }
 
-  function send(data) {
+  function send(data: string | Blob | BufferSource): void {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 
@@ -995,7 +1046,39 @@ function createPtySocketClient(opts) {
  * @param {() => void} [opts.onReconnectExhausted]
  * @returns {{ mount, connect, focus, resize, dispose, scheduleReconnect, sendTakeControl, sendFitResize, send, resetRetry, term, fitAddon, ptyClient, hydration, isConnected, retryBlocked }}
  */
-function createPtyTerminalController(opts) {
+interface InitialHydrationController {
+  readonly pending: boolean;
+  start(): void;
+  scheduleFinish(): void;
+  notifyData(): void;
+  finish(): void;
+  cancel(): void;
+}
+
+interface PtyTerminalController {
+  mount(container: HTMLElement, mountOpts?: { readonly cached?: string | null }): Promise<void>;
+  connect(connectOpts?: { readonly takeControl?: boolean }): void;
+  focus(): void;
+  resize(): void;
+  resizeWithTransition(): void;
+  dispose(): void;
+  scheduleReconnect(): void;
+  sendTakeControl(): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  forceRepaint(): void;
+  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): void;
+  send(data: string | Blob | BufferSource): void;
+  resetRetry(): void;
+  reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
+  readonly term: GhosttyTerminal | null;
+  readonly fitAddon: GhosttyFitAddon | null;
+  readonly ptyClient: PtySocketClient | null;
+  readonly hydration: InitialHydrationController | null;
+  readonly isConnected: boolean;
+  readonly retryBlocked: boolean;
+}
+
+function createPtyTerminalController(opts): PtyTerminalController {
   let _container = null;
   let _term = null;
   let _fitAddon = null;
@@ -1107,11 +1190,11 @@ function createPtyTerminalController(opts) {
 
   function forceRepaint() {
     if (!_term) return;
-    const t = _term as any;
+    const t = _term as GhosttyTerminal;
     // renderer.render(buffer, forceAll, viewportY, scrollbackProvider) bypasses
     // Terminal.resize()'s same-dimension guard and FitAddon.fit()'s _lastCols guard.
     // This is the only way to force a full canvas repaint without changing dimensions.
-    try { t.renderer?.render(t.wasmTerm, true, t.viewportY, t); } catch { /* private API — may drift between ghostty versions */ }
+    try { t.renderer?.render?.(t.wasmTerm, true, t.viewportY, t); } catch { /* private API — may drift between ghostty versions */ }
   }
 
   function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
@@ -1801,7 +1884,7 @@ function removeMachine(url: string): Array<{ url: string; name: string }> {
   } catch { state.selfName = "this machine"; }
   // Auto-discover wolfpack peers on tailnet
   try {
-    const d = await api("/discover");
+    const d = await api<DiscoverResponse>("/discover");
     const peers = d.peers || [];
     if (peers.length) {
       const peerUrls = new Set(peers.map(p => p.url));
@@ -1836,24 +1919,77 @@ function errorMessage(err: unknown): string {
   return String(err || "unknown error");
 }
 
-async function api(path: string, opts?: RequestInit, machineUrl?: string): Promise<any> {
+interface DiscoverPeer {
+  readonly url: string;
+  readonly name?: string;
+  readonly hostname?: string;
+}
+
+interface DiscoverResponse {
+  readonly peers?: readonly DiscoverPeer[];
+}
+
+interface InfoResponse {
+  readonly version?: string;
+  readonly name?: string;
+}
+
+interface SessionsResponse {
+  readonly sessions?: Array<Record<string, unknown>>;
+}
+
+interface RalphResponse {
+  readonly loops?: Array<Record<string, unknown>>;
+}
+
+interface ProjectsResponse {
+  readonly projects?: string[];
+}
+
+interface AgentCommandSetting {
+  readonly cmd: string;
+  readonly enabled: boolean;
+}
+
+interface SettingsResponse {
+  readonly settings?: {
+    readonly cmds?: AgentCommandSetting[];
+  };
+  readonly effective?: {
+    readonly cmds?: string[];
+    readonly agentCmd?: string;
+  };
+}
+
+interface NextSessionNameResponse {
+  readonly name?: string;
+}
+
+interface CreateSessionResponse {
+  readonly session?: string;
+}
+
+async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineUrl?: string): Promise<TResponse> {
   const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
-  let data: any = {};
+  let data: unknown = {};
   if (body) {
-    try { data = JSON.parse(body); } catch {}
+    try { data = JSON.parse(body); } catch { /* non-json response body */ }
   }
   if (!res.ok) {
-    const message = data && typeof data.error === "string"
-      ? data.error
+    const errorText = data && typeof data === "object" && "error" in data
+      ? (data as Record<string, unknown>).error
+      : undefined;
+    const message = typeof errorText === "string"
+      ? errorText
       : (body ? body.slice(0, 200) : `HTTP ${res.status}`);
-    const err = new Error(message) as Error & { status: number; data: any };
+    const err = new Error(message) as Error & { status: number; data: unknown };
     err.status = res.status;
     err.data = data;
     throw err;
   }
-  return data;
+  return data as TResponse;
 }
 
 // set by swipe engine so showView() skips animation after gesture already handled it
@@ -2145,8 +2281,8 @@ function fetchMachine(machineUrl, machineMeta) {
   // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
   const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
   const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-  const ralphFetch = wpSettings.ralphEnabled ? api("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
-  return Promise.all([api("/sessions", remoteOpts, machineUrl || undefined), api("/info", remoteOpts, machineUrl || undefined), ralphFetch])
+  const ralphFetch = wpSettings.ralphEnabled ? api<RalphResponse>("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
+  return Promise.all([api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined), api<InfoResponse>("/info", remoteOpts, machineUrl || undefined), ralphFetch])
     .then(([d, info, ralph]) => {
       if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
       return {
@@ -2334,7 +2470,7 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   el.innerHTML = '<div class="empty">Loading...</div>';
 
   try {
-    const data = await api("/projects", undefined, state.projectMachine);
+    const data = await api<ProjectsResponse>("/projects", undefined, state.projectMachine);
     if (!data.projects?.length) {
       el.innerHTML = '<div class="empty">No projects in ~/Dev</div>';
       return;
@@ -2388,8 +2524,8 @@ async function showAgentPicker() {
   nameError.classList.remove("visible");
   try {
     const [data, nameData] = await Promise.all([
-      api("/settings", undefined, state.projectMachine),
-      api("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
+      api<SettingsResponse>("/settings", undefined, state.projectMachine),
+      api<NextSessionNameResponse>("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
     ]);
     nameInput.value = nameData.name || state.selectedProject;
     // /api/settings now returns { settings, effective } — effective.cmds is
@@ -2439,7 +2575,7 @@ async function loadAgentsSettings() {
   if (!list) return;
   list.innerHTML = '<div class="empty">Loading...</div>';
   try {
-    const data = await api("/settings");
+    const data = await api<SettingsResponse>("/settings");
     renderAgentsList(data);
   } catch (e) {
     list.innerHTML = `<div class="empty">Failed to load: ${esc(errorMessage(e))}</div>`;
@@ -2473,7 +2609,7 @@ function renderAgentsList(data) {
 
 async function toggleAgentEnabled(cmd, enabled) {
   try {
-    const data = await api("/settings", {
+    const data = await api<SettingsResponse>("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ setCmdEnabled: { cmd, enabled } }),
@@ -2487,7 +2623,7 @@ async function toggleAgentEnabled(cmd, enabled) {
 
 async function removeAgent(cmd) {
   try {
-    const data = await api("/settings", {
+    const data = await api<SettingsResponse>("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ removeCmd: cmd }),
@@ -2504,7 +2640,7 @@ async function addAgent() {
   if (!cmd) return;
   showAgentAddError("");
   try {
-    const data = await api("/settings", {
+    const data = await api<SettingsResponse>("/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ addCmd: cmd }),
@@ -2559,7 +2695,7 @@ async function createSessionWithAgent(cmd) {
     const body = state.isNewProject
       ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined }
       : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
-    const data = await api("/create", {
+    const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -3411,7 +3547,7 @@ function _wfRepaintAllTerminals() {
 }
 
 window.addEventListener("focus", _wfRepaintAllTerminals);
-window.addEventListener("pageshow", (e: any) => {
+window.addEventListener("pageshow", (e: PageTransitionEvent) => {
   if (e.persisted) _wfRepaintAllTerminals();
 });
 // 30s heartbeat: cheap (one canvas draw call) and only runs while visible.
@@ -3781,7 +3917,7 @@ async function discoverMachines() {
   statusEl.textContent = "Scanning tailnet...";
   statusEl.style.color = "#555";
   try {
-    const data = await api("/discover");
+    const data = await api<DiscoverResponse>("/discover");
     const peers = data.peers || [];
     if (!peers.length) {
       statusEl.textContent = "No wolfpack instances found on tailnet";
@@ -4235,14 +4371,14 @@ function bindHtmlEventListeners(): void {
   if (discoverBtn) discoverBtn.addEventListener("click", () => discoverMachines());
 
   // Settings toggles
-  on("setting-animations", "change", function(this: any) { toggleSetting("animations", this.checked); });
-  on("setting-haptics", "change", function(this: any) { toggleSetting("haptics", this.checked); });
-  on("setting-notifications", "change", function(this: any) { toggleSetting("notifications", this.checked); });
-  on("setting-enterSends", "change", function(this: any) { toggleSetting("enterSends", this.checked); });
-  on("setting-holdToSend", "change", function(this: any) { toggleSetting("holdToSend", this.checked); });
-  on("setting-ralphEnabled", "change", function(this: any) { toggleSetting("ralphEnabled", this.checked); });
-  on("setting-debugPanel", "change", function(this: any) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
-  on("setting-snapshotTtl", "input", function(this: any) {
+  on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });
+  on("setting-haptics", "change", function(this: HTMLInputElement) { toggleSetting("haptics", this.checked); });
+  on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
+  on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
+  on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
+  on("setting-ralphEnabled", "change", function(this: HTMLInputElement) { toggleSetting("ralphEnabled", this.checked); });
+  on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
+  on("setting-snapshotTtl", "input", function(this: HTMLInputElement) {
     toggleSetting("snapshotTtl", +this.value);
     const val = $("snapshot-ttl-val");
     if (val) val.textContent = formatSnapshotTtl(this.value);
