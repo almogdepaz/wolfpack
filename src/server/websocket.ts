@@ -412,7 +412,7 @@ function setupNewPtyEntry(
     unsubscribe: null as (() => void) | null,
     unsubscribeLifecycle: null as (() => void) | null,
   };
-  activePtySessions.set(session, entry as any);
+  activePtySessions.set(session, entry);
   let spawning = false;
   let latestRequestedSize: { cols: number; rows: number } | null = null;
   const VALID_PREFILL_MODES = ["full", "viewport", "none"] as const;
