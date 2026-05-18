@@ -46,6 +46,7 @@ declare global {
     resize(cols: number, rows: number): void;
     scrollToBottom(): void;
     scrollToLine(line: number): void;
+    scrollLines(amount: number): void;
     getMode(mode: number): boolean;
     getScrollbackLength?(): number;
     clear(): void;
