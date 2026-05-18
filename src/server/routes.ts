@@ -40,7 +40,7 @@ const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
 import { RALPH_AGENTS } from "./shell.js";
-import { getBackend, getRouter } from "./backend.js";
+import { getBackend, getRouter, DuplicateSessionError } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -397,8 +397,8 @@ export const routes: Record<
       // so the backend never sees a disabled or missing agentCmd.
       const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
       await getBackend().createSession(finalName, projectDir, cmd, settingsResolver);
-    } catch (e: any) {
-      if (e.code === "DUPLICATE_SESSION") {
+    } catch (e: unknown) {
+      if (e instanceof DuplicateSessionError) {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
       }
       throw e;
@@ -581,8 +581,8 @@ export const routes: Record<
         });
       });
       json(res, { status: output });
-    } catch (e: any) {
-      json(res, { error: e.message || "git status failed" }, 500);
+    } catch (e: unknown) {
+      json(res, { error: errMsg(e) || "git status failed" }, 500);
     }
   },
 
@@ -658,8 +658,9 @@ export const routes: Record<
         }
       }
       json(res, { branches, current });
-    } catch (e: any) {
-      json(res, { error: e.stderr || e.message || "git not available" }, 500);
+    } catch (e: unknown) {
+      const msg = (e as { stderr?: string })?.stderr || errMsg(e) || "git not available";
+      json(res, { error: msg }, 500);
     }
   },
 
@@ -791,8 +792,8 @@ export const routes: Record<
     if (auditFix != null && typeof auditFix !== "boolean") {
       return json(res, { error: "invalid auditFix flag" }, 400);
     }
-    const VALID_WORKTREE_MODES = [false, "false", "plan", "task"];
-    if (worktree != null && !VALID_WORKTREE_MODES.includes(worktree as any)) {
+    const VALID_WORKTREE_MODES: readonly (boolean | string)[] = [false, "false", "plan", "task"];
+    if (worktree != null && !VALID_WORKTREE_MODES.includes(worktree)) {
       return json(res, { error: "invalid worktree mode — must be false, \"plan\", or \"task\"" }, 400);
     }
     const worktreeMode = (worktree === "plan" || worktree === "task") ? worktree : "false";
@@ -823,8 +824,8 @@ export const routes: Record<
         execFileSync("git", ["fetch", "origin", `${source}:${source}`], {
           cwd: projectDir, encoding: "utf-8", timeout: 30000,
         });
-      } catch (e: any) {
-        const stderr = e.stderr || e.message || "";
+      } catch (e: unknown) {
+        const stderr = (e as { stderr?: string })?.stderr || errMsg(e) || "";
         try {
           execFileSync("git", ["rev-parse", "--verify", source], {
             cwd: projectDir, encoding: "utf-8", timeout: 5000,
@@ -837,8 +838,8 @@ export const routes: Record<
         execFileSync("git", ["checkout", "-b", newBranch, source], {
           cwd: projectDir, encoding: "utf-8", timeout: 10000,
         });
-      } catch (e: any) {
-        const stderr = e.stderr || e.message || "branch creation failed";
+      } catch (e: unknown) {
+        const stderr = (e as { stderr?: string })?.stderr || errMsg(e) || "branch creation failed";
         return json(res, { error: stderr }, 400);
       }
     }

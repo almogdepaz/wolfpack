@@ -5,6 +5,7 @@
  * __setTestBackend(). No real broker daemon needed.
  */
 import type { SessionBackend } from "./backend.js";
+import { DuplicateSessionError } from "./backend.js";
 import { stripAnsi } from "./strip-ansi.js";
 
 export interface MockBackendOptions {
@@ -63,9 +64,7 @@ export class MockBackend implements SessionBackend {
     this.lastCreateArgs = { name, cwd, cmd };
     if (this._onBeforeCreate) this._onBeforeCreate(name);
     if (this._sessions.has(name)) {
-      const err = new Error(`duplicate session: ${name}`);
-      (err as any).code = "DUPLICATE_SESSION";
-      throw err;
+      throw new DuplicateSessionError(name);
     }
     this._sessions.add(name);
   }

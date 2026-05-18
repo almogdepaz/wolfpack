@@ -13,6 +13,14 @@ import type { EventBody } from "../broker/codec.js";
 
 const log = createLogger("backend");
 
+export class DuplicateSessionError extends Error {
+  readonly code = "DUPLICATE_SESSION" as const;
+  constructor(name: string) {
+    super(`duplicate session: ${name}`);
+    this.name = "DuplicateSessionError";
+  }
+}
+
 const BROKER_HANDSHAKE_TIMEOUT_MS = 1000;
 const BROKER_CONNECT_TIMEOUT_MS = 1500;
 /** How often the recovery watchdog re-probes a broker that previously failed.
@@ -356,9 +364,7 @@ export class BackendRouter implements SessionBackend {
     const broker = this.requireBroker();
     const existing = await broker.list();
     if (existing.includes(name)) {
-      const err = new Error(`duplicate session: ${name}`);
-      (err as any).code = "DUPLICATE_SESSION";
-      throw err;
+      throw new DuplicateSessionError(name);
     }
     await broker.createSession(name, cwd, cmd, loadSettings);
     log.info("session created via router", { name, backend: "broker" });
