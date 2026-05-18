@@ -458,9 +458,10 @@ export function suspendGridMode() {
 
 export function restorePreservedGrid() {
   if (!hasPreservedGrid()) return false;
-  // Stale sessions (tmux exited while grid was suspended) are handled gracefully:
-  // each cell's controller will receive CLOSE_CODE_SESSION_UNAVAILABLE (4001)
-  // and transition to "session-ended" state without crashing the grid.
+  // Stale sessions (broker session exited while grid was suspended) are
+  // handled gracefully: each cell's controller will receive
+  // CLOSE_CODE_SESSION_UNAVAILABLE (4001) and transition to "session-ended"
+  // state without crashing the grid.
   const restored = WP.resumeGridState(state.preservedGridSessions, state.preservedGridFocusIndex);
   state.gridSessions = restored.sessions.map(gs => ({
     session: gs.session,

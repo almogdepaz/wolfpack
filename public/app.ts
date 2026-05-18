@@ -447,37 +447,64 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     return false;
   });
 
-  // Mouse wheel → SGR scroll sequences for tmux (ghostty-web doesn't do mouse reporting)
-  // Trackpad sends many small-deltaY events; accumulate before emitting scroll lines.
-  let _scrollAccum = 0;
-  const SCROLL_THRESHOLD = 60; // px of deltaY per scroll line (tuned for trackpad)
+  // Mouse wheel routing. Two destinations:
+  //   (a) TUIs with mouse mode (1000/1002/1003) on — forward as SGR scroll
+  //       sequences over stdin so the app (vim/htop/claude UI/etc) handles
+  //       scrollback in its own buffer. Client-side scrollback would just
+  //       fight the app's redraws.
+  //   (b) Plain shell — scroll ghostty's client-side scrollback.
+  //
+  // Both paths accumulate trackpad delta into integer line counts BEFORE
+  // dispatching, so we never trigger ghostty's smoothScrollTo with a
+  // fractional viewportY (the renderer has an off-by-one at fractional g
+  // that paints stale pixels at the boundary row — visible as a duplicate
+  // first row when scrolling up by less than a full line).
+  let _mouseModeScrollAccum = 0;
+  let _clientScrollAccum = 0;
+  const MOUSE_MODE_THRESHOLD = 60; // px per emitted scroll-line sequence (trackpad-tuned)
   term.attachCustomWheelEventHandler((ev) => {
-    // Notify scroll-lock controller before ghostty-web processes the wheel.
-    // This runs inside ghostty-web's capture-phase wheel handler, which is
-    // the ONLY place we can intercept wheel events before they're consumed.
+    // Notify scroll-lock controller before ghostty-web would process the
+    // wheel. We always consume the event below, so this is the only place
+    // the scroll-lock controller sees the gesture.
     if (onWheelScroll) onWheelScroll(ev);
-    // For tmux sessions we always forward — tmux has `mouse on` and will
-    // route wheel events (copy-mode scrollback at shell, app-mouse when in
-    // a TUI). Client-side scrollback is useless for tmux since it redraws
-    // the full pane on every output. For PTY, only forward when the app
-    // enabled mouse reporting; otherwise let ghostty scroll locally.
-    if (!alwaysForwardWheel) {
-      try {
-        const hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003);
-        if (!hasMouse) return false;
-      } catch { return false; }
+
+    let forwardToApp = alwaysForwardWheel;
+    if (!forwardToApp) {
+      try { forwardToApp = !!(term.getMode(1000) || term.getMode(1002) || term.getMode(1003)); }
+      catch { forwardToApp = false; }
     }
-    _scrollAccum += ev.deltaY;
-    const lines = Math.trunc(_scrollAccum / SCROLL_THRESHOLD);
-    if (lines === 0) return true; // accumulate more before scrolling
-    _scrollAccum -= lines * SCROLL_THRESHOLD;
-    const btn = lines > 0 ? 65 : 64;
-    const seq = `\x1b[<${btn};1;1M`;
-    const encoded = new TextEncoder().encode(seq);
-    const count = Math.min(Math.abs(lines), 5);
-    for (let i = 0; i < count; i++) {
-      if (canAcceptInput()) sendInput(encoded);
+
+    if (forwardToApp) {
+      _mouseModeScrollAccum += ev.deltaY;
+      const lines = Math.trunc(_mouseModeScrollAccum / MOUSE_MODE_THRESHOLD);
+      if (lines === 0) return true; // accumulate more before emitting
+      _mouseModeScrollAccum -= lines * MOUSE_MODE_THRESHOLD;
+      const btn = lines > 0 ? 65 : 64;
+      const seq = `\x1b[<${btn};1;1M`;
+      const encoded = new TextEncoder().encode(seq);
+      const count = Math.min(Math.abs(lines), 5);
+      for (let i = 0; i < count; i++) {
+        if (canAcceptInput()) sendInput(encoded);
+      }
+      return true;
     }
+
+    // Client-side scrollback. Accumulate pixel delta until it crosses one
+    // char-row, then dispatch `term.scrollLines(±N)` directly with an
+    // integer. This bypasses ghostty's wheel handler entirely so we never
+    // reach the smoothScrollTo path that converges to a fractional viewportY.
+    const metrics = term.renderer && typeof term.renderer.getMetrics === "function"
+      ? term.renderer.getMetrics()
+      : null;
+    const charHeight = metrics && metrics.height > 0 ? metrics.height : 17;
+    _clientScrollAccum += ev.deltaY;
+    const lines = Math.trunc(_clientScrollAccum / charHeight);
+    if (lines === 0) return true; // consume + accumulate, don't let ghostty smooth-scroll
+    _clientScrollAccum -= lines * charHeight;
+    // term.scrollLines(A) sets viewportY := viewportY - A. Positive deltaY
+    // (scroll down) shrinks viewportY toward 0; negative deltaY grows it
+    // into scrollback. Sign matches.
+    if (typeof term.scrollLines === "function") term.scrollLines(lines);
     return true;
   });
 
@@ -673,7 +700,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
  * Owns: URL construction, socket lifecycle, binary/text frame dispatch,
  *       initial attach handshake, reconnect backoff, control message parsing.
  * @param {object} opts
- * @param {string} opts.session - tmux session name
+ * @param {string} opts.session - broker session name
  * @param {string} opts.machine - remote machine URL ("" for local)
  * @param {boolean} [opts.resetPty] - append &reset=1 on first connect
  * @param {string} [opts.prefillMode] - "full" (default), "viewport", or "none"
@@ -1040,7 +1067,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
  * helpers into a single PTY terminal lifecycle controller.
  *
  * @param {object} opts
- * @param {string} opts.session - tmux session name
+ * @param {string} opts.session - broker session name
  * @param {string} [opts.machine=""] - remote machine URL ("" for local)
  * @param {number} [opts.fontSize] - override font size
  * @param {number} opts.scrollback - terminal scrollback lines
@@ -1127,6 +1154,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _mounting = false;
   let _cachedLoaded = false;
   let _userScrolledUp = false;
+  // Scrollback length snapshot captured when user enters scroll-lock. Used by
+  // the patched scrollToBottom to compute per-write scrollback growth and bump
+  // viewportY accordingly, so the visible window stays anchored to the same
+  // absolute rows as new output streams in. -1 = no baseline (not scroll-locked).
+  let _lastScrollbackLength = -1;
   let _scrollLockKeydownHandler = null;
   let _browserShortcutKeydownHandler = null;
   let _resizeObserver = null;
@@ -1328,10 +1360,19 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         // wants to read scrollback). For scroll-down we defer the viewportY
         // check to next frame when ghostty has finished processing.
         if (ev.deltaY < 0) {
+          // Snapshot scrollback length at the moment we enter scroll-lock so
+          // the patched scrollToBottom can compute the per-write delta and
+          // bump viewportY to keep the visible window anchored.
+          if (!_userScrolledUp) {
+            _lastScrollbackLength = _term.getScrollbackLength?.() ?? -1;
+          }
           _userScrolledUp = true;
         } else if (ev.deltaY > 0) {
           requestAnimationFrame(() => {
-            if (_term && _term.viewportY === 0) _userScrolledUp = false;
+            if (_term && _term.viewportY === 0) {
+              _userScrolledUp = false;
+              _lastScrollbackLength = -1;
+            }
           });
         }
       },
@@ -1383,10 +1424,22 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     // We suppress it when the user has intentionally scrolled up (via wheel/trackpad),
     // and re-enable when they scroll back to the bottom.
     {
-      // Scroll-lock: scroll up → suppress scrollToBottom, any key → snap back.
+      // Scroll-lock: scroll up → keep viewport anchored to the same absolute
+      // scrollback rows even as new output pushes lines off the live screen.
+      // Any key → snap back to bottom.
       //
       // ghostty-web's writeInternal() calls this.scrollToBottom() on every
-      // write when viewportY !== 0. Patching the instance method is sufficient.
+      // write when viewportY !== 0. A single write can push N rows from the
+      // live screen into scrollback (scrollbackLength grows by N). If we
+      // simply swallow scrollToBottom, viewportY stays the same numeric
+      // value but now points to a DIFFERENT absolute scrollback row — the
+      // user's visible window drifts by N rows per write. Visually that
+      // presents as "the first line in the window keeps changing" while
+      // the user is trying to read scrollback.
+      //
+      // Fix: track scrollbackLength delta between successive scrollToBottom
+      // calls and bump viewportY by that delta. Net effect: the same
+      // absolute scrollback rows stay at the same visual viewport rows.
       //
       // Wheel events are intercepted via onWheelScroll callback passed to
       // createTerminalInstance (fires inside ghostty-web's capture-phase
@@ -1394,24 +1447,43 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       // ghostty-web consumes them with {capture:true, passive:false}).
       const origScrollToBottom = _term.scrollToBottom.bind(_term);
       _term.scrollToBottom = () => {
-        if (_userScrolledUp) return;
-        origScrollToBottom();
+        if (!_userScrolledUp) {
+          origScrollToBottom();
+          return;
+        }
+        const sb = _term.getScrollbackLength?.() ?? 0;
+        if (_lastScrollbackLength >= 0) {
+          const delta = sb - _lastScrollbackLength;
+          if (delta > 0) {
+            // scrollToLine clamps and fires scrollEmitter so the renderer
+            // does a full repaint at the new viewportY. Direct mutation
+            // would leave dirty-row tracking stale.
+            _term.scrollToLine(_term.viewportY + delta);
+          }
+        }
+        _lastScrollbackLength = sb;
       };
       // Intercept scrollLines (used by mobile touch scroll + momentum).
-      // When viewport moves away from bottom, set _userScrolledUp.
-      // When it reaches bottom, clear it.
+      // When viewport moves away from bottom, set _userScrolledUp + snapshot
+      // baseline. When it reaches bottom, clear both.
       const origScrollLines = _term.scrollLines.bind(_term);
       _term.scrollLines = (n) => {
+        const wasScrolledUp = _userScrolledUp;
         origScrollLines(n);
         if (_term.viewportY > 0) {
+          if (!wasScrolledUp) {
+            _lastScrollbackLength = _term.getScrollbackLength?.() ?? -1;
+          }
           _userScrolledUp = true;
         } else {
           _userScrolledUp = false;
+          _lastScrollbackLength = -1;
         }
       };
       _scrollLockKeydownHandler = () => {
         if (_userScrolledUp) {
           _userScrolledUp = false;
+          _lastScrollbackLength = -1;
           origScrollToBottom();
         }
       };
@@ -1508,7 +1580,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     }
 
     // If cached snapshot was written during mount(), replace the cached
-    // buffer with live data on first output (tmux attach redraws the pane).
+    // buffer with live data on first output (broker prefill is a full
+    // snapshot redraw, so it'll overwrite the cached frame cleanly).
     if (_cachedLoaded && opts.prefillMode !== "full") {
       _reconnectPendingReset = true;
       _cachedLoaded = false;

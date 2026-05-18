@@ -1,6 +1,5 @@
 /**
  * Shell + agent-command helpers shared across backends.
- * Split out of tmux.ts so non-tmux call sites don't pull in the tmux module.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
