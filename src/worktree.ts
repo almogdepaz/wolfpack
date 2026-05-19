@@ -1,11 +1,11 @@
 /**
  * Worktree lifecycle utilities for ralph task isolation.
  *
- * Each task (or plan) gets its own git worktree under .wolfpack/worktrees/,
+ * Each task (or plan) gets its own git worktree under .worktrees/,
  * allowing concurrent agents to work without file conflicts.
  */
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { realpathSync, existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { createLogger, errMsg } from "./log.js";
 
@@ -16,8 +16,13 @@ let _cleanupInProgress = false;
 /** Test helper — returns true if a cleanup is currently running. */
 export function _isCleanupInProgress(): boolean { return _cleanupInProgress; }
 
-const WORKTREE_DIR = ".wolfpack/worktrees";
+const WORKTREE_DIR = ".worktrees";
+const LEGACY_WORKTREE_DIR = ".wolfpack/worktrees";
 const WORKTREE_ORDER_FILE = ".wolfpack/worktree-order.txt";
+
+function worktreeSlug(branchName: string): string {
+  return branchName.replace(/^ralph\//, "").replace(/[^a-z0-9-]/g, "-");
+}
 
 export interface WorktreeInfo {
   path: string;
@@ -42,7 +47,7 @@ export function slugifyTaskName(header: string): string {
 }
 
 /**
- * Create a git worktree at .wolfpack/worktrees/<slug> on a new branch.
+ * Create a git worktree at .worktrees/<slug> on a new branch.
  * Returns the absolute worktree path.
  */
 export function createWorktree(
@@ -50,9 +55,8 @@ export function createWorktree(
   branchName: string,
   baseBranch: string,
 ): string {
-  const slug = branchName.replace(/^ralph\//, "").replace(/[^a-z0-9-]/g, "-");
   const realProjectDir = realpathSync(projectDir);
-  const worktreePath = join(realProjectDir, WORKTREE_DIR, slug);
+  const worktreePath = join(realProjectDir, WORKTREE_DIR, worktreeSlug(branchName));
   execFileSync(
     "git",
     ["worktree", "add", worktreePath, "-b", branchName, "--", baseBranch],
@@ -159,8 +163,9 @@ export function listWorktrees(projectDir: string): WorktreeInfo[] {
 }
 
 /**
- * Remove all worktrees under .wolfpack/worktrees/ except the last one
- * (by numeric-aware sort of directory name, so task 10 sorts after task 9).
+ * Remove all managed ralph worktrees except the last one.
+ * New worktrees live under .worktrees/; legacy .wolfpack/worktrees/ entries
+ * are still included so old runs can be cleaned up.
  */
 export function cleanupAllExceptFinal(
   projectDir: string,
@@ -174,14 +179,58 @@ export function cleanupAllExceptFinal(
   }
 }
 
+function isPathInsideDir(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+function isManagedWorktreePath(realProjectDir: string, worktreePath: string): boolean {
+  return [WORKTREE_DIR, LEGACY_WORKTREE_DIR].some((dir) =>
+    isPathInsideDir(worktreePath, join(realProjectDir, dir)),
+  );
+}
+
+function isLegacyManagedWorktreePath(realProjectDir: string, worktreePath: string): boolean {
+  return isPathInsideDir(worktreePath, join(realProjectDir, LEGACY_WORKTREE_DIR));
+}
+
+function replaceOrderFilePath(realProjectDir: string, oldPath: string, newPath: string): void {
+  const orderFile = join(realProjectDir, WORKTREE_ORDER_FILE);
+  try {
+    if (!existsSync(orderFile)) return;
+    const lines = readFileSync(orderFile, "utf-8")
+      .split("\n")
+      .map((line) => line === oldPath ? newPath : line);
+    writeFileSync(orderFile, lines.join("\n"));
+  } catch (e: unknown) {
+    log.warn("relocateLegacyWorktree: failed to update order file", { error: errMsg(e) });
+  }
+}
+
+/** Move a reused legacy ralph worktree into the VS Code-style .worktrees/ dir. */
+export function relocateLegacyWorktree(projectDir: string, worktree: WorktreeInfo): string {
+  const realProjectDir = realpathSync(projectDir);
+  if (!isLegacyManagedWorktreePath(realProjectDir, worktree.path)) return worktree.path;
+
+  const newPath = join(realProjectDir, WORKTREE_DIR, worktreeSlug(worktree.branch));
+  if (existsSync(newPath)) {
+    throw new Error(`cannot relocate legacy worktree ${worktree.path}: destination exists: ${newPath}`);
+  }
+  execFileSync("git", ["worktree", "move", worktree.path, newPath], {
+    cwd: realProjectDir,
+    stdio: "pipe",
+  });
+  replaceOrderFilePath(realProjectDir, worktree.path, newPath);
+  return newPath;
+}
+
 function _cleanupAllExceptFinalImpl(
   projectDir: string,
 ): { removed: string[]; kept: string } {
   const realProjectDir = realpathSync(projectDir);
   const worktrees = listWorktrees(realProjectDir);
-  const wtDir = join(realProjectDir, WORKTREE_DIR);
 
-  const managed = worktrees.filter((w) => w.path.startsWith(wtDir));
+  const managed = worktrees.filter((w) => isManagedWorktreePath(realProjectDir, w.path));
 
   if (managed.length === 0) {
     return { removed: [], kept: "" };

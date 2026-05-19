@@ -7,7 +7,7 @@ describe("parsePorcelainWorktrees", () => {
     "HEAD abc123",
     "branch refs/heads/main",
     "",
-    "worktree /repo/.wolfpack/worktrees/task-1",
+    "worktree /repo/.worktrees/task-1",
     "HEAD def456",
     "branch refs/heads/ralph/task-1",
     "",
@@ -18,7 +18,7 @@ describe("parsePorcelainWorktrees", () => {
     "HEAD abc123",
     "branch refs/heads/main",
     "",
-    "worktree /repo/.wolfpack/worktrees/task-1",
+    "worktree /repo/.worktrees/task-1",
     "HEAD def456",
     "branch refs/heads/ralph/task-1",
   ].join("\n");
@@ -33,7 +33,7 @@ describe("parsePorcelainWorktrees", () => {
       bare: false,
     });
     expect(entries[1]).toEqual({
-      path: "/repo/.wolfpack/worktrees/task-1",
+      path: "/repo/.worktrees/task-1",
       head: "def456",
       branch: "ralph/task-1",
       bare: false,
@@ -44,7 +44,7 @@ describe("parsePorcelainWorktrees", () => {
     const entries = parsePorcelainWorktrees(PORCELAIN_NO_TRAILING_NEWLINE);
     expect(entries).toHaveLength(2);
     expect(entries[1]).toEqual({
-      path: "/repo/.wolfpack/worktrees/task-1",
+      path: "/repo/.worktrees/task-1",
       head: "def456",
       branch: "ralph/task-1",
       bare: false,

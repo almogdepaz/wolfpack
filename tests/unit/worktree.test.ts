@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync, existsSync, readFileSync, copyFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync, existsSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -9,6 +9,7 @@ import {
   removeWorktree,
   listWorktrees,
   cleanupAllExceptFinal,
+  relocateLegacyWorktree,
 } from "../../src/worktree.js";
 
 // ── slugifyTaskName tests ──
@@ -94,7 +95,7 @@ describe("worktree lifecycle", () => {
 
   test("createWorktree creates a worktree and returns path", () => {
     const wtPath = createWorktree(repoDir, "ralph/1-test-task", "HEAD");
-    expect(wtPath).toContain(".wolfpack/worktrees/1-test-task");
+    expect(wtPath).toContain(".worktrees/1-test-task");
 
     const wts = listWorktrees(repoDir);
     const found = wts.find((w) => w.branch === "ralph/1-test-task");
@@ -162,6 +163,56 @@ describe("worktree lifecycle", () => {
         try { removeWorktree(wt.path, repoDir); } catch {}
       }
     }
+  });
+
+  test("relocateLegacyWorktree moves reused legacy worktree into .worktrees", () => {
+    const legacyPath = join(repoDir, ".wolfpack", "worktrees", "18-legacy-reuse");
+    execFileSync(
+      "git",
+      ["worktree", "add", legacyPath, "-b", "ralph/18-legacy-reuse", "--", "HEAD"],
+      { cwd: repoDir, stdio: "pipe" },
+    );
+    const orderFile = join(repoDir, ".wolfpack", "worktree-order.txt");
+    appendFileSync(orderFile, `${legacyPath}\n`);
+    const legacy = listWorktrees(repoDir).find((w) => w.branch === "ralph/18-legacy-reuse");
+    expect(legacy).toBeDefined();
+
+    const movedPath = relocateLegacyWorktree(repoDir, legacy!);
+
+    expect(movedPath).toContain(".worktrees/18-legacy-reuse");
+    const wts = listWorktrees(repoDir);
+    const moved = wts.find((w) => w.branch === "ralph/18-legacy-reuse");
+    expect(moved?.path).toBe(movedPath);
+    expect(readFileSync(orderFile, "utf-8")).toContain(movedPath);
+    expect(readFileSync(orderFile, "utf-8")).not.toContain(legacyPath);
+
+    // Cleanup
+    removeWorktree(movedPath, repoDir);
+  });
+
+  test("cleanupAllExceptFinal still manages legacy .wolfpack/worktrees entries", () => {
+    const legacyPath = join(repoDir, ".wolfpack", "worktrees", "19-legacy");
+    execFileSync(
+      "git",
+      ["worktree", "add", legacyPath, "-b", "ralph/19-legacy", "--", "HEAD"],
+      { cwd: repoDir, stdio: "pipe" },
+    );
+    const orderFile = join(repoDir, ".wolfpack", "worktree-order.txt");
+    appendFileSync(orderFile, `${legacyPath}\n`);
+    createWorktree(repoDir, "ralph/20-new", "HEAD");
+
+    const result = cleanupAllExceptFinal(repoDir);
+
+    expect(result.removed).toContain("ralph/19-legacy");
+    expect(result.kept).toBe("ralph/20-new");
+
+    const wts = listWorktrees(repoDir);
+    expect(wts.find((w) => w.branch === "ralph/19-legacy")).toBeUndefined();
+    const kept = wts.find((w) => w.branch === "ralph/20-new");
+    expect(kept?.path).toContain(".worktrees/20-new");
+
+    // Cleanup
+    if (kept) removeWorktree(kept.path, repoDir);
   });
 
   test("createWorktree tracks creation order in worktree-order.txt", () => {
