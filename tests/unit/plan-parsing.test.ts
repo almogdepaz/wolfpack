@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parseSubtasks } from "../../src/ralph-subtasks.js";
 import { TASK_HEADER, countTasksInContent, detectOldPlanFormat, migratePlanFormat } from "../../src/wolfpack-context.js";
 
 // ── Plan-parsing functions from ralph-macchio.ts and serve.ts ──
@@ -33,13 +34,6 @@ function extractCurrentTask(plan: string): { task: string; checkbox: boolean } |
     }
   }
   return null;
-}
-
-/** Mirrors ralph-macchio.ts parseSubtasks() */
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
 }
 
 /** Mirrors serve.ts countPlanTasks() but takes content instead of path */
@@ -307,6 +301,17 @@ describe("parseSubtasks", () => {
 
   test("returns empty array for empty string", () => {
     expect(parseSubtasks("")).toEqual([]);
+  });
+
+  test("codex output is ignored because codex can echo prompt transcript tags", () => {
+    const output = [
+      "starting codex session",
+      "OUTPUT (always include):",
+      "<subtasks>",
+      "- prompt text that must not become a task",
+      "later transcript chunk says </subtasks> after unrelated echoed content",
+    ].join("\n");
+    expect(parseSubtasks(output, "codex")).toEqual([]);
   });
 });
 

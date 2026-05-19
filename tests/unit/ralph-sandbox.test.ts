@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { resolve } from "node:path";
 import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { buildSrtSettings } from "../../src/validation.js";
 import { parseRalphLog } from "../../src/server/ralph.js";
 
@@ -45,6 +45,25 @@ describe("buildSrtSettings", () => {
     expect(domains).toContain("registry.npmjs.org");
     expect(domains).toContain("bun.sh");
     expect(domains).toContain("api.anthropic.com");
+  });
+
+  test("codex settings allow the verified codex state directory", () => {
+    const settings = buildSrtSettings("/tmp/test", { agent: "codex" });
+    expect(settings.filesystem.allowWrite).toContain(join(homedir(), ".codex"));
+  });
+
+  test("codex settings allow chatgpt network domains", () => {
+    const settings = buildSrtSettings("/tmp/test", { agent: "codex" });
+    expect(settings.network.allowedDomains).toContain("chatgpt.com");
+    expect(settings.network.allowedDomains).toContain("*.chatgpt.com");
+  });
+
+  test("claude/default settings do not include codex-specific permissions", () => {
+    const defaultSettings = buildSrtSettings("/tmp/test");
+    const claudeSettings = buildSrtSettings("/tmp/test", { agent: "claude" });
+    expect(claudeSettings).toEqual(defaultSettings);
+    expect(defaultSettings.filesystem.allowWrite).not.toContain(join(homedir(), ".codex"));
+    expect(defaultSettings.network.allowedDomains).not.toContain("chatgpt.com");
   });
 
   test("network disallows local binding", () => {

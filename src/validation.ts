@@ -6,6 +6,7 @@ import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
+import type { RalphAgent } from "./ralph-agent.js";
 
 // ── Regex patterns ──
 
@@ -95,6 +96,10 @@ export interface SrtSettings {
   };
 }
 
+export interface BuildSrtSettingsOptions {
+  readonly agent?: RalphAgent;
+}
+
 /**
  * Cached `rg` resolution. Previously this ran a sync
  * `which rg` on every ralph iteration via buildSrtSettings → a hang in
@@ -132,7 +137,7 @@ function resolveRipgrepBin(): { command: string; argv0?: string } | undefined {
 }
 
 /** Build srt settings scoped to the given working directory. */
-export function buildSrtSettings(allowedWriteDir: string): SrtSettings {
+export function buildSrtSettings(allowedWriteDir: string, options: BuildSrtSettingsOptions = {}): SrtSettings {
   const absDir = resolve(allowedWriteDir);
   const settings: SrtSettings = {
     network: {
@@ -157,6 +162,14 @@ export function buildSrtSettings(allowedWriteDir: string): SrtSettings {
       denyWrite: [".env", ".env.*", "*.pem", "*.key"],
     },
   };
+
+  if (options.agent === "codex") {
+    settings.network.allowedDomains.push("chatgpt.com", "*.chatgpt.com");
+    // A codex+srt smoke test failed when only sessions/skills were writable;
+    // thread startup touches state elsewhere under ~/.codex before the session exists.
+    settings.filesystem.allowWrite.push(join(homedir(), ".codex"));
+  }
+
   const rg = resolveRipgrepBin();
   if (rg) settings.ripgrep = rg;
   return settings;

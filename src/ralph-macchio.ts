@@ -17,6 +17,9 @@ import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import type { RalphAgent } from "./ralph-agent.js";
+import { RALPH_AGENTS, isRalphAgent } from "./ralph-agent.js";
+import { parseSubtasks } from "./ralph-subtasks.js";
 import { TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
@@ -44,7 +47,12 @@ const { values: args } = parseArgs({
 const ITERATIONS = Number(args.iterations) || 5;
 const PLAN_FILE = args.plan!;
 const PROGRESS_FILE = args.progress!;
-const AGENT = args.agent!;
+const AGENT_ARG = args.agent!;
+if (!isRalphAgent(AGENT_ARG)) {
+  console.error(`unknown agent: ${AGENT_ARG}. available: ${RALPH_AGENTS.join(", ")}`);
+  process.exit(1);
+}
+const AGENT = AGENT_ARG;
 const FORMAT_PLAN = args.format!;
 const CLEANUP_ENABLED = args.cleanup !== "false";
 const AUDIT_FIX_ENABLED = args["audit-fix"] === "true";
@@ -134,7 +142,7 @@ const SRT_SETTINGS_PATH = join(PROJECT_DIR, `.ralph-srt-settings-${process.pid}.
 
 /** Write srt settings file and return the path. */
 function writeSrtSettings(allowedWriteDir: string): string {
-  const settings = buildSrtSettings(allowedWriteDir);
+  const settings = buildSrtSettings(allowedWriteDir, { agent: AGENT });
   writeFileSync(SRT_SETTINGS_PATH, JSON.stringify(settings, null, 2));
   return SRT_SETTINGS_PATH;
 }
@@ -151,7 +159,7 @@ interface AgentConfig {
   args: (prompt: string) => string[];
 }
 
-const AGENTS: Record<string, AgentConfig> = {
+const AGENTS: Record<RalphAgent, AgentConfig> = {
   claude: {
     bin: resolveBin("claude"),
     args: (prompt) => ["--model", "sonnet", "--print", "--dangerously-skip-permissions", "--allowedTools", ALLOWED_TOOLS, "-p", prompt],
@@ -171,10 +179,6 @@ const AGENTS: Record<string, AgentConfig> = {
 };
 
 const agent = AGENTS[AGENT];
-if (!agent) {
-  console.error(`unknown agent: ${AGENT}. available: ${Object.keys(AGENTS).join(", ")}`);
-  process.exit(1);
-}
 
 const LOCK_FILE = join(PROJECT_DIR, ".ralph.lock");
 
@@ -427,12 +431,6 @@ function worktreeBranchName(taskHeader: string, iterationIndex: number): string 
   const num = numMatch ? numMatch[1] : String(iterationIndex);
   const slug = slugifyTaskName(taskHeader);
   return `ralph/${num}-${slug}`;
-}
-
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
 }
 
 function appendSubtasksToPlan(subtasks: string[]): void {
@@ -995,7 +993,7 @@ async function main() {
     }
 
     // check for subtask breakdown (capped to prevent unbounded expansion)
-    const subtasks = parseSubtasks(output);
+    const subtasks = parseSubtasks(output, AGENT);
     const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
     if (subtasks.length > 0 && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
       subtaskExpansions++;
