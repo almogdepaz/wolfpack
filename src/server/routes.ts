@@ -19,6 +19,7 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
+import { isRalphAgent } from "../ralph-agent.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
@@ -39,7 +40,6 @@ import pkg from "../../package.json";
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
-import { RALPH_AGENTS } from "./shell.js";
 import { getBackend, getRouter, DuplicateSessionError } from "./backend.js";
 import {
   listDevProjects,
@@ -852,12 +852,13 @@ export const routes: Record<
     // (plan mode creates one worktree at startup, task mode creates per-iteration).
     // The route only passes the mode flag — the worker manages the lifecycle.
 
+    const selectedAgent = isRalphAgent(agent || "claude") ? (agent || "claude") : "claude";
     const workerArgs = [
       ...RALPH_BIN_ARGS.slice(1),
       "worker",
       "--plan", resolvedPlan,
       "--iterations", String(iters),
-      "--agent", RALPH_AGENTS.has(agent || "claude") ? (agent || "claude") : "claude",
+      "--agent", selectedAgent,
       "--progress", "progress.txt",
       "--cleanup", String(cleanupEnabled),
       "--audit-fix", String(auditFixEnabled),

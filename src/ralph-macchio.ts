@@ -20,6 +20,7 @@ import { parseArgs } from "node:util";
 import type { RalphAgent } from "./ralph-agent.js";
 import { RALPH_AGENTS, isRalphAgent } from "./ralph-agent.js";
 import { parseSubtasks } from "./ralph-subtasks.js";
+import { buildIterationPrompt } from "./ralph-prompt.js";
 import { TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
@@ -352,38 +353,13 @@ BEGIN.`;
  *  not injected — if the user wants them, they can install the
  *  `.claude/skills/wolfpack-{ralph,plan}` skills into their project. */
 function buildPrompt(taskDesc: string): string {
-  return `You may ONLY create/edit/delete files under ${workingDir}. Do NOT touch files outside this directory.
-
-YOUR TASK:
-${taskDesc}
-
-INSTRUCTIONS:
-1. If the task is concrete enough, implement it directly.
-2. If it's too large or vague, break it into subtasks instead of implementing.
-3. Run any relevant tests and type checks for what you built.
-4. Commit your changes with a descriptive message.
-5. Do NOT write to ${PROGRESS_FILE} — the task runner manages it automatically.
-
-OUTPUT (always include):
-<prereqs>
-- list any prerequisites or assumptions
-</prereqs>
-<tests>
-- list the tests you ran (or would run if not possible)
-</tests>
-<done>
-- explicit criteria to consider the task complete
-</done>
-
-RULES:
-- ONLY work on ONE task per iteration.
-- If a task has sub-tasks, complete one sub-task.
-- If you decide the task needs breakdown, output a <subtasks> block with one task per line, and DO NOT modify any files or make a commit in that iteration. Follow the Task Granularity rules from the context above.
-- Do NOT write to ${PLAN_FILE}. The task runner handles all plan mutations. If you need subtasks, output a <subtasks> block.
-- Do NOT remove or renumber tasks in the plan file.
-- Be thorough but focused.
-
-BEGIN.`;
+  return buildIterationPrompt({
+    agent: AGENT,
+    workingDir,
+    taskDesc,
+    planFile: PLAN_FILE,
+    progressFile: PROGRESS_FILE,
+  });
 }
 
 // create progress file if missing
