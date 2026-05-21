@@ -54,6 +54,37 @@ async function injectFakeGrid(page: Page) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+test("addToGrid from terminal view shows grid loading immediately", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    // Hold async terminal mount open so this checks the pre-mount gap that
+    // used to expose stale/full-width terminal content before hydration began.
+    // @ts-ignore
+    window.ghosttyReady = new Promise(() => {});
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  const cellStates = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
+    cells.map((cell) => ({
+      loading: cell.classList.contains("grid-loading"),
+      hydrating: cell.classList.contains("hydrating"),
+    })),
+  );
+
+  expect(cellStates).toHaveLength(2);
+  for (const cell of cellStates) {
+    expect(cell.loading || cell.hydrating).toBe(true);
+  }
+});
+
 test("addToGrid from non-terminal view switches to terminal view first", async ({ page }) => {
   await loadApp(page);
 
@@ -281,14 +312,8 @@ test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }
   // Without the fix this stays at 0 and the cell shows the manual blackfill.
   await expect.poll(async () => page.evaluate(() => {
     // @ts-ignore
-    return state.gridSessions.map((gs) => gs._forceRepaintCount);
-  }), { timeout: 3000 }).toEqual([expect.any(Number), expect.any(Number)]);
-
-  const counts = await page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.map((gs) => gs._forceRepaintCount);
-  });
-  for (const c of counts) expect(c).toBeGreaterThanOrEqual(1);
+    return state.gridSessions.every((gs) => gs._forceRepaintCount >= 1);
+  }), { timeout: 3000 }).toBe(true);
 });
 
 test("long-background visibilitychange reconnects each grid cell and repaints", async ({ page }) => {
