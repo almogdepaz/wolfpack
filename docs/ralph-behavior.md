@@ -143,6 +143,8 @@ Both phases only run if tasks were completed in this run (`i > 1`).
 
 ## Worktree Modes
 
+Ralph-managed git worktrees live under `<project>/.worktrees/` using VS Code's repo-local worktree convention. Legacy `.wolfpack/worktrees/` entries are still recognized during cleanup.
+
 ### Off (`--worktree false`)
 
 All work in project root. No isolation.
