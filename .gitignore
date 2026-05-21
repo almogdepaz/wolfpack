@@ -25,6 +25,7 @@ tests/e2e/test-results/
 playwright-report/
 PLAN*.md
 .wolfpack/
+.worktrees/
 public/.DS_Store
 .edc/
 edc-context/
