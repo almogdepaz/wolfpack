@@ -271,7 +271,9 @@ export function renderGridCells() {
       gs._cellElement.dataset.gridIndex = idx;
       gs._cellElement.classList.toggle("grid-focused", idx === state.gridFocusIndex);
     } else {
-      // New cell needed
+      // New cell needed — show loading synchronously before async WASM mount
+      // can reveal stale cached/full-width terminal content in the new grid size.
+      gs._loading = true;
       const cell = createGridCell(gs, idx);
       container.appendChild(cell);
       mountPromises.push(mountGridController(gs, cell, idx));
