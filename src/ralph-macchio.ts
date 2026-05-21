@@ -21,7 +21,7 @@ import { TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
 import { buildCleanupPrompt } from "./ralph-skill-cleanup.js";
-import { createWorktree, cleanupAllExceptFinal, removeWorktree, listWorktrees, relocateLegacyWorktree, slugifyTaskName } from "./worktree.js";
+import { createWorktree, cleanupAllExceptFinal, removeWorktree, listWorktrees, slugifyTaskName } from "./worktree.js";
 import { errMsg, killProcessTree, killProcessTreeSync } from "./shared/process-cleanup.js";
 
 const { values: args } = parseArgs({
@@ -719,11 +719,7 @@ function createMainWorktree(): void {
   // check if worktree for this branch already exists (restart case)
   const existing = listWorktrees(PROJECT_DIR).find(w => w.branch === branchName);
   if (existing) {
-    const relocatedPath = relocateLegacyWorktree(PROJECT_DIR, existing);
-    if (relocatedPath !== existing.path) {
-      appendFileSync(LOG_FILE, `worktree relocated: ${existing.path} -> ${relocatedPath}\n`);
-    }
-    mainWorkDir = relocatedPath;
+    mainWorkDir = existing.path;
     workingDir = mainWorkDir;
     PLAN_PATH = join(mainWorkDir, PLAN_FILE);
     PROGRESS_PATH = join(mainWorkDir, PROGRESS_FILE);

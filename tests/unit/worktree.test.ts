@@ -9,7 +9,6 @@ import {
   removeWorktree,
   listWorktrees,
   cleanupAllExceptFinal,
-  relocateLegacyWorktree,
 } from "../../src/worktree.js";
 
 // ── slugifyTaskName tests ──
@@ -165,32 +164,7 @@ describe("worktree lifecycle", () => {
     }
   });
 
-  test("relocateLegacyWorktree moves reused legacy worktree into .worktrees", () => {
-    const legacyPath = join(repoDir, ".wolfpack", "worktrees", "18-legacy-reuse");
-    execFileSync(
-      "git",
-      ["worktree", "add", legacyPath, "-b", "ralph/18-legacy-reuse", "--", "HEAD"],
-      { cwd: repoDir, stdio: "pipe" },
-    );
-    const orderFile = join(repoDir, ".wolfpack", "worktree-order.txt");
-    appendFileSync(orderFile, `${legacyPath}\n`);
-    const legacy = listWorktrees(repoDir).find((w) => w.branch === "ralph/18-legacy-reuse");
-    expect(legacy).toBeDefined();
-
-    const movedPath = relocateLegacyWorktree(repoDir, legacy!);
-
-    expect(movedPath).toContain(".worktrees/18-legacy-reuse");
-    const wts = listWorktrees(repoDir);
-    const moved = wts.find((w) => w.branch === "ralph/18-legacy-reuse");
-    expect(moved?.path).toBe(movedPath);
-    expect(readFileSync(orderFile, "utf-8")).toContain(movedPath);
-    expect(readFileSync(orderFile, "utf-8")).not.toContain(legacyPath);
-
-    // Cleanup
-    removeWorktree(movedPath, repoDir);
-  });
-
-  test("cleanupAllExceptFinal still manages legacy .wolfpack/worktrees entries", () => {
+  test("cleanupAllExceptFinal ignores legacy .wolfpack/worktrees entries", () => {
     const legacyPath = join(repoDir, ".wolfpack", "worktrees", "19-legacy");
     execFileSync(
       "git",
@@ -203,16 +177,18 @@ describe("worktree lifecycle", () => {
 
     const result = cleanupAllExceptFinal(repoDir);
 
-    expect(result.removed).toContain("ralph/19-legacy");
+    expect(result.removed).not.toContain("ralph/19-legacy");
     expect(result.kept).toBe("ralph/20-new");
 
     const wts = listWorktrees(repoDir);
-    expect(wts.find((w) => w.branch === "ralph/19-legacy")).toBeUndefined();
+    const legacy = wts.find((w) => w.branch === "ralph/19-legacy");
+    expect(legacy?.path).toBe(legacyPath);
     const kept = wts.find((w) => w.branch === "ralph/20-new");
     expect(kept?.path).toContain(".worktrees/20-new");
 
     // Cleanup
     if (kept) removeWorktree(kept.path, repoDir);
+    if (legacy) removeWorktree(legacy.path, repoDir);
   });
 
   test("createWorktree tracks creation order in worktree-order.txt", () => {
