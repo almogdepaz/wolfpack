@@ -1,4 +1,5 @@
 import type { RalphAgent } from "./ralph-agent.js";
+import { RALPH_RESPONSE_VERSION, RalphResponseStatus } from "./ralph-response.js";
 
 export interface BuildIterationPromptOptions {
   readonly agent: RalphAgent;
@@ -6,34 +7,13 @@ export interface BuildIterationPromptOptions {
   readonly taskDesc: string;
   readonly planFile: string;
   readonly progressFile: string;
+  readonly responseFile: string;
 }
 
 export function buildIterationPrompt(options: BuildIterationPromptOptions): string {
-  const subtaskInstructions = options.agent === "codex"
-    ? `1. If the task is concrete enough, implement it directly.
-2. If it's too large or vague, implement the smallest concrete slice that moves it forward and document assumptions in <prereqs>.
-3. Run any relevant tests and type checks for what you built.
-4. Commit your changes with a descriptive message.
-5. Do NOT write to ${options.progressFile} — the task runner manages it automatically.`
-    : `1. If the task is concrete enough, implement it directly.
-2. If it's too large or vague, break it into subtasks instead of implementing.
-3. Run any relevant tests and type checks for what you built.
-4. Commit your changes with a descriptive message.
-5. Do NOT write to ${options.progressFile} — the task runner manages it automatically.`;
-
-  const subtaskRules = options.agent === "codex"
-    ? `- ONLY work on ONE task per iteration.
-- If a task has sub-tasks, complete one sub-task.
-- Do NOT emit XML-ish control tags. Codex output can include echoed transcript text, so the runner ignores tag-based control messages for codex.
-- Do NOT write to ${options.planFile}. The task runner handles plan mutations.
-- Do NOT remove or renumber tasks in the plan file.
-- Be thorough but focused.`
-    : `- ONLY work on ONE task per iteration.
-- If a task has sub-tasks, complete one sub-task.
-- If you decide the task needs breakdown, output a <subtasks> block with one task per line, and DO NOT modify any files or make a commit in that iteration. Follow the Task Granularity rules from the context above.
-- Do NOT write to ${options.planFile}. The task runner handles all plan mutations. If you need subtasks, output a <subtasks> block.
-- Do NOT remove or renumber tasks in the plan file.
-- Be thorough but focused.`;
+  const codexRule = options.agent === "codex"
+    ? "\n- Codex output can echo transcript text; DO NOT emit XML-ish control tags."
+    : "";
 
   return `You may ONLY create/edit/delete files under ${options.workingDir}. Do NOT touch files outside this directory.
 
@@ -41,21 +21,44 @@ YOUR TASK:
 ${options.taskDesc}
 
 INSTRUCTIONS:
-${subtaskInstructions}
+1. If the task is concrete enough, implement it directly.
+2. If it's too large or vague, write a structured response with \"status\": \"${RalphResponseStatus.needsSubtasks}\" and one subtask per string; do not modify files or make a commit in that iteration.
+3. Run any relevant tests and type checks for what you built.
+4. Commit your code/doc/test changes with a descriptive message when you changed files.
+5. Do NOT write to ${options.progressFile} — the task runner manages it automatically.
+6. Do NOT commit .ralph-response.json, ${options.progressFile}, .ralph.log, .ralph_iter.tmp, .ralph-response-schema-*.json, or .ralph-srt-settings-*.json; these are runner-owned transient files.
 
-OUTPUT (always include):
-<prereqs>
-- list any prerequisites or assumptions
-</prereqs>
-<tests>
-- list the tests you ran (or would run if not possible)
-</tests>
-<done>
-- explicit criteria to consider the task complete
-</done>
+STRUCTURED RESPONSE:
+Before exiting, write valid JSON to ${options.responseFile}. Use exactly one of these valid shapes.
+
+Done response:
+{
+  "version": ${RALPH_RESPONSE_VERSION},
+  "status": "${RalphResponseStatus.done}",
+  "prereqs": ["list any prerequisites or assumptions"],
+  "tests": ["list tests you ran, or would run if not possible"],
+  "done": ["explicit criteria met by this iteration"],
+  "subtasks": []
+}
+
+Needs-subtasks response:
+{
+  "version": ${RALPH_RESPONSE_VERSION},
+  "status": "${RalphResponseStatus.needsSubtasks}",
+  "prereqs": ["list any prerequisites or assumptions"],
+  "tests": ["tests you would run after subtasks are implemented"],
+  "done": ["criteria for the subtasks to satisfy"],
+  "subtasks": ["first meaningful deliverable", "second meaningful deliverable"]
+}
 
 RULES:
-${subtaskRules}
+- ONLY work on ONE task per iteration.
+- If a task has sub-tasks, complete one sub-task.
+- The JSON response file is the only runner control channel.
+- Do NOT emit XML-ish runner control tags.${codexRule}
+- Do NOT write to ${options.planFile}. The task runner handles all plan mutations.
+- Do NOT remove or renumber tasks in the plan file.
+- Be thorough but focused.
 
 BEGIN.`;
 }

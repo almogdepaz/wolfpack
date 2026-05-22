@@ -165,8 +165,9 @@ export function buildSrtSettings(allowedWriteDir: string, options: BuildSrtSetti
 
   if (options.agent === "codex") {
     settings.network.allowedDomains.push("chatgpt.com", "*.chatgpt.com");
-    // A codex+srt smoke test failed when only sessions/skills were writable;
-    // thread startup touches state elsewhere under ~/.codex before the session exists.
+    // Codex initializes mutable state under ~/.codex before stable per-session
+    // subpaths exist. This intentionally grants broad persistent Codex state
+    // access; docs/ralph-behavior.md records the accepted sandbox risk.
     settings.filesystem.allowWrite.push(join(homedir(), ".codex"));
   }
 

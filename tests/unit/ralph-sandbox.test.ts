@@ -47,8 +47,10 @@ describe("buildSrtSettings", () => {
     expect(domains).toContain("api.anthropic.com");
   });
 
-  test("codex settings allow the verified codex state directory", () => {
+  test("codex settings intentionally allow the full persistent codex state directory", () => {
     const settings = buildSrtSettings("/tmp/test", { agent: "codex" });
+    // Codex initializes mutable state under ~/.codex before per-session paths exist.
+    // This is intentionally broader than project-local writes; docs record the risk.
     expect(settings.filesystem.allowWrite).toContain(join(homedir(), ".codex"));
   });
 
