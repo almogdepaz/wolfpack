@@ -17,7 +17,13 @@ import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
+import type { RalphAgent } from "./ralph-agent.js";
+import { RALPH_AGENTS, isRalphAgent } from "./ralph-agent.js";
+import { agentBinaryName, buildAgentArgs, RALPH_RESPONSE_JSON_SCHEMA } from "./ralph-agent-command.js";
+import { ensureRalphTransientGitExcludes } from "./ralph-git-exclude.js";
+import { buildIterationPrompt } from "./ralph-prompt.js";
+import { classifyRalphResponseResult, readRalphResponseFile } from "./ralph-response.js";
+import { TASK_HEADER, countRalphProgressFromContent, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
 import { buildCleanupPrompt } from "./ralph-skill-cleanup.js";
@@ -44,7 +50,12 @@ const { values: args } = parseArgs({
 const ITERATIONS = Number(args.iterations) || 5;
 const PLAN_FILE = args.plan!;
 const PROGRESS_FILE = args.progress!;
-const AGENT = args.agent!;
+const AGENT_ARG = args.agent!;
+if (!isRalphAgent(AGENT_ARG)) {
+  console.error(`unknown agent: ${AGENT_ARG}. available: ${RALPH_AGENTS.join(", ")}`);
+  process.exit(1);
+}
+const AGENT = AGENT_ARG;
 const FORMAT_PLAN = args.format!;
 const CLEANUP_ENABLED = args.cleanup !== "false";
 const AUDIT_FIX_ENABLED = args["audit-fix"] === "true";
@@ -70,19 +81,12 @@ let workingDir = PROJECT_DIR;
 
 const LOG_FILE = join(PROJECT_DIR, ".ralph.log");
 const ITER_FILE = join(PROJECT_DIR, ".ralph_iter.tmp");
+const RESPONSE_FILE = ".ralph-response.json";
+const RESPONSE_SCHEMA_PATH = join(PROJECT_DIR, `.ralph-response-schema-${process.pid}.json`);
 
 /** PLAN_PATH and PROGRESS_PATH point to mainWorkDir — the single source of truth. */
 let PLAN_PATH = join(PROJECT_DIR, PLAN_FILE);
 let PROGRESS_PATH = join(PROJECT_DIR, PROGRESS_FILE);
-
-const ALLOWED_TOOLS = [
-  "Edit", "Write", "Read", "Glob", "Grep",
-  "Bash(git *)", "Bash(npm *)", "Bash(npx *)", "Bash(pnpm *)",
-  "Bash(yarn *)", "Bash(bun *)", "Bash(cargo *)", "Bash(go *)",
-  "Bash(python *)", "Bash(pip *)", "Bash(pytest *)", "Bash(make *)",
-  "Bash(ls *)", "Bash(mkdir *)", "Bash(rm *)", "Bash(mv *)",
-  "Bash(cp *)", "Bash(cat *)", "Bash(echo *)", "Bash(touch *)",
-].join(",");
 
 // augment PATH with common bin dirs that may be missing in detached/non-interactive shells
 const IS_WIN = process.platform === "win32";
@@ -134,7 +138,7 @@ const SRT_SETTINGS_PATH = join(PROJECT_DIR, `.ralph-srt-settings-${process.pid}.
 
 /** Write srt settings file and return the path. */
 function writeSrtSettings(allowedWriteDir: string): string {
-  const settings = buildSrtSettings(allowedWriteDir);
+  const settings = buildSrtSettings(allowedWriteDir, { agent: AGENT });
   writeFileSync(SRT_SETTINGS_PATH, JSON.stringify(settings, null, 2));
   return SRT_SETTINGS_PATH;
 }
@@ -146,35 +150,17 @@ function cleanupSrtSettings(): void {
   }
 }
 
-interface AgentConfig {
-  bin: string;
-  args: (prompt: string) => string[];
+function writeResponseSchema(): void {
+  writeFileSync(RESPONSE_SCHEMA_PATH, JSON.stringify(RALPH_RESPONSE_JSON_SCHEMA, null, 2));
 }
 
-const AGENTS: Record<string, AgentConfig> = {
-  claude: {
-    bin: resolveBin("claude"),
-    args: (prompt) => ["--model", "sonnet", "--print", "--dangerously-skip-permissions", "--allowedTools", ALLOWED_TOOLS, "-p", prompt],
-  },
-  codex: {
-    bin: resolveBin("codex"),
-    args: (prompt) => ["exec", prompt, "--yolo"],
-  },
-  gemini: {
-    bin: resolveBin("gemini"),
-    args: (prompt) => ["-p", prompt, "--yolo"],
-  },
-  cursor: {
-    bin: resolveBin("agent"),
-    args: (prompt) => ["-p", prompt, "--yolo"],
-  },
-};
-
-const agent = AGENTS[AGENT];
-if (!agent) {
-  console.error(`unknown agent: ${AGENT}. available: ${Object.keys(AGENTS).join(", ")}`);
-  process.exit(1);
+function cleanupResponseSchema(): void {
+  try { unlinkSync(RESPONSE_SCHEMA_PATH); } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") console.warn("failed to clean up response schema:", errMsg(e));
+  }
 }
+
+const AGENT_BIN = resolveBin(agentBinaryName(AGENT));
 
 const LOCK_FILE = join(PROJECT_DIR, ".ralph.lock");
 
@@ -348,38 +334,14 @@ BEGIN.`;
  *  not injected — if the user wants them, they can install the
  *  `.claude/skills/wolfpack-{ralph,plan}` skills into their project. */
 function buildPrompt(taskDesc: string): string {
-  return `You may ONLY create/edit/delete files under ${workingDir}. Do NOT touch files outside this directory.
-
-YOUR TASK:
-${taskDesc}
-
-INSTRUCTIONS:
-1. If the task is concrete enough, implement it directly.
-2. If it's too large or vague, break it into subtasks instead of implementing.
-3. Run any relevant tests and type checks for what you built.
-4. Commit your changes with a descriptive message.
-5. Do NOT write to ${PROGRESS_FILE} — the task runner manages it automatically.
-
-OUTPUT (always include):
-<prereqs>
-- list any prerequisites or assumptions
-</prereqs>
-<tests>
-- list the tests you ran (or would run if not possible)
-</tests>
-<done>
-- explicit criteria to consider the task complete
-</done>
-
-RULES:
-- ONLY work on ONE task per iteration.
-- If a task has sub-tasks, complete one sub-task.
-- If you decide the task needs breakdown, output a <subtasks> block with one task per line, and DO NOT modify any files or make a commit in that iteration. Follow the Task Granularity rules from the context above.
-- Do NOT write to ${PLAN_FILE}. The task runner handles all plan mutations. If you need subtasks, output a <subtasks> block.
-- Do NOT remove or renumber tasks in the plan file.
-- Be thorough but focused.
-
-BEGIN.`;
+  return buildIterationPrompt({
+    agent: AGENT,
+    workingDir,
+    taskDesc,
+    planFile: PLAN_FILE,
+    progressFile: PROGRESS_FILE,
+    responseFile: join(workingDir, RESPONSE_FILE),
+  });
 }
 
 // create progress file if missing
@@ -397,7 +359,7 @@ appendFileSync(LOG_FILE, `phase_audit_fix: ${AUDIT_FIX_ENABLED ? "on" : "off"}\n
 appendFileSync(LOG_FILE, `worktree: ${WORKTREE_MODE}\n`);
 appendFileSync(LOG_FILE, `sandbox: ${SRT_AVAILABLE ? "srt" : SANDBOX_ENABLED ? "srt-not-found" : "off"}\n`);
 appendFileSync(LOG_FILE, `pid: ${process.pid}\n`);
-appendFileSync(LOG_FILE, `bin: ${agent.bin}\n`);
+appendFileSync(LOG_FILE, `bin: ${AGENT_BIN}\n`);
 appendFileSync(LOG_FILE, `started: ${new Date().toString()}\n\n`);
 
 if (SANDBOX_ENABLED && !SRT_AVAILABLE) {
@@ -427,12 +389,6 @@ function worktreeBranchName(taskHeader: string, iterationIndex: number): string 
   const num = numMatch ? numMatch[1] : String(iterationIndex);
   const slug = slugifyTaskName(taskHeader);
   return `ralph/${num}-${slug}`;
-}
-
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
 }
 
 function appendSubtasksToPlan(subtasks: string[]): void {
@@ -483,15 +439,31 @@ function cleanupIterFile(): void {
   }
 }
 
+function responsePath(): string {
+  return join(workingDir, RESPONSE_FILE);
+}
+
+function cleanupResponseFile(path = responsePath()): void {
+  try { unlinkSync(path); } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") console.warn(`failed to clean up response file:`, errMsg(e));
+  }
+}
+
 const ITERATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes per iteration
 
 // track active child for signal handling
 let activeChild: ReturnType<typeof nodeSpawn> | null = null;
 let stopping = false;
 
-function runIteration(prompt: string): Promise<{ exitCode: number; output: string }> {
+function runIteration(prompt: string, responseFile = responsePath()): Promise<{ exitCode: number; output: string }> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
+    writeResponseSchema();
+    const agentArgs = buildAgentArgs(AGENT, {
+      prompt,
+      responseFile,
+      responseSchemaFile: RESPONSE_SCHEMA_PATH,
+    });
 
     // Wrap with srt sandbox if available
     let spawnBin: string;
@@ -499,16 +471,15 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
     if (SRT_AVAILABLE) {
       writeSrtSettings(workingDir);
       // srt joins positional args with spaces then runs via `bash -c`, so args
-      // containing shell metacharacters (e.g. parentheses in --allowedTools)
-      // must be passed through `-c` with proper quoting.
-      const innerCmd = [agent.bin, ...agent.args(prompt)]
+      // containing shell metacharacters must be passed through `-c` with proper quoting.
+      const innerCmd = [AGENT_BIN, ...agentArgs]
         .map(a => shellEscape(a))
         .join(" ");
       spawnBin = SRT_BIN;
       spawnArgs = ["--settings", SRT_SETTINGS_PATH, "-c", innerCmd];
     } else {
-      spawnBin = agent.bin;
-      spawnArgs = agent.args(prompt);
+      spawnBin = AGENT_BIN;
+      spawnArgs = agentArgs;
     }
 
     const child = nodeSpawn(spawnBin, spawnArgs, {
@@ -547,7 +518,7 @@ function runIteration(prompt: string): Promise<{ exitCode: number; output: strin
 }
 
 // last-resort lock + srt settings cleanup on any exit (covers unhandled exceptions, SIGINT, etc.)
-process.on("exit", () => { removeLock(); cleanupSrtSettings(); });
+process.on("exit", () => { removeLock(); cleanupSrtSettings(); cleanupResponseSchema(); });
 
 /**
  * Graceful shutdown shared by SIGTERM and SIGINT.
@@ -593,6 +564,7 @@ function shutdownHandler(signal: "SIGTERM" | "SIGINT"): void {
   appendFileSync(LOG_FILE, `finished: ${new Date().toString()}\n`);
   removeLock();
   cleanupSrtSettings();
+  cleanupResponseSchema();
   setTimeout(() => process.exit(0), 3500);
 }
 
@@ -606,9 +578,13 @@ function logSummary(tasksCompleted: number, subtasksAdded: number): void {
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
 
-  // task counts from plan file
+  // task counts from plan + progress file; completion is tracked in progress.txt,
+  // not by mutating plan checkboxes/headers.
   const plan = readPlan();
-  const { done, total } = countTasksInContent(plan);
+  const progress = (() => {
+    try { return readFileSync(PROGRESS_PATH, "utf-8"); } catch { return ""; }
+  })();
+  const { done, total } = countRalphProgressFromContent(plan, progress);
 
   // files changed via git (committed since start + uncommitted)
   let filesChanged: string[] = [];
@@ -959,11 +935,19 @@ async function main() {
     const planSnapshot = readPlan();
     const { total: totalBefore } = countTasksInContent(planSnapshot);
 
+    ensureRalphTransientGitExcludes(workingDir, PROGRESS_FILE);
+    cleanupResponseFile();
+    const responseFile = responsePath();
     const prompt = buildPrompt(task);
     appendFileSync(LOG_FILE, `\n=== 🥋 Wax On ${i}/${maxIterations} — ${new Date().toString()} ===\n`);
     appendFileSync(LOG_FILE, `task: ${task}\n\n`);
 
-    const { exitCode, output } = await runIteration(prompt);
+    const { exitCode, output } = await runIteration(prompt, responseFile);
+
+    if (stopping) {
+      cleanupResponseFile(responseFile);
+      return;
+    }
 
     // write iter file for inspection
     writeFileSync(ITER_FILE, output);
@@ -985,19 +969,28 @@ async function main() {
         appendFileSync(LOG_FILE, `\n=== ✅ Plan recovered (${recoveredCounts.total} tasks) ===\n`);
       }
       cleanupIterFile();
+      cleanupResponseFile(responseFile);
       continue;
     }
 
     if (exitCode !== 0) {
       appendFileSync(LOG_FILE, `\n=== ⚠️  Iteration ${i} FAILED (exit code ${exitCode}) — ${new Date().toString()} ===\n\n`);
       cleanupIterFile();
+      cleanupResponseFile(responseFile);
       continue;
     }
 
-    // check for subtask breakdown (capped to prevent unbounded expansion)
-    const subtasks = parseSubtasks(output);
+    // check for structured subtask breakdown (capped to prevent unbounded expansion)
+    const responseDecision = classifyRalphResponseResult(readRalphResponseFile(responseFile));
+    if (responseDecision.kind === "not_completed") {
+      appendFileSync(LOG_FILE, `\n=== ⚠️ Iteration did not complete: ${responseDecision.reason} (${responseFile}) ===\n`);
+      cleanupIterFile();
+      cleanupResponseFile(responseFile);
+      continue;
+    }
     const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
-    if (subtasks.length > 0 && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
+    if (responseDecision.kind === "subtasks" && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
+      const subtasks = [...responseDecision.subtasks];
       subtaskExpansions++;
       subtasksAdded += subtasks.length;
       appendSubtasksToPlan(subtasks);
@@ -1009,6 +1002,7 @@ async function main() {
       lastTask = task;
       lastWasSubtaskEmission = true;
       cleanupIterFile();
+      cleanupResponseFile(responseFile);
       continue;
     }
 
@@ -1028,6 +1022,7 @@ async function main() {
     syncPlanToProject();
 
     cleanupIterFile();
+    cleanupResponseFile(responseFile);
   }
 
   // merge any outstanding task worktree at end of iterations
@@ -1084,6 +1079,7 @@ async function runAuditFix(): Promise<void> {
   // final phases run in mainWorkDir
   workingDir = mainWorkDir;
   const { exitCode, output } = await runIteration(getAuditFixPrompt());
+  if (stopping) return;
   writeFileSync(ITER_FILE, output);
 
   if (exitCode !== 0) {
@@ -1098,6 +1094,7 @@ async function runCleanup(): Promise<void> {
   appendFileSync(LOG_FILE, `\n=== 🥋 Wax Off — starting cleanup — ${new Date().toString()} ===\n\n`);
   workingDir = mainWorkDir;
   const { exitCode, output } = await runIteration(getCleanupPrompt());
+  if (stopping) return;
   writeFileSync(ITER_FILE, output);
 
   if (exitCode !== 0) {

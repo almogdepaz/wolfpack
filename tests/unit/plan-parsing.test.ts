@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { TASK_HEADER, countTasksInContent, detectOldPlanFormat, migratePlanFormat } from "../../src/wolfpack-context.js";
+import { TASK_HEADER, countRalphProgressFromContent, countTasksInContent, detectOldPlanFormat, migratePlanFormat } from "../../src/wolfpack-context.js";
 
 // ── Plan-parsing functions from ralph-macchio.ts and serve.ts ──
 // These are module-private, replicated here as pure functions for testing.
@@ -33,13 +33,6 @@ function extractCurrentTask(plan: string): { task: string; checkbox: boolean } |
     }
   }
   return null;
-}
-
-/** Mirrors ralph-macchio.ts parseSubtasks() */
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
 }
 
 /** Mirrors serve.ts countPlanTasks() but takes content instead of path */
@@ -249,64 +242,6 @@ describe("same-task-twice detection", () => {
     const planAfter = planBefore.replace("## 1. Big task", "## ~~1. Big task~~");
     const second = extractCurrentTask(planAfter);
     expect(second!.task).toContain("## 2. Other task");
-  });
-});
-
-// ── parseSubtasks tests ──
-
-describe("parseSubtasks", () => {
-  test("extracts subtasks from valid block", () => {
-    const output = "some preamble\n<subtasks>\ntask one\ntask two\ntask three\n</subtasks>\npostamble";
-    expect(parseSubtasks(output)).toEqual(["task one", "task two", "task three"]);
-  });
-
-  test("returns empty array when no subtasks block", () => {
-    expect(parseSubtasks("just some output with no subtasks")).toEqual([]);
-  });
-
-  test("returns empty array for empty subtasks block", () => {
-    expect(parseSubtasks("<subtasks>\n\n\n</subtasks>")).toEqual([]);
-  });
-
-  test("trims whitespace from each subtask", () => {
-    const output = "<subtasks>\n  padded task  \n   another one   \n</subtasks>";
-    expect(parseSubtasks(output)).toEqual(["padded task", "another one"]);
-  });
-
-  test("filters out empty lines", () => {
-    const output = "<subtasks>\ntask one\n\n\ntask two\n\n</subtasks>";
-    expect(parseSubtasks(output)).toEqual(["task one", "task two"]);
-  });
-
-  test("handles multi-word subtasks", () => {
-    const output = "<subtasks>\nimplement the authentication module with OAuth2\nwrite unit tests for login flow\n</subtasks>";
-    expect(parseSubtasks(output)).toEqual([
-      "implement the authentication module with OAuth2",
-      "write unit tests for login flow",
-    ]);
-  });
-
-  test("handles single subtask", () => {
-    const output = "<subtasks>\njust one task\n</subtasks>";
-    expect(parseSubtasks(output)).toEqual(["just one task"]);
-  });
-
-  test("uses first subtasks block if multiple present", () => {
-    const output = "<subtasks>\nfirst\n</subtasks>\nmore text\n<subtasks>\nsecond\n</subtasks>";
-    // non-greedy match means first block wins
-    expect(parseSubtasks(output)).toEqual(["first"]);
-  });
-
-  test("handles subtasks with special characters", () => {
-    const output = "<subtasks>\nfix `parseSubtasks()` in ralph-macchio.ts\nadd tests for <edge> cases\n</subtasks>";
-    expect(parseSubtasks(output)).toEqual([
-      "fix `parseSubtasks()` in ralph-macchio.ts",
-      "add tests for <edge> cases",
-    ]);
-  });
-
-  test("returns empty array for empty string", () => {
-    expect(parseSubtasks("")).toEqual([]);
   });
 });
 
@@ -622,6 +557,20 @@ describe("extractCurrentTask skips fully-completed sections", () => {
 });
 
 // ── detectOldPlanFormat tests ──
+
+describe("countRalphProgressFromContent", () => {
+  test("counts progress.txt DONE keys against unchanged plan checkboxes", () => {
+    const plan = "- [ ] smoke task\n";
+    const progress = "# Progress Log\nDONE: checkbox: smoke task\n";
+    expect(countRalphProgressFromContent(plan, progress)).toEqual({ done: 1, total: 1 });
+  });
+
+  test("does not count DONE keys that are not in the current plan", () => {
+    const plan = "- [ ] real task\n";
+    const progress = "DONE: checkbox: stale task\n";
+    expect(countRalphProgressFromContent(plan, progress)).toEqual({ done: 0, total: 1 });
+  });
+});
 
 describe("detectOldPlanFormat", () => {
   test("detects 'Task N: Title' format", () => {

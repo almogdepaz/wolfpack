@@ -92,6 +92,44 @@ export function countTasksInContent(content: string): { done: number; total: num
   return { done, total };
 }
 
+export function countRalphProgressFromContent(planContent: string, progressContent: string): { done: number; total: number } {
+  const keys = extractRalphTaskKeys(planContent);
+  const completed = new Set<string>();
+  for (const line of progressContent.split("\n")) {
+    if (line.startsWith("DONE: ")) completed.add(line.slice(6));
+  }
+  return {
+    done: keys.filter(key => completed.has(key)).length,
+    total: keys.length,
+  };
+}
+
+function extractRalphTaskKeys(planContent: string): string[] {
+  const keys: string[] = [];
+  const lines = planContent.split("\n");
+
+  for (const line of lines) {
+    const cbMatch = line.match(/^- \[ \] (.+)$/);
+    if (cbMatch) keys.push(`checkbox: ${cbMatch[1]}`);
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!TASK_HEADER.test(line)) continue;
+    const level = line.match(/^(#{2,3})/)?.[1] || "##";
+    const sectionLines = [line];
+    for (let j = i + 1; j < lines.length; j++) {
+      const nextMatch = lines[j].match(/^(#{1,3}) /);
+      if (nextMatch && nextMatch[1].length <= level.length) break;
+      sectionLines.push(lines[j]);
+    }
+    const hasChildren = sectionLines.some(l => /^- \[ \] /.test(l));
+    if (!hasChildren) keys.push(`section: ${line}`);
+  }
+
+  return keys;
+}
+
 /**
  * Validate plan file structure — checks for parseable tasks and ambiguous headers.
  * Reuses TASK_HEADER regex and checkbox pattern from countPlanTasks logic.
