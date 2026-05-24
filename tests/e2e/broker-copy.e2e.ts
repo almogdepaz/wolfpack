@@ -64,6 +64,7 @@ test("broker copy: kb-copy button writes plain-text snapshot to clipboard", asyn
   // Wait for prompt to settle and type marker.
   await wait(1500);
   await page.locator("#kb-open-btn").click();
+  await page.locator("#mobile-kb-proxy").focus();
   await page.keyboard.type(`echo ${marker}`);
   await page.keyboard.press("Enter");
   await wait(800); // give broker time to drain PTY into snapshot
