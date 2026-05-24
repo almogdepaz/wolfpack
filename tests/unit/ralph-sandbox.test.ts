@@ -115,32 +115,17 @@ describe("buildSrtSettings", () => {
     expect(settings.network.allowLocalBinding).toBe(false);
   });
 
-  test("network allows only the configured wolfpack broker Unix socket path", () => {
+  test("network does not allow host broker Unix socket access by default", () => {
     const originalSocket = process.env.WOLFPACK_BROKER_SOCKET;
     const brokerSocket = join(tmpdir(), "configured-wolfpack-broker.sock");
     process.env.WOLFPACK_BROKER_SOCKET = brokerSocket;
     try {
       const settings = buildSrtSettings("/tmp/test");
-      expect(settings.network.allowUnixSockets).toEqual([brokerSocket]);
+      expect(settings.network).not.toHaveProperty("allowUnixSockets");
       expect(settings.network).not.toHaveProperty("allowAllUnixSockets");
     } finally {
       if (originalSocket === undefined) delete process.env.WOLFPACK_BROKER_SOCKET;
       else process.env.WOLFPACK_BROKER_SOCKET = originalSocket;
-    }
-  });
-
-  test("network falls back to the default wolfpack broker Unix socket path", () => {
-    const originalSocket = process.env.WOLFPACK_BROKER_SOCKET;
-    delete process.env.WOLFPACK_BROKER_SOCKET;
-    try {
-      const settings = buildSrtSettings("/tmp/test");
-      const runtimeDir = process.env.XDG_RUNTIME_DIR;
-      const brokerSocket = runtimeDir && runtimeDir.length > 0
-        ? join(runtimeDir, "wolfpack-broker.sock")
-        : join(homedir(), ".wolfpack", "broker.sock");
-      expect(settings.network.allowUnixSockets).toEqual([brokerSocket]);
-    } finally {
-      if (originalSocket !== undefined) process.env.WOLFPACK_BROKER_SOCKET = originalSocket;
     }
   });
 
@@ -154,7 +139,8 @@ describe("buildSrtSettings", () => {
     expect(settings.network).toHaveProperty("allowedDomains");
     expect(settings.network).toHaveProperty("deniedDomains");
     expect(settings.network).toHaveProperty("allowLocalBinding");
-    expect(settings.network).toHaveProperty("allowUnixSockets");
+    expect(settings.network).not.toHaveProperty("allowUnixSockets");
+    expect(settings.network).not.toHaveProperty("allowAllUnixSockets");
     // verify filesystem keys
     expect(settings.filesystem).toHaveProperty("denyRead");
     expect(settings.filesystem).toHaveProperty("allowWrite");

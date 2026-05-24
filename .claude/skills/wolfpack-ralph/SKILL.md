@@ -36,6 +36,6 @@ Known default-srt blockers:
 - Broker-backed perf/integration tests that spawn their own broker process.
 
 Preferred handling:
-- For normal Wolfpack broker access, use a host broker outside srt and connect to its configured socket.
+- Normal Ralph tasks must not access Wolfpack's host broker socket from inside srt; broker socket access is equivalent to host PTY control.
 - For broker startup tests, perf harnesses, browser/dev servers, or anything that must bind/listen locally, run that step with `--sandbox false` or ask for an explicit socket-capable srt profile.
 - Do not enable `allowAllUnixSockets` in default Ralph runs. If a task truly needs Unix sockets inside srt, scope `network.allowUnixSockets` to the exact socket path/dir and ensure the socket directory is writable only when bind/listen is required.
