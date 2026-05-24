@@ -16,7 +16,7 @@
  * Acceptance: chain A→B→A works end-to-end against the broker backend.
  */
 import { test, expect } from "@playwright/test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
@@ -79,7 +79,7 @@ let devDir: string | null = null;
 
 test.beforeAll(async () => {
   if (skipIfNoBroker.condition) return;
-  devDir = mkdtempSync(join(tmpdir(), "wp-broker-tc-"));
+  devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-broker-tc-")));
   mkdirSync(join(devDir, PROJECT_NAME));
   srv = await start({ envOverrides: { WOLFPACK_DEV_DIR: devDir } });
 });

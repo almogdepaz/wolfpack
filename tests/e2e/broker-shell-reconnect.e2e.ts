@@ -19,7 +19,7 @@
  *     the captured WP_MARK value.
  */
 import { test, expect, type WebSocketRoute } from "@playwright/test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
@@ -69,10 +69,9 @@ let devDir: string | null = null;
 test.beforeAll(async () => {
   if (skipIfNoBroker.condition) return;
 
-  // mkdtempSync from os.tmpdir() returns a real (non-symlinked) path on all
-  // platforms, avoiding the /tmp→/private/tmp symlink on macOS that would
-  // break isUnderDevDir's realpath check.
-  devDir = mkdtempSync(join(tmpdir(), "wp-broker-shell-"));
+  // realpathSync dodges macOS /var → /private/var symlink mismatches with
+  // isUnderDevDir's realpath containment check.
+  devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-broker-shell-")));
   mkdirSync(join(devDir, PROJECT_NAME));
 
   srv = await start({ envOverrides: { WOLFPACK_DEV_DIR: devDir } });
@@ -158,7 +157,7 @@ test("broker shell: reconnect shows banner and restores marker transcript", asyn
   }
 
   // ── Type marker command ──
-  await canvas.click();
+  await page.locator("#kb-open-btn").click();
   await page.keyboard.type(MARKER_CMD);
   await page.keyboard.press("Enter");
 

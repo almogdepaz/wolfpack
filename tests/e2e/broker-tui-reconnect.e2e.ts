@@ -27,7 +27,7 @@
  *     always emits these to prevent leftover client-side terminal state).
  */
 import { test, expect, type WebSocketRoute } from "@playwright/test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
@@ -89,7 +89,7 @@ let devDir: string | null = null;
 
 test.beforeAll(async () => {
   if (skipIfNoBroker.condition) return;
-  devDir = mkdtempSync(join(tmpdir(), "wp-broker-tui-"));
+  devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-broker-tui-")));
   mkdirSync(join(devDir, PROJECT_NAME));
   srv = await start({ envOverrides: { WOLFPACK_DEV_DIR: devDir } });
 });
@@ -170,7 +170,7 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   }
 
   // ── Write main-screen token (used later to verify no alt-screen bleed-through) ──
-  await canvas.click();
+  await page.locator("#kb-open-btn").click();
   await page.keyboard.type(`echo "${MAIN_TOKEN}"`);
   await page.keyboard.press("Enter");
 

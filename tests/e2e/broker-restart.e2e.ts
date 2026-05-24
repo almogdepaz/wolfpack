@@ -9,7 +9,7 @@
  * marker bytes typed before the first server was killed.
  */
 import { test, expect, type WebSocketRoute } from "@playwright/test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -119,7 +119,7 @@ let devDir: string | null = null;
 test.beforeAll(async () => {
   if (skip.condition) return;
   socketPath = `/tmp/wp-broker-${randomUUID()}.sock`;
-  devDir = mkdtempSync(join(tmpdir(), "wp-restart-"));
+  devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-restart-")));
   mkdirSync(join(devDir, PROJECT_NAME));
 
   brokerProc = spawn(BROKER_BIN!, [], {
@@ -197,7 +197,7 @@ test("wolfpack restart: broker session survives and prefill restores marker", as
     } else { idleCount = 0; lastLen = conn1Output.length; }
   }
 
-  await canvas1.click();
+  await page1.locator("#kb-open-btn").click();
   await page1.keyboard.type(`echo ${marker}`);
   await page1.keyboard.press("Enter");
 
