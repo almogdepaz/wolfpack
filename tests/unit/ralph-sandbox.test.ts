@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +22,47 @@ describe("buildSrtSettings", () => {
     const settings = buildSrtSettings("./relative-dir");
     const expected = resolve("./relative-dir");
     expect(settings.filesystem.allowWrite[0]).toBe(expected);
+  });
+
+  test("allowWrite includes the git metadata directory for a normal repository", () => {
+    const repo = mkdtempSync(join(tmpdir(), "ralph-srt-git-root-"));
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "pipe" });
+      const settings = buildSrtSettings(repo);
+      expect(settings.filesystem.allowWrite).toContain(join(repo, ".git"));
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("allowWrite includes linked worktree git metadata outside the worktree", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "ralph-srt-git-worktree-"));
+    const repo = join(tmp, "repo");
+    const worktree = join(tmp, "worktree");
+    try {
+      mkdirSync(repo);
+      execFileSync("git", ["init"], { cwd: repo, stdio: "pipe" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo, stdio: "pipe" });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: repo, stdio: "pipe" });
+      execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: repo, stdio: "pipe" });
+      writeFileSync(join(repo, "README.md"), "init\n");
+      execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "pipe" });
+      execFileSync("git", ["commit", "-m", "init"], { cwd: repo, stdio: "pipe" });
+      execFileSync("git", ["worktree", "add", "-b", "wt-test", worktree], { cwd: repo, stdio: "pipe" });
+
+      const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], { cwd: worktree, encoding: "utf-8" }).trim();
+      const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd: worktree, encoding: "utf-8" }).trim();
+      const resolvedGitDir = resolve(worktree, gitDir);
+      const resolvedCommonDir = resolve(worktree, commonDir);
+      const settings = buildSrtSettings(worktree);
+
+      expect(resolvedGitDir).toContain(join(repo, ".git", "worktrees"));
+      expect(resolvedCommonDir.endsWith(`${join("repo", ".git")}`)).toBe(true);
+      expect(settings.filesystem.allowWrite).toContain(resolvedGitDir);
+      expect(settings.filesystem.allowWrite).toContain(resolvedCommonDir);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("denyRead blocks sensitive directories", () => {
