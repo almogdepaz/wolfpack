@@ -25,3 +25,17 @@ Each subtask = a meaningful deliverable (3-5 per breakdown). NOT single lines of
 
 To notify the user (push notification to their phone/desktop):
 curl -s http://localhost:18790/api/notify -H 'Content-Type: application/json' -d '{"message": "your message"}'
+
+## Srt Sandbox and Local Sockets
+
+Default Ralph srt is intentionally restrictive. Do not plan default-srt work that requires starting local listeners unless the plan explicitly includes a host/non-srt verification phase.
+
+Known default-srt blockers:
+- Unix domain socket bind/listen, including starting `wolfpack-broker` inside srt.
+- Localhost TCP bind/listen unless a socket-capable profile explicitly enables local binding.
+- Broker-backed perf/integration tests that spawn their own broker process.
+
+Preferred handling:
+- For normal Wolfpack broker access, use a host broker outside srt and connect to its configured socket.
+- For broker startup tests, perf harnesses, browser/dev servers, or anything that must bind/listen locally, run that step with `--sandbox false` or ask for an explicit socket-capable srt profile.
+- Do not enable `allowAllUnixSockets` in default Ralph runs. If a task truly needs Unix sockets inside srt, scope `network.allowUnixSockets` to the exact socket path/dir and ensure the socket directory is writable only when bind/listen is required.

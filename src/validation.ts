@@ -85,6 +85,7 @@ export interface SrtSettings {
     allowedDomains: string[];
     deniedDomains: string[];
     allowLocalBinding: boolean;
+    allowUnixSockets?: string[];
   };
   filesystem: {
     denyRead: string[];
@@ -157,6 +158,17 @@ function resolveGitMetadataDirs(cwd: string): string[] {
   }
 }
 
+function configuredWolfpackBrokerSocketPath(): string {
+  const explicitSocket = process.env.WOLFPACK_BROKER_SOCKET;
+  if (explicitSocket && explicitSocket.length > 0) return explicitSocket;
+
+  const runtimeDir = process.env.XDG_RUNTIME_DIR;
+  if (runtimeDir && runtimeDir.length > 0) {
+    return join(runtimeDir, "wolfpack-broker.sock");
+  }
+  return join(homedir(), ".wolfpack", "broker.sock");
+}
+
 /** Build srt settings scoped to the given working directory. */
 export function buildSrtSettings(allowedWriteDir: string, options: BuildSrtSettingsOptions = {}): SrtSettings {
   const absDir = resolve(allowedWriteDir);
@@ -176,6 +188,11 @@ export function buildSrtSettings(allowedWriteDir: string, options: BuildSrtSetti
       ],
       deniedDomains: [],
       allowLocalBinding: false,
+      // macOS srt can path-scope Unix sockets. Allow the sandboxed client to
+      // connect to Wolfpack's host broker socket without allowing arbitrary
+      // socket bind/listen. Linux ignores allowUnixSockets unless
+      // allowAllUnixSockets is set, which Ralph intentionally does not do.
+      allowUnixSockets: [configuredWolfpackBrokerSocketPath()],
     },
     filesystem: {
       denyRead: ["~/.ssh", "~/.gnupg", "~/.aws/credentials"],
