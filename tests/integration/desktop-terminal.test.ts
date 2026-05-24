@@ -122,7 +122,7 @@ describe("desktop terminal: open (attach handshake)", () => {
     ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, skipPrefill: true }));
     await wait(100);
 
-    expect(msgs.map(m => m.type)).toEqual(["attach_ack", "pty_ready", "prefill_done"]);
+    expect(msgs.map(m => m.type)).toEqual(["attach_ack", "pty_ready"]);
 
     await closeWs(ws);
     await wait(100);

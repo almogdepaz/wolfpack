@@ -14,6 +14,7 @@
     "test": "bun test",
     "test:e2e": "bunx playwright test",
     "test:e2e:headed": "bunx playwright test --headed",
+    "perf:terminal-load": "bun scripts/terminal-load-perf.ts",
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/",
     "postinstall": "node bin/install.cjs"
   },

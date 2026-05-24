@@ -22,7 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent, SessionPrefill } from "./backend.js";
+import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent, SessionPrefill, SessionPrefillOptions } from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
 import { SHELL } from "./shell.js";
@@ -423,10 +423,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
    * pass it to `onSessionData` so the broker replays any bytes emitted between
    * snapshot and subscribe attach.
    */
-  async getSessionPrefill(name: string, cols?: number): Promise<SessionPrefill> {
+  async getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
     if (!id) return { data: Buffer.alloc(0) };
-    const snap = await this.fetchSnapshot(id, name, "getSessionPrefill", cols);
+    const snap = await this.fetchSnapshot(id, name, "getSessionPrefill", cols, options?.scrollbackLines);
     if (!snap) return { data: Buffer.alloc(0) };
     const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
     return { data: renderSnapshotToAnsi(snap), seq };
@@ -541,11 +541,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     name: string,
     callsite: string,
     targetCols?: number,
+    scrollbackLines: number = SNAPSHOT_SCROLLBACK_LINES,
   ): Promise<SnapshotPayload | undefined> {
     let resp: ControlResponse;
     const params: Record<string, unknown> = {
       session_id: id,
-      scrollback_lines: SNAPSHOT_SCROLLBACK_LINES,
+      scrollback_lines: scrollbackLines,
     };
     if (targetCols !== undefined && targetCols > 0) {
       params.target_cols = targetCols;

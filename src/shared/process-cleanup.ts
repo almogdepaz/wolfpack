@@ -28,6 +28,14 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+const testRalphProcessPids = new Set<number>();
+
+export function __registerTestRalphProcess(pid: number): () => void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__registerTestRalphProcess() is only available in test mode");
+  testRalphProcessPids.add(pid);
+  return () => { testRalphProcessPids.delete(pid); };
+}
+
 /**
  * PID-reuse-safe liveness check for a ralph worker. `kill(pid, 0)` alone
  * returns true for ANY process at that PID, so a recycled PID (the OS
@@ -46,6 +54,7 @@ export function isProcessAlive(pid: number): boolean {
  */
 export function isRalphProcessAlive(pid: number): boolean {
   if (pid <= 1 || !isProcessAlive(pid)) return false;
+  if (process.env.WOLFPACK_TEST && testRalphProcessPids.has(pid)) return true;
   try {
     const cmdline = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
       encoding: "utf-8",

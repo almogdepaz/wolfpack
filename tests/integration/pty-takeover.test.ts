@@ -318,7 +318,7 @@ describe("pty takeover: post-control_granted re-attach", () => {
 
   test("re-attach with prefillMode=none still sends attach_ack + pty_ready (no prefill_done needed)", async () => {
     // When client sends prefillMode=none, it doesn't enter buffering mode,
-    // so prefill_done is still sent but client ignores it.
+    // so the server can skip prefill_done entirely.
     injectFakeEntry("takeover-test");
 
     const ws = await connectPty("takeover-test");
@@ -343,8 +343,7 @@ describe("pty takeover: post-control_granted re-attach", () => {
     const types = msgs.map(m => m.type);
     expect(types).toContain("attach_ack");
     expect(types).toContain("pty_ready");
-    // prefill_done is also sent (harmless — client just ignores it with prefillMode=none)
-    expect(types).toContain("prefill_done");
+    expect(types).not.toContain("prefill_done");
 
     await closeWs(ws);
     await wait(100);
