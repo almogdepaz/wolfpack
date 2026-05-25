@@ -4,6 +4,8 @@
 
 Ralph is an iterative AI agent loop. It reads a plan file (PLAN.md), extracts tasks one at a time, runs an agent (claude/codex/gemini/cursor) on each, and tracks completion in a separate progress file. Supports worktree isolation, cleanup/audit phases, and multi-machine deployment.
 
+Ralph is opt-in in the UI: users must enable **Settings → Ralph Loop → Enable Ralph Loop** before Ralph controls appear. API routes still exist server-side; the setting gates UI visibility/discoverability.
+
 ---
 
 ## Files & State
@@ -191,7 +193,7 @@ Main worktree + per-section sub-worktrees:
 
 | Endpoint | Method | Body | Effect |
 |----------|--------|------|--------|
-| `/api/ralph/start` | POST | `{ project, iterations, planFile, agent, cleanup, auditFix, worktree, ... }` | Spawn worker, acquire lock |
+| `/api/ralph/start` | POST | `{ project, iterations, planFile, agent, cleanup, auditFix, worktree, ... }` | Spawn worker, acquire lock. UI access requires **Settings → Ralph Loop → Enable Ralph Loop**. |
 | `/api/ralph/cancel` | POST | `{ project }` | SIGTERM process + group, delete progress.txt |
 | `/api/ralph/dismiss` | POST | `{ project, deletePlan? }` | Delete log + lock + progress, optionally plan, cleanup worktrees |
 

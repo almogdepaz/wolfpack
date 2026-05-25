@@ -83,7 +83,7 @@ Scan the QR with your phone, tap **Add to Home Screen**, done.
 - **Desktop grid** — view up to 6 sessions side-by-side. Add via `+`, remove via `×`, `Cmd+ArrowLeft/Right` to navigate.
 - **Mobile-first terminal** — ghostty-web (WASM) emulator. Keyboard accessory bar (arrows, Esc, `git`, copy). On-screen keyboard suppressed until you ask for it. Long-press to select.
 - **PWA** — install on home screen. Notifications + vibration when sessions need attention. Reconnects on drop.
-- **Ralph loop** — autonomous task runner. Hand it a markdown plan, it iterates through tasks with an agent, committing along the way. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
+- **Ralph loop** — autonomous task runner. Hand it a markdown plan, it iterates through tasks with an agent, committing along the way. Ralph controls are hidden until you enable **Settings → Ralph Loop → Enable Ralph Loop**. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
 
 ## CLI
 
