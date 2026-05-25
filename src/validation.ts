@@ -6,6 +6,7 @@ import { isAbsolute, resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
+import type { RalphAgent } from "./ralph-agent.js";
 
 // ── Regex patterns ──
 
@@ -95,6 +96,10 @@ export interface SrtSettings {
   };
 }
 
+export interface BuildSrtSettingsOptions {
+  readonly agent?: RalphAgent;
+}
+
 /**
  * Cached `rg` resolution. Previously this ran a sync
  * `which rg` on every ralph iteration via buildSrtSettings → a hang in
@@ -153,7 +158,7 @@ function resolveGitMetadataDirs(cwd: string): string[] {
 }
 
 /** Build srt settings scoped to the given working directory. */
-export function buildSrtSettings(allowedWriteDir: string): SrtSettings {
+export function buildSrtSettings(allowedWriteDir: string, options: BuildSrtSettingsOptions = {}): SrtSettings {
   const absDir = resolve(allowedWriteDir);
   const settings: SrtSettings = {
     network: {
@@ -178,7 +183,17 @@ export function buildSrtSettings(allowedWriteDir: string): SrtSettings {
       denyWrite: [".env", ".env.*", "*.pem", "*.key"],
     },
   };
+
   settings.filesystem.allowWrite.push(...resolveGitMetadataDirs(absDir));
+
+  if (options.agent === "codex") {
+    settings.network.allowedDomains.push("chatgpt.com", "*.chatgpt.com");
+    // Codex initializes mutable state under ~/.codex before stable per-session
+    // subpaths exist. This intentionally grants broad persistent Codex state
+    // access; docs/ralph-behavior.md records the accepted sandbox risk.
+    settings.filesystem.allowWrite.push(join(homedir(), ".codex"));
+  }
+
   const rg = resolveRipgrepBin();
   if (rg) settings.ripgrep = rg;
   return settings;
