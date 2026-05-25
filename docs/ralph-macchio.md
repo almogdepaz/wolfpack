@@ -2,6 +2,10 @@
 
 Autonomous task runner. Write a markdown plan file, pick an agent, set iterations, and let it rip. Ralph reads the plan, extracts the first incomplete task, hands it to the agent, marks it done, and moves on — implementing, testing, and committing along the way.
 
+## Enable Ralph
+
+Ralph is opt-in. Open **Settings → Ralph Loop** and turn on **Enable Ralph Loop** before trying to start, monitor, or cancel loops. Until this setting is enabled, Ralph controls are intentionally hidden from the UI.
+
 ## Plan File Format
 
 Tasks use numbered markdown headers. Ralph recognizes this pattern and nothing else:
@@ -43,4 +47,4 @@ Each Ralph iteration:
 
 A final cleanup pass identifies and removes dead code after all tasks complete.
 
-Start, monitor, and cancel loops from your phone via the Ralph panel, or from the CLI.
+Start, monitor, and cancel loops from your phone via the Ralph panel after **Settings → Ralph Loop → Enable Ralph Loop** is on, or from the CLI.

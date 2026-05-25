@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { buildSrtSettings } from "../../src/validation.js";
 import { parseRalphLog } from "../../src/server/ralph.js";
 
@@ -89,9 +89,44 @@ describe("buildSrtSettings", () => {
     expect(domains).toContain("api.anthropic.com");
   });
 
+  test("codex settings intentionally allow the full persistent codex state directory", () => {
+    const settings = buildSrtSettings("/tmp/test", { agent: "codex" });
+    // Codex initializes mutable state under ~/.codex before per-session paths exist.
+    // This is intentionally broader than project-local writes; docs record the risk.
+    expect(settings.filesystem.allowWrite).toContain(join(homedir(), ".codex"));
+  });
+
+  test("codex settings allow chatgpt network domains", () => {
+    const settings = buildSrtSettings("/tmp/test", { agent: "codex" });
+    expect(settings.network.allowedDomains).toContain("chatgpt.com");
+    expect(settings.network.allowedDomains).toContain("*.chatgpt.com");
+  });
+
+  test("claude/default settings do not include codex-specific permissions", () => {
+    const defaultSettings = buildSrtSettings("/tmp/test");
+    const claudeSettings = buildSrtSettings("/tmp/test", { agent: "claude" });
+    expect(claudeSettings).toEqual(defaultSettings);
+    expect(defaultSettings.filesystem.allowWrite).not.toContain(join(homedir(), ".codex"));
+    expect(defaultSettings.network.allowedDomains).not.toContain("chatgpt.com");
+  });
+
   test("network disallows local binding", () => {
     const settings = buildSrtSettings("/tmp/test");
     expect(settings.network.allowLocalBinding).toBe(false);
+  });
+
+  test("network does not allow host broker Unix socket access by default", () => {
+    const originalSocket = process.env.WOLFPACK_BROKER_SOCKET;
+    const brokerSocket = join(tmpdir(), "configured-wolfpack-broker.sock");
+    process.env.WOLFPACK_BROKER_SOCKET = brokerSocket;
+    try {
+      const settings = buildSrtSettings("/tmp/test");
+      expect(settings.network).not.toHaveProperty("allowUnixSockets");
+      expect(settings.network).not.toHaveProperty("allowAllUnixSockets");
+    } finally {
+      if (originalSocket === undefined) delete process.env.WOLFPACK_BROKER_SOCKET;
+      else process.env.WOLFPACK_BROKER_SOCKET = originalSocket;
+    }
   });
 
   test("settings structure matches srt schema", () => {
@@ -104,6 +139,8 @@ describe("buildSrtSettings", () => {
     expect(settings.network).toHaveProperty("allowedDomains");
     expect(settings.network).toHaveProperty("deniedDomains");
     expect(settings.network).toHaveProperty("allowLocalBinding");
+    expect(settings.network).not.toHaveProperty("allowUnixSockets");
+    expect(settings.network).not.toHaveProperty("allowAllUnixSockets");
     // verify filesystem keys
     expect(settings.filesystem).toHaveProperty("denyRead");
     expect(settings.filesystem).toHaveProperty("allowWrite");

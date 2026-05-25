@@ -22,6 +22,18 @@ test.afterAll(async () => {
   srv?.close();
 });
 
+function proxyToServer(ws: WebSocketRoute): void {
+  const server = ws.connectToServer();
+
+  // Proxy messages bidirectionally
+  ws.onMessage((msg) => server.send(msg));
+  server.onMessage((msg) => ws.send(msg));
+
+  // Forward close from either side (disables default auto-forwarding)
+  ws.onClose((code, reason) => server.close({ code, reason }));
+  server.onClose((code, reason) => ws.close({ code, reason }));
+}
+
 /** Helper: set up a WS proxy that exposes the page-facing route for later close(). */
 function setupWsProxy(page: import("@playwright/test").Page) {
   // Tracks the FIRST (active) page-facing route for disconnect simulation.
@@ -31,18 +43,9 @@ function setupWsProxy(page: import("@playwright/test").Page) {
   let connectionCount = 0;
 
   const ready = page.routeWebSocket(/\/ws\/pty/, (ws) => {
-    const server = ws.connectToServer();
     connectionCount++;
-
-    // Proxy messages bidirectionally
-    ws.onMessage((msg) => server.send(msg));
-    server.onMessage((msg) => ws.send(msg));
-
-    // Forward close from either side (disables default auto-forwarding)
-    ws.onClose((code, reason) => server.close({ code, reason }));
-    server.onClose((code, reason) => ws.close({ code, reason }));
-
     activeRoute = ws;
+    proxyToServer(ws);
   });
 
   return {
@@ -95,6 +98,39 @@ test("WS disconnect shows reconnecting banner then recovers", async ({
 
   // Verify canvas still present after reconnect
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5000 });
+});
+
+test("WS disconnect keeps reconnecting banner visible during a network outage", async ({
+  page,
+  context,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name === "desktop",
+    "mobile-only viewport tests",
+  );
+
+  const proxy = setupWsProxy(page);
+  await proxy.ready;
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.locator(".card", { hasText: "test-project" }).first().click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5000 });
+
+  const connStatus = page.locator("#conn-status");
+  await expect(connStatus).toBeHidden();
+
+  await context.setOffline(true);
+  proxy.disconnect();
+
+  try {
+    await expect(connStatus).toBeVisible({ timeout: 3000 });
+    await expect(connStatus).toContainText(/reconnecting/i, { timeout: 3000 });
+  } finally {
+    await context.setOffline(false);
+  }
+
+  await expect(connStatus).toBeHidden({ timeout: 15000 });
 });
 
 test("WS disconnect during active session preserves terminal content", async ({

@@ -3,6 +3,8 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
+import type { RalphAgent } from "../ralph-agent.js";
+import { RALPH_AGENTS as RALPH_AGENT_LIST } from "../ralph-agent.js";
 
 const _realExec = promisify(execFile);
 type ExecFn = (file: string, args: readonly string[], options?: { timeout?: number; encoding?: BufferEncoding; maxBuffer?: number }) => Promise<{ stdout: string; stderr: string }>;
@@ -28,11 +30,11 @@ export const SHELL = (() => {
   return "/bin/sh";
 })();
 
-export const RALPH_AGENTS = new Set(["claude", "codex", "gemini", "cursor"]);
+export const RALPH_AGENTS = new Set<RalphAgent>(RALPH_AGENT_LIST);
 
-export function detectAgent(agentCmd: string): "claude" | "gemini" | "codex" | "cursor" | null {
+export function detectAgent(agentCmd: string): RalphAgent | null {
   for (const agent of RALPH_AGENTS) {
-    if (new RegExp(`^${agent}\\b`).test(agentCmd)) return agent as "claude" | "gemini" | "codex" | "cursor";
+    if (new RegExp(`^${agent}\\b`).test(agentCmd)) return agent;
   }
   return null;
 }

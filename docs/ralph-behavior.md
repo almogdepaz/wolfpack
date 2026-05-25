@@ -4,6 +4,8 @@
 
 Ralph is an iterative AI agent loop. It reads a plan file (PLAN.md), extracts tasks one at a time, runs an agent (claude/codex/gemini/cursor) on each, and tracks completion in a separate progress file. Supports worktree isolation, cleanup/audit phases, and multi-machine deployment.
 
+Ralph is opt-in in the UI: users must enable **Settings → Ralph Loop → Enable Ralph Loop** before Ralph controls appear. API routes still exist server-side; the setting gates UI visibility/discoverability.
+
 ---
 
 ## Files & State
@@ -15,6 +17,7 @@ Ralph is an iterative AI agent loop. It reads a plan file (PLAN.md), extracts ta
 | `.ralph.log` | Iteration output, status detection, summary. Contains `all_tasks_done: true` when worker confirms completion. Overwritten each run. | Deleted on dismiss |
 | `.ralph.lock` | Empty file, presence = lock held. Prevents concurrent runs. | Deleted on cancel/dismiss/exit |
 | `.ralph_iter.tmp` | Last iteration's raw agent output. Cleaned up per iteration. | Transient |
+| `.ralph-response.json` | Structured per-iteration agent response. The runner reads this for completion/subtask decisions instead of parsing stdout. All agents use this same file/schema contract. | Transient |
 
 ---
 
@@ -98,13 +101,12 @@ For each iteration `i` from 1 to `maxIterations`:
 
 7. **Check exit code** — if non-zero, log failure, continue
 
-8. **Subtask detection** — parse `<subtasks>` block:
-   - Append to plan as `- [ ]` checkboxes
-   - Mark parent done in progress
-   - Expand iteration budget
-   - Continue (don't mark parent done again)
+8. **Structured response detection** — read `.ralph-response.json`:
+   - Require valid JSON with `version: 1` and `status: "done" | "needs_subtasks"`
+   - Missing/invalid response means the task is not complete
+   - For `needs_subtasks`, append `subtasks` strings to plan as `- [ ]` checkboxes, mark parent done, expand iteration budget, and continue
 
-9. **Mark task complete** — append to progress.txt
+9. **Mark task complete** — only after an explicit `status: "done"`, append to progress.txt
 
 10. **Sync** progress back from sub-worktree, sync plan to project dir
 
@@ -191,7 +193,7 @@ Main worktree + per-section sub-worktrees:
 
 | Endpoint | Method | Body | Effect |
 |----------|--------|------|--------|
-| `/api/ralph/start` | POST | `{ project, iterations, planFile, agent, cleanup, auditFix, worktree, ... }` | Spawn worker, acquire lock |
+| `/api/ralph/start` | POST | `{ project, iterations, planFile, agent, cleanup, auditFix, worktree, ... }` | Spawn worker, acquire lock. UI access requires **Settings → Ralph Loop → Enable Ralph Loop**. |
 | `/api/ralph/cancel` | POST | `{ project }` | SIGTERM process + group, delete progress.txt |
 | `/api/ralph/dismiss` | POST | `{ project, deletePlan? }` | Delete log + lock + progress, optionally plan, cleanup worktrees |
 
@@ -243,22 +245,41 @@ Task counts (for progress bar display): `tasksTotal` from plan file, `tasksDone`
 
 ---
 
-## Subtask Protocol
+## Structured Response Protocol
 
-When a task is too large, the agent outputs:
-```
-<subtasks>
-Subtask description A
-Subtask description B
-</subtasks>
+Every agent uses the same runner contract: write `.ralph-response.json` before exit. Codex is invoked with native structured-output flags (`--output-last-message` + `--output-schema`); claude/gemini/cursor are prompted to write the same file and schema. The response file and other `.ralph-*`/progress/log files are runner-owned transient files and must not be committed. Ralph also adds these transient paths to the active worktree's `.git/info/exclude` so `git add -A` does not stage them.
+
+Done response:
+```json
+{
+  "version": 1,
+  "status": "done",
+  "prereqs": ["assumption or prerequisite"],
+  "tests": ["test command or planned test"],
+  "done": ["completion criterion met"],
+  "subtasks": []
+}
 ```
 
-Ralph then:
-1. Strips markdown headers and `~~` from subtask text
-2. Appends as `- [ ] <subtask>` checkboxes to plan
-3. Marks parent task done in progress (never re-picked)
-4. Expands iteration budget: `maxIterations += subtasks.length`
-5. Cap: max 5 expansions, ceiling at `max(ITERATIONS*2, 100)`
+Needs-subtasks response:
+```json
+{
+  "version": 1,
+  "status": "needs_subtasks",
+  "prereqs": ["assumption or prerequisite"],
+  "tests": ["test command or planned test"],
+  "done": ["completion criterion"],
+  "subtasks": ["Subtask description A", "Subtask description B"]
+}
+```
+
+For `needs_subtasks`, Ralph then:
+1. Validates the JSON response schema
+2. Strips markdown headers and `~~` from subtask text
+3. Appends as `- [ ] <subtask>` checkboxes to plan
+4. Marks parent task done in progress (never re-picked)
+5. Expands iteration budget: `maxIterations += subtasks.length`
+6. Cap: max 5 expansions, ceiling at `max(ITERATIONS*2, 100)`
 
 ---
 
@@ -281,11 +302,17 @@ Ralph then:
 | Agent | Binary | Key flags |
 |-------|--------|-----------|
 | claude | `claude` | `--print --dangerously-skip-permissions --allowedTools [...]` |
-| codex | `codex` | Agent-specific flags |
+| codex | `codex` | `exec --disable apps --dangerously-bypass-approvals-and-sandbox --output-last-message <response> --output-schema <schema>` |
 | cursor | `cursor` | Agent-specific flags |
 | gemini | `gemini` | Agent-specific flags |
 
 Allowed tools: Edit, Write, Read, Glob, Grep, Bash (git, npm, bun, cargo, go, python, make, ls, mkdir, rm, mv, cp, cat, echo, touch)
+
+### Srt sandbox policy
+
+Ralph's srt settings are project-scoped by default: write access is limited to the active worktree, `/tmp`, the active repository's git metadata directories, and the agent's required home-state directory. Git metadata write access is required so sandboxed agents can create commits from normal repos and linked worktrees; it intentionally includes the common git dir for linked worktrees. For Codex, the sandbox intentionally allows writes to the full `~/.codex` directory and network access to `chatgpt.com` / `*.chatgpt.com`. This is broader persistent state access than the project worktree; it is accepted because Codex initializes mutable state under `~/.codex` before stable per-session subpaths exist. Codex is run with `--disable apps` because Ralph does not need Codex app/plugin tooling and the apps worker emits sandbox-specific `wham/apps` transport warnings. Do not widen this further without a failing Codex+srt smoke log and a regression test.
+
+Default Ralph srt does not allow local listener creation or host broker socket access. Plans or verification steps that need Unix domain socket bind/listen (for example, starting `wolfpack-broker` inside srt), localhost TCP bind/listen, browser/dev servers, broker-backed perf/integration tests, or direct access to Wolfpack's broker socket must run that phase outside srt (`--sandbox false`) or use an explicitly requested socket-capable profile. Do not enable `allowAllUnixSockets` in default Ralph runs. If a task truly needs Unix socket access inside srt, the profile must scope `network.allowUnixSockets` to the exact socket path/dir and ensure the socket directory is writable only when bind/listen is required.
 
 ---
 
