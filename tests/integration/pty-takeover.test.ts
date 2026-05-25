@@ -472,6 +472,21 @@ describe("pty takeover: session validation at upgrade", () => {
       // connect failed — expected
     }
   });
+
+  test("backend failure during WS upgrade rejects connection without killing server", async () => {
+    const originalList = ctx.mockBackend.list.bind(ctx.mockBackend);
+    ctx.mockBackend.list = async () => {
+      throw new Error("simulated broker offline");
+    };
+
+    try {
+      await expect(connectPty("takeover-test")).rejects.toThrow("connect failed");
+      const res = await fetch(`http://127.0.0.1:${ctx.port}/api/info`);
+      expect(res.status).toBe(200);
+    } finally {
+      ctx.mockBackend.list = originalList;
+    }
+  });
 });
 
 // ── take_control without attach guard ──

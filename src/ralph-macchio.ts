@@ -18,6 +18,7 @@ import { writeFileSync, appendFileSync, readFileSync, existsSync, unlinkSync, co
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { TASK_HEADER, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
+import { classifyRalphIterationOutput } from "./ralph-control.js";
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
 import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
 import { buildCleanupPrompt } from "./ralph-skill-cleanup.js";
@@ -368,7 +369,7 @@ OUTPUT (always include):
 - list the tests you ran (or would run if not possible)
 </tests>
 <done>
-- explicit criteria to consider the task complete
+- explicit criteria proving the task is complete; if this block is missing or empty, the runner will NOT mark the task complete
 </done>
 
 RULES:
@@ -429,13 +430,7 @@ function worktreeBranchName(taskHeader: string, iterationIndex: number): string 
   return `ralph/${num}-${slug}`;
 }
 
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
-}
-
-function appendSubtasksToPlan(subtasks: string[]): void {
+function appendSubtasksToPlan(subtasks: readonly string[]): void {
   // sanitize: collapse embedded newlines first, then strip markdown headers and strikethrough markers
   const safe = subtasks.map(t => t.replace(/[\r\n]+/g, " ").replace(/^#+\s*/, "").replace(/~~/g, "").trim()).filter(Boolean);
   const lines = safe.map(t => `- [ ] ${t}`).join("\n");
@@ -994,20 +989,30 @@ async function main() {
       continue;
     }
 
-    // check for subtask breakdown (capped to prevent unbounded expansion)
-    const subtasks = parseSubtasks(output);
+    // check for explicit runner control output before marking completion
+    const control = classifyRalphIterationOutput(output);
     const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
-    if (subtasks.length > 0 && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
+    if (control.kind === "subtasks") {
+      if (subtaskExpansions >= MAX_SUBTASK_EXPANSIONS) {
+        appendFileSync(LOG_FILE, `\n=== ⚠️ Subtask expansion cap reached (${MAX_SUBTASK_EXPANSIONS}) — task not marked complete ===\n`);
+        cleanupIterFile();
+        continue;
+      }
       subtaskExpansions++;
-      subtasksAdded += subtasks.length;
-      appendSubtasksToPlan(subtasks);
+      subtasksAdded += control.subtasks.length;
+      appendSubtasksToPlan(control.subtasks);
       // mark parent done so it's never re-picked
       markTaskCompleted(task, checkbox);
-      maxIterations = expandBudget(maxIterations, subtasks.length, MAX_CEILING);
-      appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${subtasks.length}) — extended to ${maxIterations} iterations (ceiling ${MAX_CEILING}, expansions ${subtaskExpansions}/${MAX_SUBTASK_EXPANSIONS}) ===\n`);
-      for (const st of subtasks) appendFileSync(LOG_FILE, `  + ${st}\n`);
+      maxIterations = expandBudget(maxIterations, control.subtasks.length, MAX_CEILING);
+      appendFileSync(LOG_FILE, `\n=== 🧩 Subtasks detected (${control.subtasks.length}) — extended to ${maxIterations} iterations (ceiling ${MAX_CEILING}, expansions ${subtaskExpansions}/${MAX_SUBTASK_EXPANSIONS}) ===\n`);
+      for (const st of control.subtasks) appendFileSync(LOG_FILE, `  + ${st}\n`);
       lastTask = task;
       lastWasSubtaskEmission = true;
+      cleanupIterFile();
+      continue;
+    }
+    if (control.kind === "incomplete") {
+      appendFileSync(LOG_FILE, `\n=== ⚠️ Iteration omitted completion signal: ${control.reason} — task not marked complete ===\n`);
       cleanupIterFile();
       continue;
     }

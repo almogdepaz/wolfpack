@@ -2,7 +2,7 @@
  * Shared pure validation functions.
  * Extracted from serve.ts and cli.ts for testability — zero side effects.
  */
-import { resolve, join } from "node:path";
+import { isAbsolute, resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -131,6 +131,27 @@ function resolveRipgrepBin(): { command: string; argv0?: string } | undefined {
   return undefined;
 }
 
+function resolveGitMetadataDirs(cwd: string): string[] {
+  try {
+    const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return [gitDir, commonDir]
+      .filter(path => path.length > 0)
+      .map(path => isAbsolute(path) ? path : resolve(cwd, path))
+      .filter((path, index, paths) => paths.indexOf(path) === index);
+  } catch {
+    return [];
+  }
+}
+
 /** Build srt settings scoped to the given working directory. */
 export function buildSrtSettings(allowedWriteDir: string): SrtSettings {
   const absDir = resolve(allowedWriteDir);
@@ -157,6 +178,7 @@ export function buildSrtSettings(allowedWriteDir: string): SrtSettings {
       denyWrite: [".env", ".env.*", "*.pem", "*.key"],
     },
   };
+  settings.filesystem.allowWrite.push(...resolveGitMetadataDirs(absDir));
   const rg = resolveRipgrepBin();
   if (rg) settings.ripgrep = rg;
   return settings;

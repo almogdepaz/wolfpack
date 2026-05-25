@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parseSubtasks } from "../../src/ralph-control.js";
 import { TASK_HEADER, countTasksInContent, detectOldPlanFormat, migratePlanFormat } from "../../src/wolfpack-context.js";
 
 // ── Plan-parsing functions from ralph-macchio.ts and serve.ts ──
@@ -33,13 +34,6 @@ function extractCurrentTask(plan: string): { task: string; checkbox: boolean } |
     }
   }
   return null;
-}
-
-/** Mirrors ralph-macchio.ts parseSubtasks() */
-function parseSubtasks(output: string): string[] {
-  const match = output.match(/<subtasks>([\s\S]*?)<\/subtasks>/);
-  if (!match) return [];
-  return match[1].split("\n").map(l => l.trim()).filter(l => l.length > 0);
 }
 
 /** Mirrors serve.ts countPlanTasks() but takes content instead of path */
