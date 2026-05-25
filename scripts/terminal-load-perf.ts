@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { chromium, type Page } from "playwright";
 
-type TraceEvent = { t: number; kind: string; [field: string]: unknown };
-type TraceState = {
+export type TraceEvent = { t: number; kind: string; [field: string]: unknown };
+export type TraceState = {
   _meta: { session: string; machine: string; startWall: number; startPerf: number; mode?: string };
   events: TraceEvent[];
 };
-type ServerTiming = {
+export type ServerTiming = {
   event: string;
   session: string;
   mode: string;
@@ -194,8 +194,28 @@ function delta(a: number | null, b: number | null): number | null {
   return +(b - a).toFixed(3);
 }
 
-function summarizeCell(trace: TraceState): CellSummary {
-  const events = trace.events;
+function findLastEventIndex(events: TraceEvent[], predicate: (event: TraceEvent) => boolean): number {
+  for (let idx = events.length - 1; idx >= 0; idx--) {
+    if (predicate(events[idx])) return idx;
+  }
+  return -1;
+}
+
+function eventsForLatestAttach(events: TraceEvent[]): TraceEvent[] {
+  const attachIndex = findLastEventIndex(events, (event) => event.kind === "attach.send");
+  if (attachIndex < 0) return events;
+
+  const setupKinds = new Set(["openSession.start", "addToGrid.start", "dom.cell.created", "ghostty.ready"]);
+  let startIndex = attachIndex;
+  for (let idx = attachIndex - 1; idx >= 0; idx--) {
+    if (events[idx].kind === "attach.send") break;
+    if (setupKinds.has(events[idx].kind)) startIndex = idx;
+  }
+  return events.slice(startIndex);
+}
+
+export function summarizeCell(trace: TraceState): CellSummary {
+  const events = eventsForLatestAttach(trace.events);
   const prefillBytes = events
     .filter((event) => event.kind === "ws.binary" && event.bucket === "prefill")
     .reduce((sum, event) => sum + (typeof event.size === "number" ? event.size : 0), 0);
@@ -209,13 +229,14 @@ function summarizeCell(trace: TraceState): CellSummary {
   };
 }
 
-function serverTimingsFor(timings: ServerTiming[], sessions: string[]): ServerTiming[] {
+export function serverTimingsFor(timings: ServerTiming[], sessions: string[], startIndex = 0): ServerTiming[] {
   const set = new Set(sessions);
-  return timings.filter((timing) => set.has(timing.session));
+  return timings.slice(startIndex).filter((timing) => set.has(timing.session));
 }
 
 async function runSingle(baseUrl: string, timings: ServerTiming[], session: string): Promise<ScenarioSummary> {
   const { page, close } = await setupPage(baseUrl);
+  const timingStart = timings.length;
   try {
     await page.evaluate((name) => {
       (window as unknown as { openSession(name: string): void }).openSession(name);
@@ -228,7 +249,7 @@ async function runSingle(baseUrl: string, timings: ServerTiming[], session: stri
       mode: "single",
       cells: 1,
       sessions: [summarizeCell(trace)],
-      server: serverTimingsFor(timings, [session]),
+      server: serverTimingsFor(timings, [session], timingStart),
     };
   } finally {
     await close();
@@ -237,6 +258,7 @@ async function runSingle(baseUrl: string, timings: ServerTiming[], session: stri
 
 async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: string[]): Promise<ScenarioSummary> {
   const { page, close } = await setupPage(baseUrl);
+  const timingStart = timings.length;
   try {
     await page.evaluate((names) => {
       const w = window as unknown as {
@@ -263,7 +285,7 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
       mode: "grid",
       cells: sessions.length,
       sessions: cells,
-      server: serverTimingsFor(timings, sessions),
+      server: serverTimingsFor(timings, sessions, timingStart),
     };
   } finally {
     await close();
@@ -340,7 +362,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

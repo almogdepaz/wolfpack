@@ -6,7 +6,7 @@ import {
   esc, escAttr, state, setState, wpSettings,
   TERM_PRESETS, GRID_TERMINAL_SCROLLBACK, isDesktop,
 } from "./app-state";
-import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
+import { __wfTraceEvent, __wfTraceStart } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
@@ -108,7 +108,7 @@ export function updateGridLayout() {
 }
 
 function createGridCell(gs, idx) {
-  const trace = __wfTraceGet(gs.session, gs.machine || "") || __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
+  const trace = __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
   __wfTraceEvent(trace, "dom.cell.created", { gridIndex: idx });
   const cell = document.createElement("div");
   cell.className = "grid-cell" + (idx === state.gridFocusIndex ? " grid-focused" : "") + (gs._loading ? " grid-loading" : "");

@@ -1,6 +1,6 @@
 # Terminal Load Performance
 
-This is the linked report for `TERMINAL_LOAD_OPTIMIZATION_PLAN.md` task 7.
+This document describes the terminal-load pipeline, debug tooling, advisory budgets, deterministic coverage, and measurement status.
 
 ## Pipeline
 
