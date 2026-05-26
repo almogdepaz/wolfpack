@@ -316,6 +316,57 @@ test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }
   }), { timeout: 3000 }).toBe(true);
 });
 
+test("grid pty_ready clears stale prefill-loading state", async ({ page }) => {
+  await loadApp(page);
+  await page.evaluate(() => localStorage.setItem("wolfpackDebug", "1"));
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    initTerminal();
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return !!state.terminalController?.term;
+  }), { timeout: 5000 }).toBe(true);
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    const debugWindow = window as unknown as {
+      __wfTrace?: Record<string, { _meta: { session: string }; events: Array<{ kind: string }> }>;
+    };
+    const traces = Object.values(debugWindow.__wfTrace || {});
+    return ["test-project", "another-project"].every((session) =>
+      traces.some((trace) => trace._meta.session === session && trace.events.some((event) => event.kind === "pty_ready")),
+    );
+  }), { timeout: 5000 }).toBe(true);
+
+  const loadingStates = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
+    cells.map((cell) => ({
+      loadState: (cell as HTMLElement).dataset.terminalLoadState,
+      slow: cell.classList.contains("terminal-load-slow"),
+      slowLabel: (cell as HTMLElement).dataset.terminalSlowLabel,
+    })),
+  );
+
+  for (const cell of loadingStates) {
+    expect(cell.loadState).not.toBe("prefill-loading");
+    expect(cell.slowLabel).not.toBe("waiting for grid cell prefill");
+  }
+});
+
 test("long-background visibilitychange reconnects each grid cell and repaints", async ({ page }) => {
   await loadApp(page);
 

@@ -173,6 +173,12 @@ async function mountGridController(gs, cell, idx) {
       // dimensions/dirty-cells haven't changed. Fires on every reconnect too,
       // so post-sleep / long-background recovery also gets a fresh repaint.
       if (gs.controller) gs.controller.forceRepaint();
+      // pty_ready is sent after prefill_done + broker subscribe. From here the
+      // cell may still be hidden by hydration, but it is no longer waiting for
+      // prefill. Keep the loading UI honest so stale slow-path badges don't sit
+      // on top of an otherwise usable terminal.
+      setTerminalLoadVisualState(cell, "hydrating");
+      gs._slowLoad?.start("hydrating grid cell");
     },
     onOutput: () => {
       if (_gridCachedPending) {
