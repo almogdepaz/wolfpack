@@ -404,7 +404,7 @@ describe("desktop terminal: two-phase prefill", () => {
     await wait(100);
   });
 
-  test("attach with prefillMode=full sends attach_ack and correct prefill sequence", async () => {
+  test("attach with prefillMode=full sends attach_ack and skips viewport boundary", async () => {
     const ws = await connectPty("desktop-test");
     const msgs = collectJsonMessages(ws);
 
@@ -414,16 +414,13 @@ describe("desktop terminal: two-phase prefill", () => {
 
     const types = msgs.map(m => m.type);
     expect(types).toContain("attach_ack");
-    // Verify ordering: attach_ack < prefill_viewport < prefill_done
+    // Full prefill has no separate viewport boundary; clients flush buffered
+    // full bytes at prefill_done.
     const ackIdx = types.indexOf("attach_ack");
-    const vpIdx = types.indexOf("prefill_viewport");
     const doneIdx = types.indexOf("prefill_done");
-    if (vpIdx >= 0) {
-      expect(vpIdx).toBeGreaterThan(ackIdx);
-    }
+    expect(types).not.toContain("prefill_viewport");
     if (doneIdx >= 0) {
       expect(doneIdx).toBeGreaterThan(ackIdx);
-      if (vpIdx >= 0) expect(doneIdx).toBeGreaterThan(vpIdx);
     }
 
     await closeWs(ws);

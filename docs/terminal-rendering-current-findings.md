@@ -45,11 +45,10 @@ In `src/server/websocket.ts`, full mode does:
 1. wait for client resize messages to settle via `waitForResizeSettle()`.
 2. apply broker resize and wait for output quiescence via `waitForOutputQuiescence()`.
 3. fetch broker snapshot via `getSessionPrefill(...)` with default scrollback lines.
-4. send `prefill_viewport` JSON before full binary prefill chunks.
-5. send binary prefill chunks.
-6. send `prefill_done`.
-7. subscribe to live output with `sinceSeq = snapshot.seq`.
-8. send `pty_ready`.
+4. send binary prefill chunks.
+5. send `prefill_done`.
+6. subscribe to live output with `sinceSeq = snapshot.seq`.
+7. send `pty_ready`.
 
 ### Viewport mode server sequence
 
@@ -81,9 +80,9 @@ In `createPtySocketClient()`:
 - On `prefill_done`, the client flushes remaining buffered chunks.
 - Binary frames after `_awaitingPrefillDone` is false are treated as replay/live output and are written directly via `onBinaryData`.
 
-### Full mode `prefill_viewport`
+### Full mode and `prefill_viewport`
 
-For full mode, server sends `prefill_viewport` before binary prefill chunks. In that case the client flushes zero viewport chunks at `prefill_viewport`, then buffers and flushes the full prefill at `prefill_done`.
+Full mode does not emit a `prefill_viewport` boundary. The client buffers full binary prefill chunks and flushes them at `prefill_done`.
 
 ### Viewport mode `prefill_viewport`
 

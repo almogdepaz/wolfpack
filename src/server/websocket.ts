@@ -128,6 +128,12 @@ const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
 // Covers session-open CSS transitions (~200ms total) + WS jitter.
 const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 200;
 const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
+// Grid viewport attaches are already mounted in stable cells and fetch no
+// broker scrollback, so they use a shorter resize settle budget than full
+// desktop attaches while still coalescing same-turn resize frames.
+const VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS = 40;
+const VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 60;
+const VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 160;
 // After applying the settled resize, wait for the shell's SIGWINCH-triggered
 // redraw to fully land in the broker output stream so it's captured in the
 // snapshot — NOT replayed via `sinceSeq` to a viewer whose canvas is already
@@ -486,7 +492,11 @@ function bail(ctx: PtyEntryContext): boolean {
 async function waitForResizeSettle(
   ctx: PtyEntryContext,
   initialSize: { cols: number; rows: number },
+  options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
 ): Promise<{ cols: number; rows: number } | null> {
+  const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
+  const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
+  const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
   let pendingSize = initialSize;
   ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
   const settleStart = Date.now();
@@ -494,12 +504,12 @@ async function waitForResizeSettle(
   while (true) {
     if (bail(ctx)) return null;
     const elapsedTotal = Date.now() - settleStart;
-    if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_TIMEOUT_MS) break;
+    if (elapsedTotal >= timeoutMs) break;
     if (lastChangeAt < 0) {
-      if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS) break;
+      if (elapsedTotal >= initialWaitMs) break;
     } else {
       const elapsedSinceChange = Date.now() - lastChangeAt;
-      if (elapsedSinceChange >= PRE_SNAPSHOT_RESIZE_SETTLE_MS) break;
+      if (elapsedSinceChange >= settleMs) break;
     }
     await new Promise(resolve => setTimeout(resolve, 16));
     const latest = ctx.requestedSize.current;
@@ -614,7 +624,6 @@ async function sendSnapshotPrefill(
       ctx.entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
       sendPrefillDone(ctx.entry);
     } else {
-      ctx.entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
       await sendPrefillChunked(ctx.entry, sendBuf, ctx.session, ctx.timing);
     }
   } else {
@@ -856,7 +865,11 @@ function setupNewPtyEntry(
       // attach dimensions with same-turn resize messages.
       let appliedSize: { cols: number; rows: number };
       if (prefillMode === "viewport") {
-        const pending = await waitForResizeSettle(ctx, { cols, rows });
+        const pending = await waitForResizeSettle(ctx, { cols, rows }, {
+          initialWaitMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS,
+          settleMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS,
+          timeoutMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS,
+        });
         if (pending === null) return;
         appliedSize = pending;
         timing?.mark("resize_apply.start", { cols: appliedSize.cols, rows: appliedSize.rows, prefillMode });

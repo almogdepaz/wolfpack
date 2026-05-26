@@ -38,3 +38,38 @@ test("open session drawer from terminal view", async ({ page }, testInfo) => {
   await expect(drawer).toHaveClass(/open/);
 });
 
+test("desktop switchSession renders cached snapshot placeholder immediately", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "wp-snap||another-project",
+      JSON.stringify({ d: "cached-another-session", ts: Date.now() }),
+    );
+  });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#terminal-view")).toBeVisible();
+
+  const immediateState = await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    switchSession("another-project");
+    const container = document.getElementById("desktop-terminal-container");
+    return {
+      hasCachedClass: container?.classList.contains("cached-visible") ?? false,
+      placeholder: container?.querySelector(".cached-terminal-placeholder")?.textContent ?? "",
+    };
+  });
+
+  expect(immediateState).toEqual({
+    hasCachedClass: true,
+    placeholder: "cached-another-session",
+  });
+});
+

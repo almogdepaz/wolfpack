@@ -29,6 +29,7 @@ import {
 } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
+import { GhosttyPrewarmPool } from "./ghostty-prewarm-pool";
 
 import {
   __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
@@ -46,8 +47,33 @@ import {
 
 // ── WASM capability guard ──
 
+const GHOSTTY_PREWARM_POOL_SIZE = 2;
+const GHOSTTY_PREWARM_DELAY_MS = 750;
+
+const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
+  maxSize: GHOSTTY_PREWARM_POOL_SIZE,
+  create: async () => {
+    if (typeof window.createIsolatedGhostty !== "function") {
+      throw new Error("createIsolatedGhostty unavailable");
+    }
+    return window.createIsolatedGhostty();
+  },
+  onError: (error) => console.debug("[wf] ghostty prewarm failed:", error),
+});
+
 function canUseWasmTerminal(): boolean {
   return !window.wasmFailed;
+}
+
+function scheduleGhosttyPrewarm(): void {
+  if (typeof window.createIsolatedGhostty !== "function") return;
+  window.setTimeout(() => {
+    void window.ghosttyReady
+      ?.then(() => {
+        for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) ghosttyPrewarmPool.prewarm();
+      })
+      .catch((error) => console.debug("[wf] ghostty prewarm skipped:", error));
+  }, GHOSTTY_PREWARM_DELAY_MS);
 }
 
 // ── Performance Metrics (UX-16) ──
@@ -394,7 +420,12 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // reaching here without isolation is a single-cell terminal where the
   // shared singleton is safe.
   let isolatedGhostty: unknown = null;
-  if (typeof window.createIsolatedGhostty === "function") {
+  let usedPrewarmedGhostty = false;
+  const prewarmedGhostty = ghosttyPrewarmPool.take();
+  if (prewarmedGhostty.instance) {
+    isolatedGhostty = prewarmedGhostty.instance;
+    usedPrewarmedGhostty = true;
+  } else if (typeof window.createIsolatedGhostty === "function") {
     try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
   } else {
@@ -416,7 +447,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     },
     scrollback,
   });
-  __wfTraceEvent(trace, "terminal.instance.created", { isolatedGhostty: !!isolatedGhostty });
+  __wfTraceEvent(trace, "terminal.instance.created", { isolatedGhostty: !!isolatedGhostty, prewarmed: usedPrewarmedGhostty });
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -3102,6 +3133,7 @@ async function initTerminal(cached?: string): Promise<void> {
     onHydrated: () => {
       slowLoad.stop();
       setTerminalLoadVisualState(container, "live");
+      scheduleGhosttyPrewarm();
     },
   });
 
@@ -3624,6 +3656,7 @@ async function switchSession(val) {
   setState({ currentSession: name, currentMachine: machineUrl });
   recordRecent(machineUrl, name);
   restoreDraft();
+  const cached = loadSnapshot(machineUrl, name);
   loadSessionSwitcher();
   // Update machine label in header (showView sets it, but drawer bypasses showView)
   const hml = document.getElementById("header-machine-label");
@@ -3634,7 +3667,7 @@ async function switchSession(val) {
     hml.textContent = mName;
     hml.style.display = "block";
   }
-  initTerminal();
+  initTerminal(cached);
   renderSidebar();
 }
 
@@ -4680,6 +4713,7 @@ if (isDesktop() && state.sessionsExpanded) {
 }
 showView("sessions", true);
 loadSessions().then(renderSidebar);
+scheduleGhosttyPrewarm();
 
 // Unregister stale service workers but keep our push SW
 if ("serviceWorker" in navigator) {
