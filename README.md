@@ -99,7 +99,7 @@ wolfpack uninstall --yes Remove everything
 
 ## Agent Skills
 
-Wolfpack exposes repository-local agent skills in `.claude/skills/`:
+Wolfpack exposes repository-local agent skills in `skills/`:
 
 - `wolfpack-plan` — plan-file task header conventions that Ralph can parse.
 - `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
