@@ -2626,6 +2626,9 @@ async function openSession(name, machineUrl) {
   }
   // On desktop, if already in terminal view, do a session switch
   if (isDesktop() && state.currentView === "terminal" && state.currentSession) {
+    if (name !== state.currentSession || (machineUrl || "") !== state.currentMachine) {
+      hideTerminalCanvasForTeardown();
+    }
     // If sidebar is auto-expanded (hover), instantly collapse it before
     // switching so the new terminal fits to full width. Without this,
     // initTerminal() fits to the narrow width, triggering a PTY
@@ -3248,7 +3251,18 @@ async function initTerminal(cached?: string): Promise<void> {
   connectDesktopWs();
 }
 
+function hideTerminalCanvasForTeardown(): void {
+  const container = document.getElementById("desktop-terminal-container");
+  if (!container || container.style.display === "none") return;
+  container.classList.add("hydrating");
+  container.classList.remove("hydrated", "cached-visible");
+  setTerminalLoadVisualState(container, "prefill-loading");
+  removeCachedTerminalPlaceholder();
+  void container.offsetHeight;
+}
+
 function destroyTerminal() {
+  hideTerminalCanvasForTeardown();
   if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
@@ -3658,6 +3672,7 @@ async function switchSession(val) {
     }
     return;
   }
+  hideTerminalCanvasForTeardown();
   closeDrawer(true);
   // Exit grid mode if active
   if (isGridActive()) exitGridMode();

@@ -232,6 +232,111 @@ function mockPrefillWebSocket(mode: "full" | "viewport"): (ws: WebSocketRoute) =
   };
 }
 
+test("desktop switch hides old canvas before auto-collapsing sidebar", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    const stateWindow = window as unknown as { state: { sidebarAutoExpanded: boolean; sidebarCollapsed: boolean } };
+    stateWindow.state.sidebarAutoExpanded = true;
+    stateWindow.state.sidebarCollapsed = false;
+    const sidebar = document.getElementById("desktop-sidebar");
+    sidebar?.classList.remove("collapsed");
+    const originalAdd = DOMTokenList.prototype.add;
+    DOMTokenList.prototype.add = function (...tokens: string[]) {
+      if (this === sidebar?.classList && tokens.includes("collapsed")) {
+        const container = document.getElementById("desktop-terminal-container");
+        const canvas = container?.querySelector("canvas");
+        const canvasStyle = canvas ? getComputedStyle(canvas) : null;
+        (window as unknown as { __sidebarCollapseVisualState?: unknown }).__sidebarCollapseVisualState = {
+          className: container?.className || "",
+          loadState: container?.getAttribute("data-terminal-load-state") || "",
+          canvasVisibility: canvasStyle?.visibility || "missing",
+          canvasOpacity: canvasStyle?.opacity || "missing",
+        };
+      }
+      return originalAdd.apply(this, tokens);
+    };
+  });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("another-project", "");
+  });
+
+  const collapseVisualState = await page.evaluate(() => (window as unknown as { __sidebarCollapseVisualState?: unknown }).__sidebarCollapseVisualState);
+  expect(collapseVisualState).toEqual(expect.objectContaining({
+    loadState: "prefill-loading",
+    canvasVisibility: "hidden",
+    canvasOpacity: "0",
+  }));
+});
+
+test("desktop switch hides old canvas before disposing previous terminal", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    const controller = (window as unknown as { state: { terminalController?: { dispose?: () => void } } }).state.terminalController;
+    if (!controller?.dispose) throw new Error("missing terminal controller");
+    const originalDispose = controller.dispose.bind(controller);
+    controller.dispose = () => {
+      const container = document.getElementById("desktop-terminal-container");
+      const canvas = container?.querySelector("canvas");
+      const canvasStyle = canvas ? getComputedStyle(canvas) : null;
+      (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState = {
+        className: container?.className || "",
+        loadState: container?.getAttribute("data-terminal-load-state") || "",
+        canvasVisibility: canvasStyle?.visibility || "missing",
+        canvasOpacity: canvasStyle?.opacity || "missing",
+      };
+      originalDispose();
+    };
+  });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    switchSession("another-project");
+  });
+
+  const disposeVisualState = await page.evaluate(() => (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState);
+  expect(disposeVisualState).toEqual(expect.objectContaining({
+    loadState: "prefill-loading",
+    canvasVisibility: "hidden",
+    canvasOpacity: "0",
+  }));
+});
+
 test("desktop full prefill writes chunks while hidden before prefill_done", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
