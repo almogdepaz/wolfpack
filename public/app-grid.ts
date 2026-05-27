@@ -6,7 +6,7 @@ import {
   esc, escAttr, state, setState, wpSettings,
   TERM_PRESETS, GRID_TERMINAL_SCROLLBACK, isDesktop,
 } from "./app-state";
-import { __wfTraceEvent, __wfTraceStart } from "./app-debug";
+import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
@@ -108,7 +108,10 @@ export function updateGridLayout() {
 }
 
 function createGridCell(gs, idx) {
-  const trace = __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
+  const existingTrace = __wfTraceGet(gs.session, gs.machine || "");
+  const trace = existingTrace?._meta.mode === "grid" && existingTrace.events.some((event) => event.kind === "addToGrid.start")
+    ? existingTrace
+    : __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
   __wfTraceEvent(trace, "dom.cell.created", { gridIndex: idx });
   const cell = document.createElement("div");
   cell.className = "grid-cell" + (idx === state.gridFocusIndex ? " grid-focused" : "") + (gs._loading ? " grid-loading" : "");
@@ -138,9 +141,11 @@ async function mountGridController(gs, cell, idx) {
   if (gs.controller) return; // already mounted
   const cached = deps.loadSnapshot ? deps.loadSnapshot(gs.machine || "", gs.session) : null;
   if (cached) {
-    cell.classList.add("cached-visible");
-    setTerminalLoadVisualState(cell, "cached");
-    gs._slowLoad?.start("refreshing cached grid cell");
+    // Grid viewport prefill must not replay cached plaintext into Ghostty.
+    // Cached snapshots are width-bound prose, not terminal state, so keep
+    // the loading screen up until broker viewport prefill hydrates the cell.
+    setTerminalLoadVisualState(cell, "prefill-loading");
+    gs._slowLoad?.start("waiting for grid cell prefill");
   }
   let _gridCachedPending = !!cached;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;

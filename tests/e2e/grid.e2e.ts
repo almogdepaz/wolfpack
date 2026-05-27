@@ -54,6 +54,40 @@ async function injectFakeGrid(page: Page) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+test("grid requests viewport even when solo prefill setting is full", async ({ page }) => {
+  await loadApp(page);
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    const debugWindow = window as unknown as {
+      __wfTrace?: Record<string, { _meta: { session: string }; events: Array<{ kind: string; prefillMode?: string }> }>;
+    };
+    const traces = Object.values(debugWindow.__wfTrace || {});
+    return ["test-project", "another-project"].every((session) =>
+      traces.some((trace) =>
+        trace._meta.session === session &&
+        trace.events.some((event) => event.kind === "attach.send" && event.prefillMode === "viewport"),
+      ),
+    );
+  }), { timeout: 5000 }).toBe(true);
+});
+
 test("addToGrid from terminal view shows grid loading immediately", async ({ page }) => {
   await loadApp(page);
 
@@ -82,6 +116,161 @@ test("addToGrid from terminal view shows grid loading immediately", async ({ pag
   expect(cellStates).toHaveLength(2);
   for (const cell of cellStates) {
     expect(cell.loading || cell.hydrating).toBe(true);
+  }
+});
+
+test("addToGrid hides single terminal container before grid cells mount", async ({ page }) => {
+  await loadApp(page);
+
+  const immediateState = await page.evaluate(() => {
+    // Hold async grid terminal mount open so this inspects the synchronous
+    // single-terminal → grid transition gap.
+    // @ts-ignore
+    window.ghosttyReady = new Promise(() => {});
+    const terminal = document.getElementById("desktop-terminal-container")!;
+    terminal.style.display = "block";
+    terminal.classList.add("hydrated");
+    const canvas = document.createElement("canvas");
+    terminal.appendChild(canvas);
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+    return {
+      terminalDisplay: getComputedStyle(terminal).display,
+      gridActive: document.getElementById("desktop-grid-container")?.classList.contains("active") ?? false,
+      gridCells: document.querySelectorAll("#desktop-grid-container .grid-cell").length,
+    };
+  });
+
+  expect(immediateState).toEqual({
+    terminalDisplay: "none",
+    gridActive: true,
+    gridCells: 2,
+  });
+});
+
+test("grid cached snapshots stay behind loading screen until hydration", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "wp-snap||test-project",
+      JSON.stringify({ d: "cached-test-project-line-that-would-wrap-in-grid", ts: Date.now() }),
+    );
+    localStorage.setItem(
+      "wp-snap||another-project",
+      JSON.stringify({ d: "cached-another-project-line-that-would-wrap-in-grid", ts: Date.now() }),
+    );
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
+
+  const cachedVisibleBeforeHydration = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
+    cells.some((cell) => cell.classList.contains("cached-visible") && !cell.classList.contains("hydrated")),
+  );
+
+  expect(cachedVisibleBeforeHydration).toBe(false);
+});
+
+test("grid viewport prefill does not seed cached prose into terminal scrollback", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    const cachedLines = Array.from({ length: 80 }, (_, idx) => `GRID-CACHED-SCROLLBACK-${idx}`).join("\n");
+    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
+    localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((gs) => !!gs.controller?.isConnected && gs._cellElement?.classList.contains("hydrated"));
+  }), { timeout: 5000 }).toBe(true);
+
+  const cells = await page.evaluate(() => {
+    const w = window as unknown as {
+      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
+      state: {
+        gridSessions: Array<{
+          session: string;
+          controller?: { term?: { buffer?: { active?: unknown }; getScrollbackLength?: () => number } };
+        }>;
+      };
+    };
+    return w.state.gridSessions.map((gs) => {
+      const term = gs.controller?.term;
+      const buffer = term?.buffer?.active;
+      return {
+        session: gs.session,
+        text: buffer ? w.WP.serializeBufferTail(buffer, 120) : "",
+        scrollbackLength: term?.getScrollbackLength?.() ?? 0,
+      };
+    });
+  });
+
+  expect(cells).toHaveLength(2);
+  for (const cell of cells) {
+    expect(cell.text).not.toContain("GRID-CACHED-SCROLLBACK");
+    expect(cell.scrollbackLength).toBeLessThan(10);
+  }
+});
+
+test("new grid cells hide canvas until hydration completes", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
+
+  const earlyCanvasStates = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
+    cells.map((cell) => {
+      const canvas = cell.querySelector("canvas") as HTMLCanvasElement | null;
+      const style = canvas ? getComputedStyle(canvas) : null;
+      return {
+        hydrating: cell.classList.contains("hydrating"),
+        hydrated: cell.classList.contains("hydrated"),
+        opacity: style?.opacity ?? "missing",
+        visibility: style?.visibility ?? "missing",
+      };
+    }),
+  );
+
+  expect(earlyCanvasStates.length).toBeGreaterThan(0);
+  for (const state of earlyCanvasStates) {
+    if (!state.hydrated) {
+      expect(state.hydrating).toBe(true);
+      expect(state.opacity).toBe("0");
+      expect(state.visibility).toBe("hidden");
+    }
   }
 });
 

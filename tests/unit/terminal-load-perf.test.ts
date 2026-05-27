@@ -40,6 +40,8 @@ describe("terminal-load perf summarization", () => {
 
     expect(summarizeCell(trace)).toEqual({
       session: "perf-a",
+      setupToAttachMs: 10,
+      setupToRevealMs: 25,
       ghosttyCreationMs: 2,
       wsServerMs: 10,
       prefillMs: 4,
@@ -71,6 +73,8 @@ describe("terminal-load perf summarization", () => {
     };
 
     expect(summarizeCell(trace)).toMatchObject({
+      setupToAttachMs: 0,
+      setupToRevealMs: 20,
       ghosttyCreationMs: null,
       wsServerMs: 10,
       prefillMs: 4,

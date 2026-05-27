@@ -185,7 +185,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     await wait(350);
 
     expect(ws.hasJsonType("attach_ack")).toBe(true);
-    expect(ws.hasJsonType("prefill_viewport")).toBe(true);
+    expect(ws.hasJsonType("prefill_viewport")).toBe(false);
     expect(ws.hasJsonType("prefill_done")).toBe(true);
     expect(ws.hasJsonType("pty_ready")).toBe(true);
 
@@ -243,6 +243,39 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls.length).toBe(0); // debounced
     await wait(150);
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 132, rows: 50 }]);
+  });
+
+  test("viewport attach applies initial resize without full desktop settle wait", async () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
+    await wait(120);
+
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 80, rows: 24 },
+    ]);
+    expect(ws.hasJsonType("pty_ready")).toBe(true);
+  });
+
+  test("full attach overlaps resize apply with initial settle wait", async () => {
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "full" });
+    await wait(80);
+
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 80, rows: 24 },
+    ]);
+    expect(backend.prefillCalls).toEqual([]);
+
+    await wait(180);
+    expect(backend.prefillCalls).toEqual([
+      { name: SESSION, cols: 80, scrollbackLines: undefined },
+    ]);
+    expect(ws.hasJsonType("pty_ready")).toBe(true);
   });
 
   test("resize during attach uses settled dims for the single backend resize", async () => {

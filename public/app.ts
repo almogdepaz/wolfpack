@@ -29,6 +29,7 @@ import {
 } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
+import { GhosttyPrewarmPool } from "./ghostty-prewarm-pool";
 
 import {
   __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
@@ -46,8 +47,33 @@ import {
 
 // ── WASM capability guard ──
 
+const GHOSTTY_PREWARM_POOL_SIZE = 2;
+const GHOSTTY_PREWARM_DELAY_MS = 750;
+
+const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
+  maxSize: GHOSTTY_PREWARM_POOL_SIZE,
+  create: async () => {
+    if (typeof window.createIsolatedGhostty !== "function") {
+      throw new Error("createIsolatedGhostty unavailable");
+    }
+    return window.createIsolatedGhostty();
+  },
+  onError: (error) => console.debug("[wf] ghostty prewarm failed:", error),
+});
+
 function canUseWasmTerminal(): boolean {
   return !window.wasmFailed;
+}
+
+function scheduleGhosttyPrewarm(): void {
+  if (typeof window.createIsolatedGhostty !== "function") return;
+  window.setTimeout(() => {
+    void window.ghosttyReady
+      ?.then(() => {
+        for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) ghosttyPrewarmPool.prewarm();
+      })
+      .catch((error) => console.debug("[wf] ghostty prewarm skipped:", error));
+  }, GHOSTTY_PREWARM_DELAY_MS);
 }
 
 // ── Performance Metrics (UX-16) ──
@@ -394,7 +420,12 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // reaching here without isolation is a single-cell terminal where the
   // shared singleton is safe.
   let isolatedGhostty: unknown = null;
-  if (typeof window.createIsolatedGhostty === "function") {
+  let usedPrewarmedGhostty = false;
+  const prewarmedGhostty = ghosttyPrewarmPool.take();
+  if (prewarmedGhostty.instance) {
+    isolatedGhostty = prewarmedGhostty.instance;
+    usedPrewarmedGhostty = true;
+  } else if (typeof window.createIsolatedGhostty === "function") {
     try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
   } else {
@@ -416,7 +447,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     },
     scrollback,
   });
-  __wfTraceEvent(trace, "terminal.instance.created", { isolatedGhostty: !!isolatedGhostty });
+  __wfTraceEvent(trace, "terminal.instance.created", { isolatedGhostty: !!isolatedGhostty, prewarmed: usedPrewarmedGhostty });
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -729,6 +760,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
  * @param {(Uint8Array) => void} opts.onBinaryData
  * @param {() => void} [opts.onOpen]
  * @param {() => void} [opts.onPtyReady]
+ * @param {() => void} [opts.onPrefillDone]
  * @param {() => void} [opts.onViewerConflict]
  * @param {() => void} [opts.onControlGranted]
  * @param {() => void} [opts.onReplacePrefill]
@@ -753,6 +785,7 @@ interface PtySocketClientOpts {
   readonly onBinaryData?: (data: Uint8Array) => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
   readonly onPtyReady?: () => void;
+  readonly onPrefillDone?: () => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
   readonly onReplacePrefill?: () => void;
@@ -793,6 +826,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let _prefillChunks: Uint8Array[] = [];
   let _awaitingPrefillDone = false;
   let _sawViewportPrefill = false;
+  let _currentAttachPrefillMode = _initialPrefillMode;
   let _prefillDoneTimeout = null;
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
@@ -820,6 +854,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const prefillMode = _initialPrefillMode;
+    _currentAttachPrefillMode = prefillMode;
     _lastSentResize = dims.cols + "x" + dims.rows;
     _awaitingAttachAck = true;
     _attachAckReceived = false;
@@ -944,6 +979,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
               if (opts.onBinaryData) {
                 for (const chunk of chunks) opts.onBinaryData(chunk);
               }
+              if (opts.onPrefillDone) opts.onPrefillDone();
             }, 2000);
           } else if (msg.type === "prefill_done") {
             // Phase 2 complete (or single-phase legacy): flush remaining chunks.
@@ -965,6 +1001,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
             if (opts.onBinaryData) {
               for (const chunk of chunks) opts.onBinaryData(chunk);
             }
+            if (opts.onPrefillDone) opts.onPrefillDone();
           } else if (msg.type === "viewer_conflict") {
             __wfTraceEvent(_trace, "viewer_conflict");
             console.log("[pty-ws]", opts.session, "viewer_conflict");
@@ -988,7 +1025,12 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       if (_awaitingPrefillDone) {
         const u8 = new Uint8Array(ev.data);
         if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: u8.length });
-        __wfTraceEvent(_trace, "ws.binary", { bucket: "prefill", size: u8.length, buffered: _prefillChunks.length + 1 });
+        const streamHiddenFullPrefill = _currentAttachPrefillMode === "full" && !_sawViewportPrefill;
+        __wfTraceEvent(_trace, "ws.binary", { bucket: "prefill", size: u8.length, buffered: streamHiddenFullPrefill ? 0 : _prefillChunks.length + 1 });
+        if (streamHiddenFullPrefill) {
+          if (opts.onBinaryData) opts.onBinaryData(u8);
+          return;
+        }
         _prefillChunks.push(u8);
         return;
       }
@@ -1117,6 +1159,8 @@ interface PtyTerminalControllerOpts {
   readonly resetPty?: boolean;
   readonly prefillMode?: string;
   readonly hydrationTimeoutMs?: number;
+  readonly hydrationMinPendingMs?: number;
+  readonly hydrationSilenceMs?: number;
   readonly shouldFocus?: () => boolean;
   readonly shouldReconnect?: () => boolean;
   readonly canAcceptInput?: () => boolean;
@@ -1173,11 +1217,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _ptyClient = null;
   let _hydrationStarted = false;
   let _hydrationWritesInFlight = 0;
+  let _initialPrefillComplete = opts.prefillMode === "none";
   let _connectEpoch = 0;
   let _reconnectPendingReset = false;
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
-  let _cachedLoaded = false;
   let _userScrolledUp = false;
   // Scrollback length snapshot captured when user enters scroll-lock. Used by
   // the patched scrollToBottom to compute per-write scrollback growth and bump
@@ -1364,7 +1408,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   /**
    * mount(container, { cached }?) — create terminal, open in container, load
    * CanvasAddon, fit, create hydration controller (not yet started).
-   * Optionally write cached content.
+   * Cached plaintext is not written here; restored history must come from
+   * broker prefill or an explicit/gated fast-mode replay path.
    */
   async function mount(container, mountOpts) {
     if (_term || _mounting) return; // already mounted or in progress
@@ -1580,34 +1625,27 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       getElement: _getHydrationElement,
       getTerm: () => _term,
       shouldFocus: opts.shouldFocus || (() => true),
-      canFinish: () => _hydrationWritesInFlight === 0,
+      canFinish: () => _initialPrefillComplete && _hydrationWritesInFlight === 0,
       onReveal: () => {
         forceRepaint();
         if (opts.onHydrated) opts.onHydrated();
       },
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
-      minPendingMs: 200,
+      minPendingMs: opts.hydrationMinPendingMs ?? 80,
       // silenceMs: stay hidden until 150ms have passed since the LAST data
       // write. Catches the post-attach SIGWINCH redraw on grid cells (server
       // coalesces it into one big write, but it can arrive 100-300ms AFTER
       // prefill_done). Without this, the canvas reveals before the redraw
       // lands and the user sees the post-prefill burst paint visibly. Capped
       // by maxPendingMs=4000 for never-quiet sessions.
-      silenceMs: 150,
+      silenceMs: opts.hydrationSilenceMs ?? 50,
       // Diag-only: lets the controller emit milestones into the per-attach trace.
       session: opts.session,
       machine: opts.machine || "",
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
-    if (mountOpts && mountOpts.cached) {
-      _cachedLoaded = true;
-      _term.write(mountOpts.cached, () => {
-        try { _term.scrollToBottom(); } catch {}
-        removeCachedTerminalPlaceholder();
-      });
-    }
     _mounting = false;
   }
 
@@ -1620,18 +1658,12 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_ptyClient) _ptyClient.close();
     _connectEpoch++;
 
+    _initialPrefillComplete = opts.prefillMode === "none";
+
     // Start hydration on first connect
     if (!_hydrationStarted && _hydration) {
       startHydration();
       _hydrationStarted = true;
-    }
-
-    // If cached snapshot was written during mount(), replace the cached
-    // buffer with live data on first output (broker prefill is a full
-    // snapshot redraw, so it'll overwrite the cached frame cleanly).
-    if (_cachedLoaded && opts.prefillMode !== "full") {
-      _reconnectPendingReset = true;
-      _cachedLoaded = false;
     }
 
     // Capture reference to detect stale callbacks from replaced ptyClients
@@ -1678,6 +1710,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
+      onPrefillDone: () => {
+        if (!isCurrent()) return;
+        _initialPrefillComplete = true;
+        if (_hydration) _hydration.scheduleFinish();
+      },
       onReplacePrefill: () => {
         // Phase 2 scrollback replaces phase 1 viewport. The full scrollback
         // is a superset that contains the viewport content, so we skip the
@@ -1765,7 +1802,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
     if (_resizeRehydrateTimer) { clearTimeout(_resizeRehydrateTimer); _resizeRehydrateTimer = null; }
     _mounting = false;
-    _cachedLoaded = false;
     _userScrolledUp = false;
     if (_container) {
       if (_scrollLockKeydownHandler) _container.removeEventListener("keydown", _scrollLockKeydownHandler, true);
@@ -2590,6 +2626,9 @@ async function openSession(name, machineUrl) {
   }
   // On desktop, if already in terminal view, do a session switch
   if (isDesktop() && state.currentView === "terminal" && state.currentSession) {
+    if (name !== state.currentSession || (machineUrl || "") !== state.currentMachine) {
+      hideTerminalCanvasForTeardown();
+    }
     // If sidebar is auto-expanded (hover), instantly collapse it before
     // switching so the new terminal fits to full width. Without this,
     // initTerminal() fits to the narrow width, triggering a PTY
@@ -2606,7 +2645,7 @@ async function openSession(name, machineUrl) {
       state.sidebarAutoExpanded = false;
       if (sidebarAutoCollapseTimer) { clearTimeout(sidebarAutoCollapseTimer); sidebarAutoCollapseTimer = null; }
     }
-    switchSession(machineUrl ? machineUrl + "|" + name : name);
+    await switchSession(machineUrl ? machineUrl + "|" + name : name);
     renderSidebar();
     return;
   }
@@ -2947,9 +2986,13 @@ async function initTerminal(cached?: string): Promise<void> {
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   const kbProxy = document.getElementById("mobile-kb-proxy");
+  const soloPrefillMode = isMobile
+    ? (wpSettings.soloPrefillMode === "full" ? "full" : "viewport")
+    : "full";
+  const showCachedPlaceholder = false;
   container.style.display = "block";
   container.innerHTML = "";
-  if (cached) {
+  if (showCachedPlaceholder) {
     container.classList.add("cached-visible");
     container.classList.remove("hydrating", "hydrated");
     setTerminalLoadVisualState(container, "cached");
@@ -2960,7 +3003,7 @@ async function initTerminal(cached?: string): Promise<void> {
     setTerminalLoadVisualState(container, "prefill-loading");
   }
   const slowLoad = createTerminalSlowPathIndicator(container);
-  slowLoad.start(cached ? "refreshing cached terminal" : "waiting for terminal snapshot");
+  slowLoad.start("waiting for terminal snapshot");
   document.getElementById("kb-accessory").classList.remove("visible");
   state.kbAccessoryOpen = false;
   document.getElementById("input-bar").style.display = "none";
@@ -2980,13 +3023,12 @@ async function initTerminal(cached?: string): Promise<void> {
   }
 
   _tcState = { displaced: false, autoTakeControl: false };
-  let _cachedPendingReset = !!cached;
-  // Timer stored on state so destroyTerminal() can cancel it — prevents cross-session
-  // side effects if user switches sessions before first output arrives (see PR #89 review).
-  // After 5s, ensure canvas is visible even if hydration hasn't completed —
-  // but keep cached content showing (don't blank the screen). The onOutput
-  // handler removes cached-visible when live data arrives.
-  state._cachedFallbackTimer = cached ? setTimeout(() => {
+  let _cachedPendingReset = showCachedPlaceholder;
+  // Cached placeholders are currently disabled for solo full because stale
+  // plaintext can flash at the wrong width before broker prefill hydrates.
+  // Keep the fallback timer wired to the flag so this path stays safe if a
+  // future gated placeholder policy re-enables it.
+  state._cachedFallbackTimer = showCachedPlaceholder ? setTimeout(() => {
     state._cachedFallbackTimer = null;
     const el = document.getElementById("desktop-terminal-container");
     if (el) el.classList.add("hydrated");
@@ -2996,7 +3038,9 @@ async function initTerminal(cached?: string): Promise<void> {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "full",
+    prefillMode: soloPrefillMode,
+    hydrationMinPendingMs: 80,
+    hydrationSilenceMs: 50,
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -3102,6 +3146,7 @@ async function initTerminal(cached?: string): Promise<void> {
     onHydrated: () => {
       slowLoad.stop();
       setTerminalLoadVisualState(container, "live");
+      scheduleGhosttyPrewarm();
     },
   });
 
@@ -3206,7 +3251,30 @@ async function initTerminal(cached?: string): Promise<void> {
   connectDesktopWs();
 }
 
+function waitForAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function waitForTerminalSwitchPaint(): Promise<void> {
+  if (!isDesktop()) return;
+  // First rAF observes the queued loading styles; second resumes after that
+  // frame had a paint opportunity, before teardown/mount blocks the main thread.
+  await waitForAnimationFrame();
+  await waitForAnimationFrame();
+}
+
+function hideTerminalCanvasForTeardown(): void {
+  const container = document.getElementById("desktop-terminal-container");
+  if (!container || container.style.display === "none") return;
+  if (!container.classList.contains("hydrating")) container.classList.add("hydrating");
+  container.classList.remove("hydrated", "cached-visible");
+  setTerminalLoadVisualState(container, "prefill-loading");
+  removeCachedTerminalPlaceholder();
+  void container.offsetHeight;
+}
+
 function destroyTerminal() {
+  hideTerminalCanvasForTeardown();
   if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
@@ -3616,6 +3684,8 @@ async function switchSession(val) {
     }
     return;
   }
+  hideTerminalCanvasForTeardown();
+  await waitForTerminalSwitchPaint();
   closeDrawer(true);
   // Exit grid mode if active
   if (isGridActive()) exitGridMode();
@@ -3624,6 +3694,7 @@ async function switchSession(val) {
   setState({ currentSession: name, currentMachine: machineUrl });
   recordRecent(machineUrl, name);
   restoreDraft();
+  const cached = loadSnapshot(machineUrl, name);
   loadSessionSwitcher();
   // Update machine label in header (showView sets it, but drawer bypasses showView)
   const hml = document.getElementById("header-machine-label");
@@ -3634,7 +3705,7 @@ async function switchSession(val) {
     hml.textContent = mName;
     hml.style.display = "block";
   }
-  initTerminal();
+  initTerminal(cached);
   renderSidebar();
 }
 
@@ -4616,6 +4687,13 @@ function bindHtmlEventListeners(): void {
       if (font) toggleSetting("termFont", font);
     });
   });
+  document.querySelectorAll(".solo-prefill-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = (btn as HTMLElement).dataset.mode;
+      if (mode === "fast" && isDesktop()) return;
+      if (mode === "fast" || mode === "full") toggleSetting("soloPrefillMode", mode);
+    });
+  });
 
   // Quick commands
   on("add-quick-cmd-btn", "click", () => addQuickCmd());
@@ -4680,6 +4758,7 @@ if (isDesktop() && state.sessionsExpanded) {
 }
 showView("sessions", true);
 loadSessions().then(renderSidebar);
+scheduleGhosttyPrewarm();
 
 // Unregister stale service workers but keep our push SW
 if ("serviceWorker" in navigator) {
