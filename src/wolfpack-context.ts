@@ -4,7 +4,7 @@
  * Note: prior versions of this module also exported `RALPH_AGENT_CONTEXT`
  * and `INTERACTIVE_CONTEXT` prompt strings that were auto-injected into
  * agent commands. That injection was removed — the content now lives at
- * `.claude/skills/wolfpack-{ralph,plan}/SKILL.md` for anyone who wants
+ * `skills/wolfpack-{ralph,plan}/SKILL.md` for anyone who wants
  * to opt in by installing the skills into their own project.
  */
 

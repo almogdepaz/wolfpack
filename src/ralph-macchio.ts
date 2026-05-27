@@ -332,7 +332,7 @@ BEGIN.`;
 
 /** Build the per-iteration prompt. Plan-format and subtask conventions are
  *  not injected — if the user wants them, they can install the
- *  `.claude/skills/wolfpack-{ralph,plan}` skills into their project. */
+ *  `skills/wolfpack-{ralph,plan}` skills into their project. */
 function buildPrompt(taskDesc: string): string {
   return buildIterationPrompt({
     agent: AGENT,
