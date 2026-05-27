@@ -669,9 +669,8 @@ async function sendSnapshotPrefill(
     return undefined;
   }
   const scrollbackLines = prefillMode === "viewport" ? VIEWPORT_PREFILL_SCROLLBACK_LINES : undefined;
-  const preserveScrollback = prefillMode === "viewport";
-  ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines, preserveScrollback });
-  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines, preserveScrollback });
+  ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
+  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines });
   ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
   const prefillSeq = prefill.seq;
   ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });

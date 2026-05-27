@@ -83,7 +83,6 @@ export interface SnapshotForRender {
 const CSI = "\x1b[";
 const SGR_RESET = "\x1b[0m";
 const CLEAR_AND_HOME = "\x1b[2J\x1b[3J\x1b[H\x1b[0m";
-const CLEAR_VISIBLE_AND_HOME = "\x1b[2J\x1b[H\x1b[0m";
 
 const DEFAULT_ATTRS: CellAttrs = {
   fg: null,
@@ -195,9 +194,9 @@ function modePreamble(modes: TerminalModes | undefined): string {
  * replay to reach the same visual state. Output is a UTF-8 Buffer suitable
  * for sending directly over the WS prefill channel.
  */
-export function renderSnapshotToAnsi(snap: SnapshotForRender, options?: { readonly preserveScrollback?: boolean }): Buffer {
+export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
   const parts: string[] = [];
-  parts.push(options?.preserveScrollback ? CLEAR_VISIBLE_AND_HOME : CLEAR_AND_HOME);
+  parts.push(CLEAR_AND_HOME);
 
   // Helper: emit one StyledLine with per-cell SGR transitions, tracking
   // last-emitted attrs across the whole render so SGR state carries

@@ -88,8 +88,12 @@ export function applySetting(key, val) {
     applyTermToXterm();
   }
   if (key === "soloPrefillMode") {
-    const mode = val === "full" ? "full" : "fast";
-    document.querySelectorAll(".solo-prefill-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.mode === mode));
+    const mode = isDesktop() ? "full" : (val === "full" ? "full" : "fast");
+    document.querySelectorAll(".solo-prefill-btn").forEach(b => {
+      const button = b as HTMLButtonElement;
+      button.classList.toggle("active", button.dataset.mode === mode);
+      if (button.dataset.mode === "fast") button.disabled = isDesktop();
+    });
   }
 }
 

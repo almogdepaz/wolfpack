@@ -26,6 +26,8 @@ type ScenarioSummary = {
 };
 type CellSummary = {
   session: string;
+  setupToAttachMs: number | null;
+  setupToRevealMs: number | null;
   ghosttyCreationMs: number | null;
   wsServerMs: number | null;
   prefillMs: number | null;
@@ -35,6 +37,7 @@ type CellSummary = {
 
 const ROOT = join(import.meta.dirname, "..");
 const DEV_DIR = join(ROOT, ".wolfpack", "terminal-load-perf-dev");
+const DEFAULT_GRID_CELL_COUNTS = [2, 4, 6] as const;
 
 function resolveBrokerBin(): string | null {
   const fromEnv = process.env.WOLFPACK_BROKER_BIN;
@@ -216,11 +219,14 @@ function eventsForLatestAttach(events: TraceEvent[]): TraceEvent[] {
 
 export function summarizeCell(trace: TraceState): CellSummary {
   const events = eventsForLatestAttach(trace.events);
+  const setupStart = events[0]?.t ?? null;
   const prefillBytes = events
     .filter((event) => event.kind === "ws.binary" && event.bucket === "prefill")
     .reduce((sum, event) => sum + (typeof event.size === "number" ? event.size : 0), 0);
   return {
     session: trace._meta.session,
+    setupToAttachMs: delta(setupStart, eventTime(events, "attach.send")),
+    setupToRevealMs: delta(setupStart, eventTime(events, "hydration.reveal")),
     ghosttyCreationMs: delta(eventTime(events, "ghostty.ready"), eventTime(events, "terminal.instance.created")),
     wsServerMs: delta(eventTime(events, "attach.send"), eventTime(events, "pty_ready")),
     prefillMs: delta(eventTime(events, "prefill.first_chunk"), eventTime(events, "prefill_done")),
@@ -292,10 +298,26 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
   }
 }
 
+function gridCellCounts(): number[] {
+  const raw = process.env.WOLFPACK_PERF_GRID_CELLS;
+  if (!raw) return [...DEFAULT_GRID_CELL_COUNTS];
+  const counts = raw.split(",").map((part) => Number(part.trim())).filter((count) => Number.isInteger(count) && count >= 2 && count <= 6);
+  if (!counts.length) throw new Error("WOLFPACK_PERF_GRID_CELLS must contain integers between 2 and 6");
+  return counts;
+}
+
+async function runMeasured(summaryPromise: Promise<ScenarioSummary>): Promise<ScenarioSummary> {
+  const summary = await summaryPromise;
+  printSummary(summary);
+  return summary;
+}
+
 function printSummary(summary: ScenarioSummary): void {
   console.log(`\n${summary.scenario}`);
   console.table(summary.sessions.map((cell) => ({
     session: cell.session,
+    setupToAttachMs: cell.setupToAttachMs,
+    setupToRevealMs: cell.setupToRevealMs,
     ghosttyMs: cell.ghosttyCreationMs,
     wsServerMs: cell.wsServerMs,
     prefillMs: cell.prefillMs,
@@ -339,14 +361,13 @@ async function main(): Promise<void> {
     }
 
     const summaries: ScenarioSummary[] = [];
-    summaries.push(await runSingle(server.baseUrl, server.timings, sessions[0]));
-    for (const cells of [2, 4, 6]) {
-      summaries.push(await runGrid(server.baseUrl, server.timings, sessions.slice(0, cells)));
+    summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
+    for (const cells of gridCellCounts()) {
+      summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
     }
     if (process.env.WOLFPACK_PERF_SLOW_PREFILL_MS) {
-      summaries.push(await runSingle(server.baseUrl, server.timings, sessions[5]));
+      summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[5])));
     }
-    for (const summary of summaries) printSummary(summary);
     console.log("\njson:");
     console.log(JSON.stringify({ generatedAt: new Date().toISOString(), summaries }, null, 2));
   } finally {

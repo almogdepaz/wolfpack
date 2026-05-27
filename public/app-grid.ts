@@ -6,7 +6,7 @@ import {
   esc, escAttr, state, setState, wpSettings,
   TERM_PRESETS, GRID_TERMINAL_SCROLLBACK, isDesktop,
 } from "./app-state";
-import { __wfTraceEvent, __wfTraceStart } from "./app-debug";
+import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
@@ -108,7 +108,10 @@ export function updateGridLayout() {
 }
 
 function createGridCell(gs, idx) {
-  const trace = __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
+  const existingTrace = __wfTraceGet(gs.session, gs.machine || "");
+  const trace = existingTrace?._meta.mode === "grid" && existingTrace.events.some((event) => event.kind === "addToGrid.start")
+    ? existingTrace
+    : __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
   __wfTraceEvent(trace, "dom.cell.created", { gridIndex: idx });
   const cell = document.createElement("div");
   cell.className = "grid-cell" + (idx === state.gridFocusIndex ? " grid-focused" : "") + (gs._loading ? " grid-loading" : "");
@@ -138,10 +141,9 @@ async function mountGridController(gs, cell, idx) {
   if (gs.controller) return; // already mounted
   const cached = deps.loadSnapshot ? deps.loadSnapshot(gs.machine || "", gs.session) : null;
   if (cached) {
-    // Grid cells are narrower than solo terminals, so revealing cached
-    // full-width snapshots before first fit/hydration causes a wrapped-text
-    // flash. Keep cached bytes as an internal warm preview for the terminal
-    // buffer, but leave the loading screen visible until hydration completes.
+    // Grid viewport prefill must not replay cached plaintext into Ghostty.
+    // Cached snapshots are width-bound prose, not terminal state, so keep
+    // the loading screen up until broker viewport prefill hydrates the cell.
     setTerminalLoadVisualState(cell, "prefill-loading");
     gs._slowLoad?.start("waiting for grid cell prefill");
   }

@@ -1222,7 +1222,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _reconnectPendingReset = false;
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
-  let _cachedLoaded = false;
   let _userScrolledUp = false;
   // Scrollback length snapshot captured when user enters scroll-lock. Used by
   // the patched scrollToBottom to compute per-write scrollback growth and bump
@@ -1409,7 +1408,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   /**
    * mount(container, { cached }?) — create terminal, open in container, load
    * CanvasAddon, fit, create hydration controller (not yet started).
-   * Optionally write cached content.
+   * Cached plaintext is not written here; restored history must come from
+   * broker prefill or an explicit/gated fast-mode replay path.
    */
   async function mount(container, mountOpts) {
     if (_term || _mounting) return; // already mounted or in progress
@@ -1646,13 +1646,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
-    if (mountOpts && mountOpts.cached) {
-      _cachedLoaded = true;
-      _term.write(mountOpts.cached, () => {
-        try { _term.scrollToBottom(); } catch {}
-        removeCachedTerminalPlaceholder();
-      });
-    }
     _mounting = false;
   }
 
@@ -1673,16 +1666,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       _hydrationStarted = true;
     }
 
-    // If cached snapshot was written during mount(), keep it for viewport
-    // prefill so solo-fast switches retain recent local scrollback. Reset-only
-    // attaches are the exception: cached bytes describe the old process and
-    // must be discarded before new output arrives.
-    const preserveCachedOnInitialOpen = _cachedLoaded && opts.prefillMode !== "full" && !opts.resetPty;
-    if (_cachedLoaded && opts.prefillMode !== "full") {
-      if (opts.resetPty) _reconnectPendingReset = true;
-      _cachedLoaded = false;
-    }
-
     // Capture reference to detect stale callbacks from replaced ptyClients
     let thisClient = null;
     const isCurrent = () => _ptyClient === thisClient;
@@ -1699,11 +1682,12 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
-        // Reset on first connect unless we intentionally seeded viewport mode
-        // with a cached local tail. Ghostty-web's WASM can retain sparse stale
-        // cells across terminal instances; cached fast switches are the one
-        // case where preserving the pre-written buffer is desired scrollback.
-        if (!wasReconnect && _term && !preserveCachedOnInitialOpen) {
+        // Always reset on first connect — ghostty-web's WASM retains the
+        // previous terminal's screen buffer across Terminal instances.
+        // Without this, new sessions with sparse prefill show stale content.
+        // shouldRehydrate skips the reset for viewport prefill mode, but
+        // the WASM buffer must be cleared regardless.
+        if (!wasReconnect && _term) {
           _term.reset();
         }
         // On reconnect, clear stale content and restart hydration —
@@ -1818,7 +1802,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
     if (_resizeRehydrateTimer) { clearTimeout(_resizeRehydrateTimer); _resizeRehydrateTimer = null; }
     _mounting = false;
-    _cachedLoaded = false;
     _userScrolledUp = false;
     if (_container) {
       if (_scrollLockKeydownHandler) _container.removeEventListener("keydown", _scrollLockKeydownHandler, true);
@@ -3000,8 +2983,10 @@ async function initTerminal(cached?: string): Promise<void> {
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   const kbProxy = document.getElementById("mobile-kb-proxy");
-  const soloPrefillMode = wpSettings.soloPrefillMode === "full" ? "full" : "viewport";
-  const showCachedPlaceholder = !!cached && soloPrefillMode === "full";
+  const soloPrefillMode = isMobile
+    ? (wpSettings.soloPrefillMode === "full" ? "full" : "viewport")
+    : "full";
+  const showCachedPlaceholder = false;
   container.style.display = "block";
   container.innerHTML = "";
   if (showCachedPlaceholder) {
@@ -3015,7 +3000,7 @@ async function initTerminal(cached?: string): Promise<void> {
     setTerminalLoadVisualState(container, "prefill-loading");
   }
   const slowLoad = createTerminalSlowPathIndicator(container);
-  slowLoad.start(showCachedPlaceholder ? "refreshing cached terminal" : "waiting for terminal snapshot");
+  slowLoad.start("waiting for terminal snapshot");
   document.getElementById("kb-accessory").classList.remove("visible");
   state.kbAccessoryOpen = false;
   document.getElementById("input-bar").style.display = "none";
@@ -3036,11 +3021,10 @@ async function initTerminal(cached?: string): Promise<void> {
 
   _tcState = { displaced: false, autoTakeControl: false };
   let _cachedPendingReset = showCachedPlaceholder;
-  // Timer stored on state so destroyTerminal() can cancel it — prevents cross-session
-  // side effects if user switches sessions before first output arrives (see PR #89 review).
-  // After 5s, ensure canvas is visible even if hydration hasn't completed —
-  // but keep cached content showing (don't blank the screen). The onOutput
-  // handler removes cached-visible when live data arrives.
+  // Cached placeholders are currently disabled for solo full because stale
+  // plaintext can flash at the wrong width before broker prefill hydrates.
+  // Keep the fallback timer wired to the flag so this path stays safe if a
+  // future gated placeholder policy re-enables it.
   state._cachedFallbackTimer = showCachedPlaceholder ? setTimeout(() => {
     state._cachedFallbackTimer = null;
     const el = document.getElementById("desktop-terminal-container");
@@ -4678,6 +4662,7 @@ function bindHtmlEventListeners(): void {
   document.querySelectorAll(".solo-prefill-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const mode = (btn as HTMLElement).dataset.mode;
+      if (mode === "fast" && isDesktop()) return;
       if (mode === "fast" || mode === "full") toggleSetting("soloPrefillMode", mode);
     });
   });

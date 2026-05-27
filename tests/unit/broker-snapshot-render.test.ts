@@ -32,13 +32,6 @@ describe("renderSnapshotToAnsi: preamble", () => {
     const out = decode(renderSnapshotToAnsi(snap));
     expect(out.startsWith("\x1b[2J\x1b[3J\x1b[H\x1b[0m")).toBe(true);
   });
-
-  test("can preserve receiver scrollback while clearing visible screen", () => {
-    const snap: SnapshotForRender = { visible_screen: [], scrollback: [], cursor: { row: 0, col: 0 } };
-    const out = decode(renderSnapshotToAnsi(snap, { preserveScrollback: true }));
-    expect(out.startsWith("\x1b[2J\x1b[H\x1b[0m")).toBe(true);
-    expect(out).not.toContain("\x1b[3J");
-  });
 });
 
 describe("renderSnapshotToAnsi: scrollback rendering", () => {

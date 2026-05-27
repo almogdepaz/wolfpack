@@ -185,6 +185,56 @@ test("grid cached snapshots stay behind loading screen until hydration", async (
   expect(cachedVisibleBeforeHydration).toBe(false);
 });
 
+test("grid viewport prefill does not seed cached prose into terminal scrollback", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    const cachedLines = Array.from({ length: 80 }, (_, idx) => `GRID-CACHED-SCROLLBACK-${idx}`).join("\n");
+    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
+    localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((gs) => !!gs.controller?.isConnected && gs._cellElement?.classList.contains("hydrated"));
+  }), { timeout: 5000 }).toBe(true);
+
+  const cells = await page.evaluate(() => {
+    const w = window as unknown as {
+      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
+      state: {
+        gridSessions: Array<{
+          session: string;
+          controller?: { term?: { buffer?: { active?: unknown }; getScrollbackLength?: () => number } };
+        }>;
+      };
+    };
+    return w.state.gridSessions.map((gs) => {
+      const term = gs.controller?.term;
+      const buffer = term?.buffer?.active;
+      return {
+        session: gs.session,
+        text: buffer ? w.WP.serializeBufferTail(buffer, 120) : "",
+        scrollbackLength: term?.getScrollbackLength?.() ?? 0,
+      };
+    });
+  });
+
+  expect(cells).toHaveLength(2);
+  for (const cell of cells) {
+    expect(cell.text).not.toContain("GRID-CACHED-SCROLLBACK");
+    expect(cell.scrollbackLength).toBeLessThan(10);
+  }
+});
+
 test("new grid cells hide canvas until hydration completes", async ({ page }) => {
   await loadApp(page);
 
