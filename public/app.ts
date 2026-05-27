@@ -2645,7 +2645,7 @@ async function openSession(name, machineUrl) {
       state.sidebarAutoExpanded = false;
       if (sidebarAutoCollapseTimer) { clearTimeout(sidebarAutoCollapseTimer); sidebarAutoCollapseTimer = null; }
     }
-    switchSession(machineUrl ? machineUrl + "|" + name : name);
+    await switchSession(machineUrl ? machineUrl + "|" + name : name);
     renderSidebar();
     return;
   }
@@ -3251,10 +3251,22 @@ async function initTerminal(cached?: string): Promise<void> {
   connectDesktopWs();
 }
 
+function waitForAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function waitForTerminalSwitchPaint(): Promise<void> {
+  if (!isDesktop()) return;
+  // First rAF observes the queued loading styles; second resumes after that
+  // frame had a paint opportunity, before teardown/mount blocks the main thread.
+  await waitForAnimationFrame();
+  await waitForAnimationFrame();
+}
+
 function hideTerminalCanvasForTeardown(): void {
   const container = document.getElementById("desktop-terminal-container");
   if (!container || container.style.display === "none") return;
-  container.classList.add("hydrating");
+  if (!container.classList.contains("hydrating")) container.classList.add("hydrating");
   container.classList.remove("hydrated", "cached-visible");
   setTerminalLoadVisualState(container, "prefill-loading");
   removeCachedTerminalPlaceholder();
@@ -3673,6 +3685,7 @@ async function switchSession(val) {
     return;
   }
   hideTerminalCanvasForTeardown();
+  await waitForTerminalSwitchPaint();
   closeDrawer(true);
   // Exit grid mode if active
   if (isGridActive()) exitGridMode();

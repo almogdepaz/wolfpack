@@ -329,8 +329,81 @@ test("desktop switch hides old canvas before disposing previous terminal", async
     switchSession("another-project");
   });
 
+  await expect.poll(async () => page.evaluate(() =>
+    (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState,
+  )).not.toBeUndefined();
   const disposeVisualState = await page.evaluate(() => (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState);
   expect(disposeVisualState).toEqual(expect.objectContaining({
+    loadState: "prefill-loading",
+    canvasVisibility: "hidden",
+    canvasOpacity: "0",
+  }));
+});
+
+test("desktop keyboard session switch paints loading before terminal teardown", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  await expect.poll(async () => page.evaluate(() =>
+    (window as unknown as { state: { allSessions: readonly unknown[] } }).state.allSessions.length,
+  )).toBeGreaterThan(1);
+
+  await page.evaluate(() => {
+    const container = document.getElementById("desktop-terminal-container");
+    const controller = (window as unknown as { state: { terminalController?: { dispose?: () => void } } }).state.terminalController;
+    if (!container || !controller?.dispose) throw new Error("missing terminal controller");
+
+    const originalAdd = DOMTokenList.prototype.add;
+    (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen = false;
+    DOMTokenList.prototype.add = function (...tokens: string[]) {
+      const result = originalAdd.apply(this, tokens);
+      if (this === container.classList && tokens.includes("hydrating")) {
+        (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen = false;
+        requestAnimationFrame(() => {
+          (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen = true;
+        });
+      }
+      return result;
+    };
+
+    const originalDispose = controller.dispose.bind(controller);
+    controller.dispose = () => {
+      const canvas = container.querySelector("canvas");
+      const canvasStyle = canvas ? getComputedStyle(canvas) : null;
+      (window as unknown as { __keyboardDisposeVisualState?: unknown }).__keyboardDisposeVisualState = {
+        loadingPaintSeen: (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen === true,
+        loadState: container.getAttribute("data-terminal-load-state") || "",
+        canvasVisibility: canvasStyle?.visibility || "missing",
+        canvasOpacity: canvasStyle?.opacity || "missing",
+      };
+      originalDispose();
+    };
+  });
+
+  await page.keyboard.down("Meta");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.up("Meta");
+
+  await expect.poll(async () => page.evaluate(() =>
+    (window as unknown as { __keyboardDisposeVisualState?: unknown }).__keyboardDisposeVisualState,
+  )).not.toBeUndefined();
+  const disposeVisualState = await page.evaluate(() => (window as unknown as { __keyboardDisposeVisualState?: unknown }).__keyboardDisposeVisualState);
+  expect(disposeVisualState).toEqual(expect.objectContaining({
+    loadingPaintSeen: true,
     loadState: "prefill-loading",
     canvasVisibility: "hidden",
     canvasOpacity: "0",
