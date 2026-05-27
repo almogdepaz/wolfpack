@@ -125,8 +125,10 @@ const POST_SPAWN_RESIZE_DELAY_MS = 100;
 // it — eliminates the burst entirely instead of just hiding it on client.
 const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
 // Wait this long for the FIRST resize before assuming none is coming.
-// Covers session-open CSS transitions (~200ms total) + WS jitter.
-const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 200;
+// Full prefill still needs a window for late layout settle, but desktop attach
+// dims are already fit before attach. Keep this above viewport's 60ms while
+// avoiding a fixed 200ms tax on every full switch.
+const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 120;
 const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
 // Grid viewport attaches are already mounted in stable cells and fetch no
 // broker scrollback, so they use a shorter resize settle budget than full
@@ -581,6 +583,77 @@ async function waitForOutputQuiescence(
   return bail(ctx) ? null : appliedSize;
 }
 
+/** Full prefill can overlap the initial resize-settle window with the
+ *  SIGWINCH redraw wait: apply the attach dims immediately, observe output
+ *  while still waiting for late client resize messages, and snapshot only
+ *  once both dimensions are stable and output has quiesced. */
+async function waitForSettledResizeAndOutputQuiescence(
+  ctx: PtyEntryContext,
+  initialSize: { cols: number; rows: number },
+  options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
+): Promise<{ cols: number; rows: number } | null> {
+  const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
+  const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
+  const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
+  let pendingSize = initialSize;
+  let appliedSize = initialSize;
+  let lastChangeAt = -1;
+  const samples: Array<{ t: number; bytes: number }> = [];
+
+  ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
+  ctx.timing?.mark("quiescence_wait.start", { cols: initialSize.cols, rows: initialSize.rows });
+
+  const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
+    samples.push({ t: Date.now(), bytes: data.length });
+  }, {
+    onSubscribeError: (err: unknown) => {
+      log.debug("resize-settle observer subscribe failed", { session: ctx.session, error: errMsg(err) });
+    },
+  });
+
+  let lastResizeAt = Date.now();
+  const settleStart = lastResizeAt;
+  try {
+    await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+    lastResizeAt = Date.now();
+
+    while (true) {
+      if (bail(ctx)) break;
+      const latest = ctx.requestedSize.current;
+      if (latest && (latest.cols !== pendingSize.cols || latest.rows !== pendingSize.rows)) {
+        pendingSize = latest;
+        lastChangeAt = Date.now();
+      }
+      if (pendingSize.cols !== appliedSize.cols || pendingSize.rows !== appliedSize.rows) {
+        appliedSize = pendingSize;
+        await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+        lastResizeAt = Date.now();
+      }
+
+      const now = Date.now();
+      const elapsedTotal = now - settleStart;
+      const resizeStable = elapsedTotal >= timeoutMs
+        || (lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs);
+
+      const cutoff = now - QUIESCE_WINDOW_MS;
+      while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
+      const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
+      const outputStable = decision !== "continue";
+      if (outputStable && (decision === "animated_cap" || decision === "timeout")) {
+        log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
+      }
+      if (resizeStable && outputStable) break;
+      await new Promise(resolve => setTimeout(resolve, 16));
+    }
+  } finally {
+    if (observe) observe();
+  }
+
+  ctx.timing?.mark("resize_settle.end", { cols: appliedSize.cols, rows: appliedSize.rows });
+  ctx.timing?.mark("quiescence_wait.end", { cols: appliedSize.cols, rows: appliedSize.rows });
+  return bail(ctx) ? null : appliedSize;
+}
+
 /** Take a broker snapshot at `appliedSize.cols` and stream it to the viewer.
  *  Returns the prefill seq (used as `sinceSeq` for live subscribe) or
  *  undefined when no snapshot is required (prefillMode === "none" or
@@ -596,8 +669,9 @@ async function sendSnapshotPrefill(
     return undefined;
   }
   const scrollbackLines = prefillMode === "viewport" ? VIEWPORT_PREFILL_SCROLLBACK_LINES : undefined;
-  ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
-  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines });
+  const preserveScrollback = prefillMode === "viewport";
+  ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines, preserveScrollback });
+  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines, preserveScrollback });
   ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
   const prefillSeq = prefill.seq;
   ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });
@@ -876,9 +950,7 @@ function setupNewPtyEntry(
         await backend.resize(session, appliedSize.cols, appliedSize.rows);
         timing?.mark("resize_apply.end", { cols: appliedSize.cols, rows: appliedSize.rows, prefillMode });
       } else {
-        const pending = await waitForResizeSettle(ctx, { cols, rows });
-        if (pending === null) return;
-        const settled = await waitForOutputQuiescence(ctx, pending);
+        const settled = await waitForSettledResizeAndOutputQuiescence(ctx, { cols, rows });
         if (settled === null) return;
         appliedSize = settled;
       }

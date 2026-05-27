@@ -429,7 +429,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     const snap = await this.fetchSnapshot(id, name, "getSessionPrefill", cols, options?.scrollbackLines);
     if (!snap) return { data: Buffer.alloc(0) };
     const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
-    return { data: renderSnapshotToAnsi(snap), seq };
+    return { data: renderSnapshotToAnsi(snap, { preserveScrollback: options?.preserveScrollback }), seq };
   }
 
   isSessionAlive(name: string): boolean {

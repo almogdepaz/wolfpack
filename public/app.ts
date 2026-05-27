@@ -760,6 +760,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
  * @param {(Uint8Array) => void} opts.onBinaryData
  * @param {() => void} [opts.onOpen]
  * @param {() => void} [opts.onPtyReady]
+ * @param {() => void} [opts.onPrefillDone]
  * @param {() => void} [opts.onViewerConflict]
  * @param {() => void} [opts.onControlGranted]
  * @param {() => void} [opts.onReplacePrefill]
@@ -784,6 +785,7 @@ interface PtySocketClientOpts {
   readonly onBinaryData?: (data: Uint8Array) => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
   readonly onPtyReady?: () => void;
+  readonly onPrefillDone?: () => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
   readonly onReplacePrefill?: () => void;
@@ -824,6 +826,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let _prefillChunks: Uint8Array[] = [];
   let _awaitingPrefillDone = false;
   let _sawViewportPrefill = false;
+  let _currentAttachPrefillMode = _initialPrefillMode;
   let _prefillDoneTimeout = null;
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
@@ -851,6 +854,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     const dims = opts.getTermDimensions();
     if (!dims) return;
     const prefillMode = _initialPrefillMode;
+    _currentAttachPrefillMode = prefillMode;
     _lastSentResize = dims.cols + "x" + dims.rows;
     _awaitingAttachAck = true;
     _attachAckReceived = false;
@@ -975,6 +979,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
               if (opts.onBinaryData) {
                 for (const chunk of chunks) opts.onBinaryData(chunk);
               }
+              if (opts.onPrefillDone) opts.onPrefillDone();
             }, 2000);
           } else if (msg.type === "prefill_done") {
             // Phase 2 complete (or single-phase legacy): flush remaining chunks.
@@ -996,6 +1001,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
             if (opts.onBinaryData) {
               for (const chunk of chunks) opts.onBinaryData(chunk);
             }
+            if (opts.onPrefillDone) opts.onPrefillDone();
           } else if (msg.type === "viewer_conflict") {
             __wfTraceEvent(_trace, "viewer_conflict");
             console.log("[pty-ws]", opts.session, "viewer_conflict");
@@ -1019,7 +1025,12 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       if (_awaitingPrefillDone) {
         const u8 = new Uint8Array(ev.data);
         if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: u8.length });
-        __wfTraceEvent(_trace, "ws.binary", { bucket: "prefill", size: u8.length, buffered: _prefillChunks.length + 1 });
+        const streamHiddenFullPrefill = _currentAttachPrefillMode === "full" && !_sawViewportPrefill;
+        __wfTraceEvent(_trace, "ws.binary", { bucket: "prefill", size: u8.length, buffered: streamHiddenFullPrefill ? 0 : _prefillChunks.length + 1 });
+        if (streamHiddenFullPrefill) {
+          if (opts.onBinaryData) opts.onBinaryData(u8);
+          return;
+        }
         _prefillChunks.push(u8);
         return;
       }
@@ -1148,6 +1159,8 @@ interface PtyTerminalControllerOpts {
   readonly resetPty?: boolean;
   readonly prefillMode?: string;
   readonly hydrationTimeoutMs?: number;
+  readonly hydrationMinPendingMs?: number;
+  readonly hydrationSilenceMs?: number;
   readonly shouldFocus?: () => boolean;
   readonly shouldReconnect?: () => boolean;
   readonly canAcceptInput?: () => boolean;
@@ -1204,6 +1217,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _ptyClient = null;
   let _hydrationStarted = false;
   let _hydrationWritesInFlight = 0;
+  let _initialPrefillComplete = opts.prefillMode === "none";
   let _connectEpoch = 0;
   let _reconnectPendingReset = false;
   let _postResetBuffer: Uint8Array[] | null = null;
@@ -1611,21 +1625,21 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       getElement: _getHydrationElement,
       getTerm: () => _term,
       shouldFocus: opts.shouldFocus || (() => true),
-      canFinish: () => _hydrationWritesInFlight === 0,
+      canFinish: () => _initialPrefillComplete && _hydrationWritesInFlight === 0,
       onReveal: () => {
         forceRepaint();
         if (opts.onHydrated) opts.onHydrated();
       },
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: 50,
-      minPendingMs: 200,
+      minPendingMs: opts.hydrationMinPendingMs ?? 80,
       // silenceMs: stay hidden until 150ms have passed since the LAST data
       // write. Catches the post-attach SIGWINCH redraw on grid cells (server
       // coalesces it into one big write, but it can arrive 100-300ms AFTER
       // prefill_done). Without this, the canvas reveals before the redraw
       // lands and the user sees the post-prefill burst paint visibly. Capped
       // by maxPendingMs=4000 for never-quiet sessions.
-      silenceMs: 150,
+      silenceMs: opts.hydrationSilenceMs ?? 50,
       // Diag-only: lets the controller emit milestones into the per-attach trace.
       session: opts.session,
       machine: opts.machine || "",
@@ -1651,17 +1665,21 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_ptyClient) _ptyClient.close();
     _connectEpoch++;
 
+    _initialPrefillComplete = opts.prefillMode === "none";
+
     // Start hydration on first connect
     if (!_hydrationStarted && _hydration) {
       startHydration();
       _hydrationStarted = true;
     }
 
-    // If cached snapshot was written during mount(), replace the cached
-    // buffer with live data on first output (broker prefill is a full
-    // snapshot redraw, so it'll overwrite the cached frame cleanly).
+    // If cached snapshot was written during mount(), keep it for viewport
+    // prefill so solo-fast switches retain recent local scrollback. Reset-only
+    // attaches are the exception: cached bytes describe the old process and
+    // must be discarded before new output arrives.
+    const preserveCachedOnInitialOpen = _cachedLoaded && opts.prefillMode !== "full" && !opts.resetPty;
     if (_cachedLoaded && opts.prefillMode !== "full") {
-      _reconnectPendingReset = true;
+      if (opts.resetPty) _reconnectPendingReset = true;
       _cachedLoaded = false;
     }
 
@@ -1681,12 +1699,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
-        // Always reset on first connect — ghostty-web's WASM retains the
-        // previous terminal's screen buffer across Terminal instances.
-        // Without this, new sessions with sparse prefill show stale content.
-        // shouldRehydrate skips the reset for viewport prefill mode, but
-        // the WASM buffer must be cleared regardless.
-        if (!wasReconnect && _term) {
+        // Reset on first connect unless we intentionally seeded viewport mode
+        // with a cached local tail. Ghostty-web's WASM can retain sparse stale
+        // cells across terminal instances; cached fast switches are the one
+        // case where preserving the pre-written buffer is desired scrollback.
+        if (!wasReconnect && _term && !preserveCachedOnInitialOpen) {
           _term.reset();
         }
         // On reconnect, clear stale content and restart hydration —
@@ -1709,6 +1726,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
+      onPrefillDone: () => {
+        if (!isCurrent()) return;
+        _initialPrefillComplete = true;
+        if (_hydration) _hydration.scheduleFinish();
+      },
       onReplacePrefill: () => {
         // Phase 2 scrollback replaces phase 1 viewport. The full scrollback
         // is a superset that contains the viewport content, so we skip the
@@ -2978,9 +3000,11 @@ async function initTerminal(cached?: string): Promise<void> {
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   const kbProxy = document.getElementById("mobile-kb-proxy");
+  const soloPrefillMode = wpSettings.soloPrefillMode === "full" ? "full" : "viewport";
+  const showCachedPlaceholder = !!cached && soloPrefillMode === "full";
   container.style.display = "block";
   container.innerHTML = "";
-  if (cached) {
+  if (showCachedPlaceholder) {
     container.classList.add("cached-visible");
     container.classList.remove("hydrating", "hydrated");
     setTerminalLoadVisualState(container, "cached");
@@ -2991,7 +3015,7 @@ async function initTerminal(cached?: string): Promise<void> {
     setTerminalLoadVisualState(container, "prefill-loading");
   }
   const slowLoad = createTerminalSlowPathIndicator(container);
-  slowLoad.start(cached ? "refreshing cached terminal" : "waiting for terminal snapshot");
+  slowLoad.start(showCachedPlaceholder ? "refreshing cached terminal" : "waiting for terminal snapshot");
   document.getElementById("kb-accessory").classList.remove("visible");
   state.kbAccessoryOpen = false;
   document.getElementById("input-bar").style.display = "none";
@@ -3011,13 +3035,13 @@ async function initTerminal(cached?: string): Promise<void> {
   }
 
   _tcState = { displaced: false, autoTakeControl: false };
-  let _cachedPendingReset = !!cached;
+  let _cachedPendingReset = showCachedPlaceholder;
   // Timer stored on state so destroyTerminal() can cancel it — prevents cross-session
   // side effects if user switches sessions before first output arrives (see PR #89 review).
   // After 5s, ensure canvas is visible even if hydration hasn't completed —
   // but keep cached content showing (don't blank the screen). The onOutput
   // handler removes cached-visible when live data arrives.
-  state._cachedFallbackTimer = cached ? setTimeout(() => {
+  state._cachedFallbackTimer = showCachedPlaceholder ? setTimeout(() => {
     state._cachedFallbackTimer = null;
     const el = document.getElementById("desktop-terminal-container");
     if (el) el.classList.add("hydrated");
@@ -3027,7 +3051,9 @@ async function initTerminal(cached?: string): Promise<void> {
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: "full",
+    prefillMode: soloPrefillMode,
+    hydrationMinPendingMs: 80,
+    hydrationSilenceMs: 50,
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -4647,6 +4673,12 @@ function bindHtmlEventListeners(): void {
     btn.addEventListener("click", () => {
       const font = (btn as HTMLElement).dataset.font;
       if (font) toggleSetting("termFont", font);
+    });
+  });
+  document.querySelectorAll(".solo-prefill-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = (btn as HTMLElement).dataset.mode;
+      if (mode === "fast" || mode === "full") toggleSetting("soloPrefillMode", mode);
     });
   });
 

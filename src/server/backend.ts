@@ -71,6 +71,8 @@ export interface SessionPrefill {
 export interface SessionPrefillOptions {
   /** Limit broker scrollback rows before rendering; omit for backend default. */
   scrollbackLines?: number;
+  /** Keep client-side scrollback when rendering snapshot prefill. */
+  preserveScrollback?: boolean;
 }
 
 export interface PtyBackendMethods {

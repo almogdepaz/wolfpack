@@ -138,9 +138,12 @@ async function mountGridController(gs, cell, idx) {
   if (gs.controller) return; // already mounted
   const cached = deps.loadSnapshot ? deps.loadSnapshot(gs.machine || "", gs.session) : null;
   if (cached) {
-    cell.classList.add("cached-visible");
-    setTerminalLoadVisualState(cell, "cached");
-    gs._slowLoad?.start("refreshing cached grid cell");
+    // Grid cells are narrower than solo terminals, so revealing cached
+    // full-width snapshots before first fit/hydration causes a wrapped-text
+    // flash. Keep cached bytes as an internal warm preview for the terminal
+    // buffer, but leave the loading screen visible until hydration completes.
+    setTerminalLoadVisualState(cell, "prefill-loading");
+    gs._slowLoad?.start("waiting for grid cell prefill");
   }
   let _gridCachedPending = !!cached;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
