@@ -332,7 +332,7 @@ BEGIN.`;
 
 /** Build the per-iteration prompt. Plan-format and subtask conventions are
  *  not injected — if the user wants them, they can install the
- *  `.claude/skills/wolfpack-{ralph,plan}` skills into their project. */
+ *  `skills/wolfpack-{ralph,plan}` skills into their project. */
 function buildPrompt(taskDesc: string): string {
   return buildIterationPrompt({
     agent: AGENT,
@@ -980,7 +980,7 @@ async function main() {
       continue;
     }
 
-    // check structured runner control output before marking completion
+    // check structured runner control output before marking completion/subtask expansion
     const responseDecision = classifyRalphResponseResult(readRalphResponseFile(responseFile));
     if (responseDecision.kind === "not_completed") {
       appendFileSync(LOG_FILE, `\n=== ⚠️ Iteration did not complete: ${responseDecision.reason} (${responseFile}) ===\n`);
