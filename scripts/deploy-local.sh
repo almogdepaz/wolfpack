@@ -45,7 +45,7 @@ verify_served_app_bundle() {
   last_error="not checked"
   while [ "$i" -le "$attempts" ]; do
     tmp="$(mktemp)"
-    if curl --fail --silent --show-error "$url" > "$tmp"; then
+    if curl --connect-timeout 1 --max-time 2 --fail --silent --show-error "$url" > "$tmp"; then
       actual="$(shasum -a 256 "$tmp" | awk '{ print $1 }')"
       rm -f "$tmp"
       if [ "$actual" = "$expected" ]; then
@@ -108,7 +108,9 @@ if launchctl kickstart -k "$DOMAIN/$SERVICE" 2>/dev/null; then
   echo "deployed and restarted (pid ${OLD_SERVER_PID:-none} -> $NEW_SERVER_PID)"
 elif [ -f "$PLIST" ]; then
   launchctl bootstrap "$DOMAIN" "$PLIST"
-  echo "deployed and bootstrapped"
+  NEW_SERVER_PID="$(wait_for_pid_change "$SERVICE" "$OLD_SERVER_PID" "server")"
+  verify_served_app_bundle
+  echo "deployed and bootstrapped (pid ${OLD_SERVER_PID:-none} -> $NEW_SERVER_PID)"
 else
   echo "deployed — no plist found, run 'wolfpack service install' first"
 fi

@@ -41,7 +41,7 @@ mkdir -p "$STATE_DIR"
 case "$*" in
   "list")
     SERVER_PID="$DEPLOY_TEST_SERVER_OLD_PID"
-    if [ -f "$STATE_DIR/server-kicked" ] && [ "$DEPLOY_TEST_SERVER_PID_STAYS" != "1" ]; then SERVER_PID="$DEPLOY_TEST_SERVER_NEW_PID"; fi
+    if { [ -f "$STATE_DIR/server-kicked" ] || [ -f "$STATE_DIR/server-bootstrapped" ]; } && [ "$DEPLOY_TEST_SERVER_PID_STAYS" != "1" ]; then SERVER_PID="$DEPLOY_TEST_SERVER_NEW_PID"; fi
     BROKER_PID="$DEPLOY_TEST_BROKER_OLD_PID"
     if [ -f "$STATE_DIR/broker-kicked" ] && [ "$DEPLOY_TEST_BROKER_PID_STAYS" != "1" ]; then BROKER_PID="$DEPLOY_TEST_BROKER_NEW_PID"; fi
     echo "$BROKER_PID\t0\tcom.wolfpack.broker"
@@ -55,6 +55,9 @@ case "$*" in
   *"kickstart -k"*"com.wolfpack.server"*)
     if [ "$DEPLOY_TEST_SERVER_KICKSTART_FAIL" = "1" ]; then exit 1; fi
     touch "$STATE_DIR/server-kicked"
+    ;;
+  *"bootstrap"*"com.wolfpack.server.plist"*)
+    touch "$STATE_DIR/server-bootstrapped"
     ;;
 esac
 exit 0
@@ -171,6 +174,29 @@ describe("scripts/deploy-local.sh", () => {
     )).toThrow();
 
     const commands = readFileSync(fixture.log, "utf-8");
-    expect(commands).toContain("curl --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
+    expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
+  });
+
+  test("bounds each served-bundle verification request", () => {
+    const fixture = prepareFixture();
+    runDeploy(fixture);
+
+    const commands = readFileSync(fixture.log, "utf-8");
+    expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
+  });
+
+  test("verifies fresh app bundle after bootstrapping server", () => {
+    const fixture = prepareFixture();
+    const launchAgents = join(fixture.home, "Library", "LaunchAgents");
+    mkdirSync(launchAgents, { recursive: true });
+    writeFileSync(join(launchAgents, "com.wolfpack.server.plist"), "plist\n");
+
+    const output = runDeploy(fixture, { DEPLOY_TEST_SERVER_KICKSTART_FAIL: "1" });
+    const commands = readFileSync(fixture.log, "utf-8");
+
+    expect(output).toContain("deployed and bootstrapped");
+    expect(commands).toContain("launchctl bootstrap");
+    expect(commands).toContain("com.wolfpack.server.plist");
+    expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
   });
 });
