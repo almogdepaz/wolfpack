@@ -391,7 +391,7 @@ function worktreeBranchName(taskHeader: string, iterationIndex: number): string 
   return `ralph/${num}-${slug}`;
 }
 
-function appendSubtasksToPlan(subtasks: string[]): void {
+function appendSubtasksToPlan(subtasks: readonly string[]): void {
   // sanitize: collapse embedded newlines first, then strip markdown headers and strikethrough markers
   const safe = subtasks.map(t => t.replace(/[\r\n]+/g, " ").replace(/^#+\s*/, "").replace(/~~/g, "").trim()).filter(Boolean);
   const lines = safe.map(t => `- [ ] ${t}`).join("\n");
@@ -980,7 +980,7 @@ async function main() {
       continue;
     }
 
-    // check for structured subtask breakdown (capped to prevent unbounded expansion)
+    // check structured runner control output before marking completion/subtask expansion
     const responseDecision = classifyRalphResponseResult(readRalphResponseFile(responseFile));
     if (responseDecision.kind === "not_completed") {
       appendFileSync(LOG_FILE, `\n=== ⚠️ Iteration did not complete: ${responseDecision.reason} (${responseFile}) ===\n`);
@@ -989,8 +989,14 @@ async function main() {
       continue;
     }
     const MAX_CEILING = Math.max(ITERATIONS * 2, 100);
-    if (responseDecision.kind === "subtasks" && subtaskExpansions < MAX_SUBTASK_EXPANSIONS) {
-      const subtasks = [...responseDecision.subtasks];
+    if (responseDecision.kind === "subtasks") {
+      if (subtaskExpansions >= MAX_SUBTASK_EXPANSIONS) {
+        appendFileSync(LOG_FILE, `\n=== ⚠️ Subtask expansion cap reached (${MAX_SUBTASK_EXPANSIONS}) — task not marked complete ===\n`);
+        cleanupIterFile();
+        cleanupResponseFile(responseFile);
+        continue;
+      }
+      const subtasks = responseDecision.subtasks;
       subtaskExpansions++;
       subtasksAdded += subtasks.length;
       appendSubtasksToPlan(subtasks);

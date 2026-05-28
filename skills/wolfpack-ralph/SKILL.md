@@ -1,6 +1,6 @@
 ---
 name: wolfpack-ralph
-description: Context injected into every ralph iteration prompt. Defines the structured response expectations and user-notification endpoint. Loaded by src/wolfpack-context.ts and prepended to the prompt sent to claude/codex/cursor/gemini.
+description: Optional Ralph skill context for agents/users who install it. Defines the structured response expectations and user-notification endpoint; Wolfpack does not runtime-inject this skill into prompts.
 ---
 
 ## Ralph Agent Context

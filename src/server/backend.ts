@@ -68,6 +68,11 @@ export interface SessionPrefill {
   seq?: bigint;
 }
 
+export interface SessionPrefillOptions {
+  /** Limit broker scrollback rows before rendering; omit for backend default. */
+  scrollbackLines?: number;
+}
+
 export interface PtyBackendMethods {
   onSessionData(
     name: string,
@@ -93,7 +98,7 @@ export interface PtyBackendMethods {
    * Returns prefill bytes + snapshot seq for the WS attach handler.
    * Async because the broker sources prefill from a snapshot RPC.
    */
-  getSessionPrefill(name: string, cols?: number): SessionPrefill | Promise<SessionPrefill>;
+  getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): SessionPrefill | Promise<SessionPrefill>;
   isSessionAlive(name: string): boolean;
   /**
    * Register a lifecycle callback for a session (currently: exit only).

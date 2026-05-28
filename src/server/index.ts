@@ -28,7 +28,7 @@ import {
   createPerIpRateLimiter,
 } from "./http.js";
 import { handlePtyWs } from "./websocket.js";
-import { createLogger } from "../log.js";
+import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 
 const log = createLogger("server");
@@ -184,37 +184,45 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   });
 
   server.on("upgrade", async (req, socket, head) => {
-    const origin = req.headers.origin;
-    if (origin && !isAllowedOrigin(origin)) {
-      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-    const url = new URL(req.url ?? "/", "http://localhost");
+    try {
+      const origin = req.headers.origin;
+      if (origin && !isAllowedOrigin(origin)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://localhost");
 
-    const auth = validateRequestJwt(req.headers, url, true);
-    if (!auth.ok) {
-      log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-      return;
-    }
+      const auth = validateRequestJwt(req.headers, url, true);
+      if (!auth.ok) {
+        log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
 
-    if (url.pathname !== "/ws/pty") {
-      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-      socket.destroy();
-      return;
-    }
+      if (url.pathname !== "/ws/pty") {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
+        return;
+      }
 
-    const session = url.searchParams.get("session");
-    if (!session || !isValidSessionName(session) || !(await isAllowedSession(session))) {
-      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-      socket.destroy();
-      return;
-    }
+      const session = url.searchParams.get("session");
+      if (!session || !isValidSessionName(session) || !(await isAllowedSession(session))) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
 
-    const reset = url.searchParams.get("reset") === "1";
-    wss.handleUpgrade(req, socket, head, (ws) => handlePtyWs(ws, session, reset));
+      const reset = url.searchParams.get("reset") === "1";
+      wss.handleUpgrade(req, socket, head, (ws) => handlePtyWs(ws, session, reset));
+    } catch (e: unknown) {
+      log.error("ws upgrade error", { error: errMsg(e) });
+      if (!socket.destroyed) {
+        try { socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n"); } catch { /* socket already unusable */ }
+        socket.destroy();
+      }
+    }
   });
 
   return { server, wss };

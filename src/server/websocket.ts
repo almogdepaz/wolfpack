@@ -22,8 +22,51 @@ import { getBackend, getRouter } from "./backend.js";
 import type { SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
+import {
+  isTerminalLoadTimingEnabled,
+  terminalLoadModeFromPrefill,
+  terminalLoadTimingFields,
+  type TerminalLoadMode,
+} from "../terminal-load-timing.js";
 
 const log = createLogger("ws");
+const TERMINAL_LOAD_TIMING_ENABLED = isTerminalLoadTimingEnabled(process.env);
+
+interface ServerTerminalLoadTiming {
+  readonly session: string;
+  mode: TerminalLoadMode;
+  readonly startMs: number;
+  mark(event: string, extra?: Record<string, unknown>): void;
+}
+
+function createServerTerminalLoadTiming(session: string, mode: TerminalLoadMode = "unknown"): ServerTerminalLoadTiming | null {
+  if (!TERMINAL_LOAD_TIMING_ENABLED) return null;
+  const timing: ServerTerminalLoadTiming = {
+    session,
+    mode,
+    startMs: performance.now(),
+    mark(event: string, extra?: Record<string, unknown>): void {
+      log.info("terminal_load", terminalLoadTimingFields({
+        event,
+        session: timing.session,
+        mode: timing.mode,
+        nowMs: performance.now(),
+        startMs: timing.startMs,
+        extra,
+      }));
+    },
+  };
+  return timing;
+}
+
+function testPrefillDelayMs(): number {
+  if (!process.env.WOLFPACK_TEST) return 0;
+  const raw = process.env.WOLFPACK_TEST_PREFILL_DELAY_MS;
+  if (!raw) return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.round(n), 10_000);
+}
 
 // ── PTY session tracking ──
 
@@ -49,6 +92,7 @@ interface PtyEntryContext {
   readonly ws: WebSocket;
   readonly backend: SessionBackend & PtyBackendMethods;
   readonly requestedSize: { current: { cols: number; rows: number } | null };
+  readonly timing: ServerTerminalLoadTiming | null;
 }
 
 export const activePtySessions = new Map<string, PtyEntry>();
@@ -57,6 +101,7 @@ const ptySpawnAttempts = new Map<string, number>();
 
 // ── Constants ──
 const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
+const VIEWPORT_PREFILL_SCROLLBACK_LINES = 0;
 const PREFILL_CHUNK_SIZE = 32 * 1024;
 const PREFILL_CHUNK_DELAY_MS = 8;
 const PREFILL_OVERLAP_LIMIT = 32 * 1024;
@@ -80,9 +125,17 @@ const POST_SPAWN_RESIZE_DELAY_MS = 100;
 // it — eliminates the burst entirely instead of just hiding it on client.
 const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
 // Wait this long for the FIRST resize before assuming none is coming.
-// Covers session-open CSS transitions (~200ms total) + WS jitter.
-const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 200;
+// Full prefill still needs a window for late layout settle, but desktop attach
+// dims are already fit before attach. Keep this above viewport's 60ms while
+// avoiding a fixed 200ms tax on every full switch.
+const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 120;
 const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
+// Grid viewport attaches are already mounted in stable cells and fetch no
+// broker scrollback, so they use a shorter resize settle budget than full
+// desktop attaches while still coalescing same-turn resize frames.
+const VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS = 40;
+const VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 60;
+const VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 160;
 // After applying the settled resize, wait for the shell's SIGWINCH-triggered
 // redraw to fully land in the broker output stream so it's captured in the
 // snapshot — NOT replayed via `sinceSeq` to a viewer whose canvas is already
@@ -233,12 +286,16 @@ async function sendPrefillChunked(
   entry: { viewer: WebSocket | null; alive: boolean },
   prefill: Buffer,
   session: string,
+  timing?: ServerTerminalLoadTiming | null,
 ): Promise<boolean> {
   let offset = 0;
+  let chunkIndex = 0;
   while (offset < prefill.length) {
     if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return false;
     const end = Math.min(offset + PREFILL_CHUNK_SIZE, prefill.length);
     entry.viewer.send(prefill.subarray(offset, end));
+    timing?.mark("prefill_chunk.send", { chunkIndex, bytes: end - offset });
+    chunkIndex++;
     offset = end;
     if (offset < prefill.length) {
       await new Promise(resolve => setTimeout(resolve, PREFILL_CHUNK_DELAY_MS));
@@ -299,6 +356,8 @@ export function teardownPty(session: string): void {
 }
 
 export function handlePtyWs(ws: WebSocket, session: string, reset = false): void {
+  const initialTiming = createServerTerminalLoadTiming(session);
+  initialTiming?.mark("upgrade.accepted", { reset });
   // Force teardown existing PTY so a fresh one is spawned at the caller's dimensions
   if (reset) {
     const stale = activePtySessions.get(session);
@@ -338,7 +397,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "displaced pendingViewer close failed", session);
         existing.pendingViewer = null;
       }
-      setupNewPtyEntry(ws, session, dims);
+      setupNewPtyEntry(ws, session, dims, initialTiming);
       try { ws.send(JSON.stringify({ type: "control_granted" })); } catch (e: unknown) { log.warn("control_granted send failed", { session, error: errMsg(e) }); }
     }
 
@@ -376,6 +435,12 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
           pendingAttachDims = { cols: msg.cols, rows: msg.rows, prefillMode: pm };
+          if (initialTiming) initialTiming.mode = terminalLoadModeFromPrefill(pm || "full");
+          initialTiming?.mark("attach.parsed", {
+            cols: clampCols(msg.cols),
+            rows: clampRows(msg.rows),
+            prefillMode: pm || "full",
+          });
           if (msg.takeControl) {
             cleanupPending();
             performImmediateTakeover(pendingAttachDims);
@@ -413,7 +478,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
   }
 
   // No active PTY — create new entry
-  setupNewPtyEntry(ws, session);
+  setupNewPtyEntry(ws, session, undefined, initialTiming);
 }
 
 /** Returns true iff the helper should bail because the entry is no longer
@@ -429,19 +494,24 @@ function bail(ctx: PtyEntryContext): boolean {
 async function waitForResizeSettle(
   ctx: PtyEntryContext,
   initialSize: { cols: number; rows: number },
+  options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
 ): Promise<{ cols: number; rows: number } | null> {
+  const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
+  const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
+  const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
   let pendingSize = initialSize;
+  ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
   const settleStart = Date.now();
   let lastChangeAt = -1;
   while (true) {
     if (bail(ctx)) return null;
     const elapsedTotal = Date.now() - settleStart;
-    if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_TIMEOUT_MS) break;
+    if (elapsedTotal >= timeoutMs) break;
     if (lastChangeAt < 0) {
-      if (elapsedTotal >= PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS) break;
+      if (elapsedTotal >= initialWaitMs) break;
     } else {
       const elapsedSinceChange = Date.now() - lastChangeAt;
-      if (elapsedSinceChange >= PRE_SNAPSHOT_RESIZE_SETTLE_MS) break;
+      if (elapsedSinceChange >= settleMs) break;
     }
     await new Promise(resolve => setTimeout(resolve, 16));
     const latest = ctx.requestedSize.current;
@@ -450,6 +520,7 @@ async function waitForResizeSettle(
       lastChangeAt = Date.now();
     }
   }
+  ctx.timing?.mark("resize_settle.end", { cols: pendingSize.cols, rows: pendingSize.rows });
   return pendingSize;
 }
 
@@ -464,6 +535,7 @@ async function waitForOutputQuiescence(
 ): Promise<{ cols: number; rows: number } | null> {
   let appliedSize = pendingSize;
   const samples: Array<{ t: number; bytes: number }> = [];
+  ctx.timing?.mark("quiescence_wait.start", { cols: pendingSize.cols, rows: pendingSize.rows });
   const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
     samples.push({ t: Date.now(), bytes: data.length });
   }, {
@@ -507,6 +579,78 @@ async function waitForOutputQuiescence(
   } finally {
     if (observe) observe();
   }
+  ctx.timing?.mark("quiescence_wait.end", { cols: appliedSize.cols, rows: appliedSize.rows });
+  return bail(ctx) ? null : appliedSize;
+}
+
+/** Full prefill can overlap the initial resize-settle window with the
+ *  SIGWINCH redraw wait: apply the attach dims immediately, observe output
+ *  while still waiting for late client resize messages, and snapshot only
+ *  once both dimensions are stable and output has quiesced. */
+async function waitForSettledResizeAndOutputQuiescence(
+  ctx: PtyEntryContext,
+  initialSize: { cols: number; rows: number },
+  options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
+): Promise<{ cols: number; rows: number } | null> {
+  const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
+  const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
+  const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
+  let pendingSize = initialSize;
+  let appliedSize = initialSize;
+  let lastChangeAt = -1;
+  const samples: Array<{ t: number; bytes: number }> = [];
+
+  ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
+  ctx.timing?.mark("quiescence_wait.start", { cols: initialSize.cols, rows: initialSize.rows });
+
+  const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
+    samples.push({ t: Date.now(), bytes: data.length });
+  }, {
+    onSubscribeError: (err: unknown) => {
+      log.debug("resize-settle observer subscribe failed", { session: ctx.session, error: errMsg(err) });
+    },
+  });
+
+  let lastResizeAt = Date.now();
+  const settleStart = lastResizeAt;
+  try {
+    await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+    lastResizeAt = Date.now();
+
+    while (true) {
+      if (bail(ctx)) break;
+      const latest = ctx.requestedSize.current;
+      if (latest && (latest.cols !== pendingSize.cols || latest.rows !== pendingSize.rows)) {
+        pendingSize = latest;
+        lastChangeAt = Date.now();
+      }
+      if (pendingSize.cols !== appliedSize.cols || pendingSize.rows !== appliedSize.rows) {
+        appliedSize = pendingSize;
+        await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+        lastResizeAt = Date.now();
+      }
+
+      const now = Date.now();
+      const elapsedTotal = now - settleStart;
+      const resizeStable = elapsedTotal >= timeoutMs
+        || (lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs);
+
+      const cutoff = now - QUIESCE_WINDOW_MS;
+      while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
+      const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
+      const outputStable = decision !== "continue";
+      if (outputStable && (decision === "animated_cap" || decision === "timeout")) {
+        log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
+      }
+      if (resizeStable && outputStable) break;
+      await new Promise(resolve => setTimeout(resolve, 16));
+    }
+  } finally {
+    if (observe) observe();
+  }
+
+  ctx.timing?.mark("resize_settle.end", { cols: appliedSize.cols, rows: appliedSize.rows });
+  ctx.timing?.mark("quiescence_wait.end", { cols: appliedSize.cols, rows: appliedSize.rows });
   return bail(ctx) ? null : appliedSize;
 }
 
@@ -519,9 +663,23 @@ async function sendSnapshotPrefill(
   appliedSize: { cols: number; rows: number },
   prefillMode: PrefillMode,
 ): Promise<bigint | undefined> {
-  if (prefillMode === "none") return undefined;
-  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols);
+  if (prefillMode === "none") {
+    ctx.timing?.mark("prefill_send.start", { bytes: 0, prefillMode });
+    ctx.timing?.mark("prefill_send.end", { bytes: 0, prefillMode });
+    return undefined;
+  }
+  const scrollbackLines = prefillMode === "viewport" ? VIEWPORT_PREFILL_SCROLLBACK_LINES : undefined;
+  ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
+  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines });
+  ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
   const prefillSeq = prefill.seq;
+  ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });
+  const delayMs = testPrefillDelayMs();
+  if (delayMs > 0) {
+    ctx.timing?.mark("prefill_delay.start", { delayMs });
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    ctx.timing?.mark("prefill_delay.end", { delayMs });
+  }
   if (prefill.data.length > 0 && ctx.entry.viewer && ctx.entry.viewer.readyState === 1) {
     let sendBuf: Buffer;
     if (prefill.data.length > DESKTOP_PREFILL_MAX_BYTES) {
@@ -535,15 +693,16 @@ async function sendSnapshotPrefill(
 
     if (prefillMode === "viewport") {
       ctx.entry.viewer.send(sendBuf);
+      ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });
       ctx.entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
       sendPrefillDone(ctx.entry);
     } else {
-      ctx.entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
-      await sendPrefillChunked(ctx.entry, sendBuf, ctx.session);
+      await sendPrefillChunked(ctx.entry, sendBuf, ctx.session, ctx.timing);
     }
   } else {
     sendPrefillDone(ctx.entry);
   }
+  ctx.timing?.mark("prefill_send.end", { bytes: prefill.data.length, prefillMode });
   return prefillSeq;
 }
 
@@ -580,6 +739,7 @@ function subscribeWithCoalescing(
   let _coalesceBuf: Buffer[] = [];
   let _coalesceTimer: NodeJS.Timeout | null = null;
   let _coalesceFirstPushAt = 0;
+  let _sawFirstOutputForward = false;
   const flushCoalesce = (): void => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
     if (!_coalesceBuf.length) return;
@@ -587,9 +747,14 @@ function subscribeWithCoalescing(
     _coalesceBuf = [];
     _coalesceFirstPushAt = 0;
     if (entry.viewer && entry.viewer.readyState === 1) {
+      if (!_sawFirstOutputForward) {
+        _sawFirstOutputForward = true;
+        ctx.timing?.mark("first_output.forward", { bytes: merged.length });
+      }
       try { entry.viewer.send(merged); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
     }
   };
+  ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
   const unsub = backend.onSessionData(session, (data: Uint8Array) => {
     if (!entry.alive) return;
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
@@ -629,6 +794,7 @@ function subscribeWithCoalescing(
     }
     return false;
   }
+  ctx.timing?.mark("subscribe.success");
   // Wrap unsub so the coalesce timer + buffer don't leak past detach.
   // Drop the buffer rather than flushing: viewer is gone, no point.
   entry.unsubscribe = () => {
@@ -685,6 +851,7 @@ function setupNewPtyEntry(
   ws: WebSocket,
   session: string,
   initialDims?: { cols: number; rows: number; prefillMode?: string } | null,
+  timing?: ServerTerminalLoadTiming | null,
 ): void {
   const entry: PtyEntry = {
     viewer: ws as WebSocket | null,
@@ -720,6 +887,7 @@ function setupNewPtyEntry(
     options?: { prefillMode?: PrefillMode },
   ): Promise<void> {
     const prefillMode = options?.prefillMode ?? "full";
+    if (timing) timing.mode = terminalLoadModeFromPrefill(prefillMode);
     requestedSize.current = { cols, rows };
     if (entry.unsubscribe || spawning) return;
     spawning = true;
@@ -751,20 +919,37 @@ function setupNewPtyEntry(
 
       if (!entryStillCurrent(entry, session, ws)) return;
 
-      const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize };
+      const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize, timing: timing || null };
 
-      // Skip the settle + quiescence phases when there's no snapshot to
-      // take — the only purpose of waiting is to capture the SIGWINCH
-      // redraw in the snapshot, but prefillMode:"none" means we don't
-      // snapshot. Apply dims once and move on.
-      let appliedSize: { cols: number; rows: number };
       if (prefillMode === "none") {
-        appliedSize = { cols, rows };
-        await backend.resize(session, appliedSize.cols, appliedSize.rows);
-      } else {
-        const pending = await waitForResizeSettle(ctx, { cols, rows });
+        if (!subscribeWithCoalescing(ctx, undefined)) return;
+        const latest = requestedSize.current ?? { cols, rows };
+        timing?.mark("resize_apply.start", { cols: latest.cols, rows: latest.rows, prefillMode });
+        await backend.resize(session, latest.cols, latest.rows);
+        timing?.mark("resize_apply.end", { cols: latest.cols, rows: latest.rows, prefillMode });
+        if (!entryStillCurrent(entry, session, ws)) return;
+        timing?.mark("pty_ready.send");
+        sendPtyReady(entry);
+        return;
+      }
+
+      // Only full desktop prefill pays the quiescence tax. Viewport prefill is
+      // shallow, but still uses the settle window to coalesce the initial
+      // attach dimensions with same-turn resize messages.
+      let appliedSize: { cols: number; rows: number };
+      if (prefillMode === "viewport") {
+        const pending = await waitForResizeSettle(ctx, { cols, rows }, {
+          initialWaitMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS,
+          settleMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS,
+          timeoutMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS,
+        });
         if (pending === null) return;
-        const settled = await waitForOutputQuiescence(ctx, pending);
+        appliedSize = pending;
+        timing?.mark("resize_apply.start", { cols: appliedSize.cols, rows: appliedSize.rows, prefillMode });
+        await backend.resize(session, appliedSize.cols, appliedSize.rows);
+        timing?.mark("resize_apply.end", { cols: appliedSize.cols, rows: appliedSize.rows, prefillMode });
+      } else {
+        const settled = await waitForSettledResizeAndOutputQuiescence(ctx, { cols, rows });
         if (settled === null) return;
         appliedSize = settled;
       }
@@ -788,6 +973,7 @@ function setupNewPtyEntry(
 
       if (!subscribeWithCoalescing(ctx, prefillSeq)) return;
 
+      timing?.mark("pty_ready.send");
       sendPtyReady(entry);
     } finally {
       spawning = false;
@@ -818,23 +1004,30 @@ function setupNewPtyEntry(
         ) {
           requestedSize.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
           const isAttached = !!entry.unsubscribe;
-          if (!isAttached) {
-            let prefillMode: PrefillMode = "full";
-            if (typeof msg.prefillMode === "string" && VALID_PREFILL_MODES.includes(msg.prefillMode)) {
-              prefillMode = msg.prefillMode as PrefillMode;
-            } else if (msg.skipPrefill === true) {
-              prefillMode = "none";
-            }
-            spawnPty(requestedSize.current.cols, requestedSize.current.rows, {
+          let prefillMode: PrefillMode = "full";
+          if (typeof msg.prefillMode === "string" && VALID_PREFILL_MODES.includes(msg.prefillMode)) {
+            prefillMode = msg.prefillMode as PrefillMode;
+          } else if (msg.skipPrefill === true) {
+            prefillMode = "none";
+          }
+          if (timing) {
+            timing.mode = terminalLoadModeFromPrefill(prefillMode);
+            timing.mark("attach.parsed", {
+              cols: requestedSize.current.cols,
+              rows: requestedSize.current.rows,
               prefillMode,
             });
           }
           if (entry.viewer && entry.viewer.readyState === 1) {
             try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`attach_ack send failed`, { session, error: errMsg(e) }); }
-            if (isAttached) {
-              sendPtyReady(entry);
-              sendPrefillDone(entry);
-            }
+          }
+          if (!isAttached) {
+            spawnPty(requestedSize.current.cols, requestedSize.current.rows, {
+              prefillMode,
+            });
+          } else {
+            sendPtyReady(entry);
+            if (prefillMode !== "none") sendPrefillDone(entry);
           }
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const cols = clampCols(msg.cols);
@@ -888,6 +1081,14 @@ function setupNewPtyEntry(
       prefillMode = initialDims.prefillMode as PrefillMode;
     }
     requestedSize.current = { cols: clampCols(initialDims.cols), rows: clampRows(initialDims.rows) };
+    if (timing) {
+      timing.mode = terminalLoadModeFromPrefill(prefillMode);
+      timing.mark("attach.parsed", {
+        cols: requestedSize.current.cols,
+        rows: requestedSize.current.rows,
+        prefillMode,
+      });
+    }
     spawnPty(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
     if (entry.viewer && entry.viewer.readyState === 1) {
       try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`immediate attach_ack send failed`, { session, error: errMsg(e) }); }

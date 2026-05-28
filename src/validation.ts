@@ -149,7 +149,7 @@ function resolveGitMetadataDirs(cwd: string): string[] {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     return [gitDir, commonDir]
-      .filter(Boolean)
+      .filter(path => path.length > 0)
       .map(path => isAbsolute(path) ? path : resolve(cwd, path))
       .filter((path, index, paths) => paths.indexOf(path) === index);
   } catch {

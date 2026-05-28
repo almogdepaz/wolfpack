@@ -27,6 +27,7 @@ export interface TraceMeta {
   readonly machine: string;
   readonly startWall: number;
   readonly startPerf: number;
+  readonly markPrefix: string;
   readonly [extra: string]: unknown;
 }
 
@@ -61,6 +62,7 @@ const __wfTraceEnabled = (() => {
 })();
 
 const __wfTraceMaxEvents = 5000;
+let __wfTraceSeq = 0;
 
 export const wfTraceEnabled: boolean = __wfTraceEnabled;
 
@@ -77,12 +79,14 @@ export function __wfTraceStart(
 ): TraceState | null {
   if (!__wfTraceEnabled) return null;
   const key = __wfTraceKey(session, machine);
+  const markPrefix = "wolfpack:terminal-load:" + (++__wfTraceSeq) + ":" + key;
   const trace: TraceState = {
     _meta: {
       session,
       machine: machine || "",
       startWall: Date.now(),
       startPerf: performance.now(),
+      markPrefix,
       ...(extra || {}),
     },
     events: [],
@@ -90,6 +94,7 @@ export function __wfTraceStart(
     _rafActive: false,
   };
   window.__wfTrace![key] = trace;
+  try { performance.mark(markPrefix + ":start"); } catch {}
   return trace;
 }
 
@@ -109,6 +114,11 @@ export function __wfTraceEvent(
 ): void {
   if (!trace) return;
   if (trace.events.length >= __wfTraceMaxEvents) return;
+  const markName = trace._meta.markPrefix + ":" + kind;
+  try {
+    performance.mark(markName);
+    performance.measure(markName, trace._meta.markPrefix + ":start", markName);
+  } catch {}
   trace.events.push({
     t: +(performance.now() - trace._meta.startPerf).toFixed(3),
     kind,

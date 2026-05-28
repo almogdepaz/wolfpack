@@ -49,7 +49,7 @@ jobs:
         run: bun run typecheck
 
       - name: Run tests
-        run: bun test tests/unit/ tests/snapshot/ tests/integration/api.test.ts tests/integration/ralph-api.test.ts tests/integration/ralph-aggregation.test.ts tests/integration/ws-dispatch.test.ts tests/integration/ws-terminal.test.ts tests/integration/prompt-reconnect.test.ts
+        run: bun test tests/unit/ tests/snapshot/ tests/integration/api.test.ts tests/integration/ralph-api.test.ts tests/integration/ralph-aggregation.test.ts tests/integration/ws-dispatch.test.ts tests/integration/pty-takeover.test.ts tests/integration/prompt-reconnect.test.ts
 
       - name: Run auth tests (isolated — sets JWT env vars that contaminate shared module cache)
         run: bun test tests/integration/auth-middleware.test.ts

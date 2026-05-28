@@ -8,7 +8,7 @@
  * broker `snapshot` RPC → plain-text rendering.
  */
 import { test, expect } from "@playwright/test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
@@ -23,7 +23,7 @@ let devDir: string | null = null;
 
 test.beforeAll(async () => {
   if (skipIfNoBroker.condition) return;
-  devDir = mkdtempSync(join(tmpdir(), "wp-broker-copy-"));
+  devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-broker-copy-")));
   mkdirSync(join(devDir, PROJECT_NAME));
   srv = await start({ envOverrides: { WOLFPACK_DEV_DIR: devDir } });
 });
@@ -63,13 +63,15 @@ test("broker copy: kb-copy button writes plain-text snapshot to clipboard", asyn
 
   // Wait for prompt to settle and type marker.
   await wait(1500);
-  await canvas.click();
+  await page.locator("#kb-open-btn").click();
+  await page.locator("#mobile-kb-proxy").focus();
   await page.keyboard.type(`echo ${marker}`);
   await page.keyboard.press("Enter");
   await wait(800); // give broker time to drain PTY into snapshot
 
-  // Click the copy button — overlay shows "copied N chars" on success.
+  // Click the copy button and wait for the async fetch/writeText path to finish.
   await page.locator(".kb-key.kb-copy").click();
+  await expect(page.locator("#git-status-overlay")).toContainText("copied", { timeout: 5000 });
 
   // Read clipboard. The button writes to navigator.clipboard.
   const clipboard = await page.evaluate(() => navigator.clipboard.readText());

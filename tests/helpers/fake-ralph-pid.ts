@@ -12,14 +12,19 @@
  * at the wrapper shell, not the sleep child).
  */
 import { execFileSync } from "node:child_process";
+import { __registerTestRalphProcess } from "../../src/test-hooks.js";
 
 export interface FakeRalph {
   pid: number;
   proc: ReturnType<typeof Bun.spawn> | null;
+  unregister: (() => void) | null;
+  prevWolfpackTest: string | undefined;
 }
 
 export function startFakeRalph(): FakeRalph {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
+  let unregister: (() => void) | null = null;
+  const prevWolfpackTest = process.env.WOLFPACK_TEST;
   let pid = process.pid; // safe fallback; tests will fail loudly rather than silently
   try {
     // Use /bin/bash explicitly: `exec -a NAME` is a bash builtin, NOT in
@@ -32,23 +37,34 @@ export function startFakeRalph(): FakeRalph {
       stdout: "ignore",
       stderr: "ignore",
     });
+    if (proc.pid && proc.pid > 1) pid = proc.pid;
     // The Bun.spawn handle is the shell pid; the actual sleep is a child.
     // pgrep so isRalphProcessAlive() (which inspects ps cmdline) sees the
     // right argv. Brief busy-wait — exec is near-instant.
     const start = Date.now();
     while (Date.now() - start < 1000) {
       try {
-        const out = execFileSync("pgrep", ["-f", "ralph-macchio worker"], { encoding: "utf-8" });
+        const out = execFileSync("pgrep", ["-f", "ralph-macchio worker"], {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        });
         const found = Number(out.trim().split("\n")[0]);
         if (Number.isFinite(found) && found > 1) { pid = found; break; }
       } catch { /* not yet visible */ }
       Bun.sleepSync(20);
     }
   } catch { /* leave pid = process.pid — affected tests will fail */ }
-  return { pid, proc };
+  if (proc && pid !== process.pid) {
+    process.env.WOLFPACK_TEST = "1";
+    unregister = __registerTestRalphProcess(pid);
+  }
+  return { pid, proc, unregister, prevWolfpackTest };
 }
 
 export function stopFakeRalph(handle: FakeRalph): void {
+  try { handle.unregister?.(); } catch { /* gone */ }
+  if (handle.prevWolfpackTest === undefined) delete process.env.WOLFPACK_TEST;
+  else process.env.WOLFPACK_TEST = handle.prevWolfpackTest;
   try { if (handle.pid !== process.pid) process.kill(handle.pid, "SIGKILL"); } catch { /* gone */ }
   try { handle.proc?.kill("SIGKILL"); } catch { /* gone */ }
 }
