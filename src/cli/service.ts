@@ -631,24 +631,25 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
     } catch { /* server unreachable or parse error — proceed with stop */ }
   }
 
+  let serverStopped = false;
   try {
     if (IS_MACOS) {
       launchdBootout();
     } else if (IS_LINUX) {
       execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
     }
+    serverStopped = true;
     print(green("  Wolfpack service stopped."));
   } catch (e: unknown) {
     log.error("failed to stop service", { error: errMsg(e) });
     print(red("  Failed to stop service."));
-    return false;
   }
-  if (config && isPortInUse(config.port)) {
+  if (serverStopped && config && isPortInUse(config.port)) {
     killPortHolder(config.port);
     waitForPortFree(config.port, 5000);
   }
   if (stopBroker) brokerServiceStop();
-  return true;
+  return serverStopped;
 }
 
 export function serviceStart(_options: ServiceActionOptions = {}) {

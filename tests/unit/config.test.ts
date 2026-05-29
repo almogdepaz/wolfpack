@@ -55,14 +55,20 @@ describe("hasUninstallConfirmationFlag", () => {
 });
 
 describe("parseServiceCommand", () => {
-  test("parses broker-aware service actions", () => {
-    expect(parseServiceCommand(["restart"])).toEqual({ action: "restart", broker: false });
-    expect(parseServiceCommand(["restart", "--broker"])).toEqual({ action: "restart", broker: true });
-    expect(parseServiceCommand(["stop", "--broker"])).toEqual({ action: "stop", broker: true });
-    expect(parseServiceCommand(["start", "--broker"])).toEqual({ action: "start", broker: true });
+  test("parses every accepted service action", () => {
+    for (const action of ["install", "uninstall", "stop", "start", "restart", "status"] as const) {
+      expect(parseServiceCommand([action])).toEqual({ action, broker: false });
+      expect(parseServiceCommand([action, "--broker"])).toEqual({ action, broker: true });
+    }
   });
 
-  test("rejects unknown service flags and actions", () => {
+  test("treats duplicate broker flags as idempotent", () => {
+    expect(parseServiceCommand(["restart", "--broker", "--broker"])).toEqual({ action: "restart", broker: true });
+  });
+
+  test("rejects missing actions, flag-only input, unknown flags, and unknown actions", () => {
+    expect(parseServiceCommand([])).toBeNull();
+    expect(parseServiceCommand(["--broker"])).toBeNull();
     expect(parseServiceCommand(["restart", "--wat"])).toBeNull();
     expect(parseServiceCommand(["nuke"])).toBeNull();
   });
