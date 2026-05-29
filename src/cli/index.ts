@@ -15,6 +15,7 @@ import {
   serviceUninstall,
   serviceStop,
   serviceStart,
+  serviceRestart,
   serviceStatus,
   isServiceInstalled,
   isServiceRunning,
@@ -47,6 +48,21 @@ export function planServiceEnsureAction(
 
 export function hasUninstallConfirmationFlag(argv: string[]): boolean {
   return argv.includes("--yes") || argv.includes("--force");
+}
+
+export type ServiceCommandAction = "install" | "uninstall" | "stop" | "start" | "restart" | "status";
+
+export interface ParsedServiceCommand {
+  readonly action: ServiceCommandAction;
+  readonly broker: boolean;
+}
+
+export function parseServiceCommand(argv: readonly string[]): ParsedServiceCommand | null {
+  const [action, ...flags] = argv;
+  if (!action) return null;
+  if (!["install", "uninstall", "stop", "start", "restart", "status"].includes(action)) return null;
+  if (flags.some(flag => flag !== "--broker")) return null;
+  return { action: action as ServiceCommandAction, broker: flags.includes("--broker") };
 }
 
 async function start() {
@@ -140,15 +156,17 @@ async function main() {
   if (cmd === "setup") {
     await setup();
   } else if (cmd === "service") {
-    if (subcmd === "install") serviceInstall();
-    else if (subcmd === "uninstall") serviceUninstall();
-    else if (subcmd === "stop") serviceStop();
-    else if (subcmd === "start") serviceStart();
-    else if (subcmd === "status") serviceStatus();
-    else {
-      print("  Usage: wolfpack service [install|uninstall|start|stop|status]");
+    const serviceCommand = parseServiceCommand(process.argv.slice(3));
+    if (!serviceCommand) {
+      print("  Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
       process.exit(1);
     }
+    if (serviceCommand.action === "install") serviceInstall();
+    else if (serviceCommand.action === "uninstall") serviceUninstall();
+    else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
+    else if (serviceCommand.action === "start") serviceStart();
+    else if (serviceCommand.action === "restart") serviceRestart(serviceCommand.broker ? { broker: true } : {});
+    else if (serviceCommand.action === "status") serviceStatus();
   } else if (cmd === "doctor") {
     process.exit(await doctor());
   } else if (cmd === "ls" || cmd === "list") {

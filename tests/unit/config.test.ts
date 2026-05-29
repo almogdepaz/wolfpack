@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { remoteUrl, type Config } from "../../src/cli/config.ts";
-import { planServiceEnsureAction, hasUninstallConfirmationFlag } from "../../src/cli/index.ts";
+import { planServiceEnsureAction, hasUninstallConfirmationFlag, parseServiceCommand } from "../../src/cli/index.ts";
 
 describe("remoteUrl", () => {
   const base: Config = { devDir: "/home/dev", port: 18790 };
@@ -51,5 +51,19 @@ describe("hasUninstallConfirmationFlag", () => {
   test("rejects missing confirmation flag", () => {
     expect(hasUninstallConfirmationFlag([])).toBe(false);
     expect(hasUninstallConfirmationFlag(["--dry-run"])).toBe(false);
+  });
+});
+
+describe("parseServiceCommand", () => {
+  test("parses broker-aware service actions", () => {
+    expect(parseServiceCommand(["restart"])).toEqual({ action: "restart", broker: false });
+    expect(parseServiceCommand(["restart", "--broker"])).toEqual({ action: "restart", broker: true });
+    expect(parseServiceCommand(["stop", "--broker"])).toEqual({ action: "stop", broker: true });
+    expect(parseServiceCommand(["start", "--broker"])).toEqual({ action: "start", broker: true });
+  });
+
+  test("rejects unknown service flags and actions", () => {
+    expect(parseServiceCommand(["restart", "--wat"])).toBeNull();
+    expect(parseServiceCommand(["nuke"])).toBeNull();
   });
 });
