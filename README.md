@@ -93,7 +93,7 @@ wolfpack setup           Re-run the setup wizard
 wolfpack ls              List active broker sessions
 wolfpack kill <name>     Kill a session
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
-wolfpack service ...     install / start / stop / status / uninstall (launchd / systemd)
+wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
 wolfpack uninstall --yes Remove everything
 ```
 

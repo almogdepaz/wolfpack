@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { remoteUrl, type Config } from "../../src/cli/config.ts";
-import { planServiceEnsureAction, hasUninstallConfirmationFlag } from "../../src/cli/index.ts";
+import { planServiceEnsureAction, hasUninstallConfirmationFlag, parseServiceCommand } from "../../src/cli/index.ts";
 
 describe("remoteUrl", () => {
   const base: Config = { devDir: "/home/dev", port: 18790 };
@@ -51,5 +51,25 @@ describe("hasUninstallConfirmationFlag", () => {
   test("rejects missing confirmation flag", () => {
     expect(hasUninstallConfirmationFlag([])).toBe(false);
     expect(hasUninstallConfirmationFlag(["--dry-run"])).toBe(false);
+  });
+});
+
+describe("parseServiceCommand", () => {
+  test("parses every accepted service action", () => {
+    for (const action of ["install", "uninstall", "stop", "start", "restart", "status"] as const) {
+      expect(parseServiceCommand([action])).toEqual({ action, broker: false });
+      expect(parseServiceCommand([action, "--broker"])).toEqual({ action, broker: true });
+    }
+  });
+
+  test("treats duplicate broker flags as idempotent", () => {
+    expect(parseServiceCommand(["restart", "--broker", "--broker"])).toEqual({ action: "restart", broker: true });
+  });
+
+  test("rejects missing actions, flag-only input, unknown flags, and unknown actions", () => {
+    expect(parseServiceCommand([])).toBeNull();
+    expect(parseServiceCommand(["--broker"])).toBeNull();
+    expect(parseServiceCommand(["restart", "--wat"])).toBeNull();
+    expect(parseServiceCommand(["nuke"])).toBeNull();
   });
 });

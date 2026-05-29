@@ -299,6 +299,11 @@ const LAUNCHD_DOMAIN = `gui/${process.getuid!()}`;
 const LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/${PLIST_LABEL}`;
 const BROKER_LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/com.wolfpack.broker`;
 
+export interface ServiceActionOptions {
+  readonly broker?: boolean;
+  readonly skipBrokerSessionWarning?: boolean;
+}
+
 function launchdBootout() {
   try {
     execSync(`launchctl bootout ${LAUNCHD_TARGET} 2>/dev/null`);
@@ -404,14 +409,38 @@ function brokerServiceInstall(): void {
   }
 }
 
-function brokerServiceUninstall(): void {
+function cleanupBrokerSocket(): void {
+  try { unlinkSync(BROKER_SOCKET_PATH); } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker socket", { error: errMsg(e) });
+  }
+}
+
+function brokerServiceStop(): void {
   if (IS_MACOS) {
     launchdBootoutBroker();
+  } else if (IS_LINUX) {
+    try { execSync(`systemctl --user stop ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not running */ }
+  }
+  cleanupBrokerSocket();
+  print(green("  Wolfpack broker stopped."));
+}
+
+function brokerServiceStart(): void {
+  if (isBrokerServiceRunning()) {
+    print(dim("  Wolfpack broker already running."));
+    return;
+  }
+  brokerServiceInstall();
+  print(green("  Wolfpack broker started."));
+}
+
+function brokerServiceUninstall(): void {
+  brokerServiceStop();
+  if (IS_MACOS) {
     try { unlinkSync(BROKER_PLIST_PATH); } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker plist", { error: errMsg(e) });
     }
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user stop ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not running */ }
     try { execSync(`systemctl --user disable ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not enabled */ }
     try { unlinkSync(BROKER_SYSTEMD_PATH); } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker unit", { error: errMsg(e) });
@@ -419,10 +448,6 @@ function brokerServiceUninstall(): void {
     try { execSync("systemctl --user daemon-reload"); } catch (e: unknown) {
       log.warn("daemon-reload after broker uninstall failed", { error: errMsg(e) });
     }
-  }
-  // Clean up the socket file (broker recreates on next start).
-  try { unlinkSync(BROKER_SOCKET_PATH); } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker socket", { error: errMsg(e) });
   }
 }
 
@@ -569,11 +594,12 @@ export function serviceUninstall() {
   print(green("  Wolfpack service removed."));
 }
 
-export function serviceStop() {
+export function serviceStop(options: ServiceActionOptions = {}): boolean {
   const config = loadConfig();
+  const stopBroker = options.broker ?? (ask("  Stop broker too? This kills broker-owned sessions. (y/n) ").toLowerCase() === "y");
 
   // Warn about active sessions before stopping
-  if (config && isPortInUse(config.port)) {
+  if (!options.skipBrokerSessionWarning && config && isPortInUse(config.port)) {
     try {
       const res = execFileSync(
         "curl", ["-s", "--max-time", "3", `http://127.0.0.1:${config.port}/api/backend`],
@@ -588,40 +614,46 @@ export function serviceStop() {
         const answer = ask("  Continue? (y/n) ");
         if (answer.toLowerCase() !== "y") {
           print(dim("  Aborted."));
-          return;
+          return false;
         }
       } else {
         const { broker = 0 } = data.counts;
         if (broker > 0) {
-          print(dim(`\n  ${broker} broker session${broker > 1 ? "s" : ""} will persist (broker daemon is independent).`));
+          const consequence = stopBroker ? "will be terminated with the broker daemon" : "will persist (broker daemon is independent)";
+          print(dim(`\n  ${broker} broker session${broker > 1 ? "s" : ""} ${consequence}.`));
           const answer = ask("  Continue? (y/n) ");
           if (answer.toLowerCase() !== "y") {
             print(dim("  Aborted."));
-            return;
+            return false;
           }
         }
       }
     } catch { /* server unreachable or parse error — proceed with stop */ }
   }
 
+  let serverStopped = false;
   try {
     if (IS_MACOS) {
       launchdBootout();
     } else if (IS_LINUX) {
       execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
     }
+    serverStopped = true;
     print(green("  Wolfpack service stopped."));
   } catch (e: unknown) {
     log.error("failed to stop service", { error: errMsg(e) });
     print(red("  Failed to stop service."));
   }
-  if (config && isPortInUse(config.port)) {
+  if (serverStopped && config && isPortInUse(config.port)) {
     killPortHolder(config.port);
     waitForPortFree(config.port, 5000);
   }
+  if (stopBroker) brokerServiceStop();
+  return serverStopped;
 }
 
-export function serviceStart() {
+export function serviceStart(_options: ServiceActionOptions = {}) {
+  if (!isBrokerServiceRunning()) brokerServiceStart();
   const config = loadConfig();
   if (config && isPortInUse(config.port)) {
     killPortHolder(config.port);
@@ -640,6 +672,12 @@ export function serviceStart() {
   }
 }
 
+export function serviceRestart(options: ServiceActionOptions = {}) {
+  const restartBroker = options.broker ?? (ask("  Restart broker too? This kills broker-owned sessions. (y/n) ").toLowerCase() === "y");
+  if (!serviceStop({ broker: restartBroker })) return;
+  serviceStart({ broker: restartBroker });
+}
+
 export function isServiceRunning(): boolean {
   try {
     if (IS_MACOS) {
@@ -651,6 +689,33 @@ export function isServiceRunning(): boolean {
     }
   } catch { /* expected: command exits non-zero when service inactive */ }
   return false;
+}
+
+export function isBrokerServiceRunning(): boolean {
+  try {
+    if (IS_MACOS) {
+      const out = execSync(`launchctl print ${BROKER_LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      return /pid\s*=\s*\d+/i.test(out);
+    } else if (IS_LINUX) {
+      const out = execSync(`systemctl --user is-active ${BROKER_SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      return out === "active";
+    }
+  } catch { /* expected: command exits non-zero when broker is inactive */ }
+  return false;
+}
+
+function printBrokerStatus(): void {
+  if (isBrokerServiceRunning()) {
+    print(green("  Broker is running."));
+    return;
+  }
+  if (IS_MACOS && existsSync(BROKER_PLIST_PATH)) {
+    print(dim("  Broker service is installed but not running."));
+  } else if (IS_LINUX && existsSync(BROKER_SYSTEMD_PATH)) {
+    print(dim("  Broker service is installed but not running."));
+  } else {
+    print(dim("  Broker service is not installed."));
+  }
 }
 
 export function serviceStatus() {
@@ -693,6 +758,7 @@ export function serviceStatus() {
   } else {
     print(dim("  Service status not supported on this platform."));
   }
+  printBrokerStatus();
 }
 
 export function uninstall() {
