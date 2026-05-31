@@ -278,6 +278,41 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.hasJsonType("pty_ready")).toBe(true);
   });
 
+  test("full attach accepts matching layout_stable to end resize settle early", async () => {
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "full" });
+    ws.pushJson({ type: "layout_stable", cols: 80, rows: 24 });
+    await wait(75);
+
+    expect(backend.prefillCalls).toEqual([
+      { name: SESSION, cols: 80, scrollbackLines: undefined },
+    ]);
+    expect(ws.hasJsonType("pty_ready")).toBe(true);
+  });
+
+  test("full attach accepts layout_stable after resize and snapshots resized dims early", async () => {
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 159, rows: 47, prefillMode: "full" });
+    ws.pushJson({ type: "resize", cols: 126, rows: 47 });
+    ws.pushJson({ type: "layout_stable", cols: 126, rows: 47 });
+    await wait(75);
+
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 159, rows: 47 },
+      { name: SESSION, cols: 126, rows: 47 },
+    ]);
+    expect(backend.prefillCalls).toEqual([
+      { name: SESSION, cols: 126, scrollbackLines: undefined },
+    ]);
+    expect(ws.hasJsonType("pty_ready")).toBe(true);
+  });
+
   test("resize during attach uses settled dims for the single backend resize", async () => {
     backend.resizeDelayMs = 30;
     const ws = new FakeWs();

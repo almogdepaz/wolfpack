@@ -92,12 +92,17 @@ interface PtyEntryContext {
   readonly ws: WebSocket;
   readonly backend: SessionBackend & PtyBackendMethods;
   readonly requestedSize: { current: { cols: number; rows: number } | null };
+  readonly layoutStable: { current: { cols: number; rows: number } | null };
   readonly timing: ServerTerminalLoadTiming | null;
 }
 
 export const activePtySessions = new Map<string, PtyEntry>();
 
 const ptySpawnAttempts = new Map<string, number>();
+
+function sameSize(a: { cols: number; rows: number } | null, b: { cols: number; rows: number } | null): boolean {
+  return !!a && !!b && a.cols === b.cols && a.rows === b.rows;
+}
 
 // ── Constants ──
 const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
@@ -128,7 +133,7 @@ const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
 // Full prefill still needs a window for late layout settle, but desktop attach
 // dims are already fit before attach. Keep this above viewport's 60ms while
 // avoiding a fixed 200ms tax on every full switch.
-const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 120;
+const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 80;
 const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
 // Grid viewport attaches are already mounted in stable cells and fetch no
 // broker scrollback, so they use a shorter resize settle budget than full
@@ -157,7 +162,7 @@ const VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 160;
 const QUIESCE_WINDOW_MS = 100;
 const QUIESCE_BYTE_THRESHOLD = 1024;
 const QUIESCE_TIMEOUT_MS = 800;
-const QUIESCE_MIN_WAIT_MS = 80;
+const QUIESCE_MIN_WAIT_MS = 50;
 // Hard cap for sessions that never quiesce (animated TUIs: spinners,
 // progress bars, htop, watch). Without this, an always-busy session waits
 // the full QUIESCE_TIMEOUT_MS (800ms) before snapshotting, producing a
@@ -166,7 +171,7 @@ const QUIESCE_MIN_WAIT_MS = 80;
 // by 4x for animated sessions while leaving the common quiet-path
 // behavior unchanged: real apps quiet inside QUIESCE_WINDOW_MS well
 // before this cap is reached. Issue #129.
-const QUIESCE_ANIMATED_CAP_MS = 200;
+const QUIESCE_ANIMATED_CAP_MS = 160;
 
 /**
  * Pure decision for the quiescence loop. Returns one of:
@@ -507,6 +512,9 @@ async function waitForResizeSettle(
     if (bail(ctx)) return null;
     const elapsedTotal = Date.now() - settleStart;
     if (elapsedTotal >= timeoutMs) break;
+    if (sameSize(ctx.layoutStable.current, pendingSize)) {
+      break;
+    }
     if (lastChangeAt < 0) {
       if (elapsedTotal >= initialWaitMs) break;
     } else {
@@ -633,6 +641,7 @@ async function waitForSettledResizeAndOutputQuiescence(
       const now = Date.now();
       const elapsedTotal = now - settleStart;
       const resizeStable = elapsedTotal >= timeoutMs
+        || sameSize(ctx.layoutStable.current, pendingSize)
         || (lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs);
 
       const cutoff = now - QUIESCE_WINDOW_MS;
@@ -864,6 +873,7 @@ function setupNewPtyEntry(
   activePtySessions.set(session, entry);
   let spawning = false;
   const requestedSize: { current: { cols: number; rows: number } | null } = { current: null };
+  const layoutStable: { current: { cols: number; rows: number } | null } = { current: null };
 
   // Streaming attach path: snapshot prefill + subscribe to broker output stream.
   const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
@@ -919,7 +929,7 @@ function setupNewPtyEntry(
 
       if (!entryStillCurrent(entry, session, ws)) return;
 
-      const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize, timing: timing || null };
+      const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize, layoutStable, timing: timing || null };
 
       if (prefillMode === "none") {
         if (!subscribeWithCoalescing(ctx, undefined)) return;
@@ -1029,6 +1039,9 @@ function setupNewPtyEntry(
             sendPtyReady(entry);
             if (prefillMode !== "none") sendPrefillDone(entry);
           }
+        } else if (msg.type === "layout_stable" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+          layoutStable.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
+          timing?.mark("layout_stable", { cols: layoutStable.current.cols, rows: layoutStable.current.rows });
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const cols = clampCols(msg.cols);
           const rows = clampRows(msg.rows);
