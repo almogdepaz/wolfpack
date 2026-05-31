@@ -17,10 +17,10 @@
         "typescript": "^6.0.3",
       },
       "optionalDependencies": {
-        "wolfpack-bridge-darwin-arm64": "1.6.3",
-        "wolfpack-bridge-darwin-x64": "1.6.3",
-        "wolfpack-bridge-linux-arm64": "1.6.3",
-        "wolfpack-bridge-linux-x64": "1.6.3",
+        "wolfpack-bridge-darwin-arm64": "1.6.4",
+        "wolfpack-bridge-darwin-x64": "1.6.4",
+        "wolfpack-bridge-linux-arm64": "1.6.4",
+        "wolfpack-bridge-linux-x64": "1.6.4",
       },
     },
   },
@@ -46,14 +46,6 @@
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
-
-    "wolfpack-bridge-darwin-arm64": ["wolfpack-bridge-darwin-arm64@1.6.3", "", { "os": "darwin", "cpu": "arm64" }, "sha512-ELIfqaHOv02DO2zGAAtxCdeJ1WJZFQ30xi2Kd2YsKjXNnjJkyqTKYU6VAeOUi9xZgLfnaRnyCpQDHKE0NtciEQ=="],
-
-    "wolfpack-bridge-darwin-x64": ["wolfpack-bridge-darwin-x64@1.6.3", "", { "os": "darwin", "cpu": "x64" }, "sha512-MipmD31l5Ezo1e86AM/8Q4Op9oXHztRvqmqf8DMOyoXuvFduf7R/CvZmfpYP8e2EknYj9BIJKkGfYNgohYbiuA=="],
-
-    "wolfpack-bridge-linux-arm64": ["wolfpack-bridge-linux-arm64@1.6.3", "", { "os": "linux", "cpu": "arm64" }, "sha512-Of+9cL1gBNxNcpIx4TZBRlvf8O8CZCspd7YrUEAQNGf6TFr5ecrYXkLB8bkhpS57IQtlKZh7LW4HfHyQACk4Nw=="],
-
-    "wolfpack-bridge-linux-x64": ["wolfpack-bridge-linux-x64@1.6.3", "", { "os": "linux", "cpu": "x64" }, "sha512-kX0tmZi3Sf7JCUQDe4jDcTxqHsnO5fzRjIL3e4X7mUht/EtCFfR+aOWpSXtUG1rQe8NxW1fRUnpqd9PbdiXn9Q=="],
 
     "ws": ["ws@8.19.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="],
   }
