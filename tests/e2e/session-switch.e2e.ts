@@ -232,6 +232,93 @@ function mockPrefillWebSocket(mode: "full" | "viewport"): (ws: WebSocketRoute) =
   };
 }
 
+test("desktop terminal sends layout_stable after attach ack", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  const messages: Array<{ type?: string; cols?: number; rows?: number }> = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { type?: string; cols?: number; rows?: number };
+      try { parsed = JSON.parse(message); } catch { return; }
+      messages.push(parsed);
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("FULL-PREFILL\n"));
+      setTimeout(() => ws.send(JSON.stringify({ type: "prefill_done" })), 30);
+      setTimeout(() => ws.send(JSON.stringify({ type: "pty_ready" })), 40);
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+
+  await expect.poll(() => messages.some((message) => message.type === "layout_stable"), { timeout: 5000 }).toBe(true);
+  const stableIndex = messages.findIndex((message) => message.type === "layout_stable");
+  const stable = messages[stableIndex];
+  const latestSizeMessage = messages
+    .slice(0, stableIndex)
+    .filter((message) => message.type === "attach" || message.type === "resize")
+    .at(-1);
+  expect(stable).toEqual(expect.objectContaining({ cols: latestSizeMessage?.cols, rows: latestSizeMessage?.rows }));
+});
+
+test("desktop sidebar hover does not put live terminal into loading state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only sidebar path");
+
+  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  const hoverState = await page.evaluate(() => {
+    const stateWindow = window as unknown as { state: { sidebarResizeDone: boolean; sidebarCollapsed: boolean; sidebarPinned: boolean; sessionsExpanded: boolean } };
+    stateWindow.state.sidebarResizeDone = false;
+    stateWindow.state.sidebarCollapsed = true;
+    stateWindow.state.sidebarPinned = false;
+    stateWindow.state.sessionsExpanded = false;
+    const sidebar = document.getElementById("desktop-sidebar");
+    sidebar?.classList.add("collapsed");
+    document.body.classList.remove("sidebar-pinned", "sessions-expanded");
+    document.getElementById("sidebar-hover-edge")?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    const container = document.getElementById("desktop-terminal-container");
+    const canvas = container?.querySelector("canvas");
+    const canvasStyle = canvas ? getComputedStyle(canvas) : null;
+    return {
+      className: container?.className || "",
+      loadState: container?.getAttribute("data-terminal-load-state") || "",
+      canvasVisibility: canvasStyle?.visibility || "missing",
+      canvasOpacity: canvasStyle?.opacity || "missing",
+    };
+  });
+
+  expect(hoverState.className).not.toContain("transitioning");
+  expect(hoverState.loadState).toBe("live");
+  expect(hoverState.canvasVisibility).toBe("visible");
+  expect(hoverState.canvasOpacity).toBe("1");
+});
+
 test("desktop switch hides old canvas before auto-collapsing sidebar", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
@@ -408,6 +495,46 @@ test("desktop keyboard session switch paints loading before terminal teardown", 
     canvasVisibility: "hidden",
     canvasOpacity: "0",
   }));
+});
+
+test("desktop full prefill records hydration timing after prefill_done", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  const timing = await page.evaluate(() => {
+    const debugWindow = window as unknown as {
+      __wfTrace?: Record<string, { _meta: { session: string }; events: Array<{ kind: string; t: number }> }>;
+    };
+    const trace = Object.values(debugWindow.__wfTrace || {}).find((candidate) => candidate._meta.session === "test-project");
+    if (!trace) throw new Error("missing trace");
+    const at = (kind: string) => trace.events.find((event) => event.kind === kind)?.t;
+    const prefillDone = at("prefill_done");
+    const hydrationFinish = at("hydration.finish");
+    if (prefillDone === undefined || hydrationFinish === undefined) throw new Error("missing hydration timing events");
+    return {
+      prefillDone,
+      hydrationFinish,
+      delta: +(hydrationFinish - prefillDone).toFixed(1),
+    };
+  });
+
+  expect(timing.hydrationFinish).toBeGreaterThan(timing.prefillDone);
+  expect(timing.delta).toBeLessThan(1000);
 });
 
 test("desktop full prefill writes chunks while hidden before prefill_done", async ({ page }, testInfo) => {

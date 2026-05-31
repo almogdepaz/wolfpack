@@ -25,11 +25,22 @@ describe("quiescenceDecision — pure quiescence loop logic", () => {
     expect(
       quiescenceDecision({
         samples: [],
-        now: 50, // < MIN_WAIT 80
+        now: 40, // < MIN_WAIT 50
         lastResizeAt: 0,
         settleStart: 0,
       }),
     ).toBe("continue");
+  });
+
+  test("returns 'quiet' at the 50ms minimum when recent bytes are below threshold", () => {
+    expect(
+      quiescenceDecision({
+        samples: [{ t: 25, bytes: 100 }],
+        now: 50,
+        lastResizeAt: 0,
+        settleStart: 0,
+      }),
+    ).toBe("quiet");
   });
 
   test("returns 'quiet' after MIN_WAIT_MS when recent bytes are below threshold", () => {
@@ -78,11 +89,11 @@ describe("quiescenceDecision — pure quiescence loop logic", () => {
   });
 
   test("MIN_WAIT_MS is measured from the most recent resize, not settleStart", () => {
-    // 250ms total elapsed, but resize just happened at t=200 — MIN_WAIT not satisfied
+    // 240ms total elapsed, but resize just happened at t=200 — MIN_WAIT not satisfied
     expect(
       quiescenceDecision({
         samples: [],
-        now: 250,
+        now: 240,
         lastResizeAt: 200,
         settleStart: 0,
       }),

@@ -587,6 +587,8 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   return { term, fitAddon };
 }
 const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
+const INITIAL_HYDRATION_SETTLE_MS = 16;
+const INITIAL_HYDRATION_SILENCE_MS = 32;
 
 /**
  * Shared hydration controller for ghostty-web terminals.
@@ -884,6 +886,26 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }, 300);
   }
 
+  function sendLayoutStable(): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try { opts.fitTerminal(); } catch {}
+    const dims = opts.getTermDimensions();
+    if (!dims) return;
+    const key = dims.cols + "x" + dims.rows;
+    if (key !== _lastSentResize) {
+      _lastSentResize = key;
+      ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
+    }
+    ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows }));
+    __wfTraceEvent(_trace, "layout_stable.send", { cols: dims.cols, rows: dims.rows });
+  }
+
+  function sendLayoutStableAfterPaint(): void {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => { sendLayoutStable(); });
+    });
+  }
+
   /** Fit terminal + send resize dimensions over the socket (debounced). */
   let _lastSentResize = "";
   let _resizeDebounceTimer = null;
@@ -943,7 +965,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
             // initial dims on mobile where layout isn't finalized at connect time.
             // Same-dimension acks are skipped to avoid a duplicate resize cycle
             // immediately after attach.
-            requestAnimationFrame(() => { sendFitResize(); });
+            sendLayoutStableAfterPaint();
           } else if (msg.type === "pty_ready") {
             __wfTraceEvent(_trace, "pty_ready");
             if (opts.onPtyReady) opts.onPtyReady();
@@ -1160,6 +1182,7 @@ interface PtyTerminalControllerOpts {
   readonly prefillMode?: string;
   readonly hydrationTimeoutMs?: number;
   readonly hydrationMinPendingMs?: number;
+  readonly hydrationSettleMs?: number;
   readonly hydrationSilenceMs?: number;
   readonly shouldFocus?: () => boolean;
   readonly shouldReconnect?: () => boolean;
@@ -1631,15 +1654,12 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (opts.onHydrated) opts.onHydrated();
       },
       timeoutMs: opts.hydrationTimeoutMs,
-      settleMs: 50,
+      settleMs: opts.hydrationSettleMs ?? INITIAL_HYDRATION_SETTLE_MS,
       minPendingMs: opts.hydrationMinPendingMs ?? 80,
-      // silenceMs: stay hidden until 150ms have passed since the LAST data
-      // write. Catches the post-attach SIGWINCH redraw on grid cells (server
-      // coalesces it into one big write, but it can arrive 100-300ms AFTER
-      // prefill_done). Without this, the canvas reveals before the redraw
-      // lands and the user sees the post-prefill burst paint visibly. Capped
-      // by maxPendingMs=4000 for never-quiet sessions.
-      silenceMs: opts.hydrationSilenceMs ?? 50,
+      // Stay hidden briefly after the last terminal write. This catches late
+      // post-attach redraw chunks without paying the old fixed 50ms settle
+      // after prefill_done when the stream is already quiet.
+      silenceMs: opts.hydrationSilenceMs ?? INITIAL_HYDRATION_SILENCE_MS,
       // Diag-only: lets the controller emit milestones into the per-attach trace.
       session: opts.session,
       machine: opts.machine || "",
@@ -3040,7 +3060,8 @@ async function initTerminal(cached?: string): Promise<void> {
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
     prefillMode: soloPrefillMode,
     hydrationMinPendingMs: 80,
-    hydrationSilenceMs: 50,
+    hydrationSettleMs: INITIAL_HYDRATION_SETTLE_MS,
+    hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
@@ -4552,7 +4573,6 @@ function initSidebar() {
   hoverEdge.addEventListener("mouseenter", () => {
     if (state.sidebarCollapsed && !state.sidebarPinned && !state.sessionsExpanded) {
       state.sidebarTransitionIsHover = true;
-      if (!state.sidebarResizeDone) hideGridCellsForTransition();
       sidebar.classList.remove("collapsed");
       state.sidebarAutoExpanded = true;
     }
@@ -4564,7 +4584,6 @@ function initSidebar() {
       sidebarAutoCollapseTimer = setTimeout(() => {
         if (state.sidebarAutoExpanded) {
           state.sidebarTransitionIsHover = true;
-          if (!state.sidebarResizeDone) hideGridCellsForTransition();
           sidebar.classList.add("collapsed");
           state.sidebarCollapsed = true;
           state.sidebarAutoExpanded = false;
