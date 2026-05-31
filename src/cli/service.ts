@@ -672,9 +672,38 @@ export function serviceStart(_options: ServiceActionOptions = {}) {
   }
 }
 
+function readBrokerSessionCount(config: Config | null): number | null {
+  if (!config || !isPortInUse(config.port)) return null;
+  try {
+    const res = execFileSync(
+      "curl", ["-s", "--max-time", "3", `http://127.0.0.1:${config.port}/api/backend`],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const data = JSON.parse(res);
+    const count = data?.counts?.broker;
+    return typeof count === "number" ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+function brokerRestartPrompt(activeBrokerSessions: number | null): string {
+  if (activeBrokerSessions === null) {
+    return "  Restart broker too? This will reset active broker sessions. (y/n) ";
+  }
+  if (activeBrokerSessions === 0) {
+    return "  Restart broker too? No active broker sessions detected. (y/n) ";
+  }
+  const sessions = activeBrokerSessions === 1 ? "session" : "sessions";
+  return `  Restart broker too? This will reset ${activeBrokerSessions} active broker ${sessions}. (y/n) `;
+}
+
 export function serviceRestart(options: ServiceActionOptions = {}) {
-  const restartBroker = options.broker ?? (ask("  Restart broker too? This kills broker-owned sessions. (y/n) ").toLowerCase() === "y");
-  if (!serviceStop({ broker: restartBroker })) return;
+  const promptedForBroker = options.broker === undefined;
+  const restartBroker = options.broker ?? (
+    ask(brokerRestartPrompt(readBrokerSessionCount(loadConfig()))).toLowerCase() === "y"
+  );
+  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning: promptedForBroker })) return;
   serviceStart({ broker: restartBroker });
 }
 

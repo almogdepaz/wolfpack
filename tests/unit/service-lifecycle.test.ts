@@ -8,10 +8,15 @@ const innerTestPath = join(process.cwd(), "tests", "unit", ".tmp-service-lifecyc
 const innerTest = String.raw`import { describe, expect, mock, test } from "bun:test";
 
 const execCommands: string[] = [];
+const askPrompts: string[] = [];
+let curlBackendResponse = JSON.stringify({ counts: { broker: 3 } });
 
 await mock.module("node:child_process", () => ({
   execFile: mock(() => undefined),
-  execFileSync: mock(() => ""),
+  execFileSync: mock((command: string, args?: string[]) => {
+    if (command === "curl" && args?.some((arg) => arg.includes("/api/backend"))) return curlBackendResponse;
+    return "";
+  }),
   execSync: mock((command: string) => {
     execCommands.push(command);
     if (command === "systemctl --user stop wolfpack") {
@@ -27,15 +32,18 @@ await mock.module("../../src/cli/config.js", () => ({
   WOLFPACK_DIR: "/tmp/wolfpack-service-lifecycle-test",
   IS_MACOS: false,
   IS_LINUX: true,
-  ask: mock(() => "n"),
-  isPortInUse: mock(() => false),
+  ask: mock((prompt: string) => {
+    askPrompts.push(prompt);
+    return "y";
+  }),
+  isPortInUse: mock(() => true),
   killPortHolder: mock(() => undefined),
-  loadConfig: mock(() => null),
+  loadConfig: mock(() => ({ port: 18790 })),
   sleepSync: mock(() => undefined),
   waitForPortFree: mock(() => undefined),
 }));
 
-const { serviceStop } = await import("../../src/cli/service.ts");
+const { serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
 
 describe("serviceStop", () => {
   test("attempts broker shutdown when broker-inclusive server stop fails", () => {
@@ -44,6 +52,21 @@ describe("serviceStop", () => {
     expect(serviceStop({ broker: true, skipBrokerSessionWarning: true })).toBe(false);
 
     expect(execCommands).toContain("systemctl --user stop wolfpack");
+    expect(execCommands).toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
+  });
+});
+
+describe("serviceRestart", () => {
+  test("uses one broker prompt that includes active session reset count", () => {
+    execCommands.length = 0;
+    askPrompts.length = 0;
+    curlBackendResponse = JSON.stringify({ counts: { broker: 3 } });
+
+    serviceRestart();
+
+    expect(askPrompts).toEqual([
+      "  Restart broker too? This will reset 3 active broker sessions. (y/n) ",
+    ]);
     expect(execCommands).toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
   });
 });
