@@ -2870,6 +2870,110 @@ msgInput.addEventListener("keydown", (e) => {
   btn.addEventListener("mouseleave", cancelHold);
 })();
 
+// ── Image attachment (camera / photo library) ──
+// Photos are downscaled and re-encoded as JPEG client-side before upload:
+// keeps agent context small and converts iPhone HEIC to a format agents read.
+const IMG_MAX_DIM = 1568; // beyond this Claude downsamples anyway — extra pixels cost tokens, not detail
+const IMG_JPEG_QUALITY = 0.85;
+const IMG_PASSTHROUGH_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+
+async function decodeImageFile(file) {
+  if (window.createImageBitmap) {
+    try {
+      return await createImageBitmap(file);
+    } catch {} // some formats (e.g. HEIC) fail here — fall through to <img> decode
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.decoding = "async";
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function optimizeImage(file) {
+  const source = await decodeImageFile(file);
+  const srcW = source.naturalWidth || source.width;
+  const srcH = source.naturalHeight || source.height;
+  const scale = Math.min(1, IMG_MAX_DIM / Math.max(srcW, srcH));
+  const w = Math.max(1, Math.round(srcW * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(source, 0, 0, w, h);
+  if (source.close) source.close();
+  const blob = await new Promise((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", IMG_JPEG_QUALITY),
+  );
+  if (!blob) throw new Error("image encode failed");
+  // keep the original when it's already a supported format and not bigger
+  if (IMG_PASSTHROUGH_TYPES.includes(file.type) && scale === 1 && file.size <= blob.size) {
+    return file;
+  }
+  return blob;
+}
+
+function insertImagePath(path) {
+  const input = document.getElementById("msg-input");
+  const cur = input.value;
+  const sep = cur && !/\s$/.test(cur) ? " " : "";
+  input.value = cur + sep + path + " ";
+  autoResizeInput();
+  updatePreview();
+  saveDraft();
+  input.focus();
+}
+
+async function uploadImage(file) {
+  const session = state.currentSession;
+  if (!session) return;
+  const machine = state.currentMachine;
+  const btn = document.getElementById("img-btn");
+  btn.disabled = true;
+  btn.classList.add("uploading");
+  try {
+    const blob = await optimizeImage(file);
+    const data = await api(
+      "/upload-image?session=" + encodeURIComponent(session),
+      {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "image/jpeg" },
+        body: blob,
+      },
+      machine,
+    );
+    // Only insert if the user is still on the same session
+    if (state.currentSession === session && state.currentMachine === machine) {
+      insertImagePath(data.path);
+    }
+  } catch (e) {
+    alert("Image upload failed: " + errorMessage(e));
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("uploading");
+  }
+}
+
+(function setupImageUpload() {
+  const btn = document.getElementById("img-btn");
+  const fileInput = document.getElementById("img-file");
+  if (!btn || !fileInput) return;
+  btn.addEventListener("click", () => {
+    if (!state.currentSession) return;
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    fileInput.value = ""; // reset so picking the same photo again re-fires change
+    if (file) uploadImage(file);
+  });
+})();
+
 // ── Keyboard accessory row (UX-15) ──
 // Toggle-based: user taps ⌨ button in input bar to show/hide.
 // Always starts closed on session entry.

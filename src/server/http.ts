@@ -129,6 +129,25 @@ export function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/** Read a raw binary body up to maxBytes. Rejects with "body too large" when exceeded. */
+export function readBodyRaw(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > maxBytes) {
+        req.destroy();
+        reject(new Error("body too large"));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 export async function parseBody<T = any>(req: IncomingMessage, res: ServerResponse): Promise<T | null> {
   try {
     return JSON.parse(await readBody(req)) as T;
