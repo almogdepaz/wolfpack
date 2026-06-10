@@ -807,6 +807,20 @@ body.term-font-alt #terminal { font-family: "JetBrains Mono", "Fira Code", "Sour
   color: var(--bg-base);
   box-shadow: 0 0 12px var(--accent-glow);
 }
+#img-btn svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  margin: 0 auto;
+}
+#img-btn.uploading {
+  pointer-events: none;
+  animation: img-uploading 1s ease-in-out infinite;
+}
+@keyframes img-uploading {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 
 .picker-cancel-btn {
   display: none;

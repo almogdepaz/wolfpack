@@ -159,10 +159,19 @@ import {
   isAllowedSession,
   json,
   parseBody,
+  readBodyRaw,
   serveFile,
   cachedPeers,
   discoverPeers,
 } from "./http.js";
+import {
+  MAX_IMAGE_BYTES,
+  IMAGE_MIME_TO_EXT,
+  sniffImageExt,
+  makeImageFilename,
+  ensureImageDir,
+  pruneOldImages,
+} from "../image-upload.js";
 import { activePtySessions, teardownPty } from "./websocket.js";
 
 /** Validate project name + directory in one call. Returns resolved path or sends error and returns null. */
@@ -464,6 +473,55 @@ export const routes: Record<
     } catch (e: any) {
       json(res, { error: e.message || "git status failed" }, 500);
     }
+  },
+
+  // ── Image upload ──
+  // Saves a photo from the mobile client into the session's project dir so the
+  // agent running there can read it by path. Body is raw image bytes; the
+  // client downscales/re-encodes before upload to keep agent context small.
+  "POST /api/upload-image": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session || !isValidSessionName(session)) {
+      return json(res, { error: "invalid session" }, 400);
+    }
+    if (!(await isAllowedSession(session))) {
+      return json(res, { error: "session not found" }, 404);
+    }
+    const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+    if (!IMAGE_MIME_TO_EXT[contentType]) {
+      return json(res, { error: "unsupported content type (jpeg, png, webp, gif only)" }, 415);
+    }
+    let body: Buffer;
+    try {
+      body = await readBodyRaw(req, MAX_IMAGE_BYTES);
+    } catch { /* expected: client sent more than MAX_IMAGE_BYTES */
+      return json(res, { error: "image too large (max 10MB)" }, 413);
+    }
+    const ext = sniffImageExt(body);
+    if (!ext) {
+      return json(res, { error: "not a valid image" }, 400);
+    }
+    // Save under the project dir so agents can read it without leaving cwd;
+    // fall back to ~/.wolfpack/images when the project dir is unknown.
+    const projectDir = sessionDirMap.get(session);
+    const baseDir = projectDir && existsSync(projectDir) ? projectDir : homedir();
+    let imgDir: string;
+    try {
+      imgDir = ensureImageDir(baseDir);
+    } catch (e: unknown) {
+      log.error("upload-image: failed to create image dir", { baseDir, error: errMsg(e) });
+      return json(res, { error: "failed to create image directory" }, 500);
+    }
+    pruneOldImages(imgDir);
+    const filePath = join(imgDir, makeImageFilename(ext));
+    try {
+      writeFileSync(filePath, body);
+    } catch (e: unknown) {
+      log.error("upload-image: failed to write image", { path: filePath, error: errMsg(e) });
+      return json(res, { error: "failed to save image" }, 500);
+    }
+    json(res, { ok: true, path: filePath, bytes: body.length });
   },
 
   // ── Ralph loop API ──

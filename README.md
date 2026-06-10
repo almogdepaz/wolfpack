@@ -164,6 +164,7 @@ On first run, `wolfpack` walks you through:
   - **Classic** (default) — lightweight capture-pane polling. No WASM, works on all devices. Best for quick monitoring and input.
   - **Ghostty (WASM)** — full terminal emulator via [ghostty-web](https://github.com/ghostty-org/ghostty). Richer output (colors, cursor, scrollback) but heavier on battery. Keyboard is suppressed by default — tap the keyboard button to open it.
 - **Keyboard accessory** — quick-action bar with Enter, Esc, arrow keys, Ctrl combos, and git status
+- **Image input** — attach a photo from the camera or photo library; it's downscaled (max 1568px, JPEG) for token-efficient agent context, saved to the session's project under `.wolfpack/images/`, and its path is inserted into the message input for the agent to read
 - **Touch scrolling** — momentum physics, long-press to select text and copy
 - **Haptic feedback** — vibration on key actions (toggleable)
 - **PWA** — install as a standalone app on your phone's home screen
