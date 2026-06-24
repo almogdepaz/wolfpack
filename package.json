@@ -2,7 +2,7 @@
   "name": "wolfpack-bridge",
   "version": "1.6.4",
   "type": "module",
-  "description": "Mobile command center for tmux-based AI agent sessions",
+  "description": "Mobile/browser command center for AI coding agents on your own machines",
   "bin": {
     "wolfpack": "./bin/run.cjs"
   },
@@ -25,14 +25,18 @@
     "wolfpack-bridge-linux-x64": "1.6.4"
   },
   "keywords": [
-    "tmux",
-    "ai",
-    "agents",
+    "ai-agents",
+    "ai-coding",
+    "claude",
+    "claude-code",
+    "codex",
+    "developer-tools",
     "mobile",
     "pwa",
-    "terminal",
-    "claude",
-    "codex"
+    "remote-terminal",
+    "self-hosted",
+    "tailscale",
+    "terminal"
   ],
   "repository": {
     "type": "git",

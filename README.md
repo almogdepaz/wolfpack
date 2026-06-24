@@ -5,36 +5,11 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://github.com/almogdepaz/wolfpack/releases)
 
-```
-        ...:.
-           :=+=:
-       . .-*####+-
-      .- :++**####*=.
-       -  :+***#####*=:.
-       :   .+**######*+==++++++=:..
-       ..   .=*#######*++++====+=--=-.
-       .:.-    -+**######**+*#*+=-:-===:
-     -.  ..     -++++***#**++*#*--:---===:
-     -.:--==+=--=*++*+**********+==------++-
-     .:----=++*++##########******+=====--=+#=-.
-       .::-----=+*#%%%%%%#***###*+===--==+*=++=:.
-         ...::::-=+*#%%############*+-----===+****+=:.
-          :--=-====+******++****##***-.::--++*######**
-         .++-+++++***********#*+*#***=.:---=+**=--=+==
-         -**++*++****+***##*++*****++=. ----=+=.  ..:-
-        .+##***+*+*****##*#=-=**=-=-::. -**-::-==+++++
-        :*%%*+=+=+****##**++****+**+-.. -*=-   .::::-=
-        .-#%#*+*+**#***+++**+****+*++=--+=::-:..:...-+
-         =###***=*+++++-=*=+++++-====-=:-=--:=---==---
-        .:-+***+=*+++**+++===*++++=--:=  ::=::-=----++
-          .+****+++++*##+***++=+*-.:--:..-===---=-:-++
-          .-+###**+++*#****+=---:--==.--=:==-==:::-=++
-            :####*****+++======:.. :...:::---:.=------
-            .=###***+++*++++--:.:::.   :-=::.:..-:---:
-             :+**++++++*++*+=-:: .. ...... ..   .:..::
-```
+Control Claude, Codex, Gemini, or any shell command from your phone or browser.
+Wolfpack runs on your own macOS/Linux machine — laptop, workstation, or cloud VM — and gives you a PWA command center for long-running AI coding sessions across your Tailscale tailnet.
 
-Drive AI coding agents (Claude, Codex, Gemini, any shell command) from your phone or browser. Sessions live in a Rust PTY broker that outlives the web server, so restarts don't kill your agents. Designed to ride on top of [Tailscale](https://tailscale.com/) — no ports to open, no DNS to wire up.
+Sessions live in a Rust PTY broker, not the web server, so server restarts and redeploys do not kill your agents.
+There is no Wolfpack-hosted relay or account; remote access is normally handled by [Tailscale](https://tailscale.com/).
 
 <p align="center">
   <img src="docs/desktop-grid.png" width="700" alt="Desktop — multi-terminal grid view" />
@@ -43,51 +18,76 @@ Drive AI coding agents (Claude, Codex, Gemini, any shell command) from your phon
   <img src="docs/mobile-sessions.png" width="250" alt="Mobile — session list across machines" />
 </p>
 
-## Install
+## Quickstart
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
+wolfpack
 ```
 
-Downloads the right pre-built binary for your platform, runs the setup wizard, and optionally installs as a login service. No runtime deps — broker is bundled.
+The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service.
+Supported: macOS arm64/x64 and Linux x64/arm64.
 
-<details>
-<summary>Alternative: install via Bun / npm</summary>
+Want npm instead?
 
 ```bash
-bunx wolfpack-bridge      # or: npx wolfpack-bridge
+bunx wolfpack-bridge
+# or
+npx wolfpack-bridge
 ```
 
-</details>
+If setup gets weird, run:
 
-Supported: macOS (arm64/x64), Linux (x64/arm64).
+```bash
+wolfpack doctor
+```
 
-## First Run
+Uninstall is explicit:
 
-`wolfpack` walks you through:
+```bash
+wolfpack uninstall --yes
+```
 
-1. Install Tailscale (recommended — you almost certainly want remote access)
-2. Pick a projects directory and port
-3. Detect your Tailscale hostname and run `tailscale serve` for HTTPS
-4. Install as a login service (optional)
-5. Print a QR code
+## First five minutes
 
-Scan the QR with your phone, tap **Add to Home Screen**, done.
+1. Run the installer.
+2. Choose your projects directory and port.
+3. Let setup detect your Tailscale hostname and configure `tailscale serve` for HTTPS remote access.
+4. Install the service when prompted if you want Wolfpack to survive login/reboots.
+5. Scan the QR code, open Wolfpack on your phone, then **Add to Home Screen**.
+6. Create a session and pick an agent command.
 
-## What It Does
+Local-only browser use works without Tailscale. Phone/remote use is where Tailscale earns its keep.
 
-- **Multi-machine** — one phone manages sessions on every machine on your tailnet. Online/offline status per machine, cross-machine session list.
-- **Session triage** — color-coded states (running / idle / needs-input), live output preview on cards.
-- **Agent-agnostic** — Claude, Codex, Gemini, or any custom command. Configure per-session in Settings → Agents.
-- **Survives restarts** — the broker daemon owns every PTY. Redeploy the server, agents keep running.
-- **Desktop grid** — view up to 6 sessions side-by-side. Add via `+`, remove via `×`, `Cmd+ArrowLeft/Right` to navigate.
-- **Mobile-first terminal** — ghostty-web (WASM) emulator. Keyboard accessory bar (arrows, Esc, `git`, copy). On-screen keyboard suppressed until you ask for it. Long-press to select.
-- **PWA** — install on home screen. Notifications + vibration when sessions need attention. Reconnects on drop.
-- **Ralph loop** — autonomous task runner. Hand it a markdown plan, it iterates through tasks with an agent, committing along the way. Ralph controls are hidden until you enable **Settings → Ralph Loop → Enable Ralph Loop**. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
+## Why use it
+
+- **Phone-first agent control** — respond to Claude/Codex/Gemini while away from your desk.
+- **Multi-machine view** — manage sessions from every machine in your tailnet, including cloud VMs.
+- **Persistent PTYs** — the Rust broker owns sessions, so server restarts do not kill agents.
+- **Session triage** — cards show running/idle/needs-input state and live output previews.
+- **Desktop grid** — view up to 6 terminals side by side.
+- **PWA UX** — install on your home screen, reconnect on drops, receive notifications when sessions need attention.
+- **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
+- **Ralph loop** — optional autonomous plan runner. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
+
+## Agent recipes
+
+Wolfpack starts sessions by running a command in the selected project directory.
+Configure commands in **Settings → Agents**.
+
+| Agent | Command |
+| --- | --- |
+| Shell | `shell` |
+| Claude Code | `claude` |
+| Codex | `codex` |
+| Gemini | `gemini` |
+| Custom wrapper | any command on `PATH`, for example `opencode` or `my-agent --flag` |
+
+`cmd` validation intentionally rejects shell metacharacters for session commands. If you need complex setup, put it in a wrapper script on `PATH` and add that command.
 
 ## CLI
 
-```
+```text
 wolfpack                 Start the server (runs setup on first launch)
 wolfpack setup           Re-run the setup wizard
 wolfpack ls              List active broker sessions
@@ -97,21 +97,27 @@ wolfpack service ...     install / start / stop / restart / status / uninstall (
 wolfpack uninstall --yes Remove everything
 ```
 
-## Agent Skills
+Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md).
 
-Wolfpack exposes repository-local agent skills in `skills/`:
+## Trust and security model
 
-- `wolfpack-plan` — plan-file task header conventions that Ralph can parse.
-- `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
-- `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
+Wolfpack is self-hosted software for machines you control. Those machines can be local laptops, workstations, or cloud VMs.
 
-Copy or symlink these skill directories into an agent's skill path when you want that agent to opt in.
+- Browser/PWA talks to the Wolfpack server over HTTP/WebSocket.
+- Remote access is normally private HTTPS through Tailscale.
+- The server talks to the broker over a per-user Unix socket.
+- The broker owns the PTYs and runs your selected commands locally on that machine.
+- Optional JWT auth can be layered on top of Tailscale.
+- Wolfpack does not provide a hosted relay, managed account, or prompt upload service.
+
+Running coding agents is intentionally powerful: those commands execute with your local user permissions in the chosen project directory.
+Treat Wolfpack access like shell access to that machine.
 
 ## Architecture
 
-```
+```text
 ┌─────────────┐    ┌───────────┐    ┌──────────────────────────────────────────┐
-│   Phone /   │    │ Tailscale │    │              Your Machine                │
+│   Phone /   │    │ Tailscale │    │       Your machine / cloud VM            │
 │   Browser   │◄──►│  (HTTPS)  │◄──►│                                          │
 │   (PWA)     │    │  mesh VPN │    │  ┌──────────┐  unix   ┌──────────────┐  │
 └─────────────┘    └───────────┘    │  │ wolfpack │ socket  │  wolfpack-   │  │
@@ -126,7 +132,7 @@ Copy or symlink these skill directories into an agent's skill path when you want
 - **Server** — Bun HTTP + WebSocket. Pure broker client; owns no PTYs.
 - **Broker** — `wolfpack-broker`, Rust daemon. Owns every PTY, keeps per-session output rings. One Unix-domain socket per host (`$XDG_RUNTIME_DIR/wolfpack-broker.sock`, fallback `~/.wolfpack/broker.sock`). Wire protocol in [docs/broker-protocol.md](docs/broker-protocol.md).
 
-## Optional: JWT Auth
+## Optional JWT auth
 
 Tailscale already gates who can reach the server. If you want an extra auth layer on top — useful if you share your tailnet with others, or for defense-in-depth — set a JWT secret:
 
@@ -150,7 +156,17 @@ Optional: `WOLFPACK_JWT_AUDIENCE`, `WOLFPACK_JWT_ISSUER`, `WOLFPACK_JWT_CLOCK_TO
 }
 ```
 
-Per-server agent settings in `~/.wolfpack/bridge-settings.json`. The broker socket's filesystem permissions are the auth boundary.
+Per-server agent settings live in `~/.wolfpack/bridge-settings.json`.
+
+## Agent skills
+
+Wolfpack exposes repository-local agent skills in `skills/`:
+
+- `wolfpack-plan` — plan-file task header conventions that Ralph can parse.
+- `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
+- `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
+
+Copy or symlink these skill directories into an agent's skill path when you want that agent to opt in.
 
 ## Contributing
 
