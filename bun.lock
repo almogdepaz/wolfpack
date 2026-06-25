@@ -7,7 +7,7 @@
       "dependencies": {
         "ghostty-web": "0.4.0",
         "qrcode-terminal": "^0.12.0",
-        "ws": "^8.19.0",
+        "ws": "^8.21.0",
       },
       "devDependencies": {
         "@playwright/test": "^1.58.2",
@@ -17,10 +17,10 @@
         "typescript": "^6.0.3",
       },
       "optionalDependencies": {
-        "wolfpack-bridge-darwin-arm64": "1.6.4",
-        "wolfpack-bridge-darwin-x64": "1.6.4",
-        "wolfpack-bridge-linux-arm64": "1.6.4",
-        "wolfpack-bridge-linux-x64": "1.6.4",
+        "wolfpack-bridge-darwin-arm64": "1.6.5",
+        "wolfpack-bridge-darwin-x64": "1.6.5",
+        "wolfpack-bridge-linux-arm64": "1.6.5",
+        "wolfpack-bridge-linux-x64": "1.6.5",
       },
     },
   },
@@ -47,6 +47,6 @@
 
     "undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
-    "ws": ["ws@8.19.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="],
+    "ws": ["ws@8.21.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g=="],
   }
 }
