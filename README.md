@@ -99,6 +99,13 @@ wolfpack uninstall --yes Remove everything
 
 Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md).
 
+## Guides
+
+- [Pi / coding-agent quickstart](docs/pi-quickstart.md) — configure `pi`, start a session, and add Wolfpack to your phone.
+- [Mobile agent workflow](docs/mobile-agent-workflow.md) — triage many agents from your phone without doom-scrolling terminals.
+- [Multi-machine setup](docs/multi-machine.md) — manage laptop, workstation, and cloud VM sessions from one PWA.
+- [Troubleshooting](docs/troubleshooting.md) — Tailscale, services, broker health, stale PWA cache, and reset steps.
+
 ## Trust and security model
 
 Wolfpack is self-hosted software for machines you control. Those machines can be local laptops, workstations, or cloud VMs.
