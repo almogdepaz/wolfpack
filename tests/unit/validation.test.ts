@@ -13,7 +13,7 @@ const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
 
 /** Mirrors serve.ts plan file validation (inline in ralph start handler) */
 function isValidPlanFile(name: string): boolean {
-  return /^[a-zA-Z0-9._\- ]+\.md$/.test(name) && name !== ".." && name !== ".";
+  return (/^[a-zA-Z0-9._\- ]+\.md$/.test(name) || /^\.plans\/[a-zA-Z0-9._\- ]+\.md$/.test(name)) && name !== ".." && name !== ".";
 }
 
 /** Mirrors validation.ts BRANCH_REGEX — rejects .. and // sequences */
@@ -279,6 +279,10 @@ describe("isValidPlanFile", () => {
     expect(isValidPlanFile("plan123.md")).toBe(true);
   });
 
+  test("accepts .plans markdown files", () => {
+    expect(isValidPlanFile(".plans/adoption.md")).toBe(true);
+  });
+
   test("rejects file not ending in .md", () => {
     expect(isValidPlanFile("plan.txt")).toBe(false);
   });
@@ -295,8 +299,13 @@ describe("isValidPlanFile", () => {
     expect(isValidPlanFile("../evil.md")).toBe(false);
   });
 
-  test("rejects path with slashes", () => {
+  test("rejects path with slashes outside .plans", () => {
     expect(isValidPlanFile("subdir/plan.md")).toBe(false);
+  });
+
+  test("rejects nested or traversing .plans paths", () => {
+    expect(isValidPlanFile(".plans/nested/plan.md")).toBe(false);
+    expect(isValidPlanFile(".plans/../evil.md")).toBe(false);
   });
 
   test("rejects empty string", () => {

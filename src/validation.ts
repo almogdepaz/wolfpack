@@ -13,6 +13,7 @@ import type { RalphAgent } from "./ralph-agent.js";
 export const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
 export const BRANCH_REGEX = /^(?!.*\.\.)(?!.*\/\/)[a-zA-Z0-9._\-/]+$/;
 export const PLAN_FILE_REGEX = /^[a-zA-Z0-9._\- ]+\.md$/;
+export const DOT_PLANS_FILE_REGEX = /^\.plans\/[a-zA-Z0-9._\- ]+\.md$/;
 export const SAFE_FILENAME = /^[a-zA-Z0-9._\- ]+$/;
 
 // ── Validation functions ──
@@ -26,7 +27,7 @@ export function isValidSessionName(name: string): boolean {
 }
 
 export function isValidPlanFile(name: string): boolean {
-  return PLAN_FILE_REGEX.test(name) && name !== ".." && name !== ".";
+  return (PLAN_FILE_REGEX.test(name) || DOT_PLANS_FILE_REGEX.test(name)) && name !== ".." && name !== ".";
 }
 
 // ── Budget expansion ──
