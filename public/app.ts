@@ -3884,26 +3884,21 @@ msgInput.addEventListener("input", () => {
   updatePreview();
   saveDraft();
 });
-// Enter behavior driven by wpSettings.enterSends (UX-07)
-// enterSends=true: Enter submits, Shift+Enter newline
-// enterSends=false: Enter newline, Shift+Enter submits
+// Textarea Enter behavior: desktop honors enterSends; mobile Enter stays newline
+// because terminal/menu Enter is handled by mobile-kb-proxy.
 
 msgInput.addEventListener("keydown", (e) => {
   if (state.currentView !== "terminal") return;
   const empty = !msgInput.value.trim();
   if (e.key === "Enter") {
-    if (wpSettings.enterSends) {
-      // Enter sends, Shift+Enter adds newline
-      if (!e.shiftKey) {
-        e.preventDefault();
-        if (empty) sendKey("Enter"); else sendMsg();
-      }
-    } else {
-      // Enter adds newline, Shift+Enter sends
-      if (e.shiftKey) {
-        e.preventDefault();
-        if (empty) sendKey("Enter"); else sendMsg();
-      }
+    if (WP.shouldSubmitMessageInputOnEnter({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      enterSends: wpSettings.enterSends,
+      isDesktop: isDesktop(),
+    })) {
+      e.preventDefault();
+      if (empty) sendKey("Enter"); else sendMsg();
     }
   } else if (e.key === "ArrowUp" && empty) {
     e.preventDefault();

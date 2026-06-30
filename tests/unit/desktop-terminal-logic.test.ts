@@ -3,7 +3,7 @@
  * index.html for copy interception, binary encoding, and stdin gating.
  */
 import { describe, expect, test } from "bun:test";
-import { shouldInterceptCopy, encodeTerminalBinary } from "../../src/terminal-input";
+import { shouldInterceptCopy, encodeTerminalBinary, shouldSubmitMessageInputOnEnter } from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
 
@@ -74,6 +74,55 @@ describe("desktop terminal: binary encoding (encodeTerminalBinary)", () => {
   test("CSI escape sequence encodes correctly", () => {
     const result = encodeTerminalBinary("\x1b[A");
     expect(result).toEqual(new Uint8Array([27, 91, 65]));
+  });
+});
+
+// ── Message textarea Enter behavior ──
+
+describe("message textarea: Enter behavior", () => {
+  test("mobile Enter inserts newline even when enterSends is enabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: false,
+      enterSends: true,
+      isDesktop: false,
+    })).toBe(false);
+  });
+
+  test("mobile Shift+Enter submits", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: true,
+      enterSends: true,
+      isDesktop: false,
+    })).toBe(true);
+  });
+
+  test("desktop Enter submits when enterSends is enabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: false,
+      enterSends: true,
+      isDesktop: true,
+    })).toBe(true);
+  });
+
+  test("desktop Enter inserts newline when enterSends is disabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: false,
+      enterSends: false,
+      isDesktop: true,
+    })).toBe(false);
+  });
+
+  test("non-Enter keys never submit", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "a",
+      shiftKey: false,
+      enterSends: true,
+      isDesktop: true,
+    })).toBe(false);
   });
 });
 

@@ -24,3 +24,20 @@ export function encodeTerminalBinary(data: string): Uint8Array {
   for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i) & 0xff;
   return buf;
 }
+
+export interface MessageInputEnterEvent {
+  readonly key: string;
+  readonly shiftKey: boolean;
+  readonly enterSends: boolean;
+  readonly isDesktop: boolean;
+}
+
+/**
+ * Mobile soft-keyboard Enter must insert textarea newlines; terminal/menu Enter
+ * is handled by the separate mobile proxy path.
+ */
+export function shouldSubmitMessageInputOnEnter(event: MessageInputEnterEvent): boolean {
+  if (event.key !== "Enter") return false;
+  const effectiveEnterSends = event.isDesktop && event.enterSends;
+  return effectiveEnterSends ? !event.shiftKey : event.shiftKey;
+}
