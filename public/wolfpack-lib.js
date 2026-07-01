@@ -38,7 +38,7 @@ function shouldSubmitMessageInputOnEnter(event) {
   return event.enterSends ? !event.shiftKey : event.shiftKey;
 }
 function shouldInsertMessageNewlineFromAccessoryKey(event) {
-  return event.key === "Enter" && event.isMessageInputActive;
+  return event.key === "Enter" && (event.isMessageInputActive || !!event.hasMessageInputDraft);
 }
 // src/reconnect-hydration.ts
 function shouldRehydrate(wasReconnect, hydrationStarted, prefillDisabled) {

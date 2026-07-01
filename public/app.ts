@@ -3999,9 +3999,11 @@ function insertMessageInputNewline(): void {
 
     function fire() {
       haptic([15]);
+      const messageInput = document.getElementById("msg-input") as HTMLTextAreaElement;
       if (WP.shouldInsertMessageNewlineFromAccessoryKey({
         key,
-        isMessageInputActive: document.activeElement === document.getElementById("msg-input"),
+        isMessageInputActive: document.activeElement === messageInput,
+        hasMessageInputDraft: messageInput.value.length > 0,
       })) {
         insertMessageInputNewline();
         return;

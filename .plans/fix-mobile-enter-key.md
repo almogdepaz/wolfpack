@@ -1,6 +1,6 @@
 # fix mobile enter key
 
-status: native enter restored, accessory enter verified
+status: accessory focus-loss fix verified
 
 ## success criteria
 - mobile terminal proxy enter still sends `\r` for interactive menus.
@@ -27,3 +27,7 @@ status: native enter restored, accessory enter verified
 - correction: native textarea Enter should send when `enterSends` is enabled; only accessory/keycheck Enter inserts a newline while `#msg-input` is focused.
 - red test: changed mobile textarea tests and bundle expectation; `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` failed against the previous helper behavior.
 - correction verification: `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` reports 33 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1542 pass / 0 fail.
+- user-reported follow-up: accessory Enter still sent prompt in real mobile testing.
+- root cause hypothesis confirmed by regression: relying only on `document.activeElement === #msg-input` is fragile on mobile accessory taps; if focus is lost before `fire()`, the helper sends terminal Enter.
+- focus-loss fix: accessory Enter now inserts a textarea newline when `#msg-input` is focused OR the textarea has draft text.
+- focus-loss verification: `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` reports 34 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1543 pass / 0 fail.

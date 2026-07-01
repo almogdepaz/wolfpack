@@ -141,10 +141,19 @@ describe("mobile accessory row: Enter behavior", () => {
     })).toBe(true);
   });
 
-  test("Enter still goes to terminal when the message input is not active", () => {
+  test("Enter inserts a message newline when mobile focus was lost but the textarea has draft text", () => {
     expect(shouldInsertMessageNewlineFromAccessoryKey({
       key: "Enter",
       isMessageInputActive: false,
+      hasMessageInputDraft: true,
+    })).toBe(true);
+  });
+
+  test("Enter still goes to terminal when the message input is not active and has no draft", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Enter",
+      isMessageInputActive: false,
+      hasMessageInputDraft: false,
     })).toBe(false);
   });
 

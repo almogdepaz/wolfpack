@@ -44,8 +44,9 @@ export function shouldSubmitMessageInputOnEnter(event: MessageInputEnterEvent): 
 export interface KeyboardAccessoryKeyEvent {
   readonly key: string;
   readonly isMessageInputActive: boolean;
+  readonly hasMessageInputDraft?: boolean;
 }
 
 export function shouldInsertMessageNewlineFromAccessoryKey(event: KeyboardAccessoryKeyEvent): boolean {
-  return event.key === "Enter" && event.isMessageInputActive;
+  return event.key === "Enter" && (event.isMessageInputActive || !!event.hasMessageInputDraft);
 }

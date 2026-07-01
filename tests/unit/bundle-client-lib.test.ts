@@ -12,7 +12,11 @@ interface MessageInputEnterEvent {
 
 type MessageInputEnterHandler = (event: MessageInputEnterEvent) => boolean;
 
-type AccessoryEnterHandler = (event: { readonly key: string; readonly isMessageInputActive: boolean }) => boolean;
+type AccessoryEnterHandler = (event: {
+  readonly key: string;
+  readonly isMessageInputActive: boolean;
+  readonly hasMessageInputDraft?: boolean;
+}) => boolean;
 
 interface BundleWp {
   readonly shouldInsertMessageNewlineFromAccessoryKey?: AccessoryEnterHandler;
@@ -42,6 +46,7 @@ describe("wolfpack-lib browser bundle", () => {
     expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: false })).toBe(true);
     expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: true })).toBe(true);
     expect(accessoryHelper({ key: "Enter", isMessageInputActive: true })).toBe(true);
-    expect(accessoryHelper({ key: "Enter", isMessageInputActive: false })).toBe(false);
+    expect(accessoryHelper({ key: "Enter", isMessageInputActive: false, hasMessageInputDraft: true })).toBe(true);
+    expect(accessoryHelper({ key: "Enter", isMessageInputActive: false, hasMessageInputDraft: false })).toBe(false);
   });
 });
