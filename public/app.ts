@@ -3884,8 +3884,8 @@ msgInput.addEventListener("input", () => {
   updatePreview();
   saveDraft();
 });
-// Textarea Enter behavior: desktop honors enterSends; mobile Enter stays newline
-// because terminal/menu Enter is handled by mobile-kb-proxy.
+// Textarea Enter behavior follows enterSends; the mobile accessory row handles
+// focused-textarea Enter separately so it can insert a newline.
 
 msgInput.addEventListener("keydown", (e) => {
   if (state.currentView !== "terminal") return;

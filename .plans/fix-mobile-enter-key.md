@@ -1,12 +1,13 @@
 # fix mobile enter key
 
-status: accessory enter fix verified
+status: native enter restored, accessory enter verified
 
 ## success criteria
 - mobile terminal proxy enter still sends `\r` for interactive menus.
-- mobile message textarea enter inserts newline even if `enterSends` is true/persisted.
-- desktop enter-send behavior remains unchanged.
-- regression test covers the decision logic.
+- native textarea enter follows `enterSends` on mobile and desktop.
+- mobile accessory/keycheck enter inserts newline when `#msg-input` is focused.
+- mobile terminal proxy enter still sends `\r` for interactive menus.
+- regression test covers both decision paths.
 
 ## notes
 - root cause hypothesis: message textarea directly uses persisted `wpSettings.enterSends`; if a user has it true, mobile enter submits instead of inserting a newline.
@@ -23,3 +24,6 @@ status: accessory enter fix verified
 - red test: `bun test tests/unit/desktop-terminal-logic.test.ts` failed because `shouldInsertMessageNewlineFromAccessoryKey` was not implemented/exported.
 - red bundle test: `bun test tests/unit/bundle-client-lib.test.ts` failed until `public/wolfpack-lib.js` was regenerated with `shouldInsertMessageNewlineFromAccessoryKey`.
 - accessory fix verification green: `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` reports 33 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1542 pass / 0 fail.
+- correction: native textarea Enter should send when `enterSends` is enabled; only accessory/keycheck Enter inserts a newline while `#msg-input` is focused.
+- red test: changed mobile textarea tests and bundle expectation; `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` failed against the previous helper behavior.
+- correction verification: `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` reports 33 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1542 pass / 0 fail.

@@ -35,8 +35,7 @@ function encodeTerminalBinary(data) {
 function shouldSubmitMessageInputOnEnter(event) {
   if (event.key !== "Enter")
     return false;
-  const effectiveEnterSends = event.isDesktop && event.enterSends;
-  return effectiveEnterSends ? !event.shiftKey : event.shiftKey;
+  return event.enterSends ? !event.shiftKey : event.shiftKey;
 }
 function shouldInsertMessageNewlineFromAccessoryKey(event) {
   return event.key === "Enter" && event.isMessageInputActive;

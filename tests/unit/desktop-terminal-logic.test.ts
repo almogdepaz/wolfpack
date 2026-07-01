@@ -85,22 +85,22 @@ describe("desktop terminal: binary encoding (encodeTerminalBinary)", () => {
 // ── Message textarea Enter behavior ──
 
 describe("message textarea: Enter behavior", () => {
-  test("mobile Enter inserts newline even when enterSends is enabled", () => {
+  test("mobile Enter submits when enterSends is enabled", () => {
     expect(shouldSubmitMessageInputOnEnter({
       key: "Enter",
       shiftKey: false,
       enterSends: true,
       isDesktop: false,
-    })).toBe(false);
+    })).toBe(true);
   });
 
-  test("mobile Shift+Enter submits", () => {
+  test("mobile Shift+Enter inserts newline when enterSends is enabled", () => {
     expect(shouldSubmitMessageInputOnEnter({
       key: "Enter",
       shiftKey: true,
       enterSends: true,
       isDesktop: false,
-    })).toBe(true);
+    })).toBe(false);
   });
 
   test("desktop Enter submits when enterSends is enabled", () => {

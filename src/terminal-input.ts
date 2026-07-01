@@ -33,13 +33,12 @@ export interface MessageInputEnterEvent {
 }
 
 /**
- * Mobile soft-keyboard Enter must insert textarea newlines; terminal/menu Enter
- * is handled by the separate mobile proxy path.
+ * Decide whether textarea Enter submits a prompt.
+ * The mobile accessory row has separate handling for inserting textarea newlines.
  */
 export function shouldSubmitMessageInputOnEnter(event: MessageInputEnterEvent): boolean {
   if (event.key !== "Enter") return false;
-  const effectiveEnterSends = event.isDesktop && event.enterSends;
-  return effectiveEnterSends ? !event.shiftKey : event.shiftKey;
+  return event.enterSends ? !event.shiftKey : event.shiftKey;
 }
 
 export interface KeyboardAccessoryKeyEvent {

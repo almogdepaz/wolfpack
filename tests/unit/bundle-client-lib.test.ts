@@ -39,7 +39,7 @@ describe("wolfpack-lib browser bundle", () => {
     if (!helper) throw new Error("missing window.WP.shouldSubmitMessageInputOnEnter");
     if (!accessoryHelper) throw new Error("missing window.WP.shouldInsertMessageNewlineFromAccessoryKey");
 
-    expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: false })).toBe(false);
+    expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: false })).toBe(true);
     expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: true })).toBe(true);
     expect(accessoryHelper({ key: "Enter", isMessageInputActive: true })).toBe(true);
     expect(accessoryHelper({ key: "Enter", isMessageInputActive: false })).toBe(false);
