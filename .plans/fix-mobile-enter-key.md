@@ -1,6 +1,6 @@
 # fix mobile enter key
 
-status: review notes addressed
+status: accessory enter fix verified
 
 ## success criteria
 - mobile terminal proxy enter still sends `\r` for interactive menus.
@@ -19,3 +19,7 @@ status: review notes addressed
 - edc review: 0 findings across all modules; optional tooling recommendation was to add bundle-level coverage for `window.WP.shouldSubmitMessageInputOnEnter`.
 - added generated bundle characterization test: `tests/unit/bundle-client-lib.test.ts`.
 - review-note verification green: `bun test tests/unit/bundle-client-lib.test.ts tests/unit/desktop-terminal-logic.test.ts` reports 30 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1539 pass / 0 fail.
+- user-reported follow-up: accessory-row Enter still sent terminal enter while typing in `msg-input`.
+- red test: `bun test tests/unit/desktop-terminal-logic.test.ts` failed because `shouldInsertMessageNewlineFromAccessoryKey` was not implemented/exported.
+- red bundle test: `bun test tests/unit/bundle-client-lib.test.ts` failed until `public/wolfpack-lib.js` was regenerated with `shouldInsertMessageNewlineFromAccessoryKey`.
+- accessory fix verification green: `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` reports 33 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1542 pass / 0 fail.

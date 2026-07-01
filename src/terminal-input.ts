@@ -41,3 +41,12 @@ export function shouldSubmitMessageInputOnEnter(event: MessageInputEnterEvent): 
   const effectiveEnterSends = event.isDesktop && event.enterSends;
   return effectiveEnterSends ? !event.shiftKey : event.shiftKey;
 }
+
+export interface KeyboardAccessoryKeyEvent {
+  readonly key: string;
+  readonly isMessageInputActive: boolean;
+}
+
+export function shouldInsertMessageNewlineFromAccessoryKey(event: KeyboardAccessoryKeyEvent): boolean {
+  return event.key === "Enter" && event.isMessageInputActive;
+}

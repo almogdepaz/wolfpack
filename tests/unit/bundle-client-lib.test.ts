@@ -12,7 +12,10 @@ interface MessageInputEnterEvent {
 
 type MessageInputEnterHandler = (event: MessageInputEnterEvent) => boolean;
 
+type AccessoryEnterHandler = (event: { readonly key: string; readonly isMessageInputActive: boolean }) => boolean;
+
 interface BundleWp {
+  readonly shouldInsertMessageNewlineFromAccessoryKey?: AccessoryEnterHandler;
   readonly shouldSubmitMessageInputOnEnter?: MessageInputEnterHandler;
 }
 
@@ -30,10 +33,15 @@ describe("wolfpack-lib browser bundle", () => {
     runInNewContext(readFileSync(bundlePath, "utf8"), context);
 
     const helper = context.window.WP?.shouldSubmitMessageInputOnEnter;
+    const accessoryHelper = context.window.WP?.shouldInsertMessageNewlineFromAccessoryKey;
     expect(typeof helper).toBe("function");
+    expect(typeof accessoryHelper).toBe("function");
     if (!helper) throw new Error("missing window.WP.shouldSubmitMessageInputOnEnter");
+    if (!accessoryHelper) throw new Error("missing window.WP.shouldInsertMessageNewlineFromAccessoryKey");
 
     expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: false })).toBe(false);
     expect(helper({ key: "Enter", shiftKey: false, enterSends: true, isDesktop: true })).toBe(true);
+    expect(accessoryHelper({ key: "Enter", isMessageInputActive: true })).toBe(true);
+    expect(accessoryHelper({ key: "Enter", isMessageInputActive: false })).toBe(false);
   });
 });

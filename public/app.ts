@@ -3974,6 +3974,18 @@ function toggleKbAccessory() {
   haptic([10]);
 }
 
+function insertMessageInputNewline(): void {
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  input.value = input.value.slice(0, start) + "\n" + input.value.slice(end);
+  input.selectionStart = start + 1;
+  input.selectionEnd = start + 1;
+  autoResizeInput();
+  updatePreview();
+  saveDraft();
+}
+
 (function setupKbAccessory() {
   const acc = document.getElementById("kb-accessory");
   if (!acc) return;
@@ -3987,6 +3999,13 @@ function toggleKbAccessory() {
 
     function fire() {
       haptic([15]);
+      if (WP.shouldInsertMessageNewlineFromAccessoryKey({
+        key,
+        isMessageInputActive: document.activeElement === document.getElementById("msg-input"),
+      })) {
+        insertMessageInputNewline();
+        return;
+      }
       sendKey(key);
     }
 

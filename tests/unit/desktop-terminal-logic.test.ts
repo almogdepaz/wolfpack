@@ -3,7 +3,12 @@
  * index.html for copy interception, binary encoding, and stdin gating.
  */
 import { describe, expect, test } from "bun:test";
-import { shouldInterceptCopy, encodeTerminalBinary, shouldSubmitMessageInputOnEnter } from "../../src/terminal-input";
+import {
+  shouldInterceptCopy,
+  encodeTerminalBinary,
+  shouldInsertMessageNewlineFromAccessoryKey,
+  shouldSubmitMessageInputOnEnter,
+} from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
 
@@ -122,6 +127,31 @@ describe("message textarea: Enter behavior", () => {
       shiftKey: false,
       enterSends: true,
       isDesktop: true,
+    })).toBe(false);
+  });
+});
+
+// ── Mobile accessory Enter behavior ──
+
+describe("mobile accessory row: Enter behavior", () => {
+  test("Enter inserts a message newline while the message input is active", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Enter",
+      isMessageInputActive: true,
+    })).toBe(true);
+  });
+
+  test("Enter still goes to terminal when the message input is not active", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Enter",
+      isMessageInputActive: false,
+    })).toBe(false);
+  });
+
+  test("non-Enter accessory keys never insert message newlines", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Escape",
+      isMessageInputActive: true,
     })).toBe(false);
   });
 });

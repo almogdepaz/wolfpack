@@ -12,6 +12,7 @@ export {
 export {
   shouldInterceptCopy,
   encodeTerminalBinary,
+  shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
 } from "./terminal-input";
 
