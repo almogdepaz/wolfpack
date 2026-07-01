@@ -24,3 +24,29 @@ export function encodeTerminalBinary(data: string): Uint8Array {
   for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i) & 0xff;
   return buf;
 }
+
+export interface MessageInputEnterEvent {
+  readonly key: string;
+  readonly shiftKey: boolean;
+  readonly enterSends: boolean;
+  readonly isDesktop: boolean;
+}
+
+/**
+ * Decide whether textarea Enter submits a prompt.
+ * The mobile accessory row has separate handling for inserting textarea newlines.
+ */
+export function shouldSubmitMessageInputOnEnter(event: MessageInputEnterEvent): boolean {
+  if (event.key !== "Enter") return false;
+  return event.enterSends ? !event.shiftKey : event.shiftKey;
+}
+
+export interface KeyboardAccessoryKeyEvent {
+  readonly key: string;
+  readonly isMessageInputActive: boolean;
+  readonly hasMessageInputDraft?: boolean;
+}
+
+export function shouldInsertMessageNewlineFromAccessoryKey(event: KeyboardAccessoryKeyEvent): boolean {
+  return event.key === "Enter" && (event.isMessageInputActive || !!event.hasMessageInputDraft);
+}

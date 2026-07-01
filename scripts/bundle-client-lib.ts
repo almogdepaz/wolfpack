@@ -50,7 +50,7 @@ const coreCode = esmCode.replace(/export\s*\{[^}]*\};?\s*$/, "").trim();
 // Verify all expected exports were found — catches silent breakage if Bun output format changes
 const REQUIRED_EXPORTS = [
   "captureScrollState", "scrollTargetAfterResize", "serializeBufferTail",
-  "shouldInterceptCopy", "encodeTerminalBinary", "shouldRehydrate",
+  "shouldInterceptCopy", "encodeTerminalBinary", "shouldInsertMessageNewlineFromAccessoryKey", "shouldSubmitMessageInputOnEnter", "shouldRehydrate",
   "addToGridState", "removeFromGridState", "suspendGridState", "resumeGridState",
   "classifyDisconnect", "handleViewerConflict", "handleControlGranted",
   "handleDisplaced", "prepareAutoTakeControl", "handleTakeControlClick",

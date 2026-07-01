@@ -3421,13 +3421,25 @@ function updatePreview() {
   }
 }
 
-function sendKey(key: string): void {
+function sendTerminalText(text: string): void {
   if (!state.currentSession) return;
+  wpMetrics.sendCount++;
+  if (_sendTerminalInput(_textEncoder.encode(text))) return;
+  wpMetrics.sendFailCount++;
+}
+
+function sendKey(key: string): void {
   const esc = KEY_TO_ESCAPE[key];
   if (!esc) return;
-  wpMetrics.sendCount++;
-  if (_sendTerminalInput(_textEncoder.encode(esc))) return;
-  wpMetrics.sendFailCount++;
+  sendTerminalText(esc);
+}
+
+function sendAccessoryKey(key: string): void {
+  if (key === "Enter") {
+    sendTerminalText("\n");
+    return;
+  }
+  sendKey(key);
 }
 
 async function killSession(name, e, machineUrl) {
@@ -3884,26 +3896,21 @@ msgInput.addEventListener("input", () => {
   updatePreview();
   saveDraft();
 });
-// Enter behavior driven by wpSettings.enterSends (UX-07)
-// enterSends=true: Enter submits, Shift+Enter newline
-// enterSends=false: Enter newline, Shift+Enter submits
+// Textarea Enter behavior follows enterSends; the mobile accessory row handles
+// focused-textarea Enter separately so it can insert a newline.
 
 msgInput.addEventListener("keydown", (e) => {
   if (state.currentView !== "terminal") return;
   const empty = !msgInput.value.trim();
   if (e.key === "Enter") {
-    if (wpSettings.enterSends) {
-      // Enter sends, Shift+Enter adds newline
-      if (!e.shiftKey) {
-        e.preventDefault();
-        if (empty) sendKey("Enter"); else sendMsg();
-      }
-    } else {
-      // Enter adds newline, Shift+Enter sends
-      if (e.shiftKey) {
-        e.preventDefault();
-        if (empty) sendKey("Enter"); else sendMsg();
-      }
+    if (WP.shouldSubmitMessageInputOnEnter({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      enterSends: wpSettings.enterSends,
+      isDesktop: isDesktop(),
+    })) {
+      e.preventDefault();
+      if (empty) sendKey("Enter"); else sendMsg();
     }
   } else if (e.key === "ArrowUp" && empty) {
     e.preventDefault();
@@ -3979,6 +3986,18 @@ function toggleKbAccessory() {
   haptic([10]);
 }
 
+function insertMessageInputNewline(): void {
+  const input = document.getElementById("msg-input") as HTMLTextAreaElement;
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  input.value = input.value.slice(0, start) + "\n" + input.value.slice(end);
+  input.selectionStart = start + 1;
+  input.selectionEnd = start + 1;
+  autoResizeInput();
+  updatePreview();
+  saveDraft();
+}
+
 (function setupKbAccessory() {
   const acc = document.getElementById("kb-accessory");
   if (!acc) return;
@@ -3992,7 +4011,16 @@ function toggleKbAccessory() {
 
     function fire() {
       haptic([15]);
-      sendKey(key);
+      const messageInput = document.getElementById("msg-input") as HTMLTextAreaElement;
+      if (WP.shouldInsertMessageNewlineFromAccessoryKey({
+        key,
+        isMessageInputActive: document.activeElement === messageInput,
+        hasMessageInputDraft: messageInput.value.length > 0,
+      })) {
+        insertMessageInputNewline();
+        return;
+      }
+      sendAccessoryKey(key);
     }
 
     // Prevent focus steal (keeps keyboard open)

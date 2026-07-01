@@ -3,7 +3,12 @@
  * index.html for copy interception, binary encoding, and stdin gating.
  */
 import { describe, expect, test } from "bun:test";
-import { shouldInterceptCopy, encodeTerminalBinary } from "../../src/terminal-input";
+import {
+  shouldInterceptCopy,
+  encodeTerminalBinary,
+  shouldInsertMessageNewlineFromAccessoryKey,
+  shouldSubmitMessageInputOnEnter,
+} from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
 
@@ -74,6 +79,89 @@ describe("desktop terminal: binary encoding (encodeTerminalBinary)", () => {
   test("CSI escape sequence encodes correctly", () => {
     const result = encodeTerminalBinary("\x1b[A");
     expect(result).toEqual(new Uint8Array([27, 91, 65]));
+  });
+});
+
+// ── Message textarea Enter behavior ──
+
+describe("message textarea: Enter behavior", () => {
+  test("mobile Enter submits when enterSends is enabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: false,
+      enterSends: true,
+      isDesktop: false,
+    })).toBe(true);
+  });
+
+  test("mobile Shift+Enter inserts newline when enterSends is enabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: true,
+      enterSends: true,
+      isDesktop: false,
+    })).toBe(false);
+  });
+
+  test("desktop Enter submits when enterSends is enabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: false,
+      enterSends: true,
+      isDesktop: true,
+    })).toBe(true);
+  });
+
+  test("desktop Enter inserts newline when enterSends is disabled", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "Enter",
+      shiftKey: false,
+      enterSends: false,
+      isDesktop: true,
+    })).toBe(false);
+  });
+
+  test("non-Enter keys never submit", () => {
+    expect(shouldSubmitMessageInputOnEnter({
+      key: "a",
+      shiftKey: false,
+      enterSends: true,
+      isDesktop: true,
+    })).toBe(false);
+  });
+});
+
+// ── Mobile accessory Enter behavior ──
+
+describe("mobile accessory row: Enter behavior", () => {
+  test("Enter inserts a message newline while the message input is active", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Enter",
+      isMessageInputActive: true,
+    })).toBe(true);
+  });
+
+  test("Enter inserts a message newline when mobile focus was lost but the textarea has draft text", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Enter",
+      isMessageInputActive: false,
+      hasMessageInputDraft: true,
+    })).toBe(true);
+  });
+
+  test("Enter still goes to terminal when the message input is not active and has no draft", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Enter",
+      isMessageInputActive: false,
+      hasMessageInputDraft: false,
+    })).toBe(false);
+  });
+
+  test("non-Enter accessory keys never insert message newlines", () => {
+    expect(shouldInsertMessageNewlineFromAccessoryKey({
+      key: "Escape",
+      isMessageInputActive: true,
+    })).toBe(false);
   });
 });
 
