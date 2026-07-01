@@ -1,6 +1,6 @@
 # fix mobile enter key
 
-status: verified
+status: review notes addressed
 
 ## success criteria
 - mobile terminal proxy enter still sends `\r` for interactive menus.
@@ -16,3 +16,6 @@ status: verified
 - narrow green: `bun test tests/unit/desktop-terminal-logic.test.ts` passes.
 - typecheck green: `bun run typecheck` exits 0.
 - full suite green: `bun test` reports 1538 pass / 0 fail.
+- edc review: 0 findings across all modules; optional tooling recommendation was to add bundle-level coverage for `window.WP.shouldSubmitMessageInputOnEnter`.
+- added generated bundle characterization test: `tests/unit/bundle-client-lib.test.ts`.
+- review-note verification green: `bun test tests/unit/bundle-client-lib.test.ts tests/unit/desktop-terminal-logic.test.ts` reports 30 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1539 pass / 0 fail.
