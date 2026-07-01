@@ -18,7 +18,7 @@ import {
   statSync,
   lstatSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseRalphLog, countPlanTasks, type RalphStatus } from "../../src/server/ralph.ts";
 import { isValidPlanFile } from "../../src/validation.ts";
@@ -142,6 +142,29 @@ const routes: Record<
   "GET /api/ralph": async (_req, res) => {
     const loops = scanRalphLoops();
     json(res, { loops });
+  },
+
+  "GET /api/ralph/plans": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const project = url.searchParams.get("project");
+    if (!project || !isValidProjectName(project)) {
+      return json(res, { error: "invalid project" }, 400);
+    }
+    const projectDir = join(TEST_DEV_DIR, project);
+    if (!existsSync(projectDir)) {
+      return json(res, { error: "project directory not found" }, 404);
+    }
+    const rootPlans = readdirSync(projectDir)
+      .filter((f) => f.endsWith(".md") && !f.startsWith(".") && !/^(readme|doc|changelog|contributing|license|code.of.conduct)\.md$/i.test(f))
+      .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { return false; } });
+    const dotPlansDir = join(projectDir, ".plans");
+    const dotPlans = existsSync(dotPlansDir)
+      ? readdirSync(dotPlansDir)
+        .map((f) => `.plans/${f}`)
+        .filter((f) => isValidPlanFile(f))
+        .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { return false; } })
+      : [];
+    json(res, { plans: [...rootPlans, ...dotPlans].sort() });
   },
 
   "GET /api/ralph/task-count": async (req, res) => {
@@ -363,7 +386,7 @@ const routes: Record<
 
     // conditionally delete plan file
     if (deletePlan && status.planFile) {
-      if (SAFE_FILENAME.test(status.planFile) && !status.planFile.includes("..")) {
+      if (isValidPlanFile(status.planFile)) {
         tryDelete(join(projectDir, status.planFile), status.planFile);
       } else {
         failed.push(status.planFile);
@@ -460,6 +483,7 @@ function setupProject(
     writeFileSync(join(dir, ".ralph.log"), opts.log);
   }
   if (opts?.plan) {
+    mkdirSync(dirname(join(dir, opts.plan.name)), { recursive: true });
     writeFileSync(join(dir, opts.plan.name), opts.plan.content);
   }
   return dir;
@@ -660,6 +684,22 @@ describe("POST /api/ralph/start", () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toContain("not found");
+  });
+
+  test(".plans plan file starts ralph loop", async () => {
+    setupProject("start-test", {
+      plan: { name: ".plans/adoption.md", content: "- [ ] task\n" },
+    });
+
+    const res = await post("/api/ralph/start", {
+      project: "start-test",
+      planFile: ".plans/adoption.md",
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(lastSpawnArgs).not.toBeNull();
+    expect(valueAfterFlag(lastSpawnArgs!.args, "--plan")).toBe(".plans/adoption.md");
   });
 
   test("custom plan file not found → 404", async () => {
@@ -1238,6 +1278,21 @@ describe("POST /api/ralph/dismiss", () => {
     expect(existsSync(join(dir, "MY-PLAN.md"))).toBe(false);
   });
 
+  test("dismiss with deletePlan deletes .plans plan file", async () => {
+    const dir = setupProject("dismiss-test", {
+      plan: { name: ".plans/adoption.md", content: "- [x] done\n" },
+      log: `ralph — 5 iterations\nagent: claude\nplan: .plans/adoption.md\npid: 2\nstarted: 2025-01-01\nfinished: 2025-01-01\n`,
+    });
+
+    const res = await post("/api/ralph/dismiss", { project: "dismiss-test", deletePlan: true });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.deleted).toContain(".plans/adoption.md");
+    expect(data.failed).not.toContain(".plans/adoption.md");
+    expect(existsSync(join(dir, ".plans", "adoption.md"))).toBe(false);
+  });
+
   test("path traversal in plan file name → rejected at parse, dismiss succeeds cleanly", async () => {
     const dir = setupProject("dismiss-traversal");
     writeFileSync(join(dir, ".ralph.log"),
@@ -1359,6 +1414,27 @@ describe("GET /api/ralph", () => {
   });
 });
 
+describe("GET /api/ralph/plans", () => {
+  afterEach(() => {
+    cleanupProject("plans-proj");
+  });
+
+  test("lists root plans and .plans markdown plans", async () => {
+    setupProject("plans-proj", {
+      plan: { name: "PLAN.md", content: "- [ ] root\n" },
+    });
+    const dir = join(TEST_DEV_DIR, "plans-proj");
+    mkdirSync(join(dir, ".plans"), { recursive: true });
+    writeFileSync(join(dir, ".plans", "adoption.md"), "- [ ] dot plan\n");
+    writeFileSync(join(dir, ".plans", "notes.txt"), "not a plan\n");
+
+    const res = await get("/api/ralph/plans?project=plans-proj");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.plans).toEqual([".plans/adoption.md", "PLAN.md"]);
+  });
+});
+
 describe("GET /api/ralph/task-count", () => {
   afterEach(() => {
     cleanupProject("tc-proj");
@@ -1454,6 +1530,21 @@ describe("GET /api/ralph/task-count", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe("invalid plan file");
+  });
+
+  test(".plans plan file works", async () => {
+    setupProject("tc-proj", {
+      plan: {
+        name: ".plans/adoption.md",
+        content: "- [x] a\n- [ ] b\n",
+      },
+    });
+
+    const res = await get("/api/ralph/task-count?project=tc-proj&plan=" + encodeURIComponent(".plans/adoption.md"));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.done).toBe(1);
+    expect(data.total).toBe(2);
   });
 
   test("custom plan file name works", async () => {

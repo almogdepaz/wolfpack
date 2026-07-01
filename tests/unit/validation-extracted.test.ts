@@ -200,10 +200,14 @@ describe("isValidPlanFile", () => {
   test("accepts valid plan files", () => {
     expect(isValidPlanFile("PLAN.md")).toBe(true);
     expect(isValidPlanFile("my plan.md")).toBe(true);
+    expect(isValidPlanFile(".plans/adoption.md")).toBe(true);
   });
 
   test("rejects traversal and non-md", () => {
     expect(isValidPlanFile("../evil.md")).toBe(false);
+    expect(isValidPlanFile(".plans/../evil.md")).toBe(false);
+    expect(isValidPlanFile("plans/adoption.md")).toBe(false);
+    expect(isValidPlanFile(".plans/nested/adoption.md")).toBe(false);
     expect(isValidPlanFile("plan.txt")).toBe(false);
     expect(isValidPlanFile("")).toBe(false);
   });

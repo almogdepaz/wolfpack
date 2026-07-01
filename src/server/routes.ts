@@ -670,11 +670,17 @@ export const routes: Record<
     const projectDir = resolveProjectDir(res, project);
     if (!projectDir) return;
     try {
-      const files = readdirSync(projectDir)
+      const rootPlans = readdirSync(projectDir)
         .filter((f) => f.endsWith(".md") && !f.startsWith(".") && !/^(readme|doc|changelog|contributing|license|code.of.conduct)\.md$/i.test(f))
-        .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { /* race: file removed between readdir and stat */ return false; } })
-        .sort();
-      json(res, { plans: files });
+        .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { /* race: file removed between readdir and stat */ return false; } });
+      const dotPlansDir = join(projectDir, ".plans");
+      const dotPlans = existsSync(dotPlansDir)
+        ? readdirSync(dotPlansDir)
+          .map((f) => `.plans/${f}`)
+          .filter((f) => isValidPlanFile(f))
+          .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { /* race: file removed between readdir and stat */ return false; } })
+        : [];
+      json(res, { plans: [...rootPlans, ...dotPlans].sort() });
     } catch (e: unknown) {
       log.warn("failed to list plan files", { error: errMsg(e) });
       json(res, { plans: [] });
@@ -967,7 +973,7 @@ export const routes: Record<
     }
 
     if (deletePlan && status.planFile) {
-      if (SAFE_FILENAME.test(status.planFile) && !status.planFile.includes("..")) {
+      if (isValidPlanFile(status.planFile)) {
         tryDelete(join(projectDir, status.planFile), status.planFile);
       } else {
         failed.push(status.planFile);
