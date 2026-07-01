@@ -3421,13 +3421,25 @@ function updatePreview() {
   }
 }
 
-function sendKey(key: string): void {
+function sendTerminalText(text: string): void {
   if (!state.currentSession) return;
+  wpMetrics.sendCount++;
+  if (_sendTerminalInput(_textEncoder.encode(text))) return;
+  wpMetrics.sendFailCount++;
+}
+
+function sendKey(key: string): void {
   const esc = KEY_TO_ESCAPE[key];
   if (!esc) return;
-  wpMetrics.sendCount++;
-  if (_sendTerminalInput(_textEncoder.encode(esc))) return;
-  wpMetrics.sendFailCount++;
+  sendTerminalText(esc);
+}
+
+function sendAccessoryKey(key: string): void {
+  if (key === "Enter") {
+    sendTerminalText("\n");
+    return;
+  }
+  sendKey(key);
 }
 
 async function killSession(name, e, machineUrl) {
@@ -4008,7 +4020,7 @@ function insertMessageInputNewline(): void {
         insertMessageInputNewline();
         return;
       }
-      sendKey(key);
+      sendAccessoryKey(key);
     }
 
     // Prevent focus steal (keeps keyboard open)

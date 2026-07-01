@@ -1,6 +1,6 @@
 # fix mobile enter key
 
-status: accessory focus-loss fix verified
+status: browser mobile accessory fix verified
 
 ## success criteria
 - mobile terminal proxy enter still sends `\r` for interactive menus.
@@ -31,3 +31,8 @@ status: accessory focus-loss fix verified
 - root cause hypothesis confirmed by regression: relying only on `document.activeElement === #msg-input` is fragile on mobile accessory taps; if focus is lost before `fire()`, the helper sends terminal Enter.
 - focus-loss fix: accessory Enter now inserts a textarea newline when `#msg-input` is focused OR the textarea has draft text.
 - focus-loss verification: `bun test tests/unit/desktop-terminal-logic.test.ts tests/unit/bundle-client-lib.test.ts` reports 34 pass / 0 fail; `bun run typecheck` exits 0; `bun test` reports 1543 pass / 0 fail.
+- browser repro: mobile terminal view hides `#input-bar`; accessory `⏎` drives `mobile-kb-proxy`, not `#msg-input`, so prior textarea/focus fixes missed the real path.
+- browser red test: patched `terminalController.send` in mobile browser and confirmed accessory `⏎` sent `[13]` (`\r`).
+- actual fix: native mobile keyboard Enter still sends `[13]`; visible accessory `⏎` now sends `[10]` (`\n` / ctrl-j) for multiline assistant prompt insertion.
+- browser regression: `tests/e2e/mobile-accessory-enter.e2e.ts` covers iphone-se and iphone-14.
+- final verification: `bunx playwright test tests/e2e/mobile-accessory-enter.e2e.ts --project=iphone-se --project=iphone-14` reports 2 pass; `bun run typecheck` exits 0; `bun test` reports 1543 pass / 0 fail.
