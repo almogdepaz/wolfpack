@@ -1,12 +1,12 @@
-# Wolfpack
+# Wolfpack — browser terminal manager for AI coding agents
 
 [![CI](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml/badge.svg)](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://github.com/almogdepaz/wolfpack/releases)
 
-Control Claude, Codex, Gemini, or any shell command from your phone or browser.
-Wolfpack runs on your own macOS/Linux machine — laptop, workstation, or cloud VM — and gives you a PWA command center for long-running AI coding sessions across your Tailscale tailnet.
+Wolfpack is a self-hosted browser terminal dashboard for AI coding agents: Claude Code, Codex, Gemini, shell commands, and custom agent wrappers.
+It runs on your own macOS/Linux machine — laptop, workstation, or cloud VM — and gives you a PWA command center for long-running agent terminal sessions across your Tailscale tailnet.
 
 Sessions live in a Rust PTY broker, not the web server, so server restarts and redeploys do not kill your agents.
 There is no Wolfpack-hosted relay or account; remote access is normally handled by [Tailscale](https://tailscale.com/).
@@ -60,6 +60,9 @@ wolfpack uninstall --yes
 Local-only browser use works without Tailscale. Phone/remote use is where Tailscale earns its keep.
 
 ## Why use it
+
+Use Wolfpack when you want a self-hosted alternative to juggling tmux panes, SSH windows, and cloud workspaces for AI agent sessions.
+It is an AI agent terminal orchestrator for developers who need persistent browser/mobile access to coding agents running on machines they control.
 
 - **Phone-first agent control** — respond to Claude/Codex/Gemini while away from your desk.
 - **Multi-machine view** — manage sessions from every machine in your tailnet, including cloud VMs.
