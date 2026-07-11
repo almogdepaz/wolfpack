@@ -23,7 +23,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     ]
   },
   "ownership": {
-    "source": "src/control-api/schema.ts",
+    "schemaSource": "src/control-api/schema.ts",
+    "runtimeSource": "src/server/routes.ts",
     "generatedArtifact": "docs/generated/control-api.schema.json",
     "compatibilityDocs": "docs/control-api-schema.md"
   },
@@ -169,7 +170,25 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           }
         },
         "required": [],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {},
+            "required": [
+              "project"
+            ],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {},
+            "required": [
+              "newProject"
+            ],
+            "additionalProperties": true
+          }
+        ]
       },
       "response": {
         "$id": "wolfpack:control-api:http:createSession:response",

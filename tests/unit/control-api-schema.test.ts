@@ -86,10 +86,20 @@ function validate(schema: unknown, value: unknown, root: JsonObject, path = "$")
   return [];
 }
 
-function httpResponse(operationId: string): JsonObject {
+function httpOperation(operationId: string): JsonObject {
   const http = artifact.http;
   if (!isObject(http) || !isObject(http[operationId])) throw new Error(`missing operation ${operationId}`);
-  const operation = http[operationId] as JsonObject;
+  return http[operationId] as JsonObject;
+}
+
+function httpRequest(operationId: string): JsonObject {
+  const operation = httpOperation(operationId);
+  if (!isObject(operation.request)) throw new Error(`missing request schema for ${operationId}`);
+  return operation.request;
+}
+
+function httpResponse(operationId: string): JsonObject {
+  const operation = httpOperation(operationId);
   if (!isObject(operation.response)) throw new Error(`missing response schema for ${operationId}`);
   return operation.response;
 }
@@ -124,7 +134,23 @@ describe("control api schema generation", () => {
   });
 });
 
+describe("control api schema docs", () => {
+  test("documents runtime routes as authoritative validation boundary", () => {
+    const docs = readFileSync("docs/control-api-schema.md", "utf-8");
+
+    expect(docs).toContain("Runtime routes remain authoritative");
+  });
+});
+
 describe("control api schema compatibility samples", () => {
+  test("create-session request requires project or newProject", () => {
+    const request = httpRequest("createSession");
+
+    expect(validate(request, { cmd: "shell" }, artifact)).not.toEqual([]);
+    expect(validate(request, { project: "wolfpack", cmd: "shell" }, artifact)).toEqual([]);
+    expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+  });
+
   test("representative http responses satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", { name: "devbox", version: "1.6.6" }],

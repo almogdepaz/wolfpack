@@ -26,7 +26,8 @@ type ControlApiSource = {
   readonly schemaVersion: typeof CONTROL_API_SCHEMA_VERSION;
   readonly artifactPath: typeof CONTROL_API_SCHEMA_ARTIFACT;
   readonly ownership: {
-    readonly source: string;
+    readonly schemaSource: string;
+    readonly runtimeSource: string;
     readonly generatedArtifact: string;
     readonly compatibilityDocs: string;
   };
@@ -98,7 +99,8 @@ export const controlApiSource: ControlApiSource = {
   schemaVersion: CONTROL_API_SCHEMA_VERSION,
   artifactPath: CONTROL_API_SCHEMA_ARTIFACT,
   ownership: {
-    source: "src/control-api/schema.ts",
+    schemaSource: "src/control-api/schema.ts",
+    runtimeSource: "src/server/routes.ts",
     generatedArtifact: CONTROL_API_SCHEMA_ARTIFACT,
     compatibilityDocs: "docs/control-api-schema.md",
   },
@@ -246,12 +248,18 @@ export const controlApiSource: ControlApiSource = {
       operationId: "createSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({
-        project: ref("ProjectName"),
-        newProject: ref("ProjectName"),
-        cmd: ref("Command"),
-        sessionName: ref("SessionName"),
-      }),
+      request: {
+        ...object({
+          project: ref("ProjectName"),
+          newProject: ref("ProjectName"),
+          cmd: ref("Command"),
+          sessionName: ref("SessionName"),
+        }),
+        anyOf: [
+          object({}, ["project"], { additionalProperties: true }),
+          object({}, ["newProject"], { additionalProperties: true }),
+        ],
+      },
       response: object({
         ok: boolean(),
         session: ref("SessionName"),
@@ -627,7 +635,7 @@ export function buildControlApiSchema(): JsonSchema {
     title: "Wolfpack public control API and event stream schema",
     type: "object",
     version: controlApiSource.schemaVersion,
-    generatedFrom: controlApiSource.ownership.source,
+    generatedFrom: controlApiSource.ownership.schemaSource,
     artifactPath: controlApiSource.artifactPath,
     compatibility: {
       additiveChanges: [
