@@ -31,7 +31,7 @@ beforeAll(() => {
 
 describe("app ralph authority rendering", () => {
   test("renders source authority and stale state", async () => {
-    const { renderRalphCardHtml, getRalphStatus } = await import("../../public/app-ralph.ts");
+    const { renderRalphCardHtml, getRalphStatus } = await import("../../src/ralph-card-render.ts");
     const loop = {
       project: "wolfpack",
       active: true,
@@ -56,7 +56,7 @@ describe("app ralph authority rendering", () => {
   });
 
   test("renders unknown authority without blocking card actions", async () => {
-    const { renderRalphCardHtml, getRalphStatus } = await import("../../public/app-ralph.ts");
+    const { renderRalphCardHtml, getRalphStatus } = await import("../../src/ralph-card-render.ts");
     const loop = {
       project: "wolfpack",
       active: false,
