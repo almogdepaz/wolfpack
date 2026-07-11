@@ -54,7 +54,7 @@ class AttachMockBackend extends MockBackend {
     this.writeCalls.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
   }
 
-  getSessionPrefill(): { data: Buffer; seq?: bigint } {
+  async getSessionPrefill(): Promise<{ data: Buffer; seq?: bigint }> {
     return { data: this.prefill };
   }
 }
