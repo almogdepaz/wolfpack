@@ -1,0 +1,1711 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfpack:control-api",
+  "title": "Wolfpack public control API and event stream schema",
+  "type": "object",
+  "version": "1.0.0",
+  "generatedFrom": "src/control-api/schema.ts",
+  "artifactPath": "docs/generated/control-api.schema.json",
+  "compatibility": {
+    "additiveChanges": [
+      "new optional object properties",
+      "new stable operations",
+      "new server-to-client event message types"
+    ],
+    "breakingChanges": [
+      "removing or renaming stable operations, fields, or message types",
+      "making optional fields required",
+      "changing auth expectations",
+      "tightening enum/pattern constraints for stable fields"
+    ]
+  },
+  "ownership": {
+    "source": "src/control-api/schema.ts",
+    "generatedArtifact": "docs/generated/control-api.schema.json",
+    "compatibilityDocs": "docs/control-api-schema.md"
+  },
+  "trustBoundaries": [
+    "schemas publish public client contracts; they do not replace route-side project/session/path validation",
+    "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
+    "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
+    "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients"
+  ],
+  "http": {
+    "getInfo": {
+      "route": "GET /api/info",
+      "stable": true,
+      "auth": "public",
+      "response": {
+        "$id": "wolfpack:control-api:http:getInfo:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getInfo response",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "listSessions": {
+      "route": "GET /api/sessions",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listSessions:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSessions response",
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SessionSummary"
+            }
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "listProjects": {
+      "route": "GET /api/projects",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listProjects:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listProjects response",
+        "type": "object",
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ProjectName"
+            }
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "nextSessionName": {
+      "route": "GET /api/next-session-name",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:nextSessionName:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "nextSessionName request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:nextSessionName:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "nextSessionName response",
+        "type": "object",
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/SessionName"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope"
+      ]
+    },
+    "createSession": {
+      "route": "POST /api/create",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:createSession:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "createSession request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "newProject": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "cmd": {
+            "$ref": "#/$defs/Command"
+          },
+          "sessionName": {
+            "$ref": "#/$defs/SessionName"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:createSession:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "createSession response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          }
+        },
+        "required": [
+          "ok",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope"
+      ]
+    },
+    "getSettings": {
+      "route": "GET /api/settings",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getSettings:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSettings response",
+        "type": "object",
+        "properties": {
+          "settings": {
+            "$ref": "#/$defs/Settings"
+          },
+          "effective": {
+            "$ref": "#/$defs/EffectiveSettings"
+          }
+        },
+        "required": [
+          "settings",
+          "effective"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "updateSettings": {
+      "route": "POST /api/settings",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:updateSettings:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateSettings request",
+        "type": "object",
+        "properties": {
+          "agentCmd": {
+            "$ref": "#/$defs/Command"
+          },
+          "addCmd": {
+            "$ref": "#/$defs/Command"
+          },
+          "removeCmd": {
+            "$ref": "#/$defs/Command"
+          },
+          "setCmdEnabled": {
+            "type": "object",
+            "properties": {
+              "cmd": {
+                "$ref": "#/$defs/Command"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "cmd",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:updateSettings:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateSettings response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "settings": {
+            "$ref": "#/$defs/Settings"
+          },
+          "effective": {
+            "$ref": "#/$defs/EffectiveSettings"
+          }
+        },
+        "required": [
+          "ok",
+          "settings",
+          "effective"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope"
+      ]
+    },
+    "getBackendStatus": {
+      "route": "GET /api/backend",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getBackendStatus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getBackendStatus response",
+        "type": "object",
+        "properties": {
+          "brokerAvailable": {
+            "type": "boolean"
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "tmux": {
+                "type": "integer"
+              },
+              "broker": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "tmux",
+              "broker"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "brokerAvailable",
+          "counts"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "killSession": {
+      "route": "POST /api/kill",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:killSession:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "killSession request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:killSession:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "killSession response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
+    "resizeSession": {
+      "route": "POST /api/resize",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:resizeSession:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resizeSession request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "cols": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session",
+          "cols",
+          "rows"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:resizeSession:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resizeSession response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
+    "discoverPeers": {
+      "route": "GET /api/discover",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:discoverPeers:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "discoverPeers response",
+        "type": "object",
+        "properties": {
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Peer"
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "peers"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "capturePane": {
+      "route": "GET /api/poll",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:capturePane:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "capturePane request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:capturePane:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "capturePane response",
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
+    "copyText": {
+      "route": "GET /api/copy-text",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:copyText:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "copyText request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:copyText:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "copyText response",
+        "type": "string",
+        "contentMediaType": "text/plain"
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
+    "getGitStatus": {
+      "route": "GET /api/git-status",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getGitStatus:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getGitStatus request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/ProjectName"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getGitStatus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getGitStatus response",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "listRalphLoops": {
+      "route": "GET /api/ralph",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:listRalphLoops:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listRalphLoops request",
+        "type": "object",
+        "properties": {
+          "aggregate": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:listRalphLoops:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listRalphLoops response",
+        "type": "object",
+        "properties": {
+          "loops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/RalphLoop"
+            }
+          }
+        },
+        "required": [
+          "loops"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "listRalphBranches": {
+      "route": "GET /api/ralph/branches",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:listRalphBranches:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listRalphBranches request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:listRalphBranches:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listRalphBranches response",
+        "type": "object",
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/BranchName"
+            }
+          },
+          "current": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branches",
+          "current"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "listRalphPlans": {
+      "route": "GET /api/ralph/plans",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:listRalphPlans:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listRalphPlans request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:listRalphPlans:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listRalphPlans response",
+        "type": "object",
+        "properties": {
+          "plans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PlanFile"
+            }
+          }
+        },
+        "required": [
+          "plans"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
+    "getRalphLog": {
+      "route": "GET /api/ralph/log",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getRalphLog:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getRalphLog request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getRalphLog:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getRalphLog response",
+        "type": "object",
+        "properties": {
+          "log": {
+            "type": "string"
+          },
+          "totalLines": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "log",
+          "totalLines"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "startRalph": {
+      "route": "POST /api/ralph/start",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:startRalph:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "startRalph request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "iterations": {
+            "type": "integer"
+          },
+          "planFile": {
+            "$ref": "#/$defs/PlanFile"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "newBranch": {
+            "$ref": "#/$defs/BranchName"
+          },
+          "sourceBranch": {
+            "$ref": "#/$defs/BranchName"
+          },
+          "format": {
+            "type": "boolean"
+          },
+          "cleanup": {
+            "type": "boolean"
+          },
+          "auditFix": {
+            "type": "boolean"
+          },
+          "worktree": {
+            "$ref": "#/$defs/WorktreeMode"
+          },
+          "worktreeBranch": {
+            "$ref": "#/$defs/BranchName"
+          },
+          "worktreeBase": {
+            "$ref": "#/$defs/BranchName"
+          },
+          "sandbox": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:startRalph:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "startRalph response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "worktree": {
+            "enum": [
+              "plan",
+              "task"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "pid"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "getRalphTaskCount": {
+      "route": "GET /api/ralph/task-count",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getRalphTaskCount:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getRalphTaskCount request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "plan": {
+            "$ref": "#/$defs/PlanFile"
+          }
+        },
+        "required": [
+          "project",
+          "plan"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getRalphTaskCount:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getRalphTaskCount response",
+        "$ref": "#/$defs/TaskCount"
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
+    "cancelRalph": {
+      "route": "POST /api/ralph/cancel",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:cancelRalph:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "cancelRalph request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:cancelRalph:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "cancelRalph response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "killed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "killed"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "dismissRalph": {
+      "route": "POST /api/ralph/dismiss",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:dismissRalph:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "dismissRalph request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "deletePlan": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:dismissRalph:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "dismissRalph response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "worktreeCleanup": {
+            "type": "object",
+            "properties": {
+              "removed": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "kept": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "removed",
+              "kept"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "ok",
+          "deleted",
+          "failed"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope"
+      ]
+    },
+    "getVapidPublicKey": {
+      "route": "GET /api/push/vapid-key",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getVapidPublicKey:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getVapidPublicKey response",
+        "type": "object",
+        "properties": {
+          "publicKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "publicKey"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "subscribePush": {
+      "route": "POST /api/push/subscribe",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:subscribePush:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "subscribePush request",
+        "$ref": "#/$defs/PushSubscription"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:subscribePush:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "subscribePush response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "429 ErrorEnvelope"
+      ]
+    },
+    "unsubscribePush": {
+      "route": "POST /api/push/unsubscribe",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:unsubscribePush:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "unsubscribePush request",
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:unsubscribePush:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "unsubscribePush response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope"
+      ]
+    },
+    "sendNotification": {
+      "route": "POST /api/notify",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:sendNotification:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendNotification request",
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:sendNotification:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendNotification response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "sent": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": true
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "429 ErrorEnvelope"
+      ]
+    }
+  },
+  "websocket": {
+    "/ws/pty": {
+      "auth": "jwt-when-configured",
+      "query": {
+        "$id": "wolfpack:control-api:ws:pty:query",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "/ws/pty query",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "reset": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "messages": {
+        "attach": {
+          "stable": true,
+          "direction": "client-to-server",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:attach",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty attach",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "attach"
+              },
+              "cols": {
+                "type": "integer"
+              },
+              "rows": {
+                "type": "integer"
+              },
+              "skipPrefill": {
+                "type": "boolean"
+              },
+              "prefillMode": {
+                "$ref": "#/$defs/PrefillMode"
+              },
+              "takeControl": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "cols",
+              "rows"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "layout_stable": {
+          "stable": true,
+          "direction": "client-to-server",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:layout_stable",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty layout_stable",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "layout_stable"
+              },
+              "cols": {
+                "type": "integer"
+              },
+              "rows": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "type",
+              "cols",
+              "rows"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resize": {
+          "stable": true,
+          "direction": "client-to-server",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:resize",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty resize",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "resize"
+              },
+              "cols": {
+                "type": "integer"
+              },
+              "rows": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "type",
+              "cols",
+              "rows"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "take_control": {
+          "stable": true,
+          "direction": "client-to-server",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:take_control",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty take_control",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "take_control"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "attach_ack": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:attach_ack",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty attach_ack",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "attach_ack"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "prefill_done": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:prefill_done",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty prefill_done",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "prefill_done"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "prefill_viewport": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:prefill_viewport",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty prefill_viewport",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "prefill_viewport"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "pty_ready": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:pty_ready",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty pty_ready",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "pty_ready"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "viewer_conflict": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:viewer_conflict",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty viewer_conflict",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "viewer_conflict"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "control_granted": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:control_granted",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty control_granted",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "control_granted"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "binaryFrames": {
+        "client-to-server": "raw PTY input bytes, capped by runtime MAX_PTY_BINARY_BYTES",
+        "server-to-client": "raw PTY output/prefill bytes"
+      }
+    }
+  },
+  "ralph": {
+    "responseFile": {
+      "path": ".ralph-response.json",
+      "schema": {
+        "$id": "wolfpack:control-api:ralph:response-file",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Ralph structured response file",
+        "$ref": "#/$defs/RalphIterationResponse"
+      }
+    }
+  },
+  "$defs": {
+    "ErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": true
+    },
+    "SessionName": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "ProjectName": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._-]+$"
+    },
+    "PlanFile": {
+      "type": "string",
+      "pattern": "^(?:[a-zA-Z0-9._-]+\\.md|\\.plans/[a-zA-Z0-9._-]+\\.md)$"
+    },
+    "BranchName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "Command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "TriageStatus": {
+      "enum": [
+        "running",
+        "idle"
+      ]
+    },
+    "PrefillMode": {
+      "enum": [
+        "full",
+        "viewport",
+        "none"
+      ]
+    },
+    "WorktreeMode": {
+      "enum": [
+        false,
+        "false",
+        "plan",
+        "task"
+      ]
+    },
+    "CmdEntry": {
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "$ref": "#/$defs/Command"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cmd",
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "Settings": {
+      "type": "object",
+      "properties": {
+        "agentCmd": {
+          "type": "string"
+        },
+        "cmds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CmdEntry"
+          }
+        }
+      },
+      "required": [
+        "agentCmd",
+        "cmds"
+      ],
+      "additionalProperties": false
+    },
+    "EffectiveSettings": {
+      "type": "object",
+      "properties": {
+        "agentCmd": {
+          "type": "string"
+        },
+        "cmds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Command"
+          }
+        }
+      },
+      "required": [
+        "agentCmd",
+        "cmds"
+      ],
+      "additionalProperties": false
+    },
+    "SessionSummary": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "lastLine": {
+          "type": "string"
+        },
+        "triage": {
+          "$ref": "#/$defs/TriageStatus"
+        }
+      },
+      "required": [
+        "name",
+        "lastLine",
+        "triage"
+      ],
+      "additionalProperties": false
+    },
+    "Peer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "additionalProperties": true
+    },
+    "RalphLoop": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "completed": {
+          "type": "boolean"
+        },
+        "audit": {
+          "type": "boolean"
+        },
+        "cleanup": {
+          "type": "boolean"
+        },
+        "cleanupEnabled": {
+          "type": "boolean"
+        },
+        "auditFixEnabled": {
+          "type": "boolean"
+        },
+        "iteration": {
+          "type": "integer"
+        },
+        "totalIterations": {
+          "type": "integer"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "planFile": {
+          "type": "string"
+        },
+        "progressFile": {
+          "type": "string"
+        },
+        "started": {
+          "type": "string"
+        },
+        "finished": {
+          "type": "string"
+        },
+        "lastOutput": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "tasksDone": {
+          "type": "integer"
+        },
+        "tasksTotal": {
+          "type": "integer"
+        },
+        "worktreeMode": {
+          "type": "string"
+        },
+        "worktreeBranch": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "string"
+        },
+        "machineName": {
+          "type": "string"
+        },
+        "machineUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project",
+        "active",
+        "completed",
+        "audit",
+        "cleanup",
+        "cleanupEnabled",
+        "auditFixEnabled",
+        "iteration",
+        "totalIterations",
+        "agent",
+        "planFile",
+        "progressFile",
+        "started",
+        "finished",
+        "lastOutput",
+        "pid",
+        "tasksDone",
+        "tasksTotal",
+        "worktreeMode",
+        "worktreeBranch"
+      ],
+      "additionalProperties": true
+    },
+    "TaskCount": {
+      "type": "object",
+      "properties": {
+        "done": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "done",
+        "total",
+        "issues"
+      ],
+      "additionalProperties": false
+    },
+    "PushSubscription": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "keys": {
+          "type": "object",
+          "properties": {
+            "p256dh": {
+              "type": "string"
+            },
+            "auth": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "p256dh",
+            "auth"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "endpoint",
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "RalphIterationResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "status": {
+          "enum": [
+            "done",
+            "needs_subtasks"
+          ]
+        },
+        "prereqs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "done": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subtasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "status",
+        "prereqs",
+        "tests",
+        "done",
+        "subtasks"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

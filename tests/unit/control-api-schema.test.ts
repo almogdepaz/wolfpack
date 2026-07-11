@@ -1,0 +1,199 @@
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import {
+  CONTROL_API_SCHEMA_ARTIFACT,
+  buildControlApiSchema,
+} from "../../src/control-api/schema.ts";
+import {
+  generateControlApiSchemaText,
+  validateControlApiSchemaArtifact,
+} from "../../scripts/gen-control-api-schema.ts";
+
+type JsonObject = Record<string, unknown>;
+
+const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveRef(schema: JsonObject, root: JsonObject): JsonObject {
+  const ref = schema.$ref;
+  if (typeof ref !== "string") return schema;
+  const prefix = "#/$defs/";
+  if (!ref.startsWith(prefix)) throw new Error(`unsupported ref ${ref}`);
+  const name = ref.slice(prefix.length);
+  const defs = root.$defs;
+  if (!isObject(defs) || !isObject(defs[name])) throw new Error(`missing ref ${ref}`);
+  return defs[name] as JsonObject;
+}
+
+function validate(schema: unknown, value: unknown, root: JsonObject, path = "$"): string[] {
+  if (!isObject(schema)) return [];
+  const resolved = resolveRef(schema, root);
+  if (resolved !== schema) return validate(resolved, value, root, path);
+
+  if (Array.isArray(resolved.anyOf)) {
+    const variants = resolved.anyOf.map((candidate) => validate(candidate, value, root, path));
+    return variants.some((errors) => errors.length === 0)
+      ? []
+      : [`${path} did not match anyOf: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
+  }
+
+  if ("const" in resolved && value !== resolved.const) {
+    return [`${path} expected const ${JSON.stringify(resolved.const)}`];
+  }
+
+  if (Array.isArray(resolved.enum) && !resolved.enum.some((candidate) => candidate === value)) {
+    return [`${path} expected one of ${JSON.stringify(resolved.enum)}`];
+  }
+
+  if (typeof resolved.type === "string") {
+    if (resolved.type === "object" && !isObject(value)) return [`${path} expected object`];
+    if (resolved.type === "array" && !Array.isArray(value)) return [`${path} expected array`];
+    if (resolved.type === "string" && typeof value !== "string") return [`${path} expected string`];
+    if (resolved.type === "number" && typeof value !== "number") return [`${path} expected number`];
+    if (resolved.type === "integer" && (!Number.isInteger(value))) return [`${path} expected integer`];
+    if (resolved.type === "boolean" && typeof value !== "boolean") return [`${path} expected boolean`];
+    if (resolved.type === "null" && value !== null) return [`${path} expected null`];
+  }
+
+  if (typeof value === "string" && typeof resolved.pattern === "string" && !(new RegExp(resolved.pattern).test(value))) {
+    return [`${path} failed pattern ${resolved.pattern}`];
+  }
+
+  if (Array.isArray(value) && isObject(resolved.items)) {
+    return value.flatMap((item, index) => validate(resolved.items, item, root, `${path}[${index}]`));
+  }
+
+  if (isObject(value) && isObject(resolved.properties)) {
+    const required = Array.isArray(resolved.required) ? resolved.required : [];
+    const errors: string[] = [];
+    for (const key of required) {
+      if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
+    }
+    for (const [key, child] of Object.entries(resolved.properties)) {
+      if (key in value) errors.push(...validate(child, value[key], root, `${path}.${key}`));
+    }
+    if (resolved.additionalProperties === false) {
+      for (const key of Object.keys(value)) {
+        if (!(key in resolved.properties)) errors.push(`${path}.${key} is not allowed`);
+      }
+    }
+    return errors;
+  }
+
+  return [];
+}
+
+function httpResponse(operationId: string): JsonObject {
+  const http = artifact.http;
+  if (!isObject(http) || !isObject(http[operationId])) throw new Error(`missing operation ${operationId}`);
+  const operation = http[operationId] as JsonObject;
+  if (!isObject(operation.response)) throw new Error(`missing response schema for ${operationId}`);
+  return operation.response;
+}
+
+function wsMessage(name: string): JsonObject {
+  const websocket = artifact.websocket;
+  const pty = isObject(websocket) ? websocket["/ws/pty"] : undefined;
+  const messages = isObject(pty) ? pty.messages : undefined;
+  const message = isObject(messages) ? messages[name] : undefined;
+  if (!isObject(message) || !isObject(message.schema)) throw new Error(`missing ws message ${name}`);
+  return message.schema;
+}
+
+function ralphResponseFile(): JsonObject {
+  const ralph = artifact.ralph;
+  const responseFile = isObject(ralph) ? ralph.responseFile : undefined;
+  if (!isObject(responseFile) || !isObject(responseFile.schema)) throw new Error("missing ralph response file schema");
+  return responseFile.schema;
+}
+
+describe("control api schema generation", () => {
+  test("generated artifact is current", () => {
+    expect(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")).toBe(generateControlApiSchemaText());
+  });
+
+  test("schema source emits a stable snapshot", () => {
+    expect(JSON.stringify(buildControlApiSchema(), null, 2)).toMatchSnapshot();
+  });
+
+  test("artifact has no duplicate contracts or unsupported field types", () => {
+    expect(validateControlApiSchemaArtifact(artifact)).toEqual([]);
+  });
+});
+
+describe("control api schema compatibility samples", () => {
+  test("representative http responses satisfy generated schemas", () => {
+    const samples: Array<[string, unknown]> = [
+      ["getInfo", { name: "devbox", version: "1.6.6" }],
+      ["listSessions", { sessions: [{ name: "wolf-1", lastLine: "ready", triage: "idle" }] }],
+      ["getSettings", {
+        settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }] },
+        effective: { agentCmd: "shell", cmds: ["shell"] },
+      }],
+      ["listRalphLoops", {
+        loops: [{
+          project: "wolfpack",
+          active: true,
+          completed: false,
+          audit: false,
+          cleanup: false,
+          cleanupEnabled: true,
+          auditFixEnabled: false,
+          iteration: 1,
+          totalIterations: 5,
+          agent: "codex",
+          planFile: ".plans/c-generated-control-api-schema.md",
+          progressFile: "progress.txt",
+          started: "2026-07-11T00:00:00Z",
+          finished: "",
+          lastOutput: "running",
+          pid: 12345,
+          tasksDone: 0,
+          tasksTotal: 4,
+          worktreeMode: "task",
+          worktreeBranch: "feature/example",
+          sandbox: "true",
+          machineName: "devbox",
+          machineUrl: "",
+        }],
+      }],
+    ];
+
+    for (const [operationId, payload] of samples) {
+      expect(validate(httpResponse(operationId), payload, artifact), operationId).toEqual([]);
+    }
+  });
+
+  test("representative websocket control messages satisfy generated schemas", () => {
+    const samples: Array<[string, unknown]> = [
+      ["attach", { type: "attach", cols: 120, rows: 40, prefillMode: "full" }],
+      ["resize", { type: "resize", cols: 100, rows: 30 }],
+      ["layout_stable", { type: "layout_stable", cols: 100, rows: 30 }],
+      ["take_control", { type: "take_control" }],
+      ["attach_ack", { type: "attach_ack" }],
+      ["prefill_done", { type: "prefill_done" }],
+      ["prefill_viewport", { type: "prefill_viewport" }],
+      ["pty_ready", { type: "pty_ready" }],
+      ["viewer_conflict", { type: "viewer_conflict" }],
+      ["control_granted", { type: "control_granted" }],
+    ];
+
+    for (const [messageName, payload] of samples) {
+      expect(validate(wsMessage(messageName), payload, artifact), messageName).toEqual([]);
+    }
+  });
+
+  test("representative ralph response file satisfies generated schema", () => {
+    expect(validate(ralphResponseFile(), {
+      version: 1,
+      status: "needs_subtasks",
+      prereqs: ["branch exists"],
+      tests: ["bun test tests/unit/control-api-schema.test.ts"],
+      done: ["schema source defined"],
+      subtasks: ["wire generated schema into docs"],
+    }, artifact)).toEqual([]);
+  });
+});
