@@ -26,6 +26,20 @@ export interface RalphLoop {
   readonly lastOutput?: string;
   readonly worktreeMode?: string;
   readonly worktreeBranch?: string;
+  readonly statusSource?: {
+    readonly state: string;
+    readonly authority: string;
+    readonly freshness: string;
+    readonly label: string;
+    readonly stale: boolean;
+    readonly message?: string;
+  };
+  readonly statusSources?: ReadonlyArray<{
+    readonly source: string;
+    readonly freshness: string;
+    readonly label: string;
+    readonly message?: string;
+  }>;
 }
 
 interface RalphStatusResult {
@@ -80,14 +94,30 @@ export function initRalphDeps(d: RalphDeps) {
 // ── Status helpers ──
 
 export function getRalphStatus(loop: RalphLoop): RalphStatusResult {
+  const sourceState = loop.statusSource?.state;
   const hitLimit = !loop.active && !loop.completed && !!loop.finished;
+  const status = sourceState === "audit" || sourceState === "cleanup" || sourceState === "running" ||
+    sourceState === "done" || sourceState === "stopped" || sourceState === "idle" || sourceState === "unknown"
+    ? sourceState
+    : loop.audit ? "audit" : loop.cleanup ? "cleanup" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "stopped" : "idle";
   return {
     hitLimit,
-    status: loop.audit ? "audit" : loop.cleanup ? "cleanup" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "limit" : "idle",
-    statusLabel: loop.audit ? "AUDIT" : loop.cleanup ? "CLEANUP" : loop.active ? "RUNNING" : loop.completed ? "DONE" : hitLimit ? "STOPPED" : "IDLE",
+    status: status === "stopped" ? "limit" : status,
+    statusLabel: status === "audit" ? "AUDIT" : status === "cleanup" ? "CLEANUP" : status === "running" ? "RUNNING" : status === "done" ? "DONE" : status === "stopped" ? "STOPPED" : status === "unknown" ? "UNKNOWN" : "IDLE",
     dotClass: loop.active ? "purple" : "gray",
     dotTitle: loop.active ? "active" : "idle",
   };
+}
+
+function renderStatusSource(loop: RalphLoop): string {
+  const source = loop.statusSource;
+  if (!source) return '<span class="ralph-authority unknown">authority unknown</span>';
+  const cls = source.authority + (source.stale || source.freshness !== "fresh" ? " stale" : "");
+  const stale = source.stale || source.freshness !== "fresh" ? " · " + source.freshness : "";
+  const title = source.message ? ' title="' + escAttr(source.message) + '"' : '';
+  return '<span class="ralph-authority ' + escAttr(cls) + '"' + title + '>' +
+    esc(source.authority + ' · ' + source.label + stale) +
+  '</span>';
 }
 
 // ── Card rendering ──
@@ -98,6 +128,7 @@ export function renderRalphCardHtml(loop: RalphLoop, machineUrl: string): string
   const taskLabel = loop.tasksDone + '/' + loop.tasksTotal + ' tasks';
   const iterLabel = loop.totalIterations > 0 ? loop.iteration + '/' + loop.totalIterations + ' iter' : '';
   const lastOut = loop.lastOutput ? '<div class="ralph-last-output">' + esc(loop.lastOutput) + '</div>' : '';
+  const authority = renderStatusSource(loop);
   const mUrl = escAttr(machineUrl || '');
   return '<div class="ralph-card ' + status + '" onclick="openRalphDetail(\'' + escAttr(loop.project) + '\', \'' + mUrl + '\')">' +
     '<div class="ralph-card-header">' +
@@ -110,6 +141,7 @@ export function renderRalphCardHtml(loop: RalphLoop, machineUrl: string): string
       '<span class="ralph-iter">' + taskLabel + '</span>' +
     '</div>' +
     (iterLabel ? '<div class="ralph-iter ralph-iter-align">' + iterLabel + '</div>' : '') +
+    '<div class="ralph-authority-row">' + authority + '</div>' +
     lastOut +
   '</div>';
 }
@@ -121,6 +153,7 @@ export function sidebarRalphCardHtml(loop: RalphLoop, machineUrl: string): strin
     '<span class="dot ' + dotClass + '" title="' + dotTitle + '"></span>' +
     '<span class="sidebar-ralph-name">' + esc(loop.project) + '</span>' +
     '<span class="ralph-status ' + status + '">' + statusLabel + '</span>' +
+    renderStatusSource(loop) +
     '<button class="kill-btn" onclick="dismissRalph(\'' + escAttr(loop.project) + '\', event, \'' + mUrl + '\')">&times;</button>' +
   '</div>';
 }
@@ -165,6 +198,7 @@ export async function refreshRalphDetail() {
         '<div class="ralph-bar"><div class="ralph-bar-fill ' + status + '" style="width:' + taskPct + '%"></div></div>' +
       '</div>' +
       (loop.planFile ? '<div class="ralph-detail-meta">plan: ' + esc(loop.planFile) + '</div>' : '') +
+      '<div class="ralph-detail-meta">status: ' + renderStatusSource(loop) + '</div>' +
       '<div class="ralph-detail-meta">phases: audit+fix ' + (auditFixEnabled ? "on" : "off") + ', cleanup ' + (cleanupEnabled ? "on" : "off") + '</div>' +
       (loop.started ? '<div class="ralph-detail-meta">started: ' + esc(loop.started) + '</div>' : '') +
       (loop.finished ? '<div class="ralph-detail-meta">finished: ' + esc(loop.finished) + '</div>' : '');

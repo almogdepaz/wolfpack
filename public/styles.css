@@ -1045,6 +1045,7 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
 .ralph-card.done { border-left: 2px solid var(--accent); }
 .ralph-card.limit { border-left: 2px solid var(--warning-hot); }
 .ralph-card.idle { border-left: 2px solid var(--border-strong); }
+.ralph-card.unknown { border-left: 2px solid var(--text-faint); }
 .ralph-card:active {
   background: var(--bg-pressed);
   border-top-color: var(--ralph);
@@ -1089,6 +1090,7 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
 .ralph-bar-fill.done { background: var(--accent); }
 .ralph-bar-fill.limit { background: var(--warning-hot); }
 .ralph-bar-fill.idle { background: var(--text-faint); }
+.ralph-bar-fill.unknown { background: var(--text-faint); }
 .ralph-iter {
   font-size: 10px;
   color: var(--text-dim);
@@ -1108,7 +1110,31 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
 .ralph-status.done { color: var(--accent); background: var(--accent-ghost); }
 .ralph-status.idle { color: var(--text-dim); background: #55555515; }
 .ralph-status.limit { color: var(--warning-hot); background: #ff660015; }
+.ralph-status.unknown { color: var(--text-dim); background: #55555515; }
 .ralph-status.failed { color: var(--danger); }
+.ralph-authority-row {
+  margin-top: 4px;
+  min-height: 14px;
+}
+.ralph-authority {
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.ralph-authority.lifecycle,
+.ralph-authority.manifest {
+  color: var(--text-secondary);
+}
+.ralph-authority.fallback,
+.ralph-authority.identity,
+.ralph-authority.unknown,
+.ralph-authority.stale {
+  color: var(--text-faint);
+}
+.sidebar-ralph-card .ralph-authority {
+  display: none;
+}
 .dot.purple {
   background: var(--ralph);
   box-shadow: 0 0 6px #9b59b680, 0 0 14px #9b59b620;

@@ -57,7 +57,7 @@ const RALPH_LOG_MAX_LINES = 500;
 // ── Peer ralph-response validation ──
 
 /** Allowed keys on a ralph loop entry from a remote peer. */
-const RALPH_LOOP_SCHEMA: Record<string, "string" | "number" | "boolean"> = {
+const RALPH_LOOP_SCHEMA: Record<string, "string" | "number" | "boolean" | "object" | "array"> = {
   project: "string",
   active: "boolean",
   completed: "boolean",
@@ -78,6 +78,9 @@ const RALPH_LOOP_SCHEMA: Record<string, "string" | "number" | "boolean"> = {
   tasksTotal: "number",
   worktreeMode: "string",
   worktreeBranch: "string",
+  sandbox: "string",
+  statusSource: "object",
+  statusSources: "array",
 };
 
 /**
@@ -109,7 +112,11 @@ export function validatePeerLoops(peerName: string, data: unknown): Record<strin
     }
     const clean: Record<string, unknown> = {};
     for (const [key, expectedType] of Object.entries(RALPH_LOOP_SCHEMA)) {
-      if (key in obj && typeof obj[key] === expectedType) {
+      if (key in obj && (
+        (expectedType === "array" && Array.isArray(obj[key])) ||
+        (expectedType === "object" && typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) ||
+        (expectedType !== "array" && expectedType !== "object" && typeof obj[key] === expectedType)
+      )) {
         clean[key] = obj[key];
       }
     }

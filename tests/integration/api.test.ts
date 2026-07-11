@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeAll, afterAll, beforeEach } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
@@ -216,6 +216,70 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[1].triage).toBe("idle");
     expect(data.sessions[2].name).toBe("running-sess");
     expect(data.sessions[2].triage).toBe("running");
+  });
+});
+
+describe("GET /api/ralph status authority", () => {
+  test("returns source authority diagnostics for malformed manifest without blocking response", async () => {
+    const project = "status-authority-malformed";
+    const dir = join(TEST_DEV_DIR, project);
+    mkdirSync(join(dir, ".wolfpack"), { recursive: true });
+    createdDirs.push(dir);
+    writeFileSync(join(dir, "PLAN.md"), "- [ ] task\n");
+    writeFileSync(join(dir, ".wolfpack", "agent-status.json"), "{ nope");
+    writeFileSync(join(dir, ".ralph.log"), [
+      "🥋 ralph — 5 iterations",
+      "agent: codex",
+      "plan: PLAN.md",
+      "progress: progress.txt",
+      "pid: 999999",
+      "started: Sat Jul 11 2026 12:00:00",
+      "",
+    ].join("\n"));
+
+    const res = await get("/api/ralph");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const loop = data.loops.find((entry: any) => entry.project === project);
+    expect(loop).toBeTruthy();
+    expect(loop.statusSource).toMatchObject({
+      state: "idle",
+      authority: "fallback",
+      freshness: "fresh",
+    });
+    expect(loop.statusSources).toContainEqual(expect.objectContaining({
+      authority: "manifest",
+      freshness: "malformed",
+      source: "local-manifest",
+    }));
+  });
+
+  test("returns structured manifest status when fresh", async () => {
+    const project = "status-authority-manifest";
+    const dir = join(TEST_DEV_DIR, project);
+    mkdirSync(join(dir, ".wolfpack"), { recursive: true });
+    createdDirs.push(dir);
+    writeFileSync(join(dir, "PLAN.md"), "- [ ] task\n");
+    writeFileSync(join(dir, ".wolfpack", "agent-status.json"), JSON.stringify({ state: "running", observedAt: "2026-07-11T00:00:00Z" }));
+    writeFileSync(join(dir, ".ralph.log"), [
+      "🥋 ralph — 5 iterations",
+      "agent: codex",
+      "plan: PLAN.md",
+      "progress: progress.txt",
+      "pid: 999999",
+      "started: Sat Jul 11 2026 12:00:00",
+      "",
+    ].join("\n"));
+
+    const res = await get("/api/ralph");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const loop = data.loops.find((entry: any) => entry.project === project);
+    expect(loop.statusSource).toMatchObject({
+      state: "running",
+      authority: "manifest",
+      freshness: "fresh",
+    });
   });
 });
 
