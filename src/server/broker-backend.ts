@@ -212,6 +212,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       ["TERM", "xterm-256color"],
       ["LANG", "en_US.UTF-8"],
       ["WOLFPACK_PROJECT_DIR", cwd],
+      ["WOLFPACK_SESSION_NAME", name],
     ];
 
     let resp: ControlResponse;
