@@ -346,6 +346,78 @@ describe("POST /api/create", () => {
   });
 });
 
+describe("session control API", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
+    mockBackend.lastSendArgs = null;
+  });
+
+  test("reads current output from backend snapshot", async () => {
+    const res = await get("/api/session-control/read?session=wolf-1");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ session: "wolf-1", output: "captured output for wolf-1\n" });
+  });
+
+  test("send validates session then delegates to backend", async () => {
+    const res = await post("/api/session-control/send", {
+      session: "wolf-1",
+      text: "echo hi",
+      noEnter: true,
+    });
+    expect(res.status).toBe(200);
+    expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: true });
+  });
+
+  test("send returns 404 for unknown session", async () => {
+    const res = await post("/api/session-control/send", {
+      session: "ghost",
+      text: "echo hi",
+    });
+    expect(res.status).toBe(404);
+    expect(mockBackend.lastSendArgs).toBeNull();
+  });
+
+  test("wait succeeds from existing snapshot without subscribing", async () => {
+    const res = await post("/api/session-control/wait", {
+      session: "wolf-1",
+      text: "output for wolf-1",
+      timeoutMs: 50,
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+  });
+
+  test("wait succeeds from later broker output", async () => {
+    mockBackend.setCapturePane(async () => "booting\n");
+    const wait = post("/api/session-control/wait", {
+      session: "wolf-1",
+      text: "ready",
+      timeoutMs: 500,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    mockBackend.emitSessionData("wolf-1", "system ready\n");
+    const res = await wait;
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+  });
+
+  test("wait returns 408 on timeout", async () => {
+    mockBackend.setCapturePane(async () => "booting\n");
+    const res = await post("/api/session-control/wait", {
+      session: "wolf-1",
+      text: "never appears",
+      timeoutMs: 10,
+    });
+    expect(res.status).toBe(408);
+    const data = await res.json();
+    expect(data.matched).toBe(false);
+  });
+});
+
 describe("GET /api/next-session-name", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);

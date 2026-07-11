@@ -25,6 +25,7 @@ import {
 import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
+import { runSessionCommand } from "./session-control.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
@@ -171,6 +172,8 @@ async function main() {
     process.exit(await doctor());
   } else if (cmd === "ls" || cmd === "list") {
     process.exit(await lsSessions());
+  } else if (cmd === "session") {
+    process.exit(await runSessionCommand(process.argv.slice(3)));
   } else if (cmd === "kill") {
     process.exit(await killSession(subcmd));
   } else if (cmd === "uninstall") {

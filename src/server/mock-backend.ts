@@ -29,6 +29,9 @@ export class MockBackend implements SessionBackend {
   lastCreateArgs: { name: string; cwd: string; cmd: string | undefined } | null = null;
   /** Last arguments passed to resize (name, cols, rows). */
   lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
+  /** Last arguments passed to send (name, text, noEnter). */
+  lastSendArgs: { name: string; text: string; noEnter: boolean | undefined } | null = null;
+  private readonly _outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
 
   constructor(opts: MockBackendOptions = {}) {
     this._sessions = new Set(opts.sessions ?? []);
@@ -90,8 +93,8 @@ export class MockBackend implements SessionBackend {
     this.lastResizeArgs = { name, cols, rows };
   }
 
-  async send(): Promise<void> {
-    // no-op in mock
+  async send(name: string, text: string, noEnter?: boolean): Promise<void> {
+    this.lastSendArgs = { name, text, noEnter };
   }
 
   async sendKey(): Promise<void> {
@@ -123,12 +126,28 @@ export class MockBackend implements SessionBackend {
   }
 
   onSessionData(
-    _name: string,
-    _cb: (data: Uint8Array) => void,
+    name: string,
+    cb: (data: Uint8Array) => void,
     _opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void },
   ): (() => void) | null {
-    // No real data stream — return a no-op unsubscribe
-    return () => {};
+    if (!this._sessions.has(name)) return null;
+    let subscribers = this._outputSubscribers.get(name);
+    if (!subscribers) {
+      subscribers = new Set();
+      this._outputSubscribers.set(name, subscribers);
+    }
+    subscribers.add(cb);
+    return () => {
+      const current = this._outputSubscribers.get(name);
+      if (!current) return;
+      current.delete(cb);
+      if (current.size === 0) this._outputSubscribers.delete(name);
+    };
+  }
+
+  emitSessionData(name: string, text: string): void {
+    const data = new TextEncoder().encode(text);
+    for (const cb of this._outputSubscribers.get(name) ?? []) cb(data);
   }
 
   writeToTerminal(_name: string, _data: Buffer | string): void {
