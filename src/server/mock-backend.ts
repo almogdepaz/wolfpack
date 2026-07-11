@@ -33,6 +33,12 @@ export class MockBackend implements SessionBackend {
   lastCreateArgs: { name: string; cwd: string; cmd: string | undefined; agentKind?: string } | null = null;
   /** Last arguments passed to resize (name, cols, rows). */
   lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
+  /** Last arguments passed to send (name, text, noEnter). */
+  lastSendArgs: { name: string; text: string; noEnter: boolean | undefined } | null = null;
+  private readonly _outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
+  private readonly _outputHistory = new Map<string, Array<{ seq: bigint; data: Uint8Array }>>();
+  private _nextOutputSeq = 1n;
+  private _onAfterPrefill: ((name: string, seq: bigint) => void) | null = null;
 
   constructor(opts: MockBackendOptions = {}) {
     this._sessions = new Set(opts.sessions ?? []);
@@ -48,6 +54,10 @@ export class MockBackend implements SessionBackend {
   /** Override capturePane at runtime. */
   setCapturePane(fn: (session: string) => Promise<string>): void {
     this._capturePane = fn;
+  }
+
+  setOnAfterPrefill(fn: ((name: string, seq: bigint) => void) | null): void {
+    this._onAfterPrefill = fn;
   }
 
   async list(): Promise<string[]> {
@@ -111,8 +121,8 @@ export class MockBackend implements SessionBackend {
     this.lastResizeArgs = { name, cols, rows };
   }
 
-  async send(): Promise<void> {
-    // no-op in mock
+  async send(name: string, text: string, noEnter?: boolean): Promise<void> {
+    this.lastSendArgs = { name, text, noEnter };
   }
 
   async sendKey(): Promise<void> {
@@ -144,20 +154,48 @@ export class MockBackend implements SessionBackend {
   }
 
   onSessionData(
-    _name: string,
-    _cb: (data: Uint8Array) => void,
-    _opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void },
+    name: string,
+    cb: (data: Uint8Array) => void,
+    opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void },
   ): (() => void) | null {
-    // No real data stream — return a no-op unsubscribe
-    return () => {};
+    if (!this._sessions.has(name)) return null;
+    if (opts.sinceSeq !== undefined) {
+      for (const event of this._outputHistory.get(name) ?? []) {
+        if (event.seq > opts.sinceSeq) queueMicrotask(() => cb(event.data));
+      }
+    }
+    let subscribers = this._outputSubscribers.get(name);
+    if (!subscribers) {
+      subscribers = new Set();
+      this._outputSubscribers.set(name, subscribers);
+    }
+    subscribers.add(cb);
+    return () => {
+      const current = this._outputSubscribers.get(name);
+      if (!current) return;
+      current.delete(cb);
+      if (current.size === 0) this._outputSubscribers.delete(name);
+    };
+  }
+
+  emitSessionData(name: string, text: string): void {
+    const data = new TextEncoder().encode(text);
+    const seq = this._nextOutputSeq++;
+    const history = this._outputHistory.get(name) ?? [];
+    history.push({ seq, data });
+    this._outputHistory.set(name, history);
+    for (const cb of this._outputSubscribers.get(name) ?? []) cb(data);
   }
 
   writeToTerminal(_name: string, _data: Buffer | string): void {
     // no-op in mock
   }
 
-  getSessionPrefill(_name: string, _cols?: number, _options?: { scrollbackLines?: number }): { data: Buffer; seq?: bigint } {
-    return { data: Buffer.alloc(0) };
+  async getSessionPrefill(name: string, _cols?: number, _options?: { scrollbackLines?: number }): Promise<{ data: Buffer; seq?: bigint }> {
+    const seq = this._nextOutputSeq - 1n;
+    const data = Buffer.from(this._sessions.has(name) ? stripAnsi(await this._capturePane(name)) : "");
+    this._onAfterPrefill?.(name, seq);
+    return { data, seq };
   }
 
   onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {

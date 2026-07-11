@@ -19,6 +19,7 @@ const MIME_MAP: Record<string, string> = {
   ".json": "application/json",
   ".js": "application/javascript",
   ".css": "text/css",
+  ".txt": "text/plain; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -30,7 +31,7 @@ const MIME_MAP: Record<string, string> = {
   ".ttf": "font/ttf",
 };
 
-const TEXT_EXTS = new Set([".html", ".json", ".js", ".css", ".svg", ".xml"]);
+const TEXT_EXTS = new Set([".html", ".json", ".js", ".css", ".svg", ".txt", ".xml"]);
 
 function isText(ext: string): boolean {
   return TEXT_EXTS.has(ext);
