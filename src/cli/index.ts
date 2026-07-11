@@ -25,6 +25,7 @@ import {
 import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
+import { attachCommand } from "./attach.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
@@ -173,6 +174,8 @@ async function main() {
     process.exit(await lsSessions());
   } else if (cmd === "kill") {
     process.exit(await killSession(subcmd));
+  } else if (cmd === "attach") {
+    process.exit(await attachCommand(process.argv.slice(3)));
   } else if (cmd === "uninstall") {
     if (!hasUninstallConfirmationFlag(process.argv.slice(3))) {
       print(red("  Refusing to uninstall without confirmation."));
