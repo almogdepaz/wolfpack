@@ -1425,6 +1425,69 @@
         "idle"
       ]
     },
+    "PublicSessionIdentity": {
+      "type": "object",
+      "properties": {
+        "wolfpackSessionId": {
+          "type": "string"
+        },
+        "wolfpackSessionName": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "projectPath": {
+          "type": "string"
+        },
+        "agentKind": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "restoredAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "externalAgent": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string"
+            },
+            "redactedId": {
+              "type": "string"
+            },
+            "capturedAt": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "env",
+                "broker_env",
+                "ralph_launch"
+              ]
+            }
+          },
+          "required": [
+            "provider",
+            "redactedId",
+            "capturedAt",
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "wolfpackSessionId",
+        "wolfpackSessionName",
+        "projectPath",
+        "agentKind",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
     "PrefillMode": {
       "enum": [
         "full",
@@ -1505,6 +1568,9 @@
         },
         "triage": {
           "$ref": "#/$defs/TriageStatus"
+        },
+        "identity": {
+          "$ref": "#/$defs/PublicSessionIdentity"
         }
       },
       "required": [

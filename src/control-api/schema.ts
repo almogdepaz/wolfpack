@@ -121,6 +121,21 @@ export const controlApiSource: ControlApiSource = {
     BranchName: { type: "string", pattern: "^[A-Za-z0-9._/-]+$" },
     Command: { type: "string", minLength: 1 },
     TriageStatus: { enum: ["running", "idle"] },
+    PublicSessionIdentity: object({
+      wolfpackSessionId: string(),
+      wolfpackSessionName: ref("SessionName"),
+      projectPath: string(),
+      agentKind: string(),
+      createdAt: string(),
+      restoredAt: string(),
+      updatedAt: string(),
+      externalAgent: object({
+        provider: string(),
+        redactedId: string(),
+        capturedAt: string(),
+        source: { enum: ["env", "broker_env", "ralph_launch"] },
+      }, ["provider", "redactedId", "capturedAt", "source"]),
+    }, ["wolfpackSessionId", "wolfpackSessionName", "projectPath", "agentKind", "createdAt", "updatedAt"]),
     PrefillMode: { enum: ["full", "viewport", "none"] },
     WorktreeMode: { enum: [false, "false", "plan", "task"] },
     CmdEntry: object({
@@ -139,6 +154,7 @@ export const controlApiSource: ControlApiSource = {
       name: ref("SessionName"),
       lastLine: string(),
       triage: ref("TriageStatus"),
+      identity: ref("PublicSessionIdentity"),
     }, ["name", "lastLine", "triage"]),
     Peer: object({
       name: string(),
