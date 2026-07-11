@@ -94,11 +94,15 @@ Configure commands in **Settings → Agents**.
 wolfpack                 Start the server (runs setup on first launch)
 wolfpack setup           Re-run the setup wizard
 wolfpack ls              List active broker sessions
+wolfpack attach [name]   Attach the local terminal to an existing session
 wolfpack kill <name>     Kill a session
+wolfpack session ...     Scriptable read/send/wait helpers for automation
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
 wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
 wolfpack uninstall --yes Remove everything
 ```
+
+Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 
 Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md).
 
