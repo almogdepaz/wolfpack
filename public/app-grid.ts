@@ -500,7 +500,16 @@ export function backFromRalph() {
     returnToTerminalView();
     return;
   }
-  deps.backToSessions();
+  if (state.viewBeforeRalph === "terminal") {
+    if (returnToTerminalView()) return;
+    deps.backToSessions();
+    return;
+  }
+  if (state.viewBeforeRalph === "sessions") {
+    deps.backToSessions();
+    return;
+  }
+  deps.showView(state.viewBeforeRalph || "sessions");
 }
 
 export function backFromSettings() {

@@ -215,6 +215,7 @@ describe("BrokerBackend.createSession", () => {
     const envKeys = params.env.map(([k]) => k);
     expect(envKeys).toContain("TERM");
     expect(envKeys).toContain("WOLFPACK_PROJECT_DIR");
+    expect(params.env).toContainEqual(["WOLFPACK_SESSION_NAME", "newone"]);
     // sessionDir is now resolvable without another list call
     expect(backend.sessionDir("newone")).toBe("/tmp/work");
   });

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { remoteUrl, type Config } from "../../src/cli/config.ts";
-import { planServiceEnsureAction, hasUninstallConfirmationFlag, parseServiceCommand } from "../../src/cli/index.ts";
+import {
+  planBinaryUpdateAction,
+  planServiceEnsureAction,
+  hasUninstallConfirmationFlag,
+  parseServiceCommand,
+} from "../../src/cli/index.ts";
 
 describe("remoteUrl", () => {
   const base: Config = { devDir: "/home/dev", port: 18790 };
@@ -36,6 +41,22 @@ describe("planServiceEnsureAction", () => {
 
   test("installs the service when it is not yet installed", () => {
     expect(planServiceEnsureAction(false, false)).toBe("install");
+  });
+});
+
+describe("planBinaryUpdateAction", () => {
+  test("restarts only the running server after a binary update", () => {
+    expect(planBinaryUpdateAction(true, true, true)).toBe("server-restart");
+  });
+
+  test("falls back to normal service planning when no running binary was replaced", () => {
+    expect(planBinaryUpdateAction(false, true, true)).toBe("noop");
+    expect(planBinaryUpdateAction(false, false, true)).toBe("start");
+    expect(planBinaryUpdateAction(false, false, false)).toBe("install");
+  });
+
+  test("installs when an updated binary has no running service to restart", () => {
+    expect(planBinaryUpdateAction(true, false, false)).toBe("install");
   });
 });
 
