@@ -33,6 +33,16 @@ import {
   renderSnapshotToAnsi,
   type SnapshotForRender,
 } from "../broker/snapshot-render.js";
+import {
+  extractExternalAgentFromEnv,
+  getSessionIdentityStore,
+  identityEnvVars,
+  inferAgentKind,
+  toPublicSessionIdentity,
+  type AgentKind,
+  type CaptureSessionIdentityInput,
+  type PublicSessionIdentity,
+} from "./session-identity.js";
 
 const log = createLogger("broker-backend");
 
@@ -96,6 +106,8 @@ interface BrokerSessionInfo {
   name: string;
   cwd: string;
   alive: boolean;
+  command?: string[];
+  env?: Array<[string, string]>;
 }
 
 interface StyledCell {
@@ -151,6 +163,21 @@ function toBytes(data: Buffer | string): Uint8Array {
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
 
+function envValue(env: Array<[string, string]> | undefined, key: string): string | undefined {
+  return env?.find(([k]) => k === key)?.[1];
+}
+
+function commandAgent(command: string[] | undefined): string | undefined {
+  if (!command) return undefined;
+  const joined = command.join(" ");
+  if (joined.includes("claude")) return "claude";
+  if (joined.includes("codex")) return "codex";
+  if (joined.includes("gemini")) return "gemini";
+  if (joined.includes("cursor")) return "cursor";
+  if (joined.includes(" pi")) return "pi";
+  return undefined;
+}
+
 export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   private readonly client: BrokerClientApi;
   private readonly nameToId = new Map<string, string>();
@@ -170,6 +197,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   async list(): Promise<string[]> {
     const payload = unwrap(await this.client.request("list_sessions", {}));
     const sessions = (payload.sessions as BrokerSessionInfo[] | undefined) ?? [];
+    const identitySessions: Array<{
+      wolfpackSessionId: string;
+      wolfpackSessionName: string;
+      projectPath: string;
+      agentKind?: AgentKind | string;
+      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+    }> = [];
     const liveIds = new Set<string>();
     const liveNames = new Set<string>();
     for (const s of sessions) {
@@ -178,6 +212,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       this.idToInfo.set(s.id, { id: s.id, name: s.name, cwd: s.cwd, alive: s.alive });
       liveIds.add(s.id);
       liveNames.add(s.name);
+      identitySessions.push({
+        wolfpackSessionId: s.id,
+        wolfpackSessionName: s.name,
+        projectPath: s.cwd,
+        agentKind: inferAgentKind(envValue(s.env, "WOLFPACK_AGENT_KIND") || commandAgent(s.command)),
+        externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
+      });
     }
     for (const [name, id] of this.nameToId) {
       if (!liveIds.has(id) || !liveNames.has(name)) this.nameToId.delete(name);
@@ -188,7 +229,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     for (const name of this.triageCache.keys()) {
       if (!liveNames.has(name)) this.triageCache.delete(name);
     }
+    getSessionIdentityStore().restore(identitySessions);
     return sessions.filter((s) => s.alive).map((s) => s.name);
+  }
+
+  async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
+    const byName: Record<string, PublicSessionIdentity> = {};
+    for (const identity of getSessionIdentityStore().list()) {
+      byName[identity.wolfpackSessionName] = toPublicSessionIdentity(identity);
+    }
+    return byName;
   }
 
   async createSession(
@@ -196,6 +246,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     cwd: string,
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
+    identity?: {
+      agentKind?: AgentKind | string;
+      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+    },
   ): Promise<void> {
     const agentCmd = cmd || loadSettings().agentCmd || "claude";
     if (agentCmd !== "shell" && !CMD_REGEX.test(agentCmd)) {
@@ -208,11 +262,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}; exec ${SHELL}`;
     }
 
+    const agentKind = identity?.agentKind ?? inferAgentKind(agentCmd);
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],
       ["LANG", "en_US.UTF-8"],
-      ["WOLFPACK_PROJECT_DIR", cwd],
-      ["WOLFPACK_SESSION_NAME", name],
+      ...identityEnvVars({
+        wolfpackSessionName: name,
+        projectPath: cwd,
+        agentKind,
+      }),
     ];
 
     let resp: ControlResponse;
@@ -244,6 +302,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       cwd: session.cwd,
       alive: session.alive,
     });
+    getSessionIdentityStore().capture({
+      wolfpackSessionId: session.id,
+      wolfpackSessionName: session.name,
+      projectPath: cwd,
+      agentKind,
+      externalAgent: identity?.externalAgent,
+    });
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
   }
 
@@ -267,6 +332,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     this.nameToId.delete(name);
     this.idToInfo.delete(id);
     this.triageCache.delete(name);
+    getSessionIdentityStore().deleteByName(name);
   }
 
   async hasSession(name: string): Promise<boolean> {

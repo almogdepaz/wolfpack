@@ -10,6 +10,7 @@ import { createLogger, errMsg } from "../log.js";
 import { defaultBrokerSocketPath } from "../broker/client.js";
 import type { BrokerBackend } from "./broker-backend.js";
 import type { EventBody } from "../broker/codec.js";
+import type { AgentKind, CaptureSessionIdentityInput, PublicSessionIdentity } from "./session-identity.js";
 
 const log = createLogger("backend");
 
@@ -30,11 +31,16 @@ const BROKER_WATCHDOG_INTERVAL_MS = 5000;
 
 export interface SessionBackend {
   list(): Promise<string[]>;
+  listIdentities?(): Promise<Record<string, PublicSessionIdentity>>;
   createSession(
     name: string,
     cwd: string,
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
+    identity?: {
+      agentKind?: AgentKind | string;
+      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+    },
   ): Promise<void>;
   killSession(name: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
@@ -360,18 +366,27 @@ export class BackendRouter implements SessionBackend {
     return [...sessions].sort();
   }
 
+  async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
+    if (!this.broker) return {};
+    return this.broker.listIdentities();
+  }
+
   async createSession(
     name: string,
     cwd: string,
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
+    identity?: {
+      agentKind?: AgentKind | string;
+      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+    },
   ): Promise<void> {
     const broker = this.requireBroker();
     const existing = await broker.list();
     if (existing.includes(name)) {
       throw new DuplicateSessionError(name);
     }
-    await broker.createSession(name, cwd, cmd, loadSettings);
+    await broker.createSession(name, cwd, cmd, loadSettings, identity);
     log.info("session created via router", { name, backend: "broker" });
   }
 

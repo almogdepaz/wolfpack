@@ -157,6 +157,7 @@ import {
   discoverPeers,
 } from "./http.js";
 import { activePtySessions, teardownPty } from "./websocket.js";
+import { inferAgentKind } from "./session-identity.js";
 
 /** Validate project name + directory in one call. Returns resolved path or sends error and returns null. */
 function resolveProjectDir(res: ServerResponse, project: string | null | undefined): string | null {
@@ -361,6 +362,7 @@ export const routes: Record<
 
   "GET /api/sessions": async (_req, res) => {
     const sessions = await getBackend().list();
+    const identities = await getBackend().listIdentities?.() ?? {};
     const activeNames = new Set<string>();
     const results = await Promise.all(
       sessions.map(async (name) => {
@@ -388,7 +390,7 @@ export const routes: Record<
           triage = "idle";
         }
 
-        return { name, lastLine, triage };
+        return { name, lastLine, triage, ...(identities[name] && { identity: identities[name] }) };
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
@@ -452,7 +454,8 @@ export const routes: Record<
       // Resolve the effective agent (respecting enabled-state + fallbacks) here
       // so the backend never sees a disabled or missing agentCmd.
       const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
-      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver);
+      const agentKind = inferAgentKind(cmd || settingsResolver().agentCmd);
+      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, { agentKind });
     } catch (e: unknown) {
       if (e instanceof DuplicateSessionError) {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
@@ -994,6 +997,12 @@ export const routes: Record<
       cwd: projectDir,
       detached: true,
       stdio: "ignore",
+      env: {
+        ...process.env,
+        WOLFPACK_PROJECT_DIR: projectDir,
+        WOLFPACK_AGENT_KIND: selectedAgent,
+        WOLFPACK_RALPH_AGENT_KIND: selectedAgent,
+      },
     });
     child.unref();
     spawned = true;
