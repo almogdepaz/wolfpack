@@ -8,7 +8,9 @@
   },
   "files": [
     "bin/run.cjs",
-    "bin/install.cjs"
+    "bin/install.cjs",
+    "docs/agent-skills.md",
+    "skills"
   ],
   "scripts": {
     "test": "bun test",

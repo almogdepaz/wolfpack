@@ -1,120 +1,172 @@
 ---
 name: wolfpack-tailnet-control
-description: Use when an agent needs to find, inspect, or take control of Wolfpack terminal sessions on machines reachable through the same Tailscale tailnet.
+description: Use when an agent needs safe, user-authorized inspection or control of Wolfpack terminal sessions on local or Tailscale-reachable hosts.
 ---
 
 # Wolfpack Tailnet Session Control
 
-Use this when you need to look up or control Wolfpack sessions on this machine or another machine in the same tailnet.
+Use this skill for safe Wolfpack session inspection and control. Wolfpack access
+is shell access to the target machine; prefer read-only inspection until the
+user explicitly asks for input/control.
 
-## Trust and safety
+## Existing References
 
-- Treat every Wolfpack session as a live user terminal. Read before writing.
-- Prefer the Wolfpack web UI for interactive control. Only use the low-level WebSocket protocol when automation is explicitly needed.
-- Do not kill, take over, or send input to a session unless the user asked for that exact action.
-- Tailscale is the primary network boundary. If the server has JWT auth enabled, include `Authorization: Bearer <token>` on HTTP requests. For browser-style WebSocket clients that cannot set headers, append `?token=<jwt>` alongside `session`.
+- User setup, Tailscale, and JWT auth model: `README.md`
+- Broker/session authority and low-level wire protocol: `docs/broker-protocol.md`
+- Ralph runner response and sandbox caveats: `skills/wolfpack-ralph/SKILL.md`
+- Troubleshooting local service/config failures: `docs/troubleshooting.md`
 
-## Find Wolfpack hosts
+Do not copy protocol details from those docs into task output. Link or cite the
+doc and use the structured CLI/API commands below.
 
-Local config usually tells you the current host and port:
+## Current Context
+
+Prefer explicit context from the user, runner, or environment over discovery.
+Treat session selectors as opaque handles; do not parse human-readable terminal
+text, card labels, previews, or UI prose to infer protocol state.
+
+Supported current-context variables:
 
 ```bash
-jq -r '.tailscaleHostname // empty, .port // 18790' ~/.wolfpack/config.json
+WOLFPACK_BASE_URL="http://127.0.0.1:18790"
+WOLFPACK_CURRENT_MACHINE_URL="https://machine.tailnet.ts.net"
+WOLFPACK_CURRENT_SESSION_ID="session-handle"
+WOLFPACK_AUTH_TOKEN="optional-jwt"
 ```
 
-Discover other Wolfpack servers from any running Wolfpack host:
+Use `WOLFPACK_CURRENT_MACHINE_URL` when the task is explicitly about a remote
+machine; otherwise use `WOLFPACK_BASE_URL`. If neither is present, inspect local
+config only enough to build a base URL.
+
+## Allowed Workflows
+
+Allowed without additional confirmation when the user asks you to inspect:
+
+- Inspect current context: identify base URL, auth token presence, and current
+  session handle.
+- Discover/list sessions with the HTTP API or `wolfpack ls`.
+- Read a session pane or copy-text output.
+- Check session git status.
+- Wait/poll for state changes by repeating read-only API calls.
+- Ask for attach/control guidance when the task requires live interaction.
+
+Requires explicit user intent for the exact target/session/action:
+
+- Send input to a session.
+- Take control from another viewer.
+- Create, kill, resize, or otherwise change sessions.
+- Open remote hosts or expose service/network configuration.
+- Trigger user-visible notifications.
+
+Forbidden:
+
+- Scraping browser UI prose, terminal prompts, logs, or error text as a
+  protocol when structured CLI/API data exists.
+- Guessing auth tokens, reading unrelated secret files, or bypassing JWT auth.
+- Treating a display name as stable identity if an opaque current-context
+  handle is available.
+- Killing or taking over sessions as cleanup unless the user asked.
+
+## Auth and Base URL
+
+Build helpers in shell examples:
 
 ```bash
-BASE="https://$(jq -r '.tailscaleHostname' ~/.wolfpack/config.json)"
-curl -fsS "$BASE/api/discover" | jq .
+BASE="${WOLFPACK_CURRENT_MACHINE_URL:-${WOLFPACK_BASE_URL:-http://127.0.0.1:18790}}"
+SESSION="${WOLFPACK_CURRENT_SESSION_ID:-}"
+AUTH_ARGS=()
+if [ -n "${WOLFPACK_AUTH_TOKEN:-}" ]; then
+  AUTH_ARGS=(-H "Authorization: Bearer ${WOLFPACK_AUTH_TOKEN}")
+fi
 ```
 
-Each peer has a `url` like `https://machine.tailnet.ts.net`. Use that URL as `BASE` for the commands below.
+Missing context handling:
 
-## List and inspect sessions
+- Missing `BASE`: read `~/.wolfpack/config.json` for `port` and
+  `tailscaleHostname`; if the file is absent, ask the user which host to use.
+- Missing `SESSION`: list sessions and ask the user which one to target unless
+  the task already names one.
+- HTTP 401/403: stop and ask for `WOLFPACK_AUTH_TOKEN` or user-side auth setup.
+- Tailscale/DNS failure: ask the user to verify Tailscale and `tailscale serve`;
+  do not fall back to public-network exposure.
+
+## Read-Only Examples
 
 List sessions:
 
 ```bash
-curl -fsS "$BASE/api/sessions" | jq .
+curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/sessions" | jq .
 ```
 
-Read the terminal pane for one session:
+Read the current session pane:
 
 ```bash
-SESSION="my-session"
-curl -fsS "$BASE/api/poll?session=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SESSION")" | jq -r .pane
+test -n "$SESSION" || { echo "missing WOLFPACK_CURRENT_SESSION_ID" >&2; exit 2; }
+curl -fsS "${AUTH_ARGS[@]}" \
+  "$BASE/api/poll?session=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SESSION")" \
+  | jq -r .pane
 ```
 
 Fetch plain text for copy/debugging:
 
 ```bash
-curl -fsS "$BASE/api/copy-text?session=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SESSION")"
+test -n "$SESSION" || { echo "missing WOLFPACK_CURRENT_SESSION_ID" >&2; exit 2; }
+curl -fsS "${AUTH_ARGS[@]}" \
+  "$BASE/api/copy-text?session=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SESSION")"
 ```
 
-Check a session repo's git status:
+Check git status for the session project:
 
 ```bash
-curl -fsS "$BASE/api/git-status?session=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SESSION")" | jq -r .status
+test -n "$SESSION" || { echo "missing WOLFPACK_CURRENT_SESSION_ID" >&2; exit 2; }
+curl -fsS "${AUTH_ARGS[@]}" \
+  "$BASE/api/git-status?session=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$SESSION")" \
+  | jq -r .status
 ```
 
-## Create or kill sessions
-
-Create a session in an existing project under the host's configured `devDir`:
+Wait for idle-ish stability with structured polling:
 
 ```bash
-curl -fsS "$BASE/api/create" \
+for _ in 1 2 3 4 5; do
+  curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/sessions" | jq .
+  sleep 2
+done
+```
+
+## User-Visible Control Examples
+
+Only run these after the user asked for the exact action.
+
+Create a session in an existing project under the host's configured dev dir:
+
+```bash
+curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/create" \
   -H 'Content-Type: application/json' \
-  -d '{"project":"repo-name","cmd":"claude","sessionName":"repo-name-claude"}' | jq .
+  -d '{"project":"repo-name","cmd":"codex","sessionName":"repo-name-codex"}' | jq .
 ```
 
-Kill only when explicitly requested:
+Kill a session:
 
 ```bash
-curl -fsS "$BASE/api/kill" \
+test -n "$SESSION" || { echo "missing WOLFPACK_CURRENT_SESSION_ID" >&2; exit 2; }
+curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/kill" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg session "$SESSION" '{session:$session}')" | jq .
 ```
 
-## Interactive control
+For interactive attach/take-control automation, prefer the Wolfpack UI first.
+If low-level automation is explicitly required, follow the WebSocket behavior
+already documented and tested in `docs/broker-protocol.md` and the server/e2e
+attach tests. Browser-style WebSocket clients that cannot set headers may pass
+`token=<jwt>` in the query string; keep tokens out of logs.
 
-Recommended path: open the Wolfpack UI at `$BASE`, choose the machine/session, then use the terminal. If another viewer owns the PTY, Wolfpack shows a take-control flow; confirm only if the user asked you to take over.
+## Notify the User
 
-Low-level protocol for automation:
-
-1. Connect to `wss://host/ws/pty?session=<name>`; if JWT auth is enabled and you cannot set headers, use `wss://host/ws/pty?session=<name>&token=<jwt>`.
-2. Send JSON attach first: `{"type":"attach","cols":120,"rows":40,"prefillMode":"full"}`.
-3. If the server replies `viewer_conflict`, do not take over unless requested. To take over, either send `{"type":"take_control"}` after attach, or reconnect and include `"takeControl":true` in the attach message.
-4. Terminal output arrives as binary frames. Terminal input must be sent as binary UTF-8 bytes.
-5. Resize with `{"type":"resize","cols":120,"rows":40}`.
-
-Minimal Bun example:
-
-```ts
-const base = process.env.BASE!; // e.g. https://machine.tailnet.ts.net
-const session = process.env.SESSION!;
-const wsUrl = base.replace(/^http/, "ws") + "/ws/pty?session=" + encodeURIComponent(session);
-const ws = new WebSocket(wsUrl);
-
-ws.binaryType = "arraybuffer";
-ws.addEventListener("open", () => {
-  ws.send(JSON.stringify({ type: "attach", cols: 120, rows: 40, prefillMode: "full" }));
-});
-ws.addEventListener("message", (event) => {
-  if (typeof event.data === "string") console.error("control", event.data);
-  else process.stdout.write(Buffer.from(event.data));
-});
-
-// after attach, send one command and enter:
-setTimeout(() => ws.send(Buffer.from("git status\r", "utf8")), 1000);
-```
-
-## Notify the user
-
-A session can send a Wolfpack push notification through the local host:
+Only notify when the user asked or when the active task cannot proceed without
+human input:
 
 ```bash
-curl -fsS http://localhost:18790/api/notify \
+curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/notify" \
   -H 'Content-Type: application/json' \
   -d '{"message":"agent needs input"}'
 ```
