@@ -14,13 +14,16 @@
     "bin/run.cjs",
     "bin/install.cjs",
     "llms.txt",
+    "docs/agent-skills.md",
     "docs/cli-attach.md",
-    "docs/session-control.md"
+    "docs/session-control.md",
+    "skills"
   ],
   "scripts": {
     "test": "bun test",
     "test:e2e": "bunx playwright test",
     "test:e2e:headed": "bunx playwright test --headed",
+    "gen:schema": "bun run scripts/gen-control-api-schema.ts",
     "perf:terminal-load": "bun scripts/terminal-load-perf.ts",
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/",
     "postinstall": "node bin/install.cjs"

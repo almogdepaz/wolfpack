@@ -14,6 +14,12 @@ import { join, normalize, isAbsolute } from "node:path";
 import { countTasksInContent, validatePlanFormat } from "../wolfpack-context.js";
 import { DEV_DIR } from "./dev-dir.js";
 import {
+  collectAgentStatus,
+  collectAgentStatusSources,
+  statusStateFromRalphFlags,
+  type AgentStatusSource,
+} from "./agent-status.js";
+import {
   detectAgentUiStatusFromManifests,
   loadAgentUiDetectionManifests,
   type LoadAgentUiDetectionManifestsOptions,
@@ -63,6 +69,8 @@ export interface RalphStatus {
   worktreeMode: string;
   worktreeBranch: string;
   sandbox: string;
+  statusSource: AgentStatusSource;
+  statusSources: AgentStatusSource[];
   detectionManifest?: AgentUiDetectionDiagnostics;
 }
 
@@ -134,6 +142,17 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
     worktreeMode: "false",
     worktreeBranch: "",
     sandbox: "",
+    statusSource: {
+      state: "unknown",
+      authority: "identity",
+      freshness: "unknown",
+      source: "session-identity",
+      label: "identity only",
+      stale: false,
+      observedAt: new Date().toISOString(),
+      message: "status not collected yet",
+    },
+    statusSources: [],
   };
 
   try {
@@ -251,6 +270,13 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
         : projectDir;
       status.tasksDone = countProgressDone(join(progressBase, status.progressFile));
     }
+
+    const fallbackStatus = {
+      state: statusStateFromRalphFlags(status),
+      stale: false,
+    };
+    status.statusSource = collectAgentStatus(projectDir, fallbackStatus);
+    status.statusSources = collectAgentStatusSources(projectDir, fallbackStatus);
 
     return status;
   } catch (e: unknown) {

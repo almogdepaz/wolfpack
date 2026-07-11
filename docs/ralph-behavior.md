@@ -199,9 +199,24 @@ Main worktree + per-section sub-worktrees:
 
 ---
 
-## Status Detection
+## Status Authority
 
-`parseRalphLog()` reads .ralph.log to determine state:
+Ralph loop responses include `statusSource` (the selected source) and `statusSources` (diagnostics for every checked source). Terminal text is never canonical status truth; log-derived state is explicitly labeled `fallback`.
+
+States: `running`, `audit`, `cleanup`, `done`, `stopped`, `idle`, `unknown`.
+
+Authority precedence:
+
+| Authority | Source | Notes |
+|-----------|--------|-------|
+| `lifecycle` | `.ralph/status.json` | highest authority; structured hook written by Ralph lifecycle code; stale after 60s; must not imply broker PTY liveness |
+| `manifest` | `.wolfpack/agent-status.json` | structured project-local JSON `{ "state": "...", "observedAt": "...", "message": "..." }`; stale after 60s |
+| `fallback` | `.ralph.log` markers | labeled fallback because it is derived from worker log markers |
+| `identity` | session/project identity only | `unknown` when no status source is usable |
+
+Freshness values are `fresh`, `stale`, `missing`, `malformed`, and `unknown`. The server resolves `.ralph/status.json` and `.wolfpack/agent-status.json` under the validated project directory; missing, stale, and malformed structured sources remain visible in `statusSources` even when fallback status is selected.
+
+`parseRalphLog()` still derives the fallback display state from .ralph.log:
 
 | Condition | Status |
 |-----------|--------|
@@ -209,7 +224,7 @@ Main worktree + per-section sub-worktrees:
 | PID alive + log contains `=== 🥋 Wax Off —` (no complete/failed) | `cleanup` |
 | PID alive | `running` |
 | PID dead + log contains `all_tasks_done: true` | `done` |
-| PID dead + finished timestamp present | `limit` (hit iteration cap) |
+| PID dead + finished timestamp present | `stopped` (UI label: `STOPPED`) |
 | Otherwise | `idle` |
 
 Phase detection has two layers:
