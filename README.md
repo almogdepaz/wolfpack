@@ -70,6 +70,8 @@ Local-only browser use works without Tailscale. Phone/remote use is where Tailsc
 - **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
 - **Ralph loop** — optional autonomous plan runner. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
 
+For positioning against tmux, zellij, Warp, browser SSH clients, and terminal-native agent multiplexers, see [docs/comparisons.md](docs/comparisons.md).
+
 ## Agent recipes
 
 Wolfpack starts sessions by running a command in the selected project directory.
