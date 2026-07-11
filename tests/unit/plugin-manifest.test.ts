@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverPluginManifests, validatePluginManifest } from "../../src/plugin-manifest.ts";
@@ -53,6 +53,16 @@ describe("validatePluginManifest", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors.join(" ")).toContain("invalid characters");
+  });
+});
+
+describe("plugin manifest docs", () => {
+  test("document configured plugin roots", () => {
+    const docs = readFileSync(join(process.cwd(), "docs/plugin-manifests.md"), "utf-8");
+
+    expect(docs).toContain('"pluginDirs"');
+    expect(docs).toContain("WOLFPACK_PLUGIN_DIRS");
+    expect(docs).toContain("~/.wolfpack/config.json");
   });
 });
 

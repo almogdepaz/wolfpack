@@ -11,6 +11,26 @@ Wolfpack plugins are data manifests. Version 1 does not load third-party code, r
 - Manifest paths must be regular `.json` files directly under an approved plugin root. Symlinks and paths resolving outside the root are rejected.
 - Unknown fields are validation errors.
 
+## Configured User Plugin Roots
+
+Wolfpack always checks `~/.wolfpack/plugins`. Add more user-installed roots in
+`~/.wolfpack/config.json`:
+
+```json
+{
+  "devDir": "/Users/you/Dev",
+  "port": 18790,
+  "pluginDirs": ["/Users/you/.wolfpack-extra/plugins"]
+}
+```
+
+For one-off runs or service environments, set `WOLFPACK_PLUGIN_DIRS` to a
+colon-separated list:
+
+```bash
+WOLFPACK_PLUGIN_DIRS="$HOME/.wolfpack-extra/plugins:/opt/wolfpack/plugins"
+```
+
 ## Version 1 Schema
 
 ```json
