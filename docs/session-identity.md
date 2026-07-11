@@ -18,6 +18,11 @@ Stored fields:
 
 External agent ids are never scraped from terminal prose. Wolfpack captures them only from structured launch/discovery metadata such as `WOLFPACK_EXTERNAL_AGENT_ID` and returns a redacted value from public APIs.
 
+Public session APIs intentionally expose `projectPath` as part of the `identity`
+object so local/Tailscale clients can restore context without scraping terminal
+text. Treat this as local filesystem metadata disclosure: any client authorized
+to call `/api/sessions` can see the absolute project path for each session.
+
 Launched sessions receive these context variables:
 
 - `WOLFPACK_SESSION_NAME`
