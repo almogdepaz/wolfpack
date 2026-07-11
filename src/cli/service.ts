@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
-import { print, bold, green, red, dim } from "./formatting.js";
+import { print, bold, green, red, dim, yellow } from "./formatting.js";
 
 const log = createLogger("service");
 import {
@@ -302,6 +302,21 @@ const BROKER_LAUNCHD_TARGET = `${LAUNCHD_DOMAIN}/com.wolfpack.broker`;
 export interface ServiceActionOptions {
   readonly broker?: boolean;
   readonly skipBrokerSessionWarning?: boolean;
+}
+
+function describeBrokerSessionCount(activeBrokerSessions: number | null): string {
+  if (activeBrokerSessions === null) return "active broker session count unavailable";
+  const sessions = activeBrokerSessions === 1 ? "session" : "sessions";
+  return `${activeBrokerSessions} active broker ${sessions}`;
+}
+
+function printRestartBlastRadius(restartBroker: boolean, activeBrokerSessions: number | null): void {
+  const count = describeBrokerSessionCount(activeBrokerSessions);
+  if (restartBroker) {
+    print(yellow(`  Broker restart requested; ${count} may be terminated.`));
+  } else {
+    print(dim(`  Server-only restart; ${count} will remain broker-owned.`));
+  }
 }
 
 function launchdBootout() {
@@ -699,11 +714,14 @@ function brokerRestartPrompt(activeBrokerSessions: number | null): string {
 }
 
 export function serviceRestart(options: ServiceActionOptions = {}) {
+  const activeBrokerSessions = readBrokerSessionCount(loadConfig());
   const promptedForBroker = options.broker === undefined;
   const restartBroker = options.broker ?? (
-    ask(brokerRestartPrompt(readBrokerSessionCount(loadConfig()))).toLowerCase() === "y"
+    ask(brokerRestartPrompt(activeBrokerSessions)).toLowerCase() === "y"
   );
-  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning: promptedForBroker })) return;
+  printRestartBlastRadius(restartBroker, activeBrokerSessions);
+  const skipBrokerSessionWarning = options.skipBrokerSessionWarning ?? promptedForBroker;
+  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning })) return;
   serviceStart({ broker: restartBroker });
 }
 
