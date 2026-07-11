@@ -212,6 +212,23 @@ Main worktree + per-section sub-worktrees:
 | PID dead + finished timestamp present | `limit` (hit iteration cap) |
 | Otherwise | `idle` |
 
+Phase detection has two layers:
+
+1. Explicit worker lifecycle markers are authoritative: `=== 🥋 Wax Inspect —` and `=== 🥋 Wax Off —`, with their matching complete/failed markers.
+2. Data-only agent UI detection manifests are fallback signals for active processes when explicit markers do not match. They may set only fallback phase flags (`audit` or `cleanup`) and include diagnostics (`manifestId`, `version`, `source`, `sourceKind`, `matchedRule`, `confidence`) in the status response.
+
+Manifest semantics:
+
+- Schema version is `1`.
+- A manifest contains `manifestId`, `version`, `generatedAt`, optional `validUntil`, and agent entries.
+- A rule contains `id`, `status` (`audit` or `cleanup`), `confidence`, and bounded string patterns: `contains`, `startsWith`, and `notContains`.
+- Manifests are data only. Executable-looking fields such as `script`, `command`, `exec`, `eval`, `shell`, or `code` are rejected.
+- Matches are fallback UI/status hints, not completion authority. Completion remains strict via `all_tasks_done: true`.
+
+Fallback priority is explicit lifecycle markers, then user manifests from `WOLFPACK_AGENT_UI_MANIFEST` (colon-separated paths), then an opt-in cached manifest from `WOLFPACK_AGENT_UI_MANIFEST_CACHE`, then bundled defaults. Malformed, oversized, stale, or untrusted manifests are ignored and bundled defaults continue to load.
+
+Remote update safety is intentionally transport-neutral: no automatic network fetch is enabled. A caller that obtains remote bytes must opt in by calling the update acceptance path with an expected SHA-256 and JSON content type. The update is rejected unless it is under 64 KiB, integrity matches, schema validation passes, `validUntil` is fresh, executable-looking fields are absent, and the file can be atomically written to the cache path. The previous known-good cache remains in place when validation fails.
+
 Completion detection is strict: the worker writes `all_tasks_done: true` to the log only when `extractCurrentTask()` returns null and the plan has tasks. No count-based heuristics — the extractor is the single source of truth.
 
 Task counts (for progress bar display): `tasksTotal` from plan file, `tasksDone` from progress file `DONE:` line count. These are display-only and not used for completion detection.
