@@ -304,21 +304,6 @@ export interface ServiceActionOptions {
   readonly skipBrokerSessionWarning?: boolean;
 }
 
-function describeBrokerSessionCount(activeBrokerSessions: number | null): string {
-  if (activeBrokerSessions === null) return "active broker session count unavailable";
-  const sessions = activeBrokerSessions === 1 ? "session" : "sessions";
-  return `${activeBrokerSessions} active broker ${sessions}`;
-}
-
-function printRestartBlastRadius(restartBroker: boolean, activeBrokerSessions: number | null): void {
-  const count = describeBrokerSessionCount(activeBrokerSessions);
-  if (restartBroker) {
-    print(yellow(`  Broker restart requested; ${count} may be terminated.`));
-  } else {
-    print(dim(`  Server-only restart; ${count} will remain broker-owned.`));
-  }
-}
-
 function launchdBootout() {
   try {
     execSync(`launchctl bootout ${LAUNCHD_TARGET} 2>/dev/null`);
@@ -719,7 +704,12 @@ export function serviceRestart(options: ServiceActionOptions = {}) {
   const restartBroker = options.broker ?? (
     ask(brokerRestartPrompt(activeBrokerSessions)).toLowerCase() === "y"
   );
-  printRestartBlastRadius(restartBroker, activeBrokerSessions);
+  const sessionCount = activeBrokerSessions === null
+    ? "active broker session count unavailable"
+    : `${activeBrokerSessions} active broker ${activeBrokerSessions === 1 ? "session" : "sessions"}`;
+  print(restartBroker
+    ? yellow(`  Broker restart requested; ${sessionCount} may be terminated.`)
+    : dim(`  Server-only restart; ${sessionCount} will remain broker-owned.`));
   const skipBrokerSessionWarning = options.skipBrokerSessionWarning ?? promptedForBroker;
   if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning })) return;
   serviceStart({ broker: restartBroker });
