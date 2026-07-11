@@ -12,7 +12,7 @@ user explicitly asks for input/control.
 ## Existing References
 
 - User setup, Tailscale, and JWT auth model: `README.md`
-- Broker/session authority and low-level wire protocol: `docs/broker-protocol.md`
+- Broker/session authority and server-broker wire protocol: `docs/broker-protocol.md`
 - Ralph runner response and sandbox caveats: `skills/wolfpack-ralph/SKILL.md`
 - Troubleshooting local service/config failures: `docs/troubleshooting.md`
 
@@ -155,10 +155,13 @@ curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/kill" \
 ```
 
 For interactive attach/take-control automation, prefer the Wolfpack UI first.
-If low-level automation is explicitly required, follow the WebSocket behavior
-already documented and tested in `docs/broker-protocol.md` and the server/e2e
-attach tests. Browser-style WebSocket clients that cannot set headers may pass
-`token=<jwt>` in the query string; keep tokens out of logs.
+Do not use `docs/broker-protocol.md` as a browser attach contract; it documents
+the server-broker wire protocol, not `/ws/pty` viewer conflict, take-control,
+prefill, or browser token-query behavior. If low-level browser attach automation
+is explicitly required, inspect the current server/client implementation and
+attach tests instead of guessing from the broker protocol. Browser-style
+WebSocket clients that cannot set headers may pass `token=<jwt>` in the query
+string; keep tokens out of logs.
 
 ## Notify the User
 

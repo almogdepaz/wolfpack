@@ -17,7 +17,7 @@ describe("agent skills", () => {
     expect(skill).toContain("Treat session selectors as opaque handles");
     expect(skill).toContain("Requires explicit user intent");
     expect(skill).toContain("Missing context handling");
-    expect(skill).toContain("docs/broker-protocol.md");
+    expect(skill).toContain("Do not use `docs/broker-protocol.md` as a browser attach contract");
     expect(skill).not.toContain("wss://host/ws/pty?session=<name>");
   });
 

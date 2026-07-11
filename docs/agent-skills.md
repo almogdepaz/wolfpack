@@ -21,6 +21,8 @@ the source skill content without hardcoded local paths. If your agent copies
 skills instead of symlinking, refresh the copied directories after upgrading
 Wolfpack.
 
-The control skill intentionally references `README.md`, `docs/broker-protocol.md`,
-and related skills rather than duplicating protocol contracts. Keep those docs
-authoritative when APIs or auth behavior change.
+The control skill intentionally references `README.md`, related skills, and
+`docs/broker-protocol.md` only for the server-broker wire contract. It does not
+treat broker protocol docs as the browser `/ws/pty` attach/take-control contract.
+Keep the referenced docs authoritative for their own API/auth boundaries rather
+than duplicating protocol details in skill text.
