@@ -13,8 +13,26 @@ import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.j
 import { join, normalize, isAbsolute } from "node:path";
 import { countTasksInContent, validatePlanFormat } from "../wolfpack-context.js";
 import { DEV_DIR } from "./dev-dir.js";
+import {
+  detectAgentUiStatusFromManifests,
+  loadAgentUiDetectionManifests,
+  type LoadAgentUiDetectionManifestsOptions,
+  type AgentUiDetectionDiagnostics,
+} from "../agent-ui-detection-manifest.js";
 
 const log = createLogger("ralph");
+
+function agentUiManifestLoadOptions(): LoadAgentUiDetectionManifestsOptions {
+  const userManifestPaths = process.env.WOLFPACK_AGENT_UI_MANIFEST
+    ?.split(":")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const cachedManifestPath = process.env.WOLFPACK_AGENT_UI_MANIFEST_CACHE?.trim();
+  return {
+    userManifestPaths,
+    cachedManifestPath: cachedManifestPath || undefined,
+  };
+}
 
 /** Returns true if p is a safe relative path — no absolute paths, no .. traversal. */
 function isSafeRelativePath(p: string): boolean {
@@ -45,6 +63,7 @@ export interface RalphStatus {
   worktreeMode: string;
   worktreeBranch: string;
   sandbox: string;
+  detectionManifest?: AgentUiDetectionDiagnostics;
 }
 
 export function listDevProjects(): string[] {
@@ -187,6 +206,16 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
       }
       if (content.includes("=== 🥋 Wax Off —") && !content.includes("Wax Off complete") && !content.includes("Wax Off FAILED")) {
         status.cleanup = true;
+      }
+      if (!status.audit && !status.cleanup) {
+        const manifestMatch = detectAgentUiStatusFromManifests(
+          loadAgentUiDetectionManifests(agentUiManifestLoadOptions()),
+          "ralph",
+          content,
+        );
+        if (manifestMatch?.status === "audit") status.audit = true;
+        if (manifestMatch?.status === "cleanup") status.cleanup = true;
+        if (manifestMatch) status.detectionManifest = manifestMatch.diagnostics;
       }
     }
 

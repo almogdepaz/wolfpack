@@ -25,6 +25,7 @@ import {
 import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
+import { runSessionCommand } from "./session-control.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
@@ -45,6 +46,15 @@ export function planServiceEnsureAction(
 ): "noop" | "start" | "install" {
   if (running) return "noop";
   return installed ? "start" : "install";
+}
+
+export function planBinaryUpdateAction(
+  binaryUpdated: boolean,
+  running: boolean,
+  installed: boolean,
+): "server-restart" | "noop" | "start" | "install" {
+  if (binaryUpdated && running) return "server-restart";
+  return planServiceEnsureAction(running, installed);
 }
 
 export function hasUninstallConfirmationFlag(argv: string[]): boolean {
@@ -91,14 +101,12 @@ async function start() {
   const binaryUpdated = updateStableBinary();
   const wasRunning = isServiceRunning();
   try {
-    if (binaryUpdated && wasRunning) {
-      // new binary on disk but old version still in memory — reinstall
-      serviceInstall();
-    } else {
-      const action = planServiceEnsureAction(wasRunning, isServiceInstalled());
-      if (action === "start") serviceStart();
-      else if (action === "install") serviceInstall();
-    }
+    const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
+    if (action === "server-restart") {
+      print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
+      serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+    } else if (action === "start") serviceStart();
+    else if (action === "install") serviceInstall();
   } catch (e) {
     print(red(`  Service startup failed: ${e}`));
     print(dim("  Run 'wolfpack service install' to retry."));
@@ -215,6 +223,8 @@ async function main() {
     process.exit(await doctor());
   } else if (cmd === "ls" || cmd === "list") {
     process.exit(await lsSessions());
+  } else if (cmd === "session") {
+    process.exit(await runSessionCommand(process.argv.slice(3)));
   } else if (cmd === "kill") {
     process.exit(await killSession(subcmd));
   } else if (cmd === "plugins") {
