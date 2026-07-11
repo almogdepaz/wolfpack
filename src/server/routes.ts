@@ -167,16 +167,21 @@ function parseTimeoutMs(value: unknown): number | null {
 }
 
 async function waitForSessionText(session: string, text: string, timeoutMs: number): Promise<"matched" | "timeout" | "unavailable"> {
-  const existing = await getBackend().capturePane(session);
-  if (existing.includes(text)) return "matched";
-
   const streaming = getRouter().getStreamingBackendForSession(session);
-  if (!streaming) return "unavailable";
+  if (!streaming) {
+    const existing = await getBackend().capturePane(session);
+    return existing.includes(text) ? "matched" : "unavailable";
+  }
+
+  const decoder = new TextDecoder();
+  const prefill = await streaming.getSessionPrefill(session);
+  const initial = decoder.decode(prefill.data);
+  if (initial.includes(text)) return "matched";
+  if (prefill.seq === undefined) return "unavailable";
 
   return await new Promise((resolve) => {
-    const decoder = new TextDecoder();
     let done = false;
-    let buffer = "";
+    let buffer = initial.slice(-SESSION_WAIT_BUFFER_MAX_CHARS);
     let unsubscribe: (() => void) | null = null;
     const finish = (result: "matched" | "timeout" | "unavailable") => {
       if (done) return;
@@ -193,6 +198,7 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
       }
       if (buffer.includes(text)) finish("matched");
     }, {
+      sinceSeq: prefill.seq,
       onSubscribeError: () => finish("unavailable"),
     });
     if (!unsubscribe) finish("unavailable");

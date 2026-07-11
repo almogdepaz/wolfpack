@@ -350,6 +350,7 @@ describe("session control API", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
     mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
+    mockBackend.setOnAfterPrefill(null);
     mockBackend.lastSendArgs = null;
   });
 
@@ -400,6 +401,23 @@ describe("session control API", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
     mockBackend.emitSessionData("wolf-1", "system ready\n");
     const res = await wait;
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+  });
+
+  test("wait replays output emitted between snapshot and subscribe", async () => {
+    mockBackend.setCapturePane(async () => "booting\n");
+    mockBackend.setOnAfterPrefill((session) => {
+      mockBackend.emitSessionData(session, "system ready\n");
+    });
+
+    const res = await post("/api/session-control/wait", {
+      session: "wolf-1",
+      text: "ready",
+      timeoutMs: 100,
+    });
+
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });

@@ -32,6 +32,9 @@ export class MockBackend implements SessionBackend {
   /** Last arguments passed to send (name, text, noEnter). */
   lastSendArgs: { name: string; text: string; noEnter: boolean | undefined } | null = null;
   private readonly _outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
+  private readonly _outputHistory = new Map<string, Array<{ seq: bigint; data: Uint8Array }>>();
+  private _nextOutputSeq = 1n;
+  private _onAfterPrefill: ((name: string, seq: bigint) => void) | null = null;
 
   constructor(opts: MockBackendOptions = {}) {
     this._sessions = new Set(opts.sessions ?? []);
@@ -47,6 +50,10 @@ export class MockBackend implements SessionBackend {
   /** Override capturePane at runtime. */
   setCapturePane(fn: (session: string) => Promise<string>): void {
     this._capturePane = fn;
+  }
+
+  setOnAfterPrefill(fn: ((name: string, seq: bigint) => void) | null): void {
+    this._onAfterPrefill = fn;
   }
 
   async list(): Promise<string[]> {
@@ -128,9 +135,14 @@ export class MockBackend implements SessionBackend {
   onSessionData(
     name: string,
     cb: (data: Uint8Array) => void,
-    _opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void },
+    opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void },
   ): (() => void) | null {
     if (!this._sessions.has(name)) return null;
+    if (opts.sinceSeq !== undefined) {
+      for (const event of this._outputHistory.get(name) ?? []) {
+        if (event.seq > opts.sinceSeq) queueMicrotask(() => cb(event.data));
+      }
+    }
     let subscribers = this._outputSubscribers.get(name);
     if (!subscribers) {
       subscribers = new Set();
@@ -147,6 +159,10 @@ export class MockBackend implements SessionBackend {
 
   emitSessionData(name: string, text: string): void {
     const data = new TextEncoder().encode(text);
+    const seq = this._nextOutputSeq++;
+    const history = this._outputHistory.get(name) ?? [];
+    history.push({ seq, data });
+    this._outputHistory.set(name, history);
     for (const cb of this._outputSubscribers.get(name) ?? []) cb(data);
   }
 
@@ -154,8 +170,11 @@ export class MockBackend implements SessionBackend {
     // no-op in mock
   }
 
-  getSessionPrefill(_name: string, _cols?: number, _options?: { scrollbackLines?: number }): { data: Buffer; seq?: bigint } {
-    return { data: Buffer.alloc(0) };
+  async getSessionPrefill(name: string, _cols?: number, _options?: { scrollbackLines?: number }): Promise<{ data: Buffer; seq?: bigint }> {
+    const seq = this._nextOutputSeq - 1n;
+    const data = Buffer.from(this._sessions.has(name) ? stripAnsi(await this._capturePane(name)) : "");
+    this._onAfterPrefill?.(name, seq);
+    return { data, seq };
   }
 
   onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {
