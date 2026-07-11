@@ -7,6 +7,10 @@
 import type { SessionBackend } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { stripAnsi } from "./strip-ansi.js";
+import {
+  inferAgentKind,
+  type PublicSessionIdentity,
+} from "./session-identity.js";
 
 export interface MockBackendOptions {
   sessions?: string[];
@@ -26,7 +30,7 @@ export class MockBackend implements SessionBackend {
   private _aliveOverride = new Map<string, boolean>();
 
   /** Last arguments passed to createSession (name, cwd, cmd). */
-  lastCreateArgs: { name: string; cwd: string; cmd: string | undefined } | null = null;
+  lastCreateArgs: { name: string; cwd: string; cmd: string | undefined; agentKind?: string } | null = null;
   /** Last arguments passed to resize (name, cols, rows). */
   lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
 
@@ -50,6 +54,22 @@ export class MockBackend implements SessionBackend {
     return Array.from(this._sessions);
   }
 
+  async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
+    const now = new Date(0).toISOString();
+    const out: Record<string, PublicSessionIdentity> = {};
+    for (const name of this._sessions) {
+      out[name] = {
+        wolfpackSessionId: `mock:${name}`,
+        wolfpackSessionName: name,
+        projectPath: "",
+        agentKind: "unknown",
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+    return out;
+  }
+
   /** Set hook called inside createSession before adding to set. */
   setOnBeforeCreate(fn: ((name: string) => void) | null): void {
     this._onBeforeCreate = fn;
@@ -60,8 +80,9 @@ export class MockBackend implements SessionBackend {
     cwd: string,
     cmd: string | undefined,
     _loadSettings: () => { agentCmd: string },
+    identity?: { agentKind?: string; externalAgent?: { provider?: string; id?: string; source: "env" | "broker_env" | "ralph_launch" } },
   ): Promise<void> {
-    this.lastCreateArgs = { name, cwd, cmd };
+    this.lastCreateArgs = { name, cwd, cmd, agentKind: identity?.agentKind ?? inferAgentKind(cmd) };
     if (this._onBeforeCreate) this._onBeforeCreate(name);
     if (this._sessions.has(name)) {
       throw new DuplicateSessionError(name);

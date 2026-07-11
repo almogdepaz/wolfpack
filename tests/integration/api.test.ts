@@ -16,6 +16,7 @@ const _rawTmpDir = join(tmpdir(), `wolfpack-api-test-${process.pid}`);
 mkdirSync(_rawTmpDir, { recursive: true });
 const TEST_DEV_DIR = realpathSync(_rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(process.cwd(), ".wolfpack", `api-session-identities-${process.pid}.json`);
 // Isolate the settings file so the /api/settings tests don't mutate the
 // developer's real ~/.wolfpack/bridge-settings.json. The path is read at
 // every loadSettings/saveSettings call so this works as long as it's set
@@ -146,6 +147,12 @@ describe("GET /api/sessions", () => {
     expect(data.sessions).toHaveLength(2);
     expect(typeof data.sessions[0].lastLine).toBe("string");
     expect(typeof data.sessions[0].triage).toBe("string");
+    expect(data.sessions[0].identity).toMatchObject({
+      wolfpackSessionName: data.sessions[0].name,
+      agentKind: "unknown",
+    });
+    expect(data.sessions[0].identity).not.toHaveProperty("alive");
+    expect(data.sessions[0].identity).not.toHaveProperty("triage");
     expect(["running", "idle"]).toContain(data.sessions[0].triage);
   });
 
@@ -232,6 +239,16 @@ describe("POST /api/create", () => {
     const data = await res.json();
     expect(data.ok).toBe(true);
     expect(data.session).toBe("my-app");
+    expect(mockBackend.lastCreateArgs?.agentKind).toBe("shell");
+  });
+
+  test("captures selected agent kind at launch", async () => {
+    const res = await post("/api/create", { project: "my-app", sessionName: "codex-launch", cmd: "codex" });
+    expect(res.status).toBe(200);
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "codex-launch",
+      agentKind: "codex",
+    });
   });
 
   test("generates unique session name on collision", async () => {

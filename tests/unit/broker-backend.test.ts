@@ -5,10 +5,12 @@
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import type { OutputSubscriber } from "../../src/broker/client";
 import type { SessionLifecycleEvent } from "../../src/server/backend";
+import { sessionIdentityStorePath } from "../../src/server/session-identity";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -159,6 +161,8 @@ let backend: BrokerBackend;
 
 beforeEach(() => {
   process.env.WOLFPACK_TEST = "1";
+  process.env.WOLFPACK_SESSION_IDENTITY_PATH = `${process.cwd()}/.wolfpack/broker-backend-identity-${process.pid}.json`;
+  rmSync(sessionIdentityStorePath(), { force: true });
   client = new FakeBrokerClient();
   backend = new BrokerBackend(client);
 });
@@ -215,8 +219,27 @@ describe("BrokerBackend.createSession", () => {
     const envKeys = params.env.map(([k]) => k);
     expect(envKeys).toContain("TERM");
     expect(envKeys).toContain("WOLFPACK_PROJECT_DIR");
+    expect(envKeys).toContain("WOLFPACK_SESSION_NAME");
+    expect(envKeys).toContain("WOLFPACK_AGENT_KIND");
     // sessionDir is now resolvable without another list call
     expect(backend.sessionDir("newone")).toBe("/tmp/work");
+  });
+
+  test("captures launch identity without terminal prose scraping", async () => {
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "codex-one", id: SESSION_UUID_1 }),
+    }));
+    await backend.createSession("codex-one", "/tmp/proj", "codex", loadSettings);
+
+    const identities = await backend.listIdentities();
+    expect(identities["codex-one"]).toMatchObject({
+      wolfpackSessionId: SESSION_UUID_1,
+      wolfpackSessionName: "codex-one",
+      projectPath: "/tmp/proj",
+      agentKind: "codex",
+    });
+    expect(identities["codex-one"]).not.toHaveProperty("alive");
+    expect(identities["codex-one"]).not.toHaveProperty("lastLine");
   });
 
   test("translates duplicate_session_name into legacy DUPLICATE_SESSION error", async () => {
@@ -247,12 +270,14 @@ describe("BrokerBackend.killSession", () => {
       sessions: [sessionInfo({ name: "doomed", id: SESSION_UUID_1 })],
     }));
     await backend.list();
+    expect((await backend.listIdentities()).doomed).toBeDefined();
     let killParams: { session_id: string } | undefined;
     client.setHandler("kill_session", (p) => { killParams = p as { session_id: string }; return okResp({ killed: true }); });
     await backend.killSession("doomed");
     expect(killParams?.session_id).toBe(SESSION_UUID_1);
     expect(backend.sessionDir("doomed")).toBeUndefined();
     expect(backend.isSessionAlive("doomed")).toBe(false);
+    expect((await backend.listIdentities()).doomed).toBeUndefined();
   });
 
   test("no-op when session unknown to broker", async () => {

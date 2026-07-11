@@ -1,0 +1,319 @@
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { DEV_DIR } from "./dev-dir.js";
+
+export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
+const EXTERNAL_ID_VISIBLE_PREFIX = 6;
+const EXTERNAL_ID_VISIBLE_SUFFIX = 4;
+
+export type AgentKind = "shell" | "claude" | "codex" | "pi" | "gemini" | "cursor" | "unknown";
+
+export interface ExternalAgentIdentity {
+  provider: AgentKind | string;
+  id: string;
+  capturedAt: string;
+  source: "env" | "broker_env" | "ralph_launch";
+}
+
+export interface SessionIdentity {
+  schemaVersion: typeof SESSION_IDENTITY_SCHEMA_VERSION;
+  wolfpackSessionId: string;
+  wolfpackSessionName: string;
+  projectPath: string;
+  agentKind: AgentKind | string;
+  createdAt: string;
+  restoredAt?: string;
+  updatedAt: string;
+  externalAgent?: ExternalAgentIdentity;
+}
+
+export interface PublicSessionIdentity {
+  wolfpackSessionId: string;
+  wolfpackSessionName: string;
+  projectPath: string;
+  agentKind: AgentKind | string;
+  createdAt: string;
+  restoredAt?: string;
+  updatedAt: string;
+  externalAgent?: {
+    provider: AgentKind | string;
+    redactedId: string;
+    capturedAt: string;
+    source: ExternalAgentIdentity["source"];
+  };
+}
+
+export interface CaptureSessionIdentityInput {
+  wolfpackSessionId: string;
+  wolfpackSessionName: string;
+  projectPath: string;
+  agentKind: AgentKind | string;
+  externalAgent?: {
+    provider?: AgentKind | string;
+    id?: string;
+    source: ExternalAgentIdentity["source"];
+  };
+  now?: Date;
+}
+
+interface IdentityStoreFile {
+  schemaVersion: typeof SESSION_IDENTITY_SCHEMA_VERSION;
+  sessions: SessionIdentity[];
+}
+
+export function sessionIdentityStorePath(devDir?: string): string {
+  if (process.env.WOLFPACK_SESSION_IDENTITY_PATH) return process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+  if (process.env.WOLFPACK_TEST && devDir === undefined) {
+    return join(process.cwd(), ".wolfpack", `session-identities-test-${process.pid}.json`);
+  }
+  return join(devDir ?? DEV_DIR, ".wolfpack", "session-identities.json");
+}
+
+export function inferAgentKind(cmd: string | undefined): AgentKind | string {
+  const value = (cmd || "shell").trim();
+  if (!value || value === "shell") return "shell";
+  const first = value.split(/\s+/)[0]?.split("/").pop()?.toLowerCase() || value.toLowerCase();
+  if (first === "claude") return "claude";
+  if (first === "codex") return "codex";
+  if (first === "pi") return "pi";
+  if (first === "gemini") return "gemini";
+  if (first === "cursor") return "cursor";
+  return first || "unknown";
+}
+
+export function identityEnvVars(input: {
+  wolfpackSessionName: string;
+  projectPath: string;
+  agentKind: AgentKind | string;
+}): Array<[string, string]> {
+  return [
+    ["WOLFPACK_SESSION_NAME", input.wolfpackSessionName],
+    ["WOLFPACK_PROJECT_DIR", input.projectPath],
+    ["WOLFPACK_AGENT_KIND", input.agentKind],
+    ["WOLFPACK_EXTERNAL_AGENT_ID_FILE", join(input.projectPath, ".wolfpack", "external-agent-id")],
+  ];
+}
+
+export function extractExternalAgentFromEnv(
+  env: Array<[string, string]> | undefined,
+  source: ExternalAgentIdentity["source"],
+): CaptureSessionIdentityInput["externalAgent"] | undefined {
+  if (!env) return undefined;
+  const map = new Map(env);
+  const id = map.get("WOLFPACK_EXTERNAL_AGENT_ID")?.trim();
+  if (!id) return undefined;
+  const provider = map.get("WOLFPACK_EXTERNAL_AGENT_PROVIDER")?.trim() || map.get("WOLFPACK_AGENT_KIND")?.trim();
+  return { id, provider, source };
+}
+
+export function redactExternalAgentId(id: string): string {
+  if (id.length <= EXTERNAL_ID_VISIBLE_PREFIX + EXTERNAL_ID_VISIBLE_SUFFIX) {
+    return "*".repeat(Math.max(4, id.length));
+  }
+  return `${id.slice(0, EXTERNAL_ID_VISIBLE_PREFIX)}...${id.slice(-EXTERNAL_ID_VISIBLE_SUFFIX)}`;
+}
+
+export function toPublicSessionIdentity(identity: SessionIdentity): PublicSessionIdentity {
+  return {
+    wolfpackSessionId: identity.wolfpackSessionId,
+    wolfpackSessionName: identity.wolfpackSessionName,
+    projectPath: identity.projectPath,
+    agentKind: identity.agentKind,
+    createdAt: identity.createdAt,
+    restoredAt: identity.restoredAt,
+    updatedAt: identity.updatedAt,
+    ...(identity.externalAgent && {
+      externalAgent: {
+        provider: identity.externalAgent.provider,
+        redactedId: redactExternalAgentId(identity.externalAgent.id),
+        capturedAt: identity.externalAgent.capturedAt,
+        source: identity.externalAgent.source,
+      },
+    }),
+  };
+}
+
+export class SessionIdentityStore {
+  readonly path: string;
+
+  constructor(devDir?: string) {
+    this.path = sessionIdentityStorePath(devDir);
+  }
+
+  list(): SessionIdentity[] {
+    return this.read().sessions;
+  }
+
+  getByName(name: string): SessionIdentity | undefined {
+    return this.list().find((s) => s.wolfpackSessionName === name);
+  }
+
+  capture(input: CaptureSessionIdentityInput): SessionIdentity {
+    const now = (input.now ?? new Date()).toISOString();
+    const file = this.read();
+    const existingIndex = file.sessions.findIndex((s) => s.wolfpackSessionId === input.wolfpackSessionId);
+    const existing = existingIndex >= 0 ? file.sessions[existingIndex] : undefined;
+    const externalAgent = normalizeExternalAgent(input, existing, now);
+    const next: SessionIdentity = {
+      schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION,
+      wolfpackSessionId: input.wolfpackSessionId,
+      wolfpackSessionName: input.wolfpackSessionName,
+      projectPath: input.projectPath,
+      agentKind: input.agentKind || existing?.agentKind || "unknown",
+      createdAt: existing?.createdAt ?? now,
+      restoredAt: existing ? now : undefined,
+      updatedAt: now,
+      ...(externalAgent && { externalAgent }),
+    };
+    if (existingIndex >= 0) file.sessions[existingIndex] = next;
+    else file.sessions.push(next);
+    this.write(file);
+    return next;
+  }
+
+  restore(activeSessions: Array<{
+    wolfpackSessionId: string;
+    wolfpackSessionName: string;
+    projectPath: string;
+    agentKind?: AgentKind | string;
+    externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+  }>, now: Date = new Date()): SessionIdentity[] {
+    const file = this.read();
+    const byId = new Map(file.sessions.map((s) => [s.wolfpackSessionId, s]));
+    const restoredAt = now.toISOString();
+    const next: SessionIdentity[] = [];
+    for (const session of activeSessions) {
+      const existing = byId.get(session.wolfpackSessionId);
+      const candidateExternalAgent = normalizeExternalAgent(
+        {
+          ...session,
+          agentKind: session.agentKind ?? existing?.agentKind ?? "unknown",
+          externalAgent: session.externalAgent,
+        },
+        existing,
+        restoredAt,
+      );
+      const candidate: SessionIdentity = {
+        schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION,
+        wolfpackSessionId: session.wolfpackSessionId,
+        wolfpackSessionName: session.wolfpackSessionName,
+        projectPath: session.projectPath,
+        agentKind: session.agentKind ?? existing?.agentKind ?? "unknown",
+        createdAt: existing?.createdAt ?? restoredAt,
+        restoredAt: existing?.restoredAt ?? restoredAt,
+        updatedAt: existing?.updatedAt ?? restoredAt,
+        ...(candidateExternalAgent && { externalAgent: candidateExternalAgent }),
+      };
+      if (existing && sameIdentityIgnoringTimestamps(existing, candidate)) {
+        next.push(existing);
+      } else {
+        next.push({ ...candidate, restoredAt, updatedAt: restoredAt });
+      }
+    }
+
+    if (!sameIdentitySet(file.sessions, next)) this.write({ schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION, sessions: next });
+    return next;
+  }
+
+  deleteByName(name: string): void {
+    const file = this.read();
+    const next = file.sessions.filter((s) => s.wolfpackSessionName !== name);
+    if (next.length !== file.sessions.length) {
+      this.write({ schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION, sessions: next });
+    }
+  }
+
+  deleteAll(): void {
+    rmSync(this.path, { force: true });
+  }
+
+  private read(): IdentityStoreFile {
+    try {
+      const raw = JSON.parse(readFileSync(this.path, "utf-8")) as unknown;
+      if (!isStoreFile(raw)) return emptyStore();
+      return raw;
+    } catch {
+      return emptyStore();
+    }
+  }
+
+  private write(file: IdentityStoreFile): void {
+    mkdirSync(dirname(this.path), { recursive: true });
+    const tmp = `${this.path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(file, null, 2));
+    renameSync(tmp, this.path);
+  }
+}
+
+function normalizeExternalAgent(
+  input: CaptureSessionIdentityInput,
+  existing: SessionIdentity | undefined,
+  now: string,
+): ExternalAgentIdentity | undefined {
+  const id = input.externalAgent?.id?.trim();
+  if (!id) return existing?.externalAgent;
+  return {
+    provider: input.externalAgent?.provider || input.agentKind,
+    id,
+    source: input.externalAgent!.source,
+    capturedAt: now,
+  };
+}
+
+function emptyStore(): IdentityStoreFile {
+  return { schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION, sessions: [] };
+}
+
+function isStoreFile(value: unknown): value is IdentityStoreFile {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  if (obj.schemaVersion !== SESSION_IDENTITY_SCHEMA_VERSION) return false;
+  if (!Array.isArray(obj.sessions)) return false;
+  return obj.sessions.every(isSessionIdentity);
+}
+
+function isSessionIdentity(value: unknown): value is SessionIdentity {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return obj.schemaVersion === SESSION_IDENTITY_SCHEMA_VERSION
+    && typeof obj.wolfpackSessionId === "string"
+    && typeof obj.wolfpackSessionName === "string"
+    && typeof obj.projectPath === "string"
+    && typeof obj.agentKind === "string"
+    && typeof obj.createdAt === "string"
+    && typeof obj.updatedAt === "string";
+}
+
+function sameIdentitySet(a: SessionIdentity[], b: SessionIdentity[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function sameIdentityIgnoringTimestamps(a: SessionIdentity, b: SessionIdentity): boolean {
+  const left = { ...a, restoredAt: undefined, updatedAt: undefined };
+  const right = { ...b, restoredAt: undefined, updatedAt: undefined };
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+let singleton: SessionIdentityStore | null = null;
+
+export function getSessionIdentityStore(): SessionIdentityStore {
+  if (!singleton) singleton = new SessionIdentityStore();
+  return singleton;
+}
+
+export function __resetSessionIdentityStoreForTest(): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionIdentityStoreForTest() is test-only");
+  singleton = null;
+}
+
+export function __sessionIdentityStoreFileExistsForTest(devDir: string): boolean {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__sessionIdentityStoreFileExistsForTest() is test-only");
+  return existsSync(sessionIdentityStorePath(devDir));
+}
