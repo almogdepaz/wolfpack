@@ -53,6 +53,9 @@ import {
 const PEER_FETCH_TIMEOUT_MS = 3_000;
 const RALPH_LOG_MAX_TAIL_BYTES = 128 * 1024;
 const RALPH_LOG_MAX_LINES = 500;
+const SESSION_WAIT_DEFAULT_TIMEOUT_MS = 30_000;
+const SESSION_WAIT_MAX_TIMEOUT_MS = 600_000;
+const SESSION_WAIT_BUFFER_MAX_CHARS = 128 * 1024;
 
 // ── Peer ralph-response validation ──
 
@@ -154,6 +157,52 @@ function resolveProjectDir(res: ServerResponse, project: string | null | undefin
   const dir = join(DEV_DIR, project);
   if (!validateProjectDir(res, dir)) return null;
   return dir;
+}
+
+function parseTimeoutMs(value: unknown): number | null {
+  if (value == null) return SESSION_WAIT_DEFAULT_TIMEOUT_MS;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > SESSION_WAIT_MAX_TIMEOUT_MS) return null;
+  return n;
+}
+
+async function waitForSessionText(session: string, text: string, timeoutMs: number): Promise<"matched" | "timeout" | "unavailable"> {
+  const streaming = getRouter().getStreamingBackendForSession(session);
+  if (!streaming) {
+    const existing = await getBackend().capturePane(session);
+    return existing.includes(text) ? "matched" : "unavailable";
+  }
+
+  const decoder = new TextDecoder();
+  const prefill = await streaming.getSessionPrefill(session);
+  const initial = decoder.decode(prefill.data);
+  if (initial.includes(text)) return "matched";
+  if (prefill.seq === undefined) return "unavailable";
+
+  return await new Promise((resolve) => {
+    let done = false;
+    let buffer = initial.slice(-SESSION_WAIT_BUFFER_MAX_CHARS);
+    let unsubscribe: (() => void) | null = null;
+    const finish = (result: "matched" | "timeout" | "unavailable") => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { unsubscribe?.(); } catch { /* cleanup best effort */ }
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+    unsubscribe = streaming.onSessionData(session, (data) => {
+      buffer += decoder.decode(data, { stream: true });
+      if (buffer.length > SESSION_WAIT_BUFFER_MAX_CHARS) {
+        buffer = buffer.slice(-SESSION_WAIT_BUFFER_MAX_CHARS);
+      }
+      if (buffer.includes(text)) finish("matched");
+    }, {
+      sinceSeq: prefill.seq,
+      onSubscribeError: () => finish("unavailable"),
+    });
+    if (!unsubscribe) finish("unavailable");
+  });
 }
 
 const VERSION: string = pkg.version;
@@ -514,6 +563,66 @@ export const routes: Record<
     prevPaneContent.delete(session);
     await getBackend().killSession(session);
     json(res, { ok: true });
+  },
+
+  "GET /api/session-control/read": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const session = url.searchParams.get("session");
+    if (!session) return json(res, { error: "missing session" }, 400);
+    if (!(await isAllowedSession(session))) {
+      return json(res, { error: "session not found" }, 404);
+    }
+    try {
+      const output = await getBackend().capturePane(session);
+      json(res, { session, output });
+    } catch (e: unknown) {
+      log.warn("session-control read failed", { session, error: errMsg(e) });
+      json(res, { error: "backend unavailable" }, 503);
+    }
+  },
+
+  "POST /api/session-control/send": async (req, res) => {
+    const body = await parseBody<{ session?: string; text?: string; noEnter?: boolean }>(req, res);
+    if (!body) return;
+    const session = body.session;
+    if (!session) return json(res, { error: "missing session" }, 400);
+    if (typeof body.text !== "string") return json(res, { error: "missing text" }, 400);
+    if (!(await isAllowedSession(session))) {
+      return json(res, { error: "session not found" }, 404);
+    }
+    try {
+      await getBackend().send(session, body.text, body.noEnter === true);
+      json(res, { ok: true, session });
+    } catch (e: unknown) {
+      log.warn("session-control send failed", { session, error: errMsg(e) });
+      json(res, { error: "backend unavailable" }, 503);
+    }
+  },
+
+  "POST /api/session-control/wait": async (req, res) => {
+    const body = await parseBody<{ session?: string; text?: string; timeoutMs?: number }>(req, res);
+    if (!body) return;
+    const session = body.session;
+    if (!session) return json(res, { error: "missing session" }, 400);
+    if (typeof body.text !== "string" || body.text.length === 0) {
+      return json(res, { error: "missing text" }, 400);
+    }
+    const timeoutMs = parseTimeoutMs(body.timeoutMs);
+    if (timeoutMs === null) {
+      return json(res, { error: `timeoutMs must be an integer from 1 to ${SESSION_WAIT_MAX_TIMEOUT_MS}` }, 400);
+    }
+    if (!(await isAllowedSession(session))) {
+      return json(res, { error: "session not found" }, 404);
+    }
+    try {
+      const result = await waitForSessionText(session, body.text, timeoutMs);
+      if (result === "matched") return json(res, { ok: true, session, matched: true });
+      if (result === "timeout") return json(res, { error: "timeout", session, matched: false }, 408);
+      return json(res, { error: "backend unavailable" }, 503);
+    } catch (e: unknown) {
+      log.warn("session-control wait failed", { session, error: errMsg(e) });
+      json(res, { error: "backend unavailable" }, 503);
+    }
   },
 
   "POST /api/resize": async (req, res) => {

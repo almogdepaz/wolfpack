@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# Machine-readable product context for crawlers and agents:
+# /llms.txt
