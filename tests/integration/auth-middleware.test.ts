@@ -126,6 +126,7 @@ describe("JWT auth middleware", () => {
       { method: "GET", path: "/api/projects" },
       { method: "GET", path: "/api/sessions" },
       { method: "GET", path: "/api/settings" },
+      { method: "GET", path: "/api/plugins" },
       { method: "GET", path: "/api/discover" },
       { method: "GET", path: "/api/ralph" },
       { method: "POST", path: "/api/resize" },

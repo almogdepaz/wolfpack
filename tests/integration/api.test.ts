@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeAll, afterAll, beforeEach } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
@@ -552,6 +552,75 @@ describe("POST /api/settings — agentCmd", () => {
   test("rejects malformed agentCmd with 400", async () => {
     const res = await post("/api/settings", { agentCmd: "rm -rf /; echo pwn" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/plugins", () => {
+  const pluginRoot = join(TEST_DEV_DIR, "plugins");
+  const projectPluginRoot = join(TEST_DEV_DIR, "my-app", ".wolfpack", "plugins");
+
+  beforeEach(() => {
+    rmSync(pluginRoot, { recursive: true, force: true });
+    rmSync(join(TEST_DEV_DIR, "my-app", ".wolfpack"), { recursive: true, force: true });
+    mkdirSync(pluginRoot, { recursive: true });
+    mkdirSync(projectPluginRoot, { recursive: true });
+    process.env.WOLFPACK_PLUGIN_DIRS = pluginRoot;
+  });
+
+  test("returns discovered plugins with trust labels and boundaries", async () => {
+    writeFileSync(join(pluginRoot, "valid.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "api.plugin",
+      displayName: "API Plugin",
+      capabilities: { commands: [{ id: "shell", label: "Shell", command: "shell" }] },
+    }));
+
+    const res = await get("/api/plugins");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.plugins).toHaveLength(1);
+    expect(data.plugins[0].id).toBe("api.plugin");
+    expect(data.plugins[0].source.trust).toBe("user-installed");
+    expect(data.boundaries.forbidden).toContain("arbitrary browser script execution");
+  });
+
+  test("surfaces invalid manifest errors without failing the request", async () => {
+    writeFileSync(join(pluginRoot, "valid.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "valid.plugin",
+      displayName: "Valid",
+      capabilities: {},
+    }));
+    writeFileSync(join(pluginRoot, "invalid.json"), "{nope");
+
+    const res = await get("/api/plugins");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.plugins.map((plugin: { id: string }) => plugin.id)).toEqual(["valid.plugin"]);
+    expect(data.errors.some((error: { code: string }) => error.code === "parse_error")).toBe(true);
+  });
+
+  test("project manifest wins over configured manifest with the same id", async () => {
+    writeFileSync(join(pluginRoot, "user.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "same.plugin",
+      displayName: "User Copy",
+      capabilities: {},
+    }));
+    writeFileSync(join(projectPluginRoot, "project.json"), JSON.stringify({
+      schemaVersion: 1,
+      id: "same.plugin",
+      displayName: "Project Copy",
+      capabilities: {},
+    }));
+
+    const res = await get("/api/plugins");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.plugins).toHaveLength(1);
+    expect(data.plugins[0].displayName).toBe("Project Copy");
+    expect(data.plugins[0].source.trust).toBe("project");
+    expect(data.errors.some((error: { code: string }) => error.code === "duplicate")).toBe(true);
   });
 });
 

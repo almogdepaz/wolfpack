@@ -2181,6 +2181,24 @@ interface SettingsResponse {
   };
 }
 
+interface PluginSummary {
+  readonly id: string;
+  readonly displayName: string;
+  readonly description?: string;
+  readonly capabilities?: Record<string, unknown[]>;
+  readonly source?: {
+    readonly trust?: string;
+    readonly kind?: string;
+    readonly path?: string;
+    readonly project?: string;
+  };
+}
+
+interface PluginsResponse {
+  readonly plugins?: PluginSummary[];
+  readonly errors?: Array<{ code?: string; path?: string; message?: string; trust?: string; project?: string }>;
+}
+
 interface NextSessionNameResponse {
   readonly name?: string;
 }
@@ -2339,6 +2357,7 @@ function showView(name: string, skipAnimation?: boolean): void {
     if (effectiveName === "settings") {
       renderQuickCmdSettings();
       loadAgentsSettings();
+      loadPluginsSettings();
     } else if (effectiveName === "ralph-detail") {
       refreshRalphDetail();
       state.ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
@@ -2390,6 +2409,7 @@ function showView(name: string, skipAnimation?: boolean): void {
 
       renderQuickCmdSettings();
       loadAgentsSettings();
+      loadPluginsSettings();
     } else if (name === "terminal") {
       back.style.display = "block";
       back.onclick = () => {
@@ -2882,6 +2902,55 @@ async function addAgent() {
 function showAgentAddError(msg: string): void {
   const el = document.getElementById("agent-add-error");
   if (el) el.textContent = msg;
+}
+
+async function loadPluginsSettings() {
+  const list = document.getElementById("plugins-list");
+  const errors = document.getElementById("plugins-errors");
+  if (!list || !errors) return;
+  list.innerHTML = '<div class="empty">Loading...</div>';
+  errors.innerHTML = "";
+  try {
+    const data = await api<PluginsResponse>("/plugins");
+    renderPluginsList(data);
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Failed to load plugins: ${esc(errorMessage(e))}</div>`;
+  }
+}
+
+function countPluginCapabilities(plugin: PluginSummary): string {
+  const capabilities = plugin.capabilities || {};
+  const parts = Object.entries(capabilities)
+    .filter(([, value]) => Array.isArray(value) && value.length > 0)
+    .map(([key, value]) => `${(value as unknown[]).length} ${key}`);
+  return parts.length ? parts.join(", ") : "metadata only";
+}
+
+function renderPluginsList(data: PluginsResponse) {
+  const list = document.getElementById("plugins-list");
+  const errors = document.getElementById("plugins-errors");
+  if (!list || !errors) return;
+  const plugins = data.plugins || [];
+  if (!plugins.length) {
+    list.innerHTML = '<div class="empty">No plugins discovered</div>';
+  } else {
+    list.innerHTML = plugins.map(plugin => {
+      const trust = plugin.source?.trust || "unknown";
+      const project = plugin.source?.project ? ` · ${plugin.source.project}` : "";
+      return `<div class="plugin-row">
+        <div class="plugin-row-head">
+          <span class="plugin-name">${esc(plugin.displayName || plugin.id)}</span>
+          <span class="plugin-trust">${esc(trust)}</span>
+        </div>
+        <div class="plugin-meta">${esc(plugin.id)}${esc(project)} · ${esc(countPluginCapabilities(plugin))}</div>
+        ${plugin.description ? `<div class="plugin-meta">${esc(plugin.description)}</div>` : ""}
+      </div>`;
+    }).join("");
+  }
+  const validationErrors = data.errors || [];
+  errors.innerHTML = validationErrors.map(error =>
+    `<div class="plugin-error">${esc(error.code || "error")}: ${esc(error.message || "invalid plugin")}${error.path ? ` (${esc(error.path)})` : ""}</div>`
+  ).join("");
 }
 
 // Wire up the add button + enter-to-submit when the settings page first mounts.

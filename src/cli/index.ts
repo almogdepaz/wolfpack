@@ -28,6 +28,7 @@ import { lsSessions, killSession } from "./sessions.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
+import { discoverPluginManifests, validatePluginManifest } from "../plugin-manifest.js";
 
 export {
   loadConfig,
@@ -149,6 +150,49 @@ function migratePlan(file?: string) {
   print(dim(`  File: ${filePath}`));
 }
 
+function printPluginHelp(): never {
+  print("  Usage: wolfpack plugins [list|validate <file>]");
+  process.exit(1);
+}
+
+function listPlugins(config: Config): number {
+  const result = discoverPluginManifests({
+    devDir: config.devDir,
+    configPluginDirs: config.pluginDirs,
+  });
+  if (!result.plugins.length) {
+    print(dim("  No plugins discovered."));
+  } else {
+    for (const plugin of result.plugins) {
+      print(`${plugin.id}  ${dim(plugin.source.trust)}  ${plugin.displayName}`);
+      print(dim(`  ${plugin.source.path}`));
+    }
+  }
+  for (const error of result.errors) {
+    print(yellow(`  ${error.code}: ${error.path} — ${error.message}`));
+  }
+  return result.errors.some(error => error.code !== "duplicate") ? 1 : 0;
+}
+
+function validatePlugin(file?: string): number {
+  if (!file) printPluginHelp();
+  const path = resolve(file);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (e) {
+    print(red(`  Invalid JSON: ${e}`));
+    return 1;
+  }
+  const result = validatePluginManifest(raw);
+  if (result.ok) {
+    print(green(`  Valid plugin manifest: ${result.value.id}`));
+    return 0;
+  }
+  for (const error of result.errors) print(red(`  ${error}`));
+  return 1;
+}
+
 const cmd = process.argv[2];
 const subcmd = process.argv[3];
 
@@ -173,6 +217,15 @@ async function main() {
     process.exit(await lsSessions());
   } else if (cmd === "kill") {
     process.exit(await killSession(subcmd));
+  } else if (cmd === "plugins") {
+    if (subcmd === "validate") process.exit(validatePlugin(process.argv[4]));
+    if (subcmd && subcmd !== "list") printPluginHelp();
+    const pluginConfig = loadConfig();
+    if (!pluginConfig) {
+      print(red("  Missing or invalid config. Run 'wolfpack setup' first."));
+      process.exit(1);
+    }
+    process.exit(listPlugins(pluginConfig));
   } else if (cmd === "uninstall") {
     if (!hasUninstallConfirmationFlag(process.argv.slice(3))) {
       print(red("  Refusing to uninstall without confirmation."));

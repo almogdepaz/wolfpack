@@ -26,6 +26,7 @@ export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
+  pluginDirs?: string[];
 }
 
 export let hasTTY = true;
@@ -59,7 +60,17 @@ export function parseConfig(raw: unknown): Config | null {
     typeof candidate.tailscaleHostname === "string"
       ? candidate.tailscaleHostname.trim() || undefined
       : undefined;
-  return { devDir, port, tailscaleHostname };
+  let pluginDirs: string[] | undefined;
+  if ("pluginDirs" in candidate) {
+    if (!Array.isArray(candidate.pluginDirs)) return null;
+    pluginDirs = [];
+    for (const dir of candidate.pluginDirs) {
+      if (typeof dir !== "string") return null;
+      const trimmed = dir.trim();
+      if (trimmed) pluginDirs.push(trimmed);
+    }
+  }
+  return pluginDirs ? { devDir, port, tailscaleHostname, pluginDirs } : { devDir, port, tailscaleHostname };
 }
 
 export function loadConfigFromText(text: string): Config | null {

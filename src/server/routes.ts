@@ -20,6 +20,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
 import { isRalphAgent } from "../ralph-agent.js";
+import { loadConfig } from "../cli/config.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
@@ -32,6 +33,7 @@ import {
   clampRows,
 } from "../validation.js";
 import { cleanupAllExceptFinal } from "../worktree.js";
+import { discoverPluginManifests } from "../plugin-manifest.js";
 import { assets } from "../public-assets.js";
 import { isJunkLine, type TriageStatus } from "../triage.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkRalphLoopTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
@@ -429,6 +431,19 @@ export const routes: Record<
         agentCmd: effectiveAgentCmd(settings),
       },
     });
+  },
+
+  "GET /api/plugins": async (_req, res) => {
+    const envDirs = (process.env.WOLFPACK_PLUGIN_DIRS || "")
+      .split(":")
+      .map(dir => dir.trim())
+      .filter(Boolean);
+    const configDirs = loadConfig()?.pluginDirs ?? [];
+    const result = discoverPluginManifests({
+      devDir: DEV_DIR,
+      configPluginDirs: [...configDirs, ...envDirs],
+    });
+    json(res, result);
   },
 
   "POST /api/settings": async (req, res) => {

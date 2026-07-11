@@ -7,10 +7,12 @@ describe("parseConfig", () => {
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: "box.tail123.ts.net",
+      pluginDirs: ["/Users/home/.wolfpack/plugins"],
     })).toEqual({
       devDir: "/Users/home/Dev",
       port: 18790,
       tailscaleHostname: "box.tail123.ts.net",
+      pluginDirs: ["/Users/home/.wolfpack/plugins"],
     });
   });
 
@@ -47,6 +49,11 @@ describe("parseConfig", () => {
       port: 18790,
       tailscaleHostname: undefined,
     });
+  });
+
+  test("rejects malformed pluginDirs", () => {
+    expect(parseConfig({ devDir: "/Users/home/Dev", port: 18790, pluginDirs: "../plugins" })).toBeNull();
+    expect(parseConfig({ devDir: "/Users/home/Dev", port: 18790, pluginDirs: ["/tmp/plugins", 1] })).toBeNull();
   });
 
   test("returns null for missing devDir", () => {

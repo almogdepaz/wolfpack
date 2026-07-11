@@ -2434,6 +2434,14 @@ body.mobile-no-ghost-focus #desktop-terminal-container textarea {
 .agent-add-input { flex: 1; background: var(--bg-surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 12px; color: var(--accent); font-family: inherit; font-size: 13px; outline: none; min-height: 40px; caret-color: var(--accent); }
 .agent-add-row .add-cmd-btn { width: auto; margin-top: 0; padding: 8px 16px; }
 .agent-add-error { margin-top: 6px; font-size: 11px; color: var(--danger); min-height: 14px; }
+.plugins-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.plugin-row { padding: 8px 10px; background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.plugin-row-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plugin-name { flex: 1; min-width: 0; color: var(--text-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-trust { flex-shrink: 0; color: var(--text-dim); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 2px 6px; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; }
+.plugin-meta { margin-top: 4px; color: var(--text-dim); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.plugins-errors { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.plugin-error { color: var(--danger); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 
 .quick-cmds-list { display: flex; flex-direction: column; gap: 4px; }
 .custom-cmd-row { padding: 6px; display: flex; gap: 6px; }
