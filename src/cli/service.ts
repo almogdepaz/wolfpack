@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
-import { print, bold, green, red, dim } from "./formatting.js";
+import { print, bold, green, red, dim, yellow } from "./formatting.js";
 
 const log = createLogger("service");
 import {
@@ -699,11 +699,19 @@ function brokerRestartPrompt(activeBrokerSessions: number | null): string {
 }
 
 export function serviceRestart(options: ServiceActionOptions = {}) {
+  const activeBrokerSessions = readBrokerSessionCount(loadConfig());
   const promptedForBroker = options.broker === undefined;
   const restartBroker = options.broker ?? (
-    ask(brokerRestartPrompt(readBrokerSessionCount(loadConfig()))).toLowerCase() === "y"
+    ask(brokerRestartPrompt(activeBrokerSessions)).toLowerCase() === "y"
   );
-  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning: promptedForBroker })) return;
+  const sessionCount = activeBrokerSessions === null
+    ? "active broker session count unavailable"
+    : `${activeBrokerSessions} active broker ${activeBrokerSessions === 1 ? "session" : "sessions"}`;
+  print(restartBroker
+    ? yellow(`  Broker restart requested; ${sessionCount} may be terminated.`)
+    : dim(`  Server-only restart; ${sessionCount} will remain broker-owned.`));
+  const skipBrokerSessionWarning = options.skipBrokerSessionWarning ?? promptedForBroker;
+  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning })) return;
   serviceStart({ broker: restartBroker });
 }
 

@@ -2,13 +2,18 @@
   "name": "wolfpack-bridge",
   "version": "1.6.6",
   "type": "module",
-  "description": "Mobile/browser command center for AI coding agents on your own machines",
+  "description": "Self-hosted browser terminal manager for AI coding agents on your own machines",
+  "homepage": "https://github.com/almogdepaz/wolfpack#readme",
+  "bugs": {
+    "url": "https://github.com/almogdepaz/wolfpack/issues"
+  },
   "bin": {
     "wolfpack": "./bin/run.cjs"
   },
   "files": [
     "bin/run.cjs",
-    "bin/install.cjs"
+    "bin/install.cjs",
+    "llms.txt"
   ],
   "scripts": {
     "test": "bun test",
@@ -25,18 +30,28 @@
     "wolfpack-bridge-linux-x64": "1.6.6"
   },
   "keywords": [
+    "ai-agent-terminal",
     "ai-agents",
     "ai-coding",
+    "agent-orchestration",
+    "autonomous-agents",
+    "browser-terminal",
     "claude",
     "claude-code",
+    "coding-agent",
     "codex",
     "developer-tools",
-    "mobile",
+    "gemini",
+    "multi-agent",
     "pwa",
+    "remote-development",
     "remote-terminal",
     "self-hosted",
     "tailscale",
-    "terminal"
+    "tailnet",
+    "terminal",
+    "terminal-dashboard",
+    "web-terminal"
   ],
   "repository": {
     "type": "git",

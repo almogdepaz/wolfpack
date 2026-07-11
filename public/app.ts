@@ -2372,7 +2372,7 @@ function showView(name: string, skipAnimation?: boolean): void {
       state.sessionRefreshTimer = setInterval(loadSessions, 5000);
     } else if (name === "projects") {
       back.style.display = "block";
-      back.onclick = () => { showView(state.viewBeforePicker); loadSessions(); };
+      back.onclick = () => { returnFromProjectPicker(); };
       gear.style.display = "none";
       title.textContent = "select project";
 
@@ -2413,7 +2413,7 @@ function showView(name: string, skipAnimation?: boolean): void {
       }
     } else if (name === "ralph-detail") {
       back.style.display = "block";
-      back.onclick = () => { backToSessions(); };
+      back.onclick = () => { backFromRalph(); };
       gear.style.display = "none";
       const ralphMachineSuffix = state.currentRalphMachine
         ? " @ " + (getMachines().find(m => m.url === state.currentRalphMachine)?.name || "remote")
@@ -2424,7 +2424,7 @@ function showView(name: string, skipAnimation?: boolean): void {
       state.ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
     } else if (name === "ralph-start") {
       back.style.display = "block";
-      back.onclick = () => { backToSessions(); };
+      back.onclick = () => { backFromRalph(); };
       gear.style.display = "none";
       title.textContent = "start ralph";
 
@@ -2686,6 +2686,21 @@ async function openSession(name, machineUrl) {
 
 
 // ── Project picker ──
+
+function returnFromProjectPicker(): void {
+  if (state.viewBeforePicker === "sessions") {
+    backToSessions();
+    return;
+  }
+  if (state.viewBeforePicker === "terminal") {
+    if (isDesktop() && hasPreservedGrid() && returnToTerminalView()) return;
+    if (state.currentSession) {
+      void openSession(state.currentSession, state.currentMachine || undefined);
+      return;
+    }
+  }
+  showView(state.viewBeforePicker || "sessions");
+}
 
 async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
@@ -4138,7 +4153,7 @@ function backToSessions() {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (state.currentView === "agent") { e.preventDefault(); showView("projects"); }
-  else if (state.currentView === "projects") { e.preventDefault(); showView(state.viewBeforePicker); loadSessions(); }
+  else if (state.currentView === "projects") { e.preventDefault(); returnFromProjectPicker(); }
   else if (state.currentView === "ralph-start" || state.currentView === "ralph-detail") { e.preventDefault(); backFromRalph(); }
   else if (state.currentView === "settings") { e.preventDefault(); backFromSettings(); }
 });
@@ -4691,8 +4706,7 @@ function bindHtmlEventListeners(): void {
 
   // Project picker
   const pickerCancel = document.querySelector("#projects-view .picker-cancel-btn");
-  if (pickerCancel) pickerCancel.addEventListener("click", () => { showView(state.viewBeforePicker); loadSessions(); });
-
+  if (pickerCancel) pickerCancel.addEventListener("click", () => { returnFromProjectPicker(); });
   const createProjectBtn = document.querySelector("#projects-view .new-project-row button");
   if (createProjectBtn) createProjectBtn.addEventListener("click", () => selectNewProject());
 

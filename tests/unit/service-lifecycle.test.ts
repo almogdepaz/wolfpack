@@ -69,6 +69,18 @@ describe("serviceRestart", () => {
     ]);
     expect(execCommands).toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
   });
+
+  test("server-only update restart does not prompt for or stop the broker", () => {
+    execCommands.length = 0;
+    askPrompts.length = 0;
+    curlBackendResponse = JSON.stringify({ counts: { broker: 2 } });
+
+    serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+
+    expect(askPrompts).toEqual([]);
+    expect(execCommands).toContain("systemctl --user stop wolfpack");
+    expect(execCommands).not.toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
+  });
 });
 `;
 

@@ -272,6 +272,7 @@ export const state = {
   currentRalphProject: null,
   currentRalphMachine: "",
   ralphStartMachine: "",
+  viewBeforeRalph: "sessions",
   ralphLogPollTimer: null,
   currentRalphPlanFile: "",
   restartingRalph: false,

@@ -161,6 +161,7 @@ export function sidebarRalphCardHtml(loop: RalphLoop, machineUrl: string): strin
 // ── Detail view ──
 
 export function openRalphDetail(project: string, machineUrl?: string): void {
+  state.viewBeforeRalph = state.currentView;
   state.currentRalphProject = project;
   state.currentRalphMachine = machineUrl || "";
   deps.showView("ralph-detail");
@@ -613,6 +614,7 @@ export async function discardRalph() {
 
 export function showRalphStart(machineUrl?: string): void {
   if (!wpSettings.ralphEnabled) return;
+  state.viewBeforeRalph = state.currentView;
   state.ralphStartMachine = machineUrl || "";
   state.restartingRalph = false;
   deps.showView("ralph-start");

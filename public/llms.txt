@@ -1,0 +1,49 @@
+# Wolfpack
+
+> Self-hosted browser terminal manager for AI coding agents running on your own macOS/Linux machines.
+
+Wolfpack is a PWA and CLI for controlling long-running terminal sessions from a phone or browser. It is built for AI coding agents such as Claude Code, Codex, Gemini, shell commands, and custom agent wrappers. Sessions run locally through a Rust PTY broker; Wolfpack does not provide a hosted relay or account service. Remote access is typically handled through Tailscale.
+
+## Primary links
+
+- Repository and README: https://github.com/almogdepaz/wolfpack
+- Install script: https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
+- npm package: https://www.npmjs.com/package/wolfpack-bridge
+- Issues: https://github.com/almogdepaz/wolfpack/issues
+- Discussions: https://github.com/almogdepaz/wolfpack/discussions
+
+## Core topics
+
+- AI agent terminal orchestrator
+- Browser terminal dashboard
+- Mobile control for Claude Code, Codex, Gemini, and shell sessions
+- Self-hosted remote development over Tailscale
+- Persistent PTY sessions owned by a local broker
+- Multi-machine session list and desktop terminal grid
+- Optional Ralph autonomous plan runner
+
+## Important docs
+
+- README.md: product overview, quickstart, security model, architecture, CLI usage
+- docs/troubleshooting.md: setup and runtime troubleshooting
+- docs/broker-protocol.md: broker wire protocol
+- docs/ralph-macchio.md: Ralph autonomous plan runner
+- docs/ralph-behavior.md: Ralph behavior notes
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
+wolfpack
+```
+
+npm alternatives:
+
+```bash
+bunx wolfpack-bridge
+npx wolfpack-bridge
+```
+
+## Security model summary
+
+Wolfpack is self-hosted software for machines you control. Treat access to Wolfpack like shell access to that machine. The browser talks to the local Wolfpack server over HTTP/WebSocket, the server talks to the broker over a per-user Unix socket, and the broker owns PTYs and runs commands locally in selected project directories. Optional JWT auth can be layered on top of Tailscale.
