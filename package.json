@@ -13,7 +13,9 @@
   "files": [
     "bin/run.cjs",
     "bin/install.cjs",
-    "llms.txt"
+    "llms.txt",
+    "docs/agent-skills.md",
+    "skills"
   ],
   "scripts": {
     "test": "bun test",

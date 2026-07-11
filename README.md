@@ -169,7 +169,7 @@ Wolfpack exposes repository-local agent skills in `skills/`:
 - `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
 - `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
 
-Copy or symlink these skill directories into an agent's skill path when you want that agent to opt in.
+Copy or symlink these skill directories into an agent's skill path when you want that agent to opt in. Installation/update details: [docs/agent-skills.md](docs/agent-skills.md).
 
 ## Contributing
 
