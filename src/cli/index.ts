@@ -46,6 +46,15 @@ export function planServiceEnsureAction(
   return installed ? "start" : "install";
 }
 
+export function planBinaryUpdateAction(
+  binaryUpdated: boolean,
+  running: boolean,
+  installed: boolean,
+): "server-restart" | "noop" | "start" | "install" {
+  if (binaryUpdated && running) return "server-restart";
+  return planServiceEnsureAction(running, installed);
+}
+
 export function hasUninstallConfirmationFlag(argv: string[]): boolean {
   return argv.includes("--yes") || argv.includes("--force");
 }
@@ -90,14 +99,12 @@ async function start() {
   const binaryUpdated = updateStableBinary();
   const wasRunning = isServiceRunning();
   try {
-    if (binaryUpdated && wasRunning) {
-      // new binary on disk but old version still in memory — reinstall
-      serviceInstall();
-    } else {
-      const action = planServiceEnsureAction(wasRunning, isServiceInstalled());
-      if (action === "start") serviceStart();
-      else if (action === "install") serviceInstall();
-    }
+    const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
+    if (action === "server-restart") {
+      print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
+      serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+    } else if (action === "start") serviceStart();
+    else if (action === "install") serviceInstall();
   } catch (e) {
     print(red(`  Service startup failed: ${e}`));
     print(dim("  Run 'wolfpack service install' to retry."));
