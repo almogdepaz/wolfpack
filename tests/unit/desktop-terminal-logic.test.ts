@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import {
   shouldInterceptCopy,
   encodeTerminalBinary,
+  splitTerminalInputBytes,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
 } from "../../src/terminal-input";
@@ -79,6 +80,29 @@ describe("desktop terminal: binary encoding (encodeTerminalBinary)", () => {
   test("CSI escape sequence encodes correctly", () => {
     const result = encodeTerminalBinary("\x1b[A");
     expect(result).toEqual(new Uint8Array([27, 91, 65]));
+  });
+});
+
+// ── Binary input chunking ──
+
+describe("desktop terminal: binary input chunking (splitTerminalInputBytes)", () => {
+  test("leaves small input as one frame", () => {
+    const input = new Uint8Array([1, 2, 3]);
+    expect(splitTerminalInputBytes(input, 16)).toEqual([input]);
+  });
+
+  test("splits large input into max-sized frames while preserving bytes", () => {
+    const input = new Uint8Array(40);
+    for (let i = 0; i < input.length; i += 1) input[i] = i;
+
+    const chunks = splitTerminalInputBytes(input, 16);
+
+    expect(chunks.map((chunk) => chunk.length)).toEqual([16, 16, 8]);
+    expect(new Uint8Array(chunks.flatMap((chunk) => Array.from(chunk)))).toEqual(input);
+  });
+
+  test("rejects invalid max frame size", () => {
+    expect(() => splitTerminalInputBytes(new Uint8Array([1]), 0)).toThrow("maxBytes must be positive");
   });
 });
 

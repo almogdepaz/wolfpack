@@ -1409,6 +1409,9 @@ body.mobile-no-ghost-focus #desktop-terminal-container textarea {
 .terminal-load-state-displaced {
   box-shadow: inset 0 0 0 1px rgba(255,153,68,0.28);
 }
+.terminal-load-state-ended {
+  box-shadow: inset 0 0 0 1px rgba(255,153,68,0.28);
+}
 .terminal-load-state-failed {
   box-shadow: inset 0 0 0 1px rgba(255,68,68,0.25);
 }

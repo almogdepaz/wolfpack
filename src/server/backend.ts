@@ -99,7 +99,7 @@ export interface PtyBackendMethods {
       onSubscribeError: (err: unknown) => void;
     },
   ): (() => void) | null;
-  writeToTerminal(name: string, data: Buffer | string): void;
+  writeToTerminal(name: string, data: Buffer | string): boolean;
   /**
    * Returns prefill bytes + snapshot seq for the WS attach handler.
    * Async because the broker sources prefill from a snapshot RPC.

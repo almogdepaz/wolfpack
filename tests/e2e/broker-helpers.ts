@@ -5,14 +5,14 @@
  * wired to it via BrokerBackend. Exposes `start()` / `teardown()` lifecycle
  * and a `skipIfNoBroker` export for Playwright project-level skip.
  *
- * Socket path note: uses `/tmp/wp-broker-<uuid>.sock` rather than os.tmpdir()
+ * Socket path note: uses a `/tmp/wp-broker-*` directory with `b.sock` inside rather than os.tmpdir()
  * because macOS tmpdir() expands to `/var/folders/…` which easily exceeds the
- * ~104-char Unix socket path limit.
+ * ~104-char Unix socket path limit. The socket still lives inside a private
+ * temp dir because the broker rejects shared parents it cannot chmod to 0700.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,7 +91,8 @@ export async function start(opts?: {
     throw new Error(skipIfNoBroker.reason);
   }
 
-  const socketPath = `/tmp/wp-broker-${randomUUID()}.sock`;
+  const socketDir = mkdtempSync("/tmp/wp-broker-");
+  const socketPath = join(socketDir, "b.sock");
 
   // 1. Spawn broker binary
   let brokerStderr = "";
@@ -178,6 +179,7 @@ export async function start(opts?: {
         }
       }
     } catch { /* swallow */ }
+    try { rmSync(socketDir, { recursive: true, force: true }); } catch { /* swallow */ }
     if (process.env.WOLFPACK_BROKER_DEBUG && brokerStderr) {
       process.stderr.write("[broker stderr]\n" + brokerStderr + "\n");
     }

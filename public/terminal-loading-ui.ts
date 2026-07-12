@@ -6,6 +6,7 @@ export type TerminalLoadVisualState =
   | "viewer-conflict"
   | "displaced"
   | "live"
+  | "ended"
   | "failed";
 
 export const TERMINAL_SLOW_LOAD_THRESHOLD_MS = 1200;
@@ -20,6 +21,7 @@ const STATE_LABELS: Record<TerminalLoadVisualState, string> = {
   "viewer-conflict": "active on another device",
   displaced: "control moved to another viewer",
   live: "terminal connected",
+  ended: "terminal ended",
   failed: "terminal unavailable",
 };
 
@@ -41,7 +43,7 @@ export function setTerminalLoadVisualState(el: HTMLElement | null, state: Termin
   }
   const inlineStatus = el.querySelector<HTMLElement>(".grid-cell-loading");
   if (inlineStatus) inlineStatus.dataset.terminalLoadLabel = STATE_LABELS[state];
-  if (state === "live" || state === "failed" || state === "viewer-conflict" || state === "displaced") {
+  if (state === "live" || state === "ended" || state === "failed" || state === "viewer-conflict" || state === "displaced") {
     clearTerminalSlowPath(el);
   }
 }

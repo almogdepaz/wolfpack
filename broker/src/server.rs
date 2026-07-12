@@ -10,9 +10,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::codec::{
-    read_frame_async, write_frame_async, CodecError, Frame, OutputFrame,
-};
+use crate::codec::{read_frame_async, write_frame_async, CodecError, Frame, OutputFrame};
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
     SubscribeParams, UnsubscribeParams,
@@ -103,10 +101,7 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
             // already 0o700 per spec, but for all other paths (e.g. ~/.wolfpack
             // or any custom path) we set it explicitly. This is belt-and-suspenders
             // alongside the umask below.
-            let _ = std::fs::set_permissions(
-                parent,
-                std::fs::Permissions::from_mode(0o700),
-            );
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
     }
     // Stale socket files from a previous broker process must be removed before
@@ -276,10 +271,7 @@ async fn handle_connection(
 /// Drain the per-connection event receiver into the writer queue. Logs
 /// and continues on lag (events are best-effort by protocol contract);
 /// returns when the broadcast channel closes or the writer queue dies.
-async fn forward_events(
-    mut rx: broadcast::Receiver<Event>,
-    writer_tx: mpsc::Sender<Frame>,
-) {
+async fn forward_events(mut rx: broadcast::Receiver<Event>, writer_tx: mpsc::Sender<Frame>) {
     loop {
         match rx.recv().await {
             Ok(ev) => {
@@ -298,10 +290,7 @@ async fn forward_events(
     }
 }
 
-async fn connection_writer(
-    mut w: tokio::net::unix::OwnedWriteHalf,
-    mut rx: mpsc::Receiver<Frame>,
-) {
+async fn connection_writer(mut w: tokio::net::unix::OwnedWriteHalf, mut rx: mpsc::Receiver<Frame>) {
     while let Some(frame) = rx.recv().await {
         if let Err(e) = write_frame_async(&mut w, &frame).await {
             warn!(error = %e, "broker writer failed; closing connection");
@@ -325,10 +314,7 @@ async fn dispatch_frame(
             methods::UNSUBSCRIBE => handle_unsubscribe(req, writer_tx, subs).await,
             _ => {
                 let resp = router.handle(req);
-                writer_tx
-                    .send(Frame::ControlResponse(resp))
-                    .await
-                    .is_ok()
+                writer_tx.send(Frame::ControlResponse(resp)).await.is_ok()
             }
         },
         Frame::InputBinary(inp) => {
@@ -406,10 +392,7 @@ async fn handle_subscribe(
                     id,
                     ProtocolError {
                         code: ErrorCode::SessionNotAlive,
-                        message: format!(
-                            "session {} has no live output stream",
-                            params.session_id
-                        ),
+                        message: format!("session {} has no live output stream", params.session_id),
                     },
                 ),
             )
@@ -557,10 +540,7 @@ fn chunk_to_frame(session_id: Uuid, chunk: OutputChunk) -> OutputFrame {
 }
 
 async fn send_response(writer_tx: &mpsc::Sender<Frame>, resp: ControlResponse) -> bool {
-    writer_tx
-        .send(Frame::ControlResponse(resp))
-        .await
-        .is_ok()
+    writer_tx.send(Frame::ControlResponse(resp)).await.is_ok()
 }
 
 fn unknown_session(id: u64, session_id: Uuid) -> ControlResponse {

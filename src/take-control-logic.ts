@@ -73,7 +73,10 @@ export function handleControlGranted(state: GridCellTakeControlState): GridCellT
 export function classifyDisconnect(code: number, reason: string): DisconnectAction {
   if (code === CLOSE_CODE_DISPLACED) return "displaced";
   if (code === CLOSE_CODE_SESSION_UNAVAILABLE) return "session-ended";
-  if (code === CLOSE_CODE_NORMAL && reason === WS_CLOSE_REASONS.PTY_EXITED) return "pty-exited";
+  if (
+    code === CLOSE_CODE_NORMAL
+    && (reason === WS_CLOSE_REASONS.PTY_EXITED || reason === WS_CLOSE_REASONS.PTY_TEARDOWN)
+  ) return "pty-exited";
   return "reconnect";
 }
 

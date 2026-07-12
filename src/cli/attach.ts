@@ -10,6 +10,7 @@ import {
 } from "../ws-constants.js";
 import { baseUrl, call, issueJwt } from "./api.js";
 import { dim, red, yellow } from "./formatting.js";
+import { splitTerminalInputBytes } from "../terminal-input.js";
 
 export type AttachPrefillMode = "full" | "none";
 
@@ -188,7 +189,12 @@ export async function directAttach(options: DirectAttachOptions): Promise<number
       try { ws.close(CLOSE_CODE_NORMAL, "detached"); } catch { /* socket already gone */ }
       return;
     }
-    if (ws.readyState === WebSocket.OPEN) ws.send(Uint8Array.from(chunk));
+    if (ws.readyState !== WebSocket.OPEN) return;
+    for (const frame of splitTerminalInputBytes(chunk)) {
+      const copy = new ArrayBuffer(frame.byteLength);
+      new Uint8Array(copy).set(frame);
+      ws.send(copy);
+    }
   };
 
   try {

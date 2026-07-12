@@ -66,6 +66,17 @@ describe("renderSnapshotToAnsi: scrollback rendering", () => {
     expect(out).toContain("\x1b[0;38;2;0;255;0mgrn");
   });
 
+  test("emits a wide-grapheme lead once and ignores its continuation cell", () => {
+    const snap: SnapshotForRender = {
+      scrollback: [styledRow([{ ch: "界", attrs: {} }, { ch: "", attrs: {} }, { ch: "x", attrs: {} }])],
+      visible_screen: [],
+      cursor: { row: 0, col: 3 },
+    };
+    const out = decode(renderSnapshotToAnsi(snap));
+    expect(out).toContain("界x\r\n");
+    expect(out).not.toContain("界界x");
+  });
+
   test("trims trailing pad-spaces in scrollback lines", () => {
     const snap: SnapshotForRender = {
       scrollback: [row("hello       ")],

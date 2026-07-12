@@ -25,6 +25,7 @@ type Listener = (...args: unknown[]) => void;
 class FakeWs {
   frames: (Buffer | string)[] = [];
   readyState = 1; // OPEN
+  bufferedAmount = 0;
   closeCode: number | null = null;
   closeReason: string | null = null;
   private listeners = new Map<string, Listener[]>();
@@ -92,6 +93,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   prefillCalls: Array<{ name: string; cols?: number; scrollbackLines?: number }> = [];
   writeCalls: Array<{ name: string; data: Uint8Array }> = [];
   resizeDelayMs = 0;
+  resizeError: Error | null = null;
 
   // SessionBackend
   async list(): Promise<string[]> { return [...this.alive]; }
@@ -102,6 +104,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   async capturePaneForTriage(): Promise<string> { return ""; }
   async resize(name: string, cols: number, rows: number): Promise<void> {
     if (this.resizeDelayMs > 0) await wait(this.resizeDelayMs);
+    if (this.resizeError) throw this.resizeError;
     this.resizeCalls.push({ name, cols, rows });
   }
   async send(): Promise<void> {}
@@ -123,11 +126,12 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     set.add(cb);
     return () => { set!.delete(cb); };
   }
-  writeToTerminal(name: string, data: Buffer | string): void {
+  writeToTerminal(name: string, data: Buffer | string): boolean {
     const src = typeof data === "string" ? Buffer.from(data) : data;
     const copy = new Uint8Array(src.length);
     copy.set(src);
     this.writeCalls.push({ name, data: copy });
+    return true;
   }
   onSessionLifecycle(name: string, cb: (event: SessionLifecycleEvent) => void): (() => void) | null {
     if (!this.alive.has(name)) return null;
@@ -243,6 +247,38 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls.length).toBe(0); // debounced
     await wait(150);
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 132, rows: 50 }]);
+  });
+
+  test("post-attach resize rejection closes the stale viewer instead of silently drifting geometry", async () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await wait(20);
+
+    backend.resizeError = new Error("broker unavailable");
+    ws.pushJson({ type: "resize", cols: 132, rows: 50 });
+    await wait(150);
+
+    expect(ws.closeCode).toBe(1011);
+    expect(ws.closeReason).toBe("resize failed");
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("slow viewer is closed before output exceeds its bounded queue", async () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await wait(20);
+    ws.frames.length = 0;
+
+    ws.bufferedAmount = 1024 * 1024;
+    backend.emitData(SESSION, new Uint8Array([0x41, 0x42, 0x43]));
+    await wait(25);
+
+    expect(ws.binaryFrames()).toEqual([]);
+    expect(ws.closeCode).toBe(1011);
+    expect(ws.closeReason).toBe("slow viewer");
+    expect(activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("viewport attach applies initial resize without full desktop settle wait", async () => {

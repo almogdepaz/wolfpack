@@ -6,12 +6,17 @@
 export {
   captureScrollState,
   scrollTargetAfterResize,
+  resizeRehydrateScrollTarget,
+  shouldForceRepaintAfterFit,
+  shouldSendResizeAfterGridFit,
+  shouldResizeRehydrate,
   serializeBufferTail,
 } from "./terminal-buffer";
 
 export {
   shouldInterceptCopy,
   encodeTerminalBinary,
+  splitTerminalInputBytes,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
 } from "./terminal-input";
@@ -19,6 +24,10 @@ export {
 export {
   shouldRehydrate,
 } from "./reconnect-hydration";
+
+export {
+  nextAttachDimensionAction,
+} from "./attach-dimensions";
 
 export {
   addToGridState,
@@ -35,6 +44,11 @@ export {
   FAILING_TIMEOUT_MS as PEER_FAILING_TIMEOUT_MS,
   HEALTHY_TIMEOUT_MS as PEER_HEALTHY_TIMEOUT_MS,
 } from "./peer-health";
+
+export {
+  CLOSE_CODE_SERVER_ERROR,
+  PTY_BINARY_FRAME_MAX_BYTES,
+} from "./ws-constants";
 
 export {
   CLOSE_CODE_DISPLACED,

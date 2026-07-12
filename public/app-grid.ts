@@ -26,7 +26,6 @@ interface GridTerminalController {
   forceRepaint(): void;
   focus(): void;
   resize(): void;
-  resizeWithTransition(): void;
   dispose(): void;
 }
 
@@ -237,6 +236,10 @@ async function mountGridController(gs, cell, idx) {
         gs._slowLoad?.stop();
         setTerminalLoadVisualState(cell, "displaced");
         showGridCellConflictOverlay(gs);
+      } else if (action === "session-ended" || action === "pty-exited") {
+        gs._slowLoad?.stop();
+        if (gs.controller?.term) gs.controller.term.options.disableStdin = true;
+        setTerminalLoadVisualState(cell, "ended");
       } else {
         gs.controller.scheduleReconnect();
       }
@@ -265,23 +268,9 @@ async function mountGridController(gs, cell, idx) {
 
 export function renderGridCells() {
   const container = document.getElementById("desktop-grid-container");
-  // Install resize handler if not yet
-  if (!state.gridResizeHandler) {
-    state.gridResizeHandler = () => {
-      if (!isGridActive()) return;
-      for (const gs of state.gridSessions) {
-        if (gs.controller) gs.controller.resizeWithTransition();
-      }
-    };
-    window.addEventListener("resize", state.gridResizeHandler);
-  }
-  // Build set of current sessions for diffing
+  // Each controller observes its own cell. Grid topology changes below use
+  // one rAF relayout request; do not add a competing window-resize fan-out.
   const existingCells = container.querySelectorAll(".grid-cell");
-  const existingMap = new Map();
-  existingCells.forEach(cell => {
-    const idx = parseInt((cell as HTMLElement).dataset.gridIndex || "0", 10);
-    existingMap.set(idx, cell);
-  });
   // Track which sessions need new cells vs reuse
   const existingCellSessions = [];
   const renderGen = ++_gridRenderGeneration;
@@ -370,8 +359,12 @@ function takeControlOfCell(gs) {
   }
 }
 
-function removeGridCellConflictOverlay(gs) {
+function clearGridCellTakeControlTimer(gs) {
   if (gs._takeControlTimer) { clearTimeout(gs._takeControlTimer); gs._takeControlTimer = null; }
+}
+
+function removeGridCellConflictOverlay(gs) {
+  clearGridCellTakeControlTimer(gs);
   const cell = getGridCellElement(gs);
   if (!cell) return;
   cell.querySelectorAll(".viewer-conflict-overlay").forEach(el => el.remove());
@@ -448,11 +441,8 @@ export function suspendGridMode() {
   state.preservedGridSessions = preserved.sessions;
   state.preservedGridFocusIndex = preserved.focusIndex;
   cancelGridRelayoutTransition();
-  if (state.gridResizeHandler) {
-    window.removeEventListener("resize", state.gridResizeHandler);
-    state.gridResizeHandler = null;
-  }
   for (const gs of state.gridSessions) {
+    clearGridCellTakeControlTimer(gs);
     if (gs.controller) gs.controller.dispose();
     if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
   }
@@ -636,6 +626,7 @@ export function removeFromGrid(idx) {
   // Save snapshot before disposing
   if (deps.saveGridCellSnapshot) deps.saveGridCellSnapshot(gs);
   // Cleanup controller before removing DOM (dispose needs container for removeEventListener)
+  clearGridCellTakeControlTimer(gs);
   if (gs.controller) gs.controller.dispose();
   if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
   state.gridSessions.splice(idx, 1);
@@ -657,10 +648,8 @@ export function removeFromGrid(idx) {
       }
     });
     updateGridLayout();
-    // Remove-flow relayout — per-cell transition hides canvas during refit.
-    for (const gs of state.gridSessions) {
-      if (gs.controller) gs.controller.resizeWithTransition();
-    }
+    // Topology changes may not trigger an observer in every browser.
+    scheduleGridRelayoutFit();
     setGridFocus(state.gridFocusIndex);
   }
   deps.renderSidebar();
@@ -671,17 +660,13 @@ export function removeFromGrid(idx) {
 // the caller controls when the terminal is next initialized.
 export function exitGridMode(skipRestore?) {
   cancelGridRelayoutTransition();
-  // Remove grid resize handler
-  if (state.gridResizeHandler) {
-    window.removeEventListener("resize", state.gridResizeHandler);
-    state.gridResizeHandler = null;
-  }
   // Determine which session to restore before destroying
   const remaining = state.gridSessions.length >= 1 ? state.gridSessions[0] : null;
   const restoreSession = remaining ? remaining.session : state.currentSession;
   const restoreMachine = remaining ? (remaining.machine || "") : state.currentMachine;
   // Destroy all grid sessions
   for (const gs of state.gridSessions) {
+    clearGridCellTakeControlTimer(gs);
     if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
     if (gs.controller) gs.controller.dispose();
   }
@@ -707,19 +692,6 @@ export function exitGridMode(skipRestore?) {
   if (!skipRestore && restoreSession) {
     deps.initTerminal();
     deps.renderSidebar();
-  }
-}
-
-export function fitAllGridCells() {
-  // Force synchronous layout flush before measuring cell widths. Without this,
-  // a fit triggered after display:none→grid + async wasm mount can race the
-  // layout engine and read stale clientWidth, leaving a gap on the right.
-  const container = document.getElementById("desktop-grid-container");
-  if (container) void container.offsetWidth;
-  for (const gs of state.gridSessions) {
-    if (gs.controller) {
-      try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }
-    }
   }
 }
 
@@ -766,9 +738,7 @@ export function revealGridCellsWithoutResize() {
 
 export function scheduleGridStabilizedFit() {
   if (!isGridActive()) return;
-  for (const gs of state.gridSessions) {
-    if (gs.controller) gs.controller.resizeWithTransition();
-  }
+  scheduleGridRelayoutFit();
 }
 
 export function isSessionInGrid(session, machine) {

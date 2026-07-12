@@ -3,6 +3,7 @@
  * Used by both the browser frontend (via wolfpack-lib.js bundle)
  * and unit tests (via direct import).
  */
+import { PTY_BINARY_FRAME_MAX_BYTES } from "./ws-constants";
 
 /**
  * Decide whether a key event should be intercepted for clipboard copy.
@@ -23,6 +24,19 @@ export function encodeTerminalBinary(data: string): Uint8Array {
   const buf = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i) & 0xff;
   return buf;
+}
+
+export function splitTerminalInputBytes(
+  data: Uint8Array,
+  maxBytes: number = PTY_BINARY_FRAME_MAX_BYTES,
+): Uint8Array[] {
+  if (maxBytes <= 0) throw new RangeError("maxBytes must be positive");
+  if (data.length <= maxBytes) return [data];
+  const chunks: Uint8Array[] = [];
+  for (let offset = 0; offset < data.length; offset += maxBytes) {
+    chunks.push(data.subarray(offset, Math.min(offset + maxBytes, data.length)));
+  }
+  return chunks;
 }
 
 export interface MessageInputEnterEvent {

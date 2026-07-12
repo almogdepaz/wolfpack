@@ -387,13 +387,13 @@ describe("BrokerBackend.resize", () => {
     expect(called).toBe(false);
   });
 
-  test("swallows broker 'unsupported' error (skeleton broker without resize wired)", async () => {
+  test("propagates broker resize errors", async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "tui", id: SESSION_UUID_1 })],
     }));
     await backend.list();
     client.setHandler("resize", () => errResp("unsupported", "resize not implemented"));
-    await backend.resize("tui", 100, 30); // no throw — caller continues
+    await expect(backend.resize("tui", 100, 30)).rejects.toThrow("resize not implemented");
     const resizeCalled = client.requests.some((r) => r.method === "resize");
     expect(resizeCalled).toBe(true);
   });
@@ -436,13 +436,19 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
   });
 
   test("writeToTerminal forwards raw bytes for cached session", () => {
-    backend.writeToTerminal("live", Buffer.from([0x01, 0x02, 0x03]));
+    expect(backend.writeToTerminal("live", Buffer.from([0x01, 0x02, 0x03]))).toBe(true);
     expect(client.inputs[0].sessionId).toBe(SESSION_UUID_1);
     expect(Array.from(client.inputs[0].data)).toEqual([0x01, 0x02, 0x03]);
   });
 
-  test("writeToTerminal is a no-op for unknown sessions", () => {
-    backend.writeToTerminal("ghost", "hi");
+  test("writeToTerminal reports false for unknown sessions", () => {
+    expect(backend.writeToTerminal("ghost", "hi")).toBe(false);
+    expect(client.inputs.length).toBe(0);
+  });
+
+  test("writeToTerminal reports false when broker input write throws", () => {
+    client.inputError = new Error("input plane down");
+    expect(backend.writeToTerminal("live", "hi")).toBe(false);
     expect(client.inputs.length).toBe(0);
   });
 

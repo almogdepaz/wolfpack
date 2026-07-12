@@ -1,6 +1,6 @@
 {
   "name": "wolfpack-bridge",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "type": "module",
   "description": "Self-hosted browser terminal manager for AI coding agents on your own machines",
   "homepage": "https://github.com/almogdepaz/wolfpack#readme",

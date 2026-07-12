@@ -360,11 +360,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   async resize(name: string, cols: number, rows: number): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
-    try {
-      unwrap(await this.client.request("resize", { session_id: id, cols, rows }));
-    } catch (e: unknown) {
-      log.debug("resize failed", { name, error: errMsg(e) });
-    }
+    unwrap(await this.client.request("resize", { session_id: id, cols, rows }));
   }
 
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
@@ -472,13 +468,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     };
   }
 
-  writeToTerminal(name: string, data: Buffer | string): void {
+  writeToTerminal(name: string, data: Buffer | string): boolean {
     const id = this.nameToId.get(name);
-    if (!id) return;
+    if (!id) return false;
     try {
       this.client.writeInput(id, toBytes(data));
+      return true;
     } catch (e: unknown) {
-      log.debug("writeToTerminal failed", { name, error: errMsg(e) });
+      log.warn("writeToTerminal failed", { name, error: errMsg(e) });
+      return false;
     }
   }
 

@@ -648,7 +648,12 @@ export const routes: Record<
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     if (!activePtySessions.has(session)) {
-      await getBackend().resize(session, clampCols(cols), clampRows(rows));
+      try {
+        await getBackend().resize(session, clampCols(cols), clampRows(rows));
+      } catch (e: unknown) {
+        log.warn("resize failed", { session, error: errMsg(e) });
+        return json(res, { error: "backend unavailable" }, 503);
+      }
     }
     json(res, { ok: true });
   },

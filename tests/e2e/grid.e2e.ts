@@ -305,6 +305,41 @@ test("addToGrid from non-terminal view switches to terminal view first", async (
   expect(viewAfter).toBe("terminal");
 });
 
+test("removeFromGrid clears pending take-control timer", async ({ page }) => {
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      state: {
+        currentView: string;
+        currentSession: string;
+        gridSessions: Array<unknown>;
+        gridFocusIndex: number;
+      };
+      removeFromGrid: (idx: number) => void;
+      __timerFired?: boolean;
+    };
+    w.__timerFired = false;
+    w.state.currentView = "terminal";
+    w.state.currentSession = "test-project";
+    w.state.gridFocusIndex = 0;
+    w.state.gridSessions = [
+      {
+        session: "test-project",
+        machine: "",
+        controller: { dispose() {}, isConnected: true },
+        _takeControlTimer: window.setTimeout(() => { w.__timerFired = true; }, 50),
+      },
+      { session: "another-project", machine: "", controller: { dispose() {}, isConnected: true } },
+    ];
+    w.removeFromGrid(0);
+  });
+
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() => (window as unknown as { __timerFired?: boolean }).__timerFired)).toBe(false);
+});
+
 test("navigating away from terminal with active grid suspends grid state", async ({ page }) => {
   await loadApp(page);
 

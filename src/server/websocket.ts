@@ -16,12 +16,14 @@ import {
   CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   CLOSE_CODE_DISPLACED,
+  PTY_BINARY_FRAME_MAX_BYTES,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
 import { getBackend, getRouter } from "./backend.js";
 import type { SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
+import { shouldFlushCoalescedOutput } from "../output-coalescing.js";
 import {
   isTerminalLoadTimingEnabled,
   terminalLoadModeFromPrefill,
@@ -115,7 +117,6 @@ const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
 const RATE_LIMIT_PER_SEC = 60;
-const MAX_PTY_BINARY_BYTES = 16_384;
 const RESIZE_DEBOUNCE_MS = 80;
 const RAPID_EXIT_THRESHOLD_MS = 3_000;
 const POST_SPAWN_RESIZE_DELAY_MS = 100;
@@ -210,6 +211,11 @@ export function quiescenceDecision(args: {
 // See call site for full reasoning.
 const COALESCE_FLUSH_MS = 16;
 const COALESCE_HARD_MS = 150;
+const COALESCE_MAX_BYTES = 128 * 1024;
+// The browser can recover any dropped stream by reconnecting from the broker's
+// canonical snapshot. Keeping more than 1 MiB queued for one throttled viewer
+// therefore only risks process-wide memory pressure without improving fidelity.
+const MAX_VIEWER_BUFFERED_BYTES = 1024 * 1024;
 
 function bufferStartsWithPrefillSuffix(prefillTail: Buffer, attachPrefix: Buffer, overlap: number): boolean {
   const prefillStart = prefillTail.length - overlap;
@@ -244,16 +250,12 @@ export function __stripInitialPtyOverlap(
   return { awaitingMore: false, data: attachPrefix };
 }
 
-function sendPrefillDone(entry: { viewer: WebSocket | null; alive: boolean }): boolean {
-  if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return false;
-  entry.viewer.send(JSON.stringify({ type: "prefill_done" }));
-  return true;
+function sendPrefillDone(entry: { viewer: WebSocket | null; alive: boolean }, session: string): boolean {
+  return safeViewerSend(entry, session, JSON.stringify({ type: "prefill_done" }));
 }
 
-function sendPtyReady(entry: { viewer: WebSocket | null; alive: boolean }): boolean {
-  if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return false;
-  entry.viewer.send(JSON.stringify({ type: "pty_ready" }));
-  return true;
+function sendPtyReady(entry: { viewer: WebSocket | null; alive: boolean }, session: string): boolean {
+  return safeViewerSend(entry, session, JSON.stringify({ type: "pty_ready" }));
 }
 
 /** True when `entry` is still the live, current owner of `session` and `ws`
@@ -285,6 +287,40 @@ function tryWsClose(
   catch (e: unknown) { log.debug(logMsg, { session, error: errMsg(e) }); }
 }
 
+function viewerFrameBytes(data: Buffer | string): number {
+  return typeof data === "string" ? Buffer.byteLength(data) : data.length;
+}
+
+/**
+ * The broker snapshot is authoritative, so a viewer that cannot drain output
+ * is closed rather than accumulating an unbounded server-side websocket queue.
+ */
+function safeViewerSend(
+  entry: { viewer: WebSocket | null; alive: boolean },
+  session: string,
+  data: Buffer | string,
+): boolean {
+  const viewer = entry.viewer;
+  if (!entry.alive || !viewer || viewer.readyState !== 1) return false;
+  if (viewer.bufferedAmount + viewerFrameBytes(data) > MAX_VIEWER_BUFFERED_BYTES) {
+    log.warn("slow terminal viewer exceeded output queue", {
+      session,
+      bufferedAmount: viewer.bufferedAmount,
+      frameBytes: viewerFrameBytes(data),
+      maxBufferedBytes: MAX_VIEWER_BUFFERED_BYTES,
+    });
+    tryWsClose(viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER, "slow-viewer close failed", session);
+    return false;
+  }
+  try {
+    viewer.send(data);
+    return true;
+  } catch (e: unknown) {
+    log.debug("terminal viewer send failed", { session, error: errMsg(e) });
+    return false;
+  }
+}
+
 /** Send prefill buffer in 32KB chunks with short delays to avoid stalling mobile connections.
  *  Sends `prefill_done` message at the end so the client exits buffering state. */
 async function sendPrefillChunked(
@@ -298,7 +334,7 @@ async function sendPrefillChunked(
   while (offset < prefill.length) {
     if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return false;
     const end = Math.min(offset + PREFILL_CHUNK_SIZE, prefill.length);
-    entry.viewer.send(prefill.subarray(offset, end));
+    if (!safeViewerSend(entry, session, prefill.subarray(offset, end))) return false;
     timing?.mark("prefill_chunk.send", { chunkIndex, bytes: end - offset });
     chunkIndex++;
     offset = end;
@@ -306,7 +342,7 @@ async function sendPrefillChunked(
       await new Promise(resolve => setTimeout(resolve, PREFILL_CHUNK_DELAY_MS));
     }
   }
-  return sendPrefillDone(entry);
+  return sendPrefillDone(entry, session);
 }
 
 /** Test hook: expose PTY internal state for assertions */
@@ -403,11 +439,11 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         existing.pendingViewer = null;
       }
       setupNewPtyEntry(ws, session, dims, initialTiming);
-      try { ws.send(JSON.stringify({ type: "control_granted" })); } catch (e: unknown) { log.warn("control_granted send failed", { session, error: errMsg(e) }); }
+      safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "control_granted" }));
     }
 
     // Session occupied — send conflict, hold connection open as pending
-    ws.send(JSON.stringify({ type: "viewer_conflict" }));
+    safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "viewer_conflict" }));
 
     // If there's already a pending viewer, close it
     if (existing.pendingViewer) {
@@ -451,7 +487,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
             performImmediateTakeover(pendingAttachDims);
             return;
           }
-          try { ws.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`pending attach_ack send failed`, { session, error: errMsg(e) }); }
+          safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "attach_ack" }));
           return;
         }
         if (msg.type === "take_control") {
@@ -701,15 +737,15 @@ async function sendSnapshotPrefill(
     }
 
     if (prefillMode === "viewport") {
-      ctx.entry.viewer.send(sendBuf);
+      if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return prefillSeq;
       ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });
-      ctx.entry.viewer.send(JSON.stringify({ type: "prefill_viewport" }));
-      sendPrefillDone(ctx.entry);
+      if (!safeViewerSend(ctx.entry, ctx.session, JSON.stringify({ type: "prefill_viewport" }))) return prefillSeq;
+      sendPrefillDone(ctx.entry, ctx.session);
     } else {
       await sendPrefillChunked(ctx.entry, sendBuf, ctx.session, ctx.timing);
     }
   } else {
-    sendPrefillDone(ctx.entry);
+    sendPrefillDone(ctx.entry, ctx.session);
   }
   ctx.timing?.mark("prefill_send.end", { bytes: prefill.data.length, prefillMode });
   return prefillSeq;
@@ -746,35 +782,53 @@ function subscribeWithCoalescing(
   // Latency cost: ~16ms on output (single keystroke echo: 25 → ~41ms).
   // Imperceptible vs the visual mess of mid-redraw scrolldown.
   let _coalesceBuf: Buffer[] = [];
+  let _coalesceBytes = 0;
   let _coalesceTimer: NodeJS.Timeout | null = null;
   let _coalesceFirstPushAt = 0;
   let _sawFirstOutputForward = false;
+  const sendOutputBuffer = (buf: Buffer): void => {
+    if (!entry.viewer || entry.viewer.readyState !== 1) return;
+    if (!_sawFirstOutputForward) {
+      _sawFirstOutputForward = true;
+      ctx.timing?.mark("first_output.forward", { bytes: buf.length });
+    }
+    for (let offset = 0; offset < buf.length; offset += COALESCE_MAX_BYTES) {
+      const chunk = buf.subarray(offset, Math.min(offset + COALESCE_MAX_BYTES, buf.length));
+      if (!safeViewerSend(entry, session, chunk)) return;
+    }
+  };
   const flushCoalesce = (): void => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
     if (!_coalesceBuf.length) return;
-    const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf);
+    const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf, _coalesceBytes);
     _coalesceBuf = [];
+    _coalesceBytes = 0;
     _coalesceFirstPushAt = 0;
-    if (entry.viewer && entry.viewer.readyState === 1) {
-      if (!_sawFirstOutputForward) {
-        _sawFirstOutputForward = true;
-        ctx.timing?.mark("first_output.forward", { bytes: merged.length });
-      }
-      try { entry.viewer.send(merged); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
-    }
+    sendOutputBuffer(merged);
   };
   ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
   const unsub = backend.onSessionData(session, (data: Uint8Array) => {
     if (!entry.alive) return;
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
     const now = Date.now();
-    if (_coalesceBuf.length === 0) _coalesceFirstPushAt = now;
-    _coalesceBuf.push(Buffer.from(data));
-    const heldFor = now - _coalesceFirstPushAt;
-    if (heldFor >= COALESCE_HARD_MS) {
+    const next = Buffer.from(data);
+    const heldFor = _coalesceFirstPushAt ? now - _coalesceFirstPushAt : 0;
+    if (_coalesceBuf.length > 0 && shouldFlushCoalescedOutput({
+      queuedBytes: _coalesceBytes,
+      nextBytes: next.length,
+      maxBytes: COALESCE_MAX_BYTES,
+      heldMs: heldFor,
+      hardMs: COALESCE_HARD_MS,
+    })) {
       flushCoalesce();
+    }
+    if (next.length >= COALESCE_MAX_BYTES) {
+      sendOutputBuffer(next);
       return;
     }
+    if (_coalesceBuf.length === 0) _coalesceFirstPushAt = now;
+    _coalesceBuf.push(next);
+    _coalesceBytes += next.length;
     if (_coalesceTimer) clearTimeout(_coalesceTimer);
     _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
   }, {
@@ -809,6 +863,7 @@ function subscribeWithCoalescing(
   entry.unsubscribe = () => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
     _coalesceBuf = [];
+    _coalesceBytes = 0;
     unsub();
   };
 
@@ -939,7 +994,7 @@ function setupNewPtyEntry(
         timing?.mark("resize_apply.end", { cols: latest.cols, rows: latest.rows, prefillMode });
         if (!entryStillCurrent(entry, session, ws)) return;
         timing?.mark("pty_ready.send");
-        sendPtyReady(entry);
+        sendPtyReady(entry, session);
         return;
       }
 
@@ -984,7 +1039,7 @@ function setupNewPtyEntry(
       if (!subscribeWithCoalescing(ctx, prefillSeq)) return;
 
       timing?.mark("pty_ready.send");
-      sendPtyReady(entry);
+      sendPtyReady(entry, session);
     } finally {
       spawning = false;
     }
@@ -1002,9 +1057,9 @@ function setupNewPtyEntry(
 
   ws.on("message", (raw: Buffer | string, isBinary: boolean) => {
     if (!entry.alive) return;
-    if (!rl.allow()) return;
     try {
       if (!isBinary) {
+        if (!rl.allow()) return;
         if (raw.length > MAX_WS_MESSAGE_BYTES) return; // reject oversized JSON frames
         const msg = JSON.parse(String(raw));
         if (
@@ -1029,15 +1084,15 @@ function setupNewPtyEntry(
             });
           }
           if (entry.viewer && entry.viewer.readyState === 1) {
-            try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`attach_ack send failed`, { session, error: errMsg(e) }); }
+            safeViewerSend(entry, session, JSON.stringify({ type: "attach_ack" }));
           }
           if (!isAttached) {
             spawnPty(requestedSize.current.cols, requestedSize.current.rows, {
               prefillMode,
             });
           } else {
-            sendPtyReady(entry);
-            if (prefillMode !== "none") sendPrefillDone(entry);
+            sendPtyReady(entry, session);
+            if (prefillMode !== "none") sendPrefillDone(entry, session);
           }
         } else if (msg.type === "layout_stable" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           layoutStable.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
@@ -1054,16 +1109,23 @@ function setupNewPtyEntry(
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
               if (!entry.alive) return;
-              streamingBackend.resize(session, cols, rows).catch((e: unknown) => {
-                log.debug(`streaming backend resize failed`, { session, error: errMsg(e) });
+              streamingBackend.resize(session, cols, rows).then(() => {
+                if (!entryStillCurrent(entry, session, ws)) return;
+              }).catch((e: unknown) => {
+                if (!entryStillCurrent(entry, session, ws)) return;
+                log.warn("streaming backend resize failed — reconnecting viewer", { session, error: errMsg(e) });
+                tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "resize failure viewer close failed", session);
               });
             }, RESIZE_DEBOUNCE_MS);
           }
         }
       } else {
         // Binary data — write to terminal via the streaming backend.
-        if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;
-        streamingBackend.writeToTerminal(session, raw as Buffer);
+        if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
+        if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
+          log.warn("terminal input write failed", { session });
+          ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);
+        }
       }
     } catch (e: unknown) {
       if (e instanceof SyntaxError) return;
@@ -1103,8 +1165,6 @@ function setupNewPtyEntry(
       });
     }
     spawnPty(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
-    if (entry.viewer && entry.viewer.readyState === 1) {
-      try { entry.viewer.send(JSON.stringify({ type: "attach_ack" })); } catch (e: unknown) { log.debug(`immediate attach_ack send failed`, { session, error: errMsg(e) }); }
-    }
+    safeViewerSend(entry, session, JSON.stringify({ type: "attach_ack" }));
   }
 }
