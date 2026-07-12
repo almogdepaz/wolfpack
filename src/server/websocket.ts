@@ -16,12 +16,14 @@ import {
   CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   CLOSE_CODE_DISPLACED,
+  PTY_BINARY_FRAME_MAX_BYTES,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
 import { getBackend, getRouter } from "./backend.js";
 import type { SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
+import { shouldFlushCoalescedOutput } from "../output-coalescing.js";
 import {
   isTerminalLoadTimingEnabled,
   terminalLoadModeFromPrefill,
@@ -115,7 +117,6 @@ const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
 const RATE_LIMIT_PER_SEC = 60;
-const MAX_PTY_BINARY_BYTES = 16_384;
 const RESIZE_DEBOUNCE_MS = 80;
 const RAPID_EXIT_THRESHOLD_MS = 3_000;
 const POST_SPAWN_RESIZE_DELAY_MS = 100;
@@ -210,6 +211,7 @@ export function quiescenceDecision(args: {
 // See call site for full reasoning.
 const COALESCE_FLUSH_MS = 16;
 const COALESCE_HARD_MS = 150;
+const COALESCE_MAX_BYTES = 128 * 1024;
 
 function bufferStartsWithPrefillSuffix(prefillTail: Buffer, attachPrefix: Buffer, overlap: number): boolean {
   const prefillStart = prefillTail.length - overlap;
@@ -746,35 +748,53 @@ function subscribeWithCoalescing(
   // Latency cost: ~16ms on output (single keystroke echo: 25 → ~41ms).
   // Imperceptible vs the visual mess of mid-redraw scrolldown.
   let _coalesceBuf: Buffer[] = [];
+  let _coalesceBytes = 0;
   let _coalesceTimer: NodeJS.Timeout | null = null;
   let _coalesceFirstPushAt = 0;
   let _sawFirstOutputForward = false;
+  const sendOutputBuffer = (buf: Buffer): void => {
+    if (!entry.viewer || entry.viewer.readyState !== 1) return;
+    if (!_sawFirstOutputForward) {
+      _sawFirstOutputForward = true;
+      ctx.timing?.mark("first_output.forward", { bytes: buf.length });
+    }
+    for (let offset = 0; offset < buf.length; offset += COALESCE_MAX_BYTES) {
+      const chunk = buf.subarray(offset, Math.min(offset + COALESCE_MAX_BYTES, buf.length));
+      try { entry.viewer.send(chunk); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
+    }
+  };
   const flushCoalesce = (): void => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
     if (!_coalesceBuf.length) return;
-    const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf);
+    const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf, _coalesceBytes);
     _coalesceBuf = [];
+    _coalesceBytes = 0;
     _coalesceFirstPushAt = 0;
-    if (entry.viewer && entry.viewer.readyState === 1) {
-      if (!_sawFirstOutputForward) {
-        _sawFirstOutputForward = true;
-        ctx.timing?.mark("first_output.forward", { bytes: merged.length });
-      }
-      try { entry.viewer.send(merged); } catch (e: unknown) { log.debug(`PTY data send failed`, { session, error: errMsg(e) }); }
-    }
+    sendOutputBuffer(merged);
   };
   ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
   const unsub = backend.onSessionData(session, (data: Uint8Array) => {
     if (!entry.alive) return;
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
     const now = Date.now();
-    if (_coalesceBuf.length === 0) _coalesceFirstPushAt = now;
-    _coalesceBuf.push(Buffer.from(data));
-    const heldFor = now - _coalesceFirstPushAt;
-    if (heldFor >= COALESCE_HARD_MS) {
+    const next = Buffer.from(data);
+    const heldFor = _coalesceFirstPushAt ? now - _coalesceFirstPushAt : 0;
+    if (_coalesceBuf.length > 0 && shouldFlushCoalescedOutput({
+      queuedBytes: _coalesceBytes,
+      nextBytes: next.length,
+      maxBytes: COALESCE_MAX_BYTES,
+      heldMs: heldFor,
+      hardMs: COALESCE_HARD_MS,
+    })) {
       flushCoalesce();
+    }
+    if (next.length >= COALESCE_MAX_BYTES) {
+      sendOutputBuffer(next);
       return;
     }
+    if (_coalesceBuf.length === 0) _coalesceFirstPushAt = now;
+    _coalesceBuf.push(next);
+    _coalesceBytes += next.length;
     if (_coalesceTimer) clearTimeout(_coalesceTimer);
     _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
   }, {
@@ -809,6 +829,7 @@ function subscribeWithCoalescing(
   entry.unsubscribe = () => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
     _coalesceBuf = [];
+    _coalesceBytes = 0;
     unsub();
   };
 
@@ -1002,9 +1023,9 @@ function setupNewPtyEntry(
 
   ws.on("message", (raw: Buffer | string, isBinary: boolean) => {
     if (!entry.alive) return;
-    if (!rl.allow()) return;
     try {
       if (!isBinary) {
+        if (!rl.allow()) return;
         if (raw.length > MAX_WS_MESSAGE_BYTES) return; // reject oversized JSON frames
         const msg = JSON.parse(String(raw));
         if (
@@ -1062,8 +1083,11 @@ function setupNewPtyEntry(
         }
       } else {
         // Binary data — write to terminal via the streaming backend.
-        if (Buffer.isBuffer(raw) && raw.length > MAX_PTY_BINARY_BYTES) return;
-        streamingBackend.writeToTerminal(session, raw as Buffer);
+        if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
+        if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
+          log.warn("terminal input write failed", { session });
+          ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);
+        }
       }
     } catch (e: unknown) {
       if (e instanceof SyntaxError) return;

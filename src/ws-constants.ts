@@ -15,6 +15,11 @@ export const CLOSE_CODE_SERVER_ERROR = 1011;
 export const CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
 export const CLOSE_CODE_DISPLACED = 4002;
 
+// ── Binary frame limits ──
+
+/** Maximum accepted stdin frame size on /ws/pty. Clients split larger input. */
+export const PTY_BINARY_FRAME_MAX_BYTES = 16_384;
+
 // ── Close reason strings ──
 
 export const WS_CLOSE_REASONS = {
@@ -24,4 +29,5 @@ export const WS_CLOSE_REASONS = {
   PTY_TEARDOWN: "pty teardown",
   SESSION_ENDED: "session ended",
   SUBSCRIBE_FAILED: "subscribe rpc failed",
+  WRITE_FAILED: "write failed",
 } as const;

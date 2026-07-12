@@ -49,6 +49,9 @@ import {
 
 const GHOSTTY_PREWARM_POOL_SIZE = 2;
 const GHOSTTY_PREWARM_DELAY_MS = 750;
+const ATTACH_DIMENSION_RETRY_DELAY_MS = 50;
+const ATTACH_DIMENSION_MAX_ATTEMPTS = 20;
+const RESIZE_SEND_DEBOUNCE_MS = 120;
 
 const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
   maxSize: GHOSTTY_PREWARM_POOL_SIZE,
@@ -401,9 +404,10 @@ function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
  * @param {(msg: string) => void} opts.sendMessage - send a string message (e.g. resize JSON)
  * @param {() => boolean} opts.canAcceptInput - guard for stdin (may include focus check)
  * @param {() => boolean} [opts.canSendResize] - guard for resize messages (defaults to canAcceptInput)
+ * @param {boolean} [opts.forwardResizeEvents=true] - whether terminal onResize events directly forward backend resize messages
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
-async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, onWheelScroll = null, alwaysForwardWheel = false, trace = null }) {
+async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, forwardResizeEvents = true, onWheelScroll = null, alwaysForwardWheel = false, trace = null }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -573,16 +577,20 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     });
   }
 
-  // Resize forwarding (debounced to prevent resize storms)
+  // Resize forwarding (debounced to prevent resize storms). Controlled
+  // terminal instances disable this path because their controller calls
+  // sendFitResize() after fit(); forwarding both doubles backend resize churn.
   let _termResizeTimer = null;
-  term.onResize(({ cols, rows }) => {
-    if (!shouldSendResize()) return;
-    if (_termResizeTimer) clearTimeout(_termResizeTimer);
-    _termResizeTimer = setTimeout(() => {
-      _termResizeTimer = null;
-      if (shouldSendResize()) sendMessage(JSON.stringify({ type: "resize", cols, rows }));
-    }, 50);
-  });
+  if (forwardResizeEvents) {
+    term.onResize(({ cols, rows }) => {
+      if (!shouldSendResize()) return;
+      if (_termResizeTimer) clearTimeout(_termResizeTimer);
+      _termResizeTimer = setTimeout(() => {
+        _termResizeTimer = null;
+        if (shouldSendResize()) sendMessage(JSON.stringify({ type: "resize", cols, rows }));
+      }, RESIZE_SEND_DEBOUNCE_MS);
+    });
+  }
 
   return { term, fitAddon };
 }
@@ -830,6 +838,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let _sawViewportPrefill = false;
   let _currentAttachPrefillMode = _initialPrefillMode;
   let _prefillDoneTimeout = null;
+  let _attachDimensionRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let _attachDimensionRetryAttempt = 0;
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
@@ -854,24 +864,45 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     try { opts.fitTerminal(); } catch {}
     const dims = opts.getTermDimensions();
-    if (!dims) return;
+    const dimensionAction = WP.nextAttachDimensionAction(
+      dims,
+      _attachDimensionRetryAttempt,
+      ATTACH_DIMENSION_MAX_ATTEMPTS,
+    );
+    if (dimensionAction.kind === "retry") {
+      _attachDimensionRetryAttempt = dimensionAction.nextAttempt;
+      if (!_attachDimensionRetryTimer) {
+        _attachDimensionRetryTimer = setTimeout(() => {
+          _attachDimensionRetryTimer = null;
+          sendAttachHandshake();
+        }, ATTACH_DIMENSION_RETRY_DELAY_MS);
+      }
+      return;
+    }
+    if (dimensionAction.kind === "fail") {
+      ws.close(WP.CLOSE_CODE_SERVER_ERROR, "attach dimensions unavailable");
+      return;
+    }
+    _attachDimensionRetryAttempt = 0;
+    const attachDims = dims;
+    if (!attachDims) return;
     const prefillMode = _initialPrefillMode;
     _currentAttachPrefillMode = prefillMode;
-    _lastSentResize = dims.cols + "x" + dims.rows;
+    _lastSentResize = attachDims.cols + "x" + attachDims.rows;
     _awaitingAttachAck = true;
     _attachAckReceived = false;
     _prefillChunks = [];
     _awaitingPrefillDone = prefillMode !== "none";
     _sawViewportPrefill = false;
-    const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; takeControl?: true } = { type: "attach", cols: dims.cols, rows: dims.rows, prefillMode };
+    const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; takeControl?: true } = { type: "attach", cols: attachDims.cols, rows: attachDims.rows, prefillMode };
     if (_takeControlOnAttach) { msg.takeControl = true; _takeControlOnAttach = false; }
     // Diag: start a fresh trace per attach so reconnects/take-controls show up
     // as separate sessions in the dump.
     _trace = __wfTraceGet(opts.session, opts.machine || "") || __wfTraceStart(opts.session, opts.machine || "", {
-      cols: dims.cols, rows: dims.rows, prefillMode,
+      cols: attachDims.cols, rows: attachDims.rows, prefillMode,
       takeControl: !!msg.takeControl, reset: !!opts.resetPty,
     });
-    __wfTraceEvent(_trace, "attach.send", { cols: dims.cols, rows: dims.rows, prefillMode });
+    __wfTraceEvent(_trace, "attach.send", { cols: attachDims.cols, rows: attachDims.rows, prefillMode });
     __wfTraceRafStart(_trace);
     ws.send(JSON.stringify(msg));
     if (_attachAckTimer) clearTimeout(_attachAckTimer);
@@ -930,7 +961,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       const msg = JSON.stringify({ type: "resize", cols: d.cols, rows: d.rows });
       _lastSentResize = nextKey;
       ws.send(msg);
-    }, 50);
+    }, RESIZE_SEND_DEBOUNCE_MS);
   }
 
   function connect() {
@@ -1098,10 +1129,26 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function send(data: string | Blob | BufferSource): void {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (typeof data === "string" || data instanceof Blob) {
+      ws.send(data);
+      return;
+    }
+    const bytes = data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    for (const frame of WP.splitTerminalInputBytes(bytes)) {
+      const copy = new ArrayBuffer(frame.byteLength);
+      new Uint8Array(copy).set(frame);
+      ws.send(copy);
+    }
   }
 
   function close() {
+    if (_attachDimensionRetryTimer) {
+      clearTimeout(_attachDimensionRetryTimer);
+      _attachDimensionRetryTimer = null;
+    }
     _rc.cancel();
     _rc.block();
     _awaitingAttachAck = false;
@@ -1246,6 +1293,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _userScrolledUp = false;
+  let _userRequestedScrollback = false;
   // Scrollback length snapshot captured when user enters scroll-lock. Used by
   // the patched scrollToBottom to compute per-write scrollback growth and bump
   // viewportY accordingly, so the visible window stays anchored to the same
@@ -1256,6 +1304,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _resizeObserver = null;
   let _layoutSyncRaf = null;
   let _resizeRehydrateTimer = null;
+  let _pendingResizeScrollRestore: { oldScrollbackLength: number; oldViewportY: number } | null = null;
   let _firstFitSeen = false;
   let _firstInputAccepted = false;
 
@@ -1367,10 +1416,13 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (!_fitAddon || !_term || !_container) return;
     const before = { cols: _term.cols, rows: _term.rows };
     fitTerminalPreserveScroll();
-    if (options?.repaint !== false) forceRepaint();
-    if (_ptyClient) _ptyClient.sendFitResize({ force: !!options?.forceSend, fit: false });
-    if (before.cols !== _term.cols || before.rows !== _term.rows) {
-      scheduleResizeRehydrate();
+    const after = { cols: _term.cols, rows: _term.rows };
+    if (WP.shouldForceRepaintAfterFit(before, after, options?.repaint !== false)) forceRepaint();
+    const dimensionsChanged = WP.shouldSendResizeAfterGridFit(before, after);
+    if (_ptyClient && dimensionsChanged) _ptyClient.sendFitResize({ force: !!options?.forceSend, fit: false });
+    if (dimensionsChanged) {
+      const viewportY = _term.viewportY ?? 0;
+      if (WP.shouldResizeRehydrate(viewportY, _userRequestedScrollback)) scheduleResizeRehydrate();
     }
   }
 
@@ -1410,6 +1462,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       _resizeRehydrateTimer = null;
       if (!_term || !_ptyClient || !_ptyClient.isOpen) return;
       if (shouldSuppressContainerResize()) return;
+      const viewportY = _term.viewportY ?? 0;
+      if (!WP.shouldResizeRehydrate(viewportY, _userRequestedScrollback)) return;
+      _pendingResizeScrollRestore = { oldScrollbackLength: _term.getScrollbackLength?.() ?? 0, oldViewportY: viewportY };
       _ptyClient.reconnect();
     }, 350);
   }
@@ -1456,6 +1511,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       sendMessage: (msg) => _ptyClient && _ptyClient.send(msg),
       canAcceptInput: _canAcceptInput,
       canSendResize: _canSendResize,
+      forwardResizeEvents: false,
       alwaysForwardWheel: false,
       trace,
       onWheelScroll: (ev) => {
@@ -1476,10 +1532,12 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
             _lastScrollbackLength = _term.getScrollbackLength?.() ?? -1;
           }
           _userScrolledUp = true;
+          _userRequestedScrollback = true;
         } else if (ev.deltaY > 0) {
           requestAnimationFrame(() => {
             if (_term && _term.viewportY === 0) {
               _userScrolledUp = false;
+              _userRequestedScrollback = false;
               _lastScrollbackLength = -1;
             }
           });
@@ -1588,12 +1646,14 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
           _userScrolledUp = true;
         } else {
           _userScrolledUp = false;
+          _userRequestedScrollback = false;
           _lastScrollbackLength = -1;
         }
       };
       _scrollLockKeydownHandler = () => {
         if (_userScrolledUp) {
           _userScrolledUp = false;
+          _userRequestedScrollback = false;
           _lastScrollbackLength = -1;
           origScrollToBottom();
         }
@@ -1650,6 +1710,19 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       shouldFocus: opts.shouldFocus || (() => true),
       canFinish: () => _initialPrefillComplete && _hydrationWritesInFlight === 0,
       onReveal: () => {
+        if (_pendingResizeScrollRestore && _term) {
+          const target = WP.resizeRehydrateScrollTarget({
+            ..._pendingResizeScrollRestore,
+            newScrollbackLength: _term.getScrollbackLength?.() ?? 0,
+          });
+          _pendingResizeScrollRestore = null;
+          if (target !== null) {
+            try { _term.scrollToLine(target); } catch {}
+            _userScrolledUp = target > 0;
+            _userRequestedScrollback = target > 0;
+            _lastScrollbackLength = _term.getScrollbackLength?.() ?? -1;
+          }
+        }
         forceRepaint();
         if (opts.onHydrated) opts.onHydrated();
       },
@@ -1726,7 +1799,10 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
         }
-        _userScrolledUp = false; // reset scroll-lock on reconnect
+        if (!_pendingResizeScrollRestore) {
+          _userScrolledUp = false;
+          _userRequestedScrollback = false;
+        } // reset scroll-lock on ordinary reconnect
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
@@ -1821,8 +1897,10 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_layoutSyncRaf) { cancelAnimationFrame(_layoutSyncRaf); _layoutSyncRaf = null; }
     if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
     if (_resizeRehydrateTimer) { clearTimeout(_resizeRehydrateTimer); _resizeRehydrateTimer = null; }
+    _pendingResizeScrollRestore = null;
     _mounting = false;
     _userScrolledUp = false;
+    _userRequestedScrollback = false;
     if (_container) {
       if (_scrollLockKeydownHandler) _container.removeEventListener("keydown", _scrollLockKeydownHandler, true);
       if (_browserShortcutKeydownHandler) _container.removeEventListener("keydown", _browserShortcutKeydownHandler, true);

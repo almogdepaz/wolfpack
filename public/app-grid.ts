@@ -370,8 +370,12 @@ function takeControlOfCell(gs) {
   }
 }
 
-function removeGridCellConflictOverlay(gs) {
+function clearGridCellTakeControlTimer(gs) {
   if (gs._takeControlTimer) { clearTimeout(gs._takeControlTimer); gs._takeControlTimer = null; }
+}
+
+function removeGridCellConflictOverlay(gs) {
+  clearGridCellTakeControlTimer(gs);
   const cell = getGridCellElement(gs);
   if (!cell) return;
   cell.querySelectorAll(".viewer-conflict-overlay").forEach(el => el.remove());
@@ -453,6 +457,7 @@ export function suspendGridMode() {
     state.gridResizeHandler = null;
   }
   for (const gs of state.gridSessions) {
+    clearGridCellTakeControlTimer(gs);
     if (gs.controller) gs.controller.dispose();
     if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
   }
@@ -636,6 +641,7 @@ export function removeFromGrid(idx) {
   // Save snapshot before disposing
   if (deps.saveGridCellSnapshot) deps.saveGridCellSnapshot(gs);
   // Cleanup controller before removing DOM (dispose needs container for removeEventListener)
+  clearGridCellTakeControlTimer(gs);
   if (gs.controller) gs.controller.dispose();
   if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
   state.gridSessions.splice(idx, 1);
@@ -682,6 +688,7 @@ export function exitGridMode(skipRestore?) {
   const restoreMachine = remaining ? (remaining.machine || "") : state.currentMachine;
   // Destroy all grid sessions
   for (const gs of state.gridSessions) {
+    clearGridCellTakeControlTimer(gs);
     if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
     if (gs.controller) gs.controller.dispose();
   }

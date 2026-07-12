@@ -93,6 +93,8 @@ pub enum SpawnError {
     Spawn(String),
     #[error("reader clone failed: {0}")]
     ReaderClone(String),
+    #[error("thread spawn failed: {0}")]
+    ThreadSpawn(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -145,7 +147,9 @@ pub struct Session {
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let id = self.inner.state.lock().map(|s| s.id).ok();
-        f.debug_struct("Session").field("id", &id).finish_non_exhaustive()
+        f.debug_struct("Session")
+            .field("id", &id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -222,16 +226,25 @@ impl Session {
         let drain_terminal = Arc::clone(&terminal);
         let drain_seq = Arc::clone(&seq);
         let drain_bus = Arc::clone(&bus);
-        let _ = thread::Builder::new()
-            .name(format!("broker-pty-read-{drain_id}"))
-            .spawn(move || drain_reader(reader, drain_terminal, drain_seq, drain_bus));
+        if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
+            drain_reader(reader, drain_terminal, drain_seq, drain_bus)
+        }) {
+            let mut child = child;
+            let _ = child.kill();
+            return Err(SpawnError::ThreadSpawn(e.to_string()));
+        }
 
         let reaper_inner = Arc::clone(&inner);
         let reap_id = id;
         let reaper_events = events.clone();
-        let _ = thread::Builder::new()
-            .name(format!("broker-pty-wait-{reap_id}"))
-            .spawn(move || reap(child, reaper_inner, reap_id, reaper_events));
+        let mut child_killer = child.clone_killer();
+        spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
+            reap(child, reaper_inner, reap_id, reaper_events)
+        })
+        .map_err(|e| {
+            let _ = child_killer.kill();
+            SpawnError::ThreadSpawn(e.to_string())
+        })?;
 
         Ok(Session {
             inner,
@@ -250,7 +263,11 @@ impl Session {
     }
 
     pub fn snapshot(&self) -> SessionState {
-        self.inner.state.lock().expect("session state poisoned").clone()
+        self.inner
+            .state
+            .lock()
+            .expect("session state poisoned")
+            .clone()
     }
 
     pub fn id(&self) -> Uuid {
@@ -262,11 +279,19 @@ impl Session {
     }
 
     pub fn alive(&self) -> bool {
-        self.inner.state.lock().expect("session state poisoned").alive
+        self.inner
+            .state
+            .lock()
+            .expect("session state poisoned")
+            .alive
     }
 
     pub fn exit_code(&self) -> Option<i32> {
-        self.inner.state.lock().expect("session state poisoned").exit_code
+        self.inner
+            .state
+            .lock()
+            .expect("session state poisoned")
+            .exit_code
     }
 
     /// Send `signal` to the recorded pid.
@@ -330,7 +355,11 @@ impl Session {
             term.resize(cols, rows);
         }
         drop(master);
-        let _ = events.send(Event::SessionResized { session_id: id, cols, rows });
+        let _ = events.send(Event::SessionResized {
+            session_id: id,
+            cols,
+            rows,
+        });
         let _ = events.send(Event::SnapshotInvalidated { session_id: id });
         Ok(())
     }
@@ -347,7 +376,11 @@ impl Session {
     ///
     /// `target_cols = Some(c)` reflows scrollback to `c` columns using wrap
     /// markers after truncation. Omit to skip reflow.
-    pub fn snapshot_terminal(&self, scrollback_lines: Option<u32>, target_cols: Option<u16>) -> Snapshot {
+    pub fn snapshot_terminal(
+        &self,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+    ) -> Snapshot {
         let id = self.id();
         let term = self.terminal.lock().expect("terminal poisoned");
         // Read seq under the same lock the drainer holds while bumping it,
@@ -397,10 +430,7 @@ fn drain_reader<R: Read>(
                     term.feed(&data);
                     seq.fetch_add(1, Ordering::SeqCst) + 1
                 };
-                bus.publish(OutputChunk {
-                    seq: new_seq,
-                    data,
-                });
+                bus.publish(OutputChunk { seq: new_seq, data });
             }
             Err(_) => break,
         }
@@ -408,6 +438,38 @@ fn drain_reader<R: Read>(
     // Signal "drainer done; every byte produced has been ingested" so
     // attached subscribers see Closed and sync waiters wake up.
     bus.close();
+}
+
+fn spawn_named_thread<F>(name: String, f: F) -> io::Result<thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    #[cfg(test)]
+    if FORCE_THREAD_SPAWN_FAILURES.with(|failures| {
+        let n = failures.get();
+        if n > 0 {
+            failures.set(n - 1);
+            true
+        } else {
+            false
+        }
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "forced thread spawn failure",
+        ));
+    }
+    thread::Builder::new().name(name).spawn(f)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_THREAD_SPAWN_FAILURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn force_thread_spawn_failures_for_test(count: usize) {
+    FORCE_THREAD_SPAWN_FAILURES.with(|failures| failures.set(count));
 }
 
 fn reap(
@@ -467,7 +529,10 @@ mod tests {
         let sess = spawn_session(opts(vec!["sleep", "30"])).expect("spawn");
         assert!(sess.pid().is_some(), "pid must be recorded");
         assert!(sess.pid().unwrap() > 0, "pid must be a real process id");
-        assert!(sess.alive(), "session must be alive immediately after spawn");
+        assert!(
+            sess.alive(),
+            "session must be alive immediately after spawn"
+        );
         assert_eq!(sess.exit_code(), None);
         let info = sess.snapshot().to_info();
         assert_eq!(info.cols, 80);
@@ -500,6 +565,14 @@ mod tests {
                 // the session is no longer alive.
             }
         }
+    }
+
+    #[test]
+    fn spawn_thread_failure_returns_error() {
+        force_thread_spawn_failures_for_test(1);
+        let err = spawn_session(opts(vec!["sleep", "30"]))
+            .expect_err("thread spawn failure must fail session spawn");
+        assert!(matches!(err, SpawnError::ThreadSpawn(_)));
     }
 
     #[test]
@@ -567,7 +640,10 @@ mod tests {
         let _ = sess.wait_for_exit(Duration::from_secs(5));
 
         let after = sess.snapshot_terminal(None, None).seq;
-        assert!(after > 0, "seq must advance after drainer ingests output (got {after})");
+        assert!(
+            after > 0,
+            "seq must advance after drainer ingests output (got {after})"
+        );
     }
 
     #[test]
@@ -775,9 +851,14 @@ mod tests {
         // the channel or imminent — bound the wait at TTL anyway.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            assert!(std::time::Instant::now() < deadline, "no SessionExited event");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no SessionExited event"
+            );
             match rx.try_recv() {
-                Ok(Event::SessionExited { session_id: sid, .. }) => {
+                Ok(Event::SessionExited {
+                    session_id: sid, ..
+                }) => {
                     assert_eq!(sid, session_id);
                     return;
                 }

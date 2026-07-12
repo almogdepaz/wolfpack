@@ -187,8 +187,8 @@ export class MockBackend implements SessionBackend {
     for (const cb of this._outputSubscribers.get(name) ?? []) cb(data);
   }
 
-  writeToTerminal(_name: string, _data: Buffer | string): void {
-    // no-op in mock
+  writeToTerminal(_name: string, _data: Buffer | string): boolean {
+    return true;
   }
 
   async getSessionPrefill(name: string, _cols?: number, _options?: { scrollbackLines?: number }): Promise<{ data: Buffer; seq?: bigint }> {

@@ -1036,15 +1036,18 @@ async fn resubscribe_after_unsubscribe_delivers_only_new_session_output() {
         params: json!({ "session_id": id_a }),
     }).await;
 
-    // Drain a few frames from A to confirm it's flowing.
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    // Drain frames from A to confirm it's flowing. Under parallel cargo test
+    // load, the shell/timer can take longer than a fixed 120ms sleep to emit.
     let (mut r, _w) = stream.split();
     let mut a_frames = 0u32;
-    while let Ok(Ok(frame)) = timeout(Duration::from_millis(50), read_frame_async(&mut r)).await {
-        if matches!(frame, Frame::OutputBinary(ref f) if f.session_id == id_a) {
-            a_frames += 1;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Ok(frame)) = timeout(Duration::from_millis(100), read_frame_async(&mut r)).await {
+            if matches!(frame, Frame::OutputBinary(ref f) if f.session_id == id_a) {
+                a_frames += 1;
+                break;
+            }
         }
-        if a_frames >= 1 { break; }
     }
     assert!(a_frames >= 1, "expected at least one output frame from A");
 

@@ -808,6 +808,23 @@ describe("POST /api/resize", () => {
     expect(data.error).toBe("missing params");
   });
 
+  test("returns 503 when backend resize fails", async () => {
+    const originalResize = mockBackend.resize.bind(mockBackend);
+    mockBackend.resize = async () => { throw new Error("resize transport down"); };
+    try {
+      const res = await post("/api/resize", {
+        session: "wolf-1",
+        cols: 80,
+        rows: 40,
+      });
+      expect(res.status).toBe(503);
+      const data = await res.json();
+      expect(data.error).toBe("backend unavailable");
+    } finally {
+      mockBackend.resize = originalResize;
+    }
+  });
+
   test("rejects unknown session", async () => {
     const res = await post("/api/resize", {
       session: "ghost",

@@ -123,11 +123,12 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     set.add(cb);
     return () => { set!.delete(cb); };
   }
-  writeToTerminal(name: string, data: Buffer | string): void {
+  writeToTerminal(name: string, data: Buffer | string): boolean {
     const src = typeof data === "string" ? Buffer.from(data) : data;
     const copy = new Uint8Array(src.length);
     copy.set(src);
     this.writeCalls.push({ name, data: copy });
+    return true;
   }
   onSessionLifecycle(name: string, cb: (event: SessionLifecycleEvent) => void): (() => void) | null {
     if (!this.alive.has(name)) return null;

@@ -13,7 +13,6 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -114,11 +113,13 @@ async function killProc(proc: ChildProcess): Promise<void> {
 
 let brokerProc: ChildProcess | null = null;
 let socketPath: string | null = null;
+let socketDir: string | null = null;
 let devDir: string | null = null;
 
 test.beforeAll(async () => {
   if (skip.condition) return;
-  socketPath = `/tmp/wp-broker-${randomUUID()}.sock`;
+  socketDir = mkdtempSync("/tmp/wp-broker-");
+  socketPath = join(socketDir, "b.sock");
   devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-restart-")));
   mkdirSync(join(devDir, PROJECT_NAME));
 
@@ -142,6 +143,11 @@ test.afterAll(async () => {
     }
   }
   brokerProc = null;
+  if (socketDir) {
+    try { rmSync(socketDir, { recursive: true, force: true }); } catch { /* swallow */ }
+    socketDir = null;
+    socketPath = null;
+  }
   if (devDir) {
     try { rmSync(devDir, { recursive: true, force: true }); } catch { /* swallow */ }
     devDir = null;

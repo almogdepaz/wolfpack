@@ -11,6 +11,23 @@ function captureScrollState(buffer) {
 function scrollTargetAfterResize(nextBaseY, distanceFromBottom) {
   return Math.max(0, nextBaseY - distanceFromBottom);
 }
+function shouldResizeRehydrate(viewportY, userScrolledUp) {
+  return userScrolledUp && viewportY > 0;
+}
+function shouldForceRepaintAfterFit(before, after, repaintRequested) {
+  if (!repaintRequested)
+    return false;
+  return before.cols === after.cols && before.rows === after.rows;
+}
+function shouldSendResizeAfterGridFit(before, after) {
+  return before.cols !== after.cols || before.rows !== after.rows;
+}
+function resizeRehydrateScrollTarget(state) {
+  if (state.oldViewportY <= 0)
+    return null;
+  const distanceFromScrollbackBottom = Math.max(0, state.oldScrollbackLength - state.oldViewportY);
+  return Math.max(0, state.newScrollbackLength - distanceFromScrollbackBottom);
+}
 function serializeBufferTail(buffer, maxLines) {
   const start = Math.max(0, buffer.length - maxLines);
   const lines = [];
@@ -22,6 +39,22 @@ function serializeBufferTail(buffer, maxLines) {
   return lines.join(`
 `);
 }
+// src/ws-constants.ts
+var CLOSE_CODE_NORMAL = 1000;
+var CLOSE_CODE_SERVER_ERROR = 1011;
+var CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
+var CLOSE_CODE_DISPLACED = 4002;
+var PTY_BINARY_FRAME_MAX_BYTES = 16384;
+var WS_CLOSE_REASONS = {
+  PTY_EXITED: "pty exited",
+  SESSION_UNAVAILABLE: "session unavailable",
+  DISPLACED: "displaced",
+  PTY_TEARDOWN: "pty teardown",
+  SESSION_ENDED: "session ended",
+  SUBSCRIBE_FAILED: "subscribe rpc failed",
+  WRITE_FAILED: "write failed"
+};
+
 // src/terminal-input.ts
 function shouldInterceptCopy(event, hasSelection) {
   return (event.metaKey || event.ctrlKey) && event.key === "c" && event.type === "keydown" && hasSelection;
@@ -31,6 +64,17 @@ function encodeTerminalBinary(data) {
   for (let i = 0;i < data.length; i++)
     buf[i] = data.charCodeAt(i) & 255;
   return buf;
+}
+function splitTerminalInputBytes(data, maxBytes = PTY_BINARY_FRAME_MAX_BYTES) {
+  if (maxBytes <= 0)
+    throw new RangeError("maxBytes must be positive");
+  if (data.length <= maxBytes)
+    return [data];
+  const chunks = [];
+  for (let offset = 0;offset < data.length; offset += maxBytes) {
+    chunks.push(data.subarray(offset, Math.min(offset + maxBytes, data.length)));
+  }
+  return chunks;
 }
 function shouldSubmitMessageInputOnEnter(event) {
   if (event.key !== "Enter")
@@ -43,6 +87,14 @@ function shouldInsertMessageNewlineFromAccessoryKey(event) {
 // src/reconnect-hydration.ts
 function shouldRehydrate(wasReconnect, hydrationStarted, prefillDisabled) {
   return wasReconnect || hydrationStarted && !prefillDisabled;
+}
+// src/attach-dimensions.ts
+function nextAttachDimensionAction(dimensions, attempt, maxAttempts) {
+  if (dimensions)
+    return { kind: "send" };
+  if (attempt < maxAttempts)
+    return { kind: "retry", nextAttempt: attempt + 1 };
+  return { kind: "fail" };
 }
 // src/grid-logic.ts
 var MAX_GRID_CELLS = 6;
@@ -116,19 +168,6 @@ function recordSuccess(state, url) {
 function fetchTimeoutMs(state, url) {
   return (state[url]?.failures ?? 0) >= FAILURE_THRESHOLD ? FAILING_TIMEOUT_MS : HEALTHY_TIMEOUT_MS;
 }
-// src/ws-constants.ts
-var CLOSE_CODE_NORMAL = 1000;
-var CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
-var CLOSE_CODE_DISPLACED = 4002;
-var WS_CLOSE_REASONS = {
-  PTY_EXITED: "pty exited",
-  SESSION_UNAVAILABLE: "session unavailable",
-  DISPLACED: "displaced",
-  PTY_TEARDOWN: "pty teardown",
-  SESSION_ENDED: "session ended",
-  SUBSCRIBE_FAILED: "subscribe rpc failed"
-};
-
 // src/take-control-logic.ts
 function handleViewerConflict(state) {
   if (state.autoTakeControl) {
@@ -163,6 +202,6 @@ function handleDisplaced(state) {
 function prepareAutoTakeControl(state) {
   return { ...state, autoTakeControl: true };
 }
-var WP = {suspendGridState, shouldSubmitMessageInputOnEnter, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, serializeBufferTail, scrollTargetAfterResize, resumeGridState, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
+var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
 window.WP = WP;
 })();
