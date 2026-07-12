@@ -38,6 +38,68 @@ test("open session drawer from terminal view", async ({ page }, testInfo) => {
   await expect(drawer).toHaveClass(/open/);
 });
 
+test("mobile touch scrolling works immediately after switching sessions", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only touch path");
+
+  const attachModes: string[] = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { type?: string; prefillMode?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      const prefillMode = parsed.prefillMode || "full";
+      attachModes.push(prefillMode);
+      const lineCount = prefillMode === "full" ? 120 : 12;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(Array.from({ length: lineCount }, (_, index) => `history-${index}\r\n`).join("")));
+      if (prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    switchSession("another-project");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  await expect.poll(() => attachModes).toEqual(["viewport", "full"]);
+  await expect.poll(() => page.evaluate(() => {
+    const terminal = (window as unknown as { state: { terminalController?: { term?: { getScrollbackLength?: () => number } } } }).state.terminalController?.term;
+    return terminal?.getScrollbackLength?.() ?? 0;
+  })).toBeGreaterThan(0);
+
+  const viewportY = await page.evaluate(() => {
+    const container = document.getElementById("desktop-terminal-container");
+    const canvas = container?.querySelector("canvas");
+    const terminal = (window as unknown as { state: { terminalController?: { term?: { viewportY: number } } } }).state.terminalController?.term;
+    if (!container || !canvas || !terminal) throw new Error("missing mobile terminal");
+    const dispatchTouch = (type: string, clientY: number): void => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", {
+        value: type === "touchend" ? [] : [{ clientX: 100, clientY }],
+      });
+      canvas.dispatchEvent(event);
+    };
+    dispatchTouch("touchstart", 300);
+    dispatchTouch("touchmove", 500);
+    dispatchTouch("touchend", 500);
+    return terminal.viewportY;
+  });
+
+  expect(viewportY).toBeGreaterThan(0);
+  await expect(page.locator("#mobile-kb-proxy")).not.toBeFocused();
+});
+
 test("desktop full switchSession keeps cached snapshot hidden until hydration", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 

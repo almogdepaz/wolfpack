@@ -3108,16 +3108,16 @@ function removeCachedTerminalPlaceholder(): void {
   document.querySelectorAll("." + CACHED_TERMINAL_PLACEHOLDER_CLASS).forEach((el) => el.remove());
 }
 
-async function initTerminal(cached?: string): Promise<void> {
+async function initTerminal(cached?: string, prefillModeOverride?: "full" | "viewport"): Promise<void> {
   if (state.terminalController) return;
   // Defensive: clear stale timer from a prior session that wasn't properly destroyed
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   const kbProxy = document.getElementById("mobile-kb-proxy");
-  const soloPrefillMode = isMobile
+  const soloPrefillMode = prefillModeOverride ?? (isMobile
     ? (wpSettings.soloPrefillMode === "full" ? "full" : "viewport")
-    : "full";
+    : "full");
   const showCachedPlaceholder = false;
   container.style.display = "block";
   container.innerHTML = "";
@@ -3826,7 +3826,7 @@ async function switchSession(val) {
     hml.textContent = mName;
     hml.style.display = "block";
   }
-  initTerminal(cached);
+  void initTerminal(cached, "full");
   renderSidebar();
 }
 
