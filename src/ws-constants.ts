@@ -30,4 +30,6 @@ export const WS_CLOSE_REASONS = {
   SESSION_ENDED: "session ended",
   SUBSCRIBE_FAILED: "subscribe rpc failed",
   WRITE_FAILED: "write failed",
+  RESIZE_FAILED: "resize failed",
+  SLOW_VIEWER: "slow viewer",
 } as const;

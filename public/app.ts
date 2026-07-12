@@ -24,7 +24,7 @@ import {
   hasPreservedGrid, clearPreservedGrid, setCurrentSessionFromGridFocus,
   returnToTerminalView, setGridFocus, suspendGridMode, restorePreservedGrid,
   backFromRalph, backFromSettings, addToGrid, removeFromGrid, exitGridMode,
-  fitAllGridCells, hideGridCellsForTransition, revealGridCellsWithoutResize,
+  hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
 } from "./app-grid";
 
@@ -1261,7 +1261,6 @@ interface PtyTerminalController {
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
   focus(): void;
   resize(): void;
-  resizeWithTransition(): void;
   dispose(): void;
   scheduleReconnect(): void;
   sendTakeControl(): void;
@@ -1290,6 +1289,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _initialPrefillComplete = opts.prefillMode === "none";
   let _connectEpoch = 0;
   let _reconnectPendingReset = false;
+  let _replacementPrefillPending = false;
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _userScrolledUp = false;
@@ -1483,6 +1483,25 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (opts.onHydrationStart) opts.onHydrationStart();
   }
 
+  /** Begin replacement prefill while retaining the old canvas until its first
+   * authoritative byte. The first byte promotes this to CSS-hidden hydration,
+   * preventing later snapshot chunks from painting progressively. */
+  function beginReplacementHydration(hideImmediately = false) {
+    if (!_hydration || !_term) return;
+    _hydrationWritesInFlight = 0;
+    _reconnectPendingReset = true;
+    _replacementPrefillPending = !hideImmediately;
+    if (hideImmediately) activateReplacementHydration();
+  }
+
+  function activateReplacementHydration() {
+    if (!_replacementPrefillPending && _hydration?.pending) return;
+    _replacementPrefillPending = false;
+    startHydration();
+    const el = _getHydrationElement();
+    if (el) { el.classList.remove("hydrated"); el.classList.add("hydrating"); }
+  }
+
   /**
    * mount(container, { cached }?) — create terminal, open in container, load
    * CanvasAddon, fit, create hydration controller (not yet started).
@@ -1644,6 +1663,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
             _lastScrollbackLength = _term.getScrollbackLength?.() ?? -1;
           }
           _userScrolledUp = true;
+          _userRequestedScrollback = true;
         } else {
           _userScrolledUp = false;
           _userRequestedScrollback = false;
@@ -1789,10 +1809,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (rehydrate && _term) {
           _hydrationWritesInFlight = 0;
           if (wasReconnect) {
-            // Defer terminal reset until first data arrives — keeps old
-            // content visible so there's no blank flash during reconnect.
-            _reconnectPendingReset = true;
-            startHydration();
+            // Retain the old frame until replacement bytes arrive, then hide
+            // every subsequent prefill/replay write behind hydration.
+            beginReplacementHydration();
           } else {
             startHydration();
             const el = _getHydrationElement();
@@ -1808,6 +1827,15 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
       onPrefillDone: () => {
         if (!isCurrent()) return;
+        // An empty authoritative prefill still replaces old state; clear it
+        // behind hydration instead of leaving a stale reconnect frame visible.
+        if (_replacementPrefillPending) {
+          activateReplacementHydration();
+          if (_reconnectPendingReset) {
+            _reconnectPendingReset = false;
+            _scheduleBufferedClear();
+          }
+        }
         _initialPrefillComplete = true;
         if (_hydration) _hydration.scheduleFinish();
       },
@@ -1832,6 +1860,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
           return;
         }
         if (_reconnectPendingReset) {
+          activateReplacementHydration();
           _reconnectPendingReset = false;
           _postResetBuffer = [data];
           _scheduleBufferedClear();
@@ -1850,11 +1879,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         // those writes paint live and the user sees the scrollback flash.
         // Restart hydration so the minPendingMs floor hides the burst window.
         if (_hydration && _term) {
-          _hydrationWritesInFlight = 0;
-          _reconnectPendingReset = true;
-          startHydration();
-          const el = _getHydrationElement();
-          if (el) { el.classList.remove("hydrated"); el.classList.add("hydrating"); }
+          beginReplacementHydration(true);
         }
         if (opts.onControlGranted) opts.onControlGranted();
       },
@@ -1873,15 +1898,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     syncLayout({ forceSend: true, repaint: true, reason: "resize" });
   }
 
-  let _resizeTransitionId = 0;
-  /** Blank canvas → fit → reveal. No loading overlay — just instant hide/show. */
-  function resizeWithTransition() {
-    if (!_fitAddon || !_term) return;
-    // Refit directly without hiding the canvas — hiding causes a blank frame
-    // flicker that's more jarring than the brief reflow ghostty-web does.
-    syncLayout({ forceSend: true, repaint: true, reason: "transition" });
-  }
-
   /**
    * dispose() — close socket, cancel hydration, dispose addons and terminal.
    * Removes keydown listeners from container before disposing terminal.
@@ -1893,6 +1909,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     _hydrationStarted = false;
     _hydrationWritesInFlight = 0;
     _reconnectPendingReset = false;
+    _replacementPrefillPending = false;
     _postResetBuffer = null;
     if (_layoutSyncRaf) { cancelAnimationFrame(_layoutSyncRaf); _layoutSyncRaf = null; }
     if (_resizeObserver) { try { _resizeObserver.disconnect(); } catch {} _resizeObserver = null; }
@@ -1917,7 +1934,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     connect,
     focus,
     resize,
-    resizeWithTransition,
     dispose,
     // Delegation to pty client
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
@@ -3315,22 +3331,6 @@ async function initTerminal(cached?: string): Promise<void> {
     }
   }
 
-  let _lastContainerWidth = container.clientWidth;
-  const onResize = () => {
-    if (state.desktopResizeTimer) clearTimeout(state.desktopResizeTimer);
-    state.desktopResizeTimer = setTimeout(() => {
-      state.desktopResizeTimer = null;
-      const newWidth = container.clientWidth;
-      if (isMobile && newWidth === _lastContainerWidth) return;
-      _lastContainerWidth = newWidth;
-      if (state.terminalController) {
-        isMobile ? state.terminalController.resize() : state.terminalController.resizeWithTransition();
-      }
-    }, 60);
-  };
-  window.addEventListener("resize", onResize);
-  state.desktopResizeHandler = onResize;
-
   if (window.visualViewport && isMobile) {
     const termView = document.getElementById("terminal-view");
     const vvHandler = () => {
@@ -3395,13 +3395,8 @@ function destroyTerminal() {
   // Always flush snapshot before disposing terminal — even if no timer was
   // pending, the terminal has content worth persisting for instant restore.
   flushSnapshot();
-  if (state.desktopResizeTimer) { clearTimeout(state.desktopResizeTimer); state.desktopResizeTimer = null; }
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
-  if (state.desktopResizeHandler) {
-    window.removeEventListener("resize", state.desktopResizeHandler);
-    state.desktopResizeHandler = null;
-  }
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
@@ -4735,7 +4730,7 @@ function initSidebar() {
       if (isGridActive()) {
         scheduleGridStabilizedFit();
       } else if (state.terminalController) {
-        state.terminalController.resizeWithTransition();
+        state.terminalController.resize();
       }
       revealGridCellsWithoutResize();
     }

@@ -107,8 +107,9 @@ describe("classifyDisconnect", () => {
     expect(classifyDisconnect(4001, "")).toBe("session-ended");
   });
 
-  test("1000 + 'pty exited' → pty-exited", () => {
+  test("1000 + terminal teardown reason → pty-exited", () => {
     expect(classifyDisconnect(1000, "pty exited")).toBe("pty-exited");
+    expect(classifyDisconnect(1000, "pty teardown")).toBe("pty-exited");
   });
 
   test("1000 + other reason → reconnect", () => {

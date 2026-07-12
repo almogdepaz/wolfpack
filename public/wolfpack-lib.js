@@ -52,7 +52,9 @@ var WS_CLOSE_REASONS = {
   PTY_TEARDOWN: "pty teardown",
   SESSION_ENDED: "session ended",
   SUBSCRIBE_FAILED: "subscribe rpc failed",
-  WRITE_FAILED: "write failed"
+  WRITE_FAILED: "write failed",
+  RESIZE_FAILED: "resize failed",
+  SLOW_VIEWER: "slow viewer"
 };
 
 // src/terminal-input.ts
@@ -189,7 +191,7 @@ function classifyDisconnect(code, reason) {
     return "displaced";
   if (code === CLOSE_CODE_SESSION_UNAVAILABLE)
     return "session-ended";
-  if (code === CLOSE_CODE_NORMAL && reason === WS_CLOSE_REASONS.PTY_EXITED)
+  if (code === CLOSE_CODE_NORMAL && (reason === WS_CLOSE_REASONS.PTY_EXITED || reason === WS_CLOSE_REASONS.PTY_TEARDOWN))
     return "pty-exited";
   return "reconnect";
 }
