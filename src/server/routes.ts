@@ -19,7 +19,11 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
-import { isRalphAgent } from "../ralph-agent.js";
+import {
+  configuredRalphAgents,
+  selectConfiguredRalphAgent,
+  type RalphAgent,
+} from "../ralph-agent.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
@@ -317,6 +321,10 @@ export function effectiveAgentCmd(s: Settings): string {
 export function effectiveCmds(s: Settings): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
   return enabled.length > 0 ? enabled : ["shell"];
+}
+
+export function effectiveRalphAgents(s: Settings): RalphAgent[] {
+  return configuredRalphAgents(effectiveCmds(s));
 }
 
 // Ralph worker is invoked as a subcommand: `wolfpack worker --plan ...`
@@ -862,6 +870,10 @@ export const routes: Record<
     const { project, iterations, planFile, agent, newBranch, sourceBranch, format, cleanup, auditFix, worktree, worktreeBranch, worktreeBase, sandbox } = body;
     const projectDir = resolveProjectDir(res, project);
     if (!projectDir) return;
+    const selectedAgent = selectConfiguredRalphAgent(agent, effectiveRalphAgents(loadSettings()));
+    if (!selectedAgent) {
+      return json(res, { error: "ralph agent is not configured and enabled" }, 400);
+    }
     const existing = parseRalphLog(projectDir);
     if (existing?.active) {
       return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
@@ -982,7 +994,6 @@ export const routes: Record<
     // (plan mode creates one worktree at startup, task mode creates per-iteration).
     // The route only passes the mode flag — the worker manages the lifecycle.
 
-    const selectedAgent = isRalphAgent(agent || "claude") ? (agent || "claude") : "claude";
     const workerArgs = [
       ...RALPH_BIN_ARGS.slice(1),
       "worker",

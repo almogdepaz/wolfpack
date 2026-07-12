@@ -21,7 +21,8 @@ process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(process.cwd(), ".wolfpack", `a
 // developer's real ~/.wolfpack/bridge-settings.json. The path is read at
 // every loadSettings/saveSettings call so this works as long as it's set
 // before the first request.
-process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+const TEST_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
@@ -723,6 +724,38 @@ describe("POST /api/settings — agentCmd", () => {
   test("rejects malformed agentCmd with 400", async () => {
     const res = await post("/api/settings", { agentCmd: "rm -rf /; echo pwn" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/ralph/start agent authorization", () => {
+  test("rejects a supported agent when it is disabled in settings", async () => {
+    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
+      agentCmd: "codex",
+      cmds: [
+        { cmd: "claude", enabled: false },
+        { cmd: "codex", enabled: true },
+      ],
+    }));
+
+    try {
+      const res = await post("/api/ralph/start", {
+        project: "my-app",
+        planFile: "PLAN.md",
+        agent: "claude",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
+    } finally {
+      writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
+        agentCmd: "shell",
+        cmds: [
+          { cmd: "shell", enabled: true },
+          { cmd: "claude", enabled: true },
+          { cmd: "pi", enabled: true },
+          { cmd: "codex", enabled: true },
+        ],
+      }));
+    }
   });
 });
 

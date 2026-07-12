@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 
 process.env.WOLFPACK_TEST = "1";
 
-const { effectiveAgentCmd, effectiveCmds, loadSettings } = await import(
+const { effectiveAgentCmd, effectiveCmds, effectiveRalphAgents, loadSettings } = await import(
   "../../src/server/routes.ts"
 );
 
@@ -111,6 +111,23 @@ describe("effectiveCmds", () => {
 
   test("returns [\"shell\"] when cmds is empty", () => {
     expect(effectiveCmds({ agentCmd: "shell", cmds: [] })).toEqual(["shell"]);
+  });
+});
+
+describe("effectiveRalphAgents", () => {
+  test("returns enabled exact ralph agents only", () => {
+    const settings = {
+      agentCmd: "shell",
+      cmds: [
+        { cmd: "shell", enabled: true },
+        { cmd: "claude", enabled: false },
+        { cmd: "codex", enabled: true },
+        { cmd: "gemini", enabled: true },
+        { cmd: "cursor --model opus", enabled: true },
+      ],
+    };
+
+    expect(effectiveRalphAgents(settings)).toEqual(["codex", "gemini"]);
   });
 });
 

@@ -72,6 +72,29 @@ test("desktop settings back from a terminal reopens that terminal", async ({ pag
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
 });
 
+test("ralph picker lists only enabled configured ralph agents", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop ralph picker regression");
+
+  await page.addInitScript(() => {
+    localStorage.setItem("wp-effects", JSON.stringify({ ralphEnabled: true }));
+  });
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        settings: { agentCmd: "codex", cmds: [] },
+        effective: { agentCmd: "codex", cmds: ["shell", "codex", "gemini", "claude --model opus", "pi"] },
+      }),
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showRalphStart());
+
+  await expect(page.locator("#ralph-agent-select option")).toHaveText(["codex", "gemini"]);
+  await expect(page.locator("#ralph-agent-select")).toBeEnabled();
+});
+
 test("desktop escape from ralph launched from a terminal reopens that terminal", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop terminal-origin regression");
 
