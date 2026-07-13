@@ -25,7 +25,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -50,6 +50,11 @@ pub struct SpawnOptions {
     pub rows: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionFailure {
+    PtyRead(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub id: Uuid,
@@ -63,6 +68,7 @@ pub struct SessionState {
     pub rows: u16,
     pub alive: bool,
     pub exit_code: Option<i32>,
+    pub failure: Option<SessionFailure>,
 }
 
 impl SessionState {
@@ -93,6 +99,8 @@ pub enum SpawnError {
     Spawn(String),
     #[error("reader clone failed: {0}")]
     ReaderClone(String),
+    #[error("writer acquisition failed: {0}")]
+    WriterTake(String),
     #[error("thread spawn failed: {0}")]
     ThreadSpawn(String),
 }
@@ -121,6 +129,47 @@ pub enum ResizeError {
 struct Inner {
     state: Mutex<SessionState>,
     waiter: Condvar,
+}
+
+struct SpawnedChildGuard {
+    child: Option<Box<dyn Child + Send + Sync>>,
+}
+
+impl SpawnedChildGuard {
+    fn new(child: Box<dyn Child + Send + Sync>) -> Self {
+        #[cfg(test)]
+        LAST_SPAWNED_PID.with(|observed| observed.set(child.process_id()));
+        Self { child: Some(child) }
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().expect("child guard disarmed").process_id()
+    }
+
+    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+        self.child.as_ref().expect("child guard disarmed").clone_killer()
+    }
+
+    fn into_child(mut self) -> Box<dyn Child + Send + Sync> {
+        self.child.take().expect("child guard disarmed")
+    }
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let pid = child.process_id();
+        if let Err(error) = child.kill() {
+            tracing::error!(?pid, %error, "failed to kill child during spawn rollback");
+        }
+        if let Err(error) = child.wait() {
+            tracing::error!(?pid, %error, "failed to reap child during spawn rollback");
+        }
+        #[cfg(test)]
+        LAST_REAPED_PID.with(|observed| observed.set(pid));
+    }
 }
 
 pub struct Session {
@@ -182,20 +231,25 @@ impl Session {
             .slave
             .spawn_command(cmd)
             .map_err(|e| SpawnError::Spawn(e.to_string()))?;
+        let child = SpawnedChildGuard::new(child);
 
         // Drop the slave so we don't pin an extra fd in this process; the
         // child holds its own copy.
         drop(pair.slave);
 
+        #[cfg(test)]
+        fail_forced_setup_step(ForcedSetupFailure::ReaderClone)?;
         let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| SpawnError::ReaderClone(e.to_string()))?;
 
+        #[cfg(test)]
+        fail_forced_setup_step(ForcedSetupFailure::WriterTake)?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|e| SpawnError::ReaderClone(e.to_string()))?;
+            .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
 
         let pid = child.process_id();
         let id = Uuid::new_v4();
@@ -211,6 +265,7 @@ impl Session {
             rows: opts.rows,
             alive: true,
             exit_code: None,
+            failure: None,
         };
 
         let inner = Arc::new(Inner {
@@ -226,25 +281,36 @@ impl Session {
         let drain_terminal = Arc::clone(&terminal);
         let drain_seq = Arc::clone(&seq);
         let drain_bus = Arc::clone(&bus);
+        let drain_inner = Arc::clone(&inner);
+        let drain_events = events.clone();
+        let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
-            drain_reader(reader, drain_terminal, drain_seq, drain_bus)
+            if let Err(error) = drain_reader(reader, drain_terminal, drain_seq, drain_bus) {
+                tracing::error!(
+                    session_id = %drain_id,
+                    error = %error,
+                    "PTY reader failed; terminating session"
+                );
+                mark_pty_read_failed(&drain_inner, drain_id, &error, &drain_events);
+                if let Err(kill_error) = drain_child_killer.kill() {
+                    tracing::error!(
+                        session_id = %drain_id,
+                        error = %kill_error,
+                        "failed to terminate child after PTY read failure"
+                    );
+                }
+            }
         }) {
-            let mut child = child;
-            let _ = child.kill();
             return Err(SpawnError::ThreadSpawn(e.to_string()));
         }
 
         let reaper_inner = Arc::clone(&inner);
         let reap_id = id;
         let reaper_events = events.clone();
-        let mut child_killer = child.clone_killer();
         spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
-            reap(child, reaper_inner, reap_id, reaper_events)
+            reap(child.into_child(), reaper_inner, reap_id, reaper_events)
         })
-        .map_err(|e| {
-            let _ = child_killer.kill();
-            SpawnError::ThreadSpawn(e.to_string())
-        })?;
+        .map_err(|e| SpawnError::ThreadSpawn(e.to_string()))?;
 
         Ok(Session {
             inner,
@@ -413,11 +479,11 @@ fn drain_reader<R: Read>(
     terminal: Arc<Mutex<TerminalState>>,
     seq: Arc<AtomicU64>,
     bus: Arc<OutputBus>,
-) {
+) -> io::Result<()> {
     let mut buf = [0u8; 8192];
-    loop {
+    let outcome = loop {
         match r.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => break Ok(()),
             Ok(n) => {
                 let data = Arc::new(buf[..n].to_vec());
                 // Feed the emulator and bump seq under one lock so a snapshot
@@ -432,12 +498,40 @@ fn drain_reader<R: Read>(
                 };
                 bus.publish(OutputChunk { seq: new_seq, data });
             }
-            Err(_) => break,
+            Err(error) => break Err(error),
         }
-    }
+    };
     // Signal "drainer done; every byte produced has been ingested" so
     // attached subscribers see Closed and sync waiters wake up.
     bus.close();
+    outcome
+}
+
+fn mark_pty_read_failed(
+    inner: &Inner,
+    session_id: Uuid,
+    error: &io::Error,
+    events: &EventSender,
+) -> bool {
+    let transitioned = {
+        let mut state = inner.state.lock().expect("session state poisoned");
+        if !state.alive {
+            false
+        } else {
+            state.alive = false;
+            state.failure = Some(SessionFailure::PtyRead(error.to_string()));
+            inner.waiter.notify_all();
+            true
+        }
+    };
+    if transitioned {
+        let _ = events.send(Event::SessionExited {
+            session_id,
+            exit_code: None,
+            signal: None,
+        });
+    }
+    transitioned
 }
 
 fn spawn_named_thread<F>(name: String, f: F) -> io::Result<thread::JoinHandle<()>>
@@ -445,31 +539,69 @@ where
     F: FnOnce() + Send + 'static,
 {
     #[cfg(test)]
-    if FORCE_THREAD_SPAWN_FAILURES.with(|failures| {
-        let n = failures.get();
-        if n > 0 {
-            failures.set(n - 1);
-            true
+    {
+        let step = if name.starts_with("broker-pty-read-") {
+            ForcedSetupFailure::ReaderThread
         } else {
-            false
+            ForcedSetupFailure::ReaperThread
+        };
+        let should_fail = FORCED_SETUP_FAILURE.with(|forced| forced.get() == Some(step));
+        if should_fail {
+            FORCED_SETUP_FAILURE.with(|forced| forced.set(None));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "forced thread spawn failure",
+            ));
         }
-    }) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "forced thread spawn failure",
-        ));
     }
     thread::Builder::new().name(name).spawn(f)
 }
 
 #[cfg(test)]
-thread_local! {
-    static FORCE_THREAD_SPAWN_FAILURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForcedSetupFailure {
+    ReaderClone,
+    WriterTake,
+    ReaderThread,
+    ReaperThread,
 }
 
 #[cfg(test)]
-fn force_thread_spawn_failures_for_test(count: usize) {
-    FORCE_THREAD_SPAWN_FAILURES.with(|failures| failures.set(count));
+thread_local! {
+    static FORCED_SETUP_FAILURE: std::cell::Cell<Option<ForcedSetupFailure>> = const { std::cell::Cell::new(None) };
+    static LAST_SPAWNED_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    static LAST_REAPED_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn force_setup_failure_for_test(failure: ForcedSetupFailure) {
+    FORCED_SETUP_FAILURE.with(|forced| forced.set(Some(failure)));
+    LAST_SPAWNED_PID.with(|observed| observed.set(None));
+    LAST_REAPED_PID.with(|observed| observed.set(None));
+}
+
+#[cfg(test)]
+fn fail_forced_setup_step(step: ForcedSetupFailure) -> Result<(), SpawnError> {
+    let should_fail = FORCED_SETUP_FAILURE.with(|forced| forced.get() == Some(step));
+    if should_fail {
+        FORCED_SETUP_FAILURE.with(|forced| forced.set(None));
+        Err(match step {
+            ForcedSetupFailure::ReaderClone => SpawnError::ReaderClone("forced failure".into()),
+            ForcedSetupFailure::WriterTake => SpawnError::WriterTake("forced failure".into()),
+            ForcedSetupFailure::ReaderThread | ForcedSetupFailure::ReaperThread => {
+                SpawnError::ThreadSpawn("forced failure".into())
+            }
+        })
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn take_cleanup_observation_for_test() -> (Option<u32>, Option<u32>) {
+    let spawned = LAST_SPAWNED_PID.with(|observed| observed.take());
+    let reaped = LAST_REAPED_PID.with(|observed| observed.take());
+    (spawned, reaped)
 }
 
 fn reap(
@@ -479,19 +611,24 @@ fn reap(
     events: EventSender,
 ) {
     let exit = child.wait();
-    let exit_code = {
+    let (exit_code, transitioned) = {
         let mut st = inner.state.lock().expect("session state poisoned");
+        let transitioned = st.alive;
         st.alive = false;
         st.exit_code = exit.ok().map(|s| s.exit_code() as i32);
         inner.waiter.notify_all();
-        st.exit_code
+        (st.exit_code, transitioned)
     };
-    // Best-effort: an Err here just means no one is currently subscribed.
-    let _ = events.send(Event::SessionExited {
-        session_id,
-        exit_code,
-        signal: None,
-    });
+    // A PTY read failure may have already made the session unavailable and
+    // published this transition before killing the child. Reaping still
+    // records its exit code, but must not emit a duplicate lifecycle event.
+    if transitioned {
+        let _ = events.send(Event::SessionExited {
+            session_id,
+            exit_code,
+            signal: None,
+        });
+    }
 }
 
 fn now_ms() -> u64 {
@@ -522,6 +659,71 @@ mod tests {
 
     fn spawn_session(o: SpawnOptions) -> Result<Session, SpawnError> {
         Session::spawn(o, test_events())
+    }
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "forced PTY read failure"))
+        }
+    }
+
+    #[test]
+    fn drainer_propagates_read_failure_after_closing_output() {
+        let terminal = Arc::new(Mutex::new(TerminalState::new(80, 24)));
+        let seq = Arc::new(AtomicU64::new(0));
+        let bus = OutputBus::with_defaults();
+
+        let error = drain_reader(FailingReader, terminal, seq, Arc::clone(&bus))
+            .expect_err("PTY read failure must not be treated as EOF");
+
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert!(bus.is_closed(), "read failure must close live output");
+    }
+
+    #[test]
+    fn pty_read_failure_records_failure_and_emits_one_exit_event() {
+        let id = Uuid::new_v4();
+        let inner = Arc::new(Inner {
+            state: Mutex::new(SessionState {
+                id,
+                name: "failed-reader".into(),
+                cwd: "/tmp".into(),
+                command: vec!["sleep".into(), "30".into()],
+                env: vec![],
+                pid: Some(123),
+                started_at_ms: now_ms(),
+                cols: 80,
+                rows: 24,
+                alive: true,
+                exit_code: None,
+                failure: None,
+            }),
+            waiter: Condvar::new(),
+        });
+        let (events, mut receiver) = broadcast::channel(4);
+        let error = io::Error::new(io::ErrorKind::BrokenPipe, "forced PTY read failure");
+
+        assert!(mark_pty_read_failed(&inner, id, &error, &events));
+        assert!(!mark_pty_read_failed(&inner, id, &error, &events));
+
+        let state = inner.state.lock().expect("session state poisoned");
+        assert!(!state.alive);
+        assert_eq!(
+            state.failure,
+            Some(SessionFailure::PtyRead("forced PTY read failure".into()))
+        );
+        drop(state);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Event::SessionExited {
+                session_id,
+                exit_code: None,
+                signal: None,
+            }) if session_id == id
+        ));
+        assert!(receiver.try_recv().is_err(), "exit event must be emitted once");
     }
 
     #[test]
@@ -568,11 +770,37 @@ mod tests {
     }
 
     #[test]
-    fn spawn_thread_failure_returns_error() {
-        force_thread_spawn_failures_for_test(1);
-        let err = spawn_session(opts(vec!["sleep", "30"]))
-            .expect_err("thread spawn failure must fail session spawn");
-        assert!(matches!(err, SpawnError::ThreadSpawn(_)));
+    fn every_post_spawn_setup_failure_kills_and_reaps_the_child() {
+        for failure in [
+            ForcedSetupFailure::ReaderClone,
+            ForcedSetupFailure::WriterTake,
+            ForcedSetupFailure::ReaderThread,
+            ForcedSetupFailure::ReaperThread,
+        ] {
+            force_setup_failure_for_test(failure);
+            let err = spawn_session(opts(vec!["sleep", "30"]))
+                .expect_err("forced setup failure must fail session spawn");
+            assert!(
+                matches!(
+                    err,
+                    SpawnError::ReaderClone(_)
+                        | SpawnError::WriterTake(_)
+                        | SpawnError::ThreadSpawn(_)
+                ),
+                "{failure:?}: {err:?}"
+            );
+            let (spawned_pid, reaped_pid) = take_cleanup_observation_for_test();
+            assert_eq!(reaped_pid, spawned_pid, "{failure:?} must reap its child");
+            let pid = spawned_pid.expect("spawned child pid");
+            // SAFETY: signal 0 performs existence/permission checking only.
+            let status = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            assert_eq!(status, -1, "{failure:?}: child {pid} is still alive");
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH),
+                "{failure:?}: child {pid} was not fully reaped"
+            );
+        }
     }
 
     #[test]

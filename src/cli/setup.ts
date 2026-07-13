@@ -281,8 +281,8 @@ export async function setup() {
   print("");
   print(bold("  JWT Authentication:"));
   print(dim("  1. Generate a secret:  openssl rand -base64 48"));
-  print(dim("  2. Export before starting:  export WOLFPACK_JWT_SECRET=\"your-secret\""));
-  print(dim("  3. For services, add to your service environment or shell profile."));
+  print(dim("  2. Export before setup or service install:  export WOLFPACK_JWT_SECRET=\"your-secret\""));
+  print(dim("  3. Service install stores configured JWT settings in a private credential file."));
   print("");
 
   if (serviceInstalled) {

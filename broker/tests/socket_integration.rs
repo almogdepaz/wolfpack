@@ -1315,7 +1315,80 @@ async fn events_fan_out_to_every_connected_client() {
     h.shutdown().await;
 }
 
-// ── Socket permission tests ──────────────────────────────────────────────────
+// ── Socket ownership and permission tests ───────────────────────────────────
+
+fn test_server_config(socket_path: std::path::PathBuf) -> ServerConfig {
+    let (events, _) = broadcast::channel::<Event>(EVENT_BUS_CAPACITY);
+    let registry = Arc::new(Registry::new(events.clone()));
+    ServerConfig {
+        socket_path,
+        router: Arc::new(SessionRouter::new(Arc::clone(&registry), events.clone())),
+        registry,
+        events,
+        writer_queue_capacity: None,
+    }
+}
+
+#[tokio::test]
+async fn second_server_refuses_to_replace_a_live_broker_socket() {
+    let h = Harness::boot().await;
+
+    match start(test_server_config(h.socket_path.clone())).await {
+        Ok(second) => {
+            second.shutdown().await;
+            h.shutdown().await;
+            panic!("second server replaced the live broker socket");
+        }
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse),
+    }
+
+    let mut stream = connect(&h.socket_path).await;
+    let response = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 1,
+            method: methods::LIST_SESSIONS.into(),
+            params: json!({}),
+        },
+    )
+    .await;
+    assert_eq!(response.status, Status::Ok);
+
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn stale_socket_is_removed_before_binding() {
+    let dir = tempdir().expect("tempdir");
+    let socket_path = dir.path().join("broker.sock");
+    let stale = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind stale socket");
+    drop(stale);
+
+    let server = start(test_server_config(socket_path.clone()))
+        .await
+        .expect("replace stale socket");
+    assert!(UnixStream::connect(&socket_path).await.is_ok());
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn startup_does_not_delete_a_non_socket_path() {
+    let dir = tempdir().expect("tempdir");
+    let socket_path = dir.path().join("broker.sock");
+    std::fs::write(&socket_path, b"keep me").expect("write sentinel");
+
+    match start(test_server_config(socket_path.clone())).await {
+        Ok(server) => {
+            server.shutdown().await;
+            panic!("server replaced a non-socket path");
+        }
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists),
+    }
+    assert_eq!(
+        std::fs::read(&socket_path).expect("read sentinel"),
+        b"keep me"
+    );
+}
 
 /// The socket file must be created with mode 0o600 so that only the owning
 /// user can connect to the broker. No TOCTOU window should allow a second

@@ -125,52 +125,88 @@ fi
 
 echo ""
 
-# ── Download binary ──
+# ── Download binaries ──
 
 TARGET=$(detect_target)
-DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${TARGET}"
+PLATFORM_TARGET="${TARGET#${BINARY_NAME}-}"
+BROKER_BINARY_NAME="wolfpack-broker"
+BROKER_TARGET="${BROKER_BINARY_NAME}-${PLATFORM_TARGET}"
+RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"
+DOWNLOAD_URL="${RELEASE_BASE_URL}/${TARGET}"
+BROKER_DOWNLOAD_URL="${RELEASE_BASE_URL}/${BROKER_TARGET}"
 
-echo "  Detected target: $(bold "$TARGET")"
+echo "  Detected target: $(bold "$PLATFORM_TARGET")"
 echo "  Downloading from GitHub releases..."
 
 mkdir -p "$INSTALL_DIR"
+STAGING_DIR=$(mktemp -d "${INSTALL_DIR}/.install.XXXXXX") || {
+  echo "  $(red 'Could not create installation staging directory.')"
+  exit 1
+}
+cleanup_staging() { rm -rf "$STAGING_DIR"; }
+trap cleanup_staging EXIT
+STAGED_WOLFPACK="${STAGING_DIR}/${BINARY_NAME}"
+STAGED_BROKER="${STAGING_DIR}/${BROKER_BINARY_NAME}"
 
-if command -v curl &>/dev/null; then
-  if ! curl -fSL --progress-bar -o "${INSTALL_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"; then
-    echo ""
-    echo "  $(red 'Download failed.')"
-    echo "  URL: $DOWNLOAD_URL"
-    echo "  Check that a release exists at:"
-    echo "    https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
-    exit 1
+download_asset() {
+  local url="$1"
+  local destination="$2"
+  if command -v curl &>/dev/null; then
+    curl -fSL --progress-bar -o "$destination" "$url"
+  elif command -v wget &>/dev/null; then
+    wget -q --show-progress -O "$destination" "$url"
+  else
+    echo "  $(red 'Neither curl nor wget found. Cannot download.')"
+    return 127
   fi
-elif command -v wget &>/dev/null; then
-  if ! wget -q --show-progress -O "${INSTALL_DIR}/${BINARY_NAME}" "$DOWNLOAD_URL"; then
-    echo ""
-    echo "  $(red 'Download failed.')"
-    echo "  URL: $DOWNLOAD_URL"
-    exit 1
-  fi
-else
-  echo "  $(red 'Neither curl nor wget found. Cannot download.')"
+}
+
+if ! download_asset "$DOWNLOAD_URL" "$STAGED_WOLFPACK"; then
+  echo ""
+  echo "  $(red 'Download failed.')"
+  echo "  URL: $DOWNLOAD_URL"
+  echo "  Check that a release exists at:"
+  echo "    https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+  exit 1
+fi
+if ! download_asset "$BROKER_DOWNLOAD_URL" "$STAGED_BROKER"; then
+  echo ""
+  echo "  $(red 'Download failed.')"
+  echo "  URL: $BROKER_DOWNLOAD_URL"
   exit 1
 fi
 
-chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-
-# Remove macOS quarantine/provenance flags and ad-hoc sign
-if $IS_MACOS; then
-  xattr -cr "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null
-  if ! codesign --sign - --force "${INSTALL_DIR}/${BINARY_NAME}" 2>/dev/null; then
-    echo ""
-    echo "  $(red 'Failed to codesign binary. macOS will block unsigned binaries.')"
-    echo "  Install Xcode CLI tools and re-run:"
-    echo "    $(bold 'xcode-select --install')"
+for artifact in "$STAGED_WOLFPACK" "$STAGED_BROKER"; do
+  if [ ! -s "$artifact" ]; then
+    echo "  $(red 'Downloaded artifact is empty.')"
     exit 1
   fi
+  chmod +x "$artifact" || {
+    echo "  $(red 'Failed to mark downloaded artifact executable.')"
+    exit 1
+  }
+done
+
+# Remove macOS quarantine/provenance flags and ad-hoc sign both staged assets
+# before replacing a working installation.
+if $IS_MACOS; then
+  for artifact in "$STAGED_WOLFPACK" "$STAGED_BROKER"; do
+    xattr -cr "$artifact" 2>/dev/null
+    if ! codesign --sign - --force "$artifact" 2>/dev/null; then
+      echo ""
+      echo "  $(red 'Failed to codesign binary. macOS will block unsigned binaries.')"
+      echo "  Install Xcode CLI tools and re-run:"
+      echo "    $(bold 'xcode-select --install')"
+      exit 1
+    fi
+  done
 fi
 
+mv -f "$STAGED_WOLFPACK" "${INSTALL_DIR}/${BINARY_NAME}" || exit 1
+mv -f "$STAGED_BROKER" "${INSTALL_DIR}/${BROKER_BINARY_NAME}" || exit 1
+
 echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
+echo "  $(green '✓') Broker installed to ${INSTALL_DIR}/${BROKER_BINARY_NAME}"
 
 # ── Restart service if already installed (upgrade path) ──
 
@@ -233,6 +269,10 @@ fi
 echo ""
 
 # ── Run setup ──
+
+if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" = "1" ]; then
+  exit 0
+fi
 
 if command -v wolfpack &>/dev/null; then
   echo "  $(green '✓') $(bold 'wolfpack') installed"

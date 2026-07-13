@@ -9,7 +9,7 @@ import { rmSync } from "node:fs";
 import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import type { OutputSubscriber } from "../../src/broker/client";
-import type { SessionLifecycleEvent } from "../../src/server/backend";
+import { UnsupportedTerminalKeyError, type SessionLifecycleEvent } from "../../src/server/backend";
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
@@ -307,6 +307,42 @@ describe("BrokerBackend.killSession", () => {
     expect(backend.sessionDir("stiff")).toBeUndefined();
     expect(backend.isSessionAlive("stiff")).toBe(false);
   });
+
+  test("broker kill errors preserve cached session and identity truth", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "survivor", id: SESSION_UUID_1 })],
+    }));
+    await backend.list();
+    let snapshotCalls = 0;
+    client.setHandler("snapshot", () => {
+      snapshotCalls++;
+      return okResp(styledSnapshot(["still running"]));
+    });
+    await backend.capturePaneForTriage("survivor");
+    client.setHandler("kill_session", () => errResp("internal_error", "kill rejected"));
+
+    await expect(backend.killSession("survivor")).rejects.toThrow("kill rejected");
+
+    expect(backend.sessionDir("survivor")).toBe("/tmp/work");
+    expect(backend.isSessionAlive("survivor")).toBe(true);
+    expect((await backend.listIdentities()).survivor).toBeDefined();
+    await backend.capturePaneForTriage("survivor");
+    expect(snapshotCalls).toBe(1);
+  });
+
+  test("kill transport failures preserve cached session and identity truth", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "survivor", id: SESSION_UUID_1 })],
+    }));
+    await backend.list();
+    client.requestError = new Error("broker disconnected");
+
+    await expect(backend.killSession("survivor")).rejects.toThrow("broker disconnected");
+
+    expect(backend.sessionDir("survivor")).toBe("/tmp/work");
+    expect(backend.isSessionAlive("survivor")).toBe(true);
+    expect((await backend.listIdentities()).survivor).toBeDefined();
+  });
 });
 
 describe("BrokerBackend.hasSession", () => {
@@ -430,8 +466,27 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
     expect(new TextDecoder().decode(client.inputs[0].data)).toBe("q");
   });
 
-  test("sendKey ignores unknown key without throwing", async () => {
-    await backend.sendKey("live", "F99");
+  test("sendKey rejects unknown named keys with a typed error", async () => {
+    let failure: unknown;
+    try {
+      await backend.sendKey("live", "F99");
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(UnsupportedTerminalKeyError);
+    expect((failure as UnsupportedTerminalKeyError).key).toBe("F99");
+    expect(client.inputs.length).toBe(0);
+  });
+
+  test("send propagates broker input transport failures", async () => {
+    client.inputError = new Error("input plane down");
+    await expect(backend.send("live", "echo hi")).rejects.toThrow("input plane down");
+    expect(client.inputs.length).toBe(0);
+  });
+
+  test("sendKey propagates broker input transport failures", async () => {
+    client.inputError = new Error("input plane down");
+    await expect(backend.sendKey("live", "Enter")).rejects.toThrow("input plane down");
     expect(client.inputs.length).toBe(0);
   });
 
@@ -616,13 +671,7 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     expect(errors).toEqual([]);
   });
 
-  test("onSubscribeError is only invoked for the first subscriber (the one that issued the RPC)", async () => {
-    // The subscribe RPC is issued only by the first subscriber. If a second
-    // subscriber attaches while the RPC is still in flight and the RPC fails,
-    // only the first subscriber's onSubscribeError should fire — a second
-    // subscriber is reusing an existing (in-flight, eventually failed) RPC,
-    // not issuing its own. The current implementation invokes the callback
-    // attached to the first subscriber; second subscriber gets nothing.
+  test("subscribe failure notifies and removes every viewer waiting on the shared RPC", async () => {
     client.nextSubscribeError = new Error("broker exploded");
     const firstErrors: unknown[] = [];
     const secondErrors: unknown[] = [];
@@ -632,9 +681,17 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     backend.onSessionData("live", () => {}, {
       onSubscribeError: (e) => secondErrors.push(e),
     });
+
     await new Promise((r) => setTimeout(r, 0));
+
     expect(firstErrors).toHaveLength(1);
-    expect(secondErrors).toHaveLength(0);
+    expect(secondErrors).toHaveLength(1);
+    expect(client.outputSubs.has(SESSION_UUID_1)).toBe(false);
+    expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
+
+    backend.onSessionData("live", () => {}, noopErr);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.subscribeCallCount).toBe(2);
   });
 
   test("a throwing onSubscribeError callback does not crash the unwind path", async () => {

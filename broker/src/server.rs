@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -104,9 +104,7 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
     }
-    // Stale socket files from a previous broker process must be removed before
-    // bind() can succeed. Ignore-not-found is intentional.
-    let _ = std::fs::remove_file(&socket_path);
+    prepare_socket_path(&socket_path).await?;
 
     // Set umask to 0o077 before bind so the kernel creates the socket file
     // with mode 0o600 directly, eliminating the TOCTOU window between bind
@@ -135,6 +133,46 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
         shutdown_tx,
         accept_task,
     })
+}
+
+async fn prepare_socket_path(socket_path: &Path) -> io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(socket_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to replace non-socket path {}",
+                socket_path.display()
+            ),
+        ));
+    }
+
+    match UnixStream::connect(socket_path).await {
+        Ok(stream) => {
+            drop(stream);
+            Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("broker already listening at {}", socket_path.display()),
+            ))
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            match std::fs::remove_file(socket_path) {
+                Ok(()) => Ok(()),
+                Err(remove_error) if remove_error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(remove_error) => Err(remove_error),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn accept_loop(

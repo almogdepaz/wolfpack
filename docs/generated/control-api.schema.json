@@ -1549,11 +1549,18 @@
           "items": {
             "$ref": "#/$defs/Command"
           }
+        },
+        "ralphAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
         "agentCmd",
-        "cmds"
+        "cmds",
+        "ralphAgents"
       ],
       "additionalProperties": false
     },

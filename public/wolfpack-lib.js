@@ -53,6 +53,7 @@ var WS_CLOSE_REASONS = {
   SESSION_ENDED: "session ended",
   SUBSCRIBE_FAILED: "subscribe rpc failed",
   WRITE_FAILED: "write failed",
+  INPUT_RATE_LIMITED: "input rate limit exceeded",
   RESIZE_FAILED: "resize failed",
   SLOW_VIEWER: "slow viewer"
 };

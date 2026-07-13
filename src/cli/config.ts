@@ -53,8 +53,8 @@ export function parseConfig(raw: unknown): Config | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const candidate = raw as Record<string, unknown>;
   const devDir = typeof candidate.devDir === "string" ? candidate.devDir.trim() : "";
-  const port = Math.floor(Number(candidate.port));
-  if (!devDir || !isValidPort(port)) return null;
+  const port = candidate.port;
+  if (!devDir || typeof port !== "number" || !isValidPort(port)) return null;
   const tailscaleHostname =
     typeof candidate.tailscaleHostname === "string"
       ? candidate.tailscaleHostname.trim() || undefined
@@ -103,7 +103,7 @@ export function resolveProcessCommandForValidation(comm: string, args: string): 
 
 export function isPortInUse(port: number): boolean {
   try {
-    const p = Math.floor(Number(port));
+    const p = port;
     if (!isValidPort(p)) return false;
     if (IS_MACOS) {
       const out = execFileSync("lsof", ["-i", `:${p}`, "-t"], {
@@ -123,7 +123,7 @@ export function isPortInUse(port: number): boolean {
 
 export function killPortHolder(port: number): boolean {
   try {
-    const p = Math.floor(Number(port));
+    const p = port;
     if (!isValidPort(p)) return false;
     let pid: number | null = null;
     if (IS_MACOS) {

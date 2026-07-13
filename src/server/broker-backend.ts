@@ -22,7 +22,14 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import type { SessionBackend, PtyBackendMethods, SessionLifecycleEvent, SessionPrefill, SessionPrefillOptions } from "./backend.js";
+import {
+  UnsupportedTerminalKeyError,
+  type SessionBackend,
+  type PtyBackendMethods,
+  type SessionLifecycleEvent,
+  type SessionPrefill,
+  type SessionPrefillOptions,
+} from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
 import { SHELL } from "./shell.js";
@@ -126,9 +133,13 @@ interface SnapshotPayload extends SnapshotForRender {
   seq?: number;
 }
 
-/** Per-session refcount for output subscribers. Last unref tears down the broker subscribe. */
+interface SubscriberRegistration {
+  readonly unsubscribeData: () => void;
+  readonly onSubscribeError: (error: unknown) => void;
+}
+
 interface SubscriberRef {
-  count: number;
+  readonly subscribers: Set<SubscriberRegistration>;
 }
 
 type LifecycleSubscriber = (event: SessionLifecycleEvent) => void;
@@ -315,19 +326,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   async killSession(name: string): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
-    try {
-      // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
-      // the foreground process group via the controlling PTY and reliably tears
-      // down nested shells (e.g. `bash -lic /bin/zsh`).
-      const resp = await this.client.request("kill_session", { session_id: id, signal: 1 });
-      if (resp.status === "error") {
-        const code = resp.error?.code;
-        if (code !== "unknown_session" && code !== "session_not_alive") {
-          throw new BrokerRpcError(code ?? "internal_error", resp.error?.message ?? "kill failed");
-        }
+    // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
+    // the foreground process group via the controlling PTY and reliably tears
+    // down nested shells (e.g. `bash -lic /bin/zsh`).
+    const resp = await this.client.request("kill_session", { session_id: id, signal: 1 });
+    if (resp.status === "error") {
+      const code = resp.error?.code;
+      if (code !== "unknown_session" && code !== "session_not_alive") {
+        throw new BrokerRpcError(code ?? "internal_error", resp.error?.message ?? "kill failed");
       }
-    } catch (e: unknown) {
-      log.debug("killSession: broker error (continuing local cleanup)", { name, error: errMsg(e) });
     }
     this.nameToId.delete(name);
     this.idToInfo.delete(id);
@@ -367,26 +374,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     const id = await this.resolveId(name);
     if (!id) return;
     const payload = noEnter ? text : text + "\r";
-    try {
-      this.client.writeInput(id, TEXT_ENCODER.encode(payload));
-    } catch (e: unknown) {
-      log.debug("send failed", { name, error: errMsg(e) });
-    }
+    this.client.writeInput(id, TEXT_ENCODER.encode(payload));
   }
 
   async sendKey(name: string, key: string): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
     const seq = KEY_MAP[key] ?? (key.length === 1 ? key : null);
-    if (seq === null) {
-      log.warn("sendKey: unknown key", { name, key });
-      return;
-    }
-    try {
-      this.client.writeInput(id, TEXT_ENCODER.encode(seq));
-    } catch (e: unknown) {
-      log.debug("sendKey failed", { name, key, error: errMsg(e) });
-    }
+    if (seq === null) throw new UnsupportedTerminalKeyError(key);
+    this.client.writeInput(id, TEXT_ENCODER.encode(seq));
   }
 
   sessionDir(name: string): string | undefined {
@@ -428,41 +424,40 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   ): (() => void) | null {
     const id = this.nameToId.get(name);
     if (!id) return null;
-    const unsubData = this.client.subscribeOutput(id, (frame) => cb(frame.data));
+    const registration: SubscriberRegistration = {
+      unsubscribeData: this.client.subscribeOutput(id, (frame) => cb(frame.data)),
+      onSubscribeError: opts.onSubscribeError,
+    };
     let ref = this.subscriberRefs.get(id);
     if (!ref) {
-      ref = { count: 0 };
+      ref = { subscribers: new Set() };
       this.subscriberRefs.set(id, ref);
-      // Fire-and-forget subscribe RPC. On failure, unwind the local subscriber
-      // state so the refcount doesn't leak and the output sub is cleaned up.
-      // ALSO notify the caller via opts.onSubscribeError so the WS layer can
-      // tear down the viewer (otherwise it sits idle forever).
-      this.client.subscribe(id, { sinceSeq: opts.sinceSeq }).catch((e: unknown) => {
-        log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(e) });
-        try { unsubData(); } catch { /* ignore */ }
-        const r = this.subscriberRefs.get(id);
-        if (r) {
-          r.count = Math.max(0, r.count - 1);
-          if (r.count === 0) this.subscriberRefs.delete(id);
+      const pendingRef = ref;
+      this.client.subscribe(id, { sinceSeq: opts.sinceSeq }).catch((error: unknown) => {
+        if (this.subscriberRefs.get(id) !== pendingRef) return;
+        this.subscriberRefs.delete(id);
+        log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(error) });
+        for (const subscriber of pendingRef.subscribers) {
+          try { subscriber.unsubscribeData(); } catch { /* ignore */ }
+          try { subscriber.onSubscribeError(error); } catch (callbackError: unknown) {
+            log.debug("onSubscribeError callback threw", { name, id, error: errMsg(callbackError) });
+          }
         }
-        try { opts.onSubscribeError(e); } catch (cbErr: unknown) {
-          log.debug("onSubscribeError callback threw", { name, id, error: errMsg(cbErr) });
-        }
+        pendingRef.subscribers.clear();
       });
     }
-    ref.count++;
+    ref.subscribers.add(registration);
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      try { unsubData(); } catch { /* swallow - sub teardown must not throw */ }
-      const r = this.subscriberRefs.get(id);
-      if (!r) return;
-      r.count--;
-      if (r.count <= 0) {
+      try { registration.unsubscribeData(); } catch { /* swallow - sub teardown must not throw */ }
+      if (this.subscriberRefs.get(id) !== ref) return;
+      ref.subscribers.delete(registration);
+      if (ref.subscribers.size === 0) {
         this.subscriberRefs.delete(id);
-        this.client.unsubscribe(id).catch((e: unknown) => {
-          log.debug("unsubscribe rpc failed", { name, id, error: errMsg(e) });
+        this.client.unsubscribe(id).catch((error: unknown) => {
+          log.debug("unsubscribe rpc failed", { name, id, error: errMsg(error) });
         });
       }
     };

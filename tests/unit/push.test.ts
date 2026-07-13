@@ -1,5 +1,8 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { createECDH, createVerify, createPublicKey, randomBytes } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // We need to mock the WOLFPACK_DIR before importing push module.
 // Instead, test the crypto helpers and subscription logic via the exports.
@@ -44,6 +47,38 @@ describe("push: subscription management", () => {
 
     removeSubscription(sub.endpoint);
     expect(getSubscriptionCount()).toBe(initial);
+  });
+});
+
+describe("push: corrupt subscription persistence", () => {
+  test("refuses to replace malformed persisted subscriptions", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-push-corrupt-"));
+    const script = `
+      const { mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const path = join(process.env.HOME, ".wolfpack", "push-subscriptions.json");
+      mkdirSync(join(process.env.HOME, ".wolfpack"), { recursive: true });
+      writeFileSync(path, "{not-json");
+      const { addSubscription } = await import("./src/server/push.ts");
+      try {
+        addSubscription({ endpoint: "https://fcm.googleapis.com/corrupt-test", keys: { p256dh: "key", auth: "auth" } });
+        console.log("unexpected-success");
+      } catch (error) {
+        console.log(String(error));
+      }
+      console.log("content=" + readFileSync(path, "utf-8"));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: home },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = child.stdout.toString();
+    expect(child.exitCode).toBe(0);
+    expect(output).toContain("push subscription persistence");
+    expect(output).toContain("content={not-json");
+    expect(output).not.toContain("unexpected-success");
   });
 });
 
@@ -341,6 +376,28 @@ describe("push: checkNotifyRateLimit", () => {
 });
 
 // ── State transition + debounce tests ──
+
+describe("push: delivery deadline", () => {
+  test("a never-resolving fetch is rejected within the configured deadline", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    const started = Date.now();
+    const stalledFetch = async (): Promise<Response> => new Promise(() => {});
+
+    await expect(_testing.fetchWithDeadline(
+      "https://fcm.googleapis.com/stalled",
+      {},
+      10,
+      stalledFetch,
+    )).rejects.toMatchObject({ code: "PUSH_DELIVERY_TIMEOUT" });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  test("the production push deadline is positive and bounded", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    expect(_testing.PUSH_FETCH_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(_testing.PUSH_FETCH_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+  });
+});
 
 describe("push: checkSessionTransitions", () => {
   beforeEach(async () => {

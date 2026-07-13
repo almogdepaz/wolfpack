@@ -18,12 +18,12 @@ export function createRateLimiter(rate: number) {
   let tokens = rate;
   let last = Date.now();
   return {
-    allow(): boolean {
+    allow(cost = 1): boolean {
       const now = Date.now();
       tokens = Math.min(rate, tokens + ((now - last) / 1000) * rate);
       last = now;
-      if (tokens < 1) return false;
-      tokens--;
+      if (tokens < cost) return false;
+      tokens -= cost;
       return true;
     },
   };
@@ -130,12 +130,12 @@ export function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-export async function parseBody<T = any>(req: IncomingMessage, res: ServerResponse): Promise<T | null> {
+export async function parseBody(req: IncomingMessage, res: ServerResponse): Promise<unknown | undefined> {
   try {
-    return JSON.parse(await readBody(req)) as T;
+    return JSON.parse(await readBody(req)) as unknown;
   } catch { /* expected: client sent malformed JSON */
     json(res, { error: "invalid JSON body" }, 400);
-    return null;
+    return undefined;
   }
 }
 

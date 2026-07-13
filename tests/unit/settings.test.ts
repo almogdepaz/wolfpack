@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 
 process.env.WOLFPACK_TEST = "1";
 
-const { effectiveAgentCmd, effectiveCmds, effectiveRalphAgents, loadSettings } = await import(
+const { effectiveAgentCmd, effectiveCmds, effectiveRalphAgents, loadSettings, loadSettingsWithRalphAgents } = await import(
   "../../src/server/routes.ts"
 );
 
@@ -131,6 +131,24 @@ describe("effectiveRalphAgents", () => {
   });
 });
 
+describe("loadSettingsWithRalphAgents", () => {
+  test("does not classify synthesized defaults as configured Ralph agents", () => {
+    withSettingsFile(undefined, () => {
+      const loaded = loadSettingsWithRalphAgents();
+      expect(loaded.settings.cmds.map(c => c.cmd)).toEqual(["shell", "claude", "pi", "codex"]);
+      expect(loaded.ralphAgents).toEqual([]);
+    });
+  });
+
+  test("preserves an explicitly empty persisted command list", () => {
+    withSettingsFile({ agentCmd: "shell", cmds: [] }, () => {
+      const loaded = loadSettingsWithRalphAgents();
+      expect(loaded.settings.cmds).toEqual([]);
+      expect(loaded.ralphAgents).toEqual([]);
+    });
+  });
+});
+
 describe("loadSettings — defaults", () => {
   test("returns the 4 baseline defaults when no settings file exists", () => {
     withSettingsFile(undefined, () => {
@@ -229,12 +247,11 @@ describe("loadSettings — new shape", () => {
     );
   });
 
-  test("empty cmds array in file falls back to defaults", () => {
+  test("preserves an explicitly empty cmds array", () => {
     withSettingsFile(
       { agentCmd: "shell", cmds: [] },
       () => {
-        const s = loadSettings();
-        expect(s.cmds.map(c => c.cmd)).toEqual(["shell", "claude", "pi", "codex"]);
+        expect(loadSettings().cmds).toEqual([]);
       },
     );
   });

@@ -570,6 +570,12 @@ describe("countRalphProgressFromContent", () => {
     const progress = "DONE: checkbox: stale task\n";
     expect(countRalphProgressFromContent(plan, progress)).toEqual({ done: 0, total: 1 });
   });
+
+  test("keeps legacy checked checkboxes in the bounded task-key model", () => {
+    const plan = "- [x] completed task\n- [ ] pending task\n";
+    const progress = "DONE: checkbox: completed task\nDONE: checkbox: pending task\n";
+    expect(countRalphProgressFromContent(plan, progress)).toEqual({ done: 2, total: 2 });
+  });
 });
 
 describe("detectOldPlanFormat", () => {

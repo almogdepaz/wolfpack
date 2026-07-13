@@ -26,15 +26,10 @@ describe("parseConfig", () => {
     });
   });
 
-  test("accepts numeric string ports from malformed JSON", () => {
-    expect(parseConfig({
-      devDir: "/Users/home/Dev",
-      port: "18790",
-    })).toEqual({
-      devDir: "/Users/home/Dev",
-      port: 18790,
-      tailscaleHostname: undefined,
-    });
+  test("rejects non-number and fractional ports", () => {
+    for (const port of ["18790", true, false, 18790.5, NaN, Infinity]) {
+      expect(parseConfig({ devDir: "/Users/home/Dev", port })).toBeNull();
+    }
   });
 
   test("strips unknown fields like legacy 'backend'", () => {

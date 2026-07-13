@@ -273,21 +273,23 @@ async function loadStartFormData() {
   const machine = getStartMachine();
   const sel = document.getElementById("ralph-project-select") as HTMLSelectElement;
   const agentSel = document.getElementById("ralph-agent-select") as HTMLSelectElement;
+  let hasConfiguredAgents = false;
   try {
     const [projectData, settingsData] = await Promise.all([
       deps.api<{ projects?: string[] }>("/projects", undefined, machine),
-      deps.api<{ effective?: { cmds?: string[] } }>("/settings", undefined, machine),
+      deps.api<{ effective?: { ralphAgents?: string[] } }>("/settings", undefined, machine),
     ]);
     const projects = projectData.projects || [];
-    sel.innerHTML = projects.map(p => '<option value="' + escAttr(p) + '">' + esc(p) + '</option>').join("");
+    sel.innerHTML = projects.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
     if (state.currentRalphProject && projects.includes(state.currentRalphProject)) {
       sel.value = state.currentRalphProject;
     }
-    const agents = configuredRalphAgents(settingsData.effective?.cmds || []);
-    agentSel.innerHTML = agents.length > 0
+    const agents = configuredRalphAgents(settingsData.effective?.ralphAgents || []);
+    hasConfiguredAgents = agents.length > 0;
+    agentSel.innerHTML = hasConfiguredAgents
       ? agents.map(agent => '<option value="' + escAttr(agent) + '">' + esc(agent) + '</option>').join("")
       : '<option value="">no enabled Ralph agents</option>';
-    agentSel.disabled = agents.length === 0;
+    agentSel.disabled = !hasConfiguredAgents;
   } catch {
     sel.innerHTML = '<option value="">failed to load projects</option>';
     agentSel.innerHTML = '<option value="">failed to load agents</option>';
@@ -349,6 +351,7 @@ async function loadStartFormData() {
     state.currentRalphWorktreeBranch = "";
   } else {
     lockable.forEach(el => { if (el) el.disabled = false; });
+    agentSel.disabled = !hasConfiguredAgents;
   }
 }
 

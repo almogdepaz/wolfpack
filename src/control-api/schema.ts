@@ -149,7 +149,8 @@ export const controlApiSource: ControlApiSource = {
     EffectiveSettings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("Command")),
-    }, ["agentCmd", "cmds"]),
+      ralphAgents: arrayOf(string()),
+    }, ["agentCmd", "cmds", "ralphAgents"]),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),

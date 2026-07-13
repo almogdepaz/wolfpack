@@ -13,6 +13,7 @@ import {
 } from "../validation.js";
 import {
   CLOSE_CODE_NORMAL,
+  CLOSE_CODE_POLICY_VIOLATION,
   CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
   CLOSE_CODE_DISPLACED,
@@ -32,6 +33,7 @@ import {
 } from "../terminal-load-timing.js";
 
 const log = createLogger("ws");
+const PTY_BINARY_BYTES_PER_SEC = PTY_BINARY_FRAME_MAX_BYTES * 60;
 const TERMINAL_LOAD_TIMING_ENABLED = isTerminalLoadTimingEnabled(process.env);
 
 interface ServerTerminalLoadTiming {
@@ -1053,6 +1055,7 @@ function setupNewPtyEntry(
   };
 
   const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
+  const binaryInputLimiter = createRateLimiter(PTY_BINARY_BYTES_PER_SEC);
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   ws.on("message", (raw: Buffer | string, isBinary: boolean) => {
@@ -1122,6 +1125,10 @@ function setupNewPtyEntry(
       } else {
         // Binary data — write to terminal via the streaming backend.
         if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
+        if (!binaryInputLimiter.allow(raw.length)) {
+          tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.INPUT_RATE_LIMITED, "input rate limit viewer close failed", session);
+          return;
+        }
         if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
           log.warn("terminal input write failed", { session });
           ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);

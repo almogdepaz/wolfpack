@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
 import type { TriageStatus } from "../triage.js";
+import { readValidatedJsonFile } from "./persistence.js";
 
 const log = createLogger("push");
 
@@ -97,6 +98,8 @@ export function getVapidPublicKey(): string {
 
 const MAX_SUBSCRIPTIONS = 20;
 const MAX_ENDPOINT_LENGTH = 1024;
+const PUSH_FETCH_TIMEOUT_MS = 10_000;
+const PUSH_DELIVERY_TIMEOUT_CODE = "PUSH_DELIVERY_TIMEOUT";
 
 const ALLOWED_PUSH_HOSTS = new Set([
   "fcm.googleapis.com",
@@ -105,14 +108,22 @@ const ALLOWED_PUSH_HOSTS = new Set([
   "web.push.apple.com",
 ]);
 
-function loadSubscriptions(): PushSubscription[] {
-  if (!existsSync(SUBS_PATH)) return [];
-  try {
-    const data = JSON.parse(readFileSync(SUBS_PATH, "utf-8"));
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
+function isPushSubscription(value: unknown): value is PushSubscription {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.endpoint !== "string" || !candidate.keys || typeof candidate.keys !== "object") {
+    return false;
   }
+  const keys = candidate.keys as Record<string, unknown>;
+  return typeof keys.p256dh === "string" && typeof keys.auth === "string";
+}
+
+function isSubscriptionStore(value: unknown): value is PushSubscription[] {
+  return Array.isArray(value) && value.every(isPushSubscription);
+}
+
+function loadSubscriptions(): PushSubscription[] {
+  return readValidatedJsonFile(SUBS_PATH, "push subscription", isSubscriptionStore) ?? [];
 }
 
 function saveSubscriptions(subs: PushSubscription[]): void {
@@ -320,6 +331,43 @@ export interface PushPayload {
   url?: string;
 }
 
+class PushDeliveryTimeoutError extends Error {
+  readonly code = PUSH_DELIVERY_TIMEOUT_CODE;
+  readonly endpoint: string;
+
+  constructor(endpoint: string, timeoutMs: number) {
+    super(`push delivery timed out after ${timeoutMs}ms`);
+    this.name = "PushDeliveryTimeoutError";
+    this.endpoint = endpoint;
+  }
+}
+
+type PushFetch = (input: string, init: RequestInit) => Promise<Response>;
+
+async function fetchWithDeadline(
+  endpoint: string,
+  init: RequestInit,
+  timeoutMs: number,
+  fetcher: PushFetch = fetch,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new PushDeliveryTimeoutError(endpoint, timeoutMs));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      fetcher(endpoint, { ...init, signal: controller.signal }),
+      deadline,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function sendPush(payload: PushPayload): Promise<{ sent: number; failed: number; pruned: number }> {
   const subs = loadSubscriptions();
   if (subs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
@@ -346,7 +394,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
     const { body } = encryptPayload(payloadBuf, sub);
 
-    const resp = await fetch(sub.endpoint, {
+    const resp = await fetchWithDeadline(sub.endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/octet-stream",
@@ -355,7 +403,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
         Authorization: `vapid t=${jwt}, k=${vapid.publicKey}`,
       },
       body: new Uint8Array(body),
-    });
+    }, PUSH_FETCH_TIMEOUT_MS);
 
     return { endpoint: sub.endpoint, status: resp.status };
   }));
@@ -366,7 +414,11 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
   for (const r of results) {
     if (r.status === "rejected") {
-      log.warn("push send error", { error: errMsg(r.reason) });
+      if (r.reason instanceof PushDeliveryTimeoutError) {
+        log.warn("push delivery timed out", { endpoint: r.reason.endpoint.slice(0, 60) });
+      } else {
+        log.warn("push send error", { error: errMsg(r.reason) });
+      }
       failed++;
     } else if (r.value.status === 200 || r.value.status === 201) {
       sent++;
@@ -491,6 +543,8 @@ export const _testing = {
   lastRalphPushTime,
   prevRalphState,
   PUSH_DEBOUNCE_MS,
+  PUSH_FETCH_TIMEOUT_MS,
+  fetchWithDeadline,
   resetDebounce: _testingResetDebounce,
   get notifyTimestamps() { return notifyTimestamps; },
   set notifyTimestamps(v: number[]) {

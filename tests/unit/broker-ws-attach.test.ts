@@ -236,6 +236,18 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.writeCalls.length).toBe(0);
   });
 
+  test("binary stdin exceeding the per-viewer byte budget closes the viewer", () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    const frame = Buffer.alloc(16 * 1024, 0x55);
+
+    for (let i = 0; i < 61; i++) ws.pushBinary(frame);
+
+    expect(backend.writeCalls.length).toBe(60);
+    expect(ws.closeCode).toBe(1008);
+    expect(ws.closeReason).toBe("input rate limit exceeded");
+  });
+
   test("resize after attach calls broker.resize (debounced ~80ms)", async () => {
     const ws = new FakeWs();
     attachWs(ws);

@@ -157,7 +157,7 @@ describe("control api schema compatibility samples", () => {
       ["listSessions", { sessions: [{ name: "wolf-1", lastLine: "ready", triage: "idle" }] }],
       ["getSettings", {
         settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }] },
-        effective: { agentCmd: "shell", cmds: ["shell"] },
+        effective: { agentCmd: "shell", cmds: ["shell"], ralphAgents: [] },
       }],
       ["listRalphLoops", {
         loops: [{
