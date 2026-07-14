@@ -16,7 +16,7 @@ import {
 
 interface GridTerminalController {
   readonly isConnected: boolean;
-  readonly hydration?: { finish(): void };
+  readonly hydration?: { forceFinish(): void };
   readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
   mount(cell: HTMLElement, opts: { readonly cached?: string | null }): Promise<void>;
   connect(opts?: { readonly takeControl?: boolean }): void;
@@ -374,7 +374,7 @@ function showGridCellConflictOverlay(gs) {
   const cell = getGridCellElement(gs);
   if (!cell) return;
   // Force hydration complete so overlay is visible (cell may be opacity:0)
-  if (gs.controller && gs.controller.hydration) gs.controller.hydration.finish();
+  if (gs.controller && gs.controller.hydration) gs.controller.hydration.forceFinish();
   removeGridCellConflictOverlay(gs);
   const overlay = deps.createConflictOverlay("Active on another device", "Take Control", (e) => {
     e.stopPropagation();

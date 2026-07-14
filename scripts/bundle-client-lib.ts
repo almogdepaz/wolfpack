@@ -54,7 +54,7 @@ const REQUIRED_EXPORTS = [
   "addToGridState", "removeFromGridState", "suspendGridState", "resumeGridState",
   "classifyDisconnect", "handleViewerConflict", "handleControlGranted",
   "handleDisplaced", "prepareAutoTakeControl", "handleTakeControlClick",
-  "CLOSE_CODE_DISPLACED", "CLOSE_CODE_SESSION_UNAVAILABLE", "CLOSE_CODE_NORMAL", "CLOSE_CODE_SERVER_ERROR", "PTY_BINARY_FRAME_MAX_BYTES",
+  "CLOSE_CODE_DISPLACED", "CLOSE_CODE_SESSION_UNAVAILABLE", "CLOSE_CODE_NORMAL", "CLOSE_CODE_PREFILL_TIMEOUT", "CLOSE_CODE_SERVER_ERROR", "PTY_BINARY_FRAME_MAX_BYTES", "WS_CLOSE_REASONS",
   "peerHealthRecordFailure", "peerHealthRecordSuccess", "peerHealthTimeoutMs",
   "PEER_FAILING_TIMEOUT_MS", "PEER_HEALTHY_TIMEOUT_MS",
 ];

@@ -5,6 +5,7 @@
  */
 import { test, expect, type WebSocketRoute } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
+import { CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 
 let srv: TestServer;
 
@@ -98,6 +99,188 @@ test("mobile touch scrolling works immediately after switching sessions", async 
 
   expect(viewportY).toBeGreaterThan(0);
   await expect(page.locator("#mobile-kb-proxy")).not.toBeFocused();
+});
+
+test("full session switch and reconnect keep partial prefill hidden until prefill_done", async ({ page }) => {
+  let switchedPrefillMode = "";
+  let switchedFullAttachCount = 0;
+  let latestFullPrefillDone = true;
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session");
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { readonly type?: string; readonly prefillMode?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      const prefillMode = parsed.prefillMode || "full";
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      if (session === "test-project") {
+        ws.send(Buffer.from("INITIAL-SESSION\r\n"));
+        if (prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+        ws.send(JSON.stringify({ type: "prefill_done" }));
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+        return;
+      }
+
+      switchedPrefillMode = prefillMode;
+      if (prefillMode === "viewport") {
+        ws.send(Buffer.from("SWITCHED-VIEWPORT\r\n"));
+        ws.send(JSON.stringify({ type: "prefill_viewport" }));
+        ws.send(JSON.stringify({ type: "prefill_done" }));
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+        return;
+      }
+
+      switchedFullAttachCount++;
+      latestFullPrefillDone = false;
+      ws.send(Buffer.from("SWITCHED-PARTIAL-1\r\n"));
+      setTimeout(() => ws.send(Buffer.from("SWITCHED-PARTIAL-2\r\n")), 2500);
+      setTimeout(() => {
+        latestFullPrefillDone = true;
+        ws.send(JSON.stringify({ type: "prefill_done" }));
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+      }, 5000);
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => localStorage.setItem("wolfpackDebug", "1"));
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    const debugWindow = window as unknown as {
+      __fullPrefillEarlyReveal?: boolean;
+      __wfTrace?: Record<string, {
+        readonly _meta: { readonly session: string };
+        readonly events: ReadonlyArray<{ readonly kind: string; readonly prefillMode?: string }>;
+      }>;
+    };
+    debugWindow.__fullPrefillEarlyReveal = false;
+    const observe = (): void => {
+      const trace = Object.values(debugWindow.__wfTrace || {}).find(candidate => candidate._meta.session === "another-project");
+      const fullPrefill = trace?.events.some(event => event.kind === "attach.send" && event.prefillMode === "full") ?? false;
+      const prefillDone = trace?.events.some(event => event.kind === "prefill_done") ?? false;
+      const canvas = document.querySelector("#desktop-terminal-container canvas");
+      const style = canvas ? getComputedStyle(canvas) : null;
+      if (fullPrefill && !prefillDone && style?.visibility === "visible" && style.opacity === "1") {
+        debugWindow.__fullPrefillEarlyReveal = true;
+      }
+      if (!prefillDone) requestAnimationFrame(observe);
+    };
+    requestAnimationFrame(observe);
+    // @ts-ignore exposed by the browser bundle
+    switchSession("another-project");
+  });
+
+  await expect.poll(() => switchedPrefillMode).not.toBe("");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 7000 });
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() => (window as unknown as { __fullPrefillEarlyReveal?: boolean }).__fullPrefillEarlyReveal)).toBe(false);
+
+  if (switchedPrefillMode !== "full") return;
+  await page.evaluate(() => {
+    const controller = (window as unknown as { state: { terminalController?: { reconnect(): void } } }).state.terminalController;
+    if (!controller) throw new Error("missing terminal controller");
+    controller.reconnect();
+  });
+  await expect.poll(() => switchedFullAttachCount).toBe(2);
+  await page.waitForTimeout(4200);
+  expect(latestFullPrefillDone).toBe(false);
+  const reconnectVisualState = await page.evaluate(() => {
+    const container = document.getElementById("desktop-terminal-container");
+    const canvas = container?.querySelector("canvas");
+    const style = canvas ? getComputedStyle(canvas) : null;
+    return {
+      loadState: container?.getAttribute("data-terminal-load-state") || "",
+      visibility: style?.visibility || "missing",
+      opacity: style?.opacity || "missing",
+    };
+  });
+  expect(reconnectVisualState).toEqual({
+    loadState: "hydrating",
+    visibility: "hidden",
+    opacity: "0",
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 3000 });
+});
+
+test("viewer conflict force-finishes hydration without prefill completion", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only conflict overlay path");
+
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string };
+      if (parsed.type === "attach") ws.send(JSON.stringify({ type: "viewer_conflict" }));
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+
+  await expect(page.locator("#desktop-conflict-overlay")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const controller = (window as unknown as {
+      state: { terminalController?: { hydration?: { readonly pending: boolean } } };
+    }).state.terminalController;
+    return controller?.hydration?.pending ?? null;
+  })).toBe(false);
+});
+
+test("full prefill timeout closes the stalled socket instead of revealing partial content", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "one browser profile covers the socket deadline");
+
+  const closes: Array<{ readonly code: number | undefined; readonly reason: string | undefined }> = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      expect(parsed.prefillMode).toBe("full");
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("PARTIAL-PREFILL-WITHOUT-DONE\r\n"));
+    });
+    ws.onClose((code, reason) => {
+      closes.push({ code, reason });
+      void ws.close({ code, reason });
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.clock.install();
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "prefill-loading");
+
+  await page.clock.fastForward(16_000);
+  expect(closes).toContainEqual({
+    code: CLOSE_CODE_PREFILL_TIMEOUT,
+    reason: WS_CLOSE_REASONS.PREFILL_TIMEOUT,
+  });
+  const visualState = await page.evaluate(() => {
+    const container = document.getElementById("desktop-terminal-container");
+    const canvas = container?.querySelector("canvas");
+    const style = canvas ? getComputedStyle(canvas) : null;
+    return {
+      visibility: style?.visibility || "missing",
+      opacity: style?.opacity || "missing",
+    };
+  });
+  expect(visualState).toEqual({ visibility: "hidden", opacity: "0" });
 });
 
 test("desktop full switchSession keeps cached snapshot hidden until hydration", async ({ page }, testInfo) => {

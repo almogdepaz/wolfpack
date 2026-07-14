@@ -44,6 +44,7 @@ var CLOSE_CODE_NORMAL = 1000;
 var CLOSE_CODE_SERVER_ERROR = 1011;
 var CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
 var CLOSE_CODE_DISPLACED = 4002;
+var CLOSE_CODE_PREFILL_TIMEOUT = 4003;
 var PTY_BINARY_FRAME_MAX_BYTES = 16384;
 var WS_CLOSE_REASONS = {
   PTY_EXITED: "pty exited",
@@ -54,6 +55,7 @@ var WS_CLOSE_REASONS = {
   SUBSCRIBE_FAILED: "subscribe rpc failed",
   WRITE_FAILED: "write failed",
   INPUT_RATE_LIMITED: "input rate limit exceeded",
+  PREFILL_TIMEOUT: "prefill timeout",
   RESIZE_FAILED: "resize failed",
   SLOW_VIEWER: "slow viewer"
 };
@@ -205,6 +207,6 @@ function handleDisplaced(state) {
 function prepareAutoTakeControl(state) {
   return { ...state, autoTakeControl: true };
 }
-var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
+var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, WS_CLOSE_REASONS, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_PREFILL_TIMEOUT, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
 window.WP = WP;
 })();

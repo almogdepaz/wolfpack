@@ -595,6 +595,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   return { term, fitAddon };
 }
 const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
+const PREFILL_PROTOCOL_TIMEOUT_MS = 15_000;
 const INITIAL_HYDRATION_SETTLE_MS = 16;
 const INITIAL_HYDRATION_SILENCE_MS = 32;
 
@@ -617,6 +618,7 @@ interface InitialHydrationControllerOpts {
   getElement: () => HTMLElement | null;
   getTerm: () => GhosttyTerminal | null;
   shouldFocus: () => boolean;
+  isInitialContentComplete?: () => boolean;
   canFinish?: () => boolean;
   onReveal?: () => void;
   timeoutMs?: number;
@@ -654,12 +656,12 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
     __wfTraceEvent(__wfTraceGet(_diagSession, _diagMachine), kind, fields);
   }
 
-  function finish() {
+  function finish(force = false) {
     if (!_pending) return;
     // minPendingMs floor: keep canvas hidden through the post-prefill
     // resize-redraw burst (~150-300ms after prefill_done). See call site.
     const elapsed = Date.now() - _startedAt;
-    if (minPendingMs > 0 && elapsed < minPendingMs) {
+    if (!force && minPendingMs > 0 && elapsed < minPendingMs) {
       if (_settleTimer) clearTimeout(_settleTimer);
       _settleTimer = setTimeout(finish, Math.max(settleMs, minPendingMs - elapsed));
       _diagEvent("hydration.holdMinPending", { elapsed, minPendingMs });
@@ -669,7 +671,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
     // Captures the post-attach SIGWINCH redraw burst (server coalesces it into
     // ~1 ws frame, but it can arrive 100-300ms AFTER prefill_done). Without
     // this, canvas reveals empty/partial and the burst paints visibly.
-    if (silenceMs > 0 && _lastDataAt > 0) {
+    if (!force && silenceMs > 0 && _lastDataAt > 0) {
       const sinceLastData = Date.now() - _lastDataAt;
       if (sinceLastData < silenceMs && elapsed < maxPendingMs) {
         if (_settleTimer) clearTimeout(_settleTimer);
@@ -678,7 +680,14 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
         return;
       }
     }
-    if (opts.canFinish && !opts.canFinish()) {
+    // Protocol completion is a hard reveal gate. maxPendingMs may override
+    // write quiescence below, but must never expose a partial full prefill.
+    if (!force && opts.isInitialContentComplete && !opts.isInitialContentComplete()) {
+      if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
+      _diagEvent("hydration.holdInitialContent", { elapsed });
+      return;
+    }
+    if (!force && opts.canFinish && !opts.canFinish()) {
       if (elapsed >= maxPendingMs) {
         // Safety valve: avoid infinite loader on very high-throughput sessions.
         _diagEvent("hydration.maxPendingHit", { elapsed });
@@ -741,6 +750,10 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
     }
   }
 
+  function forceFinish() {
+    finish(true);
+  }
+
   function cancel() {
     _pending = false;
     if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
@@ -753,6 +766,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
     scheduleFinish,
     notifyData,
     finish,
+    forceFinish,
     cancel,
   };
 }
@@ -768,6 +782,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
  * @param {() => {cols:number, rows:number}|null} opts.getTermDimensions
  * @param {() => void} opts.fitTerminal
  * @param {(Uint8Array) => void} opts.onBinaryData
+ * @param {() => void} [opts.onAttach]
  * @param {() => void} [opts.onOpen]
  * @param {() => void} [opts.onPtyReady]
  * @param {() => void} [opts.onPrefillDone]
@@ -793,6 +808,7 @@ interface PtySocketClientOpts {
   readonly getTermDimensions: () => TermDimensions | null;
   readonly fitTerminal: () => void;
   readonly onBinaryData?: (data: Uint8Array) => void;
+  readonly onAttach?: () => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
   readonly onPtyReady?: () => void;
   readonly onPrefillDone?: () => void;
@@ -886,6 +902,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _attachDimensionRetryAttempt = 0;
     const attachDims = dims;
     if (!attachDims) return;
+    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
+    if (opts.onAttach) opts.onAttach();
     const prefillMode = _initialPrefillMode;
     _currentAttachPrefillMode = prefillMode;
     _lastSentResize = attachDims.cols + "x" + attachDims.rows;
@@ -904,6 +922,15 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
     __wfTraceEvent(_trace, "attach.send", { cols: attachDims.cols, rows: attachDims.rows, prefillMode });
     __wfTraceRafStart(_trace);
+    if (prefillMode !== "none") {
+      const attachedSocket = ws;
+      _prefillDoneTimeout = setTimeout(() => {
+        _prefillDoneTimeout = null;
+        if (!_awaitingPrefillDone || ws !== attachedSocket || attachedSocket.readyState !== WebSocket.OPEN) return;
+        __wfTraceEvent(_trace, "prefill.timeout", { timeoutMs: PREFILL_PROTOCOL_TIMEOUT_MS });
+        attachedSocket.close(WP.CLOSE_CODE_PREFILL_TIMEOUT, WP.WS_CLOSE_REASONS.PREFILL_TIMEOUT);
+      }, PREFILL_PROTOCOL_TIMEOUT_MS);
+    }
     ws.send(JSON.stringify(msg));
     if (_attachAckTimer) clearTimeout(_attachAckTimer);
     // Compatibility fallback: older servers don't implement attach_ack.
@@ -1253,6 +1280,7 @@ interface InitialHydrationController {
   scheduleFinish(): void;
   notifyData(): void;
   finish(): void;
+  forceFinish(): void;
   cancel(): void;
 }
 
@@ -1728,7 +1756,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       getElement: _getHydrationElement,
       getTerm: () => _term,
       shouldFocus: opts.shouldFocus || (() => true),
-      canFinish: () => _initialPrefillComplete && _hydrationWritesInFlight === 0,
+      isInitialContentComplete: () => _initialPrefillComplete,
+      canFinish: () => _hydrationWritesInFlight === 0,
       onReveal: () => {
         if (_pendingResizeScrollRestore && _term) {
           const target = WP.resizeRehydrateScrollTarget({
@@ -1771,8 +1800,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_ptyClient) _ptyClient.close();
     _connectEpoch++;
 
-    _initialPrefillComplete = opts.prefillMode === "none";
-
     // Start hydration on first connect
     if (!_hydrationStarted && _hydration) {
       startHydration();
@@ -1792,6 +1819,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
       fitTerminal: fitTerminalPreserveScroll,
       shouldReconnect: opts.shouldReconnect,
+      onAttach: () => {
+        _initialPrefillComplete = opts.prefillMode === "none";
+      },
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
@@ -3072,7 +3102,7 @@ function showDesktopConflictOverlay() {
   const container = document.getElementById("desktop-terminal-container");
   if (!container) return;
   // Force hydration complete so overlay is visible (container may be opacity:0)
-  if (state.terminalController && state.terminalController.hydration) state.terminalController.hydration.finish();
+  if (state.terminalController && state.terminalController.hydration) state.terminalController.hydration.forceFinish();
   removeDesktopConflictOverlay();
   const overlay = createConflictOverlay("Session active on another device", "Take Control", () => {
     if (!state.terminalController) return;
