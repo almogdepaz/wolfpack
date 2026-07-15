@@ -57,7 +57,7 @@ export function clampRows(n: number): number {
 // ── Port validation ──
 
 export function isValidPort(n: number): boolean {
-  return Number.isFinite(n) && n >= 1 && n <= 65535;
+  return Number.isInteger(n) && n >= 1 && n <= 65535;
 }
 
 // ── Shell escaping ──

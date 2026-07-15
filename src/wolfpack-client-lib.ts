@@ -19,6 +19,7 @@ export {
   splitTerminalInputBytes,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
+  shouldReleaseScrollLockOnKeydown,
 } from "./terminal-input";
 
 export {
@@ -46,8 +47,10 @@ export {
 } from "./peer-health";
 
 export {
+  CLOSE_CODE_PREFILL_TIMEOUT,
   CLOSE_CODE_SERVER_ERROR,
   PTY_BINARY_FRAME_MAX_BYTES,
+  WS_CLOSE_REASONS,
 } from "./ws-constants";
 
 export {

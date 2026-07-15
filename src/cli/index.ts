@@ -30,6 +30,7 @@ import { runSessionCommand } from "./session-control.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
+import { applyServiceAuthFile } from "./service-auth.js";
 
 export {
   loadConfig,
@@ -78,6 +79,9 @@ export function parseServiceCommand(argv: readonly string[]): ParsedServiceComma
 
 async function start() {
   const serviceMode = process.env.WOLFPACK_SERVICE === "1";
+  const serviceAuthFile = process.env.WOLFPACK_SERVICE_AUTH_FILE;
+  if (serviceMode && serviceAuthFile) applyServiceAuthFile(serviceAuthFile);
+
   const config = loadConfig();
   if (!config) {
     if (serviceMode) {

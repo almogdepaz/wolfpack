@@ -1,7 +1,8 @@
 import { describe, expect, test, beforeAll, afterAll, beforeEach } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
@@ -21,7 +22,8 @@ process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(process.cwd(), ".wolfpack", `a
 // developer's real ~/.wolfpack/bridge-settings.json. The path is read at
 // every loadSettings/saveSettings call so this works as long as it's set
 // before the first request.
-process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+const TEST_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
@@ -290,6 +292,46 @@ describe("GET /api/ralph status authority", () => {
   });
 });
 
+describe("POST /api/ralph/start validation ordering", () => {
+  test("missing plan does not mutate locks or Git branches", async () => {
+    const project = "ralph-missing-plan";
+    const projectDir = join(TEST_DEV_DIR, project);
+    const lockPath = join(projectDir, ".ralph.lock");
+    mkdirSync(projectDir, { recursive: true });
+    createdDirs.push(projectDir);
+    execFileSync("git", ["init", "-b", "main"], { cwd: projectDir, stdio: "pipe" });
+    execFileSync("git", ["config", "user.name", "Wolfpack Test"], { cwd: projectDir });
+    execFileSync("git", ["config", "user.email", "wolfpack@example.test"], { cwd: projectDir });
+    execFileSync("git", ["remote", "add", "origin", join(projectDir, "missing-origin")], { cwd: projectDir });
+    execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: projectDir, stdio: "pipe" });
+    writeFileSync(lockPath, "preexisting-stale-lock");
+
+    const res = await post("/api/ralph/start", {
+      project,
+      planFile: "MISSING.md",
+      newBranch: "fix/missing-plan",
+      sourceBranch: "main",
+    });
+
+    expect(res.status).toBe(404);
+    expect({
+      currentBranch: execFileSync("git", ["branch", "--show-current"], {
+        cwd: projectDir,
+        encoding: "utf-8",
+      }).trim(),
+      createdBranch: execFileSync("git", ["branch", "--list", "fix/missing-plan"], {
+        cwd: projectDir,
+        encoding: "utf-8",
+      }).trim(),
+      lockContent: existsSync(lockPath) ? readFileSync(lockPath, "utf-8") : null,
+    }).toEqual({
+      currentBranch: "main",
+      createdBranch: "",
+      lockContent: "preexisting-stale-lock",
+    });
+  }, 30_000);
+});
+
 describe("POST /api/create", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
@@ -347,6 +389,13 @@ describe("POST /api/create", () => {
   test("rejects missing project entirely", async () => {
     const res = await post("/api/create", {});
     expect(res.status).toBe(400);
+  });
+
+  test("rejects non-string project fields without creating a session", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", { newProject: 42 });
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test("uses newProject field when provided", async () => {
@@ -650,6 +699,14 @@ describe("POST /api/settings — addCmd", () => {
     const res = await post("/api/settings", { addCmd: "rm -rf /; echo pwn" });
     expect(res.status).toBe(400);
   });
+
+  test("rejects non-string commands without changing settings", async () => {
+    const before = await (await get("/api/settings")).json();
+    const res = await post("/api/settings", { addCmd: 42 });
+    expect(res.status).toBe(400);
+    const after = await (await get("/api/settings")).json();
+    expect(after).toEqual(before);
+  });
 });
 
 describe("POST /api/settings — removeCmd", () => {
@@ -723,6 +780,74 @@ describe("POST /api/settings — agentCmd", () => {
   test("rejects malformed agentCmd with 400", async () => {
     const res = await post("/api/settings", { agentCmd: "rm -rf /; echo pwn" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/ralph/start agent authorization", () => {
+  beforeEach(() => {
+    writeFileSync(join(TEST_DEV_DIR, "my-app", "PLAN.md"), "- [ ] authorization test\n");
+  });
+
+  const restoreConfiguredAgents = () => writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
+    agentCmd: "shell",
+    cmds: [
+      { cmd: "shell", enabled: true },
+      { cmd: "claude", enabled: true },
+      { cmd: "pi", enabled: true },
+      { cmd: "codex", enabled: true },
+    ],
+  }));
+
+  test("rejects synthesized defaults when the settings file is missing", async () => {
+    rmSync(TEST_SETTINGS_PATH, { force: true });
+    try {
+      const res = await post("/api/ralph/start", {
+        project: "my-app",
+        planFile: "PLAN.md",
+        agent: "claude",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
+    } finally {
+      restoreConfiguredAgents();
+    }
+  });
+
+  test("rejects synthesized defaults when persisted commands are empty", async () => {
+    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({ agentCmd: "shell", cmds: [] }));
+    try {
+      const res = await post("/api/ralph/start", {
+        project: "my-app",
+        planFile: "PLAN.md",
+        agent: "claude",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
+    } finally {
+      restoreConfiguredAgents();
+    }
+  });
+
+  test("rejects a supported agent when it is disabled in settings", async () => {
+    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
+      agentCmd: "codex",
+      cmds: [
+        { cmd: "claude", enabled: false },
+        { cmd: "codex", enabled: true },
+      ],
+    }));
+
+    try {
+      const res = await post("/api/ralph/start", {
+        project: "my-app",
+        planFile: "PLAN.md",
+        agent: "claude",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
+    } finally {
+      restoreConfiguredAgents();
+    }
   });
 });
 
@@ -850,6 +975,29 @@ describe("POST /api/resize", () => {
       rows: 100,
     });
     expect(res.status).toBe(200);
+  });
+});
+
+describe("JSON body shape validation", () => {
+  test("all JSON-body routes reject non-object values", async () => {
+    const paths = [
+      "/api/create",
+      "/api/settings",
+      "/api/kill",
+      "/api/session-control/send",
+      "/api/session-control/wait",
+      "/api/resize",
+      "/api/ralph/start",
+      "/api/ralph/cancel",
+      "/api/ralph/dismiss",
+      "/api/push/subscribe",
+      "/api/push/unsubscribe",
+      "/api/notify",
+    ];
+    for (const path of paths) {
+      const res = await post(path, []);
+      expect(res.status, path).toBe(400);
+    }
   });
 });
 

@@ -5,20 +5,15 @@
  */
 
 /**
- * Determine whether to clear the terminal and restart hydration on WS open.
- *
- * - wasReconnect: true when the same ptySocketClient auto-reconnects
- * - hydrationStarted: true after the controller's first connect()
- * - prefillDisabled: true when prefillMode is not "full" (e.g. "viewport" for grid cells, "none")
- *
- * Auto-reconnect always rehydrates (wasReconnect=true).
- * Manual retry (new ptyClient, hydrationStarted=true) rehydrates only when
- * prefill is "full" (desktop). Grid cells use "viewport" so prefillDisabled=true.
+ * Determine whether an opened socket replaces content already shown by this
+ * controller. Auto-reconnects always replace. A fresh client created by a
+ * manual retry replaces only after initial hydration and only when its attach
+ * carries an authoritative prefill (`full` or `viewport`).
  */
 export function shouldRehydrate(
   wasReconnect: boolean,
   hydrationStarted: boolean,
-  prefillDisabled: boolean,
+  hasAuthoritativePrefill: boolean,
 ): boolean {
-  return wasReconnect || (hydrationStarted && !prefillDisabled);
+  return wasReconnect || (hydrationStarted && hasAuthoritativePrefill);
 }

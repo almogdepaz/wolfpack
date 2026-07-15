@@ -1,6 +1,5 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { call as callApi } from "./api.js";
 import { print, red, yellow } from "./formatting.js";
-import { loadConfig } from "./config.js";
 
 export const SESSION_EXIT = {
   OK: 0,
@@ -27,40 +26,10 @@ interface ApiError {
   readonly body: string;
 }
 
-function baseUrl(): string {
-  const config = loadConfig();
-  const port = config?.port ?? 18790;
-  return `http://127.0.0.1:${port}`;
-}
-
-function issueJwt(): string | null {
-  const secret = process.env.WOLFPACK_JWT_SECRET;
-  if (!secret || secret.length < 32) return null;
-  const now = Math.floor(Date.now() / 1000);
-  const payload: Record<string, unknown> = {
-    iat: now,
-    exp: now + 60,
-    jti: randomBytes(8).toString("hex"),
-  };
-  const iss = process.env.WOLFPACK_JWT_ISSUER?.trim();
-  if (iss) payload.iss = iss;
-  const aud = process.env.WOLFPACK_JWT_AUDIENCE?.trim();
-  if (aud) payload.aud = aud;
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const data = `${header}.${body}`;
-  const sig = createHmac("sha256", secret).update(data).digest("base64url");
-  return `${data}.${sig}`;
-}
-
 async function call(path: string, init: RequestInit = {}): Promise<unknown> {
-  const headers = new Headers(init.headers);
-  const jwt = issueJwt();
-  if (jwt) headers.set("Authorization", `Bearer ${jwt}`);
-  if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
   let resp: Response;
   try {
-    resp = await fetch(`${baseUrl()}${path}`, { ...init, headers });
+    resp = await callApi(path, init);
   } catch (e: unknown) {
     throw { status: 0, body: e instanceof Error ? e.message : String(e) } satisfies ApiError;
   }

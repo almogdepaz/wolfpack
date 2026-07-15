@@ -117,8 +117,9 @@ describe("isValidPort", () => {
     expect(isValidPort(100000)).toBe(false);
   });
 
-  test("rejects NaN", () => {
+  test("rejects NaN and fractional ports", () => {
     expect(isValidPort(NaN)).toBe(false);
+    expect(isValidPort(18790.5)).toBe(false);
   });
 
   test("rejects Infinity", () => {

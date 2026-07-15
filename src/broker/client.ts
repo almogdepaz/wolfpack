@@ -131,6 +131,23 @@ export class BrokerRequestTimeoutError extends Error {
   }
 }
 
+export class BrokerInputBackpressureError extends Error {
+  constructor() {
+    super("broker input backpressure");
+    this.name = "BrokerInputBackpressureError";
+  }
+}
+
+export class BrokerSubscribeError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(`broker subscribe failed [${code}]: ${message}`);
+    this.name = "BrokerSubscribeError";
+    this.code = code;
+  }
+}
+
 export class BrokerClient {
   private readonly socketPath: string;
   private readonly reconnectInitialDelayMs: number;
@@ -151,6 +168,7 @@ export class BrokerClient {
   private consecutiveRequestTimeouts = 0;
 
   private socket: net.Socket | null = null;
+  private inputBackpressured = false;
   private parser = new FrameParser();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private currentReconnectDelay = 0;
@@ -160,6 +178,7 @@ export class BrokerClient {
   private readonly outputSubs = new Map<string, Set<OutputSubscriber>>();
   /** Sessions the caller has asked us to subscribe to. Re-issued on reconnect. */
   private readonly activeSubscriptions = new Set<string>();
+  private readonly pendingSubscriptions = new Map<string, Promise<ControlResponse>>();
   /** Last observed output seq per active session (used for reconnect replay). */
   private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
 
@@ -200,11 +219,13 @@ export class BrokerClient {
     this.failPending(new BrokerNotConnectedError("broker client closed"));
     this.activeSubscriptions.clear();
     this.activeSubscriptionSeq.clear();
+    this.pendingSubscriptions.clear();
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
       this.socket = null;
     }
+    this.inputBackpressured = false;
   }
 
   isConnected(): boolean {
@@ -286,11 +307,16 @@ export class BrokerClient {
     if (!this.socket || this.state !== "connected") {
       throw new BrokerNotConnectedError();
     }
+    if (this.inputBackpressured) {
+      throw new BrokerInputBackpressureError();
+    }
     const frame = encodeFrame({
       kind: FRAME_KIND_INPUT_BINARY,
       value: { sessionId, data },
     });
-    this.socket.write(frame);
+    if (!this.socket.write(frame)) {
+      this.inputBackpressured = true;
+    }
   }
 
   /**
@@ -335,6 +361,12 @@ export class BrokerClient {
     if (this.state === "closed") {
       throw new BrokerNotConnectedError("broker client closed");
     }
+    if (this.state !== "connected") {
+      throw new BrokerNotConnectedError();
+    }
+    const pending = this.pendingSubscriptions.get(sessionId);
+    if (pending) return pending;
+
     this.activeSubscriptions.add(sessionId);
     if (opts.sinceSeq !== undefined) {
       // Take max(prev, sinceSeq): never lower the floor below what we've
@@ -348,13 +380,19 @@ export class BrokerClient {
     } else if (!this.activeSubscriptionSeq.has(sessionId)) {
       this.activeSubscriptionSeq.set(sessionId, undefined);
     }
-    if (this.state !== "connected") {
-      // Caller asked for a subscribe while offline; the request will be
-      // re-issued automatically on the next handleConnect. Surface the
-      // not-connected error for tight call-paths that expect ack now.
-      throw new BrokerNotConnectedError();
-    }
-    return this.issueSubscribe(sessionId, opts);
+
+    const attempt = this.issueSubscribe(sessionId, opts)
+      .catch((error: unknown) => {
+        this.clearSubscriptionState(sessionId);
+        throw error;
+      })
+      .finally(() => {
+        if (this.pendingSubscriptions.get(sessionId) === attempt) {
+          this.pendingSubscriptions.delete(sessionId);
+        }
+      });
+    this.pendingSubscriptions.set(sessionId, attempt);
+    return attempt;
   }
 
   /**
@@ -366,8 +404,8 @@ export class BrokerClient {
     sessionId: string,
     opts: { timeoutMs?: number } = {},
   ): Promise<void> {
-    const wasActive = this.activeSubscriptions.delete(sessionId);
-    this.activeSubscriptionSeq.delete(sessionId);
+    const wasActive = this.activeSubscriptions.has(sessionId);
+    this.clearSubscriptionState(sessionId);
     if (this.state === "closed") return;
     if (!wasActive) return;
     if (this.state !== "connected") return;
@@ -384,6 +422,11 @@ export class BrokerClient {
     return this.activeSubscriptions.size;
   }
 
+  private clearSubscriptionState(sessionId: string): void {
+    this.activeSubscriptions.delete(sessionId);
+    this.activeSubscriptionSeq.delete(sessionId);
+  }
+
   // ── Internals ──
 
   private connect(): void {
@@ -396,6 +439,9 @@ export class BrokerClient {
     this.socket = sock;
     sock.on("connect", () => this.handleConnect());
     sock.on("data", (chunk: Buffer) => this.handleData(chunk));
+    sock.on("drain", () => {
+      if (this.socket === sock) this.inputBackpressured = false;
+    });
     sock.on("error", () => {
       // Surface via 'close' below — keeps teardown single-pathed.
     });
@@ -423,6 +469,7 @@ export class BrokerClient {
       for (const sessionId of ids) {
         const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
         this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
+          this.clearSubscriptionState(sessionId);
           if (this.onResubscribeErrorCb) {
             try {
               this.onResubscribeErrorCb(sessionId, toError(err));
@@ -454,8 +501,13 @@ export class BrokerClient {
       }
     }
     return this.request("subscribe", params, { timeoutMs: opts.timeoutMs }).then((resp) => {
+      if (resp.status !== "ok") {
+        throw new BrokerSubscribeError(
+          resp.error?.code ?? "unknown",
+          resp.error?.message ?? "broker returned an error response",
+        );
+      }
       if (
-        resp.status === "ok" &&
         (resp.payload as Record<string, unknown> | undefined)?.replay_truncated === true &&
         this.onReplayTruncatedCb
       ) {
@@ -485,6 +537,7 @@ export class BrokerClient {
     const wasConnected = this.state === "connected";
     if (this.state !== "closed") this.state = "idle";
     this.socket = null;
+    this.inputBackpressured = false;
     this.failPending(new BrokerNotConnectedError("broker disconnected"));
     if (wasConnected) {
       try {
@@ -540,6 +593,7 @@ export class BrokerClient {
           if (this.activeSubscriptions.has(sessionId) && this.state === "connected") {
             const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
             this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
+              this.clearSubscriptionState(sessionId);
               if (this.onResubscribeErrorCb) {
                 try { this.onResubscribeErrorCb(sessionId, toError(err)); } catch { /* swallow */ }
               }

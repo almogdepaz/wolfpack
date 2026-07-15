@@ -4,6 +4,7 @@ import { renderPlist, renderBrokerPlist } from "../../src/cli/service.ts";
 const DEFAULT_CONFIG = { devDir: "/Users/home/Dev", port: 18790 };
 const DEFAULT_ARGS = ["/opt/homebrew/bin/bun", "/Users/home/Dev/wolfpack/cli.ts"];
 const DEFAULT_LOG = "/Users/home/.wolfpack/wolfpack.log";
+const SERVICE_AUTH = "/Users/home/.wolfpack/service-auth.json";
 
 describe("renderPlist", () => {
   test("includes service env vars, args, and log paths", () => {
@@ -23,6 +24,13 @@ describe("renderPlist", () => {
     expect(plist).toContain("<key>WOLFPACK_SERVICE</key>");
     expect(plist).not.toContain("WOLFPACK_DEV_DIR");
     expect(plist).not.toContain("WOLFPACK_PORT");
+  });
+
+  test("references private service credentials without embedding the JWT secret", () => {
+    const plist = renderPlist(DEFAULT_CONFIG, DEFAULT_ARGS, DEFAULT_LOG, SERVICE_AUTH);
+    expect(plist).toContain("<key>WOLFPACK_SERVICE_AUTH_FILE</key>");
+    expect(plist).toContain(`<string>${SERVICE_AUTH}</string>`);
+    expect(plist).not.toContain("WOLFPACK_JWT_SECRET");
   });
 
   test("supports compiled binary execution", () => {

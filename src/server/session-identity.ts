@@ -1,13 +1,13 @@
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEV_DIR } from "./dev-dir.js";
+import { readValidatedJsonFile } from "./persistence.js";
 
 export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
 const EXTERNAL_ID_VISIBLE_PREFIX = 6;
@@ -69,11 +69,12 @@ interface IdentityStoreFile {
 }
 
 export function sessionIdentityStorePath(devDir?: string): string {
+  if (devDir !== undefined) return join(devDir, ".wolfpack", "session-identities.json");
   if (process.env.WOLFPACK_SESSION_IDENTITY_PATH) return process.env.WOLFPACK_SESSION_IDENTITY_PATH;
-  if (process.env.WOLFPACK_TEST && devDir === undefined) {
+  if (process.env.WOLFPACK_TEST) {
     return join(process.cwd(), ".wolfpack", `session-identities-test-${process.pid}.json`);
   }
-  return join(devDir ?? DEV_DIR, ".wolfpack", "session-identities.json");
+  return join(DEV_DIR, ".wolfpack", "session-identities.json");
 }
 
 export function inferAgentKind(cmd: string | undefined): AgentKind | string {
@@ -235,13 +236,7 @@ export class SessionIdentityStore {
   }
 
   private read(): IdentityStoreFile {
-    try {
-      const raw = JSON.parse(readFileSync(this.path, "utf-8")) as unknown;
-      if (!isStoreFile(raw)) return emptyStore();
-      return raw;
-    } catch {
-      return emptyStore();
-    }
+    return readValidatedJsonFile(this.path, "session identity", isStoreFile) ?? emptyStore();
   }
 
   private write(file: IdentityStoreFile): void {

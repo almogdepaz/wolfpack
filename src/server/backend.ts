@@ -22,6 +22,17 @@ export class DuplicateSessionError extends Error {
   }
 }
 
+export class UnsupportedTerminalKeyError extends Error {
+  readonly code = "UNSUPPORTED_TERMINAL_KEY" as const;
+  readonly key: string;
+
+  constructor(key: string) {
+    super(`unsupported terminal key: ${key}`);
+    this.name = "UnsupportedTerminalKeyError";
+    this.key = key;
+  }
+}
+
 const BROKER_HANDSHAKE_TIMEOUT_MS = 1000;
 const BROKER_CONNECT_TIMEOUT_MS = 1500;
 /** How often the recovery watchdog re-probes a broker that previously failed.

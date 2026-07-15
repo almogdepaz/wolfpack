@@ -1552,11 +1552,18 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "items": {
             "$ref": "#/$defs/Command"
           }
+        },
+        "ralphAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
         "agentCmd",
-        "cmds"
+        "cmds",
+        "ralphAgents"
       ],
       "additionalProperties": false
     },

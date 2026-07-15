@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   SessionIdentityStore,
@@ -85,6 +85,35 @@ describe("session identity metadata", () => {
     expect(first).toEqual(second);
     expect(store.list()).toHaveLength(1);
     expect(store.list()[0].wolfpackSessionName).toBe("alpha");
+  });
+
+  test("refuses to overwrite malformed identity persistence", () => {
+    const devDir = tmpDevDir();
+    const path = sessionIdentityStorePath(devDir);
+    mkdirSync(join(devDir, ".wolfpack"), { recursive: true });
+    const malformed = "{not-json";
+    writeFileSync(path, malformed);
+    const store = new SessionIdentityStore(devDir);
+
+    expect(() => store.capture({
+      wolfpackSessionId: "broker-1",
+      wolfpackSessionName: "alpha",
+      projectPath: join(devDir, "alpha"),
+      agentKind: "codex",
+    })).toThrow("session identity persistence");
+    expect(readFileSync(path, "utf-8")).toBe(malformed);
+  });
+
+  test("refuses to overwrite invalid identity persistence shapes", () => {
+    const devDir = tmpDevDir();
+    const path = sessionIdentityStorePath(devDir);
+    mkdirSync(join(devDir, ".wolfpack"), { recursive: true });
+    const invalid = JSON.stringify({ schemaVersion: 1, sessions: "not-an-array" });
+    writeFileSync(path, invalid);
+    const store = new SessionIdentityStore(devDir);
+
+    expect(() => store.restore([])).toThrow("session identity persistence");
+    expect(readFileSync(path, "utf-8")).toBe(invalid);
   });
 
   test("extracts external ids only from structured env", () => {

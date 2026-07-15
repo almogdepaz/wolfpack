@@ -68,7 +68,7 @@ describe("parseRalphLog — workdir path boundary check (ISS-02)", () => {
     const worktree = join(projectDir, ".wolfpack", "worktrees", "fix-branch");
     mkdirSync(worktree, { recursive: true });
     writeFileSync(join(worktree, "PLAN.md"), "- [x] wt task\n");
-    writeFileSync(join(worktree, "progress.txt"), "DONE: wt task\n");
+    writeFileSync(join(worktree, "progress.txt"), "DONE: checkbox: wt task\n");
     writeLog(projectDir, logWithWorkdir(worktree));
 
     const s = parseRalphLog(projectDir)!;

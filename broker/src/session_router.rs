@@ -41,6 +41,10 @@ use crate::router::Router;
 use crate::session::{EventSender, KillError, KillOutcome, ResizeError};
 
 pub const EVENT_BUS_CAPACITY: usize = 256;
+const MIN_TERMINAL_COLS: u16 = 20;
+const MAX_TERMINAL_COLS: u16 = 300;
+const MIN_TERMINAL_ROWS: u16 = 5;
+const MAX_TERMINAL_ROWS: u16 = 100;
 
 pub struct SessionRouter {
     registry: Arc<Registry>,
@@ -120,6 +124,9 @@ impl SessionRouter {
     }
 
     fn create(&self, id: u64, p: CreateSessionParams) -> ControlResponse {
+        if let Err(message) = validate_dimensions(p.cols, p.rows) {
+            return invalid_request(id, format!("create_session params: {message}"));
+        }
         let opts = CreateOptions {
             name: p.name,
             cwd: p.cwd,
@@ -211,6 +218,9 @@ impl SessionRouter {
     }
 
     fn resize(&self, id: u64, p: ResizeParams) -> ControlResponse {
+        if let Err(message) = validate_dimensions(p.cols, p.rows) {
+            return invalid_request(id, format!("resize params: {message}"));
+        }
         let sess = match self.registry.get(p.session_id) {
             Some(s) => s,
             None => return unknown_session(id, p.session_id),
@@ -231,6 +241,20 @@ impl SessionRouter {
             ),
         }
     }
+}
+
+fn validate_dimensions(cols: u16, rows: u16) -> Result<(), String> {
+    if !(MIN_TERMINAL_COLS..=MAX_TERMINAL_COLS).contains(&cols) {
+        return Err(format!(
+            "cols must be between {MIN_TERMINAL_COLS} and {MAX_TERMINAL_COLS}"
+        ));
+    }
+    if !(MIN_TERMINAL_ROWS..=MAX_TERMINAL_ROWS).contains(&rows) {
+        return Err(format!(
+            "rows must be between {MIN_TERMINAL_ROWS} and {MAX_TERMINAL_ROWS}"
+        ));
+    }
+    Ok(())
 }
 
 fn invalid_request(id: u64, msg: impl Into<String>) -> ControlResponse {
@@ -307,6 +331,77 @@ mod tests {
                 "{method}"
             );
         }
+    }
+
+    #[test]
+    fn create_rejects_out_of_contract_dimensions_and_accepts_boundaries() {
+        let (router, reg) = router();
+        for (cols, rows) in [(0, 24), (80, 0), (19, 24), (301, 24), (80, 4), (80, 101)] {
+            let mut params = create_params(Some("invalid-size"), &["sleep", "30"]);
+            params["cols"] = json!(cols);
+            params["rows"] = json!(rows);
+            let response = router.handle(req(1, methods::CREATE_SESSION, params));
+            assert_eq!(response.status, Status::Error, "{cols}x{rows}");
+            assert_eq!(
+                response.error.expect("error").code,
+                ErrorCode::InvalidRequest,
+                "{cols}x{rows}"
+            );
+        }
+
+        for (id, name, cols, rows) in [
+            (2, "minimum-size", 20, 5),
+            (3, "maximum-size", 300, 100),
+        ] {
+            let mut params = create_params(Some(name), &["sleep", "30"]);
+            params["cols"] = json!(cols);
+            params["rows"] = json!(rows);
+            let response = router.handle(req(id, methods::CREATE_SESSION, params));
+            assert_eq!(response.status, Status::Ok, "{cols}x{rows}");
+        }
+        cleanup(&reg);
+    }
+
+    #[test]
+    fn resize_rejects_out_of_contract_dimensions_without_mutating_session() {
+        let (router, reg) = router();
+        let create = router.handle(req(
+            1,
+            methods::CREATE_SESSION,
+            create_params(Some("resize-validation"), &["sleep", "30"]),
+        ));
+        let session = match create.payload.expect("payload") {
+            ResponsePayload::CreateSession { session } => session,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        for (cols, rows) in [(0, 24), (80, 0), (19, 24), (301, 24), (80, 4), (80, 101)] {
+            let response = router.handle(req(
+                2,
+                methods::RESIZE,
+                json!({ "session_id": session.id, "cols": cols, "rows": rows }),
+            ));
+            assert_eq!(response.status, Status::Error, "{cols}x{rows}");
+            assert_eq!(
+                response.error.expect("error").code,
+                ErrorCode::InvalidRequest,
+                "{cols}x{rows}"
+            );
+            let state = reg.get(session.id).expect("session").snapshot();
+            assert_eq!((state.cols, state.rows), (80, 24), "{cols}x{rows}");
+        }
+
+        for (cols, rows) in [(20, 5), (300, 100)] {
+            let response = router.handle(req(
+                3,
+                methods::RESIZE,
+                json!({ "session_id": session.id, "cols": cols, "rows": rows }),
+            ));
+            assert_eq!(response.status, Status::Ok, "{cols}x{rows}");
+            let state = reg.get(session.id).expect("session").snapshot();
+            assert_eq!((state.cols, state.rows), (cols, rows));
+        }
+        cleanup(&reg);
     }
 
     #[test]

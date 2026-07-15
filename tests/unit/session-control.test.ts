@@ -51,6 +51,26 @@ describe("session control cli parsing", () => {
     expect(parsed.ok).toBe(false);
   });
 
+  test("warns when a configured JWT secret is too short", () => {
+    const script = `
+      process.env.WOLFPACK_JWT_SECRET = "too-short";
+      globalThis.fetch = async () => new Response("unauthorized", { status: 401 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      const code = await runSessionCommand(["read", "alpha"]);
+      console.log("exit=" + code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = child.stdout.toString();
+    expect(child.exitCode).toBe(0);
+    expect(output).toContain("WOLFPACK_JWT_SECRET is set but only 9 chars; >=32 required");
+    expect(output).toContain("exit=5");
+  });
+
   test("exit code map is stable", () => {
     expect(SESSION_EXIT).toEqual({
       OK: 0,

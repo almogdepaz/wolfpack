@@ -3,6 +3,7 @@ import { renderSystemdUnit, renderBrokerSystemdUnit } from "../../src/cli/servic
 
 const DEFAULT_CONFIG = { devDir: "/home/user/Dev", port: 18790 };
 const DEFAULT_ARGS = ["/usr/bin/bun", "/home/user/Dev/wolfpack/cli.ts"];
+const SERVICE_AUTH = "/home/user/.wolfpack/service-auth.json";
 
 describe("renderSystemdUnit", () => {
   test("includes service env vars and quoted args", () => {
@@ -18,6 +19,12 @@ describe("renderSystemdUnit", () => {
     expect(unit).toContain("Environment=WOLFPACK_SERVICE=1");
     expect(unit).not.toContain("WOLFPACK_DEV_DIR");
     expect(unit).not.toContain("WOLFPACK_PORT");
+  });
+
+  test("references private service credentials without embedding the JWT secret", () => {
+    const unit = renderSystemdUnit(DEFAULT_CONFIG, DEFAULT_ARGS, SERVICE_AUTH);
+    expect(unit).toContain(`Environment="WOLFPACK_SERVICE_AUTH_FILE=${SERVICE_AUTH}"`);
+    expect(unit).not.toContain("WOLFPACK_JWT_SECRET");
   });
 
   test("supports compiled binary execution", () => {

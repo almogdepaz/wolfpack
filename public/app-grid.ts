@@ -11,12 +11,13 @@ import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
+import { scheduleTakeControlFallback } from "./take-control-coordinator";
 
 // ── Dependency injection ──
 
 interface GridTerminalController {
   readonly isConnected: boolean;
-  readonly hydration?: { finish(): void };
+  readonly hydration?: { forceFinish(): void };
   readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
   mount(cell: HTMLElement, opts: { readonly cached?: string | null }): Promise<void>;
   connect(opts?: { readonly takeControl?: boolean }): void;
@@ -51,6 +52,7 @@ interface GridDeps {
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   canUseWasmTerminal?: () => boolean;
   saveGridCellSnapshot?: (gs: GridSession) => void;
+  scheduleSnapshotSave: () => void;
   flushGridSnapshots?: () => void;
   loadSnapshot?: (machine: string, session: string) => string | null;
 }
@@ -75,11 +77,19 @@ function cancelGridRelayoutTransition() {
     cancelAnimationFrame(_gridRelayoutFitRaf);
     _gridRelayoutFitRaf = null;
   }
+  if (_gridRelayoutRevealRaf != null) {
+    cancelAnimationFrame(_gridRelayoutRevealRaf);
+    _gridRelayoutRevealRaf = null;
+  }
+  for (const gs of _gridRelayoutHiddenSessions) gs._cellElement?.classList.remove("transitioning");
+  _gridRelayoutHiddenSessions.clear();
 }
 
 // ── Multi-terminal grid state ──
 let _gridRenderGeneration = 0;
 let _gridRelayoutFitRaf: number | null = null;
+let _gridRelayoutRevealRaf: number | null = null;
+const _gridRelayoutHiddenSessions = new Set<GridSession>();
 const MAX_GRID_CELLS = 6;
 
 export function isGridActive() { return state.gridSessions.length >= 2; }
@@ -201,6 +211,7 @@ async function mountGridController(gs, cell, idx) {
         // the same fix in public/app.ts onOutput for single-pane.
         cell.classList.remove("cached-visible");
       }
+      deps.scheduleSnapshotSave();
     },
     onViewerConflict: () => {
 
@@ -318,7 +329,7 @@ export function renderGridCells() {
   // Refitting existing cells is the only layout barrier needed when grid-N
   // changes. New cells run their first fit inside mount() and connect
   // independently as soon as that fit is ready.
-  scheduleGridRelayoutFit(existingCellSessions);
+  scheduleGridRelayoutFit(existingCellSessions, true);
 }
 
 export function getGridCellElement(gs) {
@@ -334,20 +345,20 @@ function takeControlOfCell(gs) {
   if (gs.controller.isConnected) {
     // Socket still open (viewer_conflict path) — send take_control directly
     gs.controller.sendTakeControl();
-    // Safety net: if control_granted doesn't arrive within 3s, force-reconnect
+    // Safety net: if control_granted stalls, retry through an authoritative
+    // takeover attach. Single-terminal mode uses the same coordinator.
     if (gs._takeControlTimer) clearTimeout(gs._takeControlTimer);
-    gs._takeControlTimer = setTimeout(() => {
-      gs._takeControlTimer = null;
-      if (!gs.controller) return;
-      const cell = getGridCellElement(gs);
-      if (!cell || !cell.querySelector(".viewer-conflict-overlay")) return;
-      gs._autoTakeControl = true;
-      if (gs.controller.isConnected) {
-        gs.controller.reconnect({ takeControl: true });
-      } else {
-        gs.controller.connect({ takeControl: true });
-      }
-    }, 3000);
+    gs._takeControlTimer = scheduleTakeControlFallback({
+      getTransport: () => gs.controller ?? null,
+      isPending: () => {
+        const cell = getGridCellElement(gs);
+        return !!cell?.querySelector(".viewer-conflict-overlay");
+      },
+      prepareRetry: () => {
+        gs._takeControlTimer = null;
+        gs._autoTakeControl = true;
+      },
+    });
   } else {
     // Socket closed (displaced) — reconnect with takeControl flag in attach.
     // Server sees takeControl=true and does immediate takeover, no extra
@@ -374,7 +385,7 @@ function showGridCellConflictOverlay(gs) {
   const cell = getGridCellElement(gs);
   if (!cell) return;
   // Force hydration complete so overlay is visible (cell may be opacity:0)
-  if (gs.controller && gs.controller.hydration) gs.controller.hydration.finish();
+  if (gs.controller && gs.controller.hydration) gs.controller.hydration.forceFinish();
   removeGridCellConflictOverlay(gs);
   const overlay = deps.createConflictOverlay("Active on another device", "Take Control", (e) => {
     e.stopPropagation();
@@ -649,7 +660,7 @@ export function removeFromGrid(idx) {
     });
     updateGridLayout();
     // Topology changes may not trigger an observer in every browser.
-    scheduleGridRelayoutFit();
+    scheduleGridRelayoutFit(state.gridSessions, true);
     setGridFocus(state.gridFocusIndex);
   }
   deps.renderSidebar();
@@ -695,9 +706,19 @@ export function exitGridMode(skipRestore?) {
   }
 }
 
-function scheduleGridRelayoutFit(sessions = state.gridSessions) {
+function scheduleGridRelayoutFit(sessions = state.gridSessions, hideUntilRepaint = false) {
   if (_gridRelayoutFitRaf != null) cancelAnimationFrame(_gridRelayoutFitRaf);
+  if (_gridRelayoutRevealRaf != null) {
+    cancelAnimationFrame(_gridRelayoutRevealRaf);
+    _gridRelayoutRevealRaf = null;
+  }
   const cells = sessions.filter(gs => !!gs.controller);
+  if (hideUntilRepaint) {
+    for (const gs of cells) {
+      gs._cellElement?.classList.add("transitioning");
+      _gridRelayoutHiddenSessions.add(gs);
+    }
+  }
   _gridRelayoutFitRaf = requestAnimationFrame(() => {
     _gridRelayoutFitRaf = null;
     if (!isGridActive()) return;
@@ -707,6 +728,17 @@ function scheduleGridRelayoutFit(sessions = state.gridSessions) {
       if (!state.gridSessions.includes(gs) || !gs.controller) continue;
       try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }
     }
+    if (_gridRelayoutHiddenSessions.size === 0) return;
+    _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+      _gridRelayoutRevealRaf = null;
+      for (const gs of _gridRelayoutHiddenSessions) {
+        if (state.gridSessions.includes(gs) && gs.controller) {
+          try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
+        }
+        gs._cellElement?.classList.remove("transitioning");
+      }
+      _gridRelayoutHiddenSessions.clear();
+    });
   });
 }
 

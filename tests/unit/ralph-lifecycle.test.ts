@@ -354,10 +354,10 @@ describe("strict all-done detection", () => {
 
     const status = parseRalphLog(tmpDir);
     expect(status!.completed).toBe(true);
-    // tasksDone (3 DONE lines) != tasksTotal (2 headers) but completed=true via all_tasks_done
-    // ISS-09: headers-only counting means total=2, not 5
+    // Progress uses the worker's task keys: three child checkboxes, with
+    // parent sections excluded because they are not independently actionable.
     expect(status!.tasksDone).toBe(3);
-    expect(status!.tasksTotal).toBe(2);
+    expect(status!.tasksTotal).toBe(3);
   });
 
   test("completed=false when all_tasks_done is NOT in log (tasks remain)", () => {
@@ -489,9 +489,10 @@ describe("parseRalphLog completed status (strict)", () => {
 
     const status = parseRalphLog(tmpDir);
     expect(status!.completed).toBe(true);
-    // ISS-09: headers-only counting → total=2 (not 4). tasksDone=4 from progress file.
-    expect(status!.tasksTotal).toBe(2);
-    expect(status!.tasksDone).toBe(4);
+    // The stale parent-section DONE line is not a task key. The two child
+    // checkboxes and standalone Build section form one bounded 3/3 model.
+    expect(status!.tasksTotal).toBe(3);
+    expect(status!.tasksDone).toBe(3);
   });
 });
 
@@ -798,11 +799,9 @@ describe("full lifecycle simulation", () => {
     );
 
     const status = parseRalphLog(tmpDir);
-    // completed=true even though tasksDone(3) != tasksTotal(2)
-    // ISS-09: headers-only counting → total=2, not 5
     expect(status!.completed).toBe(true);
     expect(status!.tasksDone).toBe(3);
-    expect(status!.tasksTotal).toBe(2);
+    expect(status!.tasksTotal).toBe(3);
 
     const { status: uiStatus } = getRalphStatus(status!);
     expect(uiStatus).toBe("done");

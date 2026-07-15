@@ -109,7 +109,7 @@ function extractRalphTaskKeys(planContent: string): string[] {
   const lines = planContent.split("\n");
 
   for (const line of lines) {
-    const cbMatch = line.match(/^- \[ \] (.+)$/);
+    const cbMatch = line.match(/^- \[[ x]\] (.+)$/);
     if (cbMatch) keys.push(`checkbox: ${cbMatch[1]}`);
   }
 
@@ -123,11 +123,11 @@ function extractRalphTaskKeys(planContent: string): string[] {
       if (nextMatch && nextMatch[1].length <= level.length) break;
       sectionLines.push(lines[j]);
     }
-    const hasChildren = sectionLines.some(l => /^- \[ \] /.test(l));
+    const hasChildren = sectionLines.some(l => /^- \[[ x]\] /.test(l));
     if (!hasChildren) keys.push(`section: ${line}`);
   }
 
-  return keys;
+  return [...new Set(keys)];
 }
 
 /**

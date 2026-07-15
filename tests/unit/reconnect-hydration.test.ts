@@ -9,40 +9,32 @@ import { shouldRehydrate } from "../../src/reconnect-hydration";
 // ── shouldRehydrate decision tests ──
 
 describe("reconnect hydration: shouldRehydrate decision", () => {
-  test("first connect (no prior hydration) → false", () => {
-    expect(shouldRehydrate(false, false, false)).toBe(false);
-  });
-
-  test("first connect with skipInitialPrefill → false", () => {
+  test("first connect with authoritative prefill → false", () => {
     expect(shouldRehydrate(false, false, true)).toBe(false);
   });
 
-  test("auto-reconnect (same ptyClient) → true", () => {
-    expect(shouldRehydrate(true, true, false)).toBe(true);
+  test("first connect without authoritative prefill → false", () => {
+    expect(shouldRehydrate(false, false, false)).toBe(false);
   });
 
-  test("auto-reconnect on grid cell (skipInitialPrefill) → true", () => {
-    // Auto-reconnect always rehydrates, even for grid cells.
-    // skipInitialPrefill was consumed on first connect; auto-reconnect
-    // uses the same ptyClient where it's already false.
+  test("auto-reconnect with full prefill → true", () => {
     expect(shouldRehydrate(true, true, true)).toBe(true);
   });
 
-  test("auto-reconnect before hydration started (edge case) → true", () => {
-    // wasReconnect alone is sufficient
-    expect(shouldRehydrate(true, false, false)).toBe(true);
+  test("auto-reconnect with viewport prefill → true", () => {
+    expect(shouldRehydrate(true, true, true)).toBe(true);
   });
 
-  test("manual retry on desktop terminal → true", () => {
-    // New ptyClient (wasReconnect=false), but hydration already started
-    // and skipInitialPrefill is not set → rehydrate with prefill
-    expect(shouldRehydrate(false, true, false)).toBe(true);
+  test("auto-reconnect before hydration started → true", () => {
+    expect(shouldRehydrate(true, false, true)).toBe(true);
   });
 
-  test("manual retry on grid cell (skipInitialPrefill) → false", () => {
-    // New ptyClient, hydration started, but skipInitialPrefill prevents
-    // prefill on fresh ptyClient → don't clear terminal
-    expect(shouldRehydrate(false, true, true)).toBe(false);
+  test("manual retry with full prefill → true", () => {
+    expect(shouldRehydrate(false, true, true)).toBe(true);
+  });
+
+  test("manual retry with viewport prefill → true", () => {
+    expect(shouldRehydrate(false, true, true)).toBe(true);
   });
 });
 
@@ -51,39 +43,29 @@ describe("reconnect hydration: shouldRehydrate decision", () => {
 // of a controller using shouldRehydrate as the decision function.
 
 describe("reconnect hydration: prefill lifecycle across connects", () => {
-  test("full lifecycle: desktop auto-reconnect clears + rehydrates each time", () => {
+  test("full lifecycle: desktop auto-reconnect clears and rehydrates each time", () => {
     let hydrationStarted = false;
-    const skipInitialPrefill = false;
+    const hasAuthoritativePrefill = true;
 
-    // First connect
-    expect(shouldRehydrate(false, hydrationStarted, skipInitialPrefill)).toBe(false);
+    expect(shouldRehydrate(false, hydrationStarted, hasAuthoritativePrefill)).toBe(false);
     hydrationStarted = true;
 
-    // Auto-reconnect #1
-    expect(shouldRehydrate(true, hydrationStarted, skipInitialPrefill)).toBe(true);
-
-    // Auto-reconnect #2
-    expect(shouldRehydrate(true, hydrationStarted, skipInitialPrefill)).toBe(true);
+    expect(shouldRehydrate(true, hydrationStarted, hasAuthoritativePrefill)).toBe(true);
+    expect(shouldRehydrate(true, hydrationStarted, hasAuthoritativePrefill)).toBe(true);
   });
 
-  test("full lifecycle: grid auto-reconnect clears despite skipInitialPrefill", () => {
+  test("full lifecycle: grid auto-reconnect clears with viewport prefill", () => {
     let hydrationStarted = false;
-    const skipInitialPrefill = true;
+    const hasAuthoritativePrefill = true;
 
-    // First connect
-    expect(shouldRehydrate(false, hydrationStarted, skipInitialPrefill)).toBe(false);
+    expect(shouldRehydrate(false, hydrationStarted, hasAuthoritativePrefill)).toBe(false);
     hydrationStarted = true;
 
-    // Auto-reconnect (wasReconnect=true overrides skipInitialPrefill)
-    expect(shouldRehydrate(true, hydrationStarted, skipInitialPrefill)).toBe(true);
+    expect(shouldRehydrate(true, hydrationStarted, hasAuthoritativePrefill)).toBe(true);
   });
 
-  test("full lifecycle: grid manual retry does NOT clear (skipInitialPrefill)", () => {
-    const hydrationStarted = true;
-    const skipInitialPrefill = true;
-
-    // Manual retry (new ptyClient, wasReconnect=false)
-    expect(shouldRehydrate(false, hydrationStarted, skipInitialPrefill)).toBe(false);
+  test("full lifecycle: grid manual retry clears with viewport prefill", () => {
+    expect(shouldRehydrate(false, true, true)).toBe(true);
   });
 });
 
@@ -95,13 +77,13 @@ describe("reconnect hydration: rehydration actions", () => {
   function simulateRehydration(opts: {
     wasReconnect: boolean;
     hydrationStarted: boolean;
-    skipInitialPrefill: boolean;
+    hasAuthoritativePrefill: boolean;
     hasTerm: boolean;
     hasHydration: boolean;
     hasElement: boolean;
   }) {
     const actions: string[] = [];
-    const rehydrate = shouldRehydrate(opts.wasReconnect, opts.hydrationStarted, opts.skipInitialPrefill);
+    const rehydrate = shouldRehydrate(opts.wasReconnect, opts.hydrationStarted, opts.hasAuthoritativePrefill);
     if (rehydrate && opts.hasTerm) {
       actions.push("term.reset");
       actions.push("counters.reset");
@@ -118,7 +100,7 @@ describe("reconnect hydration: rehydration actions", () => {
     const actions = simulateRehydration({
       wasReconnect: true,
       hydrationStarted: true,
-      skipInitialPrefill: false,
+      hasAuthoritativePrefill: true,
       hasTerm: true,
       hasHydration: true,
       hasElement: true,
@@ -136,7 +118,7 @@ describe("reconnect hydration: rehydration actions", () => {
     const actions = simulateRehydration({
       wasReconnect: false,
       hydrationStarted: false,
-      skipInitialPrefill: false,
+      hasAuthoritativePrefill: true,
       hasTerm: true,
       hasHydration: true,
       hasElement: true,
@@ -148,7 +130,7 @@ describe("reconnect hydration: rehydration actions", () => {
     const actions = simulateRehydration({
       wasReconnect: true,
       hydrationStarted: true,
-      skipInitialPrefill: false,
+      hasAuthoritativePrefill: true,
       hasTerm: false,
       hasHydration: true,
       hasElement: true,
@@ -160,7 +142,7 @@ describe("reconnect hydration: rehydration actions", () => {
     const actions = simulateRehydration({
       wasReconnect: true,
       hydrationStarted: true,
-      skipInitialPrefill: false,
+      hasAuthoritativePrefill: true,
       hasTerm: true,
       hasHydration: false,
       hasElement: true,
@@ -177,7 +159,7 @@ describe("reconnect hydration: rehydration actions", () => {
     const actions = simulateRehydration({
       wasReconnect: true,
       hydrationStarted: true,
-      skipInitialPrefill: false,
+      hasAuthoritativePrefill: true,
       hasTerm: true,
       hasHydration: true,
       hasElement: false,
@@ -189,23 +171,29 @@ describe("reconnect hydration: rehydration actions", () => {
     ]);
   });
 
-  test("grid manual retry → no rehydration", () => {
+  test("grid manual retry → full replacement hydration", () => {
     const actions = simulateRehydration({
       wasReconnect: false,
       hydrationStarted: true,
-      skipInitialPrefill: true,
+      hasAuthoritativePrefill: true,
       hasTerm: true,
       hasHydration: true,
       hasElement: true,
     });
-    expect(actions).toEqual([]);
+    expect(actions).toEqual([
+      "term.reset",
+      "counters.reset",
+      "hydration.start",
+      "css.hydrating",
+      "css.remove-hydrated",
+    ]);
   });
 
   test("desktop manual retry → full rehydration", () => {
     const actions = simulateRehydration({
       wasReconnect: false,
       hydrationStarted: true,
-      skipInitialPrefill: false,
+      hasAuthoritativePrefill: true,
       hasTerm: true,
       hasHydration: true,
       hasElement: true,

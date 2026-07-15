@@ -11,7 +11,11 @@ import {
 import { createLogger, errMsg } from "../log.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import { join, normalize, isAbsolute } from "node:path";
-import { countTasksInContent, validatePlanFormat } from "../wolfpack-context.js";
+import {
+  countRalphProgressFromContent,
+  countTasksInContent,
+  validatePlanFormat,
+} from "../wolfpack-context.js";
 import { DEV_DIR } from "./dev-dir.js";
 import {
   collectAgentStatus,
@@ -101,6 +105,22 @@ export function countProgressDone(progressPath: string): number {
     }
     return keys.size;
   } catch { return 0; }
+}
+
+function countRalphProgress(planPath: string, progressPath: string): { done: number; total: number } {
+  try {
+    const plan = readFileSync(planPath, "utf-8");
+    let progress = "";
+    if (progressPath) {
+      try {
+        progress = readFileSync(progressPath, "utf-8");
+      } catch { /* expected: no progress file before the first completed task */ }
+    }
+    return countRalphProgressFromContent(plan, progress);
+  } catch (e: unknown) {
+    log.warn("failed to read plan file", { path: planPath, error: errMsg(e) });
+    return { done: 0, total: 0 };
+  }
 }
 
 export function countPlanTasks(planPath: string): { done: number; total: number; issues: string[] } {
@@ -262,13 +282,13 @@ export function parseRalphLog(projectDir: string): RalphStatus | null {
       const planBase = workdirPath && isUnderProject && existsSync(join(workdirPath, status.planFile))
         ? workdirPath
         : projectDir;
-      const tasks = countPlanTasks(join(planBase, status.planFile));
-      status.tasksTotal = tasks.total;
-      // done count comes from progress.txt DONE: lines (for progress bar display)
-      const progressBase = workdirPath && isUnderProject && existsSync(join(workdirPath, status.progressFile))
+      const progressBase = status.progressFile && workdirPath && isUnderProject && existsSync(join(workdirPath, status.progressFile))
         ? workdirPath
         : projectDir;
-      status.tasksDone = countProgressDone(join(progressBase, status.progressFile));
+      const progressPath = status.progressFile ? join(progressBase, status.progressFile) : "";
+      const tasks = countRalphProgress(join(planBase, status.planFile), progressPath);
+      status.tasksDone = tasks.done;
+      status.tasksTotal = tasks.total;
     }
 
     const fallbackStatus = {

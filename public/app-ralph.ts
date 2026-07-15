@@ -5,6 +5,7 @@
 import { esc, escAttr, state, wpSettings, haptic } from "./app-state";
 export { getRalphStatus, renderRalphCardHtml, sidebarRalphCardHtml } from "../src/ralph-card-render";
 import { getRalphStatus, renderStatusSource, type RalphLoop } from "../src/ralph-card-render";
+import { configuredRalphAgents } from "../src/ralph-agent";
 
 // ── Types ──
 
@@ -271,15 +272,28 @@ export async function loadRalphStartForm() {
 async function loadStartFormData() {
   const machine = getStartMachine();
   const sel = document.getElementById("ralph-project-select") as HTMLSelectElement;
+  const agentSel = document.getElementById("ralph-agent-select") as HTMLSelectElement;
+  let hasConfiguredAgents = false;
   try {
-    const data = await deps.api<{ projects?: string[] }>("/projects", undefined, machine);
-    const projects = data.projects || [];
+    const [projectData, settingsData] = await Promise.all([
+      deps.api<{ projects?: string[] }>("/projects", undefined, machine),
+      deps.api<{ effective?: { ralphAgents?: string[] } }>("/settings", undefined, machine),
+    ]);
+    const projects = projectData.projects || [];
     sel.innerHTML = projects.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join("");
     if (state.currentRalphProject && projects.includes(state.currentRalphProject)) {
       sel.value = state.currentRalphProject;
     }
+    const agents = configuredRalphAgents(settingsData.effective?.ralphAgents || []);
+    hasConfiguredAgents = agents.length > 0;
+    agentSel.innerHTML = hasConfiguredAgents
+      ? agents.map(agent => '<option value="' + escAttr(agent) + '">' + esc(agent) + '</option>').join("")
+      : '<option value="">no enabled Ralph agents</option>';
+    agentSel.disabled = !hasConfiguredAgents;
   } catch {
     sel.innerHTML = '<option value="">failed to load projects</option>';
+    agentSel.innerHTML = '<option value="">failed to load agents</option>';
+    agentSel.disabled = true;
   }
   sel.onchange = function() {
     loadPlanFiles(sel.value);
@@ -337,6 +351,7 @@ async function loadStartFormData() {
     state.currentRalphWorktreeBranch = "";
   } else {
     lockable.forEach(el => { if (el) el.disabled = false; });
+    agentSel.disabled = !hasConfiguredAgents;
   }
 }
 
@@ -429,6 +444,7 @@ export async function startRalph() {
   const auditFix = (document.getElementById("ralph-audit-fix-toggle") as HTMLInputElement).checked;
   if (!project) { alert("select a project"); return; }
   if (!planFile) { alert("select a plan file"); return; }
+  if (!agent) { alert("enable a Ralph-compatible agent in settings"); return; }
 
   // Warn if plan has format issues — worker will auto-number
   let format = false;

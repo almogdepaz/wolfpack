@@ -355,6 +355,34 @@ describe("BrokerClient: input_binary", () => {
     expect(received[1].data[1]).toBe(0x0d);
   });
 
+  test("writeInput rejects additional input while the broker socket is backpressured", async () => {
+    const { server, client } = await bootClientToServer();
+    await waitFor(() => server.connections.length === 1);
+    server.connections[0].pause();
+
+    let failure: unknown;
+    for (let i = 0; i < 1024 && failure === undefined; i++) {
+      try {
+        client.writeInput(SAMPLE_UUID, new Uint8Array(16 * 1024));
+      } catch (error) {
+        failure = error;
+      }
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("broker input backpressure");
+
+    server.connections[0].resume();
+    await waitFor(() => {
+      try {
+        client.writeInput(SAMPLE_UUID, new Uint8Array([0x03]));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  });
+
   test("writeInput throws BrokerNotConnectedError when offline", () => {
     const client = new BrokerClient({ socketPath: "/nonexistent/never/exists.sock" });
     activeClient = client;
@@ -470,6 +498,35 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(subscribed).toEqual([SAMPLE_UUID]);
     expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
     expect(client.activeSubscriptionCount()).toBe(1);
+  });
+
+  test("subscribe rejects broker error responses without tracking reconnect state", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (req, sock) => {
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "error",
+          error: { code: "session_not_alive", message: "session exited" },
+        },
+      });
+    };
+
+    await expect(client.subscribe(SAMPLE_UUID)).rejects.toThrow("session_not_alive");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(client.activeSubscriptionCount()).toBe(0);
+  });
+
+  test("subscribe transport failure does not leave reconnect state active", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (_req, sock) => sock.destroy();
+
+    await expect(client.subscribe(SAMPLE_UUID)).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(client.activeSubscriptionCount()).toBe(0);
   });
 
   test("subscribe forwards since_seq when provided", async () => {
@@ -695,7 +752,7 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(reissued).toEqual([otherUuid]);
   });
 
-  test("subscribe while disconnected adds to active set and rejects", async () => {
+  test("subscribe while disconnected rejects without adding reconnect state", async () => {
     const client = new BrokerClient({ socketPath: "/nonexistent/never/exists.sock" });
     activeClient = client;
     let err: unknown;
@@ -705,7 +762,7 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
       err = e;
     }
     expect(err).toBeInstanceOf(BrokerNotConnectedError);
-    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
   });
 });
 

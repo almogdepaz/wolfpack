@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
+import { prepareServiceAuthFile } from "./service-auth.js";
 
 const log = createLogger("service");
 import {
@@ -67,6 +68,7 @@ const BROKER_SYSTEMD_PATH = join(
 );
 const BROKER_SOCKET_PATH = join(WOLFPACK_DIR, "broker.sock");
 const BROKER_LOG_PATH = join(WOLFPACK_DIR, "broker.log");
+export const SERVICE_AUTH_PATH = join(WOLFPACK_DIR, "service-auth.json");
 
 function programArgs(): string[] {
   const exe = process.execPath;
@@ -158,8 +160,14 @@ export function updateStableBinary(): boolean {
   }
 }
 
-export function renderPlist(config: Config | null, args: string[], logPath: string): string {
+export function renderPlist(
+  config: Config | null,
+  args: string[],
+  logPath: string,
+  serviceAuthPath?: string,
+): string {
   const env: Record<string, string> = { WOLFPACK_SERVICE: "1" };
+  if (serviceAuthPath) env.WOLFPACK_SERVICE_AUTH_FILE = serviceAuthPath;
   if (config?.devDir) env.WOLFPACK_DEV_DIR = config.devDir;
   if (config?.port) env.WOLFPACK_PORT = String(config.port);
 
@@ -198,19 +206,29 @@ ${envEntries}
 </plist>`;
 }
 
-export function generatePlist(): string {
+export function generatePlist(
+  serviceAuthPath: string | undefined = existsSync(SERVICE_AUTH_PATH) ? SERVICE_AUTH_PATH : undefined,
+): string {
   return renderPlist(
     loadConfig(),
     programArgs(),
     join(homedir(), ".wolfpack", "wolfpack.log"),
+    serviceAuthPath,
   );
 }
 
-export function renderSystemdUnit(config: Config | null, args: string[]): string {
+export function renderSystemdUnit(
+  config: Config | null,
+  args: string[],
+  serviceAuthPath?: string,
+): string {
   const envLines: string[] = [
     `Environment=PATH=/usr/local/bin:/usr/bin:/bin`,
     `Environment=WOLFPACK_SERVICE=1`,
   ];
+  if (serviceAuthPath) {
+    envLines.push(`Environment="WOLFPACK_SERVICE_AUTH_FILE=${systemdEsc(serviceAuthPath)}"`);
+  }
   if (config?.devDir) envLines.push(`Environment="WOLFPACK_DEV_DIR=${systemdEsc(config.devDir)}"`);
   if (config?.port) envLines.push(`Environment="WOLFPACK_PORT=${config.port}"`);
 
@@ -232,8 +250,10 @@ WantedBy=default.target
 `;
 }
 
-export function generateSystemdUnit(): string {
-  return renderSystemdUnit(loadConfig(), programArgs());
+export function generateSystemdUnit(
+  serviceAuthPath: string | undefined = existsSync(SERVICE_AUTH_PATH) ? SERVICE_AUTH_PATH : undefined,
+): string {
+  return renderSystemdUnit(loadConfig(), programArgs(), serviceAuthPath);
 }
 
 // ── Broker service file renderers ──────────────────────────────────────────
@@ -464,6 +484,16 @@ export function serviceInstall() {
     process.exit(1);
   }
 
+  let serviceAuthPath: string | undefined;
+  try {
+    const authState = prepareServiceAuthFile(SERVICE_AUTH_PATH);
+    if (authState !== "absent") serviceAuthPath = SERVICE_AUTH_PATH;
+  } catch (e: unknown) {
+    log.error("failed to prepare service authentication", { error: errMsg(e) });
+    print(red(`  Failed to install service authentication: ${errMsg(e)}`));
+    process.exit(1);
+  }
+
   if (isServiceRunning()) {
     serviceStop();
   }
@@ -476,7 +506,7 @@ export function serviceInstall() {
   brokerServiceInstall();
 
   if (IS_MACOS) {
-    const plist = generatePlist();
+    const plist = generatePlist(serviceAuthPath);
     try {
       mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
     } catch (e: unknown) {
@@ -506,7 +536,7 @@ export function serviceInstall() {
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Plist: ${PLIST_PATH}`));
   } else if (IS_LINUX) {
-    const unit = generateSystemdUnit();
+    const unit = generateSystemdUnit(serviceAuthPath);
     try {
       mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
     } catch (e: unknown) {
@@ -591,6 +621,11 @@ export function serviceUninstall() {
   }
   // Tear down the broker after the wolfpack server (server depends on it).
   brokerServiceUninstall();
+  try { unlinkSync(SERVICE_AUTH_PATH); } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log.warn("serviceUninstall: failed to remove service auth credential", { error: errMsg(e) });
+    }
+  }
   print(green("  Wolfpack service removed."));
 }
 

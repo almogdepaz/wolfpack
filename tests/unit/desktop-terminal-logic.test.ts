@@ -9,6 +9,7 @@ import {
   splitTerminalInputBytes,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
+  shouldReleaseScrollLockOnKeydown,
 } from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
@@ -44,6 +45,24 @@ describe("desktop terminal: copy handler (shouldInterceptCopy)", () => {
 
   test("Cmd+Ctrl+C with selection → true (both modifiers)", () => {
     expect(shouldInterceptCopy({ metaKey: true, ctrlKey: true, key: "c", type: "keydown" }, true)).toBe(true);
+  });
+});
+
+describe("desktop terminal: keypress scroll-lock release", () => {
+  test("ordinary terminal key releases scroll lock", () => {
+    expect(shouldReleaseScrollLockOnKeydown({ key: "a", metaKey: false })).toBe(true);
+  });
+
+  test("standalone Command key preserves scroll lock", () => {
+    expect(shouldReleaseScrollLockOnKeydown({ key: "Meta", metaKey: true })).toBe(false);
+  });
+
+  test("Command-modified shortcuts preserve scroll lock", () => {
+    expect(shouldReleaseScrollLockOnKeydown({ key: "c", metaKey: true })).toBe(false);
+  });
+
+  test("Control remains ordinary terminal input", () => {
+    expect(shouldReleaseScrollLockOnKeydown({ key: "c", metaKey: false })).toBe(true);
   });
 });
 

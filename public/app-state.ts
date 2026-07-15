@@ -1,6 +1,8 @@
 // ── Shared state, settings, and utilities ──
 // Extracted from app.ts — imported back via bundler (inlined at build time)
 
+import { unsubscribePushNotifications } from "../src/push-unsubscribe";
+
 // ── HTML / attribute escaping ──
 
 export function esc(s) {
@@ -191,27 +193,25 @@ export async function requestNotifications() {
   }
 }
 
-export async function unsubscribeNotifications() {
-  try {
-    const reg = await navigator.serviceWorker.getRegistration();
-    if (!reg) return;
-    const sub = await reg.pushManager.getSubscription();
-    if (!sub) return;
-
-    // Tell server to remove subscription
-    await fetch("/api/push/unsubscribe", {
+export async function unsubscribeNotifications(): Promise<boolean> {
+  const outcome = await unsubscribePushNotifications(
+    state,
+    async () => {
+      const reg = await navigator.serviceWorker.getRegistration();
+      return reg?.pushManager.getSubscription() ?? null;
+    },
+    endpoint => fetch("/api/push/unsubscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: sub.endpoint }),
-    });
-
-    // Unsubscribe locally
-    await sub.unsubscribe();
-    state.notificationsEnabled = false;
-    console.log("Push subscription removed");
-  } catch (e) {
-    console.error("Push unsubscribe failed:", e);
+      body: JSON.stringify({ endpoint }),
+    }),
+  );
+  if ("error" in outcome) {
+    console.error("Push unsubscribe failed:", outcome.error);
+    return false;
   }
+  if (outcome.removed) console.log("Push subscription removed");
+  return true;
 }
 
 // ── State initializer helpers ──
@@ -312,6 +312,8 @@ export const state = {
   enterRetryTimer: null,
   drawerOpen: false,
   notificationsEnabled: ("Notification" in window && Notification.permission === "granted" && "PushManager" in window),
+  notificationUnsubscribePending: false,
+  notificationUnsubscribeInFlight: false,
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
   _ghostInputObserver: null,
@@ -331,6 +333,10 @@ export function setState(patch) { Object.assign(state, patch); }
 // toggled from the URL bar / system settings without the page knowing —
 // re-check on visibility/focus so the UI toggle doesn't silently lie.
 export function syncNotificationsPermission() {
+  if (state.notificationUnsubscribePending) {
+    void unsubscribeNotifications();
+    return;
+  }
   if (!("Notification" in window)) return;
   const granted = Notification.permission === "granted";
   if (state.notificationsEnabled && !granted) {

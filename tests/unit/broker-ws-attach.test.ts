@@ -94,6 +94,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   writeCalls: Array<{ name: string; data: Uint8Array }> = [];
   resizeDelayMs = 0;
   resizeError: Error | null = null;
+  resizeOutput: Uint8Array | null = null;
 
   // SessionBackend
   async list(): Promise<string[]> { return [...this.alive]; }
@@ -106,6 +107,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     if (this.resizeDelayMs > 0) await wait(this.resizeDelayMs);
     if (this.resizeError) throw this.resizeError;
     this.resizeCalls.push({ name, cols, rows });
+    if (this.resizeOutput) this.emitData(name, this.resizeOutput);
   }
   async send(): Promise<void> {}
   async sendKey(): Promise<void> {}
@@ -236,6 +238,18 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.writeCalls.length).toBe(0);
   });
 
+  test("binary stdin exceeding the per-viewer byte budget closes the viewer", () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    const frame = Buffer.alloc(16 * 1024, 0x55);
+
+    for (let i = 0; i < 61; i++) ws.pushBinary(frame);
+
+    expect(backend.writeCalls.length).toBe(60);
+    expect(ws.closeCode).toBe(1008);
+    expect(ws.closeReason).toBe("input rate limit exceeded");
+  });
+
   test("resize after attach calls broker.resize (debounced ~80ms)", async () => {
     const ws = new FakeWs();
     attachWs(ws);
@@ -286,10 +300,31 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     attachWs(ws);
 
     ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
-    await wait(120);
+    // Viewport now pays its 60ms dimension settle plus at least 50ms of
+    // redraw quiescence. Keep margin for event-loop scheduling while staying
+    // below the full desktop attach budget.
+    await wait(220);
 
     expect(backend.resizeCalls).toEqual([
       { name: SESSION, cols: 80, rows: 24 },
+    ]);
+    expect(ws.hasJsonType("pty_ready")).toBe(true);
+  });
+
+  test("viewport attach waits for initial resize redraw output before snapshotting", async () => {
+    backend.resizeOutput = new Uint8Array(2 * 1024);
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
+    await wait(95);
+
+    expect(backend.prefillCalls).toEqual([]);
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
+
+    await wait(100);
+    expect(backend.prefillCalls).toEqual([
+      { name: SESSION, cols: 80, scrollbackLines: 0 },
     ]);
     expect(ws.hasJsonType("pty_ready")).toBe(true);
   });

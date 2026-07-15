@@ -19,7 +19,11 @@ import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createLogger, errMsg } from "../log.js";
-import { isRalphAgent } from "../ralph-agent.js";
+import {
+  configuredRalphAgents,
+  selectConfiguredRalphAgent,
+  type RalphAgent,
+} from "../ralph-agent.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
@@ -159,6 +163,62 @@ import {
 import { activePtySessions, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function parseObjectBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<Record<string, unknown> | null> {
+  const body = await parseBody(req, res);
+  if (body === undefined) return null;
+  if (!isJsonObject(body)) {
+    json(res, { error: "JSON body must be an object" }, 400);
+    return null;
+  }
+  return body;
+}
+
+function hasOptionalType(
+  body: Record<string, unknown>,
+  key: string,
+  type: "string" | "number" | "boolean",
+): boolean {
+  return body[key] === undefined || typeof body[key] === type;
+}
+
+interface CreateBody extends Record<string, unknown> {
+  project?: string;
+  newProject?: string;
+  cmd?: string;
+  sessionName?: string;
+}
+
+function isCreateBody(body: Record<string, unknown>): body is CreateBody {
+  return ["project", "newProject", "cmd", "sessionName"].every(
+    key => hasOptionalType(body, key, "string"),
+  );
+}
+
+interface SettingsBody extends Record<string, unknown> {
+  agentCmd?: string;
+  addCmd?: string;
+  removeCmd?: string;
+  setCmdEnabled?: { cmd: string; enabled: boolean };
+}
+
+function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
+  if (!["agentCmd", "addCmd", "removeCmd"].every(key => hasOptionalType(body, key, "string"))) {
+    return false;
+  }
+  return body.setCmdEnabled === undefined || (
+    isJsonObject(body.setCmdEnabled) &&
+    typeof body.setCmdEnabled.cmd === "string" &&
+    typeof body.setCmdEnabled.enabled === "boolean"
+  );
+}
+
 /** Validate project name + directory in one call. Returns resolved path or sends error and returns null. */
 function resolveProjectDir(res: ServerResponse, project: string | null | undefined): string | null {
   if (!validateProject(res, project)) return null;
@@ -255,45 +315,66 @@ function isValidCmd(cmd: string): boolean {
   return cmd === "shell" || CMD_REGEX.test(cmd);
 }
 
-export function loadSettings(): Settings {
-  let raw: Record<string, unknown> = {};
+export interface LoadedSettings {
+  settings: Settings;
+  ralphAgents: RalphAgent[];
+}
+
+export function loadSettingsWithRalphAgents(): LoadedSettings {
+  let raw: Record<string, unknown> | null = null;
   try {
-    raw = JSON.parse(readFileSync(settingsPath(), "utf-8")) as Record<string, unknown>;
+    const parsed = JSON.parse(readFileSync(settingsPath(), "utf-8")) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      raw = parsed as Record<string, unknown>;
+    }
   } catch { /* expected: settings file doesn't exist yet */ }
 
-  const agentCmd =
-    typeof raw.agentCmd === "string" && isValidCmd(raw.agentCmd) ? raw.agentCmd : "shell";
+  const agentCmd = raw && typeof raw.agentCmd === "string" && isValidCmd(raw.agentCmd)
+    ? raw.agentCmd
+    : "shell";
 
-  // New shape: `cmds: [{cmd, enabled}, ...]` — normalize and drop bad entries.
-  if (Array.isArray(raw.cmds)) {
+  // A persisted `cmds` array is authoritative, including an explicitly empty
+  // array. Synthesizing built-ins here would make unconfigured commands look
+  // user-configured to Ralph authorization.
+  if (raw && Array.isArray(raw.cmds)) {
     const cmds: CmdEntry[] = [];
     const seen = new Set<string>();
-    for (const e of raw.cmds as unknown[]) {
-      if (!e || typeof e !== "object") continue;
-      const obj = e as Record<string, unknown>;
-      if (typeof obj.cmd !== "string" || !isValidCmd(obj.cmd)) continue;
-      if (seen.has(obj.cmd)) continue;
+    for (const entry of raw.cmds as unknown[]) {
+      if (!entry || typeof entry !== "object") continue;
+      const obj = entry as Record<string, unknown>;
+      if (typeof obj.cmd !== "string" || !isValidCmd(obj.cmd) || seen.has(obj.cmd)) continue;
       seen.add(obj.cmd);
       cmds.push({ cmd: obj.cmd, enabled: obj.enabled !== false });
     }
-    if (cmds.length === 0) return { agentCmd, cmds: DEFAULT_CMDS.map(c => ({ ...c })) };
-    return { agentCmd, cmds };
+    const settings = { agentCmd, cmds };
+    return {
+      settings,
+      ralphAgents: configuredRalphAgents(cmds.filter(cmd => cmd.enabled).map(cmd => cmd.cmd)),
+    };
   }
 
-  // Legacy shape (pre-PR): `customCmds: string[]`. Merge with the new defaults
-  // so users keep their custom additions without losing the new presets.
-  // Migration runs once per settings file — the next saveSettings() rewrites
-  // it in the new shape and the legacy branch is never hit again.
+  // Legacy settings still receive the session-picker defaults, but only
+  // commands explicitly present in `customCmds` authorize Ralph.
   const cmds: CmdEntry[] = DEFAULT_CMDS.map(c => ({ ...c }));
+  const configuredCommands: string[] = [];
   const seen = new Set(cmds.map(c => c.cmd));
-  if (Array.isArray(raw.customCmds)) {
-    for (const c of raw.customCmds as unknown[]) {
-      if (typeof c !== "string" || !isValidCmd(c) || seen.has(c)) continue;
-      seen.add(c);
-      cmds.push({ cmd: c, enabled: true });
+  if (raw && Array.isArray(raw.customCmds)) {
+    for (const command of raw.customCmds as unknown[]) {
+      if (typeof command !== "string" || !isValidCmd(command)) continue;
+      configuredCommands.push(command);
+      if (seen.has(command)) continue;
+      seen.add(command);
+      cmds.push({ cmd: command, enabled: true });
     }
   }
-  return { agentCmd, cmds };
+  return {
+    settings: { agentCmd, cmds },
+    ralphAgents: configuredRalphAgents(configuredCommands),
+  };
+}
+
+export function loadSettings(): Settings {
+  return loadSettingsWithRalphAgents().settings;
 }
 
 function saveSettings(s: Settings): void {
@@ -317,6 +398,10 @@ export function effectiveAgentCmd(s: Settings): string {
 export function effectiveCmds(s: Settings): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
   return enabled.length > 0 ? enabled : ["shell"];
+}
+
+export function effectiveRalphAgents(s: Settings): RalphAgent[] {
+  return configuredRalphAgents(effectiveCmds(s));
 }
 
 // Ralph worker is invoked as a subcommand: `wolfpack worker --plan ...`
@@ -418,13 +503,11 @@ export const routes: Record<
   },
 
   "POST /api/create": async (req, res) => {
-    const body = await parseBody<{
-      project?: string;
-      newProject?: string;
-      cmd?: string;
-      sessionName?: string;
-    }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
+    if (!isCreateBody(body)) {
+      return json(res, { error: "project, newProject, cmd, and sessionName must be strings" }, 400);
+    }
     const { project, newProject, cmd, sessionName } = body;
     const folderName = newProject?.trim() || project?.trim();
     if (!validateProject(res, folderName)) return;
@@ -466,7 +549,8 @@ export const routes: Record<
   },
 
   "GET /api/settings": async (_req, res) => {
-    const settings = loadSettings();
+    const loaded = loadSettingsWithRalphAgents();
+    const settings = loaded.settings;
     // Surface the effective values so the frontend doesn't reimplement the
     // fallback rules. `effective.cmds` is what the picker should render;
     // `effective.agentCmd` is the pre-selected default.
@@ -486,6 +570,7 @@ export const routes: Record<
       effective: {
         cmds: effectiveCmds(settings),
         agentCmd: effectiveAgentCmd(settings),
+        ralphAgents: loaded.ralphAgents,
       },
     });
   },
@@ -496,13 +581,11 @@ export const routes: Record<
     // in the same request. All ops validate strict inputs and reject quietly
     // with 400 on malformed bodies; on success the full settings + effective
     // values are echoed back so the frontend can re-render without a refetch.
-    const body = await parseBody<{
-      agentCmd?: string;
-      addCmd?: string;
-      removeCmd?: string;
-      setCmdEnabled?: { cmd: string; enabled: boolean };
-    }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
+    if (!isSettingsBody(body)) {
+      return json(res, { error: "invalid settings body" }, 400);
+    }
     const settings = loadSettings();
 
     if (body.addCmd != null) {
@@ -526,9 +609,6 @@ export const routes: Record<
 
     if (body.setCmdEnabled != null) {
       const target = body.setCmdEnabled;
-      if (typeof target.cmd !== "string" || typeof target.enabled !== "boolean") {
-        return json(res, { error: "setCmdEnabled requires { cmd: string; enabled: boolean }" }, 400);
-      }
       const entry = settings.cmds.find(c => c.cmd === target.cmd);
       if (entry) entry.enabled = target.enabled;
     }
@@ -548,6 +628,7 @@ export const routes: Record<
       effective: {
         cmds: effectiveCmds(settings),
         agentCmd: effectiveAgentCmd(settings),
+        ralphAgents: effectiveRalphAgents(settings),
       },
     });
   },
@@ -562,10 +643,10 @@ export const routes: Record<
   },
 
   "POST /api/kill": async (req, res) => {
-    const body = await parseBody<{ session: string }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     const { session } = body;
-    if (!session) return json(res, { error: "missing session" }, 400);
+    if (typeof session !== "string" || !session) return json(res, { error: "missing session" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     // Clean up any associated desktop PTY session (wp_*) before killing
@@ -592,11 +673,12 @@ export const routes: Record<
   },
 
   "POST /api/session-control/send": async (req, res) => {
-    const body = await parseBody<{ session?: string; text?: string; noEnter?: boolean }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     const session = body.session;
-    if (!session) return json(res, { error: "missing session" }, 400);
+    if (typeof session !== "string" || !session) return json(res, { error: "missing session" }, 400);
     if (typeof body.text !== "string") return json(res, { error: "missing text" }, 400);
+    if (!hasOptionalType(body, "noEnter", "boolean")) return json(res, { error: "noEnter must be a boolean" }, 400);
     if (!(await isAllowedSession(session))) {
       return json(res, { error: "session not found" }, 404);
     }
@@ -610,12 +692,15 @@ export const routes: Record<
   },
 
   "POST /api/session-control/wait": async (req, res) => {
-    const body = await parseBody<{ session?: string; text?: string; timeoutMs?: number }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     const session = body.session;
-    if (!session) return json(res, { error: "missing session" }, 400);
+    if (typeof session !== "string" || !session) return json(res, { error: "missing session" }, 400);
     if (typeof body.text !== "string" || body.text.length === 0) {
       return json(res, { error: "missing text" }, 400);
+    }
+    if (!hasOptionalType(body, "timeoutMs", "number")) {
+      return json(res, { error: "timeoutMs must be a number" }, 400);
     }
     const timeoutMs = parseTimeoutMs(body.timeoutMs);
     if (timeoutMs === null) {
@@ -636,15 +721,14 @@ export const routes: Record<
   },
 
   "POST /api/resize": async (req, res) => {
-    const body = await parseBody<{
-      session: string;
-      cols: number;
-      rows: number;
-    }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     const { session, cols, rows } = body;
-    if (!session || !cols || !rows)
-      return json(res, { error: "missing params" }, 400);
+    if (
+      typeof session !== "string" || !session ||
+      typeof cols !== "number" || !Number.isFinite(cols) ||
+      typeof rows !== "number" || !Number.isFinite(rows)
+    ) return json(res, { error: "missing params" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     if (!activePtySessions.has(session)) {
@@ -843,7 +927,19 @@ export const routes: Record<
   },
 
   "POST /api/ralph/start": async (req, res) => {
-    const body = await parseBody<{
+    const body = await parseObjectBody(req, res);
+    if (!body) return;
+    if (!["project", "planFile", "agent", "newBranch", "sourceBranch", "worktreeBranch", "worktreeBase"].every(
+      key => hasOptionalType(body, key, "string"),
+    )) return json(res, { error: "invalid string field" }, 400);
+    if (
+      !hasOptionalType(body, "iterations", "number") ||
+      (typeof body.iterations === "number" && !Number.isInteger(body.iterations))
+    ) return json(res, { error: "iterations must be an integer" }, 400);
+    if (!["format", "cleanup", "auditFix", "sandbox"].every(key => hasOptionalType(body, key, "boolean"))) {
+      return json(res, { error: "invalid boolean field" }, 400);
+    }
+    const { project, iterations, planFile, agent, newBranch, sourceBranch, format, cleanup, auditFix, worktree, worktreeBranch, worktreeBase, sandbox } = body as {
       project?: string;
       iterations?: number;
       planFile?: string;
@@ -853,15 +949,59 @@ export const routes: Record<
       format?: boolean;
       cleanup?: boolean;
       auditFix?: boolean;
-      worktree?: false | "plan" | "task";
+      worktree?: unknown;
       worktreeBranch?: string;
       worktreeBase?: string;
       sandbox?: boolean;
-    }>(req, res);
-    if (!body) return;
-    const { project, iterations, planFile, agent, newBranch, sourceBranch, format, cleanup, auditFix, worktree, worktreeBranch, worktreeBase, sandbox } = body;
+    };
     const projectDir = resolveProjectDir(res, project);
     if (!projectDir) return;
+
+    const iters = Math.max(1, Math.min(500, iterations ?? 5));
+    const resolvedPlan = planFile || "PLAN.md";
+    if (!isValidPlanFile(resolvedPlan)) {
+      return json(res, { error: "invalid plan file name" }, 400);
+    }
+    if (cleanup != null && typeof cleanup !== "boolean") {
+      return json(res, { error: "invalid cleanup flag" }, 400);
+    }
+    if (auditFix != null && typeof auditFix !== "boolean") {
+      return json(res, { error: "invalid auditFix flag" }, 400);
+    }
+    const validWorktree = worktree === undefined || worktree === false || worktree === "false" || worktree === "plan" || worktree === "task";
+    if (!validWorktree) {
+      return json(res, { error: "invalid worktree mode — must be false, \"plan\", or \"task\"" }, 400);
+    }
+    const worktreeMode = (worktree === "plan" || worktree === "task") ? worktree : "false";
+    if (worktreeBranch != null && typeof worktreeBranch !== "string") {
+      return json(res, { error: "invalid worktreeBranch" }, 400);
+    }
+    if (worktreeBranch && !BRANCH_REGEX.test(worktreeBranch)) {
+      return json(res, { error: "invalid worktree branch name" }, 400);
+    }
+    if (worktreeBase != null && typeof worktreeBase !== "string") {
+      return json(res, { error: "invalid worktreeBase" }, 400);
+    }
+    if (worktreeBase && !BRANCH_REGEX.test(worktreeBase)) {
+      return json(res, { error: "invalid worktree base branch name" }, 400);
+    }
+    const source = sourceBranch || "main";
+    if (newBranch && !BRANCH_REGEX.test(newBranch)) {
+      return json(res, { error: "invalid branch name" }, 400);
+    }
+    if (newBranch && !BRANCH_REGEX.test(source)) {
+      return json(res, { error: "invalid source branch name" }, 400);
+    }
+    if (!existsSync(join(projectDir, resolvedPlan))) {
+      return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
+    }
+    const selectedAgent = selectConfiguredRalphAgent(agent, loadSettingsWithRalphAgents().ralphAgents);
+    if (!selectedAgent) {
+      return json(res, { error: "ralph agent is not configured and enabled" }, 400);
+    }
+    const cleanupEnabled = cleanup ?? true;
+    const auditFixEnabled = auditFix ?? false;
+
     const existing = parseRalphLog(projectDir);
     if (existing?.active) {
       return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
@@ -911,45 +1051,7 @@ export const routes: Record<
 
     let spawned = false;
     try {
-    const iters = Math.max(1, Math.min(500, iterations ?? 5));
-    const resolvedPlan = planFile || "PLAN.md";
-    if (!isValidPlanFile(resolvedPlan)) {
-      return json(res, { error: "invalid plan file name" }, 400);
-    }
-    if (cleanup != null && typeof cleanup !== "boolean") {
-      return json(res, { error: "invalid cleanup flag" }, 400);
-    }
-    if (auditFix != null && typeof auditFix !== "boolean") {
-      return json(res, { error: "invalid auditFix flag" }, 400);
-    }
-    const VALID_WORKTREE_MODES: readonly (boolean | string)[] = [false, "false", "plan", "task"];
-    if (worktree != null && !VALID_WORKTREE_MODES.includes(worktree)) {
-      return json(res, { error: "invalid worktree mode — must be false, \"plan\", or \"task\"" }, 400);
-    }
-    const worktreeMode = (worktree === "plan" || worktree === "task") ? worktree : "false";
-    if (worktreeBranch != null && typeof worktreeBranch !== "string") {
-      return json(res, { error: "invalid worktreeBranch" }, 400);
-    }
-    if (worktreeBranch && !BRANCH_REGEX.test(worktreeBranch)) {
-      return json(res, { error: "invalid worktree branch name" }, 400);
-    }
-    if (worktreeBase != null && typeof worktreeBase !== "string") {
-      return json(res, { error: "invalid worktreeBase" }, 400);
-    }
-    if (worktreeBase && !BRANCH_REGEX.test(worktreeBase)) {
-      return json(res, { error: "invalid worktree base branch name" }, 400);
-    }
-    const cleanupEnabled = cleanup ?? true;
-    const auditFixEnabled = auditFix ?? false;
-
     if (newBranch) {
-      if (!BRANCH_REGEX.test(newBranch)) {
-        return json(res, { error: "invalid branch name" }, 400);
-      }
-      const source = sourceBranch || "main";
-      if (!BRANCH_REGEX.test(source)) {
-        return json(res, { error: "invalid source branch name" }, 400);
-      }
       try {
         execFileSync("git", ["fetch", "origin", `${source}:${source}`], {
           cwd: projectDir, encoding: "utf-8", timeout: 30000,
@@ -974,15 +1076,10 @@ export const routes: Record<
       }
     }
 
-    if (!existsSync(join(projectDir, resolvedPlan))) {
-      return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
-    }
-
     // Worktree creation is handled by the worker process itself
     // (plan mode creates one worktree at startup, task mode creates per-iteration).
     // The route only passes the mode flag — the worker manages the lifecycle.
 
-    const selectedAgent = isRalphAgent(agent || "claude") ? (agent || "claude") : "claude";
     const workerArgs = [
       ...RALPH_BIN_ARGS.slice(1),
       "worker",
@@ -1044,9 +1141,10 @@ export const routes: Record<
   },
 
   "POST /api/ralph/cancel": async (req, res) => {
-    const body = await parseBody<{ project?: string }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     const { project } = body;
+    if (typeof project !== "string") return json(res, { error: "invalid project" }, 400);
     const projectDir = resolveProjectDir(res, project);
     if (!projectDir) return;
     const status = parseRalphLog(projectDir);
@@ -1073,9 +1171,13 @@ export const routes: Record<
   },
 
   "POST /api/ralph/dismiss": async (req, res) => {
-    const body = await parseBody<{ project?: string; deletePlan?: boolean }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     const { project, deletePlan } = body;
+    if (typeof project !== "string") return json(res, { error: "invalid project" }, 400);
+    if (deletePlan !== undefined && typeof deletePlan !== "boolean") {
+      return json(res, { error: "deletePlan must be a boolean" }, 400);
+    }
     const projectDir = resolveProjectDir(res, project);
     if (!projectDir) return;
     const status = parseRalphLog(projectDir);
@@ -1134,9 +1236,18 @@ export const routes: Record<
   },
 
   "POST /api/push/subscribe": async (req, res) => {
-    const body = await parseBody<PushSubscription>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
-    const sub: PushSubscription = { endpoint: body.endpoint, keys: { p256dh: body.keys?.p256dh, auth: body.keys?.auth } };
+    if (
+      typeof body.endpoint !== "string" ||
+      !isJsonObject(body.keys) ||
+      typeof body.keys.p256dh !== "string" ||
+      typeof body.keys.auth !== "string"
+    ) return json(res, { error: "invalid subscription" }, 400);
+    const sub: PushSubscription = {
+      endpoint: body.endpoint,
+      keys: { p256dh: body.keys.p256dh, auth: body.keys.auth },
+    };
     const validationError = validateSubscription(sub);
     if (validationError) return json(res, { error: validationError }, 400);
     const result = addSubscription(sub);
@@ -1145,7 +1256,7 @@ export const routes: Record<
   },
 
   "POST /api/push/unsubscribe": async (req, res) => {
-    const body = await parseBody<{ endpoint?: string }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
     removeSubscription(body.endpoint);
@@ -1155,7 +1266,7 @@ export const routes: Record<
   // ── Agent-triggered notifications ──
 
   "POST /api/notify": async (req, res) => {
-    const body = await parseBody<{ message?: string }>(req, res);
+    const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
     const message = body.message.slice(0, 500);
