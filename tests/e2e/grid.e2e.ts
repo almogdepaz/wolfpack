@@ -120,6 +120,60 @@ test("addToGrid from terminal view shows grid loading immediately", async ({ pag
   }
 });
 
+test("grid topology add hides existing canvases until relayout repaint completes", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.length === 2 && state.gridSessions.every((gs) =>
+      gs.controller?.isConnected &&
+      !gs.controller?.hydration?.pending &&
+      gs._cellElement?.classList.contains("hydrated")
+    );
+  }), { timeout: 5000 }).toBe(true);
+
+  const immediate = await page.evaluate(() => {
+    // @ts-ignore
+    const existing = state.gridSessions.map((gs) => gs._cellElement);
+    // @ts-ignore
+    addToGrid("third-project", "");
+    return existing.map((cell: HTMLElement) => {
+      const canvas = cell.querySelector("canvas");
+      return {
+        transitioning: cell.classList.contains("transitioning"),
+        visibility: canvas ? getComputedStyle(canvas).visibility : "missing",
+      };
+    });
+  });
+
+  expect(immediate).toEqual([
+    { transitioning: true, visibility: "hidden" },
+    { transitioning: true, visibility: "hidden" },
+  ]);
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.slice(0, 2).every((gs) => {
+      const cell = gs._cellElement;
+      const canvas = cell?.querySelector("canvas");
+      return cell && canvas &&
+        !cell.classList.contains("transitioning") &&
+        getComputedStyle(canvas).visibility === "visible";
+    });
+  }), { timeout: 5000 }).toBe(true);
+});
+
 test("addToGrid hides single terminal container before grid cells mount", async ({ page }) => {
   await loadApp(page);
 

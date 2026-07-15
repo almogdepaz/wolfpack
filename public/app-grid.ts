@@ -77,11 +77,19 @@ function cancelGridRelayoutTransition() {
     cancelAnimationFrame(_gridRelayoutFitRaf);
     _gridRelayoutFitRaf = null;
   }
+  if (_gridRelayoutRevealRaf != null) {
+    cancelAnimationFrame(_gridRelayoutRevealRaf);
+    _gridRelayoutRevealRaf = null;
+  }
+  for (const gs of _gridRelayoutHiddenSessions) gs._cellElement?.classList.remove("transitioning");
+  _gridRelayoutHiddenSessions.clear();
 }
 
 // ── Multi-terminal grid state ──
 let _gridRenderGeneration = 0;
 let _gridRelayoutFitRaf: number | null = null;
+let _gridRelayoutRevealRaf: number | null = null;
+const _gridRelayoutHiddenSessions = new Set<GridSession>();
 const MAX_GRID_CELLS = 6;
 
 export function isGridActive() { return state.gridSessions.length >= 2; }
@@ -321,7 +329,7 @@ export function renderGridCells() {
   // Refitting existing cells is the only layout barrier needed when grid-N
   // changes. New cells run their first fit inside mount() and connect
   // independently as soon as that fit is ready.
-  scheduleGridRelayoutFit(existingCellSessions);
+  scheduleGridRelayoutFit(existingCellSessions, true);
 }
 
 export function getGridCellElement(gs) {
@@ -652,7 +660,7 @@ export function removeFromGrid(idx) {
     });
     updateGridLayout();
     // Topology changes may not trigger an observer in every browser.
-    scheduleGridRelayoutFit();
+    scheduleGridRelayoutFit(state.gridSessions, true);
     setGridFocus(state.gridFocusIndex);
   }
   deps.renderSidebar();
@@ -698,9 +706,19 @@ export function exitGridMode(skipRestore?) {
   }
 }
 
-function scheduleGridRelayoutFit(sessions = state.gridSessions) {
+function scheduleGridRelayoutFit(sessions = state.gridSessions, hideUntilRepaint = false) {
   if (_gridRelayoutFitRaf != null) cancelAnimationFrame(_gridRelayoutFitRaf);
+  if (_gridRelayoutRevealRaf != null) {
+    cancelAnimationFrame(_gridRelayoutRevealRaf);
+    _gridRelayoutRevealRaf = null;
+  }
   const cells = sessions.filter(gs => !!gs.controller);
+  if (hideUntilRepaint) {
+    for (const gs of cells) {
+      gs._cellElement?.classList.add("transitioning");
+      _gridRelayoutHiddenSessions.add(gs);
+    }
+  }
   _gridRelayoutFitRaf = requestAnimationFrame(() => {
     _gridRelayoutFitRaf = null;
     if (!isGridActive()) return;
@@ -710,6 +728,17 @@ function scheduleGridRelayoutFit(sessions = state.gridSessions) {
       if (!state.gridSessions.includes(gs) || !gs.controller) continue;
       try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }
     }
+    if (_gridRelayoutHiddenSessions.size === 0) return;
+    _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+      _gridRelayoutRevealRaf = null;
+      for (const gs of _gridRelayoutHiddenSessions) {
+        if (state.gridSessions.includes(gs) && gs.controller) {
+          try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
+        }
+        gs._cellElement?.classList.remove("transitioning");
+      }
+      _gridRelayoutHiddenSessions.clear();
+    });
   });
 }
 
