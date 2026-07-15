@@ -11,6 +11,7 @@ import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
+import { scheduleTakeControlFallback } from "./take-control-coordinator";
 
 // ── Dependency injection ──
 
@@ -51,6 +52,7 @@ interface GridDeps {
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   canUseWasmTerminal?: () => boolean;
   saveGridCellSnapshot?: (gs: GridSession) => void;
+  scheduleSnapshotSave: () => void;
   flushGridSnapshots?: () => void;
   loadSnapshot?: (machine: string, session: string) => string | null;
 }
@@ -201,6 +203,7 @@ async function mountGridController(gs, cell, idx) {
         // the same fix in public/app.ts onOutput for single-pane.
         cell.classList.remove("cached-visible");
       }
+      deps.scheduleSnapshotSave();
     },
     onViewerConflict: () => {
 
@@ -334,20 +337,20 @@ function takeControlOfCell(gs) {
   if (gs.controller.isConnected) {
     // Socket still open (viewer_conflict path) — send take_control directly
     gs.controller.sendTakeControl();
-    // Safety net: if control_granted doesn't arrive within 3s, force-reconnect
+    // Safety net: if control_granted stalls, retry through an authoritative
+    // takeover attach. Single-terminal mode uses the same coordinator.
     if (gs._takeControlTimer) clearTimeout(gs._takeControlTimer);
-    gs._takeControlTimer = setTimeout(() => {
-      gs._takeControlTimer = null;
-      if (!gs.controller) return;
-      const cell = getGridCellElement(gs);
-      if (!cell || !cell.querySelector(".viewer-conflict-overlay")) return;
-      gs._autoTakeControl = true;
-      if (gs.controller.isConnected) {
-        gs.controller.reconnect({ takeControl: true });
-      } else {
-        gs.controller.connect({ takeControl: true });
-      }
-    }, 3000);
+    gs._takeControlTimer = scheduleTakeControlFallback({
+      getTransport: () => gs.controller ?? null,
+      isPending: () => {
+        const cell = getGridCellElement(gs);
+        return !!cell?.querySelector(".viewer-conflict-overlay");
+      },
+      prepareRetry: () => {
+        gs._takeControlTimer = null;
+        gs._autoTakeControl = true;
+      },
+    });
   } else {
     // Socket closed (displaced) — reconnect with takeControl flag in attach.
     // Server sees takeControl=true and does immediate takeover, no extra

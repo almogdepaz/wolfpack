@@ -64,6 +64,9 @@ var WS_CLOSE_REASONS = {
 function shouldInterceptCopy(event, hasSelection) {
   return (event.metaKey || event.ctrlKey) && event.key === "c" && event.type === "keydown" && hasSelection;
 }
+function shouldReleaseScrollLockOnKeydown(event) {
+  return event.key !== "Meta" && !event.metaKey;
+}
 function encodeTerminalBinary(data) {
   const buf = new Uint8Array(data.length);
   for (let i = 0;i < data.length; i++)
@@ -90,8 +93,8 @@ function shouldInsertMessageNewlineFromAccessoryKey(event) {
   return event.key === "Enter" && (event.isMessageInputActive || !!event.hasMessageInputDraft);
 }
 // src/reconnect-hydration.ts
-function shouldRehydrate(wasReconnect, hydrationStarted, prefillDisabled) {
-  return wasReconnect || hydrationStarted && !prefillDisabled;
+function shouldRehydrate(wasReconnect, hydrationStarted, hasAuthoritativePrefill) {
+  return wasReconnect || hydrationStarted && hasAuthoritativePrefill;
 }
 // src/attach-dimensions.ts
 function nextAttachDimensionAction(dimensions, attempt, maxAttempts) {
@@ -207,6 +210,6 @@ function handleDisplaced(state) {
 function prepareAutoTakeControl(state) {
   return { ...state, autoTakeControl: true };
 }
-var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, WS_CLOSE_REASONS, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_PREFILL_TIMEOUT, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
+var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldReleaseScrollLockOnKeydown, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, WS_CLOSE_REASONS, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_PREFILL_TIMEOUT, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
 window.WP = WP;
 })();

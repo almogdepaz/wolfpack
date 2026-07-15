@@ -10,8 +10,9 @@
  * All tests require the desktop viewport (>768px) because addToGrid() and
  * suspendGridMode() are gated on isDesktop().
  */
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
+import { CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 
 let srv: TestServer;
 
@@ -235,6 +236,105 @@ test("grid viewport prefill does not seed cached prose into terminal scrollback"
   }
 });
 
+test("grid output persists debounced recovery snapshots for every live cell", async ({ page }) => {
+  const sockets: WebSocketRoute[] = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    sockets.push(ws);
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string };
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("INITIAL-GRID-SNAPSHOT\r\n"));
+      ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    state.currentSession = "test-project";
+    // @ts-ignore exposed by the browser bundle
+    state.currentMachine = "";
+    // @ts-ignore exposed by the browser bundle
+    showView("terminal", true);
+    // @ts-ignore exposed by the browser bundle
+    addToGrid("another-project", "");
+  });
+  await expect.poll(() => sockets.length).toBe(2);
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.every((gs) => gs._cellElement?.classList.contains("hydrated"));
+  })).toBe(true);
+
+  sockets[0].send(Buffer.from("GRID-LIVE-SNAPSHOT-MARKER-0\r\n"));
+  sockets[1].send(Buffer.from("GRID-LIVE-SNAPSHOT-MARKER-1\r\n"));
+
+  await expect.poll(() => page.evaluate(() => {
+    const first = localStorage.getItem("wp-snap||test-project") ?? "";
+    const second = localStorage.getItem("wp-snap||another-project") ?? "";
+    return first.includes("GRID-LIVE-SNAPSHOT-MARKER") && second.includes("GRID-LIVE-SNAPSHOT-MARKER");
+  }), { timeout: 4_000 }).toBe(true);
+});
+
+test("grid viewport prefill timeout closes stalled sockets without revealing partial content", async ({ page }) => {
+  const closes: Array<{ readonly code: number | undefined; readonly reason: string | undefined }> = [];
+  let attachCount = 0;
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      expect(parsed.prefillMode).toBe("viewport");
+      attachCount++;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("PARTIAL-GRID-PREFILL-WITHOUT-DONE\r\n"));
+      ws.send(JSON.stringify({ type: "prefill_viewport" }));
+    });
+    ws.onClose((code, reason) => {
+      closes.push({ code, reason });
+      void ws.close({ code, reason });
+    });
+  });
+  await loadApp(page);
+  await page.clock.install();
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    state.currentSession = "test-project";
+    // @ts-ignore exposed by the browser bundle
+    state.currentMachine = "";
+    // @ts-ignore exposed by the browser bundle
+    showView("terminal", true);
+    // @ts-ignore exposed by the browser bundle
+    addToGrid("another-project", "");
+  });
+  await expect.poll(() => page.locator("#desktop-grid-container .grid-cell canvas").count()).toBe(2);
+  await expect.poll(() => attachCount).toBe(2);
+
+  await page.clock.fastForward(16_000);
+  expect(closes.length).toBeGreaterThanOrEqual(2);
+  for (const close of closes) {
+    expect(close).toEqual({
+      code: CLOSE_CODE_PREFILL_TIMEOUT,
+      reason: WS_CLOSE_REASONS.PREFILL_TIMEOUT,
+    });
+  }
+
+  const canvasStates = await page.locator("#desktop-grid-container .grid-cell canvas").evaluateAll((canvases) =>
+    canvases.map((canvas) => {
+      const style = getComputedStyle(canvas);
+      return { visibility: style.visibility, opacity: style.opacity };
+    }),
+  );
+  expect(canvasStates).toEqual([
+    { visibility: "hidden", opacity: "0" },
+    { visibility: "hidden", opacity: "0" },
+  ]);
+});
+
 test("new grid cells hide canvas until hydration completes", async ({ page }) => {
   await loadApp(page);
 
@@ -272,6 +372,77 @@ test("new grid cells hide canvas until hydration completes", async ({ page }) =>
       expect(state.visibility).toBe("hidden");
     }
   }
+});
+
+test("grid manual retry hides stale content until replacement viewport prefill completes", async ({ page }) => {
+  let attachCount = 0;
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      expect(parsed.prefillMode).toBe("viewport");
+      attachCount++;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(attachCount <= 2 ? "INITIAL-GRID-PREFILL\r\n" : "REPLACEMENT-PARTIAL\r\n"));
+      ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      if (attachCount <= 2) {
+        ws.send(JSON.stringify({ type: "prefill_done" }));
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+      }
+    });
+  });
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    state.currentSession = "test-project";
+    // @ts-ignore exposed by the browser bundle
+    state.currentMachine = "";
+    // @ts-ignore exposed by the browser bundle
+    showView("terminal", true);
+    // @ts-ignore exposed by the browser bundle
+    addToGrid("another-project", "");
+  });
+  await expect.poll(() => attachCount).toBe(2);
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.every((gs) => gs._cellElement?.classList.contains("hydrated"));
+  })).toBe(true);
+
+  await page.evaluate(() => {
+    // Closing the existing client models the disconnected half of a displaced
+    // cell before its take-control click creates a fresh socket client.
+    // @ts-ignore exposed by the browser bundle
+    state.gridSessions[0].controller.ptyClient.close();
+  });
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions[0].controller.isConnected;
+  })).toBe(false);
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    state.gridSessions[0].controller.connect({ takeControl: true });
+  });
+  await expect.poll(() => attachCount).toBe(3);
+
+  const replacementState = await page.locator("#desktop-grid-container .grid-cell").first().evaluate((cell) => {
+    const canvas = cell.querySelector("canvas");
+    const style = canvas ? getComputedStyle(canvas) : null;
+    return {
+      hydrating: cell.classList.contains("hydrating"),
+      hydrated: cell.classList.contains("hydrated"),
+      visibility: style?.visibility ?? "missing",
+      opacity: style?.opacity ?? "missing",
+    };
+  });
+  expect(replacementState).toEqual({
+    hydrating: true,
+    hydrated: false,
+    visibility: "hidden",
+    opacity: "0",
+  });
 });
 
 test("addToGrid from non-terminal view switches to terminal view first", async ({ page }) => {

@@ -238,6 +238,39 @@ test("viewer conflict force-finishes hydration without prefill completion", asyn
   })).toBe(false);
 });
 
+test("single take-control retries with takeover attach when control_granted stalls", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only conflict overlay path");
+
+  const attaches: Array<{ readonly takeControl?: boolean }> = [];
+  let takeControlMessages = 0;
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly takeControl?: boolean };
+      if (parsed.type === "attach") {
+        attaches.push({ takeControl: parsed.takeControl });
+        if (!parsed.takeControl) ws.send(JSON.stringify({ type: "viewer_conflict" }));
+      } else if (parsed.type === "take_control") {
+        takeControlMessages++;
+      }
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.clock.install();
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-conflict-overlay")).toBeVisible();
+  await page.locator("#desktop-conflict-overlay button").click();
+  await expect.poll(() => takeControlMessages).toBe(1);
+
+  await page.clock.fastForward(3_100);
+  await expect.poll(() => attaches.some(({ takeControl }) => takeControl === true)).toBe(true);
+});
+
 test("full prefill timeout closes the stalled socket instead of revealing partial content", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "one browser profile covers the socket deadline");
 

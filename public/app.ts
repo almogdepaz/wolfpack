@@ -44,6 +44,7 @@ import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
+import { scheduleTakeControlFallback } from "./take-control-coordinator";
 
 // ── WASM capability guard ──
 
@@ -1042,29 +1043,11 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
             // Stay in prefill mode for phase 2 scrollback (if server sends it)
             _awaitingPrefillDone = true;
             _sawViewportPrefill = true;
-            // Safety timeout: if WS drops between phase 1 and phase 2 (prefill_done
-            // never arrives), we'd buffer live output indefinitely. Force-flush after
-            // 2s so the terminal isn't stuck blank on flaky mobile connections.
-            if (_prefillDoneTimeout) clearTimeout(_prefillDoneTimeout);
-            _prefillDoneTimeout = setTimeout(() => {
-              _prefillDoneTimeout = null;
-              if (!_awaitingPrefillDone) return;
-              console.warn("[pty-ws] prefill_done timeout — force-flushing buffered output");
-              _awaitingPrefillDone = false;
-              const chunks = _prefillChunks;
-              _prefillChunks = [];
-              // Mark viewport prefill as consumed so a late prefill_done
-              // doesn't trigger onReplacePrefill (which would clear+reflash).
-              _sawViewportPrefill = false;
-              if (opts.onBinaryData) {
-                for (const chunk of chunks) opts.onBinaryData(chunk);
-              }
-              if (opts.onPrefillDone) opts.onPrefillDone();
-            }, 2000);
+            // Keep buffering until the authoritative prefill_done boundary.
+            // The attach-level protocol deadline closes/reconnects this socket
+            // rather than revealing partial viewport or phase-two output.
           } else if (msg.type === "prefill_done") {
             // Phase 2 complete (or single-phase legacy): flush remaining chunks.
-            // If the 2s timeout already force-flushed (_sawViewportPrefill was
-            // cleared), skip onReplacePrefill to avoid a needless clear+flash.
             _awaitingPrefillDone = false;
             if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
             const chunks = _prefillChunks;
@@ -1698,7 +1681,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
           _lastScrollbackLength = -1;
         }
       };
-      _scrollLockKeydownHandler = () => {
+      _scrollLockKeydownHandler = (event: KeyboardEvent) => {
+        if (!WP.shouldReleaseScrollLockOnKeydown(event)) return;
         if (_userScrolledUp) {
           _userScrolledUp = false;
           _userRequestedScrollback = false;
@@ -1828,14 +1812,13 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         // Always reset on first connect — ghostty-web's WASM retains the
         // previous terminal's screen buffer across Terminal instances.
         // Without this, new sessions with sparse prefill show stale content.
-        // shouldRehydrate skips the reset for viewport prefill mode, but
-        // the WASM buffer must be cleared regardless.
+        // The WASM buffer must be cleared regardless of prefill mode.
         if (!wasReconnect && _term) {
           _term.reset();
         }
         // On reconnect, clear stale content and restart hydration —
         // server sends fresh prefill scrollback on the new connection.
-        const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "full");
+        const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "none");
         if (rehydrate && _term) {
           _hydrationWritesInFlight = 0;
           if (wasReconnect) {
@@ -3097,6 +3080,25 @@ function connectDesktopWs() {
 
 // Take-control state for single-terminal mode — mirrors grid's gs._displaced / gs._autoTakeControl
 var _tcState = { displaced: false, autoTakeControl: false };
+let _desktopTakeControlTimer: number | null = null;
+
+function clearDesktopTakeControlTimer(): void {
+  if (_desktopTakeControlTimer === null) return;
+  clearTimeout(_desktopTakeControlTimer);
+  _desktopTakeControlTimer = null;
+}
+
+function startDesktopTakeControlFallback(): void {
+  clearDesktopTakeControlTimer();
+  _desktopTakeControlTimer = scheduleTakeControlFallback({
+    getTransport: () => state.terminalController,
+    isPending: () => !!document.getElementById("desktop-conflict-overlay"),
+    prepareRetry: () => {
+      _desktopTakeControlTimer = null;
+      _tcState = WP.prepareAutoTakeControl(_tcState);
+    },
+  });
+}
 
 function showDesktopConflictOverlay() {
   const container = document.getElementById("desktop-terminal-container");
@@ -3109,6 +3111,7 @@ function showDesktopConflictOverlay() {
     var clickAction = WP.handleTakeControlClick(state.terminalController.isConnected);
     if (clickAction === "send-take-control") {
       state.terminalController.sendTakeControl();
+      startDesktopTakeControlFallback();
     } else {
       _tcState = WP.prepareAutoTakeControl(_tcState);
       state.terminalController.reconnect({ takeControl: true });
@@ -3120,6 +3123,7 @@ function showDesktopConflictOverlay() {
 }
 
 function removeDesktopConflictOverlay() {
+  clearDesktopTakeControlTimer();
   const el = document.getElementById("desktop-conflict-overlay");
   if (el) el.remove();
 }
@@ -4899,6 +4903,7 @@ initGridDeps({
     const text = serializeXtermTail(gs.controller.term, 200);
     if (text) saveSnapshot(gs.machine || "", gs.session, text);
   },
+  scheduleSnapshotSave: () => scheduleSnapshotSave(null),
   flushGridSnapshots,
   loadSnapshot,
 });

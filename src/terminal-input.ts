@@ -16,6 +16,16 @@ export function shouldInterceptCopy(
   return (event.metaKey || event.ctrlKey) && event.key === "c" && event.type === "keydown" && hasSelection;
 }
 
+export interface TerminalScrollLockKeyEvent {
+  readonly key: string;
+  readonly metaKey: boolean;
+}
+
+/** Command is a browser modifier and must not abandon terminal scrollback. */
+export function shouldReleaseScrollLockOnKeydown(event: TerminalScrollLockKeyEvent): boolean {
+  return event.key !== "Meta" && !event.metaKey;
+}
+
 /**
  * Encode a binary string (from terminal onBinary callback) to a Uint8Array.
  * Each character's code point is masked to the low byte via & 0xff.

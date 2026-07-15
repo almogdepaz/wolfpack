@@ -170,9 +170,11 @@ test("scroll-lock: viewport stays anchored while output streams into scrollback"
   const anchoredMark = anchored!.row0;
   const anchoredScrollback = anchored!.scrollbackLength;
 
-  // ── Step 3: wait while the STREAM loop (already running from step 1)
-  // continues pushing lines into scrollback. We do NOT type anything here —
-  // a keypress would fire _scrollLockKeydownHandler and reset the lock.
+  // ── Step 3: Command is a browser modifier, not terminal input. Pressing it
+  // must preserve the anchored viewport while STREAM output continues.
+  await page.keyboard.down("Meta");
+  await wait(50);
+  await page.keyboard.up("Meta");
   await wait(2500);
 
   // ── Step 4: assert viewport row 0 still holds the same MARK row ─────────

@@ -944,9 +944,8 @@ function setupNewPtyEntry(
   }
 
   // ── Snapshot + subscribe attach path (PTY backend in-process, broker over RPC) ──
-  // Orchestrator only — sequencing logic lives in the four helpers above:
-  // waitForResizeSettle → waitForOutputQuiescence → sendSnapshotPrefill →
-  // subscribeWithCoalescing.
+  // Orchestrator only — sequencing logic lives in the helpers above:
+  // settle dimensions/output → sendSnapshotPrefill → subscribeWithCoalescing.
   async function attachStreamingBackend(
     backend: SessionBackend & PtyBackendMethods,
     cols: number,
@@ -1000,9 +999,10 @@ function setupNewPtyEntry(
         return;
       }
 
-      // Only full desktop prefill pays the quiescence tax. Viewport prefill is
-      // shallow, but still uses the settle window to coalesce the initial
-      // attach dimensions with same-turn resize messages.
+      // Both prefill modes snapshot after the resize-triggered redraw settles.
+      // Viewport first coalesces dimensions, then observes output around one
+      // final resize; applying attach dimensions immediately would produce a
+      // second SIGWINCH when a same-turn cell fit arrives.
       let appliedSize: { cols: number; rows: number };
       if (prefillMode === "viewport") {
         const pending = await waitForResizeSettle(ctx, { cols, rows }, {
@@ -1011,10 +1011,9 @@ function setupNewPtyEntry(
           timeoutMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS,
         });
         if (pending === null) return;
-        appliedSize = pending;
-        timing?.mark("resize_apply.start", { cols: appliedSize.cols, rows: appliedSize.rows, prefillMode });
-        await backend.resize(session, appliedSize.cols, appliedSize.rows);
-        timing?.mark("resize_apply.end", { cols: appliedSize.cols, rows: appliedSize.rows, prefillMode });
+        const settled = await waitForOutputQuiescence(ctx, pending);
+        if (settled === null) return;
+        appliedSize = settled;
       } else {
         const settled = await waitForSettledResizeAndOutputQuiescence(ctx, { cols, rows });
         if (settled === null) return;

@@ -19,6 +19,7 @@ export {
   splitTerminalInputBytes,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
+  shouldReleaseScrollLockOnKeydown,
 } from "./terminal-input";
 
 export {
