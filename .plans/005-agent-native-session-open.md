@@ -1,6 +1,6 @@
 # agent-native `wolfpack session open` plan
 
-**status:** implementation verified — deployment, live validation, and PR pending
+**status:** implementation, isolated deployment, and live validation verified — ready for PR
 **branch:** `feat/session-open` from merged `main` at `ed009b3`
 **goal:** `wolfpack session open <project>` creates a numbered sub-agent using the parent session’s harness and automatically adds it beside the parent when an active browser is showing that parent in single-session mode.
 
@@ -57,7 +57,20 @@
 - [x] single-parent automatic grid placement plus ignore-path Playwright coverage.
 - [x] canonical docs and bundled tailnet-control skill workflow.
 - [x] focused and full Bun/Rust/Playwright verification plus deterministic generation and build.
-- [ ] isolated deployment, live validation, and PR.
+- [x] isolated deployment and live validation.
+- [ ] PR.
+
+## live verification evidence
+
+- fresh full verification: Bun 1,709 passed; Rust 174 passed serially; Playwright 85 passed / 107 skipped; typecheck, production build, schema/assets determinism, and `git diff --check` passed.
+- server-only detached deployment: server PID `49532` → `52744`; broker PID remained `49523`.
+- deployed/source bundle: `6e27b37718e53139ce61be275f13f98ba169c4d1051e281e0276629ff97555cb`.
+- all four pre-existing broker sessions retained the same names and session IDs through deployment and after fixture cleanup.
+- live Pi workflow created `pi-sub-agent`, `pi-2-sub-agent`, and no-viewer `pi-3-sub-agent`, all in the requested `wolfpack` project with `agentKind: pi`.
+- active desktop parent transitioned from single terminal to a hydrated two-cell grid through the real WebSocket event path; an existing grid ignored the second child event.
+- missing context, unsupported `shell`, inactive parent, and missing project each emitted exactly one structured JSON error line with exit code 3.
+- live screenshot: `/Users/home/.dev-browser/tmp/session-open-live-grid.png`.
+- all temporary parent/child sessions and the browser fixture were removed.
 
 ## 5. Verify and deploy without restarting the broker
 
