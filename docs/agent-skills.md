@@ -8,8 +8,8 @@ Bundled skills:
 - `wolfpack-plan` - plan-file task header conventions Ralph can parse.
 - `wolfpack-ralph` - Ralph response-file contract, notifications, and sandbox
   caveats.
-- `wolfpack-tailnet-control` - safe local/Tailscale session inspection and
-  explicitly authorized control workflows.
+- `wolfpack-tailnet-control` - same-harness sub-agent creation plus safe
+  local/Tailscale session inspection and explicitly authorized control workflows.
 
 The npm package includes `skills/` so `bunx wolfpack-bridge` and installed
 packages expose the same skill text as the repository. Platform binary packages

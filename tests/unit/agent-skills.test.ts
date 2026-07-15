@@ -21,6 +21,16 @@ describe("agent skills", () => {
     expect(skill).not.toContain("wss://host/ws/pty?session=<name>");
   });
 
+  test("tailnet control skill maps sub-agent requests to session open", () => {
+    const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
+
+    expect(skill).toContain("open or create a Wolfpack sub-agent session");
+    expect(skill).toContain("wolfpack session open <project> --json");
+    expect(skill).toContain("WOLFPACK_AGENT_KIND");
+    expect(skill).toContain("WOLFPACK_SESSION_NAME");
+    expect(skill).not.toContain("curl -fsS \"${AUTH_ARGS[@]}\" \"$BASE/api/create\"");
+  });
+
   test("skill docs point at existing repo references", () => {
     const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
     const references = [

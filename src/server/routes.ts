@@ -160,7 +160,7 @@ import {
   cachedPeers,
   discoverPeers,
 } from "./http.js";
-import { activePtySessions, teardownPty } from "./websocket.js";
+import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -193,10 +193,11 @@ interface CreateBody extends Record<string, unknown> {
   newProject?: string;
   cmd?: string;
   sessionName?: string;
+  parentSession?: string;
 }
 
 function isCreateBody(body: Record<string, unknown>): body is CreateBody {
-  return ["project", "newProject", "cmd", "sessionName"].every(
+  return ["project", "newProject", "cmd", "sessionName", "parentSession"].every(
     key => hasOptionalType(body, key, "string"),
   );
 }
@@ -506,13 +507,25 @@ export const routes: Record<
     const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!isCreateBody(body)) {
-      return json(res, { error: "project, newProject, cmd, and sessionName must be strings" }, 400);
+      return json(res, { error: "project, newProject, cmd, sessionName, and parentSession must be strings" }, 400);
     }
-    const { project, newProject, cmd, sessionName } = body;
+    const { project, newProject, cmd, sessionName, parentSession } = body;
     const folderName = newProject?.trim() || project?.trim();
     if (!validateProject(res, folderName)) return;
     if (cmd && cmd !== "shell" && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
+    }
+    const parentName = parentSession?.trim();
+    if (parentSession !== undefined) {
+      if (!parentName || !isValidSessionName(parentName)) {
+        return json(res, { error: "invalid parent session" }, 400);
+      }
+      if (!(await isAllowedSession(parentName))) {
+        return json(res, {
+          error: "parent session not found",
+          code: "PARENT_SESSION_NOT_FOUND",
+        }, 404);
+      }
     }
     const customName = sessionName?.trim();
     if (customName) {
@@ -545,6 +558,7 @@ export const routes: Record<
       }
       throw e;
     }
+    if (parentName) notifySubSessionOpened(parentName, finalName);
     json(res, { ok: true, session: finalName });
   },
 

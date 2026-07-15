@@ -271,6 +271,7 @@ export const controlApiSource: ControlApiSource = {
           newProject: ref("ProjectName"),
           cmd: ref("Command"),
           sessionName: ref("SessionName"),
+          parentSession: ref("SessionName"),
         }),
         anyOf: [
           object({}, ["project"], { additionalProperties: true }),
@@ -595,6 +596,15 @@ export const controlApiSource: ControlApiSource = {
           stable: true,
           direction: "server-to-client",
           schema: object({ type: { const: "control_granted" } }, ["type"]),
+        },
+        sub_session_opened: {
+          stable: true,
+          direction: "server-to-client",
+          schema: object({
+            type: { const: "sub_session_opened" },
+            parentSession: ref("SessionName"),
+            session: ref("SessionName"),
+          }, ["type", "parentSession", "session"]),
         },
       },
     },

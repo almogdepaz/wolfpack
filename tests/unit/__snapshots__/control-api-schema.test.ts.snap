@@ -167,6 +167,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           },
           "sessionName": {
             "$ref": "#/$defs/SessionName"
+          },
+          "parentSession": {
+            "$ref": "#/$defs/SessionName"
           }
         },
         "required": [],
@@ -1367,6 +1370,33 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             },
             "required": [
               "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "sub_session_opened": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:sub_session_opened",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty sub_session_opened",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "sub_session_opened"
+              },
+              "parentSession": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "session": {
+                "$ref": "#/$defs/SessionName"
+              }
+            },
+            "required": [
+              "type",
+              "parentSession",
+              "session"
             ],
             "additionalProperties": false
           }

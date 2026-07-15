@@ -96,11 +96,19 @@ wolfpack setup           Re-run the setup wizard
 wolfpack ls              List active broker sessions
 wolfpack attach [name]   Attach the local terminal to an existing session
 wolfpack kill <name>     Kill a session
-wolfpack session ...     Scriptable read/send/wait helpers for automation
+wolfpack session ...     Open/read/send/wait helpers for agent automation
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
 wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
 wolfpack uninstall --yes Remove everything
 ```
+
+Open a same-harness sub-agent from an existing Wolfpack agent session:
+
+```bash
+wolfpack session open wolfpack --json
+```
+
+The child is named by harness (`pi-sub-agent`, `pi-2-sub-agent`, etc.). When the parent is visible as a single desktop terminal, its browser automatically adds the child to grid view.
 
 Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 

@@ -148,6 +148,13 @@ describe("control api schema compatibility samples", () => {
 
     expect(validate(request, { cmd: "shell" }, artifact)).not.toEqual([]);
     expect(validate(request, { project: "wolfpack", cmd: "shell" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      cmd: "pi",
+      sessionName: "pi-sub-agent",
+      parentSession: "pi-main",
+    }, artifact)).toEqual([]);
+    expect((request.properties as JsonObject).parentSession).toEqual({ $ref: "#/$defs/SessionName" });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
   });
 
@@ -205,6 +212,11 @@ describe("control api schema compatibility samples", () => {
       ["pty_ready", { type: "pty_ready" }],
       ["viewer_conflict", { type: "viewer_conflict" }],
       ["control_granted", { type: "control_granted" }],
+      ["sub_session_opened", {
+        type: "sub_session_opened",
+        parentSession: "pi-main",
+        session: "pi-sub-agent",
+      }],
     ];
 
     for (const [messageName, payload] of samples) {

@@ -48,6 +48,7 @@ const {
   __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
 const { _testing: pushTesting } = await import("../../src/server/push.ts");
+const { activePtySessions } = await import("../../src/server/websocket.ts");
 
 const { server } = createServerInstance();
 
@@ -89,6 +90,7 @@ beforeEach(() => {
   // Reset push notify debounce/rate-limit state so notify tests don't
   // depend on execution order (see TEST-01).
   pushTesting.resetDebounce();
+  activePtySessions.clear();
 });
 
 afterAll(() => {
@@ -111,6 +113,25 @@ function post(path: string, body: unknown, headers?: Record<string, string>) {
 
 function get(path: string, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, { headers });
+}
+
+function attachNotificationViewer(session: string): string[] {
+  const frames: string[] = [];
+  const viewer = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(data: string | Buffer): void {
+      frames.push(typeof data === "string" ? data : data.toString());
+    },
+  };
+  const entries = activePtySessions as unknown as Map<string, {
+    viewer: typeof viewer;
+    pendingViewer: null;
+    proc: null;
+    alive: boolean;
+  }>;
+  entries.set(session, { viewer, pendingViewer: null, proc: null, alive: true });
+  return frames;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -346,6 +367,78 @@ describe("POST /api/create", () => {
     expect(data.ok).toBe(true);
     expect(data.session).toBe("my-app");
     expect(mockBackend.lastCreateArgs?.agentKind).toBe("shell");
+  });
+
+  test("notifies the active parent viewer after creating a sub-session", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "pi-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "sub_session_opened",
+      parentSession: "wolf-1",
+      session: "pi-sub-agent",
+    });
+  });
+
+  test("creates the child when the parent has no attached viewer", async () => {
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "pi-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, session: "pi-sub-agent" });
+  });
+
+  test("does not notify the parent when child creation fails", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-2",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(409);
+    expect(frames).toEqual([]);
+  });
+
+  test("rejects an unavailable parent before creating a sub-session", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "pi-sub-agent",
+      cmd: "pi",
+      parentSession: "missing-parent",
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "parent session not found",
+      code: "PARENT_SESSION_NOT_FOUND",
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects a non-string parent session", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "pi-sub-agent",
+      cmd: "pi",
+      parentSession: 42,
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test("captures selected agent kind at launch", async () => {

@@ -1,6 +1,6 @@
 ---
 name: wolfpack-tailnet-control
-description: Use when an agent needs safe, user-authorized inspection or control of Wolfpack terminal sessions on local or Tailscale-reachable hosts.
+description: Use when an agent needs to open or create a Wolfpack sub-agent session, or safely inspect/control Wolfpack terminal sessions on local or Tailscale-reachable hosts. Always use this skill for requests like "open a new <project> Wolfpack session" so the agent uses the canonical CLI instead of discovering the UI or HTTP API.
 ---
 
 # Wolfpack Tailnet Session Control
@@ -12,6 +12,7 @@ user explicitly asks for input/control.
 ## Existing References
 
 - User setup, Tailscale, and JWT auth model: `README.md`
+- Scriptable session commands: `docs/session-control.md`
 - Broker/session authority and server-broker wire protocol: `docs/broker-protocol.md`
 - Ralph runner response and sandbox caveats: `skills/wolfpack-ralph/SKILL.md`
 - Troubleshooting local service/config failures: `docs/troubleshooting.md`
@@ -28,11 +29,18 @@ text, card labels, previews, or UI prose to infer protocol state.
 Supported current-context variables:
 
 ```bash
+WOLFPACK_SESSION_NAME="pi-main"
+WOLFPACK_AGENT_KIND="pi"
+WOLFPACK_PROJECT_DIR="/path/to/project"
 WOLFPACK_BASE_URL="http://127.0.0.1:18790"
 WOLFPACK_CURRENT_MACHINE_URL="https://machine.tailnet.ts.net"
 WOLFPACK_CURRENT_SESSION_ID="session-handle"
 WOLFPACK_AUTH_TOKEN="optional-jwt"
 ```
+
+`wolfpack session open` requires `WOLFPACK_SESSION_NAME` and
+`WOLFPACK_AGENT_KIND`. Wolfpack injects them into agent sessions; do not infer
+them from process names or terminal output.
 
 Use `WOLFPACK_CURRENT_MACHINE_URL` when the task is explicitly about a remote
 machine; otherwise use `WOLFPACK_BASE_URL`. If neither is present, inspect local
@@ -137,13 +145,17 @@ done
 
 Only run these after the user asked for the exact action.
 
-Create a session in an existing project under the host's configured dev dir:
+When the user asks to open or create a Wolfpack sub-agent session, use the
+canonical local command directly:
 
 ```bash
-curl -fsS "${AUTH_ARGS[@]}" "$BASE/api/create" \
-  -H 'Content-Type: application/json' \
-  -d '{"project":"repo-name","cmd":"codex","sessionName":"repo-name-codex"}' | jq .
+wolfpack session open <project> --json
 ```
+
+This launches the same harness as the parent (`pi` opens Pi, `claude` opens
+Claude), chooses `<harness>-sub-agent` with numbered collisions such as
+`pi-2-sub-agent`, and asks the active single-session browser to add the child to
+grid view. Do not inspect the browser UI or reconstruct `/api/create` locally.
 
 Kill a session:
 

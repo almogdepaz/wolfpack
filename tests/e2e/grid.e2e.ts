@@ -41,6 +41,27 @@ async function loadApp(page: Page) {
  * Inject two fake grid sessions into page state without going through the PTY
  * layer. `controller: null` is intentional — dispose() is guarded.
  */
+async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>> {
+  const sockets = new Map<string, WebSocketRoute>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    sockets.set(session, ws);
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") {
+        ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      }
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  return sockets;
+}
+
 async function injectFakeGrid(page: Page) {
   await page.evaluate(() => {
     // @ts-ignore — page-global state
@@ -54,6 +75,92 @@ async function injectFakeGrid(page: Page) {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+test("sub-session notification adds a child beside the active single parent", async ({ page }) => {
+  const sockets = await routeHydratedPty(page);
+  await loadApp(page);
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect.poll(() => sockets.has("test-project")).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.currentSession === "test-project" && state.terminalController?.isConnected;
+  })).toBe(true);
+
+  sockets.get("test-project")!.send(JSON.stringify({
+    type: "sub_session_opened",
+    parentSession: "test-project",
+    session: "another-project",
+  }));
+
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.map((entry) => entry.session);
+  })).toEqual(["test-project", "another-project"]);
+});
+
+test("sub-session notification ignores other parents, views, and existing grids", async ({ page }) => {
+  const sockets = await routeHydratedPty(page);
+  await loadApp(page);
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect.poll(() => sockets.has("test-project")).toBe(true);
+  const parentSocket = sockets.get("test-project")!;
+
+  parentSocket.send(JSON.stringify({
+    type: "sub_session_opened",
+    parentSession: "another-project",
+    session: "third-project",
+  }));
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.length;
+  })).toBe(0);
+
+  await page.evaluate(() => {
+    // @ts-ignore exercise the message guard without changing socket ownership
+    state.currentView = "settings";
+  });
+  parentSocket.send(JSON.stringify({
+    type: "sub_session_opened",
+    parentSession: "test-project",
+    session: "another-project",
+  }));
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.length;
+  })).toBe(0);
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    state.currentView = "terminal";
+  });
+  parentSocket.send(JSON.stringify({
+    type: "sub_session_opened",
+    parentSession: "test-project",
+    session: "another-project",
+  }));
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.map((entry) => entry.session);
+  })).toEqual(["test-project", "another-project"]);
+
+  await expect.poll(() => sockets.get("test-project")).not.toBeUndefined();
+  sockets.get("test-project")!.send(JSON.stringify({
+    type: "sub_session_opened",
+    parentSession: "test-project",
+    session: "third-project",
+  }));
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.gridSessions.map((entry) => entry.session);
+  })).toEqual(["test-project", "another-project"]);
+});
 
 test("grid requests viewport even when solo prefill setting is full", async ({ page }) => {
   await loadApp(page);

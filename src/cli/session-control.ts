@@ -12,18 +12,63 @@ export const SESSION_EXIT = {
 } as const;
 
 type OutputMode = "plain" | "json" | "shell";
-type SessionAction = "read" | "send" | "wait" | "current-context";
+type SessionAction = "open" | "read" | "send" | "wait" | "current-context";
+type OpenableHarness = "pi" | "claude" | "codex" | "gemini" | "cursor";
+
+const OPENABLE_HARNESSES = new Set<OpenableHarness>(["pi", "claude", "codex", "gemini", "cursor"]);
 
 export type ParsedSessionCommand =
-  | { ok: true; action: "read"; session: string; output: OutputMode }
-  | { ok: true; action: "send"; session: string; text: string; noEnter: boolean; output: OutputMode }
-  | { ok: true; action: "wait"; session: string; text: string; timeoutMs: number; output: OutputMode }
-  | { ok: true; action: "current-context"; output: OutputMode }
-  | { ok: false; message: string };
+  | { readonly ok: true; readonly action: "open"; readonly project: string; readonly output: OutputMode }
+  | { readonly ok: true; readonly action: "read"; readonly session: string; readonly output: OutputMode }
+  | { readonly ok: true; readonly action: "send"; readonly session: string; readonly text: string; readonly noEnter: boolean; readonly output: OutputMode }
+  | { readonly ok: true; readonly action: "wait"; readonly session: string; readonly text: string; readonly timeoutMs: number; readonly output: OutputMode }
+  | { readonly ok: true; readonly action: "current-context"; readonly output: OutputMode }
+  | { readonly ok: false; readonly message: string };
+
+export type SessionOpenContext =
+  | { readonly ok: true; readonly parentSession: string; readonly harness: OpenableHarness }
+  | { readonly ok: false; readonly code: "MISSING_PARENT_SESSION" | "UNSUPPORTED_HARNESS"; readonly message: string };
+
+export function chooseSubAgentSessionName(harness: OpenableHarness, existingNames: readonly string[]): string {
+  const existing = new Set(existingNames);
+  const first = `${harness}-sub-agent`;
+  if (!existing.has(first)) return first;
+  let number = 2;
+  while (existing.has(`${harness}-${number}-sub-agent`)) number++;
+  return `${harness}-${number}-sub-agent`;
+}
+
+export function resolveSessionOpenContext(env: Readonly<Record<string, string | undefined>>): SessionOpenContext {
+  const parentSession = env.WOLFPACK_SESSION_NAME?.trim();
+  if (!parentSession) {
+    return { ok: false, code: "MISSING_PARENT_SESSION", message: "wolfpack session context is missing" };
+  }
+  const harness = env.WOLFPACK_AGENT_KIND?.trim().toLowerCase();
+  if (!harness || !OPENABLE_HARNESSES.has(harness as OpenableHarness)) {
+    return {
+      ok: false,
+      code: "UNSUPPORTED_HARNESS",
+      message: "current Wolfpack session is not running a supported agent harness",
+    };
+  }
+  return { ok: true, parentSession, harness: harness as OpenableHarness };
+}
 
 interface ApiError {
   readonly status: number;
   readonly body: string;
+  readonly code?: string;
+}
+
+function structuredErrorCode(body: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const code = (parsed as { readonly code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function call(path: string, init: RequestInit = {}): Promise<unknown> {
@@ -33,7 +78,10 @@ async function call(path: string, init: RequestInit = {}): Promise<unknown> {
   } catch (e: unknown) {
     throw { status: 0, body: e instanceof Error ? e.message : String(e) } satisfies ApiError;
   }
-  if (!resp.ok) throw { status: resp.status, body: await resp.text() } satisfies ApiError;
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw { status: resp.status, body, code: structuredErrorCode(body) } satisfies ApiError;
+  }
   return resp.json();
 }
 
@@ -62,11 +110,19 @@ function parseOutputMode(args: string[]): { mode: OutputMode; shellRequested: bo
 export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
   const args = [...argv];
   const action = args.shift() as SessionAction | undefined;
-  if (!action) return { ok: false, message: "Usage: wolfpack session <read|send|wait|current-context> ..." };
-  if (!["read", "send", "wait", "current-context"].includes(action)) {
+  if (!action) return { ok: false, message: "Usage: wolfpack session <open|read|send|wait|current-context> ..." };
+  if (!["open", "read", "send", "wait", "current-context"].includes(action)) {
     return { ok: false, message: `Unknown session command: ${action}` };
   }
   const { mode: output, shellRequested } = parseOutputMode(args);
+  if (action === "open") {
+    if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
+    const project = args.shift();
+    if (!project || args.length > 0) {
+      return { ok: false, message: "Usage: wolfpack session open <project> [--json]" };
+    }
+    return { ok: true, action, project, output };
+  }
   if (action === "current-context") {
     if (args.length > 0) return { ok: false, message: "Usage: wolfpack session current-context [--json|--shell]" };
     return { ok: true, action, output };
@@ -125,12 +181,119 @@ function mapApiError(e: unknown): number {
   return SESSION_EXIT.GENERAL;
 }
 
+interface SessionListResponse {
+  readonly sessions: ReadonlyArray<{ readonly name: string }>;
+}
+
+function sessionNames(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  const sessions = (value as { sessions?: unknown }).sessions;
+  if (!Array.isArray(sessions)) return [];
+  return sessions.flatMap((session) => {
+    if (!session || typeof session !== "object") return [];
+    const name = (session as { name?: unknown }).name;
+    return typeof name === "string" ? [name] : [];
+  });
+}
+
+function writeOpenError(
+  output: OutputMode,
+  code: string,
+  message: string,
+  exitCode: number,
+): number {
+  if (output === "json") jsonOut({ ok: false, error: { code, message } });
+  else print(red(message));
+  return exitCode;
+}
+
+function mapOpenApiError(output: OutputMode, error: unknown): number {
+  const apiError = error as Partial<ApiError>;
+  if (apiError.status === 401) {
+    return writeOpenError(output, "AUTH_REQUIRED", "auth required", SESSION_EXIT.AUTH);
+  }
+  if (apiError.status === 404) {
+    if (apiError.code === "PARENT_SESSION_NOT_FOUND") {
+      return writeOpenError(
+        output,
+        "PARENT_SESSION_NOT_FOUND",
+        "parent Wolfpack session is not active",
+        SESSION_EXIT.NOT_FOUND,
+      );
+    }
+    return writeOpenError(output, "PROJECT_NOT_FOUND", "project not found", SESSION_EXIT.NOT_FOUND);
+  }
+  if (apiError.status === 503) {
+    return writeOpenError(output, "BACKEND_UNAVAILABLE", "backend unavailable", SESSION_EXIT.BACKEND_UNAVAILABLE);
+  }
+  return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
+}
+
+async function runSessionOpen(
+  parsed: Extract<ParsedSessionCommand, { readonly action: "open" }>,
+): Promise<number> {
+  const context = resolveSessionOpenContext(process.env);
+  if (!context.ok) {
+    return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
+  }
+
+  try {
+    let names = sessionNames(await call("/api/sessions") as SessionListResponse);
+    if (!names.includes(context.parentSession)) {
+      return writeOpenError(
+        parsed.output,
+        "PARENT_SESSION_NOT_FOUND",
+        "parent Wolfpack session is not active",
+        SESSION_EXIT.NOT_FOUND,
+      );
+    }
+
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      const session = chooseSubAgentSessionName(context.harness, names);
+      try {
+        await call("/api/create", {
+          method: "POST",
+          body: JSON.stringify({
+            project: parsed.project,
+            cmd: context.harness,
+            sessionName: session,
+            parentSession: context.parentSession,
+          }),
+        });
+        if (parsed.output === "json") {
+          jsonOut({ ok: true, session, project: parsed.project, harness: context.harness });
+        } else {
+          print(session);
+        }
+        return SESSION_EXIT.OK;
+      } catch (error: unknown) {
+        const apiError = error as Partial<ApiError>;
+        if (apiError.status !== 409) return mapOpenApiError(parsed.output, error);
+        if (attempt === 3) {
+          return writeOpenError(
+            parsed.output,
+            "NAME_COLLISION",
+            "could not allocate a sub-agent session name",
+            SESSION_EXIT.GENERAL,
+          );
+        }
+        names = sessionNames(await call("/api/sessions") as SessionListResponse);
+      }
+    }
+  } catch (error: unknown) {
+    return mapOpenApiError(parsed.output, error);
+  }
+  return writeOpenError(parsed.output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
+}
+
 export async function runSessionCommand(argv: readonly string[]): Promise<number> {
   const parsed = parseSessionCommand(argv);
   if (!parsed.ok) {
     print(red(parsed.message));
     return SESSION_EXIT.USAGE;
   }
+
+  if (parsed.action === "open") return runSessionOpen(parsed);
 
   if (parsed.action === "current-context") {
     const context = {

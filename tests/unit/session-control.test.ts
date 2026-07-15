@@ -1,7 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { SESSION_EXIT, parseSessionCommand } from "../../src/cli/session-control.ts";
+import {
+  SESSION_EXIT,
+  chooseSubAgentSessionName,
+  parseSessionCommand,
+  resolveSessionOpenContext,
+} from "../../src/cli/session-control.ts";
 
 describe("session control cli parsing", () => {
+  test("parses open with project and json output", () => {
+    expect(parseSessionCommand(["open", "wolfpack", "--json"])).toEqual({
+      ok: true,
+      action: "open",
+      project: "wolfpack",
+      output: "json",
+    });
+  });
+
+  test("rejects open without a project or with unsupported flags", () => {
+    expect(parseSessionCommand(["open"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "wolfpack", "--harness", "claude"]).ok).toBe(false);
+  });
+
   test("parses read with json output", () => {
     expect(parseSessionCommand(["read", "alpha", "--json"])).toEqual({
       ok: true,
@@ -51,6 +70,147 @@ describe("session control cli parsing", () => {
     expect(parsed.ok).toBe(false);
   });
 
+  test("opens a numbered same-harness child with structured parent context", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      globalThis.fetch = async (url, init) => {
+        if (String(url).endsWith("/api/sessions")) {
+          return Response.json({ sessions: [{ name: "pi-main" }, { name: "pi-sub-agent" }] });
+        }
+        if (String(url).endsWith("/api/create")) {
+          const body = JSON.parse(String(init?.body));
+          const expected = {
+            project: "wolfpack",
+            cmd: "pi",
+            sessionName: "pi-2-sub-agent",
+            parentSession: "pi-main",
+          };
+          if (JSON.stringify(body) !== JSON.stringify(expected)) {
+            return Response.json({ error: "unexpected request", body }, { status: 400 });
+          }
+          return Response.json({ ok: true, session: "pi-2-sub-agent" });
+        }
+        return Response.json({ error: "unexpected URL" }, { status: 500 });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: true,
+      session: "pi-2-sub-agent",
+      project: "wolfpack",
+      harness: "pi",
+    });
+  });
+
+  test("open retries a structured collision with the next available number", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      let listCount = 0;
+      let createCount = 0;
+      globalThis.fetch = async (url, init) => {
+        if (String(url).endsWith("/api/sessions")) {
+          listCount++;
+          return Response.json({ sessions: listCount === 1
+            ? [{ name: "pi-main" }, { name: "pi-sub-agent" }]
+            : [{ name: "pi-main" }, { name: "pi-sub-agent" }, { name: "pi-2-sub-agent" }]
+          });
+        }
+        if (String(url).endsWith("/api/create")) {
+          createCount++;
+          const body = JSON.parse(String(init?.body));
+          if (createCount === 1 && body.sessionName === "pi-2-sub-agent") {
+            return Response.json({ error: "anything" }, { status: 409 });
+          }
+          if (createCount === 2 && body.sessionName === "pi-3-sub-agent") {
+            return Response.json({ ok: true, session: body.sessionName });
+          }
+        }
+        return Response.json({ error: "unexpected request" }, { status: 500 });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: true,
+      session: "pi-3-sub-agent",
+      project: "wolfpack",
+      harness: "pi",
+    });
+  });
+
+  test("open preserves a structured parent-disappeared error from create", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      globalThis.fetch = async (url) => {
+        if (String(url).endsWith("/api/sessions")) {
+          return Response.json({ sessions: [{ name: "pi-main" }] });
+        }
+        return Response.json({
+          error: "parent session not found",
+          code: "PARENT_SESSION_NOT_FOUND",
+        }, { status: 404 });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "PARENT_SESSION_NOT_FOUND",
+        message: "parent Wolfpack session is not active",
+      },
+    });
+  });
+
+  test("open returns one JSON error when Wolfpack parent context is missing", () => {
+    const script = `
+      delete process.env.WOLFPACK_SESSION_NAME;
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      globalThis.fetch = async () => { throw new Error("fetch must not run"); };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "MISSING_PARENT_SESSION",
+        message: "wolfpack session context is missing",
+      },
+    });
+  });
+
   test("warns when a configured JWT secret is too short", () => {
     const script = `
       process.env.WOLFPACK_JWT_SECRET = "too-short";
@@ -69,6 +229,33 @@ describe("session control cli parsing", () => {
     expect(child.exitCode).toBe(0);
     expect(output).toContain("WOLFPACK_JWT_SECRET is set but only 9 chars; >=32 required");
     expect(output).toContain("exit=5");
+  });
+
+  test("chooses numbered sub-agent names while preserving the postfix", () => {
+    expect(chooseSubAgentSessionName("pi", [])).toBe("pi-sub-agent");
+    expect(chooseSubAgentSessionName("pi", ["pi-sub-agent"])).toBe("pi-2-sub-agent");
+    expect(chooseSubAgentSessionName("pi", ["pi-sub-agent", "pi-3-sub-agent"])).toBe("pi-2-sub-agent");
+    expect(chooseSubAgentSessionName("claude", ["pi-sub-agent"])).toBe("claude-sub-agent");
+  });
+
+  test("resolves open context only from a supported Wolfpack parent", () => {
+    expect(resolveSessionOpenContext({
+      WOLFPACK_SESSION_NAME: "pi-main",
+      WOLFPACK_AGENT_KIND: "pi",
+    })).toEqual({ ok: true, parentSession: "pi-main", harness: "pi" });
+    expect(resolveSessionOpenContext({ WOLFPACK_AGENT_KIND: "pi" })).toEqual({
+      ok: false,
+      code: "MISSING_PARENT_SESSION",
+      message: "wolfpack session context is missing",
+    });
+    expect(resolveSessionOpenContext({
+      WOLFPACK_SESSION_NAME: "shell-main",
+      WOLFPACK_AGENT_KIND: "shell",
+    })).toEqual({
+      ok: false,
+      code: "UNSUPPORTED_HARNESS",
+      message: "current Wolfpack session is not running a supported agent harness",
+    });
   });
 
   test("exit code map is stable", () => {
