@@ -1,6 +1,6 @@
 {
   "name": "wolfpack-bridge",
-  "version": "1.6.7",
+  "version": "1.6.8",
   "type": "module",
   "description": "Self-hosted browser terminal manager for AI coding agents on your own machines",
   "homepage": "https://github.com/almogdepaz/wolfpack#readme",
@@ -29,10 +29,10 @@
     "postinstall": "node bin/install.cjs"
   },
   "optionalDependencies": {
-    "wolfpack-bridge-darwin-arm64": "1.6.7",
-    "wolfpack-bridge-darwin-x64": "1.6.7",
-    "wolfpack-bridge-linux-arm64": "1.6.7",
-    "wolfpack-bridge-linux-x64": "1.6.7"
+    "wolfpack-bridge-darwin-arm64": "1.6.8",
+    "wolfpack-bridge-darwin-x64": "1.6.8",
+    "wolfpack-bridge-linux-arm64": "1.6.8",
+    "wolfpack-bridge-linux-x64": "1.6.8"
   },
   "keywords": [
     "ai-agent-terminal",
