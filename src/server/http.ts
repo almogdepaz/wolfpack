@@ -130,11 +130,31 @@ export function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-export async function parseBody(req: IncomingMessage, res: ServerResponse): Promise<unknown | undefined> {
+export interface InvalidBodyResponse {
+  readonly envelope: unknown;
+  readonly status: number;
+}
+
+export async function parseBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  invalidResponse?: InvalidBodyResponse,
+): Promise<unknown | undefined> {
+  let rawBody: string;
   try {
-    return JSON.parse(await readBody(req)) as unknown;
-  } catch { /* expected: client sent malformed JSON */
+    rawBody = await readBody(req);
+  } catch { /* expected: transport failure or oversized body */
     json(res, { error: "invalid JSON body" }, 400);
+    return undefined;
+  }
+  try {
+    return JSON.parse(rawBody) as unknown;
+  } catch { /* expected: client sent malformed JSON */
+    json(
+      res,
+      invalidResponse?.envelope ?? { error: "invalid JSON body" },
+      invalidResponse?.status ?? 400,
+    );
     return undefined;
   }
 }

@@ -1,0 +1,45 @@
+export const OPENABLE_HARNESSES = [
+  "pi",
+  "claude",
+  "codex",
+  "gemini",
+  "cursor",
+] as const;
+
+export type OpenableHarness = typeof OPENABLE_HARNESSES[number];
+
+const OPENABLE_HARNESS_SET: ReadonlySet<string> = new Set(OPENABLE_HARNESSES);
+
+export function isOpenableHarness(value: string): value is OpenableHarness {
+  return OPENABLE_HARNESS_SET.has(value);
+}
+
+export const SESSION_OPEN_ERROR = {
+  INVALID_REQUEST: "INVALID_REQUEST",
+  PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",
+  PARENT_SESSION_NOT_FOUND: "PARENT_SESSION_NOT_FOUND",
+  PARENT_SESSION_CHANGED: "PARENT_SESSION_CHANGED",
+  PARENT_IDENTITY_UNAVAILABLE: "PARENT_IDENTITY_UNAVAILABLE",
+  UNSUPPORTED_HARNESS: "UNSUPPORTED_HARNESS",
+  NAME_COLLISION: "NAME_COLLISION",
+  BACKEND_UNAVAILABLE: "BACKEND_UNAVAILABLE",
+} as const;
+
+export type SessionOpenErrorCode = typeof SESSION_OPEN_ERROR[keyof typeof SESSION_OPEN_ERROR];
+
+export const SESSION_OPEN_HTTP_STATUS = {
+  [SESSION_OPEN_ERROR.INVALID_REQUEST]: 400,
+  [SESSION_OPEN_ERROR.PROJECT_NOT_FOUND]: 404,
+  [SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND]: 404,
+  [SESSION_OPEN_ERROR.PARENT_SESSION_CHANGED]: 409,
+  [SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE]: 503,
+  [SESSION_OPEN_ERROR.UNSUPPORTED_HARNESS]: 400,
+  [SESSION_OPEN_ERROR.NAME_COLLISION]: 409,
+  [SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]: 503,
+} as const satisfies Readonly<Record<SessionOpenErrorCode, number>>;
+
+const SESSION_OPEN_ERROR_SET: ReadonlySet<string> = new Set(Object.values(SESSION_OPEN_ERROR));
+
+export function isSessionOpenErrorCode(value: string): value is SessionOpenErrorCode {
+  return SESSION_OPEN_ERROR_SET.has(value);
+}

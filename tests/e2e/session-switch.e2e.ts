@@ -275,11 +275,13 @@ test("full prefill timeout closes the stalled socket instead of revealing partia
   test.skip(testInfo.project.name !== "desktop", "one browser profile covers the socket deadline");
 
   const closes: Array<{ readonly code: number | undefined; readonly reason: string | undefined }> = [];
+  let observedAttachPrefillMode: string | undefined;
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     ws.onMessage((message) => {
       if (typeof message !== "string") return;
       const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
       if (parsed.type !== "attach") return;
+      observedAttachPrefillMode = parsed.prefillMode;
       expect(parsed.prefillMode).toBe("full");
       ws.send(JSON.stringify({ type: "attach_ack" }));
       ws.send(Buffer.from("PARTIAL-PREFILL-WITHOUT-DONE\r\n"));
@@ -298,9 +300,10 @@ test("full prefill timeout closes the stalled socket instead of revealing partia
     openSession("test-project", "");
   });
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "prefill-loading");
+  await expect.poll(() => observedAttachPrefillMode).toBe("full");
 
   await page.clock.fastForward(16_000);
-  expect(closes).toContainEqual({
+  await expect.poll(() => closes).toContainEqual({
     code: CLOSE_CODE_PREFILL_TIMEOUT,
     reason: WS_CLOSE_REASONS.PREFILL_TIMEOUT,
   });

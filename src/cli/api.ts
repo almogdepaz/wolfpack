@@ -3,7 +3,7 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { loadConfig } from "./config.js";
-import { print, yellow } from "./formatting.js";
+import { yellow } from "./formatting.js";
 
 export function baseUrl(): string {
   const config = loadConfig();
@@ -24,7 +24,7 @@ export function issueJwt(): string | null {
   if (secret.length < 32) {
     if (!warnedShortSecret) {
       warnedShortSecret = true;
-      print(yellow(`  WOLFPACK_JWT_SECRET is set but only ${secret.length} chars; >=32 required. Sending unauthenticated; expect 401.`));
+      process.stderr.write(`${yellow(`  WOLFPACK_JWT_SECRET is set but only ${secret.length} chars; >=32 required. Sending unauthenticated; expect 401.`)}\n`);
     }
     return null;
   }

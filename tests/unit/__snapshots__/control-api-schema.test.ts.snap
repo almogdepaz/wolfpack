@@ -32,7 +32,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     "schemas publish public client contracts; they do not replace route-side project/session/path validation",
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
-    "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients"
+    "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients",
+    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer"
   ],
   "http": {
     "getInfo": {
@@ -222,6 +223,68 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "404 ErrorEnvelope",
         "409 ErrorEnvelope",
         "503 ErrorEnvelope"
+      ]
+    },
+    "openSession": {
+      "route": "POST /api/session-open",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:openSession:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "openSession request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "parentSession": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "initialPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          }
+        },
+        "required": [
+          "project",
+          "parentSession"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:openSession:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "openSession response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "harness": {
+            "$ref": "#/$defs/OpenableHarness"
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "project",
+          "harness"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 INVALID_REQUEST|UNSUPPORTED_HARNESS",
+        "404 PARENT_SESSION_NOT_FOUND|PROJECT_NOT_FOUND",
+        "409 NAME_COLLISION|PARENT_SESSION_CHANGED",
+        "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE"
       ]
     },
     "getSettings": {
@@ -1457,6 +1520,15 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     "Command": {
       "type": "string",
       "minLength": 1
+    },
+    "OpenableHarness": {
+      "enum": [
+        "pi",
+        "claude",
+        "codex",
+        "gemini",
+        "cursor"
+      ]
     },
     "TriageStatus": {
       "enum": [

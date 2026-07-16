@@ -1,4 +1,10 @@
 import { RALPH_RESPONSE_VERSION } from "../ralph-response.ts";
+import {
+  OPENABLE_HARNESSES,
+  SESSION_OPEN_ERROR,
+  SESSION_OPEN_HTTP_STATUS,
+} from "../session-open-contract.ts";
+import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
@@ -81,6 +87,19 @@ const nullable = (schema: JsonSchema): JsonSchema => ({
 
 const ref = (name: string): JsonSchema => ({ $ref: `#/$defs/${name}` });
 
+function sessionOpenErrorLines(): readonly string[] {
+  const codesByStatus = new Map<number, SessionOpenErrorCode[]>();
+  for (const code of Object.values(SESSION_OPEN_ERROR)) {
+    const status = SESSION_OPEN_HTTP_STATUS[code];
+    const codes = codesByStatus.get(status) ?? [];
+    codes.push(code);
+    codesByStatus.set(status, codes);
+  }
+  return [...codesByStatus.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([status, codes]) => `${status} ${codes.sort().join("|")}`);
+}
+
 const object = (
   properties: Record<string, JsonSchema>,
   required: readonly string[] = [],
@@ -110,6 +129,7 @@ export const controlApiSource: ControlApiSource = {
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients",
+    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
@@ -121,6 +141,7 @@ export const controlApiSource: ControlApiSource = {
     },
     BranchName: { type: "string", pattern: "^[A-Za-z0-9._/-]+$" },
     Command: { type: "string", minLength: 1 },
+    OpenableHarness: { enum: [...OPENABLE_HARNESSES] },
     TriageStatus: { enum: ["running", "idle"] },
     ParentSessionIdentity: object({
       wolfpackSessionId: string(),
@@ -294,6 +315,27 @@ export const controlApiSource: ControlApiSource = {
         session: ref("SessionName"),
       }, ["ok", "session"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-open": {
+      operationId: "openSession",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        project: ref("ProjectName"),
+        parentSession: ref("SessionName"),
+        initialPrompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+      }, ["project", "parentSession"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        project: ref("ProjectName"),
+        harness: ref("OpenableHarness"),
+      }, ["ok", "session", "project", "harness"]),
+      errors: sessionOpenErrorLines(),
     },
     "GET /api/settings": {
       operationId: "getSettings",

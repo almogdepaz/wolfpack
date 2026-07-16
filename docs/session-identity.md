@@ -17,6 +17,8 @@ Stored fields:
 - optional structured parent Wolfpack session id/name for sub-agent grouping
 - optional external agent id, only when exposed through structured env metadata
 
+For `POST /api/session-open`, the server derives the child harness from the active parent's structured `agentKind`; the client cannot override the harness, command, or child name. The operation follows the ordinary global API auth policy when configured and adds no inter-session authorization layer. Tailnet/global Wolfpack access remains the trust boundary.
+
 External agent ids are never scraped from terminal prose. Wolfpack captures them only from structured launch/discovery metadata such as `WOLFPACK_EXTERNAL_AGENT_ID` and returns a redacted value from public APIs.
 
 Public session APIs intentionally expose `projectPath` as part of the `identity`

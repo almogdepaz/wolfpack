@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   SESSION_EXIT,
-  chooseSubAgentSessionName,
   parseSessionCommand,
   resolveSessionOpenContext,
 } from "../../src/cli/session-control.ts";
@@ -33,7 +32,7 @@ describe("session control cli parsing", () => {
     });
   });
 
-  test("preserves a launch instruction that resembles a CLI flag", () => {
+  test("preserves ordinary flag-shaped prompt text and supports explicit known-option text", () => {
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", "--review-only"])).toEqual({
       ok: true,
       action: "open",
@@ -41,11 +40,19 @@ describe("session control cli parsing", () => {
       prompt: "--review-only",
       output: "plain",
     });
+    expect(parseSessionCommand(["open", "wolfpack", "--prompt=--json"])).toEqual({
+      ok: true,
+      action: "open",
+      project: "wolfpack",
+      prompt: "--json",
+      output: "plain",
+    });
   });
 
   test("rejects open without a project, invalid prompts, or unsupported flags", () => {
     expect(parseSessionCommand(["open"]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--prompt"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "wolfpack", "--prompt", "--json"]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", " "]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", "x".repeat(32_769)]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--harness", "claude"]).ok).toBe(false);
@@ -100,38 +107,42 @@ describe("session control cli parsing", () => {
     expect(parsed.ok).toBe(false);
   });
 
-  test("opens a numbered same-harness child with structured parent context", () => {
+  test("open performs exactly one server-owned session-open request", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "pi-main";
       process.env.WOLFPACK_AGENT_KIND = "pi";
+      const calls = [];
       globalThis.fetch = async (url, init) => {
-        if (String(url).endsWith("/api/sessions")) {
-          return Response.json({ sessions: [{ name: "pi-main" }, { name: "pi-main-sub-agent" }] });
-        }
-        if (String(url).endsWith("/api/create")) {
-          const body = JSON.parse(String(init?.body));
-          const expected = {
-            project: "wolfpack",
-            cmd: "pi",
-            sessionName: "pi-main-sub-agent-2",
-            parentSession: "pi-main",
-            initialPrompt: "perform differential review only",
-          };
-          if (JSON.stringify(body) !== JSON.stringify(expected)) {
-            return Response.json({ error: "unexpected request", body }, { status: 400 });
-          }
-          return Response.json({ ok: true, session: "pi-main-sub-agent-2" });
-        }
-        return Response.json({ error: "unexpected URL" }, { status: 500 });
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return Response.json({
+          ok: true,
+          session: "pi-main-sub-agent-2",
+          project: "wolfpack",
+          harness: "pi",
+        });
       };
       const { runSessionCommand } = await import("./src/cli/session-control.ts");
-      process.exit(await runSessionCommand([
+      const code = await runSessionCommand([
         "open",
         "wolfpack",
         "--prompt",
         "perform differential review only",
         "--json",
-      ]));
+      ]);
+      const expected = [{
+        url: "http://127.0.0.1:18790/api/session-open",
+        method: "POST",
+        body: {
+          project: "wolfpack",
+          parentSession: "pi-main",
+          initialPrompt: "perform differential review only",
+        },
+      }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) {
+        console.error(JSON.stringify({ calls, expected }));
+        process.exit(99);
+      }
+      process.exit(code);
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], {
       cwd: process.cwd(),
@@ -139,6 +150,7 @@ describe("session control cli parsing", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
+    expect(child.stderr.toString()).toBe("");
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(child.stdout.toString())).toEqual({
       ok: true,
@@ -148,58 +160,12 @@ describe("session control cli parsing", () => {
     });
   });
 
-  test("open retries a structured collision with the next available number", () => {
-    const script = `
-      process.env.WOLFPACK_SESSION_NAME = "pi-main";
-      process.env.WOLFPACK_AGENT_KIND = "pi";
-      let listCount = 0;
-      let createCount = 0;
-      globalThis.fetch = async (url, init) => {
-        if (String(url).endsWith("/api/sessions")) {
-          listCount++;
-          return Response.json({ sessions: listCount === 1
-            ? [{ name: "pi-main" }, { name: "pi-main-sub-agent" }]
-            : [{ name: "pi-main" }, { name: "pi-main-sub-agent" }, { name: "pi-main-sub-agent-2" }]
-          });
-        }
-        if (String(url).endsWith("/api/create")) {
-          createCount++;
-          const body = JSON.parse(String(init?.body));
-          if (createCount === 1 && body.sessionName === "pi-main-sub-agent-2") {
-            return Response.json({ error: "anything" }, { status: 409 });
-          }
-          if (createCount === 2 && body.sessionName === "pi-main-sub-agent-3") {
-            return Response.json({ ok: true, session: body.sessionName });
-          }
-        }
-        return Response.json({ error: "unexpected request" }, { status: 500 });
-      };
-      const { runSessionCommand } = await import("./src/cli/session-control.ts");
-      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
-    `;
-    const child = Bun.spawnSync([process.execPath, "-e", script], {
-      cwd: process.cwd(),
-      env: { ...process.env, NO_COLOR: "1" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(child.exitCode).toBe(SESSION_EXIT.OK);
-    expect(JSON.parse(child.stdout.toString())).toEqual({
-      ok: true,
-      session: "pi-main-sub-agent-3",
-      project: "wolfpack",
-      harness: "pi",
-    });
-  });
-
-  test("open preserves a structured parent-disappeared error from create", () => {
+  test("open preserves a structured server failure", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "pi-main";
       process.env.WOLFPACK_AGENT_KIND = "pi";
       globalThis.fetch = async (url) => {
-        if (String(url).endsWith("/api/sessions")) {
-          return Response.json({ sessions: [{ name: "pi-main" }] });
-        }
+        if (!String(url).endsWith("/api/session-open")) process.exit(98);
         return Response.json({
           error: "parent session not found",
           code: "PARENT_SESSION_NOT_FOUND",
@@ -220,6 +186,33 @@ describe("session control cli parsing", () => {
       error: {
         code: "PARENT_SESSION_NOT_FOUND",
         message: "parent Wolfpack session is not active",
+      },
+    });
+  });
+
+  test("open preserves structured parent-change failures", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      globalThis.fetch = async () => Response.json({
+        error: "parent session identity changed",
+        code: "PARENT_SESSION_CHANGED",
+      }, { status: 409 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "PARENT_SESSION_CHANGED",
+        message: "parent Wolfpack session changed",
       },
     });
   });
@@ -248,13 +241,14 @@ describe("session control cli parsing", () => {
     });
   });
 
-  test("warns when a configured JWT secret is too short", () => {
+  test("keeps JWT warnings on stderr so JSON stdout is one envelope", () => {
     const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
       process.env.WOLFPACK_JWT_SECRET = "too-short";
       globalThis.fetch = async () => new Response("unauthorized", { status: 401 });
       const { runSessionCommand } = await import("./src/cli/session-control.ts");
-      const code = await runSessionCommand(["read", "alpha"]);
-      console.log("exit=" + code);
+      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], {
       cwd: process.cwd(),
@@ -262,30 +256,13 @@ describe("session control cli parsing", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const output = child.stdout.toString();
-    expect(child.exitCode).toBe(0);
-    expect(output).toContain("WOLFPACK_JWT_SECRET is set but only 9 chars; >=32 required");
-    expect(output).toContain("exit=5");
-  });
-
-  test("chooses parent-scoped numbered sub-agent names", () => {
-    expect(chooseSubAgentSessionName("wolfpack", [])).toBe("wolfpack-sub-agent");
-    expect(chooseSubAgentSessionName("wolfpack", ["wolfpack-sub-agent"]))
-      .toBe("wolfpack-sub-agent-2");
-    expect(chooseSubAgentSessionName("wolfpack", ["wolfpack-sub-agent", "wolfpack-sub-agent-3"]))
-      .toBe("wolfpack-sub-agent-2");
-    expect(chooseSubAgentSessionName("another-parent", ["wolfpack-sub-agent"]))
-      .toBe("another-parent-sub-agent");
-  });
-
-  test("truncates only the parent prefix to keep numbered names valid", () => {
-    const parent = "p".repeat(100);
-    const first = chooseSubAgentSessionName(parent, []);
-    const second = chooseSubAgentSessionName(parent, [first]);
-    expect(first).toHaveLength(100);
-    expect(first.endsWith("-sub-agent")).toBe(true);
-    expect(second).toHaveLength(100);
-    expect(second.endsWith("-sub-agent-2")).toBe(true);
+    expect(child.exitCode).toBe(SESSION_EXIT.AUTH);
+    expect(child.stderr.toString()).toContain("WOLFPACK_JWT_SECRET is set but only 9 chars; >=32 required");
+    expect(child.stdout.toString().trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: { code: "AUTH_REQUIRED", message: "auth required" },
+    });
   });
 
   test("resolves open context only from a supported Wolfpack parent", () => {

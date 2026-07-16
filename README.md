@@ -108,7 +108,7 @@ Open a same-harness sub-agent from an existing Wolfpack agent session:
 wolfpack session open wolfpack --prompt "perform differential review only" --json
 ```
 
-The child is named from its parent (`wolfpack-sub-agent`, `wolfpack-sub-agent-2`, etc.) and carries structured parent identity so session lists can group it under that parent. `--prompt` passes only that explicit launch instruction; it does not inherit the parent transcript or context. When the parent is visible as a single desktop terminal, its browser automatically adds the child to grid view.
+The CLI makes one `POST /api/session-open` request. The server verifies the active parent identity, derives the same harness and child name (`wolfpack-sub-agent`, `wolfpack-sub-agent-2`, etc.), and persists structured parent identity so session lists can group it under that parent. `--prompt` passes only that explicit launch instruction; it does not inherit the parent transcript or context. When the parent is visible as a single desktop terminal, its browser automatically adds the child to grid view.
 
 Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 
@@ -123,6 +123,7 @@ Wolfpack is self-hosted software for machines you control. Those machines can be
 - The server talks to the broker over a per-user Unix socket.
 - The broker owns the PTYs and runs your selected commands locally on that machine.
 - Optional JWT auth can be layered on top of Tailscale.
+- Session open follows the ordinary global API auth policy when configured and adds no inter-session authorization layer. Tailnet/global Wolfpack access remains the trust boundary; sessions can list and communicate with other sessions.
 - Wolfpack does not provide a hosted relay, managed account, or prompt upload service.
 
 Running coding agents is intentionally powerful: those commands execute with your local user permissions in the chosen project directory.
@@ -181,7 +182,21 @@ Wolfpack exposes repository-local agent skills in `skills/`:
 - `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
 - `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
 
-Copy or symlink these skill directories into an agent's skill path when you want that agent to opt in. Installation/update details: [docs/agent-skills.md](docs/agent-skills.md).
+Skills are executable agent instructions, so install only the ones you have audited. Clone or update `https://github.com/almogdepaz/wolfpack`, review the requested file (for example `skills/wolfpack-tailnet-control/SKILL.md`), then symlink that skill directory into one supported root:
+
+- Pi global: `~/.pi/agent/skills/`
+- shared Agent Skills root supported by Pi: `~/.agents/skills/`
+- Claude global where used: `~/.claude/skills/`
+
+Prefer symlinks so a reviewed `git pull --ff-only` updates the source. Refuse installation when the destination already exists; copying is also supported but must be refreshed manually. Start a fresh agent context afterward so skill descriptions are rescanned. Full fail-safe commands: [docs/agent-skills.md](docs/agent-skills.md).
+
+Then ask naturally to “open a new Wolfpack sub-agent session,” or invoke:
+
+```bash
+wolfpack session open <project> --prompt '<instruction>' --json
+```
+
+Platform binaries do not install skills. This is intentional: the cloned repository remains the auditable source of truth.
 
 ## Contributing
 

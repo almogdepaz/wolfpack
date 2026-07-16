@@ -129,6 +129,7 @@ describe("JWT auth middleware", () => {
       { method: "GET", path: "/api/discover" },
       { method: "GET", path: "/api/ralph" },
       { method: "POST", path: "/api/resize" },
+      { method: "POST", path: "/api/session-open" },
       { method: "POST", path: "/api/ralph/start" },
       { method: "POST", path: "/api/ralph/cancel" },
     ] as const;
@@ -185,6 +186,23 @@ describe("JWT auth middleware", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { projects: string[] };
     expect(Array.isArray(body.projects)).toBe(true);
+  });
+
+  test("applies ordinary JWT middleware to session-open without a special bypass", async () => {
+    const token = createValidToken();
+    const res = await fetch(`${baseUrl}/api/session-open`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "invalid session-open request",
+      code: "INVALID_REQUEST",
+    });
   });
 
   test("rejects websocket upgrade without token", async () => {

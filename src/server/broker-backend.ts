@@ -22,7 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import { UnsupportedTerminalKeyError } from "./backend.js";
+import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend.js";
 import type {
   PtyBackendMethods,
   SessionBackend,
@@ -316,9 +316,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     }
 
     if (resp.status === "error" && resp.error?.code === "duplicate_session_name") {
-      const err = new Error(`duplicate session: ${name}`);
-      (err as { code?: string }).code = "DUPLICATE_SESSION";
-      throw err;
+      throw new DuplicateSessionError(name);
     }
     const payload = unwrap(resp);
     const session = payload.session as BrokerSessionInfo;

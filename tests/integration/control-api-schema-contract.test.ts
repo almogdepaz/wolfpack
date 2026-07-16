@@ -25,6 +25,13 @@ const mockBackend = new MockBackend({
   sessions: ["wolf-1"],
   capturePane: async () => "ready\n",
 });
+const originalListIdentities = mockBackend.listIdentities.bind(mockBackend);
+mockBackend.listIdentities = async () => {
+  const identities = await originalListIdentities();
+  const parent = identities["wolf-1"];
+  if (!parent) return identities;
+  return { ...identities, "wolf-1": { ...parent, agentKind: "pi" } };
+};
 __setTestBackend(mockBackend);
 
 const { createServerInstance } = await import("../../src/server/index.ts") as any;
@@ -120,7 +127,18 @@ async function getJson(path: string): Promise<unknown> {
   return await res.json();
 }
 
+async function postJson(path: string, body: unknown): Promise<unknown> {
+  const res = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  expect(res.status).toBe(200);
+  return await res.json();
+}
+
 beforeAll(async () => {
+  mkdirSync(join(TEST_DEV_DIR, "wolfpack"), { recursive: true });
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       const port = ((server as Server).address() as AddressInfo).port;
@@ -141,6 +159,10 @@ describe("control api generated schema against runtime responses", () => {
       ["getInfo", await getJson("/api/info")],
       ["listSessions", await getJson("/api/sessions")],
       ["getSettings", await getJson("/api/settings")],
+      ["openSession", await postJson("/api/session-open", {
+        project: "wolfpack",
+        parentSession: "wolf-1",
+      })],
     ];
 
     for (const [operationId, payload] of samples) {

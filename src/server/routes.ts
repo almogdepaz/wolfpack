@@ -161,9 +161,23 @@ import {
   cachedPeers,
   discoverPeers,
 } from "./http.js";
+import type { InvalidBodyResponse } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity } from "./session-identity.js";
+import {
+  SESSION_OPEN_ERROR,
+  SESSION_OPEN_HTTP_STATUS,
+} from "../session-open-contract.js";
+import { openSubSession, SessionOpenError } from "./session-open.js";
+
+const SESSION_OPEN_INVALID_BODY_RESPONSE = {
+  envelope: {
+    error: "invalid session-open request",
+    code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+  },
+  status: SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST],
+} as const satisfies InvalidBodyResponse;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -172,11 +186,16 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 async function parseObjectBody(
   req: IncomingMessage,
   res: ServerResponse,
+  invalidResponse?: InvalidBodyResponse,
 ): Promise<Record<string, unknown> | null> {
-  const body = await parseBody(req, res);
+  const body = await parseBody(req, res, invalidResponse);
   if (body === undefined) return null;
   if (!isJsonObject(body)) {
-    json(res, { error: "JSON body must be an object" }, 400);
+    json(
+      res,
+      invalidResponse?.envelope ?? { error: "JSON body must be an object" },
+      invalidResponse?.status ?? 400,
+    );
     return null;
   }
   return body;
@@ -203,6 +222,20 @@ function isCreateBody(body: Record<string, unknown>): body is CreateBody {
   return ["project", "newProject", "cmd", "sessionName", "parentSession", "initialPrompt"].every(
     key => hasOptionalType(body, key, "string"),
   );
+}
+
+interface SessionOpenBody extends Record<string, unknown> {
+  project: string;
+  parentSession: string;
+  initialPrompt?: string;
+}
+
+function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
+  const allowedKeys = new Set(["project", "parentSession", "initialPrompt"]);
+  return Object.keys(body).every(key => allowedKeys.has(key))
+    && typeof body.project === "string"
+    && typeof body.parentSession === "string"
+    && hasOptionalType(body, "initialPrompt", "string");
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -537,14 +570,14 @@ export const routes: Record<
       if (!(await isAllowedSession(parentName))) {
         return json(res, {
           error: "parent session not found",
-          code: "PARENT_SESSION_NOT_FOUND",
+          code: SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND,
         }, 404);
       }
       const activeParentIdentity = (await getBackend().listIdentities?.())?.[parentName];
       if (!activeParentIdentity) {
         return json(res, {
           error: "parent session identity unavailable",
-          code: "PARENT_IDENTITY_UNAVAILABLE",
+          code: SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE,
         }, 503);
       }
       parentIdentity = {
@@ -592,6 +625,82 @@ export const routes: Record<
     }
     if (parentName) notifySubSessionOpened(parentName, finalName);
     json(res, { ok: true, session: finalName });
+  },
+
+  "POST /api/session-open": async (req, res) => {
+    const body = await parseObjectBody(req, res, SESSION_OPEN_INVALID_BODY_RESPONSE);
+    if (!body) return;
+    if (
+      !isSessionOpenBody(body)
+      || !isValidProjectName(body.project)
+      || !isValidSessionName(body.parentSession)
+      || (
+        body.initialPrompt !== undefined
+        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+      )
+    ) {
+      return json(
+        res,
+        SESSION_OPEN_INVALID_BODY_RESPONSE.envelope,
+        SESSION_OPEN_INVALID_BODY_RESPONSE.status,
+      );
+    }
+
+    const projectDir = join(DEV_DIR, body.project);
+    const projectValidation = validateProjectDirPure(projectDir);
+    if (!projectValidation.ok) {
+      if (projectValidation.code === "not_found") {
+        return json(res, {
+          error: "project not found",
+          code: SESSION_OPEN_ERROR.PROJECT_NOT_FOUND,
+        }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PROJECT_NOT_FOUND]);
+      }
+      return json(res, {
+        error: "invalid project",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+    }
+
+    const backend = getBackend();
+    if (!backend.listIdentities) {
+      return json(res, {
+        error: "parent session identity unavailable",
+        code: SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE]);
+    }
+
+    try {
+      const result = await openSubSession({
+        backend: {
+          list: () => backend.list(),
+          listIdentities: () => backend.listIdentities!(),
+          createSession: (name, cwd, cmd, loadSettings, options) => (
+            backend.createSession(name, cwd, cmd, loadSettings, options)
+          ),
+        },
+        parentSession: body.parentSession,
+        project: body.project,
+        projectDir,
+        initialPrompt: body.initialPrompt,
+        notify: (parent, session) => {
+          notifySubSessionOpened(parent.wolfpackSessionName, session);
+        },
+      });
+      json(res, result);
+    } catch (error: unknown) {
+      if (error instanceof SessionOpenError) {
+        return json(
+          res,
+          { error: error.message, code: error.code },
+          SESSION_OPEN_HTTP_STATUS[error.code],
+        );
+      }
+      log.warn("session-open failed", { error: errMsg(error) });
+      json(res, {
+        error: "backend unavailable",
+        code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]);
+    }
   },
 
   "GET /api/settings": async (_req, res) => {

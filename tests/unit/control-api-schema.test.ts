@@ -164,6 +164,39 @@ describe("control api schema compatibility samples", () => {
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
   });
 
+  test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
+    const operation = httpOperation("openSession");
+    const request = httpRequest("openSession");
+
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      initialPrompt: "perform differential review only",
+    }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      cmd: "claude",
+    }, artifact)).not.toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      sessionName: "override",
+    }, artifact)).not.toEqual([]);
+    expect((request.properties as JsonObject).initialPrompt).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 32768,
+    });
+    expect(validate(httpResponse("openSession"), {
+      ok: true,
+      session: "pi-main-sub-agent",
+      project: "wolfpack",
+      harness: "pi",
+    }, artifact)).toEqual([]);
+  });
+
   test("representative http responses satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", { name: "devbox", version: "1.6.6" }],

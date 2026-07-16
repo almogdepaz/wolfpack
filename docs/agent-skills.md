@@ -1,29 +1,116 @@
 # Agent Skills
 
-Wolfpack ships optional agent skills in `skills/`. They are plain directories
-that users can copy or symlink into the skill path for their agent.
+Wolfpack skills are executable agent instructions stored as ordinary repository
+files under `skills/`. Audit each requested `SKILL.md` before installing it.
+The repository, not a compiled executable, is the source of truth.
 
 Bundled skills:
 
 - `wolfpack-plan` - plan-file task header conventions Ralph can parse.
 - `wolfpack-ralph` - Ralph response-file contract, notifications, and sandbox
   caveats.
-- `wolfpack-tailnet-control` - same-harness sub-agent creation with an optional
-  explicit launch instruction (no inherited transcript/context), plus safe
-  local/Tailscale session inspection and explicitly authorized control workflows.
+- `wolfpack-tailnet-control` - same-harness sub-agent creation and safe
+  local/Tailscale session inspection and control workflows.
 
-The npm package includes `skills/` so `bunx wolfpack-bridge` and installed
-packages expose the same skill text as the repository. Platform binary packages
-only contain executables.
+## Clone or update the auditable source
 
-For shared skill directories, prefer symlinking each desired Wolfpack skill
-directory into the agent-specific skill root. Updating Wolfpack then updates
-the source skill content without hardcoded local paths. If your agent copies
-skills instead of symlinking, refresh the copied directories after upgrading
-Wolfpack.
+Use a dedicated clone. Updating is fast-forward-only so this workflow does not
+silently create a merge:
 
-The control skill intentionally references `README.md`, related skills, and
-`docs/broker-protocol.md` only for the server-broker wire contract. It does not
-treat broker protocol docs as the browser `/ws/pty` attach/take-control contract.
-Keep the referenced docs authoritative for their own API/auth boundaries rather
-than duplicating protocol details in skill text.
+```bash
+REPO="$HOME/src/wolfpack"
+if [ -d "$REPO/.git" ]; then
+  git -C "$REPO" pull --ff-only
+else
+  git clone https://github.com/almogdepaz/wolfpack "$REPO"
+fi
+```
+
+Before installing the control skill, review its complete instruction file:
+
+```bash
+less "$REPO/skills/wolfpack-tailnet-control/SKILL.md"
+```
+
+Skills can direct an agent to run commands. Do not skip this audit merely
+because the source came from the Wolfpack repository.
+
+## Install one reviewed skill
+
+Supported global roots relevant to Wolfpack are:
+
+- Pi global: `~/.pi/agent/skills/`
+- shared Agent Skills root supported by Pi: `~/.agents/skills/`
+- Claude global where used: `~/.claude/skills/`
+
+For shared skill directories, prefer symlinking each desired Wolfpack skill so
+a later reviewed `git pull --ff-only` updates the installed source. Choose one
+root; this example uses Pi global:
+
+```bash
+REPO="$HOME/src/wolfpack"
+SOURCE="$REPO/skills/wolfpack-tailnet-control"
+DEST_ROOT="$HOME/.pi/agent/skills"
+DEST="$DEST_ROOT/wolfpack-tailnet-control"
+
+[ -d "$SOURCE" ] || {
+  printf 'skill source not found: %s\n' "$SOURCE" >&2
+  exit 1
+}
+mkdir -p "$DEST_ROOT"
+[ ! -e "$DEST" ] && [ ! -L "$DEST" ] || {
+  printf 'refusing to replace existing skill: %s\n' "$DEST" >&2
+  exit 1
+}
+ln -s "$SOURCE" "$DEST"
+```
+
+To target the shared Pi-compatible root or Claude global root, set `DEST_ROOT`
+to `$HOME/.agents/skills` or `$HOME/.claude/skills` before running the same
+existence checks. Never force the link or overwrite an existing destination.
+
+Copying is an alternative for agents or environments that cannot follow
+symlinks. It uses the same fail-closed destination check:
+
+```bash
+REPO="$HOME/src/wolfpack"
+SOURCE="$REPO/skills/wolfpack-tailnet-control"
+DEST_ROOT="$HOME/.pi/agent/skills"
+DEST="$DEST_ROOT/wolfpack-tailnet-control"
+
+[ -d "$SOURCE" ] || {
+  printf 'skill source not found: %s\n' "$SOURCE" >&2
+  exit 1
+}
+mkdir -p "$DEST_ROOT"
+[ ! -e "$DEST" ] && [ ! -L "$DEST" ] || {
+  printf 'refusing to replace existing skill: %s\n' "$DEST" >&2
+  exit 1
+}
+cp -R "$SOURCE" "$DEST"
+```
+
+A copied skill must be refreshed manually after reviewing repository updates.
+In either case, start a fresh agent context so skill descriptions are rescanned.
+
+## Invoke the control skill
+
+Ask naturally: “open a new Wolfpack sub-agent session for this project with
+this instruction.” The canonical direct command is:
+
+```bash
+wolfpack session open <project> --prompt '<instruction>' --json
+```
+
+The control skill documents the tailnet/global auth boundary and references the
+canonical session-control and identity docs rather than duplicating those
+contracts.
+
+## Distribution boundary
+
+The npm package includes `skills/` so users inspecting that package can read the
+same repository files. Platform binary packages only contain executables, and
+platform binaries do not install skills. This is intentional: there is no
+binary-embedded skill payload, skill installer, network download, or automatic
+overwrite of a user's skill directories. The cloned repository remains the
+auditable source of truth.

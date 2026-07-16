@@ -9,7 +9,11 @@ import { rmSync } from "node:fs";
 import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import type { OutputSubscriber } from "../../src/broker/client";
-import { UnsupportedTerminalKeyError, type SessionLifecycleEvent } from "../../src/server/backend";
+import {
+  DuplicateSessionError,
+  UnsupportedTerminalKeyError,
+  type SessionLifecycleEvent,
+} from "../../src/server/backend";
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
@@ -316,16 +320,16 @@ describe("BrokerBackend.createSession", () => {
     });
   });
 
-  test("translates duplicate_session_name into legacy DUPLICATE_SESSION error", async () => {
+  test("translates duplicate_session_name into typed DuplicateSessionError", async () => {
     client.setHandler("create_session", () => errResp("duplicate_session_name", "in use"));
-    let caught: { code?: string } | null = null;
+    let caught: unknown;
     try {
       await backend.createSession("dup", "/tmp", "shell", loadSettings);
-    } catch (e: unknown) {
-      caught = e as { code?: string };
+    } catch (error: unknown) {
+      caught = error;
     }
-    expect(caught).not.toBeNull();
-    expect(caught!.code).toBe("DUPLICATE_SESSION");
+    expect(caught).toBeInstanceOf(DuplicateSessionError);
+    expect((caught as DuplicateSessionError).code).toBe("DUPLICATE_SESSION");
   });
 
   test("rejects invalid commands before reaching broker", async () => {

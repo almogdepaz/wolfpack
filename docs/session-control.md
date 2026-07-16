@@ -9,12 +9,14 @@ reads Wolfpack-provided environment variables in an agent process.
 
 - `wolfpack session open <project> [--prompt <instruction>] [--json]`
   - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND`, injected by Wolfpack into the parent agent session.
-  - launches the same supported harness in the exact project name.
-  - derives child names from the parent: `<parent>-sub-agent`, then `<parent>-sub-agent-2`, `<parent>-sub-agent-3`, and so on.
+  - sends one request to `POST /api/session-open`; it does not list sessions or call general `/api/create`.
+  - the server resolves the active parent through structured broker identity, launches the same supported harness, and requires the exact existing project name.
+  - the server derives child names from the parent: `<parent>-sub-agent`, then `<parent>-sub-agent-2`, `<parent>-sub-agent-3`, and so on.
   - optionally passes one explicit instruction to the child harness at process launch; no parent transcript, context window, summary, or model state is inherited.
   - stores structured parent session ID/name metadata; session lists visually group children under the parent without parsing names.
   - notifies the active parent viewer after creation; a browser showing that parent in single-terminal mode adds the child through its existing grid flow.
   - session creation still succeeds when no matching browser can apply the best-effort grid notification.
+  - follows the ordinary global API auth policy when JWT is configured and adds no inter-session authorization layer; tailnet/global Wolfpack access remains the trust boundary.
   - json success: `{ "ok": true, "session": string, "project": string, "harness": string }`
   - json failure: `{ "ok": false, "error": { "code": string, "message": string } }` with a nonzero exit code.
 - `wolfpack session read <session> [--json]`
