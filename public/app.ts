@@ -1271,6 +1271,7 @@ interface PtyTerminalController {
   mount(container: HTMLElement, mountOpts?: { readonly cached?: string | null }): Promise<void>;
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
   focus(): void;
+  scrollToBottom(): void;
   resize(): void;
   dispose(): void;
   scheduleReconnect(): void;
@@ -1907,6 +1908,13 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_term) _term.focus();
   }
 
+  function scrollToBottom() {
+    _userScrolledUp = false;
+    _userRequestedScrollback = false;
+    _lastScrollbackLength = -1;
+    if (_term) _term.scrollToBottom();
+  }
+
   function resize() {
     syncLayout({ forceSend: true, repaint: true, reason: "resize" });
   }
@@ -1946,6 +1954,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     mount,
     connect,
     focus,
+    scrollToBottom,
     resize,
     dispose,
     // Delegation to pty client
@@ -2787,7 +2796,7 @@ async function openSession(name, machineUrl) {
   const cached = loadSnapshot(state.currentMachine, name);
   showView("terminal");
   __wfTraceEvent(trace, "dom.view.created", { cached: !!cached });
-  initTerminal(cached);
+  void initTerminal(cached, "full");
   renderSidebar();
 }
 
@@ -4218,6 +4227,7 @@ function insertMessageInputNewline(): void {
       if (proxy.style.display === "none") return;
       const opening = document.activeElement !== proxy;
       if (opening) {
+        state.terminalController?.scrollToBottom();
         proxy.removeAttribute("readonly");
         proxy.setAttribute("inputmode", "text");
         proxy.focus({ preventScroll: true });
