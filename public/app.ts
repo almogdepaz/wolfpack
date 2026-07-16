@@ -2617,6 +2617,70 @@ function triageUi(triage: string | null | undefined): { dot: string; card: strin
   return TRIAGE_MAP[key];
 }
 
+interface SessionParentReference {
+  readonly wolfpackSessionId: string;
+  readonly wolfpackSessionName: string;
+}
+
+function sessionIdentityId(session): string | null {
+  const id = session?.identity?.wolfpackSessionId;
+  return typeof id === "string" && id ? id : null;
+}
+
+function sessionParentReference(session): SessionParentReference | null {
+  const parent = session?.identity?.parentSession;
+  if (!parent || typeof parent !== "object") return null;
+  if (typeof parent.wolfpackSessionId !== "string" || !parent.wolfpackSessionId) return null;
+  if (typeof parent.wolfpackSessionName !== "string" || !parent.wolfpackSessionName) return null;
+  return parent;
+}
+
+function groupSessionsByParent(sessions) {
+  const sessionIds = new Set(sessions.map(sessionIdentityId).filter(Boolean));
+  const children = new Map();
+  const roots = [];
+  for (const session of sessions) {
+    const parent = sessionParentReference(session);
+    if (!parent || !sessionIds.has(parent.wolfpackSessionId)) {
+      roots.push(session);
+      continue;
+    }
+    const siblings = children.get(parent.wolfpackSessionId) || [];
+    siblings.push(session);
+    children.set(parent.wolfpackSessionId, siblings);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  const ordered = [];
+  const visited = new Set();
+  const appendTree = (session) => {
+    const id = sessionIdentityId(session);
+    const visitKey = id || session;
+    if (visited.has(visitKey)) return;
+    visited.add(visitKey);
+    ordered.push(session);
+    if (!id) return;
+    for (const child of children.get(id) || []) appendTree(child);
+  };
+  for (const root of roots) appendTree(root);
+  for (const session of sessions) appendTree(session);
+  return ordered;
+}
+
+function subSessionCardAttributes(session, sessions): { readonly className: string; readonly dataAttribute: string } {
+  const parent = sessionParentReference(session);
+  const parentIsActive = parent && sessions.some(
+    (candidate) => sessionIdentityId(candidate) === parent.wolfpackSessionId,
+  );
+  if (!parent || !parentIsActive) return { className: "", dataAttribute: "" };
+  return {
+    className: " sub-session-card",
+    dataAttribute: ` data-parent-session="${escAttr(parent.wolfpackSessionName)}"`,
+  };
+}
+
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
   const mUrl = multiMachine ? esc(g.machine.url) : "";
@@ -2631,11 +2695,12 @@ function renderMachineGroupHtml(g, multiMachine) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
     if (g.sessions.length) {
-      html += g.sessions.map((s, i) => {
+      html += groupSessionsByParent(g.sessions).map((s, i) => {
         const lastLine = s.lastLine || "";
         const ui = triageUi(s.triage);
         const anim = state.firstLoad ? "animate-in" : "";
-        return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
+        const grouping = subSessionCardAttributes(s, g.sessions);
+        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
             <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
@@ -4657,7 +4722,7 @@ function _renderSidebarNow() {
     const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div><button class="machine-ralph-btn" onclick="showRalphStart()">&#129355;</button></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
-      html += g.sessions.map(s => sidebarCardHtml(s, "")).join("");
+      html += groupSessionsByParent(g.sessions).map(s => sidebarCardHtml(s, "", g.sessions)).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
@@ -4674,7 +4739,7 @@ function _renderSidebarNow() {
       html += `<div class="machine-group" data-machine="${mUrl}">`;
       html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${escAttr(g.machine.url)}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += g.sessions.map(s => sidebarCardHtml(s, g.machine.url)).join("");
+        html += groupSessionsByParent(g.sessions).map(s => sidebarCardHtml(s, g.machine.url, g.sessions)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -4692,7 +4757,7 @@ function _renderSidebarNow() {
   el.innerHTML = html;
 }
 
-function sidebarCardHtml(s, machineUrl) {
+function sidebarCardHtml(s, machineUrl, sessions) {
   const lastLine = s.lastLine || "";
   const ui = triageUi(s.triage);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
@@ -4705,7 +4770,8 @@ function sidebarCardHtml(s, machineUrl) {
     ? `toggleGrid('${escAttr(s.name)}', '${escAttr(machineUrl)}', event)`
     : `toggleGrid('${escAttr(s.name)}', '', event)`;
   const gridBtn = `<button class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${inGrid ? 'Remove from grid' : 'Add to grid'}">${inGrid ? '⊠' : '+'}</button>`;
-  return `<div class="card ${ui.card}${activeClass}" onclick="${onclick}">
+  const grouping = subSessionCardAttributes(s, sessions);
+  return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute} onclick="${onclick}">
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>

@@ -149,13 +149,16 @@ When the user asks to open or create a Wolfpack sub-agent session, use the
 canonical local command directly:
 
 ```bash
-wolfpack session open <project> --json
+wolfpack session open <project> --prompt '<instruction>' --json
 ```
 
 This launches the same harness as the parent (`pi` opens Pi, `claude` opens
-Claude), chooses `<harness>-sub-agent` with numbered collisions such as
-`pi-2-sub-agent`, and asks the active single-session browser to add the child to
-grid view. Do not inspect the browser UI or reconstruct `/api/create` locally.
+Claude), passes only the explicit `--prompt` instruction without inheriting the
+parent transcript or model context, derives `<parent>-sub-agent` with numbered
+children such as `wolfpack-sub-agent-2`, persists structured parent identity
+for session-list grouping, and asks the active single-session browser to add the
+child to grid view. Omit `--prompt` only when the user requested an empty child.
+Do not inspect the browser UI or reconstruct `/api/create` locally.
 
 Kill a session:
 

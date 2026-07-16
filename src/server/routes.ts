@@ -28,6 +28,7 @@ import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.j
 import {
   CMD_REGEX,
   BRANCH_REGEX,
+  MAX_INITIAL_PROMPT_LENGTH,
   isValidProjectName,
   isValidSessionName,
   isValidPlanFile,
@@ -162,6 +163,7 @@ import {
 } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
+import type { ParentSessionIdentity } from "./session-identity.js";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -194,10 +196,11 @@ interface CreateBody extends Record<string, unknown> {
   cmd?: string;
   sessionName?: string;
   parentSession?: string;
+  initialPrompt?: string;
 }
 
 function isCreateBody(body: Record<string, unknown>): body is CreateBody {
-  return ["project", "newProject", "cmd", "sessionName", "parentSession"].every(
+  return ["project", "newProject", "cmd", "sessionName", "parentSession", "initialPrompt"].every(
     key => hasOptionalType(body, key, "string"),
   );
 }
@@ -507,15 +510,26 @@ export const routes: Record<
     const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!isCreateBody(body)) {
-      return json(res, { error: "project, newProject, cmd, sessionName, and parentSession must be strings" }, 400);
+      return json(res, {
+        error: "project, newProject, cmd, sessionName, parentSession, and initialPrompt must be strings",
+      }, 400);
     }
-    const { project, newProject, cmd, sessionName, parentSession } = body;
+    const { project, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
     const folderName = newProject?.trim() || project?.trim();
     if (!validateProject(res, folderName)) return;
     if (cmd && cmd !== "shell" && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
     }
+    if (
+      initialPrompt !== undefined
+      && (!initialPrompt.trim() || initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+    ) {
+      return json(res, {
+        error: `initial prompt must be 1..${MAX_INITIAL_PROMPT_LENGTH} characters`,
+      }, 400);
+    }
     const parentName = parentSession?.trim();
+    let parentIdentity: ParentSessionIdentity | undefined;
     if (parentSession !== undefined) {
       if (!parentName || !isValidSessionName(parentName)) {
         return json(res, { error: "invalid parent session" }, 400);
@@ -526,6 +540,17 @@ export const routes: Record<
           code: "PARENT_SESSION_NOT_FOUND",
         }, 404);
       }
+      const activeParentIdentity = (await getBackend().listIdentities?.())?.[parentName];
+      if (!activeParentIdentity) {
+        return json(res, {
+          error: "parent session identity unavailable",
+          code: "PARENT_IDENTITY_UNAVAILABLE",
+        }, 503);
+      }
+      parentIdentity = {
+        wolfpackSessionId: activeParentIdentity.wolfpackSessionId,
+        wolfpackSessionName: activeParentIdentity.wolfpackSessionName,
+      };
     }
     const customName = sessionName?.trim();
     if (customName) {
@@ -551,7 +576,14 @@ export const routes: Record<
       // so the backend never sees a disabled or missing agentCmd.
       const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
       const agentKind = inferAgentKind(cmd || settingsResolver().agentCmd);
-      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, { agentKind });
+      if (initialPrompt !== undefined && agentKind === "shell") {
+        return json(res, { error: "initial prompt requires an agent harness" }, 400);
+      }
+      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
+        agentKind,
+        parentSession: parentIdentity,
+        initialPrompt,
+      });
     } catch (e: unknown) {
       if (e instanceof DuplicateSessionError) {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);

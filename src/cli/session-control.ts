@@ -1,5 +1,9 @@
 import { call as callApi } from "./api.js";
 import { print, red, yellow } from "./formatting.js";
+import {
+  MAX_INITIAL_PROMPT_LENGTH,
+  MAX_SESSION_NAME_LENGTH,
+} from "../validation.js";
 
 export const SESSION_EXIT = {
   OK: 0,
@@ -18,7 +22,13 @@ type OpenableHarness = "pi" | "claude" | "codex" | "gemini" | "cursor";
 const OPENABLE_HARNESSES = new Set<OpenableHarness>(["pi", "claude", "codex", "gemini", "cursor"]);
 
 export type ParsedSessionCommand =
-  | { readonly ok: true; readonly action: "open"; readonly project: string; readonly output: OutputMode }
+  | {
+    readonly ok: true;
+    readonly action: "open";
+    readonly project: string;
+    readonly prompt: string | undefined;
+    readonly output: OutputMode;
+  }
   | { readonly ok: true; readonly action: "read"; readonly session: string; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "send"; readonly session: string; readonly text: string; readonly noEnter: boolean; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "wait"; readonly session: string; readonly text: string; readonly timeoutMs: number; readonly output: OutputMode }
@@ -29,13 +39,16 @@ export type SessionOpenContext =
   | { readonly ok: true; readonly parentSession: string; readonly harness: OpenableHarness }
   | { readonly ok: false; readonly code: "MISSING_PARENT_SESSION" | "UNSUPPORTED_HARNESS"; readonly message: string };
 
-export function chooseSubAgentSessionName(harness: OpenableHarness, existingNames: readonly string[]): string {
+export function chooseSubAgentSessionName(parentSession: string, existingNames: readonly string[]): string {
   const existing = new Set(existingNames);
-  const first = `${harness}-sub-agent`;
-  if (!existing.has(first)) return first;
-  let number = 2;
-  while (existing.has(`${harness}-${number}-sub-agent`)) number++;
-  return `${harness}-${number}-sub-agent`;
+  let number = 1;
+  while (true) {
+    const suffix = number === 1 ? "-sub-agent" : `-sub-agent-${number}`;
+    const parentPrefix = parentSession.slice(0, MAX_SESSION_NAME_LENGTH - suffix.length);
+    const candidate = `${parentPrefix}${suffix}`;
+    if (!existing.has(candidate)) return candidate;
+    number++;
+  }
 }
 
 export function resolveSessionOpenContext(env: Readonly<Record<string, string | undefined>>): SessionOpenContext {
@@ -101,6 +114,15 @@ function consumeValue(args: string[], flag: string): string | null {
   return value;
 }
 
+function consumeLiteralValue(args: string[], flag: string): string | null {
+  const idx = args.indexOf(flag);
+  if (idx === -1) return null;
+  const value = args[idx + 1];
+  if (value === undefined) return "";
+  args.splice(idx, 2);
+  return value;
+}
+
 function parseOutputMode(args: string[]): { mode: OutputMode; shellRequested: boolean } {
   const json = consumeFlag(args, "--json");
   const shell = consumeFlag(args, "--shell");
@@ -114,14 +136,20 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   if (!["open", "read", "send", "wait", "current-context"].includes(action)) {
     return { ok: false, message: `Unknown session command: ${action}` };
   }
+  const promptValue = action === "open" ? consumeLiteralValue(args, "--prompt") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
   if (action === "open") {
     if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
+    const prompt = promptValue ?? undefined;
     const project = args.shift();
-    if (!project || args.length > 0) {
-      return { ok: false, message: "Usage: wolfpack session open <project> [--json]" };
+    if (
+      !project
+      || args.length > 0
+      || (prompt !== undefined && (!prompt.trim() || prompt.length > MAX_INITIAL_PROMPT_LENGTH))
+    ) {
+      return { ok: false, message: "Usage: wolfpack session open <project> [--prompt <instruction>] [--json]" };
     }
-    return { ok: true, action, project, output };
+    return { ok: true, action, project, prompt, output };
   }
   if (action === "current-context") {
     if (args.length > 0) return { ok: false, message: "Usage: wolfpack session current-context [--json|--shell]" };
@@ -249,7 +277,7 @@ async function runSessionOpen(
     }
 
     for (let attempt = 0; attempt <= 3; attempt++) {
-      const session = chooseSubAgentSessionName(context.harness, names);
+      const session = chooseSubAgentSessionName(context.parentSession, names);
       try {
         await call("/api/create", {
           method: "POST",
@@ -258,6 +286,7 @@ async function runSessionOpen(
             cmd: context.harness,
             sessionName: session,
             parentSession: context.parentSession,
+            ...(parsed.prompt !== undefined && { initialPrompt: parsed.prompt }),
           }),
         });
         if (parsed.output === "json") {

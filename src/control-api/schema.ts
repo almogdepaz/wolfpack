@@ -1,4 +1,5 @@
 import { RALPH_RESPONSE_VERSION } from "../ralph-response.ts";
+import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -121,6 +122,10 @@ export const controlApiSource: ControlApiSource = {
     BranchName: { type: "string", pattern: "^[A-Za-z0-9._/-]+$" },
     Command: { type: "string", minLength: 1 },
     TriageStatus: { enum: ["running", "idle"] },
+    ParentSessionIdentity: object({
+      wolfpackSessionId: string(),
+      wolfpackSessionName: ref("SessionName"),
+    }, ["wolfpackSessionId", "wolfpackSessionName"]),
     PublicSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
@@ -129,6 +134,7 @@ export const controlApiSource: ControlApiSource = {
       createdAt: string(),
       restoredAt: string(),
       updatedAt: string(),
+      parentSession: ref("ParentSessionIdentity"),
       externalAgent: object({
         provider: string(),
         redactedId: string(),
@@ -272,6 +278,11 @@ export const controlApiSource: ControlApiSource = {
           cmd: ref("Command"),
           sessionName: ref("SessionName"),
           parentSession: ref("SessionName"),
+          initialPrompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_INITIAL_PROMPT_LENGTH,
+          },
         }),
         anyOf: [
           object({}, ["project"], { additionalProperties: true }),
@@ -282,7 +293,7 @@ export const controlApiSource: ControlApiSource = {
         ok: boolean(),
         session: ref("SessionName"),
       }, ["ok", "session"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope"],
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/settings": {
       operationId: "getSettings",

@@ -105,10 +105,10 @@ wolfpack uninstall --yes Remove everything
 Open a same-harness sub-agent from an existing Wolfpack agent session:
 
 ```bash
-wolfpack session open wolfpack --json
+wolfpack session open wolfpack --prompt "perform differential review only" --json
 ```
 
-The child is named by harness (`pi-sub-agent`, `pi-2-sub-agent`, etc.). When the parent is visible as a single desktop terminal, its browser automatically adds the child to grid view.
+The child is named from its parent (`wolfpack-sub-agent`, `wolfpack-sub-agent-2`, etc.) and carries structured parent identity so session lists can group it under that parent. `--prompt` passes only that explicit launch instruction; it does not inherit the parent transcript or context. When the parent is visible as a single desktop terminal, its browser automatically adds the child to grid view.
 
 Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 

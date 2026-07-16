@@ -7,10 +7,12 @@ reads Wolfpack-provided environment variables in an agent process.
 
 ## Command Surface
 
-- `wolfpack session open <project> [--json]`
+- `wolfpack session open <project> [--prompt <instruction>] [--json]`
   - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND`, injected by Wolfpack into the parent agent session.
   - launches the same supported harness in the exact project name.
-  - names children `<harness>-sub-agent`, then `<harness>-2-sub-agent`, `<harness>-3-sub-agent`, and so on.
+  - derives child names from the parent: `<parent>-sub-agent`, then `<parent>-sub-agent-2`, `<parent>-sub-agent-3`, and so on.
+  - optionally passes one explicit instruction to the child harness at process launch; no parent transcript, context window, summary, or model state is inherited.
+  - stores structured parent session ID/name metadata; session lists visually group children under the parent without parsing names.
   - notifies the active parent viewer after creation; a browser showing that parent in single-terminal mode adds the child through its existing grid flow.
   - session creation still succeeds when no matching browser can apply the best-effort grid notification.
   - json success: `{ "ok": true, "session": string, "project": string, "harness": string }`

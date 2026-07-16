@@ -263,6 +263,16 @@ header h1 {
   box-shadow: inset 4px 0 16px -8px rgba(0,255,65,0.12);
 }
 .card.idle-session { border-left: 3px solid var(--border-subtle); }
+.card.sub-session-card {
+  margin-left: 18px;
+}
+.card.sub-session-card::before {
+  content: "↳";
+  position: absolute;
+  left: -16px;
+  color: var(--text-ghost);
+  font-size: 12px;
+}
 .triage-badge {
   font-size: 9px;
   font-weight: 700;

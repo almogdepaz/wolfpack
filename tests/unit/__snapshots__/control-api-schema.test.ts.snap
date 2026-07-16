@@ -170,6 +170,11 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           },
           "parentSession": {
             "$ref": "#/$defs/SessionName"
+          },
+          "initialPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
           }
         },
         "required": [],
@@ -215,7 +220,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       "errors": [
         "400 ErrorEnvelope",
         "404 ErrorEnvelope",
-        "409 ErrorEnvelope"
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
       ]
     },
     "getSettings": {
@@ -1458,6 +1464,22 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "idle"
       ]
     },
+    "ParentSessionIdentity": {
+      "type": "object",
+      "properties": {
+        "wolfpackSessionId": {
+          "type": "string"
+        },
+        "wolfpackSessionName": {
+          "$ref": "#/$defs/SessionName"
+        }
+      },
+      "required": [
+        "wolfpackSessionId",
+        "wolfpackSessionName"
+      ],
+      "additionalProperties": false
+    },
     "PublicSessionIdentity": {
       "type": "object",
       "properties": {
@@ -1481,6 +1503,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         },
         "updatedAt": {
           "type": "string"
+        },
+        "parentSession": {
+          "$ref": "#/$defs/ParentSessionIdentity"
         },
         "externalAgent": {
           "type": "object",

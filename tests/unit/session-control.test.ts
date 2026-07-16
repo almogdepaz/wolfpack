@@ -12,12 +12,42 @@ describe("session control cli parsing", () => {
       ok: true,
       action: "open",
       project: "wolfpack",
+      prompt: undefined,
       output: "json",
     });
   });
 
-  test("rejects open without a project or with unsupported flags", () => {
+  test("parses an explicit launch instruction without inherited context", () => {
+    expect(parseSessionCommand([
+      "open",
+      "wolfpack",
+      "--prompt",
+      "perform differential review only",
+      "--json",
+    ])).toEqual({
+      ok: true,
+      action: "open",
+      project: "wolfpack",
+      prompt: "perform differential review only",
+      output: "json",
+    });
+  });
+
+  test("preserves a launch instruction that resembles a CLI flag", () => {
+    expect(parseSessionCommand(["open", "wolfpack", "--prompt", "--review-only"])).toEqual({
+      ok: true,
+      action: "open",
+      project: "wolfpack",
+      prompt: "--review-only",
+      output: "plain",
+    });
+  });
+
+  test("rejects open without a project, invalid prompts, or unsupported flags", () => {
     expect(parseSessionCommand(["open"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "wolfpack", "--prompt"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "wolfpack", "--prompt", " "]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "wolfpack", "--prompt", "x".repeat(32_769)]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--harness", "claude"]).ok).toBe(false);
   });
 
@@ -76,25 +106,32 @@ describe("session control cli parsing", () => {
       process.env.WOLFPACK_AGENT_KIND = "pi";
       globalThis.fetch = async (url, init) => {
         if (String(url).endsWith("/api/sessions")) {
-          return Response.json({ sessions: [{ name: "pi-main" }, { name: "pi-sub-agent" }] });
+          return Response.json({ sessions: [{ name: "pi-main" }, { name: "pi-main-sub-agent" }] });
         }
         if (String(url).endsWith("/api/create")) {
           const body = JSON.parse(String(init?.body));
           const expected = {
             project: "wolfpack",
             cmd: "pi",
-            sessionName: "pi-2-sub-agent",
+            sessionName: "pi-main-sub-agent-2",
             parentSession: "pi-main",
+            initialPrompt: "perform differential review only",
           };
           if (JSON.stringify(body) !== JSON.stringify(expected)) {
             return Response.json({ error: "unexpected request", body }, { status: 400 });
           }
-          return Response.json({ ok: true, session: "pi-2-sub-agent" });
+          return Response.json({ ok: true, session: "pi-main-sub-agent-2" });
         }
         return Response.json({ error: "unexpected URL" }, { status: 500 });
       };
       const { runSessionCommand } = await import("./src/cli/session-control.ts");
-      process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));
+      process.exit(await runSessionCommand([
+        "open",
+        "wolfpack",
+        "--prompt",
+        "perform differential review only",
+        "--json",
+      ]));
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], {
       cwd: process.cwd(),
@@ -105,7 +142,7 @@ describe("session control cli parsing", () => {
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(child.stdout.toString())).toEqual({
       ok: true,
-      session: "pi-2-sub-agent",
+      session: "pi-main-sub-agent-2",
       project: "wolfpack",
       harness: "pi",
     });
@@ -121,17 +158,17 @@ describe("session control cli parsing", () => {
         if (String(url).endsWith("/api/sessions")) {
           listCount++;
           return Response.json({ sessions: listCount === 1
-            ? [{ name: "pi-main" }, { name: "pi-sub-agent" }]
-            : [{ name: "pi-main" }, { name: "pi-sub-agent" }, { name: "pi-2-sub-agent" }]
+            ? [{ name: "pi-main" }, { name: "pi-main-sub-agent" }]
+            : [{ name: "pi-main" }, { name: "pi-main-sub-agent" }, { name: "pi-main-sub-agent-2" }]
           });
         }
         if (String(url).endsWith("/api/create")) {
           createCount++;
           const body = JSON.parse(String(init?.body));
-          if (createCount === 1 && body.sessionName === "pi-2-sub-agent") {
+          if (createCount === 1 && body.sessionName === "pi-main-sub-agent-2") {
             return Response.json({ error: "anything" }, { status: 409 });
           }
-          if (createCount === 2 && body.sessionName === "pi-3-sub-agent") {
+          if (createCount === 2 && body.sessionName === "pi-main-sub-agent-3") {
             return Response.json({ ok: true, session: body.sessionName });
           }
         }
@@ -149,7 +186,7 @@ describe("session control cli parsing", () => {
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(child.stdout.toString())).toEqual({
       ok: true,
-      session: "pi-3-sub-agent",
+      session: "pi-main-sub-agent-3",
       project: "wolfpack",
       harness: "pi",
     });
@@ -231,11 +268,24 @@ describe("session control cli parsing", () => {
     expect(output).toContain("exit=5");
   });
 
-  test("chooses numbered sub-agent names while preserving the postfix", () => {
-    expect(chooseSubAgentSessionName("pi", [])).toBe("pi-sub-agent");
-    expect(chooseSubAgentSessionName("pi", ["pi-sub-agent"])).toBe("pi-2-sub-agent");
-    expect(chooseSubAgentSessionName("pi", ["pi-sub-agent", "pi-3-sub-agent"])).toBe("pi-2-sub-agent");
-    expect(chooseSubAgentSessionName("claude", ["pi-sub-agent"])).toBe("claude-sub-agent");
+  test("chooses parent-scoped numbered sub-agent names", () => {
+    expect(chooseSubAgentSessionName("wolfpack", [])).toBe("wolfpack-sub-agent");
+    expect(chooseSubAgentSessionName("wolfpack", ["wolfpack-sub-agent"]))
+      .toBe("wolfpack-sub-agent-2");
+    expect(chooseSubAgentSessionName("wolfpack", ["wolfpack-sub-agent", "wolfpack-sub-agent-3"]))
+      .toBe("wolfpack-sub-agent-2");
+    expect(chooseSubAgentSessionName("another-parent", ["wolfpack-sub-agent"]))
+      .toBe("another-parent-sub-agent");
+  });
+
+  test("truncates only the parent prefix to keep numbered names valid", () => {
+    const parent = "p".repeat(100);
+    const first = chooseSubAgentSessionName(parent, []);
+    const second = chooseSubAgentSessionName(parent, [first]);
+    expect(first).toHaveLength(100);
+    expect(first.endsWith("-sub-agent")).toBe(true);
+    expect(second).toHaveLength(100);
+    expect(second.endsWith("-sub-agent-2")).toBe(true);
   });
 
   test("resolves open context only from a supported Wolfpack parent", () => {

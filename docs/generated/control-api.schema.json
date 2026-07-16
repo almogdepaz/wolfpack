@@ -167,6 +167,11 @@
           },
           "parentSession": {
             "$ref": "#/$defs/SessionName"
+          },
+          "initialPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
           }
         },
         "required": [],
@@ -212,7 +217,8 @@
       "errors": [
         "400 ErrorEnvelope",
         "404 ErrorEnvelope",
-        "409 ErrorEnvelope"
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
       ]
     },
     "getSettings": {
@@ -1455,6 +1461,22 @@
         "idle"
       ]
     },
+    "ParentSessionIdentity": {
+      "type": "object",
+      "properties": {
+        "wolfpackSessionId": {
+          "type": "string"
+        },
+        "wolfpackSessionName": {
+          "$ref": "#/$defs/SessionName"
+        }
+      },
+      "required": [
+        "wolfpackSessionId",
+        "wolfpackSessionName"
+      ],
+      "additionalProperties": false
+    },
     "PublicSessionIdentity": {
       "type": "object",
       "properties": {
@@ -1478,6 +1500,9 @@
         },
         "updatedAt": {
           "type": "string"
+        },
+        "parentSession": {
+          "$ref": "#/$defs/ParentSessionIdentity"
         },
         "externalAgent": {
           "type": "object",

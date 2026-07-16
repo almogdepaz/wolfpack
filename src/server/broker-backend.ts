@@ -22,13 +22,14 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import {
-  UnsupportedTerminalKeyError,
-  type SessionBackend,
-  type PtyBackendMethods,
-  type SessionLifecycleEvent,
-  type SessionPrefill,
-  type SessionPrefillOptions,
+import { UnsupportedTerminalKeyError } from "./backend.js";
+import type {
+  PtyBackendMethods,
+  SessionBackend,
+  SessionLaunchOptions,
+  SessionLifecycleEvent,
+  SessionPrefill,
+  SessionPrefillOptions,
 } from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
@@ -42,13 +43,17 @@ import {
 } from "../broker/snapshot-render.js";
 import {
   extractExternalAgentFromEnv,
+  extractParentSessionFromEnv,
   getSessionIdentityStore,
   identityEnvVars,
   inferAgentKind,
   toPublicSessionIdentity,
-  type AgentKind,
-  type CaptureSessionIdentityInput,
-  type PublicSessionIdentity,
+} from "./session-identity.js";
+import type {
+  AgentKind,
+  CaptureSessionIdentityInput,
+  ParentSessionIdentity,
+  PublicSessionIdentity,
 } from "./session-identity.js";
 
 const log = createLogger("broker-backend");
@@ -214,6 +219,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       projectPath: string;
       agentKind?: AgentKind | string;
       externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+      parentSession?: ParentSessionIdentity;
     }> = [];
     const liveIds = new Set<string>();
     const liveNames = new Set<string>();
@@ -228,6 +234,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
         wolfpackSessionName: s.name,
         projectPath: s.cwd,
         agentKind: inferAgentKind(envValue(s.env, "WOLFPACK_AGENT_KIND") || commandAgent(s.command)),
+        parentSession: extractParentSessionFromEnv(s.env),
         externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
       });
     }
@@ -257,10 +264,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     cwd: string,
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
-    identity?: {
-      agentKind?: AgentKind | string;
-      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
-    },
+    options?: SessionLaunchOptions,
   ): Promise<void> {
     const agentCmd = cmd || loadSettings().agentCmd || "claude";
     if (agentCmd !== "shell" && !CMD_REGEX.test(agentCmd)) {
@@ -268,12 +272,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     }
     let shellCmd: string;
     if (agentCmd === "shell") {
+      if (options?.initialPrompt !== undefined) {
+        throw new Error("initial prompt requires an agent harness");
+      }
       shellCmd = SHELL;
     } else {
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}; exec ${SHELL}`;
+      const promptArg = options?.initialPrompt !== undefined ? " \"$1\"" : "";
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}${promptArg}; exec ${SHELL}`;
     }
 
-    const agentKind = identity?.agentKind ?? inferAgentKind(agentCmd);
+    const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],
       ["LANG", "en_US.UTF-8"],
@@ -281,6 +289,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
         wolfpackSessionName: name,
         projectPath: cwd,
         agentKind,
+        parentSession: options?.parentSession,
       }),
     ];
 
@@ -289,7 +298,14 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       resp = await this.client.request("create_session", {
         name,
         cwd,
-        command: [SHELL, "-lic", shellCmd],
+        command: [
+          SHELL,
+          "-lic",
+          shellCmd,
+          ...(options?.initialPrompt !== undefined
+            ? ["wolfpack-agent", options.initialPrompt]
+            : []),
+        ],
         env,
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,
@@ -318,7 +334,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       wolfpackSessionName: session.name,
       projectPath: cwd,
       agentKind,
-      externalAgent: identity?.externalAgent,
+      parentSession: options?.parentSession,
+      externalAgent: options?.externalAgent,
     });
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
   }

@@ -116,7 +116,13 @@ function errResp(code: string, message = "boom"): ControlResponse {
   return { id: 0, status: "error", error: { code, message } };
 }
 
-function sessionInfo(overrides: Partial<{ id: string; name: string; cwd: string; alive: boolean }> = {}) {
+function sessionInfo(overrides: Partial<{
+  id: string;
+  name: string;
+  cwd: string;
+  alive: boolean;
+  env: Array<[string, string]>;
+}> = {}) {
   return {
     id: overrides.id ?? SESSION_UUID_1,
     name: overrides.name ?? "ralph",
@@ -128,7 +134,7 @@ function sessionInfo(overrides: Partial<{ id: string; name: string; cwd: string;
     started_at_ms: 1700000000000,
     exit_code: null,
     command: ["bash", "-l"],
-    env: [],
+    env: overrides.env ?? [],
   };
 }
 
@@ -240,6 +246,74 @@ describe("BrokerBackend.createSession", () => {
     });
     expect(identities["codex-one"]).not.toHaveProperty("alive");
     expect(identities["codex-one"]).not.toHaveProperty("lastLine");
+  });
+
+  test("passes an initial instruction as an opaque harness argv value", async () => {
+    const initialPrompt = "review '$(touch /tmp/not-executed)' \"$HOME\"; done";
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "prompted", id: SESSION_UUID_1 }),
+    }));
+
+    await backend.createSession(
+      "prompted",
+      "/tmp/proj",
+      "pi",
+      loadSettings,
+      { agentKind: "pi", initialPrompt },
+    );
+
+    const create = client.requests.find((request) => request.method === "create_session");
+    const params = create?.params as { command: string[]; env: Array<[string, string]> };
+    expect(params.command.slice(3)).toEqual(["wolfpack-agent", initialPrompt]);
+    expect(params.command[2]).toContain('pi "$1"');
+    expect(params.command[2]).not.toContain(initialPrompt);
+    expect(params.env.flat()).not.toContain(initialPrompt);
+  });
+
+  test("persists parent identity in broker env and public session identity", async () => {
+    const parentSession = {
+      wolfpackSessionId: SESSION_UUID_2,
+      wolfpackSessionName: "wolfpack",
+    };
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "wolfpack-sub-agent", id: SESSION_UUID_1 }),
+    }));
+
+    await backend.createSession(
+      "wolfpack-sub-agent",
+      "/tmp/proj",
+      "pi",
+      loadSettings,
+      { agentKind: "pi", parentSession },
+    );
+
+    const create = client.requests.find((request) => request.method === "create_session");
+    const env = (create?.params as { env: Array<[string, string]> }).env;
+    expect(env).toContainEqual(["WOLFPACK_PARENT_SESSION_ID", SESSION_UUID_2]);
+    expect(env).toContainEqual(["WOLFPACK_PARENT_SESSION_NAME", "wolfpack"]);
+    expect((await backend.listIdentities())["wolfpack-sub-agent"]?.parentSession)
+      .toEqual(parentSession);
+  });
+
+  test("restores parent identity from structured broker env", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({
+        name: "wolfpack-sub-agent",
+        id: SESSION_UUID_1,
+        env: [
+          ["WOLFPACK_AGENT_KIND", "pi"],
+          ["WOLFPACK_PARENT_SESSION_ID", SESSION_UUID_2],
+          ["WOLFPACK_PARENT_SESSION_NAME", "wolfpack"],
+        ],
+      })],
+    }));
+
+    await backend.list();
+
+    expect((await backend.listIdentities())["wolfpack-sub-agent"]?.parentSession).toEqual({
+      wolfpackSessionId: SESSION_UUID_2,
+      wolfpackSessionName: "wolfpack",
+    });
   });
 
   test("translates duplicate_session_name into legacy DUPLICATE_SESSION error", async () => {

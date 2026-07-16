@@ -1,20 +1,22 @@
 # agent-native `wolfpack session open` plan
 
-**status:** implementation, isolated deployment, and live validation verified — ready for PR
+**status:** revised implementation, deployment, and live validation verified — ready to update PR #180
 **branch:** `feat/session-open` from merged `main` at `ed009b3`
 **goal:** `wolfpack session open <project>` creates a numbered sub-agent using the parent session’s harness and automatically adds it beside the parent when an active browser is showing that parent in single-session mode.
 
 **accepted contract:**
 - require structured `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND`; never inspect process ancestry or terminal prose.
 - reject missing context and `shell`/`unknown` harnesses; no harness override in v1.
-- names are `<harness>-sub-agent`, `<harness>-2-sub-agent`, `<harness>-3-sub-agent`, preserving the postfix.
+- names derive from the parent: `<parent>-sub-agent`, then `<parent>-sub-agent-2`, `<parent>-sub-agent-3`; preserve the suffix by truncating only an overlong parent prefix to the 100-character session limit.
+- persist structured parent session ID/name metadata and use it for grouping; never infer parentage by parsing the child name.
 - exact project names only; project prefix filtering remains issue #178.
 - creation succeeds when no matching browser is attached; grid notification is best-effort.
 - browser remains the only grid/layout owner. The server delivers a typed event but stores no grid state.
-- no initial prompt, remote-machine selection, persistent parent-child model, or browser automation in v1.
+- no remote-machine selection or browser automation in v1.
+- `session open --prompt <instruction>` passes one explicit instruction as an opaque harness argv value; it never inherits parent transcript/context/model state.
 
 **success evidence:**
-- a Pi parent creates `pi-sub-agent`, then `pi-2-sub-agent`, both running `pi` in the requested project.
+- a Pi parent named `wolfpack` creates `wolfpack-sub-agent`, then `wolfpack-sub-agent-2`, both running `pi` in the requested project.
 - after successful creation, the active browser showing the parent as a single terminal transitions through the existing `addToGrid()` path.
 - browsers on another parent/view or already in grid mode ignore the event.
 - `--json` emits exactly one JSON success/error envelope and a deterministic exit code.
@@ -45,12 +47,15 @@
 
 - Extend `src/cli/session-control.ts` as a thin JWT-aware client: read active names, choose the candidate, and call `/api/create` with the project, current harness, generated name, and current parent session.
 - Update `docs/session-control.md`, README, and `docs/agent-skills.md`; keep the detailed contract in `docs/session-control.md`.
-- Update `skills/wolfpack-tailnet-control/SKILL.md` so natural open/create-sub-agent requests map directly to `wolfpack session open <project> --json` without local curl/UI discovery.
+- Update `skills/wolfpack-tailnet-control/SKILL.md` so natural open/create-sub-agent requests map directly to `wolfpack session open <project> --prompt '<instruction>' --json` without local curl/UI discovery or inherited transcript context.
 - Add skill-content tests and realistic trigger/workflow evals; after product verification, refresh the user’s shared dotfiles skill as a separate local rollout artifact.
 
 ## implementation status
 
-- [x] cli parsing, structured context validation, numbering, collision retries, and json envelopes.
+- [x] revise naming to parent-scoped `-sub-agent[-n]` names with collision retries and length preservation.
+- [x] persist/expose structured parent identity and visually group child cards under their parent.
+- [x] replace racy post-create terminal typing with an explicit launch-time `--prompt` argv contract.
+- [x] cli parsing, structured context validation, collision retries, and json envelopes.
 - [x] optional `parentSession` API validation and best-effort active-viewer notification.
 - [x] generated HTTP/WebSocket control schemas and contract snapshots.
 - [x] browser websocket dispatch split into binary, terminal-control, and application-event handlers.
@@ -58,15 +63,18 @@
 - [x] canonical docs and bundled tailnet-control skill workflow.
 - [x] focused and full Bun/Rust/Playwright verification plus deterministic generation and build.
 - [x] isolated deployment and live validation.
-- [ ] PR.
+- [x] PR #180 opened; revised branch update pending.
 
 ## live verification evidence
 
-- fresh full verification: Bun 1,709 passed; Rust 174 passed serially; Playwright 85 passed / 107 skipped; typecheck, production build, schema/assets determinism, and `git diff --check` passed.
-- server-only detached deployment: server PID `49532` → `52744`; broker PID remained `49523`.
-- deployed/source bundle: `6e27b37718e53139ce61be275f13f98ba169c4d1051e281e0276629ff97555cb`.
-- all four pre-existing broker sessions retained the same names and session IDs through deployment and after fixture cleanup.
-- live Pi workflow created `pi-sub-agent`, `pi-2-sub-agent`, and no-viewer `pi-3-sub-agent`, all in the requested `wolfpack` project with `agentKind: pi`.
+- fresh full verification: Bun 1,722 passed; Rust 174 passed serially; Playwright 86 passed / 109 skipped; typecheck, production build, schema/assets determinism, and `git diff --check` passed.
+- final server-only detached deployment: server PID `84873` → `19181`; broker PID remained `49523`.
+- deployed/source bundle: `cc7e2b5b12f0488b6751238afe172dfbe5531e9fd313d8d0370b30d7fc454c5d`.
+- all six pre-existing broker sessions retained the same names and session IDs through deployment and after fixture cleanup.
+- superseded live finding: harness-scoped names (`pi-sub-agent`, etc.) did not communicate/group parent ownership; the revised contract uses parent-scoped names and structured identity.
+- live prompt finding: an immediate `session send` inserted the review prompt but left it waiting for manual Enter; a later Enter executed it, proving harness startup readiness was the missing signal. The revised contract passes the instruction at process launch instead of typing into the PTY.
+- live Pi launch created `launch-live-parent-sub-agent`; its explicit launch instruction executed without any follow-up terminal input and wrote the expected `launch-prompt-ok` marker.
+- the second child was named `launch-live-parent-sub-agent-2`; both children exposed the same structured parent ID/name and rendered directly beneath the parent with child styling.
 - active desktop parent transitioned from single terminal to a hydrated two-cell grid through the real WebSocket event path; an existing grid ignored the second child event.
 - missing context, unsupported `shell`, inactive parent, and missing project each emitted exactly one structured JSON error line with exit code 3.
 - live screenshot: `/Users/home/.dev-browser/tmp/session-open-live-grid.png`.

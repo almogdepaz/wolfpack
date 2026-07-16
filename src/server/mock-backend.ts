@@ -4,12 +4,13 @@
  * Provides a fully controllable backend that can be injected via
  * __setTestBackend(). No real broker daemon needed.
  */
-import type { SessionBackend } from "./backend.js";
+import type { SessionBackend, SessionLaunchOptions } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { stripAnsi } from "./strip-ansi.js";
-import {
-  inferAgentKind,
-  type PublicSessionIdentity,
+import { inferAgentKind } from "./session-identity.js";
+import type {
+  ParentSessionIdentity,
+  PublicSessionIdentity,
 } from "./session-identity.js";
 
 export interface MockBackendOptions {
@@ -23,6 +24,7 @@ export class MockBackend implements SessionBackend {
   private _sessions: Set<string>;
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
+  private readonly _parentSessions = new Map<string, ParentSessionIdentity>();
   /** Per-session alive override — when set, isSessionAlive() returns this
    *  instead of `_sessions.has(name)`. Used by tests to simulate a session
    *  that's listed (so WS upgrade passes) but whose backing process has
@@ -30,7 +32,14 @@ export class MockBackend implements SessionBackend {
   private _aliveOverride = new Map<string, boolean>();
 
   /** Last arguments passed to createSession (name, cwd, cmd). */
-  lastCreateArgs: { name: string; cwd: string; cmd: string | undefined; agentKind?: string } | null = null;
+  lastCreateArgs: {
+    name: string;
+    cwd: string;
+    cmd: string | undefined;
+    agentKind?: string;
+    parentSession?: ParentSessionIdentity;
+    initialPrompt?: string;
+  } | null = null;
   /** Last arguments passed to resize (name, cols, rows). */
   lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
   /** Last arguments passed to send (name, text, noEnter). */
@@ -49,6 +58,9 @@ export class MockBackend implements SessionBackend {
   /** Override the session list at runtime (useful for per-test setup). */
   setSessions(sessions: string[]): void {
     this._sessions = new Set(sessions);
+    for (const name of this._parentSessions.keys()) {
+      if (!this._sessions.has(name)) this._parentSessions.delete(name);
+    }
   }
 
   /** Override capturePane at runtime. */
@@ -75,6 +87,7 @@ export class MockBackend implements SessionBackend {
         agentKind: "unknown",
         createdAt: now,
         updatedAt: now,
+        ...(this._parentSessions.get(name) && { parentSession: this._parentSessions.get(name) }),
       };
     }
     return out;
@@ -90,18 +103,27 @@ export class MockBackend implements SessionBackend {
     cwd: string,
     cmd: string | undefined,
     _loadSettings: () => { agentCmd: string },
-    identity?: { agentKind?: string; externalAgent?: { provider?: string; id?: string; source: "env" | "broker_env" | "ralph_launch" } },
+    options?: SessionLaunchOptions,
   ): Promise<void> {
-    this.lastCreateArgs = { name, cwd, cmd, agentKind: identity?.agentKind ?? inferAgentKind(cmd) };
+    this.lastCreateArgs = {
+      name,
+      cwd,
+      cmd,
+      agentKind: options?.agentKind ?? inferAgentKind(cmd),
+      parentSession: options?.parentSession,
+      initialPrompt: options?.initialPrompt,
+    };
     if (this._onBeforeCreate) this._onBeforeCreate(name);
     if (this._sessions.has(name)) {
       throw new DuplicateSessionError(name);
     }
     this._sessions.add(name);
+    if (options?.parentSession) this._parentSessions.set(name, options.parentSession);
   }
 
   async killSession(name: string): Promise<void> {
     this._sessions.delete(name);
+    this._parentSessions.delete(name);
   }
 
   async hasSession(name: string): Promise<boolean> {

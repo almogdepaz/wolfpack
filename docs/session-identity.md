@@ -14,6 +14,7 @@ Stored fields:
 - project path
 - agent kind (`shell`, `claude`, `codex`, `pi`, `gemini`, `cursor`, or a command-derived value)
 - created/restored/updated timestamps
+- optional structured parent Wolfpack session id/name for sub-agent grouping
 - optional external agent id, only when exposed through structured env metadata
 
 External agent ids are never scraped from terminal prose. Wolfpack captures them only from structured launch/discovery metadata such as `WOLFPACK_EXTERNAL_AGENT_ID` and returns a redacted value from public APIs.
@@ -28,6 +29,7 @@ Launched sessions receive these context variables:
 - `WOLFPACK_SESSION_NAME`
 - `WOLFPACK_PROJECT_DIR`
 - `WOLFPACK_AGENT_KIND`
+- `WOLFPACK_PARENT_SESSION_ID` and `WOLFPACK_PARENT_SESSION_NAME` for child sessions
 - `WOLFPACK_EXTERNAL_AGENT_ID_FILE`
 
 Delete `$WOLFPACK_DEV_DIR/.wolfpack/session-identities.json` to remove stored identity metadata. This does not delete broker sessions, terminal snapshots, projects, or Ralph state.

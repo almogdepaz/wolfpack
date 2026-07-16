@@ -17,6 +17,60 @@ test.afterAll(async () => {
   srv?.close();
 });
 
+test("desktop groups structured sub-agents directly under their parent", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop parent-child session grouping");
+
+  const identity = (id: string, name: string, parent?: { id: string; name: string }) => ({
+    wolfpackSessionId: id,
+    wolfpackSessionName: name,
+    projectPath: "/repo/wolfpack",
+    agentKind: "pi",
+    createdAt: "2026-07-15T00:00:00.000Z",
+    updatedAt: "2026-07-15T00:00:00.000Z",
+    ...(parent && {
+      parentSession: {
+        wolfpackSessionId: parent.id,
+        wolfpackSessionName: parent.name,
+      },
+    }),
+  });
+  const parent = { id: "broker-parent", name: "wolfpack" };
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "wolfpack", lastLine: "parent", triage: "idle", identity: identity(parent.id, parent.name) },
+          { name: "unrelated", lastLine: "root", triage: "idle", identity: identity("broker-root", "unrelated") },
+          { name: "wolfpack-sub-agent-2", lastLine: "child two", triage: "idle", identity: identity("broker-child-2", "wolfpack-sub-agent-2", parent) },
+          { name: "wolfpack-sub-agent", lastLine: "child one", triage: "idle", identity: identity("broker-child-1", "wolfpack-sub-agent", parent) },
+          { name: "orphan-child", lastLine: "orphan", triage: "idle", identity: identity("broker-orphan", "orphan-child", { id: "missing-parent", name: "gone" }) },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+
+  const cards = page.locator("#session-list .card");
+  await expect(cards).toHaveCount(5);
+  await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
+    names.map((name) => name.firstChild?.textContent),
+  )).toEqual([
+    "wolfpack",
+    "wolfpack-sub-agent",
+    "wolfpack-sub-agent-2",
+    "unrelated",
+    "orphan-child",
+  ]);
+  await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
+  await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
+  await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
+  await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
+  await expect(cards.nth(4)).not.toHaveClass(/sub-session-card/);
+  await expect(cards.nth(4)).not.toHaveAttribute("data-parent-session", /.+/);
+});
+
 test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop expanded-session regression");
 

@@ -25,7 +25,8 @@ describe("agent skills", () => {
     const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
 
     expect(skill).toContain("open or create a Wolfpack sub-agent session");
-    expect(skill).toContain("wolfpack session open <project> --json");
+    expect(skill).toContain("wolfpack session open <project> --prompt '<instruction>' --json");
+    expect(skill).toContain("without inheriting the\nparent transcript or model context");
     expect(skill).toContain("WOLFPACK_AGENT_KIND");
     expect(skill).toContain("WOLFPACK_SESSION_NAME");
     expect(skill).not.toContain("curl -fsS \"${AUTH_ARGS[@]}\" \"$BASE/api/create\"");

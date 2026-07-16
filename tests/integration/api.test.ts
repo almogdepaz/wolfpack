@@ -369,33 +369,111 @@ describe("POST /api/create", () => {
     expect(mockBackend.lastCreateArgs?.agentKind).toBe("shell");
   });
 
+  test("passes an explicit launch instruction without parent transcript context", async () => {
+    const initialPrompt = "review the diff only; do not inherit parent context";
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+      initialPrompt,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockBackend.lastCreateArgs?.initialPrompt).toBe(initialPrompt);
+  });
+
+  test("rejects empty launch instructions", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+      initialPrompt: "   ",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects oversized launch instructions", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+      initialPrompt: "x".repeat(32_769),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects launch instructions for plain shells", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "shell-child",
+      cmd: "shell",
+      initialPrompt: "run this",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
   test("notifies the active parent viewer after creating a sub-session", async () => {
     const frames = attachNotificationViewer("wolf-1");
     const res = await post("/api/create", {
       project: "my-app",
-      sessionName: "pi-sub-agent",
+      sessionName: "wolf-1-sub-agent",
       cmd: "pi",
       parentSession: "wolf-1",
     });
 
     expect(res.status).toBe(200);
+    expect(mockBackend.lastCreateArgs?.parentSession).toEqual({
+      wolfpackSessionId: "mock:wolf-1",
+      wolfpackSessionName: "wolf-1",
+    });
     expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
       type: "sub_session_opened",
       parentSession: "wolf-1",
-      session: "pi-sub-agent",
+      session: "wolf-1-sub-agent",
     });
   });
 
   test("creates the child when the parent has no attached viewer", async () => {
     const res = await post("/api/create", {
       project: "my-app",
-      sessionName: "pi-sub-agent",
+      sessionName: "wolf-1-sub-agent",
       cmd: "pi",
       parentSession: "wolf-1",
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, session: "pi-sub-agent" });
+    expect(await res.json()).toEqual({ ok: true, session: "wolf-1-sub-agent" });
+  });
+
+  test("exposes structured parent identity on the created child", async () => {
+    const create = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+    expect(create.status).toBe(200);
+
+    const sessions = await get("/api/sessions");
+    const child = (await sessions.json()).sessions.find(
+      (session: { name: string }) => session.name === "wolf-1-sub-agent",
+    );
+    expect(child.identity.parentSession).toEqual({
+      wolfpackSessionId: "mock:wolf-1",
+      wolfpackSessionName: "wolf-1",
+    });
   });
 
   test("does not notify the parent when child creation fails", async () => {

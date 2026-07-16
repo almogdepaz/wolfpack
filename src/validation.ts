@@ -22,8 +22,11 @@ export function isValidProjectName(name: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
 
+export const MAX_SESSION_NAME_LENGTH = 100;
+export const MAX_INITIAL_PROMPT_LENGTH = 32_768;
+
 export function isValidSessionName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]+$/.test(name) && name.length > 0 && name.length <= 100;
+  return /^[a-zA-Z0-9_-]+$/.test(name) && name.length > 0 && name.length <= MAX_SESSION_NAME_LENGTH;
 }
 
 export function isValidPlanFile(name: string): boolean {
