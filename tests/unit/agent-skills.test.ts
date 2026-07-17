@@ -59,24 +59,23 @@ describe("agent skills", () => {
   test("tailnet control skill documents safe opaque-context workflows", () => {
     const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
 
-    expect(skill).toContain("WOLFPACK_CURRENT_SESSION_ID");
-    expect(skill).toContain("WOLFPACK_CURRENT_MACHINE_URL");
     expect(skill).toContain("Treat session selectors as opaque handles");
-    expect(skill).toContain("Requires explicit user intent");
-    expect(skill).toContain("Missing context handling");
-    expect(skill).toContain("Do not use `docs/broker-protocol.md` as a browser attach contract");
+    expect(skill).toContain("explicit user intent");
+    expect(skill).toContain("docs/session-control.md");
     expect(skill).not.toContain("wss://host/ws/pty?session=<name>");
+    expect(skill).not.toContain("curl -fsS");
+    expect(skill.split("\n").length).toBeLessThanOrEqual(80);
   });
 
-  test("tailnet control skill maps sub-agent requests to session open", () => {
+  test("tailnet control skill distinguishes top-level sessions from child agents", () => {
     const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
 
-    expect(skill).toContain("open or create a Wolfpack sub-agent session");
-    expect(skill).toContain("wolfpack session open <project> --prompt '<instruction>' --json");
-    expect(skill).toContain("without inheriting the\nparent transcript or model context");
-    expect(skill).toContain("WOLFPACK_AGENT_KIND");
-    expect(skill).toContain("WOLFPACK_SESSION_NAME");
-    expect(skill).not.toContain("curl -fsS \"${AUTH_ARGS[@]}\" \"$BASE/api/create\"");
+    expect(skill).toContain("wolfpack session create <project>");
+    expect(skill).toContain("wolfpack agent spawn <project>");
+    expect(skill).toContain("top-level");
+    expect(skill).toContain("child");
+    expect(skill).toContain("one short prompt");
+    expect(skill).not.toContain("wolfpack session open <project> --prompt '<instruction>' --json");
   });
 
   test("session-open docs preserve the tailnet/global trust boundary", () => {
@@ -90,7 +89,7 @@ describe("agent skills", () => {
       expect(content).toContain("no inter-session authorization layer");
     }
     expect(controlDocs).toContain("POST /api/session-open");
-    expect(controlDocs).toContain("one request");
+    expect(controlDocs).toContain("performs one `POST /api/session-open` request");
     expect(identityDocs).toContain("server derives the child harness");
   });
 
@@ -132,7 +131,8 @@ describe("agent skills", () => {
       expect(content).toContain("~/.agents/skills/");
       expect(content).toContain("~/.claude/skills/");
       expect(content).toContain("fresh agent context");
-      expect(content).toContain("wolfpack session open <project> --prompt '<instruction>' --json");
+      expect(content).toContain("wolfpack session create <project>");
+      expect(content).toContain("wolfpack agent spawn <project>");
       expect(content.toLowerCase()).toContain("platform binaries do not install skills");
     }
 

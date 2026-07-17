@@ -93,22 +93,30 @@ Configure commands in **Settings → Agents**.
 ```text
 wolfpack                 Start the server (runs setup on first launch)
 wolfpack setup           Re-run the setup wizard
-wolfpack ls              List active broker sessions
+wolfpack list [--json]   List active broker sessions
+wolfpack session create  Create a top-level project session
+wolfpack agent spawn     Spawn a same-harness child agent
+wolfpack session ...     Status/read/send/wait helpers for agent automation
 wolfpack attach [name]   Attach the local terminal to an existing session
-wolfpack kill <name>     Kill a session
-wolfpack session ...     Open/read/send/wait helpers for agent automation
+wolfpack kill <name|id>  Kill a session
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
 wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
 wolfpack uninstall --yes Remove everything
 ```
 
-Open a same-harness sub-agent from an existing Wolfpack agent session:
+Create a top-level project session with its initial instruction delivered at launch:
 
 ```bash
-wolfpack session open wolfpack --prompt "perform differential review only" --json
+wolfpack session create branchout --harness pi --prompt "execute .plans/000-task.md" --json
 ```
 
-The CLI makes one `POST /api/session-open` request. The server verifies the active parent identity, derives the same harness and child name (`wolfpack-sub-agent`, `wolfpack-sub-agent-2`, etc.), and persists structured parent identity so session lists can group it under that parent. `--prompt` passes only that explicit launch instruction; it does not inherit the parent transcript or context. When the parent is visible as a single desktop terminal, its browser automatically adds the child to grid view.
+Spawn a same-harness child from an existing Wolfpack agent:
+
+```bash
+wolfpack agent spawn wolfpack --prompt "perform differential review only" --json
+```
+
+Each command makes one server-owned request and returns the stable broker `sessionId`. The server validates the project, allocates the name, persists identity, and passes `--prompt` directly to the harness at startup instead of racing terminal readiness. Child spawning derives the parent harness and structured hierarchy without inheriting its transcript or context. `wolfpack session open` remains a deprecated child-spawn alias.
 
 Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 
@@ -123,7 +131,7 @@ Wolfpack is self-hosted software for machines you control. Those machines can be
 - The server talks to the broker over a per-user Unix socket.
 - The broker owns the PTYs and runs your selected commands locally on that machine.
 - Optional JWT auth can be layered on top of Tailscale.
-- Session open follows the ordinary global API auth policy when configured and adds no inter-session authorization layer. Tailnet/global Wolfpack access remains the trust boundary; sessions can list and communicate with other sessions.
+- Session control follows the ordinary global API auth policy when configured and adds no inter-session authorization layer. Tailnet/global Wolfpack access remains the trust boundary; sessions can list and communicate with other sessions.
 - Wolfpack does not provide a hosted relay, managed account, or prompt upload service.
 
 Running coding agents is intentionally powerful: those commands execute with your local user permissions in the chosen project directory.
@@ -190,10 +198,11 @@ Skills are executable agent instructions, so install only the ones you have audi
 
 Prefer symlinks so a reviewed `git pull --ff-only` updates the source. Refuse installation when the destination already exists; copying is also supported but must be refreshed manually. Start a fresh agent context afterward so skill descriptions are rescanned. Full fail-safe commands: [docs/agent-skills.md](docs/agent-skills.md).
 
-Then ask naturally to “open a new Wolfpack sub-agent session,” or invoke:
+For a top-level session or a same-harness child, invoke:
 
 ```bash
-wolfpack session open <project> --prompt '<instruction>' --json
+wolfpack session create <project> --harness pi --prompt '<instruction>' --json
+wolfpack agent spawn <project> --prompt '<instruction>' --json
 ```
 
 Platform binaries do not install skills. This is intentional: the cloned repository remains the auditable source of truth.

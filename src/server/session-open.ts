@@ -53,7 +53,7 @@ export interface SessionOpenBackend {
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
-  ): Promise<void>;
+  ): Promise<PublicSessionIdentity>;
 }
 
 interface ParentState {
@@ -65,6 +65,7 @@ interface ParentState {
 export interface SessionOpenSuccess {
   readonly ok: true;
   readonly session: string;
+  readonly sessionId: string;
   readonly project: string;
   readonly harness: OpenableHarness;
 }
@@ -131,8 +132,9 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
     const session = chooseSubAgentSessionName(input.parentSession, parentState.names);
+    let identity: PublicSessionIdentity;
     try {
-      await input.backend.createSession(
+      identity = await input.backend.createSession(
         session,
         input.projectDir,
         parentState.harness,
@@ -173,6 +175,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
     return {
       ok: true,
       session,
+      sessionId: identity.wolfpackSessionId,
       project: input.project,
       harness: parentState.harness,
     };

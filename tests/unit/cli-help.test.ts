@@ -39,12 +39,13 @@ afterAll(() => {
 
 describe("cli help dispatch", () => {
   for (const alias of [["--help"], ["-h"], ["help"]] as const) {
-    test(`top-level ${alias[0]} is side-effect-free and discovers session open`, () => {
+    test(`top-level ${alias[0]} is side-effect-free and discovers create and spawn`, () => {
       const child = runCli(alias);
 
       expect(child.exitCode).toBe(0);
       expect(child.stdout).toContain("Usage: wolfpack");
-      expect(child.stdout).toContain("wolfpack session open");
+      expect(child.stdout).toContain("wolfpack session create");
+      expect(child.stdout).toContain("wolfpack agent spawn");
       for (const command of [
         "setup",
         "service",
@@ -70,11 +71,21 @@ describe("cli help dispatch", () => {
       const child = runCli(alias);
 
       expect(child.exitCode).toBe(0);
-      for (const command of ["open", "read", "send", "wait", "current-context"]) {
+      for (const command of ["create", "status", "open", "read", "send", "wait", "current-context"]) {
         expect(child.stdout).toContain(`wolfpack session ${command}`);
       }
       expect(child.stdout).not.toContain("No valid config found");
       expect(child.stdout).not.toContain("Scan to open on your phone");
+      expect(child.stderr).toBe("");
+    });
+  }
+
+  for (const args of [["session", "create", "--help"], ["agent", "--help"], ["agent", "spawn", "--help"]] as const) {
+    test(`${args.join(" ")} is side-effect-free`, () => {
+      const child = runCli(args);
+      expect(child.exitCode).toBe(0);
+      expect(child.stdout).toContain(args[0] === "agent" ? "wolfpack agent spawn" : "wolfpack session create");
+      expect(child.stdout).not.toContain("No valid config found");
       expect(child.stderr).toBe("");
     });
   }

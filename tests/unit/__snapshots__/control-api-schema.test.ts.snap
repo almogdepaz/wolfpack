@@ -225,6 +225,71 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "503 ErrorEnvelope"
       ]
     },
+    "createTopLevelSession": {
+      "route": "POST /api/session-create",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:createTopLevelSession:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "createTopLevelSession request",
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "harness": {
+            "$ref": "#/$defs/OpenableHarness"
+          },
+          "initialPrompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:createTopLevelSession:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "createTopLevelSession response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "project": {
+            "$ref": "#/$defs/ProjectName"
+          },
+          "harness": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "project",
+          "harness"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "openSession": {
       "route": "POST /api/session-open",
       "stable": true,
@@ -265,6 +330,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "session": {
             "$ref": "#/$defs/SessionName"
           },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
           "project": {
             "$ref": "#/$defs/ProjectName"
           },
@@ -275,6 +343,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "required": [
           "ok",
           "session",
+          "sessionId",
           "project",
           "harness"
         ],
@@ -427,7 +496,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "type": "object",
         "properties": {
           "session": {
-            "$ref": "#/$defs/SessionName"
+            "$ref": "#/$defs/SessionSelector"
           }
         },
         "required": [
@@ -442,17 +511,251 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "type": "object",
         "properties": {
           "ok": {
-            "type": "boolean"
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
           }
         },
         "required": [
-          "ok"
+          "ok",
+          "session",
+          "sessionId"
         ],
         "additionalProperties": false
       },
       "errors": [
         "400 ErrorEnvelope",
-        "404 ErrorEnvelope"
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
+    "listSessionStatuses": {
+      "route": "GET /api/session-control/list",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listSessionStatuses:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSessionStatuses response",
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SessionStatus"
+            }
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "503 ErrorEnvelope"
+      ]
+    },
+    "getSessionStatus": {
+      "route": "GET /api/session-control/status",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getSessionStatus:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSessionStatus request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getSessionStatus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSessionStatus response",
+        "$ref": "#/$defs/SessionStatus"
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
+    "readSession": {
+      "route": "GET /api/session-control/read",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readSession:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSession request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readSession:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSession response",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "sessionId",
+          "output"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
+    "sendSessionInput": {
+      "route": "POST /api/session-control/send",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:sendSessionInput:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendSessionInput request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "text": {
+            "type": "string"
+          },
+          "noEnter": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:sendSessionInput:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendSessionInput response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
+    "waitForSessionText": {
+      "route": "POST /api/session-control/wait",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:waitForSessionText:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "waitForSessionText request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "text": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:waitForSessionText:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "waitForSessionText response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "matched": {
+            "const": true
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "matched"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "408 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
       ]
     },
     "resizeSession": {
@@ -1505,6 +1808,16 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       "type": "string",
       "pattern": "^[a-zA-Z0-9_-]+$"
     },
+    "SessionId": {
+      "type": "string",
+      "description": "Stable opaque broker session identifier",
+      "minLength": 1
+    },
+    "SessionSelector": {
+      "type": "string",
+      "description": "Active session name or stable opaque session identifier",
+      "minLength": 1
+    },
     "ProjectName": {
       "type": "string",
       "pattern": "^[a-zA-Z0-9._-]+$"
@@ -1714,6 +2027,57 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "name",
         "lastLine",
         "triage"
+      ],
+      "additionalProperties": false
+    },
+    "SessionControlIdentity": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session",
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "SessionStatus": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "state": {
+          "const": "active"
+        },
+        "projectPath": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "parentSession": {
+          "$ref": "#/$defs/SessionControlIdentity"
+        }
+      },
+      "required": [
+        "ok",
+        "session",
+        "sessionId",
+        "state",
+        "projectPath",
+        "harness"
       ],
       "additionalProperties": false
     },

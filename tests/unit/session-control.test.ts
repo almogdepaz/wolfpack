@@ -117,6 +117,7 @@ describe("session control cli parsing", () => {
         return Response.json({
           ok: true,
           session: "pi-main-sub-agent-2",
+          sessionId: "id-child-2",
           project: "wolfpack",
           harness: "pi",
         });
@@ -155,6 +156,7 @@ describe("session control cli parsing", () => {
     expect(JSON.parse(child.stdout.toString())).toEqual({
       ok: true,
       session: "pi-main-sub-agent-2",
+      sessionId: "id-child-2",
       project: "wolfpack",
       harness: "pi",
     });

@@ -159,6 +159,15 @@ describe("control api generated schema against runtime responses", () => {
       ["getInfo", await getJson("/api/info")],
       ["listSessions", await getJson("/api/sessions")],
       ["getSettings", await getJson("/api/settings")],
+      ["createTopLevelSession", await postJson("/api/session-create", {
+        project: "wolfpack",
+        harness: "pi",
+        initialPrompt: "execute the plan",
+      })],
+      ["listSessionStatuses", await getJson("/api/session-control/list")],
+      ["getSessionStatus", await getJson(
+        `/api/session-control/status?session=${encodeURIComponent("mock:wolfpack")}`,
+      )],
       ["openSession", await postJson("/api/session-open", {
         project: "wolfpack",
         parentSession: "wolf-1",

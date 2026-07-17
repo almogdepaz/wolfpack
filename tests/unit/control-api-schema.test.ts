@@ -192,6 +192,7 @@ describe("control api schema compatibility samples", () => {
     expect(validate(httpResponse("openSession"), {
       ok: true,
       session: "pi-main-sub-agent",
+      sessionId: "11111111-1111-1111-1111-111111111111",
       project: "wolfpack",
       harness: "pi",
     }, artifact)).toEqual([]);

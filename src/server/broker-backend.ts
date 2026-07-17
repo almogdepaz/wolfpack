@@ -265,7 +265,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
-  ): Promise<void> {
+  ): Promise<PublicSessionIdentity> {
     const agentCmd = cmd || loadSettings().agentCmd || "claude";
     if (agentCmd !== "shell" && !CMD_REGEX.test(agentCmd)) {
       throw new Error(`invalid command: ${agentCmd}`);
@@ -327,7 +327,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       cwd: session.cwd,
       alive: session.alive,
     });
-    getSessionIdentityStore().capture({
+    const identity = getSessionIdentityStore().capture({
       wolfpackSessionId: session.id,
       wolfpackSessionName: session.name,
       projectPath: cwd,
@@ -336,6 +336,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
       externalAgent: options?.externalAgent,
     });
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
+    return toPublicSessionIdentity(identity);
   }
 
   async killSession(name: string): Promise<void> {

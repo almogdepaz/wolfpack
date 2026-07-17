@@ -358,6 +358,120 @@ describe("POST /api/ralph/start validation ordering", () => {
   }, 30_000);
 });
 
+describe("agent-native top-level session control", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setCapturePane(async (session: string) => `output for ${session}`);
+    mockBackend.lastCreateArgs = null;
+    mockBackend.lastSendArgs = null;
+    process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+  });
+
+  test("creates a top-level session with one opaque launch prompt and stable id", async () => {
+    const initialPrompt = "execute .plans/000-publish-branchout.md";
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "pi",
+      initialPrompt,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "my-app",
+      sessionId: "mock:my-app",
+      project: "my-app",
+      harness: "pi",
+    });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "my-app",
+      cwd: join(TEST_DEV_DIR, "my-app"),
+      cmd: "pi",
+      agentKind: "pi",
+      initialPrompt,
+      parentSession: undefined,
+    });
+  });
+
+  test("rejects malformed create input before backend mutation", async () => {
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+      initialPrompt: "run this",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("resolves stable ids for list, status, read, send, wait, and kill", async () => {
+    const selector = encodeURIComponent("mock:wolf-1");
+
+    const list = await get("/api/session-control/list");
+    const listed = (await list.json()).sessions.find(
+      (session: { sessionId: string }) => session.sessionId === "mock:wolf-1",
+    );
+    expect(listed).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      state: "active",
+      projectPath: "",
+      harness: "unknown",
+    });
+    expect(listed).not.toHaveProperty("lastLine");
+
+    const status = await get(`/api/session-control/status?session=${selector}`);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      state: "active",
+      projectPath: "",
+      harness: "unknown",
+    });
+
+    const read = await get(`/api/session-control/read?session=${selector}`);
+    expect(await read.json()).toEqual({
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      output: "output for wolf-1",
+    });
+
+    const send = await post("/api/session-control/send", {
+      session: "mock:wolf-1",
+      text: "execute the plan",
+    });
+    expect(await send.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+    });
+    expect(mockBackend.lastSendArgs?.name).toBe("wolf-1");
+
+    const wait = await post("/api/session-control/wait", {
+      session: "mock:wolf-1",
+      text: "output for wolf-1",
+      timeoutMs: 100,
+    });
+    expect(await wait.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      matched: true,
+    });
+
+    const kill = await post("/api/kill", { session: "mock:wolf-1" });
+    expect(await kill.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+    });
+    expect(await mockBackend.hasSession("wolf-1")).toBe(false);
+  });
+});
+
 describe("POST /api/create", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
@@ -694,6 +808,7 @@ describe("POST /api/session-open", () => {
     expect(await res.json()).toEqual({
       ok: true,
       session: "wolf-1-sub-agent",
+      sessionId: "mock:wolf-1-sub-agent",
       project: "my-app",
       harness: "pi",
     });
@@ -732,6 +847,7 @@ describe("POST /api/session-open", () => {
     expect(await res.json()).toEqual({
       ok: true,
       session: "wolf-1-sub-agent-2",
+      sessionId: "mock:wolf-1-sub-agent-2",
       project: "my-app",
       harness: "pi",
     });
@@ -960,7 +1076,11 @@ describe("session control API", () => {
     const res = await get("/api/session-control/read?session=wolf-1");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ session: "wolf-1", output: "captured output for wolf-1\n" });
+    expect(data).toEqual({
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      output: "captured output for wolf-1\n",
+    });
   });
 
   test("send validates session then delegates to backend", async () => {
@@ -990,7 +1110,7 @@ describe("session control API", () => {
     });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+    expect(data).toEqual({ ok: true, session: "wolf-1", sessionId: "mock:wolf-1", matched: true });
   });
 
   test("wait succeeds from later broker output", async () => {
@@ -1005,7 +1125,7 @@ describe("session control API", () => {
     const res = await wait;
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+    expect(data).toEqual({ ok: true, session: "wolf-1", sessionId: "mock:wolf-1", matched: true });
   });
 
   test("wait replays output emitted between snapshot and subscribe", async () => {
@@ -1022,7 +1142,7 @@ describe("session control API", () => {
 
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+    expect(data).toEqual({ ok: true, session: "wolf-1", sessionId: "mock:wolf-1", matched: true });
   });
 
   test("wait returns 408 on timeout", async () => {

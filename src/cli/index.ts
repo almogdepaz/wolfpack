@@ -26,7 +26,7 @@ import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
 import { attachCommand } from "./attach.js";
-import { runSessionCommand } from "./session-control.js";
+import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
@@ -72,10 +72,11 @@ Commands:
   wolfpack setup                   Run the setup wizard
   wolfpack service <action>        Manage the Wolfpack service
   wolfpack doctor                  Diagnose the installation
-  wolfpack list                    List active sessions (alias: ls)
-  wolfpack session <action>        Run scriptable session commands
-  wolfpack session open <project>  Open a same-harness sub-agent session
-  wolfpack kill <session>          Kill a session
+  wolfpack list [--json]           List active sessions (alias: ls)
+  wolfpack session create <project> Create a top-level session
+  wolfpack session <action>        Inspect or control sessions
+  wolfpack agent spawn <project>   Spawn a same-harness child agent
+  wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
   wolfpack migrate-plan <file>     Migrate an older plan format
@@ -84,7 +85,7 @@ Commands:
 Help:
   wolfpack --help
   wolfpack session --help
-  wolfpack session open --help`;
+  wolfpack agent --help`;
 }
 
 export function shouldStartDashboard(argv: readonly string[]): boolean {
@@ -216,11 +217,13 @@ async function main() {
   } else if (cmd === "doctor") {
     process.exit(await doctor());
   } else if (cmd === "ls" || cmd === "list") {
-    process.exit(await lsSessions());
+    process.exit(await lsSessions(argv.slice(1)));
   } else if (cmd === "session") {
     process.exit(await runSessionCommand(argv.slice(1)));
+  } else if (cmd === "agent") {
+    process.exit(await runAgentCommand(argv.slice(1)));
   } else if (cmd === "kill") {
-    process.exit(await killSession(subcmd));
+    process.exit(await killSession(argv.slice(1)));
   } else if (cmd === "attach") {
     process.exit(await attachCommand(argv.slice(1)));
   } else if (cmd === "uninstall") {

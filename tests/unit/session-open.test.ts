@@ -63,11 +63,14 @@ class FakeSessionOpenBackend implements SessionOpenBackend {
     cmd: string | undefined,
     _loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
-  ): Promise<void> {
+  ): Promise<PublicSessionIdentity> {
     this.createCalls.push({ name, cwd, cmd, options });
     const failure = this.createFailures.shift();
     if (failure) throw failure;
     this.sessions.push(name);
+    const created = identity(name, cmd, `id:${name}`);
+    this.identities[name] = created;
+    return created;
   }
 }
 
@@ -121,6 +124,7 @@ describe("openSubSession", () => {
     expect(result).toEqual({
       ok: true,
       session: "pi-main-sub-agent-2",
+      sessionId: "id:pi-main-sub-agent-2",
       project: "wolfpack",
       harness: "pi",
     });

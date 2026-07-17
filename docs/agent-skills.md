@@ -9,8 +9,8 @@ Bundled skills:
 - `wolfpack-plan` - plan-file task header conventions Ralph can parse.
 - `wolfpack-ralph` - Ralph response-file contract, notifications, and sandbox
   caveats.
-- `wolfpack-tailnet-control` - same-harness sub-agent creation and safe
-  local/Tailscale session inspection and control workflows.
+- `wolfpack-tailnet-control` - top-level session creation, same-harness child
+  spawning, and safe local/Tailscale session inspection/control workflows.
 
 ## Clone or update the auditable source
 
@@ -95,16 +95,22 @@ In either case, start a fresh agent context so skill descriptions are rescanned.
 
 ## Invoke the control skill
 
-Ask naturally: “open a new Wolfpack sub-agent session for this project with
-this instruction.” The canonical direct command is:
+For a top-level project session:
 
 ```bash
-wolfpack session open <project> --prompt '<instruction>' --json
+wolfpack session create <project> --harness pi --prompt '<instruction>' --json
 ```
 
-The control skill documents the tailnet/global auth boundary and references the
-canonical session-control and identity docs rather than duplicating those
-contracts.
+For a same-harness child of the current agent:
+
+```bash
+wolfpack agent spawn <project> --prompt '<instruction>' --json
+```
+
+Keep `<instruction>` short and point at the repository plan rather than
+repeating it. The control skill documents the tailnet/global auth boundary and
+references canonical session-control and identity docs instead of duplicating
+those contracts.
 
 ## Distribution boundary
 

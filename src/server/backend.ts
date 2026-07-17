@@ -61,7 +61,7 @@ export interface SessionBackend {
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
-  ): Promise<void>;
+  ): Promise<PublicSessionIdentity>;
   killSession(name: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
   capturePane(name: string): Promise<string>;
@@ -397,14 +397,15 @@ export class BackendRouter implements SessionBackend {
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
-  ): Promise<void> {
+  ): Promise<PublicSessionIdentity> {
     const broker = this.requireBroker();
     const existing = await broker.list();
     if (existing.includes(name)) {
       throw new DuplicateSessionError(name);
     }
-    await broker.createSession(name, cwd, cmd, loadSettings, options);
+    const identity = await broker.createSession(name, cwd, cmd, loadSettings, options);
     log.info("session created via router", { name, backend: "broker" });
+    return identity;
   }
 
   async killSession(name: string): Promise<void> {

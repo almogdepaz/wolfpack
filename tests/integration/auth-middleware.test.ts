@@ -125,10 +125,13 @@ describe("JWT auth middleware", () => {
     const protectedEndpoints = [
       { method: "GET", path: "/api/projects" },
       { method: "GET", path: "/api/sessions" },
+      { method: "GET", path: "/api/session-control/list" },
+      { method: "GET", path: "/api/session-control/status?session=auth-session" },
       { method: "GET", path: "/api/settings" },
       { method: "GET", path: "/api/discover" },
       { method: "GET", path: "/api/ralph" },
       { method: "POST", path: "/api/resize" },
+      { method: "POST", path: "/api/session-create" },
       { method: "POST", path: "/api/session-open" },
       { method: "POST", path: "/api/ralph/start" },
       { method: "POST", path: "/api/ralph/cancel" },
@@ -188,8 +191,22 @@ describe("JWT auth middleware", () => {
     expect(Array.isArray(body.projects)).toBe(true);
   });
 
-  test("applies ordinary JWT middleware to session-open without a special bypass", async () => {
+  test("applies ordinary JWT middleware to agent-native create routes without a special bypass", async () => {
     const token = createValidToken();
+    const create = await fetch(`${baseUrl}/api/session-create`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(create.status).toBe(400);
+    expect(await create.json()).toEqual({
+      error: "invalid session-create request",
+      code: "INVALID_REQUEST",
+    });
+
     const res = await fetch(`${baseUrl}/api/session-open`, {
       method: "POST",
       headers: {

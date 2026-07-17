@@ -104,7 +104,7 @@ export class MockBackend implements SessionBackend {
     cmd: string | undefined,
     _loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
-  ): Promise<void> {
+  ): Promise<PublicSessionIdentity> {
     this.lastCreateArgs = {
       name,
       cwd,
@@ -119,6 +119,16 @@ export class MockBackend implements SessionBackend {
     }
     this._sessions.add(name);
     if (options?.parentSession) this._parentSessions.set(name, options.parentSession);
+    const now = new Date(0).toISOString();
+    return {
+      wolfpackSessionId: `mock:${name}`,
+      wolfpackSessionName: name,
+      projectPath: cwd,
+      agentKind: options?.agentKind ?? inferAgentKind(cmd),
+      createdAt: now,
+      updatedAt: now,
+      ...(options?.parentSession && { parentSession: options.parentSession }),
+    };
   }
 
   async killSession(name: string): Promise<void> {
