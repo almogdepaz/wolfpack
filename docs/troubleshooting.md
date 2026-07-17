@@ -86,6 +86,15 @@ If the broker also needs a restart, be deliberate: broker restarts terminate bro
 wolfpack service restart --broker
 ```
 
+For deployments from a source checkout, broker intent is mandatory:
+
+```bash
+./scripts/deploy-local.sh --broker=no   # server/CLI/browser changes; preserve sessions
+./scripts/deploy-local.sh --broker=yes  # broker changes; restart the broker intentionally
+```
+
+The deployment script builds and atomically installs signed artifacts. It then verifies service PID transitions, the served browser bundle, API health, and installed CLI help. `--broker=no` additionally requires the broker PID and all pre-existing session identities to remain unchanged. A failed verification exits nonzero; the final output line is a JSON deployment summary.
+
 ## Sessions disappeared after broker restart
 
 The broker owns PTYs. Restarting the server preserves sessions; restarting/stopping the broker is destructive.
