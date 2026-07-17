@@ -18,6 +18,11 @@ case "$1" in
     ;;
 esac
 
+if [ "$DEPLOY_BROKER" = "1" ] && [ -n "${WOLFPACK_SESSION_NAME:-}" ]; then
+  echo "ERROR: --broker=yes cannot run from a broker-owned Wolfpack session; run it from an external terminal" >&2
+  exit 1
+fi
+
 cd "$(dirname "$0")/.."
 VERIFY_TIMEOUT_SECS="${DEPLOY_VERIFY_TIMEOUT_SECS:-20}"
 DOMAIN="gui/$(id -u)"

@@ -1,6 +1,6 @@
 # session control fast path
 
-status: completed — implemented and verified; not committed, deployed, or released
+status: completed — committed as 3b4e778, integrated into the PR #180 follow-up branch, and verified locally
 branch: feat/session-control-fast-path
 base: feat/session-open@7e3f968
 

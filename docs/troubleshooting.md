@@ -93,6 +93,8 @@ For deployments from a source checkout, broker intent is mandatory:
 ./scripts/deploy-local.sh --broker=yes  # broker changes; restart the broker intentionally
 ```
 
+Run `--broker=yes` from an external terminal, not from a Wolfpack session owned by the broker being replaced. The script rejects broker replacement from structured Wolfpack session context before building or mutating the installation.
+
 The deployment script builds and atomically installs signed artifacts. It then verifies service PID transitions, the served browser bundle, API health, and installed CLI help. `--broker=no` additionally requires the broker PID and all pre-existing session identities to remain unchanged. A failed verification exits nonzero; the final output line is a JSON deployment summary.
 
 ## Sessions disappeared after broker restart

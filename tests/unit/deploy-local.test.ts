@@ -134,6 +134,8 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "0",
     DEPLOY_TEST_CORRUPT_INSTALL: "0",
     DEPLOY_VERIFY_TIMEOUT_SECS: "1",
+    WOLFPACK_SESSION_NAME: "",
+    WOLFPACK_AGENT_KIND: "",
     ...env,
   };
 }
@@ -179,6 +181,16 @@ describe("scripts/deploy-local.sh", () => {
       [join(fixture.repo, "scripts", "deploy-local.sh"), "--broker=auto"],
       deployOptions(fixture),
     )).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("rejects broker replacement from a broker-owned session before mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "yes", {
+      WOLFPACK_SESSION_NAME: "dev08-qa",
+      WOLFPACK_AGENT_KIND: "pi",
+    })).toThrow();
     expect(readFileSync(fixture.log, "utf-8")).toBe("");
   });
 
