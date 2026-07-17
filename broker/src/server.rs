@@ -595,6 +595,63 @@ fn unknown_session(id: u64, session_id: Uuid) -> ControlResponse {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn slow_output_forwarder_reports_lag_without_socket_timing() {
+        let session_id = Uuid::new_v4();
+        let bus = crate::output_bus::OutputBus::new(8, 2);
+        let subscription = bus.subscribe(None).expect("subscribe");
+        let (writer_tx, mut writer_rx) = mpsc::channel(1);
+
+        writer_tx
+            .send(Frame::Event(Event::SnapshotInvalidated {
+                session_id: Uuid::nil(),
+            }))
+            .await
+            .expect("fill writer queue");
+
+        let forwarder = tokio::spawn(forward_output(
+            session_id,
+            subscription.replay,
+            subscription.receiver,
+            writer_tx,
+        ));
+
+        for seq in 1..=4 {
+            bus.publish(OutputChunk {
+                seq,
+                data: Arc::new(vec![b'x']),
+            });
+        }
+
+        assert!(matches!(
+            writer_rx.recv().await,
+            Some(Frame::Event(Event::SnapshotInvalidated { .. }))
+        ));
+
+        let mut lagged = None;
+        for _ in 0..3 {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), writer_rx.recv())
+                .await
+                .expect("forwarder response timeout")
+                .expect("writer queue closed");
+            if let Frame::Event(Event::SubscriptionDropped {
+                session_id: dropped_session,
+                lagged: dropped_count,
+            }) = frame
+            {
+                assert_eq!(dropped_session, session_id);
+                lagged = Some(dropped_count);
+                break;
+            }
+        }
+
+        assert!(lagged.is_some_and(|count| count > 0));
+        tokio::time::timeout(std::time::Duration::from_secs(1), forwarder)
+            .await
+            .expect("forwarder did not stop after lag")
+            .expect("forwarder task failed");
+    }
+
     #[test]
     fn default_socket_path_uses_xdg_runtime_dir() {
         // Avoid mutating global env mid-test; just verify the function picks up
