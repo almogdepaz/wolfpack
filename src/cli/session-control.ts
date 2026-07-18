@@ -1,3 +1,4 @@
+import { access, readFile } from "node:fs/promises";
 import {
   isOpenableHarness,
   isSessionOpenErrorCode,
@@ -31,32 +32,33 @@ type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
-  return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt <instruction>] [--json]
+  return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
 
 Creates a top-level session. The server owns validation, naming, identity, and launch.
 The optional prompt is passed to the agent harness at process startup.`;
 }
 
 export function sessionOpenUsage(): string {
-  return `Usage: wolfpack session open <project> [--prompt <instruction>] [--json]
+  return `Usage: wolfpack session open <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 
-Deprecated alias for: wolfpack agent spawn <project> [--prompt <instruction>] [--json]`;
+Deprecated alias for: wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]`;
 }
 
 export function agentUsage(): string {
   return `Usage: wolfpack agent <command> [options]
 
 Commands:
-  wolfpack agent spawn <project> [--prompt <instruction>] [--json]
+  wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent notify-parent [--message <text>] [--json]
 
-Spawns a same-harness child of the current Wolfpack agent session.`;
+Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
 }
 
 export function sessionUsage(): string {
   return `Usage: wolfpack session <command> [options]
 
 Commands:
-  wolfpack session create <project> [--harness <agent>] [--prompt <instruction>] [--json]
+  wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
   wolfpack session status <session-or-id> [--json]
   wolfpack session read <session-or-id> [--json]
   wolfpack session send <session-or-id> <text...> [--no-enter] [--json]
@@ -74,6 +76,8 @@ export type ParsedSessionCommand =
     readonly project: string;
     readonly harness: OpenableHarness | undefined;
     readonly prompt: string | undefined;
+    readonly promptFile?: string;
+    readonly plan?: string;
     readonly output: OutputMode;
   }
   | {
@@ -81,6 +85,9 @@ export type ParsedSessionCommand =
     readonly action: "open";
     readonly project: string;
     readonly prompt: string | undefined;
+    readonly promptFile?: string;
+    readonly plan?: string;
+    readonly notifyParent?: true;
     readonly output: OutputMode;
   }
   | { readonly ok: true; readonly action: "status"; readonly session: string; readonly output: OutputMode }
@@ -96,6 +103,15 @@ export type ParsedAgentCommand =
     readonly action: "spawn";
     readonly project: string;
     readonly prompt: string | undefined;
+    readonly promptFile?: string;
+    readonly plan?: string;
+    readonly notifyParent?: true;
+    readonly output: OutputMode;
+  }
+  | {
+    readonly ok: true;
+    readonly action: "notify-parent";
+    readonly message: string | undefined;
     readonly output: OutputMode;
   }
   | { readonly ok: false; readonly message: string };
@@ -171,16 +187,26 @@ function consumeValue(args: string[], flag: string): string | null {
   return value;
 }
 
-const LAUNCH_KNOWN_OPTIONS = new Set(["--json", "--shell", "--prompt", "--harness"]);
+const LAUNCH_KNOWN_OPTIONS = new Set([
+  "--json",
+  "--shell",
+  "--prompt",
+  "--prompt-file",
+  "--plan",
+  "--notify-parent",
+  "--harness",
+  "--message",
+]);
 
-function consumeLaunchPrompt(args: string[]): string | null {
-  const directIndex = args.indexOf("--prompt");
-  const equalsIndexes = args.flatMap((arg, index) => arg.startsWith("--prompt=") ? [index] : []);
+function consumeLaunchValue(args: string[], flag: string): string | null {
+  const directIndex = args.indexOf(flag);
+  const equalsPrefix = `${flag}=`;
+  const equalsIndexes = args.flatMap((arg, index) => arg.startsWith(equalsPrefix) ? [index] : []);
   if ((directIndex !== -1 && equalsIndexes.length > 0) || equalsIndexes.length > 1) return "";
   const equalsIndex = equalsIndexes[0];
   if (equalsIndex !== undefined) {
     const [value] = args.splice(equalsIndex, 1);
-    return value.slice("--prompt=".length);
+    return value.slice(equalsPrefix.length);
   }
   if (directIndex === -1) return null;
   const value = args[directIndex + 1];
@@ -205,29 +231,60 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   if (!["create", "open", "status", "read", "send", "wait", "current-context"].includes(action)) {
     return { ok: false, message: `Unknown session command: ${action}` };
   }
-  const promptValue = action === "create" || action === "open" ? consumeLaunchPrompt(args) : null;
+  const isLaunch = action === "create" || action === "open";
+  const promptValue = isLaunch ? consumeLaunchValue(args, "--prompt") : null;
+  const promptFileValue = isLaunch ? consumeLaunchValue(args, "--prompt-file") : null;
+  const planValue = isLaunch ? consumeLaunchValue(args, "--plan") : null;
+  const notifyParent = isLaunch ? consumeFlag(args, "--notify-parent") : false;
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
-  if (action === "create" || action === "open") {
+  if (isLaunch) {
     if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
     const prompt = promptValue ?? undefined;
+    const promptFile = promptFileValue ?? undefined;
+    const plan = planValue ?? undefined;
     const project = args.shift();
     const harness = harnessValue !== null && isOpenableHarness(harnessValue)
       ? harnessValue
       : undefined;
+    const promptSources = [promptValue, promptFileValue, planValue].filter(value => value !== null);
     const validPrompt = prompt === undefined
       || (prompt.trim().length > 0 && prompt.length <= MAX_INITIAL_PROMPT_LENGTH);
+    const validPromptFile = promptFileValue === null || Boolean(promptFileValue.trim());
+    const validPlan = planValue === null || Boolean(planValue.trim());
+    const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
     const validHarness = action !== "create"
       || harnessValue === null
       || harness !== undefined;
-    if (!project || args.length > 0 || !validPrompt || !validHarness) {
+    const validNotify = action !== "create" || !notifyParent;
+    if (!project || args.length > 0 || !validPrompt || !validPromptSources || !validHarness || !validNotify) {
       return {
         ok: false,
         message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
       };
     }
-    if (action === "create") return { ok: true, action, project, harness, prompt, output };
-    return { ok: true, action, project, prompt, output };
+    if (action === "create") {
+      return {
+        ok: true,
+        action,
+        project,
+        harness,
+        prompt,
+        ...(promptFile !== undefined && { promptFile }),
+        ...(plan !== undefined && { plan }),
+        output,
+      };
+    }
+    return {
+      ok: true,
+      action,
+      project,
+      prompt,
+      ...(promptFile !== undefined && { promptFile }),
+      ...(plan !== undefined && { plan }),
+      ...(notifyParent && { notifyParent: true }),
+      output,
+    };
   }
   if (action === "current-context") {
     if (args.length > 0) return { ok: false, message: "Usage: wolfpack session current-context [--json|--shell]" };
@@ -258,18 +315,33 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
 }
 
 export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
-  const [action, ...args] = argv;
+  const [action, ...rest] = argv;
+  const args = [...rest];
+  if (action === "notify-parent") {
+    const messageValue = consumeLaunchValue(args, "--message");
+    const { mode: output, shellRequested } = parseOutputMode(args);
+    const message = messageValue ?? (args.length > 0 ? args.join(" ") : undefined);
+    const validMessage = message === undefined || (message.trim().length > 0 && message.length <= 500);
+    if (shellRequested || !validMessage || (messageValue !== null && args.length > 0)) {
+      return { ok: false, message: "Usage: wolfpack agent notify-parent [--message <text>] [--json]" };
+    }
+    return { ok: true, action: "notify-parent", message, output };
+  }
   if (action !== "spawn") {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  if (!parsed.ok) return { ok: false, message: "Usage: wolfpack agent spawn <project> [--prompt <instruction>] [--json]" };
+  const usage = "Usage: wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]";
+  if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
     ok: true,
     action: "spawn",
     project: parsed.project,
     prompt: parsed.prompt,
+    ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
+    ...(parsed.plan !== undefined && { plan: parsed.plan }),
+    ...(parsed.notifyParent && { notifyParent: true }),
     output: parsed.output,
   };
 }
@@ -443,10 +515,68 @@ function mapOpenApiError(output: OutputMode, error: unknown): number {
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }
 
+interface LaunchPromptSource {
+  readonly prompt: string | undefined;
+  readonly promptFile?: string;
+  readonly plan?: string;
+  readonly notifyParent?: true;
+  readonly output: OutputMode;
+}
+
+const NOTIFY_PARENT_PROMPT = "when done or blocked, run `wolfpack agent notify-parent` once, then summarize changes, verification, and concerns.";
+
+function compactPlanPrompt(plan: string, notifyParent?: true): string {
+  const base = `implement ${plan}. read repo instructions and the full plan first; update plan status as work progresses. preserve unrelated dirty work. do not commit, push, merge, or deploy. when done or blocked, leave this session open and summarize changes, verification, and concerns.`;
+  return notifyParent ? `${base} ${NOTIFY_PARENT_PROMPT}` : base;
+}
+
+async function readPromptFile(path: string, output: OutputMode): Promise<string | number> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return writeOpenError(output, "PROMPT_FILE_UNREADABLE", "prompt file not readable", SESSION_EXIT.NOT_FOUND);
+  }
+}
+
+async function verifyReadablePlan(path: string, output: OutputMode): Promise<number | undefined> {
+  try {
+    await access(path);
+    return undefined;
+  } catch {
+    return writeOpenError(output, "PLAN_FILE_UNREADABLE", "plan file not readable", SESSION_EXIT.NOT_FOUND);
+  }
+}
+
+async function materializeInitialPrompt(source: LaunchPromptSource): Promise<string | undefined | number> {
+  let prompt = source.prompt;
+  let includesNotifyParent = false;
+  if (source.promptFile !== undefined) {
+    const promptFileContent = await readPromptFile(source.promptFile, source.output);
+    if (typeof promptFileContent === "number") return promptFileContent;
+    prompt = promptFileContent;
+  } else if (source.plan !== undefined) {
+    const planError = await verifyReadablePlan(source.plan, source.output);
+    if (planError !== undefined) return planError;
+    prompt = compactPlanPrompt(source.plan, source.notifyParent);
+    includesNotifyParent = Boolean(source.notifyParent);
+  }
+  if (source.notifyParent && !includesNotifyParent) {
+    prompt = prompt !== undefined ? `${prompt} ${NOTIFY_PARENT_PROMPT}` : NOTIFY_PARENT_PROMPT;
+  }
+
+  if (prompt !== undefined && (!prompt.trim() || prompt.length > MAX_INITIAL_PROMPT_LENGTH)) {
+    return writeOpenError(source.output, "INVALID_PROMPT", "invalid initial prompt", SESSION_EXIT.USAGE);
+  }
+  return prompt;
+}
+
 async function runSessionOpen(
   parsed: {
     readonly project: string;
     readonly prompt: string | undefined;
+    readonly promptFile?: string;
+    readonly plan?: string;
+    readonly notifyParent?: true;
     readonly output: OutputMode;
   },
 ): Promise<number> {
@@ -454,6 +584,8 @@ async function runSessionOpen(
   if (!context.ok) {
     return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
   }
+  const initialPrompt = await materializeInitialPrompt(parsed);
+  if (typeof initialPrompt === "number") return initialPrompt;
 
   try {
     const response = await call("/api/session-open", {
@@ -461,7 +593,7 @@ async function runSessionOpen(
       body: JSON.stringify({
         project: parsed.project,
         parentSession: context.parentSession,
-        ...(parsed.prompt !== undefined && { initialPrompt: parsed.prompt }),
+        ...(initialPrompt !== undefined && { initialPrompt }),
       }),
     }) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response);
@@ -475,13 +607,16 @@ async function runSessionOpen(
 async function runSessionCreate(
   parsed: Extract<ParsedSessionCommand, { readonly action: "create" }>,
 ): Promise<number> {
+  const initialPrompt = await materializeInitialPrompt(parsed);
+  if (typeof initialPrompt === "number") return initialPrompt;
+
   try {
     const response = await call("/api/session-create", {
       method: "POST",
       body: JSON.stringify({
         project: parsed.project,
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
-        ...(parsed.prompt !== undefined && { initialPrompt: parsed.prompt }),
+        ...(initialPrompt !== undefined && { initialPrompt }),
       }),
     }) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response);
@@ -489,6 +624,28 @@ async function runSessionCreate(
     return SESSION_EXIT.OK;
   } catch (error: unknown) {
     return mapCreateApiError(parsed.output, error);
+  }
+}
+
+function defaultNotifyParentMessage(): string {
+  const session = process.env.WOLFPACK_SESSION_NAME?.trim() || "Wolfpack sub-agent";
+  return `${session} finished or blocked; ready for parent review`;
+}
+
+async function runNotifyParent(
+  parsed: Extract<ParsedAgentCommand, { readonly action: "notify-parent" }>,
+): Promise<number> {
+  const message = parsed.message ?? defaultNotifyParentMessage();
+  try {
+    const response = await call("/api/notify", {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    if (parsed.output === "json") jsonOut(response);
+    else print("notified");
+    return SESSION_EXIT.OK;
+  } catch (error: unknown) {
+    return mapApiError(error, parsed.output);
   }
 }
 
@@ -501,11 +658,16 @@ export async function runAgentCommand(argv: readonly string[]): Promise<number> 
     print(agentUsage());
     return SESSION_EXIT.OK;
   }
+  if (argv.length === 2 && argv[0] === "notify-parent" && HELP_ALIASES.has(argv[1])) {
+    print(agentUsage());
+    return SESSION_EXIT.OK;
+  }
   const parsed = parseAgentCommand(argv);
   if (!parsed.ok) {
     print(red(parsed.message));
     return SESSION_EXIT.USAGE;
   }
+  if (parsed.action === "notify-parent") return runNotifyParent(parsed);
   return runSessionOpen(parsed);
 }
 

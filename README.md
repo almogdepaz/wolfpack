@@ -107,16 +107,16 @@ wolfpack uninstall --yes Remove everything
 Create a top-level project session with its initial instruction delivered at launch:
 
 ```bash
-wolfpack session create branchout --harness pi --prompt "execute .plans/000-task.md" --json
+wolfpack session create branchout --harness pi --plan .plans/000-task.md --json
 ```
 
 Spawn a same-harness child from an existing Wolfpack agent:
 
 ```bash
-wolfpack agent spawn wolfpack --prompt "perform differential review only" --json
+wolfpack agent spawn wolfpack --plan .plans/000-review.md --notify-parent --json
 ```
 
-Each command makes one server-owned request and returns the stable broker `sessionId`. The server validates the project, allocates the name, persists identity, and passes `--prompt` directly to the harness at startup instead of racing terminal readiness. Child spawning derives the parent harness and structured hierarchy without inheriting its transcript or context. `wolfpack session open` remains a deprecated child-spawn alias.
+Each command makes one server-owned request and returns the stable broker `sessionId`. The server validates the project, allocates the name, persists identity, and passes startup instructions directly to the harness instead of racing terminal readiness. `--plan` generates a compact plan handoff without copying plan contents; `--prompt-file` avoids shell heredoc/quoting failures for bespoke long prompts. Child spawning derives the parent harness and structured hierarchy without inheriting its transcript or context. `wolfpack session open` remains a deprecated child-spawn alias.
 
 Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 
@@ -201,8 +201,8 @@ Prefer symlinks so a reviewed `git pull --ff-only` updates the source. Refuse in
 For a top-level session or a same-harness child, invoke:
 
 ```bash
-wolfpack session create <project> --harness pi --prompt '<instruction>' --json
-wolfpack agent spawn <project> --prompt '<instruction>' --json
+wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
+wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
 Platform binaries do not install skills. This is intentional: the cloned repository remains the auditable source of truth.

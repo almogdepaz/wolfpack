@@ -5,7 +5,7 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 ## Create a top-level session
 
 ```bash
-wolfpack session create <project> [--harness <agent>] [--prompt <instruction>] [--json]
+wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
 ```
 
 - performs one `POST /api/session-create` request.
@@ -14,34 +14,38 @@ wolfpack session create <project> [--harness <agent>] [--prompt <instruction>] [
 - accepts `pi`, `claude`, `codex`, `gemini`, or `cursor` as explicit harnesses.
 - allocates `<project>`, then `<project>-2`, `<project>-3`, and so on with bounded collision retries.
 - passes one explicit prompt as an opaque argv value when the harness starts; no terminal-readiness send race is involved.
+- `--prompt-file <file>` reads instruction text from disk to avoid shell heredoc/quoting failures.
+- `--plan <file>` verifies the file exists and generates a compact "read and implement this plan" startup prompt without copying plan contents.
 - rejects prompts when the effective command is a plain shell.
 - json success: `{ "ok": true, "session": string, "sessionId": string, "project": string, "harness": string }`.
 
 ## Spawn a child agent
 
 ```bash
-wolfpack agent spawn <project> [--prompt <instruction>] [--json]
+wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
 - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND` from the current parent agent.
 - resolves the parent through structured broker identity and launches the same supported harness.
 - derives `<parent>-sub-agent`, then numbered names.
-- passes only the explicit prompt; it does not inherit the parent transcript, model context, or summary.
-- stores structured parent ID/name metadata and sends a best-effort typed browser notification.
+- passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
+- supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
+- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked.
+- stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
 - json success has the same fields as top-level creation, including stable `sessionId`.
 
 `wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn`. It never means top-level creation.
 
 ## Keep handoffs short
 
-Put durable instructions in a repository plan and send only intent plus safety boundaries:
+For plan work, prefer the compact generator:
 
-```text
-execute .plans/000-task.md. verify assumptions first. stop before irreversible publication or cleanup.
+```bash
+wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
-Do not duplicate the plan, source inventory, testing policy, and architecture in every launch prompt.
+Put durable instructions in the repository plan. Do not duplicate the plan, source inventory, testing policy, and architecture in every launch prompt. For bespoke long text, write it to a file and use `--prompt-file`.
 
 ## List and inspect without terminal scraping
 
@@ -67,6 +71,8 @@ wolfpack session wait <session-or-id> <text> [--timeout-ms <1..600000>] [--json]
 - `send` writes through the broker input plane and appends Enter unless `--no-enter` is set.
 - `wait` checks the current snapshot, then subscribes from its sequence number with a bounded buffer and timeout.
 - JSON responses return the canonical `session` and stable `sessionId`; wait also returns `matched`.
+
+`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`.
 
 `wolfpack session current-context [--json|--shell]` reports only Wolfpack-injected name/project context. It never infers identity from process names or terminal prose.
 

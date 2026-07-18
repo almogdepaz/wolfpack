@@ -98,19 +98,20 @@ In either case, start a fresh agent context so skill descriptions are rescanned.
 For a top-level project session:
 
 ```bash
-wolfpack session create <project> --harness pi --prompt '<instruction>' --json
+wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
 ```
 
 For a same-harness child of the current agent:
 
 ```bash
-wolfpack agent spawn <project> --prompt '<instruction>' --json
+wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
-Keep `<instruction>` short and point at the repository plan rather than
-repeating it. The control skill documents the tailnet/global auth boundary and
-references canonical session-control and identity docs instead of duplicating
-those contracts.
+Use `--plan` for plan work and `--prompt-file` for long bespoke instructions;
+avoid pasting full plans or repository policy into the launch command. The
+control skill documents the tailnet/global auth boundary and references
+canonical session-control and identity docs instead of duplicating those
+contracts.
 
 ## Distribution boundary
 

@@ -19,17 +19,13 @@ wolfpack session create <project> --harness <pi|claude|codex|gemini|cursor> --pr
 A same-harness **child** of the current agent:
 
 ```bash
-wolfpack agent spawn <project> --prompt '<instruction>' --json
+wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
 `wolfpack session open` is only a deprecated child-spawn alias. Never use it for a top-level request.
-Both creation commands perform one server-owned request and pass the prompt at process startup.
+Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context.
 
-Use one short prompt that references the source-of-truth plan instead of repeating it:
-
-```text
-execute .plans/000-task.md. verify assumptions first. stop before irreversible publication or cleanup.
-```
+Prefer `--plan <file>` for plan work: Wolfpack generates the compact handoff prompt and verifies the file exists without copying plan contents into the parent transcript. Use `--prompt-file <file>` for long bespoke instructions. Use raw `--prompt` only for one short prompt sentence. Do NOT paste repository policy, architecture context, or full plans into the launch command.
 
 ## Structured inspection and control
 

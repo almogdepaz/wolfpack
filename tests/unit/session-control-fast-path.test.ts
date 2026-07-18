@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   SESSION_EXIT,
   parseAgentCommand,
@@ -37,7 +40,7 @@ describe("session control fast-path parsing", () => {
   test("reports agent-native usage for invalid child-agent spawn", () => {
     expect(parseAgentCommand(["spawn"])).toEqual({
       ok: false,
-      message: "Usage: wolfpack agent spawn <project> [--prompt <instruction>] [--json]",
+      message: "Usage: wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]",
     });
   });
 
@@ -55,6 +58,31 @@ describe("session control fast-path parsing", () => {
       prompt: "review the plan",
       output: "json",
     });
+  });
+
+  test("parses compact plan spawn with parent notification", () => {
+    expect(parseAgentCommand([
+      "spawn",
+      "branchout",
+      "--plan",
+      ".plans/009-subagent-token-cost-optimizations.md",
+      "--notify-parent",
+      "--json",
+    ])).toEqual({
+      ok: true,
+      action: "spawn",
+      project: "branchout",
+      prompt: undefined,
+      plan: ".plans/009-subagent-token-cost-optimizations.md",
+      notifyParent: true,
+      output: "json",
+    });
+  });
+
+  test("rejects ambiguous launch prompt sources", () => {
+    expect(parseAgentCommand(["spawn", "branchout", "--prompt", "x", "--plan", ".plans/x.md"]).ok).toBe(false);
+    expect(parseAgentCommand(["spawn", "branchout", "--prompt-file", "prompt.txt", "--plan", ".plans/x.md"]).ok).toBe(false);
+    expect(parseSessionCommand(["create", "branchout", "--notify-parent"]).ok).toBe(false);
   });
 });
 
@@ -163,6 +191,101 @@ describe("session control fast-path requests", () => {
     expect(child.stderr.toString()).toBe("");
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(child.stdout.toString()).sessionId).toBe("id-child");
+  });
+
+  test("agent spawn plan mode sends a compact prompt, not the plan contents", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "wolfpack-plan-spawn-"));
+    try {
+      const planPath = join(tempRoot, ".plans/009-token.md");
+      mkdirSync(join(tempRoot, ".plans"), { recursive: true });
+      writeFileSync(planPath, "# huge plan body that must not be copied into the prompt\n");
+      const script = `
+        process.env.WOLFPACK_SESSION_NAME = "wolfpack";
+        process.env.WOLFPACK_AGENT_KIND = "pi";
+        const calls = [];
+        globalThis.fetch = async (url, init) => {
+          calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+          return Response.json({ ok: true, session: "wolfpack-sub-agent", sessionId: "id-child", project: "branchout", harness: "pi" });
+        };
+        const { runAgentCommand } = await import("${process.cwd()}/src/cli/session-control.ts");
+        const code = await runAgentCommand(["spawn", "branchout", "--plan", "${planPath}", "--notify-parent", "--json"]);
+        const prompt = calls[0]?.body?.initialPrompt ?? "";
+        if (!prompt.includes("implement ${planPath}")) process.exit(97);
+        if (!prompt.includes("wolfpack agent notify-parent")) process.exit(98);
+        if (prompt.includes("huge plan body")) process.exit(99);
+        process.exit(code);
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: tempRoot,
+        env: { ...process.env, NO_COLOR: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.stderr.toString()).toBe("");
+      expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("prompt-file passes file contents without requiring shell heredocs", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "wolfpack-prompt-file-"));
+    try {
+      const promptPath = join(tempRoot, "prompt.txt");
+      writeFileSync(promptPath, "review the diff; don't deploy\n");
+      const script = `
+        process.env.WOLFPACK_SESSION_NAME = "wolfpack";
+        process.env.WOLFPACK_AGENT_KIND = "pi";
+        const calls = [];
+        globalThis.fetch = async (url, init) => {
+          calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+          return Response.json({ ok: true, session: "wolfpack-sub-agent", sessionId: "id-child", project: "branchout", harness: "pi" });
+        };
+        const { runAgentCommand } = await import("${process.cwd()}/src/cli/session-control.ts");
+        const code = await runAgentCommand(["spawn", "branchout", "--prompt-file", "${promptPath}", "--json"]);
+        const expectedPrompt = ${JSON.stringify("review the diff; don't deploy\n")};
+        if (calls[0]?.body?.initialPrompt !== expectedPrompt) process.exit(99);
+        process.exit(code);
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: tempRoot,
+        env: { ...process.env, NO_COLOR: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.stderr.toString()).toBe("");
+      expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("agent notify-parent wraps the existing notify endpoint", () => {
+    const script = `
+      const calls = [];
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return Response.json({ ok: true, sent: 1 });
+      };
+      const { runAgentCommand } = await import("./src/cli/session-control.ts");
+      const code = await runAgentCommand(["notify-parent", "--message", "ready for review", "--json"]);
+      const expected = [{
+        url: "http://127.0.0.1:18790/api/notify",
+        method: "POST",
+        body: { message: "ready for review" },
+      }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout.toString())).toEqual({ ok: true, sent: 1 });
   });
 
   test("status returns one json error envelope for an ambiguous selector", () => {
