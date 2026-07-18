@@ -160,13 +160,13 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
       continue;
     }
 
+    await readParentState(
+      input.backend,
+      input.parentSession,
+      parentIdentity.wolfpackSessionId,
+    );
     if (input.notify) {
       try {
-        await readParentState(
-          input.backend,
-          input.parentSession,
-          parentIdentity.wolfpackSessionId,
-        );
         input.notify(parentIdentity, session);
       } catch {
         // Browser notification is best-effort after successful creation.

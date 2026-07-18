@@ -283,7 +283,7 @@ describe("openSubSession", () => {
     expect(backend.createCalls).toEqual([]);
   });
 
-  test("notifies only after success and suppresses stale intent for a replaced parent", async () => {
+  test("notifies only after success", async () => {
     const failedBackend = new FakeSessionOpenBackend("pi-main");
     failedBackend.createFailures.push(new Error("broker down"));
     const failedNotifications: string[] = [];
@@ -295,6 +295,32 @@ describe("openSubSession", () => {
       notify: (_parent, session) => failedNotifications.push(session),
     })).rejects.toBeInstanceOf(SessionOpenError);
     expect(failedNotifications).toEqual([]);
+  });
+
+  test("fails closed after creation when the parent disappears or is replaced", async () => {
+    const disappearedBackend = new FakeSessionOpenBackend("pi-main");
+    disappearedBackend.onList = (count, current) => {
+      if (count === 2) {
+        current.sessions = [];
+        current.identities = {};
+      }
+    };
+    const disappearedNotifications: string[] = [];
+    let disappearedFailure: unknown;
+    try {
+      await openSubSession({
+        backend: disappearedBackend,
+        parentSession: "pi-main",
+        project: "wolfpack",
+        projectDir: "/dev/wolfpack",
+        notify: (_parent, session) => disappearedNotifications.push(session),
+      });
+    } catch (error: unknown) {
+      disappearedFailure = error;
+    }
+    expectSessionOpenError(disappearedFailure, "PARENT_SESSION_NOT_FOUND");
+    expect(disappearedBackend.createCalls).toHaveLength(1);
+    expect(disappearedNotifications).toEqual([]);
 
     const replacedBackend = new FakeSessionOpenBackend("pi-main");
     replacedBackend.onList = (count, current) => {
@@ -305,14 +331,20 @@ describe("openSubSession", () => {
       }
     };
     const staleNotifications: string[] = [];
-    const result = await openSubSession({
-      backend: replacedBackend,
-      parentSession: "pi-main",
-      project: "wolfpack",
-      projectDir: "/dev/wolfpack",
-      notify: (_parent, session) => staleNotifications.push(session),
-    });
-    expect(result.ok).toBe(true);
+    let replacedFailure: unknown;
+    try {
+      await openSubSession({
+        backend: replacedBackend,
+        parentSession: "pi-main",
+        project: "wolfpack",
+        projectDir: "/dev/wolfpack",
+        notify: (_parent, session) => staleNotifications.push(session),
+      });
+    } catch (error: unknown) {
+      replacedFailure = error;
+    }
+    expectSessionOpenError(replacedFailure, "PARENT_SESSION_CHANGED");
+    expect(replacedBackend.createCalls).toHaveLength(1);
     expect(staleNotifications).toEqual([]);
   });
 });
