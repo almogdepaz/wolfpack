@@ -73,7 +73,7 @@ test("mobile touch scrolling works immediately after switching sessions", async 
     switchSession("another-project");
   });
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
-  await expect.poll(() => attachModes).toEqual(["viewport", "full"]);
+  await expect.poll(() => attachModes).toEqual(["full", "full"]);
   await expect.poll(() => page.evaluate(() => {
     const terminal = (window as unknown as { state: { terminalController?: { term?: { getScrollbackLength?: () => number } } } }).state.terminalController?.term;
     return terminal?.getScrollbackLength?.() ?? 0;
@@ -427,7 +427,7 @@ test("desktop solo saved fast uses full prefill and clears cached prose", async 
   expect(tail).not.toContain("CACHED-HISTORY-MUST-NOT-MIX");
 });
 
-test("mobile fast restore with cached snapshot requests viewport prefill without showing cached placeholder", async ({ page }, testInfo) => {
+test("mobile first-session restore overrides fast mode with full prefill without showing cached placeholder", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only restore path");
 
   await page.goto(srv.baseUrl);
@@ -454,7 +454,7 @@ test("mobile fast restore with cached snapshot requests viewport prefill without
   expect(immediateState.className).not.toContain("cached-visible");
   expect(immediateState.placeholder).toBe("");
   expect(immediateState.loadState).toBe("prefill-loading");
-  await expectSoloAttachPrefillMode(page, "viewport");
+  await expectSoloAttachPrefillMode(page, "full");
 });
 
 test("desktop solo terminal defaults to full prefill", async ({ page }, testInfo) => {
