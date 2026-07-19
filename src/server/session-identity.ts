@@ -22,6 +22,11 @@ export interface ExternalAgentIdentity {
   source: "env" | "broker_env" | "ralph_launch";
 }
 
+export interface ParentSessionIdentity {
+  readonly wolfpackSessionId: string;
+  readonly wolfpackSessionName: string;
+}
+
 export interface SessionIdentity {
   schemaVersion: typeof SESSION_IDENTITY_SCHEMA_VERSION;
   wolfpackSessionId: string;
@@ -31,6 +36,7 @@ export interface SessionIdentity {
   createdAt: string;
   restoredAt?: string;
   updatedAt: string;
+  parentSession?: ParentSessionIdentity;
   externalAgent?: ExternalAgentIdentity;
 }
 
@@ -42,6 +48,7 @@ export interface PublicSessionIdentity {
   createdAt: string;
   restoredAt?: string;
   updatedAt: string;
+  parentSession?: ParentSessionIdentity;
   externalAgent?: {
     provider: AgentKind | string;
     redactedId: string;
@@ -55,6 +62,7 @@ export interface CaptureSessionIdentityInput {
   wolfpackSessionName: string;
   projectPath: string;
   agentKind: AgentKind | string;
+  parentSession?: ParentSessionIdentity;
   externalAgent?: {
     provider?: AgentKind | string;
     id?: string;
@@ -90,16 +98,32 @@ export function inferAgentKind(cmd: string | undefined): AgentKind | string {
 }
 
 export function identityEnvVars(input: {
-  wolfpackSessionName: string;
-  projectPath: string;
-  agentKind: AgentKind | string;
+  readonly wolfpackSessionName: string;
+  readonly projectPath: string;
+  readonly agentKind: AgentKind | string;
+  readonly parentSession?: ParentSessionIdentity;
 }): Array<[string, string]> {
   return [
     ["WOLFPACK_SESSION_NAME", input.wolfpackSessionName],
     ["WOLFPACK_PROJECT_DIR", input.projectPath],
     ["WOLFPACK_AGENT_KIND", input.agentKind],
+    ...(input.parentSession ? [
+      ["WOLFPACK_PARENT_SESSION_ID", input.parentSession.wolfpackSessionId] as [string, string],
+      ["WOLFPACK_PARENT_SESSION_NAME", input.parentSession.wolfpackSessionName] as [string, string],
+    ] : []),
     ["WOLFPACK_EXTERNAL_AGENT_ID_FILE", join(input.projectPath, ".wolfpack", "external-agent-id")],
   ];
+}
+
+export function extractParentSessionFromEnv(
+  env: Array<[string, string]> | undefined,
+): ParentSessionIdentity | undefined {
+  if (!env) return undefined;
+  const map = new Map(env);
+  const wolfpackSessionId = map.get("WOLFPACK_PARENT_SESSION_ID")?.trim();
+  const wolfpackSessionName = map.get("WOLFPACK_PARENT_SESSION_NAME")?.trim();
+  if (!wolfpackSessionId || !wolfpackSessionName) return undefined;
+  return { wolfpackSessionId, wolfpackSessionName };
 }
 
 export function extractExternalAgentFromEnv(
@@ -130,6 +154,7 @@ export function toPublicSessionIdentity(identity: SessionIdentity): PublicSessio
     createdAt: identity.createdAt,
     restoredAt: identity.restoredAt,
     updatedAt: identity.updatedAt,
+    ...(identity.parentSession && { parentSession: identity.parentSession }),
     ...(identity.externalAgent && {
       externalAgent: {
         provider: identity.externalAgent.provider,
@@ -162,6 +187,7 @@ export class SessionIdentityStore {
     const existingIndex = file.sessions.findIndex((s) => s.wolfpackSessionId === input.wolfpackSessionId);
     const existing = existingIndex >= 0 ? file.sessions[existingIndex] : undefined;
     const externalAgent = normalizeExternalAgent(input, existing, now);
+    const parentSession = input.parentSession ?? existing?.parentSession;
     const next: SessionIdentity = {
       schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION,
       wolfpackSessionId: input.wolfpackSessionId,
@@ -171,6 +197,7 @@ export class SessionIdentityStore {
       createdAt: existing?.createdAt ?? now,
       restoredAt: existing ? now : undefined,
       updatedAt: now,
+      ...(parentSession && { parentSession }),
       ...(externalAgent && { externalAgent }),
     };
     if (existingIndex >= 0) file.sessions[existingIndex] = next;
@@ -185,6 +212,7 @@ export class SessionIdentityStore {
     projectPath: string;
     agentKind?: AgentKind | string;
     externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+    parentSession?: ParentSessionIdentity;
   }>, now: Date = new Date()): SessionIdentity[] {
     const file = this.read();
     const byId = new Map(file.sessions.map((s) => [s.wolfpackSessionId, s]));
@@ -210,6 +238,9 @@ export class SessionIdentityStore {
         createdAt: existing?.createdAt ?? restoredAt,
         restoredAt: existing?.restoredAt ?? restoredAt,
         updatedAt: existing?.updatedAt ?? restoredAt,
+        ...((session.parentSession ?? existing?.parentSession) && {
+          parentSession: session.parentSession ?? existing?.parentSession,
+        }),
         ...(candidateExternalAgent && { externalAgent: candidateExternalAgent }),
       };
       if (existing && sameIdentityIgnoringTimestamps(existing, candidate)) {
@@ -283,7 +314,15 @@ function isSessionIdentity(value: unknown): value is SessionIdentity {
     && typeof obj.projectPath === "string"
     && typeof obj.agentKind === "string"
     && typeof obj.createdAt === "string"
-    && typeof obj.updatedAt === "string";
+    && typeof obj.updatedAt === "string"
+    && (obj.parentSession === undefined || isParentSessionIdentity(obj.parentSession));
+}
+
+function isParentSessionIdentity(value: unknown): value is ParentSessionIdentity {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return typeof obj.wolfpackSessionId === "string"
+    && typeof obj.wolfpackSessionName === "string";
 }
 
 function sameIdentitySet(a: SessionIdentity[], b: SessionIdentity[]): boolean {

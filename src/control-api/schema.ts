@@ -1,4 +1,11 @@
 import { RALPH_RESPONSE_VERSION } from "../ralph-response.ts";
+import {
+  OPENABLE_HARNESSES,
+  SESSION_OPEN_ERROR,
+  SESSION_OPEN_HTTP_STATUS,
+} from "../session-open-contract.ts";
+import type { SessionOpenErrorCode } from "../session-open-contract.ts";
+import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -80,6 +87,19 @@ const nullable = (schema: JsonSchema): JsonSchema => ({
 
 const ref = (name: string): JsonSchema => ({ $ref: `#/$defs/${name}` });
 
+function sessionOpenErrorLines(): readonly string[] {
+  const codesByStatus = new Map<number, SessionOpenErrorCode[]>();
+  for (const code of Object.values(SESSION_OPEN_ERROR)) {
+    const status = SESSION_OPEN_HTTP_STATUS[code];
+    const codes = codesByStatus.get(status) ?? [];
+    codes.push(code);
+    codesByStatus.set(status, codes);
+  }
+  return [...codesByStatus.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([status, codes]) => `${status} ${codes.sort().join("|")}`);
+}
+
 const object = (
   properties: Record<string, JsonSchema>,
   required: readonly string[] = [],
@@ -109,10 +129,19 @@ export const controlApiSource: ControlApiSource = {
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients",
+    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
     SessionName: { type: "string", pattern: "^[a-zA-Z0-9_-]+$" },
+    SessionId: {
+      ...string("Stable opaque broker session identifier"),
+      minLength: 1,
+    },
+    SessionSelector: {
+      ...string("Active session name or stable opaque session identifier"),
+      minLength: 1,
+    },
     ProjectName: { type: "string", pattern: "^[a-zA-Z0-9._-]+$" },
     PlanFile: {
       type: "string",
@@ -120,7 +149,12 @@ export const controlApiSource: ControlApiSource = {
     },
     BranchName: { type: "string", pattern: "^[A-Za-z0-9._/-]+$" },
     Command: { type: "string", minLength: 1 },
+    OpenableHarness: { enum: [...OPENABLE_HARNESSES] },
     TriageStatus: { enum: ["running", "idle"] },
+    ParentSessionIdentity: object({
+      wolfpackSessionId: string(),
+      wolfpackSessionName: ref("SessionName"),
+    }, ["wolfpackSessionId", "wolfpackSessionName"]),
     PublicSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
@@ -129,6 +163,7 @@ export const controlApiSource: ControlApiSource = {
       createdAt: string(),
       restoredAt: string(),
       updatedAt: string(),
+      parentSession: ref("ParentSessionIdentity"),
       externalAgent: object({
         provider: string(),
         redactedId: string(),
@@ -157,6 +192,19 @@ export const controlApiSource: ControlApiSource = {
       triage: ref("TriageStatus"),
       identity: ref("PublicSessionIdentity"),
     }, ["name", "lastLine", "triage"]),
+    SessionControlIdentity: object({
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+    }, ["session", "sessionId"]),
+    SessionStatus: object({
+      ok: { const: true },
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+      state: { const: "active" },
+      projectPath: string(),
+      harness: string(),
+      parentSession: ref("SessionControlIdentity"),
+    }, ["ok", "session", "sessionId", "state", "projectPath", "harness"]),
     Peer: object({
       name: string(),
       url: string(),
@@ -271,6 +319,12 @@ export const controlApiSource: ControlApiSource = {
           newProject: ref("ProjectName"),
           cmd: ref("Command"),
           sessionName: ref("SessionName"),
+          parentSession: ref("SessionName"),
+          initialPrompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_INITIAL_PROMPT_LENGTH,
+          },
         }),
         anyOf: [
           object({}, ["project"], { additionalProperties: true }),
@@ -281,7 +335,51 @@ export const controlApiSource: ControlApiSource = {
         ok: boolean(),
         session: ref("SessionName"),
       }, ["ok", "session"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope"],
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-create": {
+      operationId: "createTopLevelSession",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        project: ref("ProjectName"),
+        harness: ref("OpenableHarness"),
+        initialPrompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+      }, ["project"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        project: ref("ProjectName"),
+        harness: string(),
+      }, ["ok", "session", "sessionId", "project", "harness"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-open": {
+      operationId: "openSession",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        project: ref("ProjectName"),
+        parentSession: ref("SessionName"),
+        initialPrompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+      }, ["project", "parentSession"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        project: ref("ProjectName"),
+        harness: ref("OpenableHarness"),
+      }, ["ok", "session", "sessionId", "project", "harness"]),
+      errors: sessionOpenErrorLines(),
     },
     "GET /api/settings": {
       operationId: "getSettings",
@@ -330,9 +428,73 @@ export const controlApiSource: ControlApiSource = {
       operationId: "killSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({ session: ref("SessionName") }, ["session"]),
-      response: ok,
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
+      request: object({ session: ref("SessionSelector") }, ["session"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+      }, ["ok", "session", "sessionId"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "GET /api/session-control/list": {
+      operationId: "listSessionStatuses",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: object({ sessions: arrayOf(ref("SessionStatus")) }, ["sessions"]),
+      errors: ["503 ErrorEnvelope"],
+    },
+    "GET /api/session-control/status": {
+      operationId: "getSessionStatus",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ session: ref("SessionSelector") }, ["session"]),
+      response: ref("SessionStatus"),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "GET /api/session-control/read": {
+      operationId: "readSession",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ session: ref("SessionSelector") }, ["session"]),
+      response: object({
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        output: string(),
+      }, ["session", "sessionId", "output"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-control/send": {
+      operationId: "sendSessionInput",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionSelector"),
+        text: string(),
+        noEnter: boolean(),
+      }, ["session", "text"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+      }, ["ok", "session", "sessionId"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-control/wait": {
+      operationId: "waitForSessionText",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionSelector"),
+        text: string(),
+        timeoutMs: integer(),
+      }, ["session", "text"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        matched: { const: true },
+      }, ["ok", "session", "sessionId", "matched"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "408 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/resize": {
       operationId: "resizeSession",
@@ -595,6 +757,15 @@ export const controlApiSource: ControlApiSource = {
           stable: true,
           direction: "server-to-client",
           schema: object({ type: { const: "control_granted" } }, ["type"]),
+        },
+        sub_session_opened: {
+          stable: true,
+          direction: "server-to-client",
+          schema: object({
+            type: { const: "sub_session_opened" },
+            parentSession: ref("SessionName"),
+            session: ref("SessionName"),
+          }, ["type", "parentSession", "session"]),
         },
       },
     },

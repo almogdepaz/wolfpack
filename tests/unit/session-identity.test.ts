@@ -36,6 +36,28 @@ describe("session identity metadata", () => {
     expect(identity.agentKind).toBe("codex");
   });
 
+  test("persists and exposes structured parent session identity", () => {
+    const devDir = tmpDevDir();
+    const store = new SessionIdentityStore(devDir);
+    const parentSession = {
+      wolfpackSessionId: "broker-parent",
+      wolfpackSessionName: "wolfpack",
+    };
+    const identity = store.capture({
+      wolfpackSessionId: "broker-child",
+      wolfpackSessionName: "wolfpack-sub-agent",
+      projectPath: join(devDir, "wolfpack"),
+      agentKind: "pi",
+      parentSession,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(identity.parentSession).toEqual(parentSession);
+    expect(toPublicSessionIdentity(identity).parentSession).toEqual(parentSession);
+    expect(new SessionIdentityStore(devDir).getByName("wolfpack-sub-agent")?.parentSession)
+      .toEqual(parentSession);
+  });
+
   test("redacts external agent ids in public views", () => {
     const devDir = tmpDevDir();
     const store = new SessionIdentityStore(devDir);
@@ -134,15 +156,21 @@ describe("session identity metadata", () => {
     expect(docs).toContain("Public session APIs intentionally expose `projectPath`");
   });
 
-  test("exposes context env vars for launched agents", () => {
+  test("exposes context and parent env vars for launched agents", () => {
     const vars = new Map(identityEnvVars({
-      wolfpackSessionName: "alpha",
+      wolfpackSessionName: "alpha-sub-agent",
       projectPath: "/repo/alpha",
       agentKind: "codex",
+      parentSession: {
+        wolfpackSessionId: "broker-parent",
+        wolfpackSessionName: "alpha",
+      },
     }));
-    expect(vars.get("WOLFPACK_SESSION_NAME")).toBe("alpha");
+    expect(vars.get("WOLFPACK_SESSION_NAME")).toBe("alpha-sub-agent");
     expect(vars.get("WOLFPACK_PROJECT_DIR")).toBe("/repo/alpha");
     expect(vars.get("WOLFPACK_AGENT_KIND")).toBe("codex");
+    expect(vars.get("WOLFPACK_PARENT_SESSION_ID")).toBe("broker-parent");
+    expect(vars.get("WOLFPACK_PARENT_SESSION_NAME")).toBe("alpha");
     expect(vars.get("WOLFPACK_EXTERNAL_AGENT_ID_FILE")).toBe("/repo/alpha/.wolfpack/external-agent-id");
   });
 });

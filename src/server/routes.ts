@@ -28,6 +28,7 @@ import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.j
 import {
   CMD_REGEX,
   BRANCH_REGEX,
+  MAX_INITIAL_PROMPT_LENGTH,
   isValidProjectName,
   isValidSessionName,
   isValidPlanFile,
@@ -160,8 +161,28 @@ import {
   cachedPeers,
   discoverPeers,
 } from "./http.js";
-import { activePtySessions, teardownPty } from "./websocket.js";
+import type { InvalidBodyResponse } from "./http.js";
+import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
+import type { ParentSessionIdentity, PublicSessionIdentity } from "./session-identity.js";
+import {
+  isOpenableHarness,
+  SESSION_OPEN_ERROR,
+  SESSION_OPEN_HTTP_STATUS,
+} from "../session-open-contract.js";
+import { openSubSession, SessionOpenError } from "./session-open.js";
+import { SESSION_CREATE_ERROR } from "../session-create-contract.js";
+import { createTopLevelSession } from "./session-create.js";
+import { resolveSessionSelector } from "./session-selector.js";
+import type { SessionSelectorResult } from "./session-selector.js";
+
+const SESSION_OPEN_INVALID_BODY_RESPONSE = {
+  envelope: {
+    error: "invalid session-open request",
+    code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+  },
+  status: SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST],
+} as const satisfies InvalidBodyResponse;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -170,11 +191,16 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 async function parseObjectBody(
   req: IncomingMessage,
   res: ServerResponse,
+  invalidResponse?: InvalidBodyResponse,
 ): Promise<Record<string, unknown> | null> {
-  const body = await parseBody(req, res);
+  const body = await parseBody(req, res, invalidResponse);
   if (body === undefined) return null;
   if (!isJsonObject(body)) {
-    json(res, { error: "JSON body must be an object" }, 400);
+    json(
+      res,
+      invalidResponse?.envelope ?? { error: "JSON body must be an object" },
+      invalidResponse?.status ?? 400,
+    );
     return null;
   }
   return body;
@@ -193,12 +219,42 @@ interface CreateBody extends Record<string, unknown> {
   newProject?: string;
   cmd?: string;
   sessionName?: string;
+  parentSession?: string;
+  initialPrompt?: string;
 }
 
 function isCreateBody(body: Record<string, unknown>): body is CreateBody {
-  return ["project", "newProject", "cmd", "sessionName"].every(
+  return ["project", "newProject", "cmd", "sessionName", "parentSession", "initialPrompt"].every(
     key => hasOptionalType(body, key, "string"),
   );
+}
+
+interface SessionCreateBody extends Record<string, unknown> {
+  project: string;
+  harness?: string;
+  initialPrompt?: string;
+}
+
+function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
+  const allowedKeys = new Set(["project", "harness", "initialPrompt"]);
+  return Object.keys(body).every(key => allowedKeys.has(key))
+    && typeof body.project === "string"
+    && hasOptionalType(body, "harness", "string")
+    && hasOptionalType(body, "initialPrompt", "string");
+}
+
+interface SessionOpenBody extends Record<string, unknown> {
+  project: string;
+  parentSession: string;
+  initialPrompt?: string;
+}
+
+function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
+  const allowedKeys = new Set(["project", "parentSession", "initialPrompt"]);
+  return Object.keys(body).every(key => allowedKeys.has(key))
+    && typeof body.project === "string"
+    && typeof body.parentSession === "string"
+    && hasOptionalType(body, "initialPrompt", "string");
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -232,6 +288,52 @@ function parseTimeoutMs(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1 || n > SESSION_WAIT_MAX_TIMEOUT_MS) return null;
   return n;
+}
+
+async function resolveActiveSession(
+  res: ServerResponse,
+  selector: string,
+): Promise<Extract<SessionSelectorResult, { readonly ok: true }> | null> {
+  try {
+    const backend = getBackend();
+    const names = await backend.list();
+    const identities = await backend.listIdentities?.();
+    if (!identities) {
+      json(res, { error: "session identity unavailable" }, 503);
+      return null;
+    }
+    const resolved = resolveSessionSelector(selector, names, identities);
+    if (!resolved.ok) {
+      json(
+        res,
+        { error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found" },
+        resolved.code === "AMBIGUOUS" ? 409 : 404,
+      );
+      return null;
+    }
+    return resolved;
+  } catch (error: unknown) {
+    log.warn("session selector resolution failed", { error: errMsg(error) });
+    json(res, { error: "backend unavailable" }, 503);
+    return null;
+  }
+}
+
+function sessionStatusPayload(name: string, identity: PublicSessionIdentity) {
+  return {
+    ok: true as const,
+    session: name,
+    sessionId: identity.wolfpackSessionId,
+    state: "active" as const,
+    projectPath: identity.projectPath,
+    harness: identity.agentKind,
+    ...(identity.parentSession && {
+      parentSession: {
+        session: identity.parentSession.wolfpackSessionName,
+        sessionId: identity.parentSession.wolfpackSessionId,
+      },
+    }),
+  };
 }
 
 async function waitForSessionText(session: string, text: string, timeoutMs: number): Promise<"matched" | "timeout" | "unavailable"> {
@@ -506,13 +608,47 @@ export const routes: Record<
     const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!isCreateBody(body)) {
-      return json(res, { error: "project, newProject, cmd, and sessionName must be strings" }, 400);
+      return json(res, {
+        error: "project, newProject, cmd, sessionName, parentSession, and initialPrompt must be strings",
+      }, 400);
     }
-    const { project, newProject, cmd, sessionName } = body;
+    const { project, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
     const folderName = newProject?.trim() || project?.trim();
     if (!validateProject(res, folderName)) return;
     if (cmd && cmd !== "shell" && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
+    }
+    if (
+      initialPrompt !== undefined
+      && (!initialPrompt.trim() || initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+    ) {
+      return json(res, {
+        error: `initial prompt must be 1..${MAX_INITIAL_PROMPT_LENGTH} characters`,
+      }, 400);
+    }
+    const parentName = parentSession?.trim();
+    let parentIdentity: ParentSessionIdentity | undefined;
+    if (parentSession !== undefined) {
+      if (!parentName || !isValidSessionName(parentName)) {
+        return json(res, { error: "invalid parent session" }, 400);
+      }
+      if (!(await isAllowedSession(parentName))) {
+        return json(res, {
+          error: "parent session not found",
+          code: SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND,
+        }, 404);
+      }
+      const activeParentIdentity = (await getBackend().listIdentities?.())?.[parentName];
+      if (!activeParentIdentity) {
+        return json(res, {
+          error: "parent session identity unavailable",
+          code: SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE,
+        }, 503);
+      }
+      parentIdentity = {
+        wolfpackSessionId: activeParentIdentity.wolfpackSessionId,
+        wolfpackSessionName: activeParentIdentity.wolfpackSessionName,
+      };
     }
     const customName = sessionName?.trim();
     if (customName) {
@@ -538,14 +674,165 @@ export const routes: Record<
       // so the backend never sees a disabled or missing agentCmd.
       const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
       const agentKind = inferAgentKind(cmd || settingsResolver().agentCmd);
-      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, { agentKind });
+      if (initialPrompt !== undefined && agentKind === "shell") {
+        return json(res, { error: "initial prompt requires an agent harness" }, 400);
+      }
+      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
+        agentKind,
+        parentSession: parentIdentity,
+        initialPrompt,
+      });
     } catch (e: unknown) {
       if (e instanceof DuplicateSessionError) {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
       }
       throw e;
     }
+    if (parentName) notifySubSessionOpened(parentName, finalName);
     json(res, { ok: true, session: finalName });
+  },
+
+  "POST /api/session-create": async (req, res) => {
+    const body = await parseObjectBody(req, res);
+    if (
+      !body
+      || !isSessionCreateBody(body)
+      || !isValidProjectName(body.project)
+      || (body.harness !== undefined && !isOpenableHarness(body.harness))
+      || (
+        body.initialPrompt !== undefined
+        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+      )
+    ) {
+      if (body) json(res, {
+        error: "invalid session-create request",
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      }, 400);
+      return;
+    }
+
+    const projectDir = join(DEV_DIR, body.project);
+    const projectValidation = validateProjectDirPure(projectDir);
+    if (!projectValidation.ok) {
+      return json(
+        res,
+        {
+          error: projectValidation.code === "not_found" ? "project not found" : "invalid project",
+          code: projectValidation.code === "not_found"
+            ? SESSION_CREATE_ERROR.PROJECT_NOT_FOUND
+            : SESSION_CREATE_ERROR.INVALID_REQUEST,
+        },
+        projectValidation.code === "not_found" ? 404 : 400,
+      );
+    }
+
+    const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
+    if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === "shell") {
+      return json(res, {
+        error: "initial prompt requires an agent harness",
+        code: SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS,
+      }, 400);
+    }
+
+    try {
+      const result = await createTopLevelSession({
+        backend: getBackend(),
+        project: body.project,
+        projectDir,
+        command: configuredCommand,
+        initialPrompt: body.initialPrompt,
+        loadSettings: () => ({ agentCmd: configuredCommand }),
+      });
+      json(res, result);
+    } catch (error: unknown) {
+      if (error instanceof DuplicateSessionError) {
+        return json(res, {
+          error: "could not allocate a session name",
+          code: SESSION_CREATE_ERROR.NAME_COLLISION,
+        }, 409);
+      }
+      log.warn("session-create failed", { error: errMsg(error) });
+      json(res, {
+        error: "backend unavailable",
+        code: SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE,
+      }, 503);
+    }
+  },
+
+  "POST /api/session-open": async (req, res) => {
+    const body = await parseObjectBody(req, res, SESSION_OPEN_INVALID_BODY_RESPONSE);
+    if (!body) return;
+    if (
+      !isSessionOpenBody(body)
+      || !isValidProjectName(body.project)
+      || !isValidSessionName(body.parentSession)
+      || (
+        body.initialPrompt !== undefined
+        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+      )
+    ) {
+      return json(
+        res,
+        SESSION_OPEN_INVALID_BODY_RESPONSE.envelope,
+        SESSION_OPEN_INVALID_BODY_RESPONSE.status,
+      );
+    }
+
+    const projectDir = join(DEV_DIR, body.project);
+    const projectValidation = validateProjectDirPure(projectDir);
+    if (!projectValidation.ok) {
+      if (projectValidation.code === "not_found") {
+        return json(res, {
+          error: "project not found",
+          code: SESSION_OPEN_ERROR.PROJECT_NOT_FOUND,
+        }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PROJECT_NOT_FOUND]);
+      }
+      return json(res, {
+        error: "invalid project",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+    }
+
+    const backend = getBackend();
+    if (!backend.listIdentities) {
+      return json(res, {
+        error: "parent session identity unavailable",
+        code: SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE]);
+    }
+
+    try {
+      const result = await openSubSession({
+        backend: {
+          list: () => backend.list(),
+          listIdentities: () => backend.listIdentities!(),
+          createSession: (name, cwd, cmd, loadSettings, options) => (
+            backend.createSession(name, cwd, cmd, loadSettings, options)
+          ),
+        },
+        parentSession: body.parentSession,
+        project: body.project,
+        projectDir,
+        initialPrompt: body.initialPrompt,
+        notify: (parent, session) => {
+          notifySubSessionOpened(parent.wolfpackSessionName, session);
+        },
+      });
+      json(res, result);
+    } catch (error: unknown) {
+      if (error instanceof SessionOpenError) {
+        return json(
+          res,
+          { error: error.message, code: error.code },
+          SESSION_OPEN_HTTP_STATUS[error.code],
+        );
+      }
+      log.warn("session-open failed", { error: errMsg(error) });
+      json(res, {
+        error: "backend unavailable",
+        code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]);
+    }
   },
 
   "GET /api/settings": async (_req, res) => {
@@ -645,29 +932,63 @@ export const routes: Record<
   "POST /api/kill": async (req, res) => {
     const body = await parseObjectBody(req, res);
     if (!body) return;
-    const { session } = body;
-    if (typeof session !== "string" || !session) return json(res, { error: "missing session" }, 400);
-    if (!(await isAllowedSession(session)))
-      return json(res, { error: "session not found" }, 404);
+    const selector = body.session;
+    if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
+    const resolved = await resolveActiveSession(res, selector);
+    if (!resolved) return;
     // Clean up any associated desktop PTY session (wp_*) before killing
-    teardownPty(session);
-    prevPaneContent.delete(session);
-    await getBackend().killSession(session);
-    json(res, { ok: true });
+    teardownPty(resolved.name);
+    prevPaneContent.delete(resolved.name);
+    await getBackend().killSession(resolved.name);
+    json(res, {
+      ok: true,
+      session: resolved.name,
+      sessionId: resolved.identity.wolfpackSessionId,
+    });
+  },
+
+  "GET /api/session-control/list": async (_req, res) => {
+    try {
+      const backend = getBackend();
+      const names = await backend.list();
+      const identities = await backend.listIdentities?.();
+      if (!identities || names.some(name => !identities[name])) {
+        return json(res, { error: "session identity unavailable" }, 503);
+      }
+      const sessions = names
+        .map(name => sessionStatusPayload(name, identities[name]!))
+        .sort((left, right) => left.session.localeCompare(right.session));
+      json(res, { sessions });
+    } catch (error: unknown) {
+      log.warn("session-control list failed", { error: errMsg(error) });
+      json(res, { error: "backend unavailable" }, 503);
+    }
+  },
+
+  "GET /api/session-control/status": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const selector = url.searchParams.get("session");
+    if (!selector) return json(res, { error: "missing session" }, 400);
+    const resolved = await resolveActiveSession(res, selector);
+    if (!resolved) return;
+    json(res, sessionStatusPayload(resolved.name, resolved.identity));
   },
 
   "GET /api/session-control/read": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const session = url.searchParams.get("session");
-    if (!session) return json(res, { error: "missing session" }, 400);
-    if (!(await isAllowedSession(session))) {
-      return json(res, { error: "session not found" }, 404);
-    }
+    const selector = url.searchParams.get("session");
+    if (!selector) return json(res, { error: "missing session" }, 400);
+    const resolved = await resolveActiveSession(res, selector);
+    if (!resolved) return;
     try {
-      const output = await getBackend().capturePane(session);
-      json(res, { session, output });
+      const output = await getBackend().capturePane(resolved.name);
+      json(res, {
+        session: resolved.name,
+        sessionId: resolved.identity.wolfpackSessionId,
+        output,
+      });
     } catch (e: unknown) {
-      log.warn("session-control read failed", { session, error: errMsg(e) });
+      log.warn("session-control read failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);
     }
   },
@@ -675,18 +996,21 @@ export const routes: Record<
   "POST /api/session-control/send": async (req, res) => {
     const body = await parseObjectBody(req, res);
     if (!body) return;
-    const session = body.session;
-    if (typeof session !== "string" || !session) return json(res, { error: "missing session" }, 400);
+    const selector = body.session;
+    if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
     if (typeof body.text !== "string") return json(res, { error: "missing text" }, 400);
     if (!hasOptionalType(body, "noEnter", "boolean")) return json(res, { error: "noEnter must be a boolean" }, 400);
-    if (!(await isAllowedSession(session))) {
-      return json(res, { error: "session not found" }, 404);
-    }
+    const resolved = await resolveActiveSession(res, selector);
+    if (!resolved) return;
     try {
-      await getBackend().send(session, body.text, body.noEnter === true);
-      json(res, { ok: true, session });
+      await getBackend().send(resolved.name, body.text, body.noEnter === true);
+      json(res, {
+        ok: true,
+        session: resolved.name,
+        sessionId: resolved.identity.wolfpackSessionId,
+      });
     } catch (e: unknown) {
-      log.warn("session-control send failed", { session, error: errMsg(e) });
+      log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);
     }
   },
@@ -694,8 +1018,8 @@ export const routes: Record<
   "POST /api/session-control/wait": async (req, res) => {
     const body = await parseObjectBody(req, res);
     if (!body) return;
-    const session = body.session;
-    if (typeof session !== "string" || !session) return json(res, { error: "missing session" }, 400);
+    const selector = body.session;
+    if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
     if (typeof body.text !== "string" || body.text.length === 0) {
       return json(res, { error: "missing text" }, 400);
     }
@@ -706,16 +1030,17 @@ export const routes: Record<
     if (timeoutMs === null) {
       return json(res, { error: `timeoutMs must be an integer from 1 to ${SESSION_WAIT_MAX_TIMEOUT_MS}` }, 400);
     }
-    if (!(await isAllowedSession(session))) {
-      return json(res, { error: "session not found" }, 404);
-    }
+    const resolved = await resolveActiveSession(res, selector);
+    if (!resolved) return;
     try {
-      const result = await waitForSessionText(session, body.text, timeoutMs);
-      if (result === "matched") return json(res, { ok: true, session, matched: true });
-      if (result === "timeout") return json(res, { error: "timeout", session, matched: false }, 408);
+      const result = await waitForSessionText(resolved.name, body.text, timeoutMs);
+      const session = resolved.name;
+      const sessionId = resolved.identity.wolfpackSessionId;
+      if (result === "matched") return json(res, { ok: true, session, sessionId, matched: true });
+      if (result === "timeout") return json(res, { error: "timeout", session, sessionId, matched: false }, 408);
       return json(res, { error: "backend unavailable" }, 503);
     } catch (e: unknown) {
-      log.warn("session-control wait failed", { session, error: errMsg(e) });
+      log.warn("session-control wait failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);
     }
   },

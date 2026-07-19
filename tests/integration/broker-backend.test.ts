@@ -68,6 +68,7 @@ D("BrokerBackend ↔ real broker", () => {
   let stderrBuf = "";
 
   const SESSION = "ralph-it-shell";
+  const PROMPT_SESSION = "ralph-it-prompt";
   const MARKER = `WOLFPACK_MARKER_${process.pid}_${Math.random().toString(36).slice(2, 10)}`;
 
   beforeAll(async () => {
@@ -121,6 +122,7 @@ D("BrokerBackend ↔ real broker", () => {
     try {
       if (backend) {
         try { await backend!.killSession(SESSION); } catch { /* swallow */ }
+        try { await backend!.killSession(PROMPT_SESSION); } catch { /* swallow */ }
       }
     } catch { /* swallow */ }
     try { client?.close(); } catch { /* swallow */ }
@@ -146,6 +148,26 @@ D("BrokerBackend ↔ real broker", () => {
   test("list is empty before any sessions exist", async () => {
     const names = await backend!.list();
     expect(names).not.toContain(SESSION);
+  }, 15_000);
+
+  test("initial instruction reaches the harness as one literal argv value", async () => {
+    const scriptPath = path.join(tmpdir, "prompt-capture.sh");
+    const outputPath = path.join(tmpdir, "prompt.txt");
+    const initialPrompt = "review 'literal' $(not-executed); \"quoted\"";
+    fs.writeFileSync(scriptPath, "#!/bin/sh\nprintf '%s' \"$1\" > prompt.txt\n", { mode: 0o700 });
+
+    await backend!.createSession(
+      PROMPT_SESSION,
+      tmpdir,
+      "./prompt-capture.sh",
+      () => ({ agentCmd: "shell" }),
+      { initialPrompt },
+    );
+    await waitForFile(outputPath, 5000);
+
+    expect(fs.readFileSync(outputPath, "utf8")).toBe(initialPrompt);
+    expect(fs.existsSync(path.join(tmpdir, "not-executed"))).toBe(false);
+    await backend!.killSession(PROMPT_SESSION);
   }, 15_000);
 
   test("createSession spawns a real PTY shell, list+sessionDir reflect it", async () => {

@@ -10,7 +10,12 @@ import { createLogger, errMsg } from "../log.js";
 import { defaultBrokerSocketPath } from "../broker/client.js";
 import type { BrokerBackend } from "./broker-backend.js";
 import type { EventBody } from "../broker/codec.js";
-import type { AgentKind, CaptureSessionIdentityInput, PublicSessionIdentity } from "./session-identity.js";
+import type {
+  AgentKind,
+  CaptureSessionIdentityInput,
+  ParentSessionIdentity,
+  PublicSessionIdentity,
+} from "./session-identity.js";
 
 const log = createLogger("backend");
 
@@ -40,6 +45,13 @@ const BROKER_CONNECT_TIMEOUT_MS = 1500;
  *  and long enough to avoid hot-looping when the broker is genuinely dead. */
 const BROKER_WATCHDOG_INTERVAL_MS = 5000;
 
+export interface SessionLaunchOptions {
+  readonly agentKind?: AgentKind | string;
+  readonly externalAgent?: CaptureSessionIdentityInput["externalAgent"];
+  readonly parentSession?: ParentSessionIdentity;
+  readonly initialPrompt?: string;
+}
+
 export interface SessionBackend {
   list(): Promise<string[]>;
   listIdentities?(): Promise<Record<string, PublicSessionIdentity>>;
@@ -48,11 +60,8 @@ export interface SessionBackend {
     cwd: string,
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
-    identity?: {
-      agentKind?: AgentKind | string;
-      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
-    },
-  ): Promise<void>;
+    options?: SessionLaunchOptions,
+  ): Promise<PublicSessionIdentity>;
   killSession(name: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
   capturePane(name: string): Promise<string>;
@@ -387,18 +396,16 @@ export class BackendRouter implements SessionBackend {
     cwd: string,
     cmd: string | undefined,
     loadSettings: () => { agentCmd: string },
-    identity?: {
-      agentKind?: AgentKind | string;
-      externalAgent?: CaptureSessionIdentityInput["externalAgent"];
-    },
-  ): Promise<void> {
+    options?: SessionLaunchOptions,
+  ): Promise<PublicSessionIdentity> {
     const broker = this.requireBroker();
     const existing = await broker.list();
     if (existing.includes(name)) {
       throw new DuplicateSessionError(name);
     }
-    await broker.createSession(name, cwd, cmd, loadSettings, identity);
+    const identity = await broker.createSession(name, cwd, cmd, loadSettings, options);
     log.info("session created via router", { name, backend: "broker" });
+    return identity;
   }
 
   async killSession(name: string): Promise<void> {

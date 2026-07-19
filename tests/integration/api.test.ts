@@ -1,11 +1,16 @@
-import { describe, expect, test, beforeAll, afterAll, beforeEach } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import type { Server } from "node:http";
+import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
+import {
+  SESSION_OPEN_ERROR,
+  SESSION_OPEN_HTTP_STATUS,
+} from "../../src/session-open-contract.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
@@ -26,7 +31,7 @@ const TEST_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
 process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { __setTestBackend, DuplicateSessionError } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
 
@@ -48,6 +53,7 @@ const {
   __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
 const { _testing: pushTesting } = await import("../../src/server/push.ts");
+const { activePtySessions } = await import("../../src/server/websocket.ts");
 
 const { server } = createServerInstance();
 
@@ -89,6 +95,7 @@ beforeEach(() => {
   // Reset push notify debounce/rate-limit state so notify tests don't
   // depend on execution order (see TEST-01).
   pushTesting.resetDebounce();
+  activePtySessions.clear();
 });
 
 afterAll(() => {
@@ -111,6 +118,25 @@ function post(path: string, body: unknown, headers?: Record<string, string>) {
 
 function get(path: string, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, { headers });
+}
+
+function attachNotificationViewer(session: string): string[] {
+  const frames: string[] = [];
+  const viewer = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(data: string | Buffer): void {
+      frames.push(typeof data === "string" ? data : data.toString());
+    },
+  };
+  const entries = activePtySessions as unknown as Map<string, {
+    viewer: typeof viewer;
+    pendingViewer: null;
+    proc: null;
+    alive: boolean;
+  }>;
+  entries.set(session, { viewer, pendingViewer: null, proc: null, alive: true });
+  return frames;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -332,6 +358,120 @@ describe("POST /api/ralph/start validation ordering", () => {
   }, 30_000);
 });
 
+describe("agent-native top-level session control", () => {
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setCapturePane(async (session: string) => `output for ${session}`);
+    mockBackend.lastCreateArgs = null;
+    mockBackend.lastSendArgs = null;
+    process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+  });
+
+  test("creates a top-level session with one opaque launch prompt and stable id", async () => {
+    const initialPrompt = "execute .plans/000-publish-branchout.md";
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "pi",
+      initialPrompt,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "my-app",
+      sessionId: "mock:my-app",
+      project: "my-app",
+      harness: "pi",
+    });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "my-app",
+      cwd: join(TEST_DEV_DIR, "my-app"),
+      cmd: "pi",
+      agentKind: "pi",
+      initialPrompt,
+      parentSession: undefined,
+    });
+  });
+
+  test("rejects malformed create input before backend mutation", async () => {
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+      initialPrompt: "run this",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("resolves stable ids for list, status, read, send, wait, and kill", async () => {
+    const selector = encodeURIComponent("mock:wolf-1");
+
+    const list = await get("/api/session-control/list");
+    const listed = (await list.json()).sessions.find(
+      (session: { sessionId: string }) => session.sessionId === "mock:wolf-1",
+    );
+    expect(listed).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      state: "active",
+      projectPath: "",
+      harness: "unknown",
+    });
+    expect(listed).not.toHaveProperty("lastLine");
+
+    const status = await get(`/api/session-control/status?session=${selector}`);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      state: "active",
+      projectPath: "",
+      harness: "unknown",
+    });
+
+    const read = await get(`/api/session-control/read?session=${selector}`);
+    expect(await read.json()).toEqual({
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      output: "output for wolf-1",
+    });
+
+    const send = await post("/api/session-control/send", {
+      session: "mock:wolf-1",
+      text: "execute the plan",
+    });
+    expect(await send.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+    });
+    expect(mockBackend.lastSendArgs?.name).toBe("wolf-1");
+
+    const wait = await post("/api/session-control/wait", {
+      session: "mock:wolf-1",
+      text: "output for wolf-1",
+      timeoutMs: 100,
+    });
+    expect(await wait.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      matched: true,
+    });
+
+    const kill = await post("/api/kill", { session: "mock:wolf-1" });
+    expect(await kill.json()).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+    });
+    expect(await mockBackend.hasSession("wolf-1")).toBe(false);
+  });
+});
+
 describe("POST /api/create", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
@@ -346,6 +486,156 @@ describe("POST /api/create", () => {
     expect(data.ok).toBe(true);
     expect(data.session).toBe("my-app");
     expect(mockBackend.lastCreateArgs?.agentKind).toBe("shell");
+  });
+
+  test("passes an explicit launch instruction without parent transcript context", async () => {
+    const initialPrompt = "review the diff only; do not inherit parent context";
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+      initialPrompt,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockBackend.lastCreateArgs?.initialPrompt).toBe(initialPrompt);
+  });
+
+  test("rejects empty launch instructions", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+      initialPrompt: "   ",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects oversized launch instructions", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+      initialPrompt: "x".repeat(32_769),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects launch instructions for plain shells", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "shell-child",
+      cmd: "shell",
+      initialPrompt: "run this",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("notifies the active parent viewer after creating a sub-session", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockBackend.lastCreateArgs?.parentSession).toEqual({
+      wolfpackSessionId: "mock:wolf-1",
+      wolfpackSessionName: "wolf-1",
+    });
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "sub_session_opened",
+      parentSession: "wolf-1",
+      session: "wolf-1-sub-agent",
+    });
+  });
+
+  test("creates the child when the parent has no attached viewer", async () => {
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, session: "wolf-1-sub-agent" });
+  });
+
+  test("exposes structured parent identity on the created child", async () => {
+    const create = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-1-sub-agent",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+    expect(create.status).toBe(200);
+
+    const sessions = await get("/api/sessions");
+    const child = (await sessions.json()).sessions.find(
+      (session: { name: string }) => session.name === "wolf-1-sub-agent",
+    );
+    expect(child.identity.parentSession).toEqual({
+      wolfpackSessionId: "mock:wolf-1",
+      wolfpackSessionName: "wolf-1",
+    });
+  });
+
+  test("does not notify the parent when child creation fails", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "wolf-2",
+      cmd: "pi",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(409);
+    expect(frames).toEqual([]);
+  });
+
+  test("rejects an unavailable parent before creating a sub-session", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "pi-sub-agent",
+      cmd: "pi",
+      parentSession: "missing-parent",
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "parent session not found",
+      code: "PARENT_SESSION_NOT_FOUND",
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects a non-string parent session", async () => {
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/create", {
+      project: "my-app",
+      sessionName: "pi-sub-agent",
+      cmd: "pi",
+      parentSession: 42,
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test("captures selected agent kind at launch", async () => {
@@ -476,6 +766,304 @@ describe("POST /api/create", () => {
   });
 });
 
+describe("POST /api/session-open", () => {
+  const originalListIdentities = MockBackend.prototype.listIdentities;
+
+  function useParentHarness(agentKind: string): void {
+    mockBackend.listIdentities = async () => {
+      const identities = await originalListIdentities.call(mockBackend);
+      const parent = identities["wolf-1"];
+      if (!parent) return identities;
+      return {
+        ...identities,
+        "wolf-1": { ...parent, agentKind },
+      };
+    };
+  }
+
+  beforeEach(() => {
+    mockBackend.setSessions(["wolf-1", "wolf-2"]);
+    mockBackend.setOnBeforeCreate(null);
+    mockBackend.lastCreateArgs = null;
+    useParentHarness("pi");
+  });
+
+  afterEach(() => {
+    mockBackend.listIdentities = () => originalListIdentities.call(mockBackend);
+    mockBackend.setOnBeforeCreate(null);
+    activePtySessions.clear();
+  });
+
+  test("creates one same-harness child with exact parent identity and prompt", async () => {
+    const prompt = "review '$(touch /tmp/not-executed)' \"$HOME\"; done";
+    const frames = attachNotificationViewer("wolf-1");
+
+    const res = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+      initialPrompt: prompt,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "wolf-1-sub-agent",
+      sessionId: "mock:wolf-1-sub-agent",
+      project: "my-app",
+      harness: "pi",
+    });
+    expect(mockBackend.lastCreateArgs).toEqual({
+      name: "wolf-1-sub-agent",
+      cwd: join(TEST_DEV_DIR, "my-app"),
+      cmd: "pi",
+      agentKind: "pi",
+      parentSession: {
+        wolfpackSessionId: "mock:wolf-1",
+        wolfpackSessionName: "wolf-1",
+      },
+      initialPrompt: prompt,
+    });
+    expect(frames.map((frame) => JSON.parse(frame))).toEqual([{
+      type: "sub_session_opened",
+      parentSession: "wolf-1",
+      session: "wolf-1-sub-agent",
+    }]);
+  });
+
+  test("allocates a numbered child after a typed stale-name collision", async () => {
+    mockBackend.setOnBeforeCreate((name) => {
+      if (name === "wolf-1-sub-agent") {
+        mockBackend.setSessions(["wolf-1", "wolf-2", "wolf-1-sub-agent"]);
+        mockBackend.setOnBeforeCreate(null);
+      }
+    });
+
+    const res = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "wolf-1-sub-agent-2",
+      sessionId: "mock:wolf-1-sub-agent-2",
+      project: "my-app",
+      harness: "pi",
+    });
+  });
+
+  test("returns coded invalid-request errors for malformed and non-object JSON", async () => {
+    const malformed = await fetch(`${base}/api/session-open`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"project":',
+    });
+    expect(malformed.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+    expect(await malformed.json()).toEqual({
+      error: "invalid session-open request",
+      code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+    });
+
+    for (const body of [[], null, "wolfpack", 42]) {
+      const response = await fetch(`${base}/api/session-open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status, JSON.stringify(body)).toBe(
+        SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST],
+      );
+      expect(await response.json(), JSON.stringify(body)).toEqual({
+        error: "invalid session-open request",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+    }
+  });
+
+  test("terminates an oversized chunked request at the transport limit", async () => {
+    const url = new URL(base);
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect(Number(url.port), url.hostname);
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("oversized chunked request remained connected"));
+      }, 2_000);
+      socket.on("error", (error: NodeJS.ErrnoException) => {
+        if (error.code !== "ECONNRESET") reject(error);
+      });
+      socket.on("close", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      socket.on("connect", () => {
+        const chunk = "x".repeat(65 * 1024);
+        socket.write([
+          "POST /api/session-open HTTP/1.1",
+          `Host: ${url.host}`,
+          "Content-Type: application/json",
+          "Transfer-Encoding: chunked",
+          "Connection: keep-alive",
+          "",
+          `${chunk.length.toString(16)}\r\n${chunk}\r\n`,
+        ].join("\r\n"));
+      });
+    });
+  });
+
+  test("strictly rejects unknown fields and client-owned launch overrides", async () => {
+    for (const field of ["unknown", "newProject", "cmd", "sessionName"]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+        [field]: "override",
+      });
+      expect(res.status, field).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+      expect(await res.json(), field).toEqual({
+        error: "invalid session-open request",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs, field).toBeNull();
+    }
+  });
+
+  test("rejects missing or invalid parent context before creation", async () => {
+    for (const body of [
+      { project: "my-app" },
+      { project: "my-app", parentSession: "" },
+      { project: "my-app", parentSession: "bad parent" },
+      { project: "my-app", parentSession: 42 },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", body);
+      expect(res.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("rejects missing, prefix-matched, or invalid projects without creating them", async () => {
+    for (const project of ["missing-project", "my", "../my-app"]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", {
+        project,
+        parentSession: "wolf-1",
+      });
+      const expectedCode = project === "../my-app"
+        ? SESSION_OPEN_ERROR.INVALID_REQUEST
+        : SESSION_OPEN_ERROR.PROJECT_NOT_FOUND;
+      expect(res.status, project).toBe(SESSION_OPEN_HTTP_STATUS[expectedCode]);
+      expect(await res.json(), project).toEqual({
+        error: project === "../my-app" ? "invalid session-open request" : "project not found",
+        code: expectedCode,
+      });
+      expect(mockBackend.lastCreateArgs, project).toBeNull();
+      expect(existsSync(join(TEST_DEV_DIR, project))).toBe(false);
+    }
+  });
+
+  test("rejects blank and oversized prompts", async () => {
+    for (const initialPrompt of ["   ", "x".repeat(32_769)]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+        initialPrompt,
+      });
+      expect(res.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("returns stable collision exhaustion and backend-unavailable failures", async () => {
+    const originalCreateSession = mockBackend.createSession.bind(mockBackend);
+    let createAttempts = 0;
+    mockBackend.createSession = async () => {
+      createAttempts++;
+      throw new DuplicateSessionError("wolf-1-sub-agent");
+    };
+    try {
+      const exhausted = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+      });
+      expect(exhausted.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.NAME_COLLISION]);
+      expect(await exhausted.json()).toEqual({
+        error: "could not allocate a sub-agent session name",
+        code: SESSION_OPEN_ERROR.NAME_COLLISION,
+      });
+      expect(createAttempts).toBe(4);
+    } finally {
+      mockBackend.createSession = originalCreateSession;
+    }
+
+    const originalList = mockBackend.list.bind(mockBackend);
+    mockBackend.list = async () => { throw new Error("broker down"); };
+    try {
+      const unavailable = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+      });
+      expect(unavailable.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]);
+      expect(await unavailable.json()).toEqual({
+        error: "backend unavailable",
+        code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE,
+      });
+    } finally {
+      mockBackend.list = originalList;
+    }
+  });
+
+  test("rejects missing parents, unavailable identity, and unsupported harnesses", async () => {
+    const missing = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "missing-parent",
+    });
+    expect(missing.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND]);
+    expect(await missing.json()).toEqual({
+      error: "parent session not found",
+      code: SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND,
+    });
+
+    mockBackend.listIdentities = async () => ({});
+    const unavailable = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+    });
+    expect(unavailable.status).toBe(
+      SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE],
+    );
+    expect(await unavailable.json()).toEqual({
+      error: "parent session identity unavailable",
+      code: SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE,
+    });
+
+    for (const harness of ["shell", "unknown"]) {
+      useParentHarness(harness);
+      const unsupported = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+      });
+      expect(unsupported.status, harness).toBe(
+        SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.UNSUPPORTED_HARNESS],
+      );
+      expect(await unsupported.json(), harness).toEqual({
+        error: "parent session is not running a supported agent harness",
+        code: SESSION_OPEN_ERROR.UNSUPPORTED_HARNESS,
+      });
+    }
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+});
+
 describe("session control API", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
@@ -488,7 +1076,11 @@ describe("session control API", () => {
     const res = await get("/api/session-control/read?session=wolf-1");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ session: "wolf-1", output: "captured output for wolf-1\n" });
+    expect(data).toEqual({
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      output: "captured output for wolf-1\n",
+    });
   });
 
   test("send validates session then delegates to backend", async () => {
@@ -518,7 +1110,7 @@ describe("session control API", () => {
     });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+    expect(data).toEqual({ ok: true, session: "wolf-1", sessionId: "mock:wolf-1", matched: true });
   });
 
   test("wait succeeds from later broker output", async () => {
@@ -533,7 +1125,7 @@ describe("session control API", () => {
     const res = await wait;
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+    expect(data).toEqual({ ok: true, session: "wolf-1", sessionId: "mock:wolf-1", matched: true });
   });
 
   test("wait replays output emitted between snapshot and subscribe", async () => {
@@ -550,7 +1142,7 @@ describe("session control API", () => {
 
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true, session: "wolf-1", matched: true });
+    expect(data).toEqual({ ok: true, session: "wolf-1", sessionId: "mock:wolf-1", matched: true });
   });
 
   test("wait returns 408 on timeout", async () => {
@@ -982,6 +1574,7 @@ describe("JSON body shape validation", () => {
   test("all JSON-body routes reject non-object values", async () => {
     const paths = [
       "/api/create",
+      "/api/session-open",
       "/api/settings",
       "/api/kill",
       "/api/session-control/send",

@@ -93,14 +93,30 @@ Configure commands in **Settings → Agents**.
 ```text
 wolfpack                 Start the server (runs setup on first launch)
 wolfpack setup           Re-run the setup wizard
-wolfpack ls              List active broker sessions
+wolfpack list [--json]   List active broker sessions
+wolfpack session create  Create a top-level project session
+wolfpack agent spawn     Spawn a same-harness child agent
+wolfpack session ...     Status/read/send/wait helpers for agent automation
 wolfpack attach [name]   Attach the local terminal to an existing session
-wolfpack kill <name>     Kill a session
-wolfpack session ...     Scriptable read/send/wait helpers for automation
+wolfpack kill <name|id>  Kill a session
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
 wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
 wolfpack uninstall --yes Remove everything
 ```
+
+Create a top-level project session with its initial instruction delivered at launch:
+
+```bash
+wolfpack session create branchout --harness pi --plan .plans/000-task.md --json
+```
+
+Spawn a same-harness child from an existing Wolfpack agent:
+
+```bash
+wolfpack agent spawn wolfpack --plan .plans/000-review.md --notify-parent --json
+```
+
+Each command makes one server-owned request and returns the stable broker `sessionId`. The server validates the project, allocates the name, persists identity, and passes startup instructions directly to the harness instead of racing terminal readiness. `--plan` generates a compact plan handoff without copying plan contents; `--prompt-file` avoids shell heredoc/quoting failures for bespoke long prompts. Child spawning derives the parent harness and structured hierarchy without inheriting its transcript or context. `wolfpack session open` remains a deprecated child-spawn alias.
 
 Direct terminal attach: [docs/cli-attach.md](docs/cli-attach.md). Scriptable session control: [docs/session-control.md](docs/session-control.md).
 
@@ -115,6 +131,7 @@ Wolfpack is self-hosted software for machines you control. Those machines can be
 - The server talks to the broker over a per-user Unix socket.
 - The broker owns the PTYs and runs your selected commands locally on that machine.
 - Optional JWT auth can be layered on top of Tailscale.
+- Session control follows the ordinary global API auth policy when configured and adds no inter-session authorization layer. Tailnet/global Wolfpack access remains the trust boundary; sessions can list and communicate with other sessions.
 - Wolfpack does not provide a hosted relay, managed account, or prompt upload service.
 
 Running coding agents is intentionally powerful: those commands execute with your local user permissions in the chosen project directory.
@@ -173,7 +190,22 @@ Wolfpack exposes repository-local agent skills in `skills/`:
 - `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
 - `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
 
-Copy or symlink these skill directories into an agent's skill path when you want that agent to opt in. Installation/update details: [docs/agent-skills.md](docs/agent-skills.md).
+Skills are executable agent instructions, so install only the ones you have audited. Clone or update `https://github.com/almogdepaz/wolfpack`, review the requested file (for example `skills/wolfpack-tailnet-control/SKILL.md`), then symlink that skill directory into one supported root:
+
+- Pi global: `~/.pi/agent/skills/`
+- shared Agent Skills root supported by Pi: `~/.agents/skills/`
+- Claude global where used: `~/.claude/skills/`
+
+Prefer symlinks so a reviewed `git pull --ff-only` updates the source. Refuse installation when the destination already exists; copying is also supported but must be refreshed manually. Start a fresh agent context afterward so skill descriptions are rescanned. Full fail-safe commands: [docs/agent-skills.md](docs/agent-skills.md).
+
+For a top-level session or a same-harness child, invoke:
+
+```bash
+wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
+wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
+```
+
+Platform binaries do not install skills. This is intentional: the cloned repository remains the auditable source of truth.
 
 ## Contributing
 

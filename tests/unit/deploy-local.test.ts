@@ -25,15 +25,32 @@ function prepareFixture(): { readonly repo: string; readonly home: string; reado
   mkdirSync(bin, { recursive: true });
   cpSync(join(process.cwd(), "scripts", "deploy-local.sh"), join(repo, "scripts", "deploy-local.sh"));
 
-  writeFileSync(join(repo, "dist", "wolfpack-darwin-arm64"), "server-arm64\n");
-  writeFileSync(join(repo, "dist", "wolfpack-darwin-x64"), "server-x64\n");
+  const serverFixture = `#!/bin/sh
+echo "wolfpack $*" >> "$DEPLOY_TEST_LOG"
+if [ "$*" = "session open --help" ]; then
+  echo "Usage: wolfpack session open <project>"
+  exit 0
+fi
+exit 1
+`;
+  writeExecutable(join(repo, "dist", "wolfpack-darwin-arm64"), serverFixture);
+  writeExecutable(join(repo, "dist", "wolfpack-darwin-x64"), serverFixture);
   writeFileSync(join(repo, "dist", "wolfpack-broker"), "broker\n");
   writeFileSync(join(repo, "public", "app.bundle.js"), "fresh-app-bundle\n");
+  writeFileSync(join(home, ".wolfpack", "bin", "wolfpack-broker"), "installed-broker\n");
   writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ port: 18790 }));
   writeFileSync(log, "");
 
   writeExecutable(join(bin, "bun"), "#!/bin/sh\necho \"bun $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
   writeExecutable(join(bin, "codesign"), "#!/bin/sh\necho \"codesign $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
+  writeExecutable(join(bin, "mv"), `#!/bin/sh
+echo "mv $*" >> "$DEPLOY_TEST_LOG"
+/bin/mv "$@"
+for destination do :; done
+if [ "$DEPLOY_TEST_CORRUPT_INSTALL" = "1" ] && [ "$destination" = "$HOME/.wolfpack/bin/wolfpack" ]; then
+  printf 'corrupt\n' >> "$destination"
+fi
+`);
   writeExecutable(join(bin, "launchctl"), `#!/bin/sh
 echo "launchctl $*" >> "$DEPLOY_TEST_LOG"
 STATE_DIR="$DEPLOY_TEST_STATE_DIR"
@@ -43,7 +60,8 @@ case "$*" in
     SERVER_PID="$DEPLOY_TEST_SERVER_OLD_PID"
     if { [ -f "$STATE_DIR/server-kicked" ] || [ -f "$STATE_DIR/server-bootstrapped" ]; } && [ "$DEPLOY_TEST_SERVER_PID_STAYS" != "1" ]; then SERVER_PID="$DEPLOY_TEST_SERVER_NEW_PID"; fi
     BROKER_PID="$DEPLOY_TEST_BROKER_OLD_PID"
-    if [ -f "$STATE_DIR/broker-kicked" ] && [ "$DEPLOY_TEST_BROKER_PID_STAYS" != "1" ]; then BROKER_PID="$DEPLOY_TEST_BROKER_NEW_PID"; fi
+    if { [ -f "$STATE_DIR/broker-kicked" ] || [ -f "$STATE_DIR/broker-bootstrapped" ]; } && [ "$DEPLOY_TEST_BROKER_PID_STAYS" != "1" ]; then BROKER_PID="$DEPLOY_TEST_BROKER_NEW_PID"; fi
+    if [ -f "$STATE_DIR/server-kicked" ] && [ "$DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART" = "1" ]; then BROKER_PID="$DEPLOY_TEST_BROKER_NEW_PID"; fi
     echo "$BROKER_PID\t0\tcom.wolfpack.broker"
     echo "$SERVER_PID\t0\tcom.wolfpack.server"
     exit 0
@@ -56,6 +74,9 @@ case "$*" in
     if [ "$DEPLOY_TEST_SERVER_KICKSTART_FAIL" = "1" ]; then exit 1; fi
     touch "$STATE_DIR/server-kicked"
     ;;
+  *"bootstrap"*"com.wolfpack.broker.plist"*)
+    touch "$STATE_DIR/broker-bootstrapped"
+    ;;
   *"bootstrap"*"com.wolfpack.server.plist"*)
     touch "$STATE_DIR/server-bootstrapped"
     ;;
@@ -64,11 +85,29 @@ exit 0
 `);
   writeExecutable(join(bin, "curl"), `#!/bin/sh
 echo "curl $*" >> "$DEPLOY_TEST_LOG"
-if [ "$DEPLOY_TEST_STALE_ASSET" = "1" ]; then
-  printf 'stale-app-bundle\n'
-else
-  cat "$DEPLOY_TEST_REPO/public/app.bundle.js"
-fi
+case "$*" in
+  *"/app.bundle.js"*)
+    if [ "$DEPLOY_TEST_STALE_ASSET" = "1" ]; then
+      printf 'stale-app-bundle\n'
+    else
+      cat "$DEPLOY_TEST_REPO/public/app.bundle.js"
+    fi
+    ;;
+  *"/api/info"*)
+    printf '{"name":"test-host","version":"1.2.3"}\n'
+    ;;
+  *"/api/sessions"*)
+    if [ "$DEPLOY_TEST_DROP_SESSION" = "1" ] && [ -f "$DEPLOY_TEST_STATE_DIR/server-kicked" ]; then
+      printf '{"sessions":[{"name":"alpha","identity":{"wolfpackSessionId":"id-alpha"}}]}\n'
+    else
+      printf '{"sessions":[{"name":"alpha","identity":{"wolfpackSessionId":"id-alpha"}},{"name":"beta","identity":{"wolfpackSessionId":"id-beta"}}]}\n'
+    fi
+    ;;
+  *)
+    echo "unexpected curl request" >&2
+    exit 1
+    ;;
+esac
 `);
 
   return { repo, home, log, bin };
@@ -86,7 +125,17 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_SERVER_NEW_PID: "222",
     DEPLOY_TEST_BROKER_OLD_PID: "333",
     DEPLOY_TEST_BROKER_NEW_PID: "444",
+    DEPLOY_TEST_DROP_SESSION: "0",
+    DEPLOY_TEST_STALE_ASSET: "0",
+    DEPLOY_TEST_BROKER_PID_STAYS: "0",
+    DEPLOY_TEST_SERVER_PID_STAYS: "0",
+    DEPLOY_TEST_BROKER_KICKSTART_FAIL: "0",
+    DEPLOY_TEST_SERVER_KICKSTART_FAIL: "0",
+    DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "0",
+    DEPLOY_TEST_CORRUPT_INSTALL: "0",
     DEPLOY_VERIFY_TIMEOUT_SECS: "1",
+    WOLFPACK_SESSION_NAME: "",
+    WOLFPACK_AGENT_KIND: "",
     ...env,
   };
 }
@@ -99,8 +148,13 @@ function deployOptions(fixture: { readonly repo: string; readonly home: string; 
   };
 }
 
-function runDeploy(fixture: { readonly repo: string; readonly home: string; readonly log: string; readonly bin: string }, env: Record<string, string> = {}): string {
-  return execFileSync("bash", [join(fixture.repo, "scripts", "deploy-local.sh")], deployOptions(fixture, env));
+function runDeploy(
+  fixture: { readonly repo: string; readonly home: string; readonly log: string; readonly bin: string },
+  broker: "yes" | "no" | undefined,
+  env: Record<string, string> = {},
+): string {
+  const args = broker === undefined ? [] : [`--broker=${broker}`];
+  return execFileSync("/bin/bash", [join(fixture.repo, "scripts", "deploy-local.sh"), ...args], deployOptions(fixture, env));
 }
 
 beforeEach(() => {
@@ -112,14 +166,91 @@ afterEach(() => {
 });
 
 describe("scripts/deploy-local.sh", () => {
+  test("requires an explicit broker deployment mode before mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, undefined)).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("rejects invalid broker deployment modes before mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => execFileSync(
+      "/bin/bash",
+      [join(fixture.repo, "scripts", "deploy-local.sh"), "--broker=auto"],
+      deployOptions(fixture),
+    )).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("rejects broker replacement from a broker-owned session before mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "yes", {
+      WOLFPACK_SESSION_NAME: "dev08-qa",
+      WOLFPACK_AGENT_KIND: "pi",
+    })).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("preserves the installed broker and broker service in broker=no mode", () => {
+    const fixture = prepareFixture();
+
+    const output = runDeploy(fixture, "no");
+    const commands = readFileSync(fixture.log, "utf-8");
+
+    expect(readFileSync(join(fixture.home, ".wolfpack", "bin", "wolfpack-broker"), "utf-8")).toBe("installed-broker\n");
+    expect(commands).not.toContain("com.wolfpack.broker");
+    expect(output).toContain("\"brokerDeployed\":false");
+  });
+
+  test("fails before service restart when the installed artifact hash changes", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "no", { DEPLOY_TEST_CORRUPT_INSTALL: "1" })).toThrow();
+
+    const commands = readFileSync(fixture.log, "utf-8");
+    expect(commands).not.toContain("launchctl kickstart");
+  });
+
+  test("fails broker=no deployment when the broker pid changes", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "no", { DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "1" })).toThrow();
+  });
+
+  test("fails broker=no deployment when a pre-existing session identity disappears", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "no", { DEPLOY_TEST_DROP_SESSION: "1" })).toThrow();
+  });
+
+  test("verifies installed artifact, API health, CLI help, and preserved sessions", () => {
+    const fixture = prepareFixture();
+
+    const output = runDeploy(fixture, "no");
+    const commands = readFileSync(fixture.log, "utf-8");
+
+    expect(commands).toContain("/api/info");
+    expect(commands).toContain("/api/sessions");
+    expect(commands).toContain("wolfpack session open --help");
+    expect(commands).toMatch(/codesign -f -s - .*wolfpack\.new\./);
+    expect(output).toContain("\"preservedSessions\":2");
+    expect(output).toContain("\"serverVersion\":\"1.2.3\"");
+    expect(output).toMatch(/\"serverHash\":\"[0-9a-f]{64}\"/);
+  });
+
   test("restarts broker before restarting server when broker binary is deployed", () => {
     const fixture = prepareFixture();
-    const output = runDeploy(fixture);
+    const output = runDeploy(fixture, "yes");
     const commands = readFileSync(fixture.log, "utf-8");
 
     expect(readFileSync(join(fixture.home, ".wolfpack", "bin", "wolfpack-broker"), "utf-8")).toBe("broker\n");
     expect(output).toContain("broker restarted");
-    expect(output).toContain("deployed and restarted");
+    expect(output).toContain("server restarted");
+    expect(output).toMatch(/\"brokerHash\":\"[0-9a-f]{64}\"/);
+    expect(output).toContain("\"preservedSessions\":null");
     expect(commands.indexOf("com.wolfpack.broker")).toBeGreaterThan(-1);
     expect(commands.indexOf("com.wolfpack.server")).toBeGreaterThan(-1);
     expect(commands.indexOf("com.wolfpack.broker")).toBeLessThan(commands.indexOf("com.wolfpack.server"));
@@ -131,7 +262,7 @@ describe("scripts/deploy-local.sh", () => {
     mkdirSync(launchAgents, { recursive: true });
     writeFileSync(join(launchAgents, "com.wolfpack.broker.plist"), "plist\n");
 
-    const output = runDeploy(fixture, { DEPLOY_TEST_BROKER_KICKSTART_FAIL: "1" });
+    const output = runDeploy(fixture, "yes", { DEPLOY_TEST_BROKER_KICKSTART_FAIL: "1" });
     const commands = readFileSync(fixture.log, "utf-8");
 
     expect(output).toContain("broker bootstrapped");
@@ -140,22 +271,22 @@ describe("scripts/deploy-local.sh", () => {
     expect(commands).toContain("com.wolfpack.broker.plist");
   });
 
-  test("prints service-install reminder when broker plist is missing", () => {
+  test("fails verification when broker service cannot restart or bootstrap", () => {
     const fixture = prepareFixture();
-    const output = runDeploy(fixture, { DEPLOY_TEST_BROKER_KICKSTART_FAIL: "1" });
-    const commands = readFileSync(fixture.log, "utf-8");
 
-    expect(output).toContain("broker deployed — no broker plist found, run 'wolfpack service install' first");
+    expect(() => runDeploy(fixture, "yes", { DEPLOY_TEST_BROKER_KICKSTART_FAIL: "1" })).toThrow();
+
+    const commands = readFileSync(fixture.log, "utf-8");
     expect(commands).not.toContain("launchctl bootstrap");
-    expect(output).toContain("deployed and restarted");
+    expect(commands).not.toContain("com.wolfpack.server");
   });
 
   test("fails when server kickstart leaves the old pid running", () => {
     const fixture = prepareFixture();
 
     expect(() => execFileSync(
-      "bash",
-      [join(fixture.repo, "scripts", "deploy-local.sh")],
+      "/bin/bash",
+      [join(fixture.repo, "scripts", "deploy-local.sh"), "--broker=yes"],
       deployOptions(fixture, { DEPLOY_TEST_SERVER_PID_STAYS: "1" }),
     )).toThrow();
 
@@ -168,8 +299,8 @@ describe("scripts/deploy-local.sh", () => {
     const fixture = prepareFixture();
 
     expect(() => execFileSync(
-      "bash",
-      [join(fixture.repo, "scripts", "deploy-local.sh")],
+      "/bin/bash",
+      [join(fixture.repo, "scripts", "deploy-local.sh"), "--broker=yes"],
       deployOptions(fixture, { DEPLOY_TEST_STALE_ASSET: "1" }),
     )).toThrow();
 
@@ -179,7 +310,7 @@ describe("scripts/deploy-local.sh", () => {
 
   test("bounds each served-bundle verification request", () => {
     const fixture = prepareFixture();
-    runDeploy(fixture);
+    runDeploy(fixture, "yes");
 
     const commands = readFileSync(fixture.log, "utf-8");
     expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
@@ -191,10 +322,10 @@ describe("scripts/deploy-local.sh", () => {
     mkdirSync(launchAgents, { recursive: true });
     writeFileSync(join(launchAgents, "com.wolfpack.server.plist"), "plist\n");
 
-    const output = runDeploy(fixture, { DEPLOY_TEST_SERVER_KICKSTART_FAIL: "1" });
+    const output = runDeploy(fixture, "yes", { DEPLOY_TEST_SERVER_KICKSTART_FAIL: "1" });
     const commands = readFileSync(fixture.log, "utf-8");
 
-    expect(output).toContain("deployed and bootstrapped");
+    expect(output).toContain("server bootstrapped");
     expect(commands).toContain("launchctl bootstrap");
     expect(commands).toContain("com.wolfpack.server.plist");
     expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");

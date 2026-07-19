@@ -26,7 +26,7 @@ import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
 import { attachCommand } from "./attach.js";
-import { runSessionCommand } from "./session-control.js";
+import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
@@ -60,6 +60,36 @@ export function planBinaryUpdateAction(
 
 export function hasUninstallConfirmationFlag(argv: string[]): boolean {
   return argv.includes("--yes") || argv.includes("--force");
+}
+
+const HELP_ALIASES = new Set(["--help", "-h", "help"]);
+
+export function topLevelUsage(): string {
+  return `Usage: wolfpack [command]
+
+Commands:
+  wolfpack                         Start the dashboard/server
+  wolfpack setup                   Run the setup wizard
+  wolfpack service <action>        Manage the Wolfpack service
+  wolfpack doctor                  Diagnose the installation
+  wolfpack list [--json]           List active sessions (alias: ls)
+  wolfpack session create <project> Create a top-level session
+  wolfpack session <action>        Inspect or control sessions
+  wolfpack agent spawn <project>   Spawn a same-harness child agent
+  wolfpack kill <session-or-id> [--json] Kill a session
+  wolfpack attach [session]        Attach this terminal to a session
+  wolfpack uninstall --yes         Remove Wolfpack configuration and services
+  wolfpack migrate-plan <file>     Migrate an older plan format
+  wolfpack worker ...              Run the Ralph worker
+
+Help:
+  wolfpack --help
+  wolfpack session --help
+  wolfpack agent --help`;
+}
+
+export function shouldStartDashboard(argv: readonly string[]): boolean {
+  return argv.length === 0;
 }
 
 export type ServiceCommandAction = "install" | "uninstall" | "stop" | "start" | "restart" | "status";
@@ -162,14 +192,18 @@ function migratePlan(file?: string) {
   print(dim(`  File: ${filePath}`));
 }
 
-const cmd = process.argv[2];
-const subcmd = process.argv[3];
-
 async function main() {
-  if (cmd === "setup") {
+  const argv = process.argv.slice(2);
+  const [cmd, subcmd] = argv;
+
+  if (argv.length === 1 && HELP_ALIASES.has(cmd)) {
+    print(topLevelUsage());
+  } else if (shouldStartDashboard(argv)) {
+    await start();
+  } else if (cmd === "setup") {
     await setup();
   } else if (cmd === "service") {
-    const serviceCommand = parseServiceCommand(process.argv.slice(3));
+    const serviceCommand = parseServiceCommand(argv.slice(1));
     if (!serviceCommand) {
       print("  Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
       process.exit(1);
@@ -183,15 +217,17 @@ async function main() {
   } else if (cmd === "doctor") {
     process.exit(await doctor());
   } else if (cmd === "ls" || cmd === "list") {
-    process.exit(await lsSessions());
+    process.exit(await lsSessions(argv.slice(1)));
   } else if (cmd === "session") {
-    process.exit(await runSessionCommand(process.argv.slice(3)));
+    process.exit(await runSessionCommand(argv.slice(1)));
+  } else if (cmd === "agent") {
+    process.exit(await runAgentCommand(argv.slice(1)));
   } else if (cmd === "kill") {
-    process.exit(await killSession(subcmd));
+    process.exit(await killSession(argv.slice(1)));
   } else if (cmd === "attach") {
-    process.exit(await attachCommand(process.argv.slice(3)));
+    process.exit(await attachCommand(argv.slice(1)));
   } else if (cmd === "uninstall") {
-    if (!hasUninstallConfirmationFlag(process.argv.slice(3))) {
+    if (!hasUninstallConfirmationFlag(argv.slice(1))) {
       print(red("  Refusing to uninstall without confirmation."));
       print(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
       print(dim("  Re-run with: wolfpack uninstall --yes"));
@@ -201,10 +237,12 @@ async function main() {
   } else if (cmd === "migrate-plan") {
     migratePlan(subcmd);
   } else if (cmd === "worker") {
-    process.argv = [process.argv[0], process.argv[1], ...process.argv.slice(3)];
+    process.argv = [process.argv[0], process.argv[1], ...argv.slice(1)];
     await import("../ralph-macchio.js");
   } else {
-    await start();
+    print(red(`  Unknown command: ${cmd}`));
+    print(dim("  Run 'wolfpack --help' for available commands."));
+    process.exit(1);
   }
 }
 

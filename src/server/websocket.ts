@@ -323,6 +323,16 @@ function safeViewerSend(
   }
 }
 
+export function notifySubSessionOpened(parentSession: string, session: string): boolean {
+  const entry = activePtySessions.get(parentSession);
+  if (!entry) return false;
+  return safeViewerSend(entry, parentSession, JSON.stringify({
+    type: "sub_session_opened",
+    parentSession,
+    session,
+  }));
+}
+
 /** Send prefill buffer in 32KB chunks with short delays to avoid stalling mobile connections.
  *  Sends `prefill_done` message at the end so the client exits buffering state. */
 async function sendPrefillChunked(

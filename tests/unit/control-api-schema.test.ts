@@ -148,13 +148,76 @@ describe("control api schema compatibility samples", () => {
 
     expect(validate(request, { cmd: "shell" }, artifact)).not.toEqual([]);
     expect(validate(request, { project: "wolfpack", cmd: "shell" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      cmd: "pi",
+      sessionName: "pi-main-sub-agent",
+      parentSession: "pi-main",
+      initialPrompt: "perform differential review only",
+    }, artifact)).toEqual([]);
+    expect((request.properties as JsonObject).parentSession).toEqual({ $ref: "#/$defs/SessionName" });
+    expect((request.properties as JsonObject).initialPrompt).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 32768,
+    });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+  });
+
+  test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
+    const operation = httpOperation("openSession");
+    const request = httpRequest("openSession");
+
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      initialPrompt: "perform differential review only",
+    }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      cmd: "claude",
+    }, artifact)).not.toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      sessionName: "override",
+    }, artifact)).not.toEqual([]);
+    expect((request.properties as JsonObject).initialPrompt).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 32768,
+    });
+    expect(validate(httpResponse("openSession"), {
+      ok: true,
+      session: "pi-main-sub-agent",
+      sessionId: "11111111-1111-1111-1111-111111111111",
+      project: "wolfpack",
+      harness: "pi",
+    }, artifact)).toEqual([]);
   });
 
   test("representative http responses satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", { name: "devbox", version: "1.6.6" }],
-      ["listSessions", { sessions: [{ name: "wolf-1", lastLine: "ready", triage: "idle" }] }],
+      ["listSessions", { sessions: [{
+        name: "wolf-1-sub-agent",
+        lastLine: "ready",
+        triage: "idle",
+        identity: {
+          wolfpackSessionId: "broker-child",
+          wolfpackSessionName: "wolf-1-sub-agent",
+          projectPath: "/repo/wolf-1",
+          agentKind: "pi",
+          createdAt: "2026-07-11T00:00:00Z",
+          updatedAt: "2026-07-11T00:00:00Z",
+          parentSession: {
+            wolfpackSessionId: "broker-parent",
+            wolfpackSessionName: "wolf-1",
+          },
+        },
+      }] }],
       ["getSettings", {
         settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }] },
         effective: { agentCmd: "shell", cmds: ["shell"], ralphAgents: [] },
@@ -205,6 +268,11 @@ describe("control api schema compatibility samples", () => {
       ["pty_ready", { type: "pty_ready" }],
       ["viewer_conflict", { type: "viewer_conflict" }],
       ["control_granted", { type: "control_granted" }],
+      ["sub_session_opened", {
+        type: "sub_session_opened",
+        parentSession: "pi-main",
+        session: "pi-main-sub-agent",
+      }],
     ];
 
     for (const [messageName, payload] of samples) {

@@ -789,6 +789,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
  * @param {() => void} [opts.onPrefillDone]
  * @param {() => void} [opts.onViewerConflict]
  * @param {() => void} [opts.onControlGranted]
+ * @param {(parentSession: string, session: string) => void} [opts.onSubSessionOpened]
  * @param {() => void} [opts.onReplacePrefill]
  * @param {(number, string) => void} opts.onDisconnected
  * @param {() => void} [opts.onReconnecting]
@@ -815,6 +816,7 @@ interface PtySocketClientOpts {
   readonly onPrefillDone?: () => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
+  readonly onSubSessionOpened?: (parentSession: string, session: string) => void;
   readonly onReplacePrefill?: () => void;
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
@@ -992,6 +994,139 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }, RESIZE_SEND_DEBOUNCE_MS);
   }
 
+  type SocketControlMessage = Readonly<Record<string, unknown>> & { readonly type: string };
+  type SocketControlHandler = (message: SocketControlMessage) => void;
+
+  function handleAttachAck(): void {
+    __wfTraceEvent(_trace, "attach_ack");
+    _attachAckReceived = true;
+    _awaitingAttachAck = false;
+    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+    // Re-check dimensions after layout settles — catches stale initial dims on
+    // mobile where layout isn't finalized at connect time. Same-dimension acks
+    // are skipped to avoid a duplicate resize cycle immediately after attach.
+    sendLayoutStableAfterPaint();
+  }
+
+  function handlePtyReady(): void {
+    __wfTraceEvent(_trace, "pty_ready");
+    if (opts.onPtyReady) opts.onPtyReady();
+  }
+
+  function handlePrefillViewport(): void {
+    // Phase 1 complete: viewport content already written as binary.
+    const viewportChunks = _prefillChunks;
+    _prefillChunks = [];
+    const viewportBytes = viewportChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    __wfTraceEvent(_trace, "prefill_viewport", {
+      viewportFrames: viewportChunks.length,
+      viewportBytes,
+    });
+    if (opts.onBinaryData) {
+      for (const chunk of viewportChunks) opts.onBinaryData(chunk);
+    }
+    // Stay in prefill mode for phase 2 scrollback (if server sends it). Keep
+    // buffering until the authoritative prefill_done boundary. The attach-level
+    // protocol deadline closes/reconnects rather than revealing partial output.
+    _awaitingPrefillDone = true;
+    _sawViewportPrefill = true;
+  }
+
+  function handlePrefillDone(): void {
+    // Phase 2 complete (or single-phase legacy): flush remaining chunks.
+    _awaitingPrefillDone = false;
+    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
+    const chunks = _prefillChunks;
+    _prefillChunks = [];
+    const bufferedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    __wfTraceEvent(_trace, "prefill_done", {
+      bufferedFrames: chunks.length,
+      bufferedBytes,
+      sawViewportPrefill: _sawViewportPrefill,
+    });
+    if (_sawViewportPrefill && chunks.length && opts.onReplacePrefill) {
+      opts.onReplacePrefill();
+    }
+    _sawViewportPrefill = false;
+    if (opts.onBinaryData) {
+      for (const chunk of chunks) opts.onBinaryData(chunk);
+    }
+    if (opts.onPrefillDone) opts.onPrefillDone();
+  }
+
+  function handleViewerConflict(): void {
+    __wfTraceEvent(_trace, "viewer_conflict");
+    console.log("[pty-ws]", opts.session, "viewer_conflict");
+    _awaitingAttachAck = false;
+    _awaitingPrefillDone = false;
+    _prefillChunks = [];
+    _sawViewportPrefill = false;
+    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
+    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+    if (opts.onViewerConflict) opts.onViewerConflict();
+  }
+
+  function handleControlGranted(): void {
+    __wfTraceEvent(_trace, "control_granted");
+    console.log("[pty-ws]", opts.session, "control_granted — sending re-attach");
+    // Fresh viewer takeover needs a fresh attach bootstrap.
+    sendAttachHandshake();
+    if (opts.onControlGranted) opts.onControlGranted();
+  }
+
+  function handleSubSessionOpened(message: SocketControlMessage): void {
+    if (typeof message.parentSession !== "string" || typeof message.session !== "string") return;
+    if (opts.onSubSessionOpened) opts.onSubSessionOpened(message.parentSession, message.session);
+  }
+
+  const terminalControlHandlers: Readonly<Record<string, SocketControlHandler>> = {
+    attach_ack: handleAttachAck,
+    pty_ready: handlePtyReady,
+    prefill_viewport: handlePrefillViewport,
+    prefill_done: handlePrefillDone,
+    viewer_conflict: handleViewerConflict,
+    control_granted: handleControlGranted,
+  };
+  const applicationControlHandlers: Readonly<Record<string, SocketControlHandler>> = {
+    sub_session_opened: handleSubSessionOpened,
+  };
+
+  function handleTextFrame(raw: string): void {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      const message = parsed as Readonly<Record<string, unknown>>;
+      if (typeof message.type !== "string") return;
+      const typedMessage = message as SocketControlMessage;
+      const handler = terminalControlHandlers[typedMessage.type] ?? applicationControlHandlers[typedMessage.type];
+      if (handler) handler(typedMessage);
+    } catch (error: unknown) {
+      console.warn("[pty-ws] failed to handle control message:", error);
+    }
+  }
+
+  function handleBinaryFrame(data: ArrayBuffer): void {
+    if (_awaitingPrefillDone) {
+      const bytes = new Uint8Array(data);
+      if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: bytes.length });
+      const streamHiddenFullPrefill = _currentAttachPrefillMode === "full" && !_sawViewportPrefill;
+      __wfTraceEvent(_trace, "ws.binary", {
+        bucket: "prefill",
+        size: bytes.length,
+        buffered: streamHiddenFullPrefill ? 0 : _prefillChunks.length + 1,
+      });
+      if (streamHiddenFullPrefill) {
+        if (opts.onBinaryData) opts.onBinaryData(bytes);
+        return;
+      }
+      _prefillChunks.push(bytes);
+      return;
+    }
+    const bytes = new Uint8Array(data);
+    __wfTraceEvent(_trace, "ws.binary", { bucket: "replay", size: bytes.length });
+    if (opts.onBinaryData) opts.onBinaryData(bytes);
+  }
+
   function connect() {
     _rc.cancel();
     if (ws && ws.readyState <= WebSocket.OPEN) return;
@@ -1011,95 +1146,12 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       if (opts.onOpen) opts.onOpen(wasReconnect);
     };
 
-    sock.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === "attach_ack") {
-            __wfTraceEvent(_trace, "attach_ack");
-            _attachAckReceived = true;
-            _awaitingAttachAck = false;
-            if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
-            // Re-check dimensions after layout settles — catches stale
-            // initial dims on mobile where layout isn't finalized at connect time.
-            // Same-dimension acks are skipped to avoid a duplicate resize cycle
-            // immediately after attach.
-            sendLayoutStableAfterPaint();
-          } else if (msg.type === "pty_ready") {
-            __wfTraceEvent(_trace, "pty_ready");
-            if (opts.onPtyReady) opts.onPtyReady();
-          } else if (msg.type === "prefill_viewport") {
-            // Phase 1 complete: viewport content already written as binary.
-            // Flush any buffered viewport chunks immediately for fast first paint.
-            const viewportChunks = _prefillChunks;
-            _prefillChunks = [];
-            const _vpBytes = viewportChunks.reduce((s, c) => s + c.length, 0);
-            __wfTraceEvent(_trace, "prefill_viewport", {
-              viewportFrames: viewportChunks.length, viewportBytes: _vpBytes,
-            });
-            if (opts.onBinaryData) {
-              for (const chunk of viewportChunks) opts.onBinaryData(chunk);
-            }
-            // Stay in prefill mode for phase 2 scrollback (if server sends it)
-            _awaitingPrefillDone = true;
-            _sawViewportPrefill = true;
-            // Keep buffering until the authoritative prefill_done boundary.
-            // The attach-level protocol deadline closes/reconnects this socket
-            // rather than revealing partial viewport or phase-two output.
-          } else if (msg.type === "prefill_done") {
-            // Phase 2 complete (or single-phase legacy): flush remaining chunks.
-            _awaitingPrefillDone = false;
-            if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-            const chunks = _prefillChunks;
-            _prefillChunks = [];
-            const _bufferedBytes = chunks.reduce((s, c) => s + c.length, 0);
-            __wfTraceEvent(_trace, "prefill_done", {
-              bufferedFrames: chunks.length, bufferedBytes: _bufferedBytes,
-              sawViewportPrefill: _sawViewportPrefill,
-            });
-            if (_sawViewportPrefill && chunks.length && opts.onReplacePrefill) {
-              opts.onReplacePrefill();
-            }
-            _sawViewportPrefill = false;
-            if (opts.onBinaryData) {
-              for (const chunk of chunks) opts.onBinaryData(chunk);
-            }
-            if (opts.onPrefillDone) opts.onPrefillDone();
-          } else if (msg.type === "viewer_conflict") {
-            __wfTraceEvent(_trace, "viewer_conflict");
-            console.log("[pty-ws]", opts.session, "viewer_conflict");
-            _awaitingAttachAck = false;
-            _awaitingPrefillDone = false;
-            _prefillChunks = [];
-            _sawViewportPrefill = false;
-            if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-            if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
-            if (opts.onViewerConflict) opts.onViewerConflict();
-          } else if (msg.type === "control_granted") {
-            __wfTraceEvent(_trace, "control_granted");
-            console.log("[pty-ws]", opts.session, "control_granted — sending re-attach");
-            // Fresh viewer takeover needs a fresh attach bootstrap.
-            sendAttachHandshake();
-            if (opts.onControlGranted) opts.onControlGranted();
-          }
-        } catch (e) { console.warn("[pty-ws] failed to parse control message:", e); }
+    sock.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        handleTextFrame(event.data);
         return;
       }
-      if (_awaitingPrefillDone) {
-        const u8 = new Uint8Array(ev.data);
-        if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: u8.length });
-        const streamHiddenFullPrefill = _currentAttachPrefillMode === "full" && !_sawViewportPrefill;
-        __wfTraceEvent(_trace, "ws.binary", { bucket: "prefill", size: u8.length, buffered: streamHiddenFullPrefill ? 0 : _prefillChunks.length + 1 });
-        if (streamHiddenFullPrefill) {
-          if (opts.onBinaryData) opts.onBinaryData(u8);
-          return;
-        }
-        _prefillChunks.push(u8);
-        return;
-      }
-      const u8 = new Uint8Array(ev.data);
-      __wfTraceEvent(_trace, "ws.binary", { bucket: "replay", size: u8.length });
-      if (opts.onBinaryData) opts.onBinaryData(u8);
+      handleBinaryFrame(event.data as ArrayBuffer);
     };
 
     sock.onclose = (ev) => {
@@ -1251,6 +1303,7 @@ interface PtyTerminalControllerOpts {
   readonly onOutput?: (data: Uint8Array) => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
+  readonly onSubSessionOpened?: (parentSession: string, session: string) => void;
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
   readonly onReconnectExhausted?: () => void;
@@ -1883,6 +1936,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         _writeTermData(data);
       },
       onViewerConflict: () => { if (isCurrent() && opts.onViewerConflict) opts.onViewerConflict(); },
+      onSubSessionOpened: (parentSession, session) => {
+        if (isCurrent() && opts.onSubSessionOpened) opts.onSubSessionOpened(parentSession, session);
+      },
       onControlGranted: () => {
         if (!isCurrent()) return;
         // control_granted triggers a fresh attach handshake over the existing
@@ -2570,6 +2626,70 @@ function triageUi(triage: string | null | undefined): { dot: string; card: strin
   return TRIAGE_MAP[key];
 }
 
+interface SessionParentReference {
+  readonly wolfpackSessionId: string;
+  readonly wolfpackSessionName: string;
+}
+
+function sessionIdentityId(session): string | null {
+  const id = session?.identity?.wolfpackSessionId;
+  return typeof id === "string" && id ? id : null;
+}
+
+function sessionParentReference(session): SessionParentReference | null {
+  const parent = session?.identity?.parentSession;
+  if (!parent || typeof parent !== "object") return null;
+  if (typeof parent.wolfpackSessionId !== "string" || !parent.wolfpackSessionId) return null;
+  if (typeof parent.wolfpackSessionName !== "string" || !parent.wolfpackSessionName) return null;
+  return parent;
+}
+
+function groupSessionsByParent(sessions) {
+  const sessionIds = new Set(sessions.map(sessionIdentityId).filter(Boolean));
+  const children = new Map();
+  const roots = [];
+  for (const session of sessions) {
+    const parent = sessionParentReference(session);
+    if (!parent || !sessionIds.has(parent.wolfpackSessionId)) {
+      roots.push(session);
+      continue;
+    }
+    const siblings = children.get(parent.wolfpackSessionId) || [];
+    siblings.push(session);
+    children.set(parent.wolfpackSessionId, siblings);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  const ordered = [];
+  const visited = new Set();
+  const appendTree = (session) => {
+    const id = sessionIdentityId(session);
+    const visitKey = id || session;
+    if (visited.has(visitKey)) return;
+    visited.add(visitKey);
+    ordered.push(session);
+    if (!id) return;
+    for (const child of children.get(id) || []) appendTree(child);
+  };
+  for (const root of roots) appendTree(root);
+  for (const session of sessions) appendTree(session);
+  return ordered;
+}
+
+function subSessionCardAttributes(session, sessions): { readonly className: string; readonly dataAttribute: string } {
+  const parent = sessionParentReference(session);
+  const parentIsActive = parent && sessions.some(
+    (candidate) => sessionIdentityId(candidate) === parent.wolfpackSessionId,
+  );
+  if (!parent || !parentIsActive) return { className: "", dataAttribute: "" };
+  return {
+    className: " sub-session-card",
+    dataAttribute: ` data-parent-session="${escAttr(parent.wolfpackSessionName)}"`,
+  };
+}
+
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
   const mUrl = multiMachine ? esc(g.machine.url) : "";
@@ -2584,11 +2704,12 @@ function renderMachineGroupHtml(g, multiMachine) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
     if (g.sessions.length) {
-      html += g.sessions.map((s, i) => {
+      html += groupSessionsByParent(g.sessions).map((s, i) => {
         const lastLine = s.lastLine || "";
         const ui = triageUi(s.triage);
         const anim = state.firstLoad ? "animate-in" : "";
-        return `<div class="card card-stagger ${anim} ${ui.card}" style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
+        const grouping = subSessionCardAttributes(s, g.sessions);
+        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
             <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
@@ -3253,6 +3374,14 @@ async function initTerminal(cached?: string, prefillModeOverride?: "full" | "vie
       if (state.enterRetryTimer) { clearTimeout(state.enterRetryTimer); state.enterRetryTimer = null; }
       wpMetrics.wsMessagesReceived++;
       scheduleSnapshotSave(null);
+    },
+    onSubSessionOpened: (parentSession, session) => {
+      if (!isDesktop()) return;
+      if (state.currentView !== "terminal") return;
+      if (state.currentSession !== parentSession) return;
+      if (state.gridSessions.length > 0) return;
+      if (session === parentSession) return;
+      addToGrid(session, state.currentMachine || "");
     },
     onViewerConflict: () => {
       var r = WP.handleViewerConflict(_tcState);
@@ -4603,7 +4732,7 @@ function _renderSidebarNow() {
     const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div><button class="machine-ralph-btn" onclick="showRalphStart()">&#129355;</button></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
-      html += g.sessions.map(s => sidebarCardHtml(s, "")).join("");
+      html += groupSessionsByParent(g.sessions).map(s => sidebarCardHtml(s, "", g.sessions)).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
@@ -4620,7 +4749,7 @@ function _renderSidebarNow() {
       html += `<div class="machine-group" data-machine="${mUrl}">`;
       html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${escAttr(g.machine.url)}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += g.sessions.map(s => sidebarCardHtml(s, g.machine.url)).join("");
+        html += groupSessionsByParent(g.sessions).map(s => sidebarCardHtml(s, g.machine.url, g.sessions)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -4638,7 +4767,7 @@ function _renderSidebarNow() {
   el.innerHTML = html;
 }
 
-function sidebarCardHtml(s, machineUrl) {
+function sidebarCardHtml(s, machineUrl, sessions) {
   const lastLine = s.lastLine || "";
   const ui = triageUi(s.triage);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
@@ -4651,7 +4780,8 @@ function sidebarCardHtml(s, machineUrl) {
     ? `toggleGrid('${escAttr(s.name)}', '${escAttr(machineUrl)}', event)`
     : `toggleGrid('${escAttr(s.name)}', '', event)`;
   const gridBtn = `<button class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${inGrid ? 'Remove from grid' : 'Add to grid'}">${inGrid ? '⊠' : '+'}</button>`;
-  return `<div class="card ${ui.card}${activeClass}" onclick="${onclick}">
+  const grouping = subSessionCardAttributes(s, sessions);
+  return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute} onclick="${onclick}">
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>

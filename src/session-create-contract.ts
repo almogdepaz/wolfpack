@@ -1,0 +1,15 @@
+export const SESSION_CREATE_ERROR = {
+  INVALID_REQUEST: "INVALID_REQUEST",
+  PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",
+  UNSUPPORTED_HARNESS: "UNSUPPORTED_HARNESS",
+  NAME_COLLISION: "NAME_COLLISION",
+  BACKEND_UNAVAILABLE: "BACKEND_UNAVAILABLE",
+} as const;
+
+export type SessionCreateErrorCode = typeof SESSION_CREATE_ERROR[keyof typeof SESSION_CREATE_ERROR];
+
+const SESSION_CREATE_ERROR_SET: ReadonlySet<string> = new Set(Object.values(SESSION_CREATE_ERROR));
+
+export function isSessionCreateErrorCode(value: string): value is SessionCreateErrorCode {
+  return SESSION_CREATE_ERROR_SET.has(value);
+}
