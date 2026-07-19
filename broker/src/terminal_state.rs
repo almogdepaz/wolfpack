@@ -283,12 +283,17 @@ impl TerminalState {
         };
         let visible_screen = active.lines.iter().map(line_to_styled).collect();
 
-        // Truncate first (at raw-row granularity), then reflow.
-        let total = inner.scrollback.len();
-        let start = scrollback_limit
-            .map(|n| total.saturating_sub(n))
-            .unwrap_or(0);
-        let scrollback_rows: Vec<Row> = inner.scrollback.iter().skip(start).cloned().collect();
+        // The alternate screen is isolated from primary-screen history.
+        // Truncate primary scrollback first (at raw-row granularity), then reflow.
+        let scrollback_rows: Vec<Row> = if inner.on_alt {
+            Vec::new()
+        } else {
+            let total = inner.scrollback.len();
+            let start = scrollback_limit
+                .map(|n| total.saturating_sub(n))
+                .unwrap_or(0);
+            inner.scrollback.iter().skip(start).cloned().collect()
+        };
         let scrollback_rows = match target_cols {
             Some(tc) if tc > 0 => reflow_lines(&scrollback_rows, tc),
             _ => scrollback_rows,
@@ -1888,9 +1893,10 @@ mod tests {
     #[test]
     fn snapshot_visible_screen_follows_active_buffer() {
         // On alt screen the visible_screen must reflect the alt grid, and
-        // scrollback must stay empty (alt scrolls don't feed the ring).
+        // primary-screen scrollback must remain hidden.
         let mut t = TerminalState::new(4, 2);
-        t.feed(b"primary");
+        t.feed(b"one1\r\ntwo2\r\nthree");
+        assert!(!t.inner.scrollback.is_empty());
         t.feed(b"\x1b[?1049h"); // enter alt — cleared
         t.feed(b"alt!");
 

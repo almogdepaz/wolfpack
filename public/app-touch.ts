@@ -10,7 +10,7 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
   let velocityY = 0;
   let momentumId = null;
   let tracking = false;
-  const SCROLL_THRESHOLD = 28;
+  const DEFAULT_SCROLL_THRESHOLD_PX = 17;
   const FRICTION = 0.95;
   const MIN_VELOCITY = 0.5;
   const MAX_LINES_PER_EVENT = 5;
@@ -146,10 +146,12 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
   function sendScroll(deltaY) {
     let hasMouse = false;
     try { hasMouse = term.getMode(1000) || term.getMode(1002) || term.getMode(1003); } catch {}
+    const metrics = term.renderer?.getMetrics?.();
+    const scrollThreshold = metrics?.height > 0 ? metrics.height : DEFAULT_SCROLL_THRESHOLD_PX;
     scrollAccum += deltaY;
-    const lines = Math.trunc(scrollAccum / SCROLL_THRESHOLD);
+    const lines = Math.trunc(scrollAccum / scrollThreshold);
     if (lines === 0) return;
-    scrollAccum -= lines * SCROLL_THRESHOLD;
+    scrollAccum -= lines * scrollThreshold;
     if (hasMouse) {
       const btn = lines > 0 ? 65 : 64;
       const seq = encoder.encode(`\x1b[<${btn};1;1M`);
@@ -273,10 +275,12 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
     if (Math.abs(velocityY) > MIN_VELOCITY) { momentumId = requestAnimationFrame(momentumTick); }
   }
 
+  const keyboardButton = document.getElementById("kb-open-btn");
   container.addEventListener("touchstart", onTouchStart, { passive: true });
   container.addEventListener("touchmove", onTouchMove, { passive: false });
   container.addEventListener("touchend", onTouchEnd, { passive: true });
   container.addEventListener("touchcancel", onTouchEnd, { passive: true });
+  keyboardButton?.addEventListener("click", cancelMomentum, true);
 
   return function cleanup() {
     cancelMomentum();
@@ -286,5 +290,6 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
     container.removeEventListener("touchmove", onTouchMove);
     container.removeEventListener("touchend", onTouchEnd);
     container.removeEventListener("touchcancel", onTouchEnd);
+    keyboardButton?.removeEventListener("click", cancelMomentum, true);
   };
 }
