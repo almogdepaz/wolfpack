@@ -1,12 +1,93 @@
 import { describe, expect, test } from "bun:test";
 import {
   cleanupCreatedSessions,
+  parsePerfRunCount,
   serverTimingsFor,
   summarizeCell,
+  summarizePerfRuns,
   summarizeServerPhases,
+  type PerfRunReport,
   type ServerTiming,
   type TraceState,
 } from "../../scripts/terminal-load-perf.ts";
+
+function perfRunReport(gridRevealMs: readonly number[], gridPrewarmHits: readonly boolean[]): PerfRunReport {
+  return {
+    pageLoads: [{
+      cardVisibleMs: 100,
+      domContentLoadedMs: 10,
+      loadEventMs: 11,
+      firstContentfulPaintMs: 12,
+      longTaskCount: 0,
+      longTaskTotalMs: 0,
+      longTaskMaxMs: 0,
+      consoleErrorCount: 0,
+      prewarmScheduledDelayMs: 0,
+      prewarmReadyCount: 2,
+      firstPrewarmReadyMs: 20,
+      secondPrewarmReadyMs: 25,
+      ghosttyReadyDoneMs: 15,
+      prewarmEvents: [],
+    }],
+    summaries: [{
+      scenario: "grid:2",
+      mode: "grid",
+      cells: 2,
+      server: [],
+      sessions: gridRevealMs.map((setupToRevealMs, index) => ({
+        session: `perf-${index + 1}`,
+        setupToAttachMs: 1,
+        setupToRevealMs,
+        ghosttyCreationMs: 0,
+        terminalPrewarmed: gridPrewarmHits[index] ?? false,
+        isolatedGhostty: true,
+        wsServerMs: 2,
+        prefillMs: 3,
+        hydrationRevealMs: 4,
+        hydrationStartToPrefillDoneMs: 5,
+        prefillDoneToRevealMs: 6,
+        ptyReadyToRevealMs: 7,
+        attachAckToAfterPaintLayoutStableMs: 8,
+        lastWriteToRevealMs: 9,
+        lastWriteDoneToRevealMs: 10,
+        hydrationMinPendingMs: 80,
+        hydrationSilenceMs: 32,
+        layoutStableDebugMode: "after-paint",
+        attachCols: 72,
+        attachRows: 55,
+        afterPaintCols: 72,
+        afterPaintRows: 55,
+        afterPaintColDelta: 0,
+        attachContainerWidth: 509,
+        afterPaintContainerWidth: 509,
+        containerWidthDelta: 0,
+        prefillBytes: 100,
+      })),
+    }],
+  };
+}
+
+describe("terminal-load perf run options", () => {
+  test("parses positive run counts and defaults to one run", () => {
+    expect(parsePerfRunCount(undefined)).toBe(1);
+    expect(parsePerfRunCount("3")).toBe(3);
+    expect(() => parsePerfRunCount("0")).toThrow("WOLFPACK_PERF_RUNS");
+  });
+
+  test("summarizes repeated runs with prewarm hit counts and percentiles", () => {
+    expect(summarizePerfRuns([
+      perfRunReport([200, 210], [true, true]),
+      perfRunReport([190, 230], [true, false]),
+    ])).toMatchObject({
+      runs: 2,
+      pageConsoleErrorsTotal: 0,
+      grid: {
+        setupToRevealMs: { count: 4, p50: 200, p95: 230 },
+        prewarmHits: { hits: 3, total: 4 },
+      },
+    });
+  });
+});
 
 describe("terminal-load perf cleanup", () => {
   test("kills created perf sessions in reverse order", async () => {

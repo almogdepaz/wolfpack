@@ -25,7 +25,7 @@ export type ServerTiming = {
 };
 type ScenarioMode = "single" | "grid";
 
-type ScenarioSummary = {
+export type ScenarioSummary = {
   scenario: string;
   mode: ScenarioMode;
   cells: number;
@@ -46,7 +46,7 @@ type GhosttyPrewarmPerfEvent = {
   readyCount?: number;
 };
 
-type PageLoadSummary = {
+export type PageLoadSummary = {
   cardVisibleMs: number;
   domContentLoadedMs: number | null;
   loadEventMs: number | null;
@@ -62,7 +62,7 @@ type PageLoadSummary = {
   ghosttyReadyDoneMs: number | null;
   prewarmEvents: GhosttyPrewarmPerfEvent[];
 };
-type CellSummary = {
+export type CellSummary = {
   session: string;
   setupToAttachMs: number | null;
   setupToRevealMs: number | null;
@@ -90,6 +90,47 @@ type CellSummary = {
   afterPaintContainerWidth: number | null;
   containerWidthDelta: number | null;
   prefillBytes: number;
+};
+
+export type PerfRunReport = {
+  readonly pageLoads: PageLoadSummary[];
+  readonly summaries: ScenarioSummary[];
+};
+
+type MetricStats = {
+  readonly count: number;
+  readonly p50: number | null;
+  readonly p95: number | null;
+  readonly min: number | null;
+  readonly max: number | null;
+};
+
+type HitStats = {
+  readonly hits: number;
+  readonly total: number;
+};
+
+type PerfRunsSummary = {
+  readonly runs: number;
+  readonly pageConsoleErrorsTotal: number;
+  readonly page: {
+    readonly cardVisibleMs: MetricStats;
+    readonly secondPrewarmReadyMs: MetricStats;
+    readonly longTaskCount: MetricStats;
+    readonly longTaskTotalMs: MetricStats;
+  };
+  readonly single: {
+    readonly setupToRevealMs: MetricStats;
+    readonly ghosttyCreationMs: MetricStats;
+    readonly prewarmHits: HitStats;
+  };
+  readonly grid: {
+    readonly setupToRevealMs: MetricStats;
+    readonly ghosttyCreationMs: MetricStats;
+    readonly wsServerMs: MetricStats;
+    readonly prefillDoneToRevealMs: MetricStats;
+    readonly prewarmHits: HitStats;
+  };
 };
 
 type ServerPhaseSummary = {
@@ -643,6 +684,110 @@ function gridCellCounts(): number[] {
   return counts;
 }
 
+export function parsePerfRunCount(raw: string | undefined): number {
+  if (!raw) return 1;
+  const count = Number(raw);
+  if (!Number.isInteger(count) || count < 1) throw new Error("WOLFPACK_PERF_RUNS must be a positive integer");
+  return count;
+}
+
+function percentile(values: readonly number[], percentileValue: number): number | null {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const index = Math.max(0, Math.ceil(sorted.length * percentileValue / 100) - 1);
+  return sorted[index] ?? null;
+}
+
+function metricStats(values: readonly number[]): MetricStats {
+  const finite = values.filter(Number.isFinite);
+  return {
+    count: finite.length,
+    p50: percentile(finite, 50),
+    p95: percentile(finite, 95),
+    min: finite.length ? Math.min(...finite) : null,
+    max: finite.length ? Math.max(...finite) : null,
+  };
+}
+
+function addMetric(target: number[], value: number | null): void {
+  if (value !== null && Number.isFinite(value)) target.push(value);
+}
+
+export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSummary {
+  const pageCardVisibleMs: number[] = [];
+  const pageSecondPrewarmReadyMs: number[] = [];
+  const pageLongTaskCount: number[] = [];
+  const pageLongTaskTotalMs: number[] = [];
+  let pageConsoleErrorsTotal = 0;
+
+  const singleSetupToRevealMs: number[] = [];
+  const singleGhosttyCreationMs: number[] = [];
+  let singlePrewarmHits = 0;
+  let singlePrewarmTotal = 0;
+
+  const gridSetupToRevealMs: number[] = [];
+  const gridGhosttyCreationMs: number[] = [];
+  const gridWsServerMs: number[] = [];
+  const gridPrefillDoneToRevealMs: number[] = [];
+  let gridPrewarmHits = 0;
+  let gridPrewarmTotal = 0;
+
+  for (const run of runs) {
+    for (const pageLoad of run.pageLoads) {
+      addMetric(pageCardVisibleMs, pageLoad.cardVisibleMs);
+      addMetric(pageSecondPrewarmReadyMs, pageLoad.secondPrewarmReadyMs);
+      addMetric(pageLongTaskCount, pageLoad.longTaskCount);
+      addMetric(pageLongTaskTotalMs, pageLoad.longTaskTotalMs);
+      pageConsoleErrorsTotal += pageLoad.consoleErrorCount;
+    }
+    for (const summary of run.summaries) {
+      const isGrid = summary.mode === "grid";
+      for (const cell of summary.sessions) {
+        if (isGrid) {
+          addMetric(gridSetupToRevealMs, cell.setupToRevealMs);
+          addMetric(gridGhosttyCreationMs, cell.ghosttyCreationMs);
+          addMetric(gridWsServerMs, cell.wsServerMs);
+          addMetric(gridPrefillDoneToRevealMs, cell.prefillDoneToRevealMs);
+          if (cell.terminalPrewarmed !== null) {
+            gridPrewarmTotal++;
+            if (cell.terminalPrewarmed) gridPrewarmHits++;
+          }
+        } else {
+          addMetric(singleSetupToRevealMs, cell.setupToRevealMs);
+          addMetric(singleGhosttyCreationMs, cell.ghosttyCreationMs);
+          if (cell.terminalPrewarmed !== null) {
+            singlePrewarmTotal++;
+            if (cell.terminalPrewarmed) singlePrewarmHits++;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    runs: runs.length,
+    pageConsoleErrorsTotal,
+    page: {
+      cardVisibleMs: metricStats(pageCardVisibleMs),
+      secondPrewarmReadyMs: metricStats(pageSecondPrewarmReadyMs),
+      longTaskCount: metricStats(pageLongTaskCount),
+      longTaskTotalMs: metricStats(pageLongTaskTotalMs),
+    },
+    single: {
+      setupToRevealMs: metricStats(singleSetupToRevealMs),
+      ghosttyCreationMs: metricStats(singleGhosttyCreationMs),
+      prewarmHits: { hits: singlePrewarmHits, total: singlePrewarmTotal },
+    },
+    grid: {
+      setupToRevealMs: metricStats(gridSetupToRevealMs),
+      ghosttyCreationMs: metricStats(gridGhosttyCreationMs),
+      wsServerMs: metricStats(gridWsServerMs),
+      prefillDoneToRevealMs: metricStats(gridPrefillDoneToRevealMs),
+      prewarmHits: { hits: gridPrewarmHits, total: gridPrewarmTotal },
+    },
+  };
+}
+
 async function runMeasured(summaryPromise: Promise<ScenarioSummary>): Promise<ScenarioSummary> {
   const summary = await summaryPromise;
   printSummary(summary);
@@ -738,6 +883,38 @@ function printSummary(summary: ScenarioSummary): void {
   }
 }
 
+async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>>, runIndex: number): Promise<PerfRunReport> {
+  const createdSessions: string[] = [];
+  try {
+    if (process.env.WOLFPACK_PERF_ONLY_PAGE_LOAD === "1") {
+      return { pageLoads: [await runMeasuredPageLoad(server.baseUrl)], summaries: [] };
+    }
+
+    const runId = `${Date.now().toString(36)}-${runIndex + 1}`;
+    const sessions = Array.from({ length: 6 }, (_, i) => `perf-${runId}-${i + 1}`);
+    for (const [idx, session] of sessions.entries()) {
+      await createSession(server.baseUrl, session, `perf-project-${runIndex + 1}-${idx + 1}`);
+      createdSessions.push(session);
+    }
+
+    const pageLoads: PageLoadSummary[] = [await runMeasuredPageLoad(server.baseUrl)];
+    const summaries: ScenarioSummary[] = [];
+    summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
+    for (const cells of gridCellCounts()) {
+      summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
+    }
+    if (process.env.WOLFPACK_PERF_SLOW_PREFILL_MS) {
+      summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[5])));
+    }
+    return { pageLoads, summaries };
+  } finally {
+    if (createdSessions.length > 0) {
+      const cleanupFailures = await cleanupCreatedSessions(server.baseUrl, createdSessions);
+      if (cleanupFailures.length > 0) console.warn("perf session cleanup failures", cleanupFailures);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const brokerBin = resolveBrokerBin();
   const broker = existingBroker() || (brokerBin ? startBroker(brokerBin) : null);
@@ -750,43 +927,25 @@ async function main(): Promise<void> {
   mkdirSync(DEV_DIR, { recursive: true });
 
   let server: Awaited<ReturnType<typeof startServer>> | null = null;
-  const createdSessions: string[] = [];
   try {
     if (broker.proc) await waitForFile(broker.socketPath, 5000);
     server = await startServer(broker.socketPath, {
       prefillDelayMs: Number(process.env.WOLFPACK_PERF_SLOW_PREFILL_MS || 0) || undefined,
     });
-    if (process.env.WOLFPACK_PERF_ONLY_PAGE_LOAD === "1") {
-      const pageLoads = [await runMeasuredPageLoad(server.baseUrl)];
-      console.log("\njson:");
-      console.log(JSON.stringify({ generatedAt: new Date().toISOString(), pageLoads, summaries: [] }, null, 2));
-      return;
+
+    const runCount = parsePerfRunCount(process.env.WOLFPACK_PERF_RUNS);
+    const runs: PerfRunReport[] = [];
+    for (let runIndex = 0; runIndex < runCount; runIndex++) {
+      if (runCount > 1) console.log(`\nperf run ${runIndex + 1}/${runCount}`);
+      runs.push(await runPerfMeasurement(server, runIndex));
     }
 
-    const runId = Date.now().toString(36);
-    const sessions = Array.from({ length: 6 }, (_, i) => `perf-${runId}-${i + 1}`);
-    for (const [idx, session] of sessions.entries()) {
-      await createSession(server.baseUrl, session, `perf-project-${idx + 1}`);
-      createdSessions.push(session);
-    }
-
-    const pageLoads: PageLoadSummary[] = [];
-    pageLoads.push(await runMeasuredPageLoad(server.baseUrl));
-    const summaries: ScenarioSummary[] = [];
-    summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
-    for (const cells of gridCellCounts()) {
-      summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
-    }
-    if (process.env.WOLFPACK_PERF_SLOW_PREFILL_MS) {
-      summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[5])));
-    }
+    const report = runCount === 1
+      ? { generatedAt: new Date().toISOString(), ...runs[0], summary: summarizePerfRuns(runs) }
+      : { generatedAt: new Date().toISOString(), runs, summary: summarizePerfRuns(runs) };
     console.log("\njson:");
-    console.log(JSON.stringify({ generatedAt: new Date().toISOString(), pageLoads, summaries }, null, 2));
+    console.log(JSON.stringify(report, null, 2));
   } finally {
-    if (server && createdSessions.length > 0) {
-      const cleanupFailures = await cleanupCreatedSessions(server.baseUrl, createdSessions);
-      if (cleanupFailures.length > 0) console.warn("perf session cleanup failures", cleanupFailures);
-    }
     if (server) server.proc.kill("SIGTERM");
     if (broker.proc) {
       broker.proc.kill("SIGTERM");
