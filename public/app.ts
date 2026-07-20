@@ -29,11 +29,14 @@ import {
 } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
-import { GhosttyPrewarmPool } from "./ghostty-prewarm-pool";
+import {
+  GhosttyPrewarmPool,
+  scheduleGhosttyPrewarmRefill,
+} from "./ghostty-prewarm-pool";
 
 import {
   __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
-  captureLastCrash,
+  captureLastCrash, wfTraceEnabled,
 } from "./app-debug";
 import type { TraceState } from "./app-debug";
 import {
@@ -45,14 +48,57 @@ import {
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
+import { resolveHydrationDebugTiming } from "../src/terminal-hydration-debug";
+import { resolveGhosttyPrewarmDebugTiming } from "../src/ghostty-prewarm-debug";
+import {
+  resolveLayoutStableDebugMode,
+  shouldSendImmediateLayoutStable,
+  type LayoutStablePrefillMode,
+} from "../src/terminal-layout-stable-debug";
 
 // ── WASM capability guard ──
 
 const GHOSTTY_PREWARM_POOL_SIZE = 2;
-const GHOSTTY_PREWARM_DELAY_MS = 750;
+const GHOSTTY_PREWARM_DELAY_MS = 0;
 const ATTACH_DIMENSION_RETRY_DELAY_MS = 50;
 const ATTACH_DIMENSION_MAX_ATTEMPTS = 20;
 const RESIZE_SEND_DEBOUNCE_MS = 120;
+
+function safeLocalStorage(): Pick<Storage, "getItem"> | null {
+  try { return window.localStorage; }
+  catch { return null; }
+}
+
+interface GhosttyPrewarmDebugEvent {
+  readonly t: number;
+  readonly kind: string;
+  readonly slot?: number;
+  readonly delayMs?: number;
+  readonly readyCount?: number;
+}
+
+interface GhosttyPrewarmDebugState {
+  readonly startPerf: number;
+  readonly events: GhosttyPrewarmDebugEvent[];
+  readyCount: number;
+}
+
+function ghosttyPrewarmDebugState(): GhosttyPrewarmDebugState | null {
+  if (!wfTraceEnabled) return null;
+  const target = window as unknown as { __wfGhosttyPrewarm?: GhosttyPrewarmDebugState };
+  target.__wfGhosttyPrewarm ??= { startPerf: 0, events: [], readyCount: 0 };
+  return target.__wfGhosttyPrewarm;
+}
+
+function recordGhosttyPrewarmEvent(kind: string, fields?: Omit<GhosttyPrewarmDebugEvent, "kind" | "t">): void {
+  const state = ghosttyPrewarmDebugState();
+  if (!state) return;
+  state.events.push({
+    t: +(performance.now() - state.startPerf).toFixed(3),
+    kind,
+    ...(fields || {}),
+  });
+}
 
 const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
   maxSize: GHOSTTY_PREWARM_POOL_SIZE,
@@ -62,7 +108,16 @@ const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
     }
     return window.createIsolatedGhostty();
   },
-  onError: (error) => console.debug("[wf] ghostty prewarm failed:", error),
+  onReady: () => {
+    const state = ghosttyPrewarmDebugState();
+    if (!state) return;
+    state.readyCount++;
+    recordGhosttyPrewarmEvent("prewarm.ready", { readyCount: state.readyCount });
+  },
+  onError: (error) => {
+    recordGhosttyPrewarmEvent("prewarm.error");
+    console.debug("[wf] ghostty prewarm failed:", error);
+  },
 });
 
 function canUseWasmTerminal(): boolean {
@@ -71,13 +126,37 @@ function canUseWasmTerminal(): boolean {
 
 function scheduleGhosttyPrewarm(): void {
   if (typeof window.createIsolatedGhostty !== "function") return;
+  const timing = resolveGhosttyPrewarmDebugTiming({
+    debugEnabled: wfTraceEnabled,
+    storage: safeLocalStorage(),
+    defaults: { delayMs: GHOSTTY_PREWARM_DELAY_MS },
+  });
+  recordGhosttyPrewarmEvent("schedule", { delayMs: timing.delayMs });
   window.setTimeout(() => {
+    recordGhosttyPrewarmEvent("ghostty_ready.wait");
     void window.ghosttyReady
       ?.then(() => {
-        for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) ghosttyPrewarmPool.prewarm();
+        recordGhosttyPrewarmEvent("ghostty_ready.done");
+        for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) {
+          const task = ghosttyPrewarmPool.prewarm();
+          recordGhosttyPrewarmEvent(task ? "prewarm.start" : "prewarm.skip", { slot: i + 1 });
+        }
       })
-      .catch((error) => console.debug("[wf] ghostty prewarm skipped:", error));
-  }, GHOSTTY_PREWARM_DELAY_MS);
+      .catch((error) => {
+        recordGhosttyPrewarmEvent("ghostty_ready.error");
+        console.debug("[wf] ghostty prewarm skipped:", error);
+      });
+  }, timing.delayMs);
+}
+
+function scheduleGhosttyPrewarmRefillForConsumedInstance(): void {
+  if (typeof window.createIsolatedGhostty !== "function") return;
+  scheduleGhosttyPrewarmRefill({
+    prewarm: () => ghosttyPrewarmPool.prewarm(),
+    schedule: (task) => { window.setTimeout(task, 0); },
+    waitUntilReady: () => window.ghosttyReady,
+    onError: (error) => console.debug("[wf] ghostty prewarm refill skipped:", error),
+  });
 }
 
 // ── Performance Metrics (UX-16) ──
@@ -430,6 +509,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   if (prewarmedGhostty.instance) {
     isolatedGhostty = prewarmedGhostty.instance;
     usedPrewarmedGhostty = true;
+    scheduleGhosttyPrewarmRefillForConsumedInstance();
   } else if (typeof window.createIsolatedGhostty === "function") {
     try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
@@ -731,7 +811,7 @@ function createInitialHydrationController(opts: InitialHydrationControllerOpts):
     if (_fallbackTimer) clearTimeout(_fallbackTimer);
     if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
     _fallbackTimer = setTimeout(finish, timeoutMs);
-    _diagEvent("hydration.start", { minPendingMs, timeoutMs });
+    _diagEvent("hydration.start", { minPendingMs, silenceMs, timeoutMs });
   }
 
   function scheduleFinish() {
@@ -801,13 +881,20 @@ interface TermDimensions {
   readonly rows: number;
 }
 
+interface TerminalLayoutMetrics {
+  readonly containerWidth: number;
+  readonly containerClientWidth: number;
+  readonly viewportWidth: number;
+}
+
 interface PtySocketClientOpts {
   readonly session: string;
   readonly machine?: string;
   readonly resetPty?: boolean;
-  readonly prefillMode?: string;
+  readonly prefillMode?: LayoutStablePrefillMode;
   readonly takeControlOnAttach?: boolean;
   readonly getTermDimensions: () => TermDimensions | null;
+  readonly getLayoutMetrics?: () => TerminalLayoutMetrics | null;
   readonly fitTerminal: () => void;
   readonly onBinaryData?: (data: Uint8Array) => void;
   readonly onAttach?: () => void;
@@ -859,6 +946,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let _prefillDoneTimeout = null;
   let _attachDimensionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let _attachDimensionRetryAttempt = 0;
+  const _layoutStableDebugMode = resolveLayoutStableDebugMode(safeLocalStorage(), wfTraceEnabled);
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
@@ -923,7 +1011,14 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       cols: attachDims.cols, rows: attachDims.rows, prefillMode,
       takeControl: !!msg.takeControl, reset: !!opts.resetPty,
     });
-    __wfTraceEvent(_trace, "attach.send", { cols: attachDims.cols, rows: attachDims.rows, prefillMode });
+    const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
+    __wfTraceEvent(_trace, "attach.send", {
+      ...(layoutMetrics ?? {}),
+      cols: attachDims.cols,
+      rows: attachDims.rows,
+      prefillMode,
+      layoutStableDebugMode: _layoutStableDebugMode,
+    });
     __wfTraceRafStart(_trace);
     if (prefillMode !== "none") {
       const attachedSocket = ws;
@@ -935,6 +1030,9 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       }, PREFILL_PROTOCOL_TIMEOUT_MS);
     }
     ws.send(JSON.stringify(msg));
+    if (shouldSendImmediateLayoutStable(_layoutStableDebugMode, prefillMode)) {
+      sendLayoutStable("immediate");
+    }
     if (_attachAckTimer) clearTimeout(_attachAckTimer);
     // Compatibility fallback: older servers don't implement attach_ack.
     _attachAckTimer = setTimeout(() => {
@@ -947,7 +1045,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }, 300);
   }
 
-  function sendLayoutStable(): void {
+  function sendLayoutStable(reason: "after-paint" | "immediate" = "after-paint"): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     try { opts.fitTerminal(); } catch {}
     const dims = opts.getTermDimensions();
@@ -957,13 +1055,19 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       _lastSentResize = key;
       ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
     }
-    ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows }));
-    __wfTraceEvent(_trace, "layout_stable.send", { cols: dims.cols, rows: dims.rows });
+    ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
+    const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
+    __wfTraceEvent(_trace, "layout_stable.send", {
+      ...(layoutMetrics ?? {}),
+      cols: dims.cols,
+      rows: dims.rows,
+      reason,
+    });
   }
 
   function sendLayoutStableAfterPaint(): void {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => { sendLayoutStable(); });
+      requestAnimationFrame(() => { sendLayoutStable("after-paint"); });
     });
   }
 
@@ -1288,7 +1392,7 @@ interface PtyTerminalControllerOpts {
   readonly cursorBlink?: boolean;
   readonly disableStdin?: boolean;
   readonly resetPty?: boolean;
-  readonly prefillMode?: string;
+  readonly prefillMode?: LayoutStablePrefillMode;
   readonly hydrationTimeoutMs?: number;
   readonly hydrationMinPendingMs?: number;
   readonly hydrationSettleMs?: number;
@@ -1790,6 +1894,15 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     // 200ms is a small cushion to absorb these without revealing mid-burst.
     // Total cost on desktop: ~200ms reveal time (down from 800ms).
     // ─────────────────────────────────────────────────────────────────────────
+    const hydrationTiming = resolveHydrationDebugTiming({
+      debugEnabled: wfTraceEnabled,
+      storage: safeLocalStorage(),
+      defaults: {
+        minPendingMs: opts.hydrationMinPendingMs ?? 80,
+        silenceMs: opts.hydrationSilenceMs ?? INITIAL_HYDRATION_SILENCE_MS,
+      },
+    });
+
     _hydration = createInitialHydrationController({
       getElement: _getHydrationElement,
       getTerm: () => _term,
@@ -1815,11 +1928,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       },
       timeoutMs: opts.hydrationTimeoutMs,
       settleMs: opts.hydrationSettleMs ?? INITIAL_HYDRATION_SETTLE_MS,
-      minPendingMs: opts.hydrationMinPendingMs ?? 80,
+      minPendingMs: hydrationTiming.minPendingMs,
       // Stay hidden briefly after the last terminal write. This catches late
       // post-attach redraw chunks without paying the old fixed 50ms settle
       // after prefill_done when the stream is already quiet.
-      silenceMs: opts.hydrationSilenceMs ?? INITIAL_HYDRATION_SILENCE_MS,
+      silenceMs: hydrationTiming.silenceMs,
       // Diag-only: lets the controller emit milestones into the per-attach trace.
       session: opts.session,
       machine: opts.machine || "",
@@ -1855,6 +1968,15 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       resetPty: opts.resetPty,
       prefillMode: opts.prefillMode,
       getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
+      getLayoutMetrics: () => {
+        if (!_container) return null;
+        const rect = _container.getBoundingClientRect();
+        return {
+          containerWidth: rect.width,
+          containerClientWidth: _container.clientWidth,
+          viewportWidth: window.innerWidth,
+        };
+      },
       fitTerminal: fitTerminalPreserveScroll,
       shouldReconnect: opts.shouldReconnect,
       onAttach: () => {

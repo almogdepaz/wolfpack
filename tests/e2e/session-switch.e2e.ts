@@ -554,6 +554,89 @@ test("desktop terminal sends layout_stable after attach ack", async ({ page }, t
   expect(stable).toEqual(expect.objectContaining({ cols: latestSizeMessage?.cols, rows: latestSizeMessage?.rows }));
 });
 
+test("debug layout-stable immediate mode sends an early stable signal before attach ack", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  const messages: Array<{ type?: string; cols?: number; rows?: number }> = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { type?: string; cols?: number; rows?: number };
+      try { parsed = JSON.parse(message); } catch { return; }
+      messages.push(parsed);
+      if (parsed.type !== "attach") return;
+      setTimeout(() => ws.send(JSON.stringify({ type: "attach_ack" })), 25);
+      setTimeout(() => ws.send(Buffer.from("FULL-PREFILL\n")), 30);
+      setTimeout(() => ws.send(JSON.stringify({ type: "prefill_done" })), 60);
+      setTimeout(() => ws.send(JSON.stringify({ type: "pty_ready" })), 70);
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wolfpackLayoutStableDebugMode", "immediate-and-after-paint");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+
+  await expect.poll(() => messages.filter((message) => message.type === "layout_stable").length, { timeout: 5000 }).toBeGreaterThanOrEqual(2);
+  const attachIndex = messages.findIndex((message) => message.type === "attach");
+  const firstStableIndex = messages.findIndex((message) => message.type === "layout_stable");
+  expect(firstStableIndex).toBe(attachIndex + 1);
+  const attach = messages[attachIndex];
+  const firstStable = messages[firstStableIndex];
+  expect(firstStable).toEqual(expect.objectContaining({ cols: attach?.cols, rows: attach?.rows }));
+});
+
+test("debug viewport-only layout-stable mode does not send immediate for desktop full prefill", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+
+  const messages: Array<{ type?: string; cols?: number; rows?: number }> = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { type?: string; cols?: number; rows?: number };
+      try { parsed = JSON.parse(message); } catch { return; }
+      messages.push(parsed);
+      if (parsed.type !== "attach") return;
+      setTimeout(() => {
+        messages.push({ type: "attach_ack" });
+        ws.send(JSON.stringify({ type: "attach_ack" }));
+      }, 25);
+      setTimeout(() => ws.send(Buffer.from("FULL-PREFILL\n")), 30);
+      setTimeout(() => ws.send(JSON.stringify({ type: "prefill_done" })), 60);
+      setTimeout(() => ws.send(JSON.stringify({ type: "pty_ready" })), 70);
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wolfpackLayoutStableDebugMode", "viewport-immediate-and-after-paint");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+
+  await expect.poll(() => messages.some((message) => message.type === "layout_stable"), { timeout: 5000 }).toBe(true);
+  const ackIndex = messages.findIndex((message) => message.type === "attach_ack");
+  const firstStableIndex = messages.findIndex((message) => message.type === "layout_stable");
+  expect(ackIndex).toBeGreaterThan(-1);
+  expect(firstStableIndex).toBeGreaterThan(ackIndex);
+});
+
 test("desktop sidebar hover does not put live terminal into loading state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only sidebar path");
 

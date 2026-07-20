@@ -606,6 +606,104 @@ test("grid manual retry hides stale content until replacement viewport prefill c
   });
 });
 
+test("viewport-only immediate layout-stable does not expose cached grid content", async ({ page }) => {
+  const messages: Array<{ type?: string; prefillMode?: string; reason?: string }> = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { type?: string; prefillMode?: string; reason?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      messages.push(parsed);
+      if (parsed.type !== "attach") return;
+      setTimeout(() => {
+        messages.push({ type: "attach_ack" });
+        ws.send(JSON.stringify({ type: "attach_ack" }));
+      }, 50);
+      setTimeout(() => ws.send(Buffer.from("GRID-VIEWPORT-PREFILL\n")), 2400);
+      setTimeout(() => ws.send(JSON.stringify({ type: "prefill_done" })), 2500);
+      setTimeout(() => ws.send(JSON.stringify({ type: "pty_ready" })), 2510);
+    });
+  });
+
+  await loadApp(page);
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wolfpackLayoutStableDebugMode", "viewport-immediate-and-after-paint");
+    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "STALE-GRID-CACHED-PROSE", ts: Date.now() }));
+    localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: "STALE-GRID-CACHED-PROSE", ts: Date.now() }));
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
+
+  const earlyStates = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
+    cells.map((cell) => {
+      const canvas = cell.querySelector("canvas") as HTMLCanvasElement | null;
+      const style = canvas ? getComputedStyle(canvas) : null;
+      return {
+        cachedVisible: cell.classList.contains("cached-visible"),
+        hydrating: cell.classList.contains("hydrating"),
+        hydrated: cell.classList.contains("hydrated"),
+        opacity: style?.opacity ?? "missing",
+        visibility: style?.visibility ?? "missing",
+      };
+    }),
+  );
+
+  expect(earlyStates.length).toBeGreaterThanOrEqual(2);
+  for (const state of earlyStates) {
+    expect(state.cachedVisible).toBe(false);
+    if (!state.hydrated) {
+      expect(state.hydrating).toBe(true);
+      expect(state.opacity).toBe("0");
+      expect(state.visibility).toBe("hidden");
+    }
+  }
+
+  await expect.poll(() => messages.filter((message) => message.type === "attach" && message.prefillMode === "viewport").length, { timeout: 5000 }).toBeGreaterThanOrEqual(2);
+  await expect.poll(() => messages.filter((message) => message.type === "layout_stable" && message.reason === "immediate").length, { timeout: 5000 }).toBeGreaterThanOrEqual(2);
+  const firstAckIndex = messages.findIndex((message) => message.type === "attach_ack");
+  const firstImmediateIndex = messages.findIndex((message) => message.type === "layout_stable" && message.reason === "immediate");
+  expect(firstImmediateIndex).toBeGreaterThan(-1);
+  expect(firstAckIndex).toBeGreaterThan(firstImmediateIndex);
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((gs) => gs._cellElement?.classList.contains("hydrated"));
+  }), { timeout: 5000 }).toBe(true);
+
+  const cells = await page.evaluate(() => {
+    const w = window as unknown as {
+      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
+      state: {
+        gridSessions: Array<{
+          session: string;
+          controller?: { term?: { buffer?: { active?: unknown } } };
+        }>;
+      };
+    };
+    return w.state.gridSessions.map((gs) => {
+      const buffer = gs.controller?.term?.buffer?.active;
+      return buffer ? w.WP.serializeBufferTail(buffer, 120) : "";
+    });
+  });
+  expect(cells).toHaveLength(2);
+  for (const text of cells) expect(text).not.toContain("STALE-GRID-CACHED-PROSE");
+});
+
 test("addToGrid from non-terminal view switches to terminal view first", async ({ page }) => {
   await loadApp(page);
 

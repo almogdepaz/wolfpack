@@ -96,6 +96,25 @@ function shouldInsertMessageNewlineFromAccessoryKey(event) {
 function shouldRehydrate(wasReconnect, hydrationStarted, hasAuthoritativePrefill) {
   return wasReconnect || hydrationStarted && hasAuthoritativePrefill;
 }
+// src/terminal-hydration-debug.ts
+var HYDRATION_DEBUG_MIN_PENDING_KEY = "wolfpackHydrationMinPendingMs";
+var HYDRATION_DEBUG_SILENCE_KEY = "wolfpackHydrationSilenceMs";
+function parseNonNegativeMs(raw) {
+  if (raw === null || raw.trim() === "")
+    return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0)
+    return null;
+  return value;
+}
+function resolveHydrationDebugTiming(opts) {
+  if (!opts.debugEnabled || !opts.storage)
+    return opts.defaults;
+  return {
+    minPendingMs: parseNonNegativeMs(opts.storage.getItem(HYDRATION_DEBUG_MIN_PENDING_KEY)) ?? opts.defaults.minPendingMs,
+    silenceMs: parseNonNegativeMs(opts.storage.getItem(HYDRATION_DEBUG_SILENCE_KEY)) ?? opts.defaults.silenceMs
+  };
+}
 // src/attach-dimensions.ts
 function nextAttachDimensionAction(dimensions, attempt, maxAttempts) {
   if (dimensions)
@@ -210,6 +229,6 @@ function handleDisplaced(state) {
 function prepareAutoTakeControl(state) {
   return { ...state, autoTakeControl: true };
 }
-var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldReleaseScrollLockOnKeydown, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, WS_CLOSE_REASONS, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_PREFILL_TIMEOUT, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
+var WP = {suspendGridState, splitTerminalInputBytes, shouldSubmitMessageInputOnEnter, shouldSendResizeAfterGridFit, shouldResizeRehydrate, shouldReleaseScrollLockOnKeydown, shouldRehydrate, shouldInterceptCopy, shouldInsertMessageNewlineFromAccessoryKey, shouldForceRepaintAfterFit, serializeBufferTail, scrollTargetAfterResize, resumeGridState, resolveHydrationDebugTiming, resizeRehydrateScrollTarget, removeFromGridState, prepareAutoTakeControl, peerHealthTimeoutMs: fetchTimeoutMs, peerHealthRecordSuccess: recordSuccess, peerHealthRecordFailure: recordFailure, nextAttachDimensionAction, handleViewerConflict, handleTakeControlClick, handleDisplaced, handleControlGranted, encodeTerminalBinary, classifyDisconnect, captureScrollState, addToGridState, WS_CLOSE_REASONS, PTY_BINARY_FRAME_MAX_BYTES, PEER_HEALTHY_TIMEOUT_MS: HEALTHY_TIMEOUT_MS, PEER_FAILING_TIMEOUT_MS: FAILING_TIMEOUT_MS, HYDRATION_DEBUG_SILENCE_KEY, HYDRATION_DEBUG_MIN_PENDING_KEY, CLOSE_CODE_SESSION_UNAVAILABLE, CLOSE_CODE_SERVER_ERROR, CLOSE_CODE_PREFILL_TIMEOUT, CLOSE_CODE_NORMAL, CLOSE_CODE_DISPLACED};
 window.WP = WP;
 })();

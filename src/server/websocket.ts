@@ -556,18 +556,29 @@ async function waitForResizeSettle(
   ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
   const settleStart = Date.now();
   let lastChangeAt = -1;
+  let settleReason = "timeout";
   while (true) {
     if (bail(ctx)) return null;
     const elapsedTotal = Date.now() - settleStart;
-    if (elapsedTotal >= timeoutMs) break;
+    if (elapsedTotal >= timeoutMs) {
+      settleReason = "timeout";
+      break;
+    }
     if (sameSize(ctx.layoutStable.current, pendingSize)) {
+      settleReason = "layout_stable";
       break;
     }
     if (lastChangeAt < 0) {
-      if (elapsedTotal >= initialWaitMs) break;
+      if (elapsedTotal >= initialWaitMs) {
+        settleReason = "initial_wait";
+        break;
+      }
     } else {
       const elapsedSinceChange = Date.now() - lastChangeAt;
-      if (elapsedSinceChange >= settleMs) break;
+      if (elapsedSinceChange >= settleMs) {
+        settleReason = "settled";
+        break;
+      }
     }
     await new Promise(resolve => setTimeout(resolve, 16));
     const latest = ctx.requestedSize.current;
@@ -576,7 +587,12 @@ async function waitForResizeSettle(
       lastChangeAt = Date.now();
     }
   }
-  ctx.timing?.mark("resize_settle.end", { cols: pendingSize.cols, rows: pendingSize.rows });
+  ctx.timing?.mark("resize_settle.end", {
+    cols: pendingSize.cols,
+    rows: pendingSize.rows,
+    elapsedMs: Date.now() - settleStart,
+    reason: settleReason,
+  });
   return pendingSize;
 }
 
@@ -591,6 +607,8 @@ async function waitForOutputQuiescence(
 ): Promise<{ cols: number; rows: number } | null> {
   let appliedSize = pendingSize;
   const samples: Array<{ t: number; bytes: number }> = [];
+  let outputDecision: ReturnType<typeof quiescenceDecision> | null = null;
+  let settleStart = Date.now();
   ctx.timing?.mark("quiescence_wait.start", { cols: pendingSize.cols, rows: pendingSize.rows });
   const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
     samples.push({ t: Date.now(), bytes: data.length });
@@ -607,7 +625,7 @@ async function waitForOutputQuiescence(
   try {
     await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
     let lastResizeAt = Date.now();
-    const settleStart = lastResizeAt;
+    settleStart = lastResizeAt;
     while (true) {
       if (bail(ctx)) break;
       // Dim changed since we last applied? Re-resize and restart the
@@ -625,6 +643,7 @@ async function waitForOutputQuiescence(
       while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
       const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
       if (decision !== "continue") {
+        outputDecision = decision;
         if (decision === "animated_cap" || decision === "timeout") {
           log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
         }
@@ -635,7 +654,12 @@ async function waitForOutputQuiescence(
   } finally {
     if (observe) observe();
   }
-  ctx.timing?.mark("quiescence_wait.end", { cols: appliedSize.cols, rows: appliedSize.rows });
+  ctx.timing?.mark("quiescence_wait.end", {
+    cols: appliedSize.cols,
+    rows: appliedSize.rows,
+    elapsedMs: Date.now() - settleStart,
+    outputDecision,
+  });
   return bail(ctx) ? null : appliedSize;
 }
 
@@ -654,6 +678,11 @@ async function waitForSettledResizeAndOutputQuiescence(
   let pendingSize = initialSize;
   let appliedSize = initialSize;
   let lastChangeAt = -1;
+  let resizeStableAtMs: number | null = null;
+  let resizeStableReason: string | null = null;
+  let outputStableAtMs: number | null = null;
+  let outputDecision: ReturnType<typeof quiescenceDecision> | null = null;
+  let resizeApplyCount = 0;
   const samples: Array<{ t: number; bytes: number }> = [];
 
   ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
@@ -671,6 +700,7 @@ async function waitForSettledResizeAndOutputQuiescence(
   const settleStart = lastResizeAt;
   try {
     await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+    resizeApplyCount += 1;
     lastResizeAt = Date.now();
 
     while (true) {
@@ -683,19 +713,29 @@ async function waitForSettledResizeAndOutputQuiescence(
       if (pendingSize.cols !== appliedSize.cols || pendingSize.rows !== appliedSize.rows) {
         appliedSize = pendingSize;
         await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+        resizeApplyCount += 1;
         lastResizeAt = Date.now();
       }
 
       const now = Date.now();
       const elapsedTotal = now - settleStart;
-      const resizeStable = elapsedTotal >= timeoutMs
-        || sameSize(ctx.layoutStable.current, pendingSize)
-        || (lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs);
+      const resizeStableByTimeout = elapsedTotal >= timeoutMs;
+      const resizeStableByLayout = sameSize(ctx.layoutStable.current, pendingSize);
+      const resizeStableByWait = lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs;
+      const resizeStable = resizeStableByTimeout || resizeStableByLayout || resizeStableByWait;
+      if (resizeStable && resizeStableAtMs === null) {
+        resizeStableAtMs = elapsedTotal;
+        resizeStableReason = resizeStableByTimeout ? "timeout" : resizeStableByLayout ? "layout_stable" : lastChangeAt < 0 ? "initial_wait" : "settled";
+      }
 
       const cutoff = now - QUIESCE_WINDOW_MS;
       while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
       const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
       const outputStable = decision !== "continue";
+      if (outputStable && outputStableAtMs === null) {
+        outputStableAtMs = elapsedTotal;
+        outputDecision = decision;
+      }
       if (outputStable && (decision === "animated_cap" || decision === "timeout")) {
         log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
       }
@@ -706,8 +746,27 @@ async function waitForSettledResizeAndOutputQuiescence(
     if (observe) observe();
   }
 
-  ctx.timing?.mark("resize_settle.end", { cols: appliedSize.cols, rows: appliedSize.rows });
-  ctx.timing?.mark("quiescence_wait.end", { cols: appliedSize.cols, rows: appliedSize.rows });
+  const elapsedMs = Date.now() - settleStart;
+  ctx.timing?.mark("resize_settle.end", {
+    cols: appliedSize.cols,
+    rows: appliedSize.rows,
+    elapsedMs,
+    reason: resizeStableReason,
+    resizeStableAtMs,
+    outputStableAtMs,
+    outputDecision,
+    resizeApplyCount,
+  });
+  ctx.timing?.mark("quiescence_wait.end", {
+    cols: appliedSize.cols,
+    rows: appliedSize.rows,
+    elapsedMs,
+    resizeStableAtMs,
+    resizeStableReason,
+    outputStableAtMs,
+    outputDecision,
+    resizeApplyCount,
+  });
   return bail(ctx) ? null : appliedSize;
 }
 
@@ -1108,7 +1167,11 @@ function setupNewPtyEntry(
           }
         } else if (msg.type === "layout_stable" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           layoutStable.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
-          timing?.mark("layout_stable", { cols: layoutStable.current.cols, rows: layoutStable.current.rows });
+          timing?.mark("layout_stable", {
+            cols: layoutStable.current.cols,
+            rows: layoutStable.current.rows,
+            reason: typeof msg.reason === "string" ? msg.reason : undefined,
+          });
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const cols = clampCols(msg.cols);
           const rows = clampRows(msg.rows);
