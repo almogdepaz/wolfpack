@@ -1507,6 +1507,7 @@ body.mobile-no-ghost-focus #desktop-terminal-container textarea {
 #desktop-grid-container.grid-6 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
 
 .grid-cell {
+  --grid-loading-focus-border: rgba(0,255,65,0.28);
   position: relative;
   overflow: hidden;
   background: var(--bg-base);
@@ -1520,6 +1521,13 @@ body.mobile-no-ghost-focus #desktop-terminal-container textarea {
 .grid-cell.grid-focused {
   border-color: rgba(0,255,65,0.6);
   box-shadow: inset 0 0 12px rgba(0,255,65,0.1), 0 0 8px rgba(0,255,65,0.15);
+}
+.grid-cell.grid-focused.grid-loading,
+.grid-cell.grid-focused.terminal-load-state-prefill-loading,
+.grid-cell.grid-focused.terminal-load-state-hydrating,
+.grid-cell.grid-focused.terminal-load-state-reconnecting {
+  border-color: var(--grid-loading-focus-border);
+  box-shadow: inset 0 0 0 1px rgba(0,255,65,0.08), 0 0 6px rgba(0,255,65,0.08);
 }
 .grid-cell canvas {
   flex: 1;
