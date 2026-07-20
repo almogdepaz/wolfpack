@@ -14,16 +14,20 @@ export const TERMINAL_SLOW_LOAD_THRESHOLD_MS = 1200;
 const STATE_CLASS_PREFIX = "terminal-load-state-";
 
 const STATE_LABELS: Record<TerminalLoadVisualState, string> = {
-  cached: "restoring cached snapshot",
-  "prefill-loading": "loading terminal snapshot",
-  hydrating: "hydrating terminal",
+  cached: "restoring terminal",
+  "prefill-loading": "loading terminal",
+  hydrating: "preparing terminal",
   reconnecting: "reconnecting terminal",
-  "viewer-conflict": "active on another device",
-  displaced: "control moved to another viewer",
+  "viewer-conflict": "active elsewhere",
+  displaced: "control moved elsewhere",
   live: "terminal connected",
   ended: "terminal ended",
   failed: "terminal unavailable",
 };
+
+export function terminalLoadLabelFor(state: TerminalLoadVisualState): string {
+  return STATE_LABELS[state];
+}
 
 export interface SlowPathIndicator {
   start(label?: string): void;
@@ -37,12 +41,13 @@ export function setTerminalLoadVisualState(el: HTMLElement | null, state: Termin
   }
   el.classList.add(STATE_CLASS_PREFIX + state);
   el.dataset.terminalLoadState = state;
-  el.dataset.terminalLoadLabel = STATE_LABELS[state];
+  const label = terminalLoadLabelFor(state);
+  el.dataset.terminalLoadLabel = label;
   if (typeof el.setAttribute === "function") {
-    el.setAttribute("aria-label", STATE_LABELS[state]);
+    el.setAttribute("aria-label", label);
   }
   const inlineStatus = el.querySelector<HTMLElement>(".grid-cell-loading");
-  if (inlineStatus) inlineStatus.dataset.terminalLoadLabel = STATE_LABELS[state];
+  if (inlineStatus) inlineStatus.dataset.terminalLoadLabel = label;
   if (state === "live" || state === "ended" || state === "failed" || state === "viewer-conflict" || state === "displaced") {
     clearTerminalSlowPath(el);
   }
