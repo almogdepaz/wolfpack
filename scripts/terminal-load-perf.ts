@@ -4,6 +4,12 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { chromium, type Page } from "playwright";
+import {
+  HYDRATION_DEBUG_MIN_PENDING_KEY,
+  HYDRATION_DEBUG_SILENCE_KEY,
+} from "../src/terminal-hydration-debug";
+import { GHOSTTY_PREWARM_DEBUG_DELAY_KEY } from "../src/ghostty-prewarm-debug";
+import { LAYOUT_STABLE_DEBUG_MODE_KEY } from "../src/terminal-layout-stable-debug";
 
 export type TraceEvent = { t: number; kind: string; [field: string]: unknown };
 export type TraceState = {
@@ -17,22 +23,92 @@ export type ServerTiming = {
   sinceStartMs: number;
   [field: string]: unknown;
 };
+type ScenarioMode = "single" | "grid";
+
 type ScenarioSummary = {
   scenario: string;
-  mode: "single" | "grid";
+  mode: ScenarioMode;
   cells: number;
   sessions: CellSummary[];
   server: ServerTiming[];
+};
+
+type PageLoadSetup = {
+  cardVisibleMs: number;
+  consoleErrors: string[];
+};
+
+type GhosttyPrewarmPerfEvent = {
+  t: number;
+  kind: string;
+  slot?: number;
+  delayMs?: number;
+  readyCount?: number;
+};
+
+type PageLoadSummary = {
+  cardVisibleMs: number;
+  domContentLoadedMs: number | null;
+  loadEventMs: number | null;
+  firstContentfulPaintMs: number | null;
+  longTaskCount: number;
+  longTaskTotalMs: number;
+  longTaskMaxMs: number;
+  consoleErrorCount: number;
+  prewarmScheduledDelayMs: number | null;
+  prewarmReadyCount: number;
+  firstPrewarmReadyMs: number | null;
+  secondPrewarmReadyMs: number | null;
+  ghosttyReadyDoneMs: number | null;
+  prewarmEvents: GhosttyPrewarmPerfEvent[];
 };
 type CellSummary = {
   session: string;
   setupToAttachMs: number | null;
   setupToRevealMs: number | null;
   ghosttyCreationMs: number | null;
+  terminalPrewarmed: boolean | null;
+  isolatedGhostty: boolean | null;
   wsServerMs: number | null;
   prefillMs: number | null;
   hydrationRevealMs: number | null;
+  hydrationStartToPrefillDoneMs: number | null;
+  prefillDoneToRevealMs: number | null;
+  ptyReadyToRevealMs: number | null;
+  attachAckToAfterPaintLayoutStableMs: number | null;
+  lastWriteToRevealMs: number | null;
+  lastWriteDoneToRevealMs: number | null;
+  hydrationMinPendingMs: number | null;
+  hydrationSilenceMs: number | null;
+  layoutStableDebugMode: string | null;
+  attachCols: number | null;
+  attachRows: number | null;
+  afterPaintCols: number | null;
+  afterPaintRows: number | null;
+  afterPaintColDelta: number | null;
+  attachContainerWidth: number | null;
+  afterPaintContainerWidth: number | null;
+  containerWidthDelta: number | null;
   prefillBytes: number;
+};
+
+type ServerPhaseSummary = {
+  session: string;
+  mode: ScenarioMode;
+  attachParsedMs: number | null;
+  resizeSettleMs: number | null;
+  quiescenceMs: number | null;
+  snapshotFetchMs: number | null;
+  prefillSendMs: number | null;
+  subscribeMs: number | null;
+  serverReadyMs: number | null;
+  outputDecision: string | null;
+  resizeStableAtMs: number | null;
+  outputStableAtMs: number | null;
+  afterPaintLayoutStableMs: number | null;
+  afterPaintSnapshotDeltaMs: number | null;
+  afterPaintColsDelta: number | null;
+  afterPaintRowsDelta: number | null;
 };
 
 const ROOT = join(import.meta.dirname, "..");
@@ -116,8 +192,8 @@ async function startServer(socketPath: string, opts?: { prefillDelayMs?: number 
   const port = await new Promise<number>((resolve, reject) => {
     const timeout = setTimeout(() => {
       proc.kill("SIGTERM");
-      reject(new Error("perf test server did not start within 15s"));
-    }, 15_000);
+      reject(new Error("perf test server did not start within 30s"));
+    }, 30_000);
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
@@ -166,13 +242,94 @@ async function createSession(baseUrl: string, name: string, project: string): Pr
   if (!res.ok) throw new Error(`create ${name} failed: ${res.status} ${await res.text()}`);
 }
 
-async function setupPage(baseUrl: string): Promise<{ page: Page; close(): Promise<void> }> {
+async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await page.addInitScript(() => localStorage.setItem("wolfpackDebug", "1"));
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => {
+    consoleErrors.push(error.message);
+  });
+  await page.addInitScript((opts) => {
+    const target = window as unknown as {
+      __wfPerfLongTasks?: Array<{ startTime: number; duration: number }>;
+    };
+    target.__wfPerfLongTasks = [];
+    try {
+      const observer = new PerformanceObserver((list) => {
+        const longTasks = target.__wfPerfLongTasks;
+        if (!longTasks) return;
+        for (const entry of list.getEntries()) {
+          longTasks.push({
+            startTime: +entry.startTime.toFixed(3),
+            duration: +entry.duration.toFixed(3),
+          });
+        }
+      });
+      observer.observe({ type: "longtask", buffered: true });
+    } catch {}
+
+    localStorage.setItem("wolfpackDebug", "1");
+    if (opts.minPendingMs !== undefined) localStorage.setItem(opts.minPendingKey, opts.minPendingMs);
+    if (opts.silenceMs !== undefined) localStorage.setItem(opts.silenceKey, opts.silenceMs);
+    if (opts.layoutStableMode !== undefined) localStorage.setItem(opts.layoutStableModeKey, opts.layoutStableMode);
+    if (opts.ghosttyPrewarmDelayMs !== undefined) localStorage.setItem(opts.ghosttyPrewarmDelayKey, opts.ghosttyPrewarmDelayMs);
+  }, {
+    minPendingKey: HYDRATION_DEBUG_MIN_PENDING_KEY,
+    silenceKey: HYDRATION_DEBUG_SILENCE_KEY,
+    layoutStableModeKey: LAYOUT_STABLE_DEBUG_MODE_KEY,
+    ghosttyPrewarmDelayKey: GHOSTTY_PREWARM_DEBUG_DELAY_KEY,
+    minPendingMs: process.env.WOLFPACK_PERF_HYDRATION_MIN_PENDING_MS,
+    silenceMs: process.env.WOLFPACK_PERF_HYDRATION_SILENCE_MS,
+    layoutStableMode: process.env.WOLFPACK_PERF_LAYOUT_STABLE_MODE,
+    ghosttyPrewarmDelayMs: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_DELAY_MS,
+  });
+  const startedAt = performance.now();
   await page.goto(baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
-  return { page, close: () => browser.close() };
+  await page.waitForSelector(".card", { timeout: 10_000 });
+  const cardVisibleMs = +(performance.now() - startedAt).toFixed(3);
+  return { page, pageLoad: { cardVisibleMs, consoleErrors }, close: () => browser.close() };
+}
+
+async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: number): Promise<PageLoadSummary> {
+  if (waitMs > 0) await page.waitForTimeout(waitMs);
+  const metrics = await page.evaluate(() => {
+    const target = window as unknown as {
+      __wfPerfLongTasks?: Array<{ startTime: number; duration: number }>;
+      __wfGhosttyPrewarm?: { events: GhosttyPrewarmPerfEvent[] };
+    };
+    const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    const firstContentfulPaint = performance.getEntriesByName("first-contentful-paint")[0];
+    return {
+      domContentLoadedMs: nav ? +(nav.domContentLoadedEventEnd - nav.startTime).toFixed(3) : null,
+      loadEventMs: nav ? +(nav.loadEventEnd - nav.startTime).toFixed(3) : null,
+      firstContentfulPaintMs: firstContentfulPaint ? +firstContentfulPaint.startTime.toFixed(3) : null,
+      longTasks: target.__wfPerfLongTasks || [],
+      prewarmEvents: target.__wfGhosttyPrewarm?.events || [],
+    };
+  });
+  const readyEvents = metrics.prewarmEvents.filter((event) => event.kind === "prewarm.ready");
+  const scheduled = metrics.prewarmEvents.find((event) => event.kind === "schedule");
+  const ghosttyReadyDone = metrics.prewarmEvents.find((event) => event.kind === "ghostty_ready.done");
+  const longTaskDurations = metrics.longTasks.map((task) => task.duration);
+  return {
+    cardVisibleMs: setup.cardVisibleMs,
+    domContentLoadedMs: metrics.domContentLoadedMs,
+    loadEventMs: metrics.loadEventMs,
+    firstContentfulPaintMs: metrics.firstContentfulPaintMs,
+    longTaskCount: metrics.longTasks.length,
+    longTaskTotalMs: +longTaskDurations.reduce((sum, duration) => sum + duration, 0).toFixed(3),
+    longTaskMaxMs: longTaskDurations.length ? +Math.max(...longTaskDurations).toFixed(3) : 0,
+    consoleErrorCount: setup.consoleErrors.length,
+    prewarmScheduledDelayMs: typeof scheduled?.delayMs === "number" ? scheduled.delayMs : null,
+    prewarmReadyCount: readyEvents.length,
+    firstPrewarmReadyMs: readyEvents[0]?.t ?? null,
+    secondPrewarmReadyMs: readyEvents[1]?.t ?? null,
+    ghosttyReadyDoneMs: ghosttyReadyDone?.t ?? null,
+    prewarmEvents: metrics.prewarmEvents,
+  };
 }
 
 async function readTraces(page: Page, expected: number): Promise<Record<string, TraceState>> {
@@ -190,6 +347,48 @@ async function readTraces(page: Page, expected: number): Promise<Record<string, 
 
 function eventTime(events: TraceEvent[], kind: string): number | null {
   return events.find((event) => event.kind === kind)?.t ?? null;
+}
+
+function eventNumber(events: TraceEvent[], kind: string, field: string): number | null {
+  const value = events.find((event) => event.kind === kind)?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function eventString(events: TraceEvent[], kind: string, field: string): string | null {
+  const value = events.find((event) => event.kind === kind)?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function eventNumberFrom(event: TraceEvent | undefined, field: string): number | null {
+  const value = event?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function eventBoolFrom(event: TraceEvent | undefined, field: string): boolean | null {
+  const value = event?.[field];
+  return typeof value === "boolean" ? value : null;
+}
+
+function eventByKind(events: TraceEvent[], kind: string): TraceEvent | undefined {
+  return events.find((event) => event.kind === kind);
+}
+
+function lastEventTimeBefore(events: TraceEvent[], kind: string, beforeMs: number | null): number | null {
+  if (beforeMs === null) return null;
+  for (let idx = events.length - 1; idx >= 0; idx--) {
+    const event = events[idx];
+    if (event.kind === kind && event.t <= beforeMs) return event.t;
+  }
+  return null;
+}
+
+function layoutStableEvent(events: TraceEvent[], reason: string): TraceEvent | undefined {
+  return events.find((event) => event.kind === "layout_stable.send" && event.reason === reason);
+}
+
+function deltaNumber(a: number | null, b: number | null): number | null {
+  if (a === null || b === null) return null;
+  return +(b - a).toFixed(3);
 }
 
 function delta(a: number | null, b: number | null): number | null {
@@ -223,14 +422,43 @@ export function summarizeCell(trace: TraceState): CellSummary {
   const prefillBytes = events
     .filter((event) => event.kind === "ws.binary" && event.bucket === "prefill")
     .reduce((sum, event) => sum + (typeof event.size === "number" ? event.size : 0), 0);
+  const attach = eventByKind(events, "attach.send");
+  const terminalCreated = eventByKind(events, "terminal.instance.created");
+  const afterPaint = layoutStableEvent(events, "after-paint") ?? eventByKind(events, "layout_stable.send");
+  const attachCols = eventNumberFrom(attach, "cols");
+  const attachRows = eventNumberFrom(attach, "rows");
+  const afterPaintCols = eventNumberFrom(afterPaint, "cols");
+  const afterPaintRows = eventNumberFrom(afterPaint, "rows");
+  const attachContainerWidth = eventNumberFrom(attach, "containerWidth");
+  const afterPaintContainerWidth = eventNumberFrom(afterPaint, "containerWidth");
+  const hydrationReveal = eventTime(events, "hydration.reveal");
   return {
     session: trace._meta.session,
     setupToAttachMs: delta(setupStart, eventTime(events, "attach.send")),
-    setupToRevealMs: delta(setupStart, eventTime(events, "hydration.reveal")),
+    setupToRevealMs: delta(setupStart, hydrationReveal),
     ghosttyCreationMs: delta(eventTime(events, "ghostty.ready"), eventTime(events, "terminal.instance.created")),
+    terminalPrewarmed: eventBoolFrom(terminalCreated, "prewarmed"),
+    isolatedGhostty: eventBoolFrom(terminalCreated, "isolatedGhostty"),
     wsServerMs: delta(eventTime(events, "attach.send"), eventTime(events, "pty_ready")),
     prefillMs: delta(eventTime(events, "prefill.first_chunk"), eventTime(events, "prefill_done")),
-    hydrationRevealMs: delta(eventTime(events, "hydration.start"), eventTime(events, "hydration.reveal")),
+    hydrationRevealMs: delta(eventTime(events, "hydration.start"), hydrationReveal),
+    hydrationStartToPrefillDoneMs: delta(eventTime(events, "hydration.start"), eventTime(events, "prefill_done")),
+    prefillDoneToRevealMs: delta(eventTime(events, "prefill_done"), hydrationReveal),
+    ptyReadyToRevealMs: delta(eventTime(events, "pty_ready"), hydrationReveal),
+    attachAckToAfterPaintLayoutStableMs: delta(eventTime(events, "attach_ack"), afterPaint?.t ?? null),
+    lastWriteToRevealMs: delta(lastEventTimeBefore(events, "_writeTermData", hydrationReveal), hydrationReveal),
+    lastWriteDoneToRevealMs: delta(lastEventTimeBefore(events, "term.writeDone", hydrationReveal), hydrationReveal),
+    hydrationMinPendingMs: eventNumber(events, "hydration.start", "minPendingMs"),
+    hydrationSilenceMs: eventNumber(events, "hydration.start", "silenceMs"),
+    layoutStableDebugMode: eventString(events, "attach.send", "layoutStableDebugMode"),
+    attachCols,
+    attachRows,
+    afterPaintCols,
+    afterPaintRows,
+    afterPaintColDelta: deltaNumber(attachCols, afterPaintCols),
+    attachContainerWidth,
+    afterPaintContainerWidth,
+    containerWidthDelta: deltaNumber(attachContainerWidth, afterPaintContainerWidth),
     prefillBytes,
   };
 }
@@ -238,6 +466,77 @@ export function summarizeCell(trace: TraceState): CellSummary {
 export function serverTimingsFor(timings: ServerTiming[], sessions: string[], startIndex = 0): ServerTiming[] {
   const set = new Set(sessions);
   return timings.slice(startIndex).filter((timing) => set.has(timing.session));
+}
+
+function timingAt(events: ServerTiming[], event: string): number | null {
+  return events.find((item) => item.event === event)?.sinceStartMs ?? null;
+}
+
+function timingDelta(events: ServerTiming[], startEvent: string, endEvent: string): number | null {
+  return delta(timingAt(events, startEvent), timingAt(events, endEvent));
+}
+
+function timingNumber(events: ServerTiming[], event: string, field: string): number | null {
+  const value = events.find((item) => item.event === event)?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function timingString(events: ServerTiming[], event: string, field: string): string | null {
+  const value = events.find((item) => item.event === event)?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function timingEvent(events: ServerTiming[], event: string, predicate?: (event: ServerTiming) => boolean): ServerTiming | undefined {
+  return events.find((item) => item.event === event && (!predicate || predicate(item)));
+}
+
+function timingNumberFrom(event: ServerTiming | undefined, field: string): number | null {
+  const value = event?.[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function summarizeServerPhases(
+  timings: ServerTiming[],
+  sessions: string[],
+  mode: ScenarioMode,
+): ServerPhaseSummary[] {
+  return sessions.map((session) => {
+    const events = timings.filter((timing) => timing.session === session && timing.mode === mode);
+    const attach = timingEvent(events, "attach.parsed");
+    const afterPaintLayoutStable = timingEvent(events, "layout_stable", (event) => event.reason === "after-paint")
+      ?? timingEvent(events, "layout_stable");
+    const attachCols = timingNumberFrom(attach, "cols");
+    const attachRows = timingNumberFrom(attach, "rows");
+    const afterPaintCols = timingNumberFrom(afterPaintLayoutStable, "cols");
+    const afterPaintRows = timingNumberFrom(afterPaintLayoutStable, "rows");
+    return {
+      session,
+      mode,
+      attachParsedMs: timingAt(events, "attach.parsed"),
+      resizeSettleMs: timingDelta(events, "resize_settle.start", "resize_settle.end"),
+      quiescenceMs: timingDelta(events, "quiescence_wait.start", "quiescence_wait.end"),
+      snapshotFetchMs: timingDelta(events, "snapshot_fetch.start", "snapshot_fetch.end"),
+      prefillSendMs: timingDelta(events, "prefill_send.start", "prefill_send.end"),
+      subscribeMs: timingDelta(events, "subscribe.start", "subscribe.success"),
+      serverReadyMs: timingAt(events, "pty_ready.send"),
+      outputDecision: timingString(events, "quiescence_wait.end", "outputDecision"),
+      resizeStableAtMs: timingNumber(events, "quiescence_wait.end", "resizeStableAtMs"),
+      outputStableAtMs: timingNumber(events, "quiescence_wait.end", "outputStableAtMs"),
+      afterPaintLayoutStableMs: afterPaintLayoutStable?.sinceStartMs ?? null,
+      afterPaintSnapshotDeltaMs: delta(afterPaintLayoutStable?.sinceStartMs ?? null, timingAt(events, "snapshot_fetch.start")),
+      afterPaintColsDelta: deltaNumber(attachCols, afterPaintCols),
+      afterPaintRowsDelta: deltaNumber(attachRows, afterPaintRows),
+    };
+  });
+}
+
+async function runPageLoad(baseUrl: string): Promise<PageLoadSummary> {
+  const { page, pageLoad, close } = await setupPage(baseUrl);
+  try {
+    return await readPageLoadSummary(page, pageLoad, Number(process.env.WOLFPACK_PERF_PAGE_LOAD_WAIT_MS || 1500));
+  } finally {
+    await close();
+  }
 }
 
 async function runSingle(baseUrl: string, timings: ServerTiming[], session: string): Promise<ScenarioSummary> {
@@ -262,6 +561,14 @@ async function runSingle(baseUrl: string, timings: ServerTiming[], session: stri
   }
 }
 
+function gridAddDelayMs(): number {
+  const raw = process.env.WOLFPACK_PERF_GRID_ADD_DELAY_MS;
+  if (!raw) return 0;
+  const delay = Number(raw);
+  if (!Number.isFinite(delay) || delay < 0) throw new Error("WOLFPACK_PERF_GRID_ADD_DELAY_MS must be a non-negative number");
+  return delay;
+}
+
 async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: string[]): Promise<ScenarioSummary> {
   const { page, close } = await setupPage(baseUrl);
   const timingStart = timings.length;
@@ -274,6 +581,8 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
       w.openSession(names[0]);
     }, sessions);
     await page.waitForSelector("#desktop-terminal-container canvas", { timeout: 10_000 });
+    const addDelayMs = gridAddDelayMs();
+    if (addDelayMs > 0) await page.waitForTimeout(addDelayMs);
     for (const session of sessions.slice(1)) {
       await page.evaluate((name) => {
         (window as unknown as { addToGrid(name: string): void }).addToGrid(name);
@@ -312,6 +621,31 @@ async function runMeasured(summaryPromise: Promise<ScenarioSummary>): Promise<Sc
   return summary;
 }
 
+async function runMeasuredPageLoad(baseUrl: string): Promise<PageLoadSummary> {
+  const summary = await runPageLoad(baseUrl);
+  printPageLoadSummary(summary);
+  return summary;
+}
+
+function printPageLoadSummary(summary: PageLoadSummary): void {
+  console.log("\npage-load");
+  console.table([{
+    cardVisibleMs: summary.cardVisibleMs,
+    domContentLoadedMs: summary.domContentLoadedMs,
+    loadEventMs: summary.loadEventMs,
+    firstContentfulPaintMs: summary.firstContentfulPaintMs,
+    longTaskCount: summary.longTaskCount,
+    longTaskTotalMs: summary.longTaskTotalMs,
+    longTaskMaxMs: summary.longTaskMaxMs,
+    consoleErrorCount: summary.consoleErrorCount,
+    prewarmScheduledDelayMs: summary.prewarmScheduledDelayMs,
+    prewarmReadyCount: summary.prewarmReadyCount,
+    firstPrewarmReadyMs: summary.firstPrewarmReadyMs,
+    secondPrewarmReadyMs: summary.secondPrewarmReadyMs,
+    ghosttyReadyDoneMs: summary.ghosttyReadyDoneMs,
+  }]);
+}
+
 function printSummary(summary: ScenarioSummary): void {
   console.log(`\n${summary.scenario}`);
   console.table(summary.sessions.map((cell) => ({
@@ -319,10 +653,49 @@ function printSummary(summary: ScenarioSummary): void {
     setupToAttachMs: cell.setupToAttachMs,
     setupToRevealMs: cell.setupToRevealMs,
     ghosttyMs: cell.ghosttyCreationMs,
+    terminalPrewarmed: cell.terminalPrewarmed,
+    isolatedGhostty: cell.isolatedGhostty,
     wsServerMs: cell.wsServerMs,
     prefillMs: cell.prefillMs,
     hydrationRevealMs: cell.hydrationRevealMs,
+    hydrationStartToPrefillDoneMs: cell.hydrationStartToPrefillDoneMs,
+    prefillDoneToRevealMs: cell.prefillDoneToRevealMs,
+    ptyReadyToRevealMs: cell.ptyReadyToRevealMs,
+    attachAckToAfterPaintLayoutStableMs: cell.attachAckToAfterPaintLayoutStableMs,
+    lastWriteToRevealMs: cell.lastWriteToRevealMs,
+    lastWriteDoneToRevealMs: cell.lastWriteDoneToRevealMs,
+    hydrationMinPendingMs: cell.hydrationMinPendingMs,
+    hydrationSilenceMs: cell.hydrationSilenceMs,
+    layoutStableDebugMode: cell.layoutStableDebugMode,
+    attachCols: cell.attachCols,
+    afterPaintCols: cell.afterPaintCols,
+    afterPaintColDelta: cell.afterPaintColDelta,
+    attachContainerWidth: cell.attachContainerWidth,
+    afterPaintContainerWidth: cell.afterPaintContainerWidth,
+    containerWidthDelta: cell.containerWidthDelta,
     prefillBytes: cell.prefillBytes,
+  })));
+  const serverPhases = summarizeServerPhases(
+    summary.server,
+    summary.sessions.map((cell) => cell.session),
+    summary.mode,
+  );
+  console.table(serverPhases.map((phase) => ({
+    session: phase.session,
+    mode: phase.mode,
+    serverReadyMs: phase.serverReadyMs,
+    resizeSettleMs: phase.resizeSettleMs,
+    quiescenceMs: phase.quiescenceMs,
+    snapshotFetchMs: phase.snapshotFetchMs,
+    prefillSendMs: phase.prefillSendMs,
+    subscribeMs: phase.subscribeMs,
+    outputDecision: phase.outputDecision,
+    resizeStableAtMs: phase.resizeStableAtMs,
+    outputStableAtMs: phase.outputStableAtMs,
+    afterPaintLayoutStableMs: phase.afterPaintLayoutStableMs,
+    afterPaintSnapshotDeltaMs: phase.afterPaintSnapshotDeltaMs,
+    afterPaintColsDelta: phase.afterPaintColsDelta,
+    afterPaintRowsDelta: phase.afterPaintRowsDelta,
   })));
   const serverEnd = summary.server.filter((event) =>
     ["snapshot_fetch.end", "prefill_send.end", "pty_ready.send"].includes(event.event));
@@ -354,12 +727,21 @@ async function main(): Promise<void> {
     server = await startServer(broker.socketPath, {
       prefillDelayMs: Number(process.env.WOLFPACK_PERF_SLOW_PREFILL_MS || 0) || undefined,
     });
+    if (process.env.WOLFPACK_PERF_ONLY_PAGE_LOAD === "1") {
+      const pageLoads = [await runMeasuredPageLoad(server.baseUrl)];
+      console.log("\njson:");
+      console.log(JSON.stringify({ generatedAt: new Date().toISOString(), pageLoads, summaries: [] }, null, 2));
+      return;
+    }
+
     const runId = Date.now().toString(36);
     const sessions = Array.from({ length: 6 }, (_, i) => `perf-${runId}-${i + 1}`);
     for (const [idx, session] of sessions.entries()) {
       await createSession(server.baseUrl, session, `perf-project-${idx + 1}`);
     }
 
+    const pageLoads: PageLoadSummary[] = [];
+    pageLoads.push(await runMeasuredPageLoad(server.baseUrl));
     const summaries: ScenarioSummary[] = [];
     summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
     for (const cells of gridCellCounts()) {
@@ -369,7 +751,7 @@ async function main(): Promise<void> {
       summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[5])));
     }
     console.log("\njson:");
-    console.log(JSON.stringify({ generatedAt: new Date().toISOString(), summaries }, null, 2));
+    console.log(JSON.stringify({ generatedAt: new Date().toISOString(), pageLoads, summaries }, null, 2));
   } finally {
     if (server) server.proc.kill("SIGTERM");
     if (broker.proc) {

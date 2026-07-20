@@ -40,4 +40,17 @@ describe("GhosttyPrewarmPool", () => {
     expect(errors).toHaveLength(1);
     expect(pool.take()).toEqual({ instance: "ghostty-ok", prewarmed: true });
   });
+
+  test("notifies when a prewarm instance becomes ready", async () => {
+    const ready: string[] = [];
+    const pool = new GhosttyPrewarmPool({
+      maxSize: 1,
+      create: async () => "ghostty-ok",
+      onReady: (instance) => ready.push(instance),
+    });
+
+    await pool.prewarm();
+
+    expect(ready).toEqual(["ghostty-ok"]);
+  });
 });

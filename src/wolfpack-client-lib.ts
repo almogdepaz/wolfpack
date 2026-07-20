@@ -27,6 +27,12 @@ export {
 } from "./reconnect-hydration";
 
 export {
+  HYDRATION_DEBUG_MIN_PENDING_KEY,
+  HYDRATION_DEBUG_SILENCE_KEY,
+  resolveHydrationDebugTiming,
+} from "./terminal-hydration-debug";
+
+export {
   nextAttachDimensionAction,
 } from "./attach-dimensions";
 
