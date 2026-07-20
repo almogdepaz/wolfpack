@@ -29,7 +29,10 @@ import {
 } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
-import { GhosttyPrewarmPool } from "./ghostty-prewarm-pool";
+import {
+  GhosttyPrewarmPool,
+  scheduleGhosttyPrewarmRefill,
+} from "./ghostty-prewarm-pool";
 
 import {
   __wfTraceStart, __wfTraceGet, __wfTraceEvent, __wfTraceRafStart, __wfTraceRafStop,
@@ -144,6 +147,16 @@ function scheduleGhosttyPrewarm(): void {
         console.debug("[wf] ghostty prewarm skipped:", error);
       });
   }, timing.delayMs);
+}
+
+function scheduleGhosttyPrewarmRefillForConsumedInstance(): void {
+  if (typeof window.createIsolatedGhostty !== "function") return;
+  scheduleGhosttyPrewarmRefill({
+    prewarm: () => ghosttyPrewarmPool.prewarm(),
+    schedule: (task) => { window.setTimeout(task, 0); },
+    waitUntilReady: () => window.ghosttyReady,
+    onError: (error) => console.debug("[wf] ghostty prewarm refill skipped:", error),
+  });
 }
 
 // ── Performance Metrics (UX-16) ──
@@ -496,6 +509,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   if (prewarmedGhostty.instance) {
     isolatedGhostty = prewarmedGhostty.instance;
     usedPrewarmedGhostty = true;
+    scheduleGhosttyPrewarmRefillForConsumedInstance();
   } else if (typeof window.createIsolatedGhostty === "function") {
     try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }

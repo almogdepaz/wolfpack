@@ -1,11 +1,46 @@
 import { describe, expect, test } from "bun:test";
 import {
+  cleanupCreatedSessions,
   serverTimingsFor,
   summarizeCell,
   summarizeServerPhases,
   type ServerTiming,
   type TraceState,
 } from "../../scripts/terminal-load-perf.ts";
+
+describe("terminal-load perf cleanup", () => {
+  test("kills created perf sessions in reverse order", async () => {
+    const calls: Array<{ readonly url: string; readonly body: string | undefined }> = [];
+    const fetcher = async (url: string, init: RequestInit): Promise<Response> => {
+      calls.push({ url, body: typeof init.body === "string" ? init.body : undefined });
+      return new Response("ok", { status: 200 });
+    };
+
+    const failures = await cleanupCreatedSessions("http://perf.test", ["perf-a", "perf-b"], fetcher);
+
+    expect(failures).toEqual([]);
+    expect(calls).toEqual([
+      { url: "http://perf.test/api/kill", body: JSON.stringify({ session: "perf-b" }) },
+      { url: "http://perf.test/api/kill", body: JSON.stringify({ session: "perf-a" }) },
+    ]);
+  });
+
+  test("continues cleanup after one session kill fails", async () => {
+    const calls: string[] = [];
+    const fetcher = async (_url: string, init: RequestInit): Promise<Response> => {
+      const body = typeof init.body === "string" ? JSON.parse(init.body) as { readonly session: string } : { session: "missing" };
+      calls.push(body.session);
+      return body.session === "perf-b"
+        ? new Response("boom", { status: 500 })
+        : new Response("ok", { status: 200 });
+    };
+
+    const failures = await cleanupCreatedSessions("http://perf.test", ["perf-a", "perf-b"], fetcher);
+
+    expect(calls).toEqual(["perf-b", "perf-a"]);
+    expect(failures).toEqual([{ session: "perf-b", error: "500 boom" }]);
+  });
+});
 
 describe("terminal-load perf summarization", () => {
   test("filters server timings to the current scenario window", () => {

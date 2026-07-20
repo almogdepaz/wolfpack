@@ -242,6 +242,34 @@ async function createSession(baseUrl: string, name: string, project: string): Pr
   if (!res.ok) throw new Error(`create ${name} failed: ${res.status} ${await res.text()}`);
 }
 
+type SessionCleanupFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+export type SessionCleanupFailure = {
+  readonly session: string;
+  readonly error: string;
+};
+
+export async function cleanupCreatedSessions(
+  baseUrl: string,
+  sessions: readonly string[],
+  fetcher: SessionCleanupFetch = fetch,
+): Promise<SessionCleanupFailure[]> {
+  const failures: SessionCleanupFailure[] = [];
+  for (const session of [...sessions].reverse()) {
+    try {
+      const res = await fetcher(`${baseUrl}/api/kill`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session }),
+      });
+      if (!res.ok && res.status !== 404) failures.push({ session, error: `${res.status} ${await res.text()}` });
+    } catch (error) {
+      failures.push({ session, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return failures;
+}
+
 async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -722,6 +750,7 @@ async function main(): Promise<void> {
   mkdirSync(DEV_DIR, { recursive: true });
 
   let server: Awaited<ReturnType<typeof startServer>> | null = null;
+  const createdSessions: string[] = [];
   try {
     if (broker.proc) await waitForFile(broker.socketPath, 5000);
     server = await startServer(broker.socketPath, {
@@ -738,6 +767,7 @@ async function main(): Promise<void> {
     const sessions = Array.from({ length: 6 }, (_, i) => `perf-${runId}-${i + 1}`);
     for (const [idx, session] of sessions.entries()) {
       await createSession(server.baseUrl, session, `perf-project-${idx + 1}`);
+      createdSessions.push(session);
     }
 
     const pageLoads: PageLoadSummary[] = [];
@@ -753,6 +783,10 @@ async function main(): Promise<void> {
     console.log("\njson:");
     console.log(JSON.stringify({ generatedAt: new Date().toISOString(), pageLoads, summaries }, null, 2));
   } finally {
+    if (server && createdSessions.length > 0) {
+      const cleanupFailures = await cleanupCreatedSessions(server.baseUrl, createdSessions);
+      if (cleanupFailures.length > 0) console.warn("perf session cleanup failures", cleanupFailures);
+    }
     if (server) server.proc.kill("SIGTERM");
     if (broker.proc) {
       broker.proc.kill("SIGTERM");
