@@ -112,4 +112,21 @@ describe("GhosttyPrewarmPool", () => {
     await Promise.resolve();
     expect(created).toBe(2);
   });
+
+  test("refill scheduling reports asynchronous prewarm failures", async () => {
+    const scheduledTasks: Array<() => void> = [];
+    const expectedError = new Error("refill failed");
+    const errors: unknown[] = [];
+
+    scheduleGhosttyPrewarmRefill({
+      prewarm: async () => { throw expectedError; },
+      schedule: (task) => scheduledTasks.push(task),
+      onError: (error) => errors.push(error),
+    });
+
+    scheduledTasks[0]?.();
+    await Promise.resolve();
+
+    expect(errors).toEqual([expectedError]);
+  });
 });

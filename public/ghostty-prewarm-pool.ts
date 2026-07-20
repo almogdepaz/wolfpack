@@ -19,15 +19,20 @@ export interface GhosttyPrewarmRefillScheduleOptions {
 
 export function scheduleGhosttyPrewarmRefill(options: GhosttyPrewarmRefillScheduleOptions): void {
   const onError = options.onError ?? (() => {});
+  const prewarm = (): void => {
+    try {
+      void options.prewarm()?.catch(onError);
+    } catch (error) {
+      onError(error);
+    }
+  };
   options.schedule(() => {
     const ready = options.waitUntilReady?.();
     if (!ready) {
-      void options.prewarm();
+      prewarm();
       return;
     }
-    void ready.then(() => {
-      void options.prewarm();
-    }).catch(onError);
+    void ready.then(prewarm).catch(onError);
   });
 }
 
