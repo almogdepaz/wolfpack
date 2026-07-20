@@ -155,6 +155,14 @@ type ServerPhaseSummary = {
 const ROOT = join(import.meta.dirname, "..");
 const DEV_DIR = join(ROOT, ".wolfpack", "terminal-load-perf-dev");
 const DEFAULT_GRID_CELL_COUNTS = [2, 4, 6] as const;
+const PERF_HARNESS_ENV_HELP = [
+  "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
+  "WOLFPACK_PERF_GRID_CELLS: comma-separated grid sizes 2-6 (default: 2,4,6)",
+  "WOLFPACK_PERF_USE_EXISTING_BROKER: set to 1 to use WOLFPACK_BROKER_SOCKET instead of spawning a broker",
+  "WOLFPACK_PERF_ONLY_PAGE_LOAD: set to 1 to skip single/grid terminal scenarios",
+  "WOLFPACK_PERF_PAGE_LOAD_WAIT_MS: extra post-load wait before page-load trace capture",
+  "WOLFPACK_PERF_SLOW_PREFILL_MS: inject server-side prefill delay for slow-path measurements",
+] as const;
 
 function resolveBrokerBin(): string | null {
   const fromEnv = process.env.WOLFPACK_BROKER_BIN;
@@ -684,6 +692,10 @@ function gridCellCounts(): number[] {
   return counts;
 }
 
+export function describePerfHarnessEnv(): readonly string[] {
+  return PERF_HARNESS_ENV_HELP;
+}
+
 export function parsePerfRunCount(raw: string | undefined): number {
   if (!raw) return 1;
   const count = Number(raw);
@@ -711,6 +723,29 @@ function metricStats(values: readonly number[]): MetricStats {
 
 function addMetric(target: number[], value: number | null): void {
   if (value !== null && Number.isFinite(value)) target.push(value);
+}
+
+function formatMetricPair(stats: MetricStats): string {
+  if (stats.p50 === null || stats.p95 === null) return "n/a (n=0)";
+  return `${stats.p50}/${stats.p95}ms (n=${stats.count})`;
+}
+
+export function formatPerfRunsSummary(summary: PerfRunsSummary): string {
+  return [
+    "aggregate summary",
+    `runs: ${summary.runs}`,
+    `page card visible p50/p95: ${formatMetricPair(summary.page.cardVisibleMs)}`,
+    `page second prewarm ready p50/p95: ${formatMetricPair(summary.page.secondPrewarmReadyMs)}`,
+    `page console errors: ${summary.pageConsoleErrorsTotal}`,
+    `single reveal p50/p95: ${formatMetricPair(summary.single.setupToRevealMs)}`,
+    `single ghostty create p50/p95: ${formatMetricPair(summary.single.ghosttyCreationMs)}`,
+    `single prewarm hits: ${summary.single.prewarmHits.hits}/${summary.single.prewarmHits.total}`,
+    `grid reveal p50/p95: ${formatMetricPair(summary.grid.setupToRevealMs)}`,
+    `grid ghostty create p50/p95: ${formatMetricPair(summary.grid.ghosttyCreationMs)}`,
+    `grid ws server p50/p95: ${formatMetricPair(summary.grid.wsServerMs)}`,
+    `grid prefill_done→reveal p50/p95: ${formatMetricPair(summary.grid.prefillDoneToRevealMs)}`,
+    `grid prewarm hits: ${summary.grid.prewarmHits.hits}/${summary.grid.prewarmHits.total}`,
+  ].join("\n");
 }
 
 export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSummary {
@@ -916,6 +951,12 @@ async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>
 }
 
 async function main(): Promise<void> {
+  if (process.env.WOLFPACK_PERF_HELP === "1") {
+    console.log("terminal-load perf environment:");
+    for (const line of describePerfHarnessEnv()) console.log(`- ${line}`);
+    return;
+  }
+
   const brokerBin = resolveBrokerBin();
   const broker = existingBroker() || (brokerBin ? startBroker(brokerBin) : null);
   if (!broker) {
@@ -940,9 +981,11 @@ async function main(): Promise<void> {
       runs.push(await runPerfMeasurement(server, runIndex));
     }
 
+    const summary = summarizePerfRuns(runs);
     const report = runCount === 1
-      ? { generatedAt: new Date().toISOString(), ...runs[0], summary: summarizePerfRuns(runs) }
-      : { generatedAt: new Date().toISOString(), runs, summary: summarizePerfRuns(runs) };
+      ? { generatedAt: new Date().toISOString(), ...runs[0], summary }
+      : { generatedAt: new Date().toISOString(), runs, summary };
+    console.log(`\n${formatPerfRunsSummary(summary)}`);
     console.log("\njson:");
     console.log(JSON.stringify(report, null, 2));
   } finally {

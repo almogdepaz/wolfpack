@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   cleanupCreatedSessions,
+  describePerfHarnessEnv,
+  formatPerfRunsSummary,
   parsePerfRunCount,
   serverTimingsFor,
   summarizeCell,
@@ -86,6 +88,25 @@ describe("terminal-load perf run options", () => {
         prewarmHits: { hits: 3, total: 4 },
       },
     });
+  });
+
+  test("formats a readable aggregate summary for terminal output", () => {
+    const summary = summarizePerfRuns([
+      perfRunReport([200, 210], [true, true]),
+      perfRunReport([190, 230], [true, false]),
+    ]);
+
+    expect(formatPerfRunsSummary(summary)).toContain("runs: 2");
+    expect(formatPerfRunsSummary(summary)).toContain("grid reveal p50/p95: 200/230ms (n=4)");
+    expect(formatPerfRunsSummary(summary)).toContain("grid prewarm hits: 3/4");
+  });
+
+  test("documents perf harness environment knobs in one helper", () => {
+    expect(describePerfHarnessEnv()).toEqual(expect.arrayContaining([
+      "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
+      "WOLFPACK_PERF_GRID_CELLS: comma-separated grid sizes 2-6 (default: 2,4,6)",
+      "WOLFPACK_PERF_USE_EXISTING_BROKER: set to 1 to use WOLFPACK_BROKER_SOCKET instead of spawning a broker",
+    ]));
   });
 });
 
