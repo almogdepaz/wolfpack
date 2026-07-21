@@ -18,12 +18,17 @@ import { join } from "node:path";
 import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import {
   configuredRalphAgents,
   selectConfiguredRalphAgent,
   type RalphAgent,
 } from "../ralph-agent.js";
+import {
+  isActiveRalphWorktreeMode,
+  RALPH_WORKTREE_MODE,
+} from "../ralph-worktree-mode.js";
 import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
 import {
   CMD_REGEX,
@@ -393,10 +398,10 @@ const prevPaneContent = new Map<string, string>();
  * first.
  */
 const DEFAULT_CMDS: ReadonlyArray<{ cmd: string; enabled: boolean }> = [
-  { cmd: "shell",  enabled: true },
-  { cmd: "claude", enabled: true },
-  { cmd: "pi",     enabled: true },
-  { cmd: "codex",  enabled: true },
+  { cmd: AGENT_KIND.SHELL, enabled: true },
+  { cmd: AGENT_KIND.CLAUDE, enabled: true },
+  { cmd: AGENT_KIND.PI, enabled: true },
+  { cmd: AGENT_KIND.CODEX, enabled: true },
 ];
 
 interface CmdEntry {
@@ -414,7 +419,7 @@ interface Settings {
 
 /** A command is valid if it's literally `"shell"` or matches CMD_REGEX. */
 function isValidCmd(cmd: string): boolean {
-  return cmd === "shell" || CMD_REGEX.test(cmd);
+  return cmd === AGENT_KIND.SHELL || CMD_REGEX.test(cmd);
 }
 
 export interface LoadedSettings {
@@ -486,20 +491,20 @@ function saveSettings(s: Settings): void {
 }
 
 /** Resolve the agent that should actually run for a new session.
- *  Priority: settings.agentCmd if it's enabled → first enabled cmd → "shell". */
+ *  Priority: settings.agentCmd if it's enabled → first enabled cmd → shell. */
 export function effectiveAgentCmd(s: Settings): string {
   const enabled = s.cmds.filter(c => c.enabled);
   const requested = enabled.find(c => c.cmd === s.agentCmd);
   if (requested) return requested.cmd;
   if (enabled.length > 0) return enabled[0].cmd;
-  return "shell";
+  return AGENT_KIND.SHELL;
 }
 
 /** What the session-create picker should show: enabled cmds, or ["shell"] if
  *  the user has disabled everything (always-on fallback). */
 export function effectiveCmds(s: Settings): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
-  return enabled.length > 0 ? enabled : ["shell"];
+  return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL];
 }
 
 export function effectiveRalphAgents(s: Settings): RalphAgent[] {
@@ -615,7 +620,7 @@ export const routes: Record<
     const { project, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
     const folderName = newProject?.trim() || project?.trim();
     if (!validateProject(res, folderName)) return;
-    if (cmd && cmd !== "shell" && !CMD_REGEX.test(cmd)) {
+    if (cmd && cmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
     }
     if (
@@ -674,7 +679,7 @@ export const routes: Record<
       // so the backend never sees a disabled or missing agentCmd.
       const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
       const agentKind = inferAgentKind(cmd || settingsResolver().agentCmd);
-      if (initialPrompt !== undefined && agentKind === "shell") {
+      if (initialPrompt !== undefined && agentKind === AGENT_KIND.SHELL) {
         return json(res, { error: "initial prompt requires an agent harness" }, 400);
       }
       await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
@@ -727,7 +732,7 @@ export const routes: Record<
     }
 
     const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
-    if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === "shell") {
+    if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL) {
       return json(res, {
         error: "initial prompt requires an agent harness",
         code: SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS,
@@ -1293,11 +1298,11 @@ export const routes: Record<
     if (auditFix != null && typeof auditFix !== "boolean") {
       return json(res, { error: "invalid auditFix flag" }, 400);
     }
-    const validWorktree = worktree === undefined || worktree === false || worktree === "false" || worktree === "plan" || worktree === "task";
+    const validWorktree = worktree === undefined || worktree === false || worktree === RALPH_WORKTREE_MODE.DISABLED || (typeof worktree === "string" && isActiveRalphWorktreeMode(worktree));
     if (!validWorktree) {
-      return json(res, { error: "invalid worktree mode — must be false, \"plan\", or \"task\"" }, 400);
+      return json(res, { error: `invalid worktree mode — must be false, "${RALPH_WORKTREE_MODE.PLAN}", or "${RALPH_WORKTREE_MODE.TASK}"` }, 400);
     }
-    const worktreeMode = (worktree === "plan" || worktree === "task") ? worktree : "false";
+    const worktreeMode = typeof worktree === "string" && isActiveRalphWorktreeMode(worktree) ? worktree : RALPH_WORKTREE_MODE.DISABLED;
     if (worktreeBranch != null && typeof worktreeBranch !== "string") {
       return json(res, { error: "invalid worktreeBranch" }, 400);
     }
@@ -1442,7 +1447,7 @@ export const routes: Record<
       ok: true,
       pid: child.pid ?? 0,
       branch: newBranch || undefined,
-      worktree: worktreeMode !== "false" ? worktreeMode : undefined,
+      worktree: worktreeMode !== RALPH_WORKTREE_MODE.DISABLED ? worktreeMode : undefined,
     });
     } finally {
       if (!spawned) removeLock();

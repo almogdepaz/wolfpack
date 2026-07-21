@@ -8,6 +8,7 @@ import type { SessionBackend, SessionLaunchOptions } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { stripAnsi } from "./strip-ansi.js";
 import { inferAgentKind } from "./session-identity.js";
+import { AGENT_KIND } from "../agent-kind.js";
 import type {
   ParentSessionIdentity,
   PublicSessionIdentity,
@@ -84,7 +85,7 @@ export class MockBackend implements SessionBackend {
         wolfpackSessionId: `mock:${name}`,
         wolfpackSessionName: name,
         projectPath: "",
-        agentKind: "unknown",
+        agentKind: AGENT_KIND.UNKNOWN,
         createdAt: now,
         updatedAt: now,
         ...(this._parentSessions.get(name) && { parentSession: this._parentSessions.get(name) }),

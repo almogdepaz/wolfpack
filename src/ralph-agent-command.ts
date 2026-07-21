@@ -1,3 +1,4 @@
+import { AGENT_KIND } from "./agent-kind.js";
 import type { RalphAgent } from "./ralph-agent.js";
 import { RALPH_RESPONSE_VERSION, RalphResponseStatus } from "./ralph-response.js";
 
@@ -31,14 +32,14 @@ export interface BuildAgentArgsOptions {
 }
 
 export function agentBinaryName(agent: RalphAgent): string {
-  return agent === "cursor" ? "agent" : agent;
+  return agent === AGENT_KIND.CURSOR ? "agent" : agent;
 }
 
 export function buildAgentArgs(agent: RalphAgent, options: BuildAgentArgsOptions): string[] {
   switch (agent) {
-    case "claude":
+    case AGENT_KIND.CLAUDE:
       return ["--model", "sonnet", "--print", "--dangerously-skip-permissions", "--allowedTools", RALPH_ALLOWED_TOOLS, "-p", options.prompt];
-    case "codex":
+    case AGENT_KIND.CODEX:
       return [
         "exec",
         "--disable", "apps",
@@ -47,9 +48,9 @@ export function buildAgentArgs(agent: RalphAgent, options: BuildAgentArgsOptions
         "--output-schema", options.responseSchemaFile,
         options.prompt,
       ];
-    case "gemini":
+    case AGENT_KIND.GEMINI:
       return ["-p", options.prompt, "--yolo"];
-    case "cursor":
+    case AGENT_KIND.CURSOR:
       return ["-p", options.prompt, "--yolo"];
   }
 }

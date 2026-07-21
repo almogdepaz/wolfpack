@@ -22,6 +22,10 @@ import { RALPH_AGENTS, isRalphAgent } from "./ralph-agent.js";
 import { agentBinaryName, buildAgentArgs, RALPH_RESPONSE_JSON_SCHEMA } from "./ralph-agent-command.js";
 import { ensureRalphTransientGitExcludes } from "./ralph-git-exclude.js";
 import { buildIterationPrompt } from "./ralph-prompt.js";
+import {
+  isActiveRalphWorktreeMode,
+  RALPH_WORKTREE_MODE,
+} from "./ralph-worktree-mode.js";
 import { classifyRalphResponseResult, readRalphResponseFile } from "./ralph-response.js";
 import { TASK_HEADER, countRalphProgressFromContent, countTasksInContent, validatePlanFormat } from "./wolfpack-context.js";
 import { expandBudget, resolveCleanupDiffBase, buildSrtSettings, shellEscape } from "./validation.js";
@@ -29,6 +33,9 @@ import { buildAuditFixPrompt } from "./ralph-skill-audit.js";
 import { buildCleanupPrompt } from "./ralph-skill-cleanup.js";
 import { createWorktree, cleanupAllExceptFinal, removeWorktree, listWorktrees, slugifyTaskName } from "./worktree.js";
 import { errMsg, killProcessTree, killProcessTreeSync } from "./shared/process-cleanup.js";
+
+const BOOLEAN_FALSE = "false";
+const BOOLEAN_TRUE = "true";
 
 const { values: args } = parseArgs({
   args: process.argv.slice(2),
@@ -38,12 +45,12 @@ const { values: args } = parseArgs({
     progress: { type: "string", default: "progress.txt" },
     agent: { type: "string", default: "claude" },
     format: { type: "boolean", default: false },
-    cleanup: { type: "string", default: "true" },
-    "audit-fix": { type: "string", default: "false" },
-    worktree: { type: "string", default: "false" },
+    cleanup: { type: "string", default: BOOLEAN_TRUE },
+    "audit-fix": { type: "string", default: BOOLEAN_FALSE },
+    worktree: { type: "string", default: RALPH_WORKTREE_MODE.DISABLED },
     "worktree-branch": { type: "string" },
     "worktree-base": { type: "string" },
-    sandbox: { type: "string", default: "true" },
+    sandbox: { type: "string", default: BOOLEAN_TRUE },
   },
 });
 
@@ -57,12 +64,12 @@ if (!isRalphAgent(AGENT_ARG)) {
 }
 const AGENT = AGENT_ARG;
 const FORMAT_PLAN = args.format!;
-const CLEANUP_ENABLED = args.cleanup !== "false";
-const AUDIT_FIX_ENABLED = args["audit-fix"] === "true";
-const WORKTREE_MODE = (args.worktree === "plan" || args.worktree === "task") ? args.worktree : "false" as const;
+const CLEANUP_ENABLED = args.cleanup !== BOOLEAN_FALSE;
+const AUDIT_FIX_ENABLED = args["audit-fix"] === BOOLEAN_TRUE;
+const WORKTREE_MODE = isActiveRalphWorktreeMode(args.worktree) ? args.worktree : RALPH_WORKTREE_MODE.DISABLED;
 const WORKTREE_BRANCH = args["worktree-branch"] || undefined;
 const WORKTREE_BASE = args["worktree-base"] || undefined;
-const SANDBOX_ENABLED = args.sandbox !== "false";
+const SANDBOX_ENABLED = args.sandbox !== BOOLEAN_FALSE;
 const PROJECT_DIR = process.cwd();
 
 /**
@@ -549,7 +556,7 @@ function shutdownHandler(signal: "SIGTERM" | "SIGINT"): void {
   if (activeChild?.pid) {
     killProcessTreeSync(activeChild.pid);
   }
-  if (WORKTREE_MODE !== "false") {
+  if (WORKTREE_MODE !== RALPH_WORKTREE_MODE.DISABLED) {
     try {
       const result = cleanupAllExceptFinal(PROJECT_DIR);
       if (result.removed.length > 0) {
@@ -782,12 +789,12 @@ async function main() {
   }
 
   // --- Worktree setup (AFTER format/dedup/validate so those run in PROJECT_DIR) ---
-  if (WORKTREE_MODE === "plan" || WORKTREE_MODE === "task") {
+  if (isActiveRalphWorktreeMode(WORKTREE_MODE)) {
     createMainWorktree();
   }
 
   // In task mode, clean up orphan sub-worktrees from crashed/interrupted runs
-  if (WORKTREE_MODE === "task") {
+  if (WORKTREE_MODE === RALPH_WORKTREE_MODE.TASK) {
     const worktrees = listWorktrees(PROJECT_DIR);
     const mainBranch = getCurrentBranch(mainWorkDir);
     const orphans = worktrees.filter(w =>
@@ -872,7 +879,7 @@ async function main() {
     }
 
     // --- Task mode: manage per-section sub-worktrees ---
-    if (WORKTREE_MODE === "task") {
+    if (WORKTREE_MODE === RALPH_WORKTREE_MODE.TASK) {
       // determine which section this iteration belongs to
       const header = checkbox ? null : taskSectionHeader(task);
       const isNewSection = header && header !== currentTaskHeader;

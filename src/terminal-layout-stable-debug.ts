@@ -1,8 +1,11 @@
+import { TERMINAL_PREFILL_MODE } from "./terminal-prefill.js";
+import type { TerminalPrefillMode } from "./terminal-prefill.js";
+
 export const LAYOUT_STABLE_DEBUG_MODE_KEY = "wolfpackLayoutStableDebugMode";
 
 export type LayoutStableDebugMode = "after-paint" | "immediate-and-after-paint" | "viewport-immediate-and-after-paint";
 
-export type LayoutStablePrefillMode = "full" | "viewport" | "none";
+export type LayoutStablePrefillMode = TerminalPrefillMode;
 
 export function resolveLayoutStableDebugMode(
   storage: Pick<Storage, "getItem"> | null,
@@ -20,5 +23,5 @@ export function shouldSendImmediateLayoutStable(
   prefillMode: LayoutStablePrefillMode,
 ): boolean {
   return mode === "immediate-and-after-paint"
-    || (mode === "viewport-immediate-and-after-paint" && prefillMode === "viewport");
+    || (mode === "viewport-immediate-and-after-paint" && prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT);
 }

@@ -1,4 +1,9 @@
+import {
+  ACTIVE_RALPH_WORKTREE_MODES,
+  RALPH_WORKTREE_MODE,
+} from "../ralph-worktree-mode.ts";
 import { RALPH_RESPONSE_VERSION } from "../ralph-response.ts";
+import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
   OPENABLE_HARNESSES,
   SESSION_OPEN_ERROR,
@@ -171,8 +176,8 @@ export const controlApiSource: ControlApiSource = {
         source: { enum: ["env", "broker_env", "ralph_launch"] },
       }, ["provider", "redactedId", "capturedAt", "source"]),
     }, ["wolfpackSessionId", "wolfpackSessionName", "projectPath", "agentKind", "createdAt", "updatedAt"]),
-    PrefillMode: { enum: ["full", "viewport", "none"] },
-    WorktreeMode: { enum: [false, "false", "plan", "task"] },
+    PrefillMode: { enum: [...TERMINAL_PREFILL_MODES] },
+    WorktreeMode: { enum: [false, ...Object.values(RALPH_WORKTREE_MODE)] },
     CmdEntry: object({
       cmd: ref("Command"),
       enabled: boolean(),
@@ -603,7 +608,7 @@ export const controlApiSource: ControlApiSource = {
         ok: boolean(),
         pid: integer(),
         branch: string(),
-        worktree: { enum: ["plan", "task"] },
+        worktree: { enum: [...ACTIVE_RALPH_WORKTREE_MODES] },
       }, ["ok", "pid"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "500 ErrorEnvelope"],
     },

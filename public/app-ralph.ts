@@ -6,6 +6,11 @@ import { esc, escAttr, state, wpSettings, haptic } from "./app-state";
 export { getRalphStatus, renderRalphCardHtml, sidebarRalphCardHtml } from "../src/ralph-card-render";
 import { getRalphStatus, renderStatusSource, type RalphLoop } from "../src/ralph-card-render";
 import { configuredRalphAgents } from "../src/ralph-agent";
+import {
+  isActiveRalphWorktreeMode,
+  RALPH_WORKTREE_MODE,
+} from "../src/ralph-worktree-mode";
+import type { ActiveRalphWorktreeMode } from "../src/ralph-worktree-mode";
 
 // ── Types ──
 
@@ -22,7 +27,7 @@ interface StartRalphBody {
   format: boolean;
   cleanup: boolean;
   auditFix: boolean;
-  worktree: false | "plan" | "task";
+  worktree: false | ActiveRalphWorktreeMode;
   worktreeBranch?: string;
   worktreeBase?: string;
   newBranch?: string;
@@ -100,7 +105,7 @@ export async function refreshRalphDetail() {
     if (loop.active) {
       actions.innerHTML = '<button class="ralph-launch-btn ralph-cancel-btn" onclick="cancelRalph()">Cancel</button>';
     } else {
-      const wt = escAttr(loop.worktreeMode || 'false');
+      const wt = escAttr(loop.worktreeMode || RALPH_WORKTREE_MODE.DISABLED);
       const wtBranch = escAttr(loop.worktreeBranch || '');
       actions.innerHTML =
         '<button class="ralph-launch-btn" onclick="continueRalph(\'' + escAttr(loop.planFile || '') + '\',\'' + escAttr(loop.agent || '') + '\',' + cleanupEnabled + ',' + auditFixEnabled + ',\'' + wt + '\',\'' + wtBranch + '\')">Continue</button>' +
@@ -243,7 +248,7 @@ export async function dismissRalph(project: string, event: Event, machineUrl: st
 
 // ── Start form ──
 
-function getCheckedRadioValue(name: string, fallback = "false"): string {
+function getCheckedRadioValue(name: string, fallback = RALPH_WORKTREE_MODE.DISABLED): string {
   const radio = document.querySelector<HTMLInputElement>(`input[name="${name}"]:checked`);
   return radio?.value ?? fallback;
 }
@@ -299,7 +304,7 @@ async function loadStartFormData() {
     loadPlanFiles(sel.value);
     const isoVal = getCheckedRadioValue("ralph-isolation");
     if (isoVal === "branch") loadBranches(sel.value);
-    if (isoVal === "plan" || isoVal === "task") loadWorktreeBranches(sel.value);
+    if (isActiveRalphWorktreeMode(isoVal)) loadWorktreeBranches(sel.value);
   };
   // Reset toggles on form load (restore from state if restarting)
   (document.getElementById("ralph-cleanup-toggle") as HTMLInputElement).checked = state.currentRalphCleanup != null ? state.currentRalphCleanup : true;
@@ -308,7 +313,7 @@ async function loadStartFormData() {
   state.currentRalphAuditFix = undefined;
   // enforce original worktree mode on continue
   const isoRadios = document.querySelectorAll('input[name="ralph-isolation"]') as NodeListOf<HTMLInputElement>;
-  if (state.restartingRalph && state.currentRalphWorktreeMode !== "false") {
+  if (state.restartingRalph && state.currentRalphWorktreeMode !== RALPH_WORKTREE_MODE.DISABLED) {
     const mode = state.currentRalphWorktreeMode;
     isoRadios.forEach(r => {
       r.checked = r.value === mode;
@@ -385,7 +390,7 @@ async function syncIterationsFromPlan(project: string, planFile: string): Promis
 
 export function onIsolationChange(): void {
   const val = getCheckedRadioValue("ralph-isolation");
-  const isWorktree = val === "plan" || val === "task";
+  const isWorktree = isActiveRalphWorktreeMode(val);
   document.getElementById("ralph-branch-fields").style.display = val === "branch" ? "flex" : "none";
   document.getElementById("ralph-worktree-fields").style.display = isWorktree ? "flex" : "none";
   const project = (document.getElementById("ralph-project-select") as HTMLSelectElement).value;
@@ -398,8 +403,8 @@ export function onIsolationChange(): void {
 
 function updateWorktreePlaceholder(mode: string): void {
   const input = document.getElementById("ralph-worktree-name") as HTMLInputElement;
-  input.placeholder = mode === "task" ? "ralph/1-task-slug (auto per task)" : "ralph/plan-my-feature";
-  if (mode === "task") { input.value = ""; input.disabled = true; }
+  input.placeholder = mode === RALPH_WORKTREE_MODE.TASK ? "ralph/1-task-slug (auto per task)" : "ralph/plan-my-feature";
+  if (mode === RALPH_WORKTREE_MODE.TASK) { input.value = ""; input.disabled = true; }
   else { input.disabled = false; }
 }
 
@@ -463,7 +468,7 @@ export async function startRalph() {
   } catch {}
 
   const isoVal = getCheckedRadioValue("ralph-isolation");
-  const worktree: false | "plan" | "task" = (isoVal === "plan" || isoVal === "task") ? isoVal : false;
+  const worktree: false | ActiveRalphWorktreeMode = isActiveRalphWorktreeMode(isoVal) ? isoVal : false;
   const body: StartRalphBody = { project, iterations, planFile, agent, format, cleanup, auditFix, worktree };
   if (worktree) {
     const wtName = (document.getElementById("ralph-worktree-name") as HTMLInputElement).value.trim();
@@ -498,7 +503,7 @@ export function continueRalph(planFile: string, agent: string, cleanup: boolean,
   state.currentRalphAgent = agent || "";
   state.currentRalphCleanup = cleanup;
   state.currentRalphAuditFix = auditFix;
-  state.currentRalphWorktreeMode = worktreeMode || "false";
+  state.currentRalphWorktreeMode = worktreeMode || RALPH_WORKTREE_MODE.DISABLED;
   state.currentRalphWorktreeBranch = worktreeBranch || "";
   state.restartingRalph = true;
   state.ralphStartMachine = state.currentRalphMachine;

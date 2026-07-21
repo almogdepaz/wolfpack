@@ -1,6 +1,11 @@
 /**
  * `wolfpack attach` — direct terminal attach through the server `/ws/pty` path.
  */
+import {
+  isCliAttachPrefillMode,
+  TERMINAL_PREFILL_MODE,
+} from "../terminal-prefill.js";
+import type { CliAttachPrefillMode } from "../terminal-prefill.js";
 import { isValidSessionName } from "../validation.js";
 import {
   CLOSE_CODE_DISPLACED,
@@ -12,7 +17,7 @@ import { baseUrl, call, issueJwt } from "./api.js";
 import { dim, red, yellow } from "./formatting.js";
 import { splitTerminalInputBytes } from "../terminal-input.js";
 
-export type AttachPrefillMode = "full" | "none";
+export type AttachPrefillMode = CliAttachPrefillMode;
 
 export const ATTACH_EXIT = {
   OK: 0,
@@ -35,21 +40,21 @@ export type AttachTargetResolution =
 export function parseAttachCommand(argv: readonly string[]): ParsedAttachCommand | null {
   let session: string | undefined;
   let takeControl = false;
-  let prefillMode: AttachPrefillMode = "full";
+  let prefillMode: AttachPrefillMode = TERMINAL_PREFILL_MODE.FULL;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--take-control" || arg === "--force") {
       takeControl = true;
     } else if (arg === "--no-prefill") {
-      prefillMode = "none";
+      prefillMode = TERMINAL_PREFILL_MODE.NONE;
     } else if (arg === "--prefill") {
       const next = argv[i + 1];
-      if (next !== "full" && next !== "none") return null;
+      if (!next || !isCliAttachPrefillMode(next)) return null;
       prefillMode = next;
       i += 1;
     } else if (arg.startsWith("--prefill=")) {
       const value = arg.slice("--prefill=".length);
-      if (value !== "full" && value !== "none") return null;
+      if (!isCliAttachPrefillMode(value)) return null;
       prefillMode = value;
     } else if (arg.startsWith("-")) {
       return null;

@@ -55,6 +55,9 @@ import {
   shouldSendImmediateLayoutStable,
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
+import { AGENT_KIND } from "../src/agent-kind";
+import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import type { TerminalPrefillMode } from "../src/terminal-prefill";
 
 // ── WASM capability guard ──
 
@@ -935,7 +938,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   });
   let hasConnected = false;
   let consumeReset = !!opts.resetPty;
-  let _initialPrefillMode = opts.prefillMode || "full";
+  let _initialPrefillMode = opts.prefillMode || TERMINAL_PREFILL_MODE.FULL;
   let _attachAckTimer = null;
   let _attachAckReceived = false;
   let _awaitingAttachAck = false;
@@ -1001,7 +1004,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _awaitingAttachAck = true;
     _attachAckReceived = false;
     _prefillChunks = [];
-    _awaitingPrefillDone = prefillMode !== "none";
+    _awaitingPrefillDone = prefillMode !== TERMINAL_PREFILL_MODE.NONE;
     _sawViewportPrefill = false;
     const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; takeControl?: true } = { type: "attach", cols: attachDims.cols, rows: attachDims.rows, prefillMode };
     if (_takeControlOnAttach) { msg.takeControl = true; _takeControlOnAttach = false; }
@@ -1020,7 +1023,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       layoutStableDebugMode: _layoutStableDebugMode,
     });
     __wfTraceRafStart(_trace);
-    if (prefillMode !== "none") {
+    if (prefillMode !== TERMINAL_PREFILL_MODE.NONE) {
       const attachedSocket = ws;
       _prefillDoneTimeout = setTimeout(() => {
         _prefillDoneTimeout = null;
@@ -1213,7 +1216,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (_awaitingPrefillDone) {
       const bytes = new Uint8Array(data);
       if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: bytes.length });
-      const streamHiddenFullPrefill = _currentAttachPrefillMode === "full" && !_sawViewportPrefill;
+      const streamHiddenFullPrefill = _currentAttachPrefillMode === TERMINAL_PREFILL_MODE.FULL && !_sawViewportPrefill;
       __wfTraceEvent(_trace, "ws.binary", {
         bucket: "prefill",
         size: bytes.length,
@@ -1455,7 +1458,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _ptyClient = null;
   let _hydrationStarted = false;
   let _hydrationWritesInFlight = 0;
-  let _initialPrefillComplete = opts.prefillMode === "none";
+  let _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
   let _connectEpoch = 0;
   let _reconnectPendingReset = false;
   let _replacementPrefillPending = false;
@@ -1623,7 +1626,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
    * trigger a reconnect for a layout that's about to revert.
    */
   function scheduleResizeRehydrate() {
-    if (opts.prefillMode !== "full") return;
+    if (opts.prefillMode !== TERMINAL_PREFILL_MODE.FULL) return;
     if (!_ptyClient || !_ptyClient.isOpen) return;
     if (shouldSuppressContainerResize()) return;
     if (_resizeRehydrateTimer) clearTimeout(_resizeRehydrateTimer);
@@ -1980,7 +1983,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       fitTerminal: fitTerminalPreserveScroll,
       shouldReconnect: opts.shouldReconnect,
       onAttach: () => {
-        _initialPrefillComplete = opts.prefillMode === "none";
+        _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
       },
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
@@ -1994,7 +1997,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         }
         // On reconnect, clear stale content and restart hydration —
         // server sends fresh prefill scrollback on the new connection.
-        const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== "none");
+        const rehydrate = WP.shouldRehydrate(wasReconnect, _hydrationStarted, opts.prefillMode !== TERMINAL_PREFILL_MODE.NONE);
         if (rehydrate && _term) {
           _hydrationWritesInFlight = 0;
           if (wasReconnect) {
@@ -3039,7 +3042,7 @@ async function openSession(name, machineUrl) {
   const cached = loadSnapshot(state.currentMachine, name);
   showView("terminal");
   __wfTraceEvent(trace, "dom.view.created", { cached: !!cached });
-  void initTerminal(cached, "full");
+  void initTerminal(cached, TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
 
@@ -3131,7 +3134,7 @@ async function showAgentPicker() {
     // /api/settings now returns { settings, effective } — effective.cmds is
     // the list to render (already filtered to enabled, with ["shell"] fallback
     // when nothing's on). Manage which cmds appear via the Settings page.
-    const cmds = data.effective?.cmds || ["shell"];
+    const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
     const defaultCmd = data.effective?.agentCmd;
     const html = cmds.map(cmd => `
       <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
@@ -3394,7 +3397,7 @@ function removeCachedTerminalPlaceholder(): void {
   document.querySelectorAll("." + CACHED_TERMINAL_PLACEHOLDER_CLASS).forEach((el) => el.remove());
 }
 
-async function initTerminal(cached?: string, prefillModeOverride?: "full" | "viewport"): Promise<void> {
+async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefillMode): Promise<void> {
   if (state.terminalController) return;
   // Defensive: clear stale timer from a prior session that wasn't properly destroyed
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
@@ -3402,8 +3405,8 @@ async function initTerminal(cached?: string, prefillModeOverride?: "full" | "vie
   const container = document.getElementById("desktop-terminal-container");
   const kbProxy = document.getElementById("mobile-kb-proxy");
   const soloPrefillMode = prefillModeOverride ?? (isMobile
-    ? (wpSettings.soloPrefillMode === "full" ? "full" : "viewport")
-    : "full");
+    ? (wpSettings.soloPrefillMode === TERMINAL_PREFILL_MODE.FULL ? TERMINAL_PREFILL_MODE.FULL : TERMINAL_PREFILL_MODE.VIEWPORT)
+    : TERMINAL_PREFILL_MODE.FULL);
   const showCachedPlaceholder = false;
   container.style.display = "block";
   container.innerHTML = "";
@@ -4129,7 +4132,7 @@ async function switchSession(val) {
     hml.textContent = mName;
     hml.style.display = "block";
   }
-  void initTerminal(cached, "full");
+  void initTerminal(cached, TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
 
@@ -5167,7 +5170,7 @@ function bindHtmlEventListeners(): void {
     btn.addEventListener("click", () => {
       const mode = (btn as HTMLElement).dataset.mode;
       if (mode === "fast" && isDesktop()) return;
-      if (mode === "fast" || mode === "full") toggleSetting("soloPrefillMode", mode);
+      if (mode === "fast" || mode === TERMINAL_PREFILL_MODE.FULL) toggleSetting("soloPrefillMode", mode);
     });
   });
 

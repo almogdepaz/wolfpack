@@ -33,6 +33,10 @@ import type {
 } from "./backend.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody } from "../broker/codec.js";
+import {
+  AGENT_KIND,
+  detectAgentKindFromCommandArgs,
+} from "../agent-kind.js";
 import { SHELL } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
@@ -184,14 +188,7 @@ function envValue(env: Array<[string, string]> | undefined, key: string): string
 }
 
 function commandAgent(command: string[] | undefined): string | undefined {
-  if (!command) return undefined;
-  const joined = command.join(" ");
-  if (joined.includes("claude")) return "claude";
-  if (joined.includes("codex")) return "codex";
-  if (joined.includes("gemini")) return "gemini";
-  if (joined.includes("cursor")) return "cursor";
-  if (joined.includes(" pi")) return "pi";
-  return undefined;
+  return detectAgentKindFromCommandArgs(command);
 }
 
 export class BrokerBackend implements SessionBackend, PtyBackendMethods {
@@ -266,12 +263,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity> {
-    const agentCmd = cmd || loadSettings().agentCmd || "claude";
-    if (agentCmd !== "shell" && !CMD_REGEX.test(agentCmd)) {
+    const agentCmd = cmd || loadSettings().agentCmd || AGENT_KIND.CLAUDE;
+    if (agentCmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(agentCmd)) {
       throw new Error(`invalid command: ${agentCmd}`);
     }
     let shellCmd: string;
-    if (agentCmd === "shell") {
+    if (agentCmd === AGENT_KIND.SHELL) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }

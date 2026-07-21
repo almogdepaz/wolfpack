@@ -12,6 +12,7 @@ import {
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
+import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 
 // ── Dependency injection ──
 
@@ -166,7 +167,7 @@ async function mountGridController(gs, cell, idx) {
     cursorBlink: idx === state.gridFocusIndex,
     disableStdin: idx !== state.gridFocusIndex,
     resetPty: gs._resetPty,
-    prefillMode: "viewport",
+    prefillMode: TERMINAL_PREFILL_MODE.VIEWPORT,
     shouldFocus: () => state.gridSessions[state.gridFocusIndex] === gs,
     shouldReconnect: () => state.gridSessions.includes(gs),
     canAcceptInput: () => !!(gs.controller && gs.controller.isConnected && state.gridSessions[state.gridFocusIndex] === gs),

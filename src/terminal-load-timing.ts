@@ -1,3 +1,5 @@
+import { TERMINAL_PREFILL_MODE } from "./terminal-prefill.js";
+
 export type TerminalLoadMode = "single" | "grid" | "none" | "unknown";
 
 export interface TerminalLoadLogFields {
@@ -14,9 +16,9 @@ export function isTerminalLoadTimingEnabled(env: Record<string, string | undefin
 }
 
 export function terminalLoadModeFromPrefill(prefillMode: string | undefined): TerminalLoadMode {
-  if (prefillMode === "full") return "single";
-  if (prefillMode === "viewport") return "grid";
-  if (prefillMode === "none") return "none";
+  if (prefillMode === TERMINAL_PREFILL_MODE.FULL) return "single";
+  if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) return "grid";
+  if (prefillMode === TERMINAL_PREFILL_MODE.NONE) return "none";
   return "unknown";
 }
 

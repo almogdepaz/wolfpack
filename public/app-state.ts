@@ -2,6 +2,7 @@
 // Extracted from app.ts — imported back via bundler (inlined at build time)
 
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
+import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 
 // ── HTML / attribute escaping ──
 
@@ -90,7 +91,7 @@ export function applySetting(key, val) {
     applyTermToXterm();
   }
   if (key === "soloPrefillMode") {
-    const mode = isDesktop() ? "full" : (val === "full" ? "full" : "fast");
+    const mode = isDesktop() ? TERMINAL_PREFILL_MODE.FULL : (val === TERMINAL_PREFILL_MODE.FULL ? TERMINAL_PREFILL_MODE.FULL : "fast");
     document.querySelectorAll(".solo-prefill-btn").forEach(b => {
       const button = b as HTMLButtonElement;
       button.classList.toggle("active", button.dataset.mode === mode);

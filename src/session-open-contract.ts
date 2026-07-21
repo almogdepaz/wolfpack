@@ -1,18 +1,8 @@
-export const OPENABLE_HARNESSES = [
-  "pi",
-  "claude",
-  "codex",
-  "gemini",
-  "cursor",
-] as const;
-
-export type OpenableHarness = typeof OPENABLE_HARNESSES[number];
-
-const OPENABLE_HARNESS_SET: ReadonlySet<string> = new Set(OPENABLE_HARNESSES);
-
-export function isOpenableHarness(value: string): value is OpenableHarness {
-  return OPENABLE_HARNESS_SET.has(value);
-}
+export {
+  OPENABLE_HARNESSES,
+  isOpenableHarness,
+} from "./agent-kind.js";
+export type { OpenableHarness } from "./agent-kind.js";
 
 export const SESSION_OPEN_ERROR = {
   INVALID_REQUEST: "INVALID_REQUEST",

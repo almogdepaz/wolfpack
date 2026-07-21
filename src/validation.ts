@@ -6,6 +6,7 @@ import { isAbsolute, resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
+import { AGENT_KIND } from "./agent-kind.js";
 import type { RalphAgent } from "./ralph-agent.js";
 
 // ── Regex patterns ──
@@ -190,7 +191,7 @@ export function buildSrtSettings(allowedWriteDir: string, options: BuildSrtSetti
 
   settings.filesystem.allowWrite.push(...resolveGitMetadataDirs(absDir));
 
-  if (options.agent === "codex") {
+  if (options.agent === AGENT_KIND.CODEX) {
     settings.network.allowedDomains.push("chatgpt.com", "*.chatgpt.com");
     // Codex initializes mutable state under ~/.codex before stable per-session
     // subpaths exist. This intentionally grants broad persistent Codex state
