@@ -31,6 +31,11 @@ import {
   terminalLoadTimingFields,
   type TerminalLoadMode,
 } from "../terminal-load-timing.js";
+import {
+  isTerminalPrefillMode,
+  TERMINAL_PREFILL_MODE,
+} from "../terminal-prefill.js";
+import type { TerminalPrefillMode } from "../terminal-prefill.js";
 
 const log = createLogger("ws");
 const PTY_BINARY_BYTES_PER_SEC = PTY_BINARY_FRAME_MAX_BYTES * 60;
@@ -83,8 +88,7 @@ interface PtyEntry {
   unsubscribeLifecycle?: (() => void) | null;
 }
 
-const VALID_PREFILL_MODES = ["full", "viewport", "none"] as const;
-type PrefillMode = typeof VALID_PREFILL_MODES[number];
+type PrefillMode = TerminalPrefillMode;
 
 /** Shared state for a single attach lifecycle. `requestedSize.current` is
  *  mutated by the outer ws message handler (resize/attach frames) and read
@@ -488,11 +492,12 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
           pendingAttachDims = { cols: msg.cols, rows: msg.rows, prefillMode: pm };
-          if (initialTiming) initialTiming.mode = terminalLoadModeFromPrefill(pm || "full");
+          const parsedPrefillMode = pm && isTerminalPrefillMode(pm) ? pm : TERMINAL_PREFILL_MODE.FULL;
+          if (initialTiming) initialTiming.mode = terminalLoadModeFromPrefill(parsedPrefillMode);
           initialTiming?.mark("attach.parsed", {
             cols: clampCols(msg.cols),
             rows: clampRows(msg.rows),
-            prefillMode: pm || "full",
+            prefillMode: parsedPrefillMode,
           });
           if (msg.takeControl) {
             cleanupPending();
@@ -779,12 +784,12 @@ async function sendSnapshotPrefill(
   appliedSize: { cols: number; rows: number },
   prefillMode: PrefillMode,
 ): Promise<bigint | undefined> {
-  if (prefillMode === "none") {
+  if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
     ctx.timing?.mark("prefill_send.start", { bytes: 0, prefillMode });
     ctx.timing?.mark("prefill_send.end", { bytes: 0, prefillMode });
     return undefined;
   }
-  const scrollbackLines = prefillMode === "viewport" ? VIEWPORT_PREFILL_SCROLLBACK_LINES : undefined;
+  const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? VIEWPORT_PREFILL_SCROLLBACK_LINES : undefined;
   ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
   const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines });
   ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
@@ -807,7 +812,7 @@ async function sendSnapshotPrefill(
       sendBuf = prefill.data;
     }
 
-    if (prefillMode === "viewport") {
+    if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
       if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return prefillSeq;
       ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });
       if (!safeViewerSend(ctx.entry, ctx.session, JSON.stringify({ type: "prefill_viewport" }))) return prefillSeq;
@@ -1021,7 +1026,7 @@ function setupNewPtyEntry(
     rows: number,
     options?: { prefillMode?: PrefillMode },
   ): Promise<void> {
-    const prefillMode = options?.prefillMode ?? "full";
+    const prefillMode = options?.prefillMode ?? TERMINAL_PREFILL_MODE.FULL;
     if (timing) timing.mode = terminalLoadModeFromPrefill(prefillMode);
     requestedSize.current = { cols, rows };
     if (entry.unsubscribe || spawning) return;
@@ -1056,7 +1061,7 @@ function setupNewPtyEntry(
 
       const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize, layoutStable, timing: timing || null };
 
-      if (prefillMode === "none") {
+      if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
         if (!subscribeWithCoalescing(ctx, undefined)) return;
         const latest = requestedSize.current ?? { cols, rows };
         timing?.mark("resize_apply.start", { cols: latest.cols, rows: latest.rows, prefillMode });
@@ -1073,7 +1078,7 @@ function setupNewPtyEntry(
       // final resize; applying attach dimensions immediately would produce a
       // second SIGWINCH when a same-turn cell fit arrives.
       let appliedSize: { cols: number; rows: number };
-      if (prefillMode === "viewport") {
+      if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
         const pending = await waitForResizeSettle(ctx, { cols, rows }, {
           initialWaitMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS,
           settleMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS,
@@ -1118,7 +1123,7 @@ function setupNewPtyEntry(
   // Backend-uniform spawn — both PTY and broker use attachStreamingBackend.
   const spawnPty = (cols: number, rows: number, options?: { prefillMode?: PrefillMode; skipPrefill?: boolean }): Promise<void> => {
     let prefillMode: PrefillMode | undefined = options?.prefillMode;
-    if (!prefillMode && options?.skipPrefill === true) prefillMode = "none";
+    if (!prefillMode && options?.skipPrefill === true) prefillMode = TERMINAL_PREFILL_MODE.NONE;
     return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
   };
 
@@ -1140,11 +1145,11 @@ function setupNewPtyEntry(
         ) {
           requestedSize.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
           const isAttached = !!entry.unsubscribe;
-          let prefillMode: PrefillMode = "full";
-          if (typeof msg.prefillMode === "string" && VALID_PREFILL_MODES.includes(msg.prefillMode)) {
-            prefillMode = msg.prefillMode as PrefillMode;
+          let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
+          if (typeof msg.prefillMode === "string" && isTerminalPrefillMode(msg.prefillMode)) {
+            prefillMode = msg.prefillMode;
           } else if (msg.skipPrefill === true) {
-            prefillMode = "none";
+            prefillMode = TERMINAL_PREFILL_MODE.NONE;
           }
           if (timing) {
             timing.mode = terminalLoadModeFromPrefill(prefillMode);
@@ -1163,7 +1168,7 @@ function setupNewPtyEntry(
             });
           } else {
             sendPtyReady(entry, session);
-            if (prefillMode !== "none") sendPrefillDone(entry, session);
+            if (prefillMode !== TERMINAL_PREFILL_MODE.NONE) sendPrefillDone(entry, session);
           }
         } else if (msg.type === "layout_stable" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           layoutStable.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
@@ -1230,9 +1235,9 @@ function setupNewPtyEntry(
   // If initial dims were captured (e.g. from a pending viewer's attach before
   // take_control), spawn PTY immediately — saves a full round trip.
   if (initialDims && typeof initialDims.cols === "number" && typeof initialDims.rows === "number") {
-    let prefillMode: PrefillMode = "full";
-    if (typeof initialDims.prefillMode === "string" && VALID_PREFILL_MODES.includes(initialDims.prefillMode as PrefillMode)) {
-      prefillMode = initialDims.prefillMode as PrefillMode;
+    let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
+    if (typeof initialDims.prefillMode === "string" && isTerminalPrefillMode(initialDims.prefillMode)) {
+      prefillMode = initialDims.prefillMode;
     }
     requestedSize.current = { cols: clampCols(initialDims.cols), rows: clampRows(initialDims.rows) };
     if (timing) {

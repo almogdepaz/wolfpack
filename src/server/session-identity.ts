@@ -6,14 +6,18 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  AGENT_KIND,
+  inferAgentKindFromCommand,
+} from "../agent-kind.js";
+import type { AgentKind } from "../agent-kind.js";
+export type { AgentKind } from "../agent-kind.js";
 import { DEV_DIR } from "./dev-dir.js";
 import { readValidatedJsonFile } from "./persistence.js";
 
 export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
 const EXTERNAL_ID_VISIBLE_PREFIX = 6;
 const EXTERNAL_ID_VISIBLE_SUFFIX = 4;
-
-export type AgentKind = "shell" | "claude" | "codex" | "pi" | "gemini" | "cursor" | "unknown";
 
 export interface ExternalAgentIdentity {
   provider: AgentKind | string;
@@ -86,15 +90,7 @@ export function sessionIdentityStorePath(devDir?: string): string {
 }
 
 export function inferAgentKind(cmd: string | undefined): AgentKind | string {
-  const value = (cmd || "shell").trim();
-  if (!value || value === "shell") return "shell";
-  const first = value.split(/\s+/)[0]?.split("/").pop()?.toLowerCase() || value.toLowerCase();
-  if (first === "claude") return "claude";
-  if (first === "codex") return "codex";
-  if (first === "pi") return "pi";
-  if (first === "gemini") return "gemini";
-  if (first === "cursor") return "cursor";
-  return first || "unknown";
+  return inferAgentKindFromCommand(cmd);
 }
 
 export function identityEnvVars(input: {
@@ -193,7 +189,7 @@ export class SessionIdentityStore {
       wolfpackSessionId: input.wolfpackSessionId,
       wolfpackSessionName: input.wolfpackSessionName,
       projectPath: input.projectPath,
-      agentKind: input.agentKind || existing?.agentKind || "unknown",
+      agentKind: input.agentKind || existing?.agentKind || AGENT_KIND.UNKNOWN,
       createdAt: existing?.createdAt ?? now,
       restoredAt: existing ? now : undefined,
       updatedAt: now,
@@ -223,7 +219,7 @@ export class SessionIdentityStore {
       const candidateExternalAgent = normalizeExternalAgent(
         {
           ...session,
-          agentKind: session.agentKind ?? existing?.agentKind ?? "unknown",
+          agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN,
           externalAgent: session.externalAgent,
         },
         existing,
@@ -234,7 +230,7 @@ export class SessionIdentityStore {
         wolfpackSessionId: session.wolfpackSessionId,
         wolfpackSessionName: session.wolfpackSessionName,
         projectPath: session.projectPath,
-        agentKind: session.agentKind ?? existing?.agentKind ?? "unknown",
+        agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN,
         createdAt: existing?.createdAt ?? restoredAt,
         restoredAt: existing?.restoredAt ?? restoredAt,
         updatedAt: existing?.updatedAt ?? restoredAt,

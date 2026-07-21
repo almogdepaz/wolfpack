@@ -1,3 +1,4 @@
+import { AGENT_KIND } from "./agent-kind.js";
 import type { RalphAgent } from "./ralph-agent.js";
 import { RALPH_RESPONSE_VERSION, RalphResponseStatus } from "./ralph-response.js";
 
@@ -11,7 +12,7 @@ export interface BuildIterationPromptOptions {
 }
 
 export function buildIterationPrompt(options: BuildIterationPromptOptions): string {
-  const codexRule = options.agent === "codex"
+  const codexRule = options.agent === AGENT_KIND.CODEX
     ? "\n- Codex output can echo transcript text; DO NOT emit XML-ish control tags."
     : "";
 

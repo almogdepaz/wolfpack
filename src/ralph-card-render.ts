@@ -1,3 +1,13 @@
+import {
+  AGENT_STATUS_FRESHNESS,
+  AGENT_STATUS_STATE,
+  agentStatusLabel,
+  isAgentStatusState,
+} from "./agent-status-contract.js";
+import type { AgentStatusState } from "./agent-status-contract.js";
+
+const RALPH_CARD_LIMIT_STATUS = "limit";
+
 export interface RalphLoop {
   readonly project: string;
   readonly active: boolean;
@@ -53,24 +63,28 @@ function escAttr(value: string): string {
 export function getRalphStatus(loop: RalphLoop): RalphStatusResult {
   const sourceState = loop.statusSource?.state;
   const hitLimit = !loop.active && !loop.completed && !!loop.finished;
-  const status = sourceState === "audit" || sourceState === "cleanup" || sourceState === "running" ||
-    sourceState === "done" || sourceState === "stopped" || sourceState === "idle" || sourceState === "unknown"
+  const status: AgentStatusState = sourceState && isAgentStatusState(sourceState)
     ? sourceState
-    : loop.audit ? "audit" : loop.cleanup ? "cleanup" : loop.active ? "running" : loop.completed ? "done" : hitLimit ? "stopped" : "idle";
+    : loop.audit ? AGENT_STATUS_STATE.AUDIT
+      : loop.cleanup ? AGENT_STATUS_STATE.CLEANUP
+        : loop.active ? AGENT_STATUS_STATE.RUNNING
+          : loop.completed ? AGENT_STATUS_STATE.DONE
+            : hitLimit ? AGENT_STATUS_STATE.STOPPED
+              : AGENT_STATUS_STATE.IDLE;
   return {
     hitLimit,
-    status: status === "stopped" ? "limit" : status,
-    statusLabel: status === "audit" ? "AUDIT" : status === "cleanup" ? "CLEANUP" : status === "running" ? "RUNNING" : status === "done" ? "DONE" : status === "stopped" ? "STOPPED" : status === "unknown" ? "UNKNOWN" : "IDLE",
+    status: status === AGENT_STATUS_STATE.STOPPED ? RALPH_CARD_LIMIT_STATUS : status,
+    statusLabel: agentStatusLabel(status),
     dotClass: loop.active ? "purple" : "gray",
-    dotTitle: loop.active ? "active" : "idle",
+    dotTitle: loop.active ? "active" : AGENT_STATUS_STATE.IDLE,
   };
 }
 
 export function renderStatusSource(loop: RalphLoop): string {
   const source = loop.statusSource;
   if (!source) return '<span class="ralph-authority unknown">authority unknown</span>';
-  const cls = source.authority + (source.stale || source.freshness !== "fresh" ? " stale" : "");
-  const stale = source.stale || source.freshness !== "fresh" ? " · " + source.freshness : "";
+  const cls = source.authority + (source.stale || source.freshness !== AGENT_STATUS_FRESHNESS.FRESH ? " stale" : "");
+  const stale = source.stale || source.freshness !== AGENT_STATUS_FRESHNESS.FRESH ? " · " + source.freshness : "";
   const title = source.message ? ' title="' + escAttr(source.message) + '"' : "";
   return '<span class="ralph-authority ' + escAttr(cls) + '"' + title + '>' +
     esc(source.authority + " · " + source.label + stale) +

@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { AGENT_KIND } from "./agent-kind.js";
 import { basename, dirname, join } from "node:path";
 
 export const AGENT_UI_MANIFEST_SCHEMA_VERSION = 1;
@@ -118,7 +119,7 @@ const ALLOWED_CONTENT_TYPES = new Set([
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}(?:\.\d{3})?z$/i;
 const SAFE_ID_RE = /^[a-z0-9._-]{1,80}$/;
 const SAFE_VERSION_RE = /^[a-z0-9._:+-]{1,80}$/i;
-const FORBIDDEN_KEYS = new Set(["code", "command", "commands", "eval", "exec", "script", "shell"]);
+const FORBIDDEN_KEYS = new Set(["code", "command", "commands", "eval", "exec", "script", AGENT_KIND.SHELL]);
 
 export function bundledAgentUiDetectionManifest(): LoadedAgentUiDetectionManifest {
   return {
