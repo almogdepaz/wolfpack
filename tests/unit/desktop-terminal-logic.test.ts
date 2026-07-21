@@ -10,6 +10,7 @@ import {
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
   shouldReleaseScrollLockOnKeydown,
+  textToSendForMobileAutocompleteCommit,
 } from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
@@ -171,6 +172,31 @@ describe("message textarea: Enter behavior", () => {
       enterSends: true,
       isDesktop: true,
     })).toBe(false);
+  });
+});
+
+// ── Mobile keyboard proxy autocomplete behavior ──
+
+describe("mobile keyboard proxy: autocomplete commits", () => {
+  test("sends only the unsent suffix when autocomplete commits a word with an already-sent prefix", () => {
+    expect(textToSendForMobileAutocompleteCommit({
+      alreadySentTail: "comp",
+      committedText: "complicated",
+    })).toBe("licated");
+  });
+
+  test("uses the longest sent suffix as the autocomplete prefix", () => {
+    expect(textToSendForMobileAutocompleteCommit({
+      alreadySentTail: "echo comp",
+      committedText: "complicated",
+    })).toBe("licated");
+  });
+
+  test("sends the full committed text when it does not overlap recently sent input", () => {
+    expect(textToSendForMobileAutocompleteCommit({
+      alreadySentTail: "ls ",
+      committedText: "complicated",
+    })).toBe("complicated");
   });
 });
 

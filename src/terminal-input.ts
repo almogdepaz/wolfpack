@@ -74,3 +74,28 @@ export interface KeyboardAccessoryKeyEvent {
 export function shouldInsertMessageNewlineFromAccessoryKey(event: KeyboardAccessoryKeyEvent): boolean {
   return event.key === "Enter" && (event.isMessageInputActive || !!event.hasMessageInputDraft);
 }
+
+export interface MobileAutocompleteCommit {
+  readonly alreadySentTail: string;
+  readonly committedText: string;
+}
+
+export function textToSendForMobileAutocompleteCommit(event: MobileAutocompleteCommit): string {
+  if (!event.committedText) return "";
+  const maxOverlap = Math.min(event.alreadySentTail.length, event.committedText.length);
+  for (let length = maxOverlap; length > 0; length -= 1) {
+    if (event.alreadySentTail.endsWith(event.committedText.slice(0, length))) {
+      return event.committedText.slice(length);
+    }
+  }
+  return event.committedText;
+}
+
+export function updateMobileSentTail(
+  alreadySentTail: string,
+  sentText: string,
+  maxChars: number = 64,
+): string {
+  if (!sentText) return alreadySentTail;
+  return (alreadySentTail + sentText).slice(-maxChars);
+}

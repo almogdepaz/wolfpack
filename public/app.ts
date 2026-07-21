@@ -4426,6 +4426,32 @@ function insertMessageInputNewline(): void {
   if (!proxy) return;
   let _composing = false;
   let _skipNextInput = false;
+  let _sentTail = "";
+
+  function rememberSentText(text: string): void {
+    _sentTail = WP.updateMobileSentTail(_sentTail, text);
+  }
+
+  function sendRememberedProxyText(text: string): boolean {
+    const sent = text || proxy.value;
+    const ok = sendMobileProxyText(proxy, text);
+    if (ok) rememberSentText(sent);
+    return ok;
+  }
+
+  function sendMobileAutocompleteCommitText(committedText: string): boolean {
+    const text = WP.textToSendForMobileAutocompleteCommit({
+      alreadySentTail: _sentTail,
+      committedText,
+    });
+    if (!text) {
+      proxy.value = "";
+      return true;
+    }
+    const ok = sendMobileProxyText(proxy, text);
+    if (ok) rememberSentText(text);
+    return ok;
+  }
 
   // Send every character immediately — don't wait for composition to finish.
   // The proxy is invisible so we don't need composed text; the terminal wants
@@ -4435,7 +4461,7 @@ function insertMessageInputNewline(): void {
   proxy.addEventListener("compositionend", () => {
     _composing = false;
     if (proxy.value) {
-      _skipNextInput = sendMobileProxyText(proxy, proxy.value);
+      _skipNextInput = sendMobileAutocompleteCommitText(proxy.value);
     }
   });
 
@@ -4449,22 +4475,33 @@ function insertMessageInputNewline(): void {
     // Skip insertLineBreak/insertParagraph — keydown handler already sent \r
     if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") return;
     // During composition: send the newest char immediately (last char in value).
-    // Autocomplete/predictive text buffers chars in the proxy — we drain them
-    // one by one so the terminal sees each keystroke without waiting for word selection.
+    // Autocomplete/predictive text may later commit the full word, so track
+    // what already went to the terminal and trim that prefix from the commit.
     if (_composing && proxy.value) {
       const last = proxy.value.slice(-1);
-      // Clear everything except what the IME is still composing over
-      sendMobileProxyText(proxy, last);
+      sendRememberedProxyText(last);
       return;
     }
-    sendMobileProxyText(proxy, proxy.value || e.data || "");
+    const pending = proxy.value || e.data || "";
+    if (e.inputType === "insertReplacementText" || e.inputType === "insertFromComposition" || (e.inputType === "insertText" && pending.length > 1)) {
+      sendMobileAutocompleteCommitText(pending);
+      return;
+    }
+    sendRememberedProxyText(pending);
   });
 
   proxy.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
-      if (_sendTerminalInput(_textEncoder.encode("\r"))) e.preventDefault();
+      if (_sendTerminalInput(_textEncoder.encode("\r"))) {
+        _sentTail = "";
+        e.preventDefault();
+      }
     } else if (e.key === "Backspace") {
-      if (_sendTerminalInput(_textEncoder.encode("\x7f")) || !proxy.value) e.preventDefault();
+      const sentBackspace = _sendTerminalInput(_textEncoder.encode("\x7f"));
+      if (sentBackspace) _sentTail = _sentTail.slice(0, -1);
+      if (sentBackspace || !proxy.value) {
+        e.preventDefault();
+      }
     } else if (e.key === "Escape") {
       if (_sendTerminalInput(_textEncoder.encode("\x1b"))) e.preventDefault();
     }
