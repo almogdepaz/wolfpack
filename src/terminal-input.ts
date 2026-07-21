@@ -78,10 +78,17 @@ export function shouldInsertMessageNewlineFromAccessoryKey(event: KeyboardAccess
 export interface MobileAutocompleteCommit {
   readonly alreadySentTail: string;
   readonly committedText: string;
+  readonly requirePrefixExtension?: boolean;
 }
 
 export function textToSendForMobileAutocompleteCommit(event: MobileAutocompleteCommit): string {
   if (!event.committedText) return "";
+  if (event.requirePrefixExtension) {
+    const tokenStart = event.alreadySentTail.search(/\S+$/);
+    const sentToken = tokenStart === -1 ? "" : event.alreadySentTail.slice(tokenStart);
+    if (!sentToken) return event.committedText;
+    return event.committedText.startsWith(sentToken) ? event.committedText.slice(sentToken.length) : "";
+  }
   const maxOverlap = Math.min(event.alreadySentTail.length, event.committedText.length);
   for (let length = maxOverlap; length > 0; length -= 1) {
     if (event.alreadySentTail.endsWith(event.committedText.slice(0, length))) {
@@ -97,5 +104,11 @@ export function updateMobileSentTail(
   maxChars: number = 64,
 ): string {
   if (!sentText) return alreadySentTail;
-  return (alreadySentTail + sentText).slice(-maxChars);
+  if (sentText.includes("\r") || sentText.includes("\n") || sentText.includes("\x1b")) return "";
+  const backspaces = sentText.match(/\x7f/g)?.length ?? 0;
+  const tail = backspaces > 0 ? alreadySentTail.slice(0, Math.max(0, alreadySentTail.length - backspaces)) : alreadySentTail;
+  const printableText = sentText.replace(/\x7f/g, "");
+  const nextTail = (tail + printableText).slice(-maxChars);
+  const tokenStart = nextTail.search(/\S+$/);
+  return tokenStart === -1 ? "" : nextTail.slice(tokenStart);
 }

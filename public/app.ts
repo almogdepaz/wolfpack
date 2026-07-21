@@ -3803,10 +3803,19 @@ function updatePreview() {
   }
 }
 
+let _mobileKbProxySentTail = "";
+
+function rememberMobileTerminalText(text: string): void {
+  _mobileKbProxySentTail = WP.updateMobileSentTail(_mobileKbProxySentTail, text);
+}
+
 function sendTerminalText(text: string): void {
   if (!state.currentSession) return;
   wpMetrics.sendCount++;
-  if (_sendTerminalInput(_textEncoder.encode(text))) return;
+  if (_sendTerminalInput(_textEncoder.encode(text))) {
+    rememberMobileTerminalText(text);
+    return;
+  }
   wpMetrics.sendFailCount++;
 }
 
@@ -4426,10 +4435,9 @@ function insertMessageInputNewline(): void {
   if (!proxy) return;
   let _composing = false;
   let _skipNextInput = false;
-  let _sentTail = "";
 
   function rememberSentText(text: string): void {
-    _sentTail = WP.updateMobileSentTail(_sentTail, text);
+    rememberMobileTerminalText(text);
   }
 
   function sendRememberedProxyText(text: string): boolean {
@@ -4441,8 +4449,9 @@ function insertMessageInputNewline(): void {
 
   function sendMobileAutocompleteCommitText(committedText: string): boolean {
     const text = WP.textToSendForMobileAutocompleteCommit({
-      alreadySentTail: _sentTail,
+      alreadySentTail: _mobileKbProxySentTail,
       committedText,
+      requirePrefixExtension: true,
     });
     if (!text) {
       proxy.value = "";
@@ -4493,12 +4502,12 @@ function insertMessageInputNewline(): void {
   proxy.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       if (_sendTerminalInput(_textEncoder.encode("\r"))) {
-        _sentTail = "";
+        rememberSentText("\r");
         e.preventDefault();
       }
     } else if (e.key === "Backspace") {
       const sentBackspace = _sendTerminalInput(_textEncoder.encode("\x7f"));
-      if (sentBackspace) _sentTail = _sentTail.slice(0, -1);
+      if (sentBackspace) rememberSentText("\x7f");
       if (sentBackspace || !proxy.value) {
         e.preventDefault();
       }

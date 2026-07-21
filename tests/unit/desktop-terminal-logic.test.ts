@@ -11,6 +11,7 @@ import {
   shouldSubmitMessageInputOnEnter,
   shouldReleaseScrollLockOnKeydown,
   textToSendForMobileAutocompleteCommit,
+  updateMobileSentTail,
 } from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
@@ -197,6 +198,33 @@ describe("mobile keyboard proxy: autocomplete commits", () => {
       alreadySentTail: "ls ",
       committedText: "complicated",
     })).toBe("complicated");
+  });
+
+  test("does not replay replacement commits that are not prefix extensions", () => {
+    expect(textToSendForMobileAutocompleteCommit({
+      alreadySentTail: "dont",
+      committedText: "don't",
+      requirePrefixExtension: true,
+    })).toBe("");
+    expect(textToSendForMobileAutocompleteCommit({
+      alreadySentTail: "ka",
+      committedText: "か",
+      requirePrefixExtension: true,
+    })).toBe("");
+    expect(textToSendForMobileAutocompleteCommit({
+      alreadySentTail: "abcd",
+      committedText: "bcde",
+      requirePrefixExtension: true,
+    })).toBe("");
+  });
+
+  test("updates sent tail for terminal control input", () => {
+    expect(updateMobileSentTail("comp", "\n")).toBe("");
+    expect(updateMobileSentTail("comp", "\r")).toBe("");
+    expect(updateMobileSentTail("comp", "\x1b[A")).toBe("");
+    expect(updateMobileSentTail("comp", "\x7f")).toBe("com");
+    expect(updateMobileSentTail("ls", " ")).toBe("");
+    expect(updateMobileSentTail("echo", " comp")).toBe("comp");
   });
 });
 

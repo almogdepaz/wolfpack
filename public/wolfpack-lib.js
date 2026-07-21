@@ -95,6 +95,13 @@ function shouldInsertMessageNewlineFromAccessoryKey(event) {
 function textToSendForMobileAutocompleteCommit(event) {
   if (!event.committedText)
     return "";
+  if (event.requirePrefixExtension) {
+    const tokenStart = event.alreadySentTail.search(/\S+$/);
+    const sentToken = tokenStart === -1 ? "" : event.alreadySentTail.slice(tokenStart);
+    if (!sentToken)
+      return event.committedText;
+    return event.committedText.startsWith(sentToken) ? event.committedText.slice(sentToken.length) : "";
+  }
   const maxOverlap = Math.min(event.alreadySentTail.length, event.committedText.length);
   for (let length = maxOverlap;length > 0; length -= 1) {
     if (event.alreadySentTail.endsWith(event.committedText.slice(0, length))) {
@@ -106,7 +113,15 @@ function textToSendForMobileAutocompleteCommit(event) {
 function updateMobileSentTail(alreadySentTail, sentText, maxChars = 64) {
   if (!sentText)
     return alreadySentTail;
-  return (alreadySentTail + sentText).slice(-maxChars);
+  if (sentText.includes("\r") || sentText.includes(`
+`) || sentText.includes("\x1B"))
+    return "";
+  const backspaces = sentText.match(/\x7f/g)?.length ?? 0;
+  const tail = backspaces > 0 ? alreadySentTail.slice(0, Math.max(0, alreadySentTail.length - backspaces)) : alreadySentTail;
+  const printableText = sentText.replace(/\x7f/g, "");
+  const nextTail = (tail + printableText).slice(-maxChars);
+  const tokenStart = nextTail.search(/\S+$/);
+  return tokenStart === -1 ? "" : nextTail.slice(tokenStart);
 }
 // src/reconnect-hydration.ts
 function shouldRehydrate(wasReconnect, hydrationStarted, hasAuthoritativePrefill) {
