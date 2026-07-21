@@ -23,6 +23,11 @@ if [ "$DEPLOY_BROKER" = "1" ] && [ -n "${WOLFPACK_SESSION_NAME:-}" ]; then
   exit 1
 fi
 
+if [ "$DEPLOY_BROKER" = "1" ] && [ "${WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE:-0}" != "1" ] && [ ! -t 0 ]; then
+  echo "ERROR: --broker=yes must be run from an interactive external terminal; set WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE=1 only for a known one-shot supervisor" >&2
+  exit 1
+fi
+
 cd "$(dirname "$0")/.."
 VERIFY_TIMEOUT_SECS="${DEPLOY_VERIFY_TIMEOUT_SECS:-20}"
 DOMAIN="gui/$(id -u)"
@@ -38,6 +43,10 @@ SESSION_BEFORE=""
 SESSION_AFTER=""
 HELP_OUTPUT=""
 HELP_ERROR=""
+DEPLOY_LOCK_DIR="$HOME/.wolfpack/deploy.lock"
+DEPLOY_LOCK_HELD=0
+DEPLOY_MUTATION_STARTED=0
+DEPLOY_SUCCEEDED=0
 
 cleanup() {
   [ -z "$ACTIVE_STAGE" ] || rm -f "$ACTIVE_STAGE"
@@ -45,8 +54,36 @@ cleanup() {
   [ -z "$SESSION_AFTER" ] || rm -f "$SESSION_AFTER"
   [ -z "$HELP_OUTPUT" ] || rm -f "$HELP_OUTPUT"
   [ -z "$HELP_ERROR" ] || rm -f "$HELP_ERROR"
+  if [ "$DEPLOY_LOCK_HELD" = "1" ]; then
+    if [ "$DEPLOY_SUCCEEDED" = "1" ] || [ "$DEPLOY_MUTATION_STARTED" = "0" ]; then
+      rm -rf "$DEPLOY_LOCK_DIR"
+    else
+      date -u '+%Y-%m-%dT%H:%M:%SZ' > "$DEPLOY_LOCK_DIR/failed_at" 2>/dev/null || true
+    fi
+  fi
 }
 trap cleanup EXIT
+
+acquire_deploy_lock() {
+  mkdir -p "$HOME/.wolfpack"
+  if mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; then
+    DEPLOY_LOCK_HELD=1
+    printf '%s\n' "$$" > "$DEPLOY_LOCK_DIR/pid"
+    date -u '+%Y-%m-%dT%H:%M:%SZ' > "$DEPLOY_LOCK_DIR/started_at"
+    return 0
+  fi
+
+  local holder=""
+  holder="$(cat "$DEPLOY_LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ -n "$holder" ]; then
+    echo "ERROR: another Wolfpack deploy is already running (pid $holder); remove $DEPLOY_LOCK_DIR only after verifying no deploy is active" >&2
+  else
+    echo "ERROR: another Wolfpack deploy is already running; remove $DEPLOY_LOCK_DIR only after verifying no deploy is active" >&2
+  fi
+  exit 1
+}
+
+acquire_deploy_lock
 
 service_pid() {
   launchctl list | awk -v label="$1" '$3 == label && $1 ~ /^[0-9]+$/ { print $1; exit }'
@@ -231,6 +268,7 @@ fi
 
 SERVER_HASH=""
 BROKER_HASH=""
+DEPLOY_MUTATION_STARTED=1
 install_signed "$SERVER_SOURCE" "$SERVER_INSTALL" SERVER_HASH
 
 NEW_BROKER_PID="$OLD_BROKER_PID"
@@ -280,6 +318,7 @@ if [ "$DEPLOY_BROKER" = "0" ]; then
   PRESERVED_SESSIONS="$(jq '.sessions | length' "$SESSION_BEFORE")"
 fi
 
+DEPLOY_SUCCEEDED=1
 jq -cn \
   --arg mode "$([ "$DEPLOY_BROKER" = "1" ] && echo yes || echo no)" \
   --argjson brokerDeployed "$([ "$DEPLOY_BROKER" = "1" ] && echo true || echo false)" \

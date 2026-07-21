@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, type ExecFileSyncOptions, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -134,6 +134,7 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "0",
     DEPLOY_TEST_CORRUPT_INSTALL: "0",
     DEPLOY_VERIFY_TIMEOUT_SECS: "1",
+    WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE: "1",
     WOLFPACK_SESSION_NAME: "",
     WOLFPACK_AGENT_KIND: "",
     ...env,
@@ -191,6 +192,23 @@ describe("scripts/deploy-local.sh", () => {
       WOLFPACK_SESSION_NAME: "dev08-qa",
       WOLFPACK_AGENT_KIND: "pi",
     })).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("rejects noninteractive broker replacement without explicit override before mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "yes", {
+      WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE: "0",
+    })).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("rejects concurrent deploys before mutation", () => {
+    const fixture = prepareFixture();
+    mkdirSync(join(fixture.home, ".wolfpack", "deploy.lock"));
+
+    expect(() => runDeploy(fixture, "no")).toThrow();
     expect(readFileSync(fixture.log, "utf-8")).toBe("");
   });
 
@@ -293,6 +311,18 @@ describe("scripts/deploy-local.sh", () => {
     const commands = readFileSync(fixture.log, "utf-8");
     expect(commands).toContain("launchctl kickstart -k");
     expect(commands).toContain("launchctl list");
+  });
+
+  test("keeps the deploy lock after a failed mutating broker deployment", () => {
+    const fixture = prepareFixture();
+    const lockPath = join(fixture.home, ".wolfpack", "deploy.lock");
+
+    expect(() => runDeploy(fixture, "yes", { DEPLOY_TEST_SERVER_PID_STAYS: "1" })).toThrow();
+    expect(existsSync(lockPath)).toBe(true);
+
+    writeFileSync(fixture.log, "");
+    expect(() => runDeploy(fixture, "yes")).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
   });
 
   test("fails when restarted server still serves stale app bundle", () => {
