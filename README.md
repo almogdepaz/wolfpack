@@ -12,10 +12,22 @@ Sessions live in a Rust PTY broker, not the web server, so server restarts and r
 There is no Wolfpack-hosted relay or account; remote access is normally handled by [Tailscale](https://tailscale.com/).
 
 <p align="center">
-  <img src="docs/desktop-grid.png" width="700" alt="Desktop — multi-terminal grid view" />
+  <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack usage demo showing a parent agent session and subagents" />
 </p>
 <p align="center">
-  <img src="docs/mobile-sessions.png" width="250" alt="Mobile — session list across machines" />
+  <a href="docs/assets/wolfpack-usage-demo.mp4">Watch/download the MP4 demo</a>
+</p>
+<p align="center">
+  <img src="docs/assets/wolfpack-desktop-dashboard.png" width="700" alt="Desktop — session dashboard" />
+</p>
+<p align="center">
+  <img src="docs/assets/wolfpack-desktop-terminal.png" width="700" alt="Desktop — broker-backed terminal session" />
+</p>
+<p align="center">
+  <img src="docs/assets/wolfpack-mobile-sessions.png" width="250" alt="Mobile — session list" />
+</p>
+<p align="center">
+  <img src="docs/assets/wolfpack-settings.png" width="700" alt="Desktop — settings and agent command configuration" />
 </p>
 
 ## Quickstart
