@@ -146,7 +146,7 @@ test("opening the mobile keyboard returns the terminal to latest output", async 
   expect(scrolledState.viewportY).toBeGreaterThan(0);
 
   await page.locator("#kb-open-btn").click();
-  await expect(page.locator("#mobile-kb-proxy")).toBeFocused();
+  await expect(page.locator("#desktop-terminal-container textarea")).toBeFocused();
   await expect.poll(() => page.evaluate(() => {
     const terminal = (window as unknown as {
       state: { terminalController?: { term?: { readonly viewportY: number } } };

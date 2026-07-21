@@ -731,14 +731,18 @@ function scheduleGridRelayoutFit(sessions = state.gridSessions, hideUntilRepaint
     }
     if (_gridRelayoutHiddenSessions.size === 0) return;
     _gridRelayoutRevealRaf = requestAnimationFrame(() => {
-      _gridRelayoutRevealRaf = null;
       for (const gs of _gridRelayoutHiddenSessions) {
         if (state.gridSessions.includes(gs) && gs.controller) {
           try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
         }
-        gs._cellElement?.classList.remove("transitioning");
       }
-      _gridRelayoutHiddenSessions.clear();
+      _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+        _gridRelayoutRevealRaf = null;
+        for (const gs of _gridRelayoutHiddenSessions) {
+          gs._cellElement?.classList.remove("transitioning");
+        }
+        _gridRelayoutHiddenSessions.clear();
+      });
     });
   });
 }

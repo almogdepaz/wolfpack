@@ -10,8 +10,6 @@ import {
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
   shouldReleaseScrollLockOnKeydown,
-  textToSendForMobileAutocompleteCommit,
-  updateMobileSentTail,
 } from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
@@ -173,58 +171,6 @@ describe("message textarea: Enter behavior", () => {
       enterSends: true,
       isDesktop: true,
     })).toBe(false);
-  });
-});
-
-// ── Mobile keyboard proxy autocomplete behavior ──
-
-describe("mobile keyboard proxy: autocomplete commits", () => {
-  test("sends only the unsent suffix when autocomplete commits a word with an already-sent prefix", () => {
-    expect(textToSendForMobileAutocompleteCommit({
-      alreadySentTail: "comp",
-      committedText: "complicated",
-    })).toBe("licated");
-  });
-
-  test("uses the longest sent suffix as the autocomplete prefix", () => {
-    expect(textToSendForMobileAutocompleteCommit({
-      alreadySentTail: "echo comp",
-      committedText: "complicated",
-    })).toBe("licated");
-  });
-
-  test("sends the full committed text when it does not overlap recently sent input", () => {
-    expect(textToSendForMobileAutocompleteCommit({
-      alreadySentTail: "ls ",
-      committedText: "complicated",
-    })).toBe("complicated");
-  });
-
-  test("does not replay replacement commits that are not prefix extensions", () => {
-    expect(textToSendForMobileAutocompleteCommit({
-      alreadySentTail: "dont",
-      committedText: "don't",
-      requirePrefixExtension: true,
-    })).toBe("");
-    expect(textToSendForMobileAutocompleteCommit({
-      alreadySentTail: "ka",
-      committedText: "か",
-      requirePrefixExtension: true,
-    })).toBe("");
-    expect(textToSendForMobileAutocompleteCommit({
-      alreadySentTail: "abcd",
-      committedText: "bcde",
-      requirePrefixExtension: true,
-    })).toBe("");
-  });
-
-  test("updates sent tail for terminal control input", () => {
-    expect(updateMobileSentTail("comp", "\n")).toBe("");
-    expect(updateMobileSentTail("comp", "\r")).toBe("");
-    expect(updateMobileSentTail("comp", "\x1b[A")).toBe("");
-    expect(updateMobileSentTail("comp", "\x7f")).toBe("com");
-    expect(updateMobileSentTail("ls", " ")).toBe("");
-    expect(updateMobileSentTail("echo", " comp")).toBe("comp");
   });
 });
 

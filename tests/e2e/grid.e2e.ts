@@ -281,6 +281,47 @@ test("grid topology add hides existing canvases until relayout repaint completes
   }), { timeout: 5000 }).toBe(true);
 });
 
+test("grid topology add waits one frame after relayout repaint before revealing existing cells", async ({ page }) => {
+  await loadApp(page);
+
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+  });
+
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.length === 2 && state.gridSessions.every((gs) =>
+      gs.controller?.isConnected &&
+      !gs.controller?.hydration?.pending &&
+      gs._cellElement?.classList.contains("hydrated")
+    );
+  }), { timeout: 5000 }).toBe(true);
+
+  const states = await page.evaluate(async () => {
+    // @ts-ignore
+    const existing = state.gridSessions.map((gs) => gs._cellElement as HTMLElement);
+    // @ts-ignore
+    addToGrid("third-project", "");
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await nextFrame();
+    await nextFrame();
+    const afterRepaintRequestFrame = existing.map((cell: HTMLElement) => cell.classList.contains("transitioning"));
+    await nextFrame();
+    const afterRevealFrame = existing.map((cell: HTMLElement) => cell.classList.contains("transitioning"));
+    return { afterRepaintRequestFrame, afterRevealFrame };
+  });
+
+  expect(states.afterRepaintRequestFrame).toEqual([true, true]);
+  expect(states.afterRevealFrame).toEqual([false, false]);
+});
+
 test("addToGrid hides single terminal container before grid cells mount", async ({ page }) => {
   await loadApp(page);
 

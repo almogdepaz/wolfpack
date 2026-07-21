@@ -39,7 +39,234 @@ test("open session drawer from terminal view", async ({ page }, testInfo) => {
   await expect(drawer).toHaveClass(/open/);
 });
 
-test("mobile touch scrolling works immediately after switching sessions", async ({ page }, testInfo) => {
+test("mobile keyboard viewport shift does not take over terminal view transform", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only keyboard viewport path");
+
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { readonly type?: string; readonly prefillMode?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("keyboard-test\r\n"));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    const listeners: Array<() => void> = [];
+    const fakeVisualViewport = {
+      height: 844,
+      addEventListener: (_type: string, listener: () => void) => listeners.push(listener),
+      removeEventListener: (_type: string, listener: () => void) => {
+        const index = listeners.indexOf(listener);
+        if (index >= 0) listeners.splice(index, 1);
+      },
+    };
+    Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
+    Object.defineProperty(window, "visualViewport", { value: fakeVisualViewport, configurable: true });
+    (window as unknown as { __setFakeKeyboardHeight: (height: number) => void }).__setFakeKeyboardHeight = (height: number): void => {
+      fakeVisualViewport.height = 844 - height;
+      for (const listener of listeners) listener();
+    };
+  });
+
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  const state = await page.evaluate(() => {
+    const terminalView = document.getElementById("terminal-view")!;
+    const terminalViewBefore = terminalView.style.transform;
+    (window as unknown as { __setFakeKeyboardHeight: (height: number) => void }).__setFakeKeyboardHeight(320);
+    const terminalContainer = document.getElementById("desktop-terminal-container")!;
+    const accessory = document.getElementById("kb-accessory")!;
+    const appState = (window as unknown as {
+      state: { kbAccessoryOpen: boolean; terminalController?: { term?: { options: { disableStdin: boolean } } } };
+    }).state;
+    return {
+      terminalViewBefore,
+      terminalViewInlineTransform: terminalView.style.transform,
+      terminalContainerInlineTransform: terminalContainer.style.transform,
+      accessoryDisplay: getComputedStyle(accessory).display,
+      accessoryInlineTransform: accessory.style.transform,
+      keyboardStateOpen: appState.kbAccessoryOpen,
+      stdinDisabled: appState.terminalController?.term?.options.disableStdin,
+    };
+  });
+
+  expect(state.terminalViewInlineTransform).toBe(state.terminalViewBefore);
+  expect(state.terminalContainerInlineTransform).toBe("translateY(-320px)");
+  expect(state.accessoryDisplay).toBe("flex");
+  expect(state.accessoryInlineTransform).toBe("translateY(-320px)");
+  expect(state.keyboardStateOpen).toBe(false);
+  expect(state.stdinDisabled).toBe(true);
+});
+
+test("mobile terminal mount does not horizontally scroll the view container", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only terminal mount path");
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  await expect.poll(() => page.evaluate(() => ({
+    viewScrollLeft: document.getElementById("view-container")?.scrollLeft ?? -1,
+    terminalLeft: Math.round(document.getElementById("terminal-view")?.getBoundingClientRect().left ?? -1),
+  }))).toEqual({ viewScrollLeft: 0, terminalLeft: 0 });
+});
+
+test("mobile keyboard uses ghostty native input with explicit open and close", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only ghostty keyboard path");
+
+  const sentFrames: string[] = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") {
+        sentFrames.push(Buffer.from(message).toString("utf8"));
+        return;
+      }
+      let parsed: { readonly type?: string; readonly prefillMode?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    openSession("test-project", "");
+  });
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+
+  await expect(page.locator("#mobile-kb-proxy")).toHaveCount(0);
+  const nativeInput = page.locator("#desktop-terminal-container textarea");
+  await expect(nativeInput).toHaveCount(1);
+  await expect(nativeInput).toHaveAttribute("readonly", "");
+  await expect(nativeInput).toHaveAttribute("inputmode", "none");
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.terminalController?.term?.options.disableStdin;
+  })).toBe(true);
+
+  await page.locator("#kb-open-btn").click();
+  await expect(nativeInput).not.toHaveAttribute("readonly", "");
+  await expect(nativeInput).toHaveAttribute("inputmode", "text");
+  await expect.poll(() => page.evaluate(() => document.activeElement === document.querySelector("#desktop-terminal-container textarea"))).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.terminalController?.term?.options.disableStdin;
+  })).toBe(false);
+
+  await nativeInput.evaluate((textarea) => {
+    textarea.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: "a",
+      inputType: "insertText",
+    }));
+  });
+  await expect.poll(() => sentFrames).toEqual(["a"]);
+  sentFrames.length = 0;
+
+  await nativeInput.evaluate((textarea) => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "b",
+      code: "KeyB",
+    }));
+    textarea.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: "b",
+      inputType: "insertText",
+    }));
+  });
+  await expect.poll(() => sentFrames).toEqual(["b"]);
+  sentFrames.length = 0;
+
+  await nativeInput.evaluate((textarea) => {
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "你好" }));
+    textarea.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: "你好",
+      inputType: "insertText",
+    }));
+    textarea.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: null,
+      inputType: "deleteContentBackward",
+    }));
+  });
+  await expect.poll(() => sentFrames.join(""), { timeout: 5000 }).toBe("你好\x7f");
+
+  await page.locator("#kb-open-btn").click();
+  await expect(nativeInput).toHaveAttribute("readonly", "");
+  await expect(nativeInput).toHaveAttribute("inputmode", "none");
+  await expect.poll(() => page.evaluate(() => document.activeElement === document.querySelector("#desktop-terminal-container textarea"))).toBe(false);
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    return state.terminalController?.term?.options.disableStdin;
+  })).toBe(true);
+});
+
+test("mobile card swipe peek does not expose fallback terminal input UI", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only swipe path");
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  const state = await page.evaluate(() => {
+    const card = document.querySelector(".card") as HTMLElement | null;
+    if (!card) throw new Error("missing session card");
+    const dispatchTouch = (type: string, clientX: number, clientY: number): void => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", {
+        value: type === "touchend" ? [] : [{ clientX, clientY }],
+      });
+      card.dispatchEvent(event);
+    };
+    dispatchTouch("touchstart", 350, 220);
+    dispatchTouch("touchmove", 40, 222);
+    const terminalView = document.getElementById("terminal-view");
+    const inputBar = document.getElementById("input-bar");
+    const accessory = document.getElementById("kb-accessory");
+    return {
+      terminalVisible: terminalView?.classList.contains("visible") ?? false,
+      terminalTransform: terminalView ? getComputedStyle(terminalView).transform : "",
+      inputBarDisplay: inputBar ? getComputedStyle(inputBar).display : "missing",
+      accessoryDisplay: accessory ? getComputedStyle(accessory).display : "missing",
+      accessoryVisible: accessory?.classList.contains("visible") ?? false,
+    };
+  });
+
+  expect(state.terminalVisible).toBe(true);
+  expect(state.terminalTransform).not.toBe("none");
+  expect(state.inputBarDisplay).toBe("none");
+  expect(state.accessoryDisplay).toBe("none");
+  expect(state.accessoryVisible).toBe(false);
+});
+
+test("mobile touch scrolling dismisses an open native keyboard after drag threshold", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only touch path");
 
   const attachModes: string[] = [];
@@ -79,11 +306,16 @@ test("mobile touch scrolling works immediately after switching sessions", async 
     return terminal?.getScrollbackLength?.() ?? 0;
   })).toBeGreaterThan(0);
 
-  const viewportY = await page.evaluate(() => {
+  await page.locator("#kb-open-btn").click();
+  const nativeInput = page.locator("#desktop-terminal-container textarea");
+  await expect(nativeInput).toBeFocused();
+
+  const dragState = await page.evaluate(() => {
     const container = document.getElementById("desktop-terminal-container");
     const canvas = container?.querySelector("canvas");
-    const terminal = (window as unknown as { state: { terminalController?: { term?: { viewportY: number } } } }).state.terminalController?.term;
-    if (!container || !canvas || !terminal) throw new Error("missing mobile terminal");
+    const textarea = container?.querySelector("textarea") as HTMLTextAreaElement | null;
+    const terminal = (window as unknown as { state: { terminalController?: { term?: { viewportY: number; options: { disableStdin: boolean } } } } }).state.terminalController?.term;
+    if (!container || !canvas || !textarea || !terminal) throw new Error("missing mobile terminal");
     const dispatchTouch = (type: string, clientY: number): void => {
       const event = new Event(type, { bubbles: true, cancelable: true });
       Object.defineProperty(event, "touches", {
@@ -92,13 +324,28 @@ test("mobile touch scrolling works immediately after switching sessions", async 
       canvas.dispatchEvent(event);
     };
     dispatchTouch("touchstart", 300);
+    const focusedAfterStart = document.activeElement === textarea;
     dispatchTouch("touchmove", 500);
+    const focusedAfterMove = document.activeElement === textarea;
     dispatchTouch("touchend", 500);
-    return terminal.viewportY;
+    return {
+      focusedAfterStart,
+      focusedAfterMove,
+      focusedAfterEnd: document.activeElement === textarea,
+      inputMode: textarea.getAttribute("inputmode"),
+      readOnly: textarea.readOnly,
+      stdinDisabled: terminal.options.disableStdin,
+      viewportY: terminal.viewportY,
+    };
   });
 
-  expect(viewportY).toBeGreaterThan(0);
-  await expect(page.locator("#mobile-kb-proxy")).not.toBeFocused();
+  expect(dragState.focusedAfterStart).toBe(true);
+  expect(dragState.focusedAfterMove).toBe(false);
+  expect(dragState.focusedAfterEnd).toBe(false);
+  expect(dragState.inputMode).toBe("none");
+  expect(dragState.readOnly).toBe(true);
+  expect(dragState.stdinDisabled).toBe(true);
+  expect(dragState.viewportY).toBeGreaterThan(0);
 });
 
 test("full session switch and reconnect keep partial prefill hidden until prefill_done", async ({ page }) => {

@@ -25,6 +25,7 @@ declare global {
     readonly cols: number;
     readonly rows: number;
     readonly element?: HTMLElement;
+    readonly textarea?: HTMLTextAreaElement;
     readonly renderer?: {
       getMetrics?: () => { readonly width: number; readonly height: number } | null;
       render?: (wasmTerm: unknown, forceAll: boolean, viewportY: unknown, scrollbackProvider: unknown) => void;

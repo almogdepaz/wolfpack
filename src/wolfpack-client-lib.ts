@@ -20,8 +20,6 @@ export {
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
   shouldReleaseScrollLockOnKeydown,
-  textToSendForMobileAutocompleteCommit,
-  updateMobileSentTail,
 } from "./terminal-input";
 
 export {

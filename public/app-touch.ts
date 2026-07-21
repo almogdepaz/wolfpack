@@ -4,12 +4,13 @@
  */
 import { haptic } from "./app-state";
 
-export function setupTouchScrollHandler(container, term, sendInput, canAcceptInput) {
+export function setupTouchScrollHandler(container, term, sendInput, canAcceptInput, dismissKeyboard) {
   let lastTouchY = 0;
   let scrollAccum = 0;
   let velocityY = 0;
   let momentumId = null;
   let tracking = false;
+  let dragStarted = false;
   const DEFAULT_SCROLL_THRESHOLD_PX = 17;
   const FRICTION = 0.95;
   const MIN_VELOCITY = 0.5;
@@ -186,18 +187,10 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
 
   function onTouchStart(e) {
     if (e.touches.length !== 1) return;
-    // Blur proxy on terminal touch — keyboard only opens via kb-open-btn.
-    // Skip blur if the touch originated on kb-open-btn (or its children),
-    // otherwise toggleMobileKeyboard's focus() is immediately undone.
-    const target = e.target as HTMLElement;
-    const isKbBtn = target.id === "kb-open-btn" || target.closest?.("#kb-open-btn");
-    if (!isKbBtn) {
-      const proxy = document.getElementById("mobile-kb-proxy");
-      if (proxy && document.activeElement === proxy) proxy.blur();
-    }
     cancelMomentum();
     clearSelection();
     tracking = true;
+    dragStarted = false;
     const touch = e.touches[0];
     lastTouchY = touch.clientY;
     selStartX = touch.clientX;
@@ -248,6 +241,10 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
     const dy = touch.clientY - selStartY;
     if (Math.sqrt(dx * dx + dy * dy) > LONGPRESS_MOVE_TOLERANCE) {
       cancelLongPress();
+      if (!dragStarted) {
+        dragStarted = true;
+        dismissKeyboard();
+      }
     }
 
     e.preventDefault();
@@ -260,6 +257,9 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
 
   function onTouchEnd() {
     cancelLongPress();
+    // Ghostty focuses its textarea from the canvas touchend handler before
+    // this container listener runs. Reassert the closed state after a drag.
+    if (dragStarted) dismissKeyboard();
 
     if (selecting) {
       // Keep selection visible — show copy button for explicit user action.
