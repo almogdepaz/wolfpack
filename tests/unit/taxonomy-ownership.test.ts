@@ -2,6 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
+import { AGENT_KIND } from "../../src/agent-kind";
+import {
+  AGENT_STATUS_AUTHORITY,
+  AGENT_STATUS_FRESHNESS,
+  AGENT_STATUS_SOURCE,
+} from "../../src/agent-status-contract";
+import { RALPH_WORKTREE_MODE } from "../../src/ralph-worktree-mode";
+import { TERMINAL_PREFILL_MODE } from "../../src/terminal-prefill";
 
 type TaxonomyRule = {
   readonly name: string;
@@ -12,11 +20,15 @@ type TaxonomyRule = {
 
 const ROOT = join(import.meta.dirname, "..", "..");
 
+function taxonomyMembers(...groups: ReadonlyArray<Readonly<Record<string, string>>>): readonly string[] {
+  return groups.flatMap(group => Object.values(group));
+}
+
 const TAXONOMIES: readonly TaxonomyRule[] = [
-  { name: "agent-kind", owner: "src/agent-kind.ts", members: ["shell", "pi", "claude", "codex", "gemini", "cursor", "unknown"], context: /agent|harness/i },
-  { name: "terminal-prefill-mode", owner: "src/terminal-prefill.ts", members: ["full", "viewport", "none"], context: /prefill/i },
-  { name: "ralph-worktree-mode", owner: "src/ralph-worktree-mode.ts", members: ["false", "plan", "task"], context: /worktree|isoVal|isolation/i },
-  { name: "agent-status-source", owner: "src/agent-status-contract.ts", members: ["lifecycle", "manifest", "fallback", "identity", "fresh", "stale", "missing", "malformed", "ralph-lifecycle", "local-manifest", "screen-fallback", "session-identity"], context: /AgentStatus|statusSource|freshness|authority|candidate|readStructuredStatusFile/ },
+  { name: "agent-kind", owner: "src/agent-kind.ts", members: taxonomyMembers(AGENT_KIND), context: /agent|harness/i },
+  { name: "terminal-prefill-mode", owner: "src/terminal-prefill.ts", members: taxonomyMembers(TERMINAL_PREFILL_MODE), context: /prefill/i },
+  { name: "ralph-worktree-mode", owner: "src/ralph-worktree-mode.ts", members: taxonomyMembers(RALPH_WORKTREE_MODE), context: /worktree|isoVal|isolation/i },
+  { name: "agent-status-source", owner: "src/agent-status-contract.ts", members: taxonomyMembers(AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_SOURCE), context: /AgentStatus|statusSource|freshness|authority|candidate|readStructuredStatusFile/ },
 ];
 
 const EXCLUDED_DIRS = new Set(["dist", "node_modules", "tests", "broker", "edc-context", ".plans", "plans"]);
