@@ -545,6 +545,33 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(captured!.since_seq).toBe(1234);
   });
 
+  test("subscription_dropped resumes after the last output delivered before the barrier", async () => {
+    const { server, client } = await bootClientToServer();
+    const sinceSeqs: Array<number | undefined> = [];
+    server.onRequest = (req, sock) => {
+      if (req.method === "subscribe") {
+        sinceSeqs.push((req.params as { since_seq?: number }).since_seq);
+      }
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true, current_seq: 42 } },
+      });
+    };
+    await client.subscribe(SAMPLE_UUID);
+
+    server.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 42n, data: new Uint8Array([1]) },
+    });
+    server.broadcast({
+      kind: FRAME_KIND_EVENT,
+      value: { event: "subscription_dropped", session_id: SAMPLE_UUID, lagged: 7 },
+    });
+
+    await waitFor(() => sinceSeqs.length === 2);
+    expect(sinceSeqs).toEqual([undefined, 42]);
+  });
+
   test("subscribe clamps since_seq above Number.MAX_SAFE_INTEGER", async () => {
     const { server, client } = await bootClientToServer();
     let captured: Record<string, unknown> | null = null;

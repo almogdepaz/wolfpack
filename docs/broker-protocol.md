@@ -232,11 +232,16 @@ Binary payload layout:
 ```
 
 - `session_id`: raw 16-byte UUID for the session this output belongs to.
-- `seq`: monotonic broker-assigned sequence over the session's output stream.
-  `seq` is the index of the **last** byte in this frame; `subscribe.since_seq`
-  uses the same numbering.
-- `raw PTY bytes`: exactly what the PTY emitted, no transformation. The client
-  must not interpret these as JSON.
+- `seq`: monotonic broker-assigned PTY-chunk watermark. Each PTY read receives
+  one sequence number. A frame may contain one chunk or several contiguous
+  chunks coalesced by the broker; `seq` is the final chunk covered by the frame.
+  `subscribe.since_seq` uses the same chunk numbering.
+- `raw PTY bytes`: exactly what the covered PTY chunks emitted, concatenated in
+  sequence order with no transformation. The client must not interpret these
+  as JSON.
+- Output frames remain ordered by `seq` within a session. Control responses and
+  lifecycle events use a prioritized queue and may overtake already-queued
+  output frames so PTY bursts cannot starve request handling.
 
 ### `input_binary` (kind `0x04`)
 
@@ -275,10 +280,14 @@ are not tied to any request `id`.
 | `session_exited`      | `session_id, exit_code?, signal?`                |
 | `session_resized`     | `session_id, cols, rows`                         |
 | `snapshot_invalidated`| `session_id` — clients SHOULD re-`snapshot`      |
+| `subscription_dropped`| `session_id, lagged` — re-subscribe from the last delivered `seq` |
 
-Events are best-effort: a connection that did not subscribe to a session may
-still receive events for it (lifecycle events are global). The broker
-guarantees delivery order matches its own state-transition order.
+Lifecycle events are best-effort and global: a connection may receive them
+without subscribing to the affected session. They use the prioritized control
+queue and can overtake output. `subscription_dropped` is different: it is sent
+only to the affected connection through its output queue, after all previously
+accepted output frames. That ordering barrier makes replay from the client's
+last delivered `seq` safe.
 
 ---
 
@@ -312,7 +321,7 @@ source.
 ```jsonc
 {
   "session_id":     "<uuid>",
-  "seq":            12345,           // last output byte covered by this snapshot
+  "seq":            12345,           // last PTY chunk covered by this snapshot
   "cols":           120,
   "rows":           30,
   "visible_screen": [StyledLine; rows],   // top-to-bottom, exactly `rows` entries

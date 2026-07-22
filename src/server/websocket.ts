@@ -843,12 +843,11 @@ function subscribeWithCoalescing(
   // (e.g. post-resize redraws) that arrived after the snapshot was taken.
   //
   // ── Adaptive coalescing ──
-  // Broker forwards every PTY-read chunk as a separate output frame.
-  // macOS PTY delivers ~1KB clusters during heavy TUI redraws (claude
-  // SIGWINCH repaint = 1500 chunks @ 1024 bytes). Without coalescing,
-  // each chunk = one ws.send = one browser macrotask = one ghostty parse
-  // pass; ghostty paints between chunks as rAF fires, so the user sees
-  // mid-redraw fragments scrolling/painting incrementally.
+  // Broker frames may already combine contiguous PTY reads up to 8 KiB, but a
+  // heavy TUI redraw still spans many broker frames. Without this second-stage
+  // time-based coalescing, each frame becomes one ws.send, one browser
+  // macrotask, and one ghostty parse pass; ghostty may paint between frames so
+  // the user sees mid-redraw fragments scrolling/painting incrementally.
   //
   // Strategy: append to a buffer + arm a flush timer for COALESCE_FLUSH_MS
   // (one rAF). Each new chunk resets the timer. Hard cap at

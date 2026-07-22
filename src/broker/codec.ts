@@ -56,7 +56,7 @@ export interface EventBody {
 export interface OutputBinaryFrame {
   /** Canonical lowercase UUID string (8-4-4-4-12). */
   sessionId: string;
-  /** Monotonic per-session output seq, last byte index of this frame. */
+  /** Final per-session PTY-chunk seq covered by this possibly coalesced frame. */
   seq: bigint;
   /** Raw PTY bytes; receiver-owned (caller may retain). */
   data: Uint8Array;

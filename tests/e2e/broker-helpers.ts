@@ -20,6 +20,7 @@ export interface BrokerTestServer {
   port: number;
   baseUrl: string;
   socketPath: string;
+  brokerStderr(): string;
   teardown(): Promise<void>;
 }
 
@@ -185,5 +186,11 @@ export async function start(opts?: {
     }
   }
 
-  return { port, baseUrl: `http://127.0.0.1:${port}`, socketPath, teardown };
+  return {
+    port,
+    baseUrl: `http://127.0.0.1:${port}`,
+    socketPath,
+    brokerStderr: () => brokerStderr,
+    teardown,
+  };
 }
