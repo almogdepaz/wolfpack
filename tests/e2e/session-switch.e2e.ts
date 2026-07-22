@@ -901,7 +901,11 @@ test("desktop sidebar hover does not put live terminal into loading state", asyn
     // @ts-ignore exposed by the browser bundle
     openSession("test-project", "");
   });
-  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  const terminalContainer = page.locator("#desktop-terminal-container");
+  await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  await expect.poll(async () => terminalContainer.locator("canvas").evaluate((canvas) => getComputedStyle(canvas).opacity), {
+    timeout: 5000,
+  }).toBe("1");
 
   const hoverState = await page.evaluate(() => {
     const stateWindow = window as unknown as { state: { sidebarResizeDone: boolean; sidebarCollapsed: boolean; sidebarPinned: boolean; sessionsExpanded: boolean } };

@@ -20,9 +20,9 @@ use crate::ring_buffer::OutputChunk;
 use crate::router::Router;
 use crate::session::EventSender;
 
-/// Per-connection queue depth. Control and output use separate queues so PTY
-/// traffic cannot starve request responses; the socket writer prioritises the
-/// control queue while preserving order within each queue.
+/// Per-connection queue depth. Control/global lifecycle and output use separate
+/// queues so PTY traffic cannot starve request responses; the socket writer
+/// prioritises control while preserving order within each queue.
 const WRITER_QUEUE_CAPACITY: usize = 1024;
 /// Merge adjacent PTY reads before crossing the broker socket without raising
 /// the writer queue's pre-coalescing memory envelope (1,024 × 8 KiB).
@@ -236,8 +236,8 @@ async fn handle_connection(
     debug!("broker connection opened");
     let (mut read_half, write_half) = stream.into_split();
 
-    // Control responses/events must not queue behind a PTY redraw burst. The
-    // dedicated socket writer prioritises this queue over live/replay output.
+    // Control responses/global lifecycle events must not queue behind a PTY
+    // redraw burst. The socket writer prioritises this queue over output.
     let (writer_tx, writer_rx) = mpsc::channel::<Frame>(writer_queue_cap);
     let (output_tx, output_rx) = mpsc::channel::<Frame>(writer_queue_cap);
     let writer_task = tokio::spawn(connection_writer(write_half, writer_rx, output_rx));
@@ -485,7 +485,6 @@ async fn handle_subscribe(
         sub.replay,
         sub.receiver,
         output_tx.clone(),
-        writer_tx.clone(),
     ));
     subs.insert(session_id, handle);
     true
@@ -549,13 +548,16 @@ fn enqueue_output_chunk(
     pending.push_back(chunk_to_frame(session_id, chunk));
 }
 
-async fn notify_subscription_lag(writer_tx: &mpsc::Sender<Frame>, session_id: Uuid, lagged: u64) {
+async fn notify_subscription_lag(output_tx: &mpsc::Sender<Frame>, session_id: Uuid, lagged: u64) {
     warn!(
         %session_id,
         lagged,
         "subscription forwarder lagged broadcast; notifying client to re-subscribe"
     );
-    let _ = writer_tx
+    // This event is an output-stream barrier: queue it behind every output
+    // frame already accepted for the connection. The client can then resume
+    // from its last delivered seq without older frames arriving afterward.
+    let _ = output_tx
         .send(Frame::Event(crate::protocol::Event::SubscriptionDropped {
             session_id,
             lagged,
@@ -573,7 +575,6 @@ async fn forward_output(
     replay: Vec<OutputChunk>,
     mut rx: tokio::sync::broadcast::Receiver<OutputChunk>,
     output_tx: mpsc::Sender<Frame>,
-    control_tx: mpsc::Sender<Frame>,
 ) {
     let mut pending = VecDeque::new();
     let mut pending_bytes = 0;
@@ -594,7 +595,7 @@ async fn forward_output(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    notify_subscription_lag(&control_tx, session_id, n).await;
+                    notify_subscription_lag(&output_tx, session_id, n).await;
                     return;
                 }
             }
@@ -623,7 +624,7 @@ async fn forward_output(
                     receiver_closed = true;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    notify_subscription_lag(&control_tx, session_id, n).await;
+                    notify_subscription_lag(&output_tx, session_id, n).await;
                     return;
                 }
             },
@@ -679,7 +680,6 @@ mod tests {
         let bus = crate::output_bus::OutputBus::new(CHUNK_COUNT as usize, 256);
         let subscription = bus.subscribe(None).expect("subscribe");
         let (output_tx, mut output_rx) = mpsc::channel(1);
-        let (control_tx, _control_rx) = mpsc::channel(1);
 
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
@@ -693,7 +693,6 @@ mod tests {
             subscription.replay,
             subscription.receiver,
             output_tx,
-            control_tx,
         ));
         tokio::task::yield_now().await;
 
@@ -750,7 +749,6 @@ mod tests {
         }
         let subscription = bus.subscribe(Some(0)).expect("subscribe");
         let (output_tx, mut output_rx) = mpsc::channel(1);
-        let (control_tx, _control_rx) = mpsc::channel(1);
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
                 session_id: Uuid::nil(),
@@ -763,7 +761,6 @@ mod tests {
             subscription.replay,
             subscription.receiver,
             output_tx,
-            control_tx,
         ));
         for (seq, byte) in [(3, b'c'), (4, b'd')] {
             bus.publish(OutputChunk {
@@ -806,7 +803,6 @@ mod tests {
         let bus = crate::output_bus::OutputBus::new(64, 64);
         let subscription = bus.subscribe(None).expect("subscribe");
         let (output_tx, mut output_rx) = mpsc::channel(1);
-        let (control_tx, mut control_rx) = mpsc::channel(1);
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
                 session_id: Uuid::nil(),
@@ -819,7 +815,6 @@ mod tests {
             subscription.replay,
             subscription.receiver,
             output_tx,
-            control_tx,
         ));
         for seq in 1..=CHUNKS_TO_CAP {
             bus.publish(OutputChunk {
@@ -839,10 +834,14 @@ mod tests {
             output_rx.recv().await,
             Some(Frame::Event(Event::SnapshotInvalidated { .. }))
         ));
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), control_rx.recv())
+        assert!(matches!(
+            output_rx.recv().await,
+            Some(Frame::OutputBinary(OutputFrame { seq: 1, .. }))
+        ));
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), output_rx.recv())
             .await
-            .expect("lag recovery event timeout")
-            .expect("control queue closed");
+            .expect("SubscriptionDropped overtook older queued output")
+            .expect("output queue closed");
         assert!(matches!(
             event,
             Frame::Event(Event::SubscriptionDropped {
@@ -854,6 +853,46 @@ mod tests {
             .await
             .expect("forwarder did not stop after lag recovery")
             .expect("forwarder task failed");
+    }
+
+    #[tokio::test]
+    async fn connection_writer_sends_control_before_queued_output() {
+        let session_id = Uuid::new_v4();
+        let (broker_stream, mut client_stream) = UnixStream::pair().expect("socket pair");
+        let (_read_half, write_half) = broker_stream.into_split();
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        output_tx
+            .send(Frame::OutputBinary(OutputFrame {
+                session_id,
+                seq: 1,
+                data: vec![b'x'],
+            }))
+            .await
+            .expect("queue output");
+        control_tx
+            .send(Frame::ControlResponse(unknown_session(7, Uuid::nil())))
+            .await
+            .expect("queue control response");
+        drop(control_tx);
+        drop(output_tx);
+
+        let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx));
+        assert!(matches!(
+            read_frame_async(&mut client_stream)
+                .await
+                .expect("read control response"),
+            Frame::ControlResponse(ControlResponse { id: 7, .. })
+        ));
+        assert!(matches!(
+            read_frame_async(&mut client_stream).await.expect("read output"),
+            Frame::OutputBinary(OutputFrame {
+                session_id: output_session,
+                seq: 1,
+                ..
+            }) if output_session == session_id
+        ));
+        writer.await.expect("writer task failed");
     }
 
     #[tokio::test]
@@ -870,7 +909,6 @@ mod tests {
             subscription.replay,
             subscription.receiver,
             output_tx,
-            control_tx.clone(),
         ));
         for seq in 1..=OUTPUT_CHUNKS {
             bus.publish(OutputChunk {

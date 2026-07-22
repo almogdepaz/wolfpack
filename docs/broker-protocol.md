@@ -280,10 +280,14 @@ are not tied to any request `id`.
 | `session_exited`      | `session_id, exit_code?, signal?`                |
 | `session_resized`     | `session_id, cols, rows`                         |
 | `snapshot_invalidated`| `session_id` — clients SHOULD re-`snapshot`      |
+| `subscription_dropped`| `session_id, lagged` — re-subscribe from the last delivered `seq` |
 
-Events are best-effort: a connection that did not subscribe to a session may
-still receive events for it (lifecycle events are global). The broker
-guarantees delivery order matches its own state-transition order.
+Lifecycle events are best-effort and global: a connection may receive them
+without subscribing to the affected session. They use the prioritized control
+queue and can overtake output. `subscription_dropped` is different: it is sent
+only to the affected connection through its output queue, after all previously
+accepted output frames. That ordering barrier makes replay from the client's
+last delivered `seq` safe.
 
 ---
 

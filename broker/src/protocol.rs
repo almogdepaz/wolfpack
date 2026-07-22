@@ -321,9 +321,10 @@ pub enum Event {
     SessionResized { session_id: Uuid, cols: u16, rows: u16 },
     SnapshotInvalidated { session_id: Uuid },
     /// Emitted directly to the connection that had its subscription dropped
-    /// due to broadcast lag. The client should re-snapshot to resync and then
-    /// re-subscribe. This event is NOT broadcast to all clients — it is sent
-    /// only on the writer channel of the affected connection.
+    /// due to broadcast lag. The client should re-subscribe from its last
+    /// delivered seq. This event is NOT broadcast to all clients: it is queued
+    /// on the affected connection's output stream after all accepted frames,
+    /// making it an ordering barrier for safe replay recovery.
     SubscriptionDropped { session_id: Uuid, lagged: u64 },
 }
 

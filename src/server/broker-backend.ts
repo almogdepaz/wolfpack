@@ -138,7 +138,7 @@ interface StyledLine {
 interface SnapshotPayload extends SnapshotForRender {
   visible_screen: StyledLine[];
   scrollback?: StyledLine[];
-  /** Broker output-stream byte offset at capture time. Present on all broker snapshots. */
+  /** Final broker PTY-chunk seq covered at capture time. Present on all broker snapshots. */
   seq?: number;
 }
 
@@ -492,8 +492,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
    * Fetch a fresh broker snapshot and render it to ANSI bytes for WS prefill.
    * Returns `{ data: empty, seq: undefined }` when the session is unknown or
    * the broker rejects the snapshot - callers treat empty data as "no prefill".
-   * `seq` is the broker output-stream byte offset at snapshot capture time;
-   * pass it to `onSessionData` so the broker replays any bytes emitted between
+   * `seq` is the final broker PTY-chunk watermark covered by the snapshot;
+   * pass it to `onSessionData` so the broker replays chunks emitted between
    * snapshot and subscribe attach.
    */
   async getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionPrefill> {

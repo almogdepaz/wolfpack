@@ -90,7 +90,7 @@ export type SessionLifecycleEvent =
 
 export interface SessionPrefill {
   data: Buffer;
-  /** Broker output-stream seq at snapshot time; undefined for non-broker backends. */
+  /** Final broker PTY-chunk seq covered by the snapshot; undefined for non-broker backends. */
   seq?: bigint;
 }
 

@@ -585,8 +585,8 @@ export class BrokerClient {
       }
       case FRAME_KIND_EVENT: {
         const ev = frame.value;
-        // subscription_dropped is a per-connection signal (not a global event):
-        // auto-resubscribe to get live output flowing again, then notify the caller.
+        // subscription_dropped is a per-connection output-stream barrier, queued
+        // after older output. Resume from the last delivered seq, then notify the caller.
         if (ev.event === "subscription_dropped" && typeof ev.session_id === "string") {
           const sessionId = ev.session_id as string;
           const lagged = typeof ev.lagged === "number" ? ev.lagged as number : 0;
