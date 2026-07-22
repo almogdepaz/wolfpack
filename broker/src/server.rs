@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,13 @@ use crate::session::EventSender;
 /// it publishes through the broadcast channel; only this connection's
 /// fanout slows down.
 const WRITER_QUEUE_CAPACITY: usize = 1024;
+/// Merge adjacent PTY reads before crossing the broker socket. This keeps a
+/// redraw burst from consuming one writer-queue slot per tiny kernel read.
+const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 128 * 1024;
+/// Keep draining live broadcast output while the socket writer is blocked,
+/// but bound per-subscription memory. At the cap we drain queued frames first;
+/// sustained producers then hit the existing broadcast-lag recovery contract.
+const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct ServerConfig {
     pub socket_path: PathBuf,
@@ -510,55 +517,112 @@ async fn handle_unsubscribe(
     .await
 }
 
-/// One forwarder task per (connection, session) subscription. Pushes
-/// replay first (chunks the ring still held at subscribe time), then
-/// pulls from the broadcast receiver until the bus closes or the writer
-/// queue dies. On `RecvError::Lagged(_)`, the forwarder logs and stops:
-/// the client must re-`subscribe` (or `snapshot`) to recover. Surfacing
-/// lag rather than silently swallowing it preserves the seq invariant.
+/// Queue one PTY read, merging contiguous seqs into a bounded socket frame.
+fn enqueue_output_chunk(
+    pending: &mut VecDeque<OutputFrame>,
+    pending_bytes: &mut usize,
+    session_id: Uuid,
+    chunk: OutputChunk,
+) {
+    *pending_bytes += chunk.data.len();
+    if let Some(last) = pending.back_mut() {
+        if last.seq.checked_add(1) == Some(chunk.seq)
+            && last.data.len() + chunk.data.len() <= OUTPUT_FRAME_COALESCE_MAX_BYTES
+        {
+            last.seq = chunk.seq;
+            last.data.extend_from_slice(&chunk.data);
+            return;
+        }
+    }
+    pending.push_back(chunk_to_frame(session_id, chunk));
+}
+
+async fn notify_subscription_lag(writer_tx: &mpsc::Sender<Frame>, session_id: Uuid, lagged: u64) {
+    warn!(
+        %session_id,
+        lagged,
+        "subscription forwarder lagged broadcast; notifying client to re-subscribe"
+    );
+    let _ = writer_tx
+        .send(Frame::Event(crate::protocol::Event::SubscriptionDropped {
+            session_id,
+            lagged,
+        }))
+        .await;
+}
+
+/// One forwarder task per (connection, session) subscription. Replay and live
+/// chunks share a bounded local queue. Crucially, this task continues draining
+/// the broadcast receiver while the per-connection writer is backpressured;
+/// otherwise 256 tiny PTY reads can overflow the broadcast channel before the
+/// Unix socket drains, forcing a replay-truncated reconnect loop.
 async fn forward_output(
     session_id: Uuid,
     replay: Vec<OutputChunk>,
     mut rx: tokio::sync::broadcast::Receiver<OutputChunk>,
     writer_tx: mpsc::Sender<Frame>,
 ) {
+    let mut pending = VecDeque::new();
+    let mut pending_bytes = 0;
     for chunk in replay {
-        if writer_tx
-            .send(Frame::OutputBinary(chunk_to_frame(session_id, chunk)))
-            .await
-            .is_err()
-        {
-            return;
-        }
+        enqueue_output_chunk(&mut pending, &mut pending_bytes, session_id, chunk);
     }
+    let mut receiver_closed = false;
+
     loop {
-        match rx.recv().await {
-            Ok(chunk) => {
-                if writer_tx
-                    .send(Frame::OutputBinary(chunk_to_frame(session_id, chunk)))
-                    .await
-                    .is_err()
-                {
+        if pending.is_empty() {
+            if receiver_closed {
+                return;
+            }
+            match rx.recv().await {
+                Ok(chunk) => {
+                    enqueue_output_chunk(&mut pending, &mut pending_bytes, session_id, chunk);
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    notify_subscription_lag(&writer_tx, session_id, n).await;
                     return;
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                warn!(
-                    %session_id,
-                    lagged = n,
-                    "subscription forwarder lagged broadcast; notifying client to re-subscribe"
-                );
-                // Notify the client directly on its writer channel so it can
-                // re-snapshot and re-subscribe. This event is NOT broadcast to
-                // all clients — only this connection's writer sees it.
-                let _ = writer_tx
-                    .send(Frame::Event(crate::protocol::Event::SubscriptionDropped {
-                        session_id,
-                        lagged: n,
-                    }))
-                    .await;
+        }
+
+        // Once the local byte cap is reached, apply backpressure by draining a
+        // coalesced frame before accepting more. If the producer remains too
+        // fast, the broadcast channel surfaces an exact Lagged count as before.
+        if receiver_closed || pending_bytes >= OUTPUT_FORWARD_BUFFER_MAX_BYTES {
+            let Some(frame) = pending.pop_front() else {
+                continue;
+            };
+            pending_bytes -= frame.data.len();
+            if writer_tx.send(Frame::OutputBinary(frame)).await.is_err() {
                 return;
+            }
+            continue;
+        }
+
+        tokio::select! {
+            received = rx.recv() => match received {
+                Ok(chunk) => {
+                    enqueue_output_chunk(&mut pending, &mut pending_bytes, session_id, chunk);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    receiver_closed = true;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    notify_subscription_lag(&writer_tx, session_id, n).await;
+                    return;
+                }
+            },
+            permit = writer_tx.reserve() => {
+                let Ok(permit) = permit else {
+                    return;
+                };
+                let Some(frame) = pending.pop_front() else {
+                    continue;
+                };
+                pending_bytes -= frame.data.len();
+                permit.send(Frame::OutputBinary(frame));
             }
         }
     }
@@ -596,9 +660,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn slow_output_forwarder_reports_lag_without_socket_timing() {
+    async fn slow_output_forwarder_preserves_burst_during_writer_backpressure() {
+        const CHUNK_COUNT: u64 = 2_000;
         let session_id = Uuid::new_v4();
-        let bus = crate::output_bus::OutputBus::new(8, 2);
+        let bus = crate::output_bus::OutputBus::new(CHUNK_COUNT as usize, 256);
         let subscription = bus.subscribe(None).expect("subscribe");
         let (writer_tx, mut writer_rx) = mpsc::channel(1);
 
@@ -615,40 +680,46 @@ mod tests {
             subscription.receiver,
             writer_tx,
         ));
+        tokio::task::yield_now().await;
 
-        for seq in 1..=4 {
+        for seq in 1..=CHUNK_COUNT {
             bus.publish(OutputChunk {
                 seq,
                 data: Arc::new(vec![b'x']),
             });
+            tokio::task::yield_now().await;
         }
+        bus.close();
 
         assert!(matches!(
             writer_rx.recv().await,
             Some(Frame::Event(Event::SnapshotInvalidated { .. }))
         ));
 
-        let mut lagged = None;
-        for _ in 0..3 {
+        let mut output = Vec::new();
+        let mut output_seqs = Vec::new();
+        while output.len() < CHUNK_COUNT as usize {
             let frame = tokio::time::timeout(std::time::Duration::from_secs(1), writer_rx.recv())
                 .await
                 .expect("forwarder response timeout")
                 .expect("writer queue closed");
-            if let Frame::Event(Event::SubscriptionDropped {
-                session_id: dropped_session,
-                lagged: dropped_count,
-            }) = frame
-            {
-                assert_eq!(dropped_session, session_id);
-                lagged = Some(dropped_count);
-                break;
+            match frame {
+                Frame::OutputBinary(frame) => {
+                    output.extend_from_slice(&frame.data);
+                    output_seqs.push(frame.seq);
+                }
+                Frame::Event(Event::SubscriptionDropped { lagged, .. }) => {
+                    panic!("buffered redraw burst was dropped: {lagged} chunks");
+                }
+                _ => {}
             }
         }
 
-        assert!(lagged.is_some_and(|count| count > 0));
+        assert_eq!(output, vec![b'x'; CHUNK_COUNT as usize]);
+        assert_eq!(output_seqs, [CHUNK_COUNT]);
         tokio::time::timeout(std::time::Duration::from_secs(1), forwarder)
             .await
-            .expect("forwarder did not stop after lag")
+            .expect("forwarder did not stop after bus close")
             .expect("forwarder task failed");
     }
 
