@@ -232,11 +232,16 @@ Binary payload layout:
 ```
 
 - `session_id`: raw 16-byte UUID for the session this output belongs to.
-- `seq`: monotonic broker-assigned sequence over the session's output stream.
-  `seq` is the index of the **last** byte in this frame; `subscribe.since_seq`
-  uses the same numbering.
-- `raw PTY bytes`: exactly what the PTY emitted, no transformation. The client
-  must not interpret these as JSON.
+- `seq`: monotonic broker-assigned PTY-chunk watermark. Each PTY read receives
+  one sequence number. A frame may contain one chunk or several contiguous
+  chunks coalesced by the broker; `seq` is the final chunk covered by the frame.
+  `subscribe.since_seq` uses the same chunk numbering.
+- `raw PTY bytes`: exactly what the covered PTY chunks emitted, concatenated in
+  sequence order with no transformation. The client must not interpret these
+  as JSON.
+- Output frames remain ordered by `seq` within a session. Control responses and
+  lifecycle events use a prioritized queue and may overtake already-queued
+  output frames so PTY bursts cannot starve request handling.
 
 ### `input_binary` (kind `0x04`)
 
@@ -312,7 +317,7 @@ source.
 ```jsonc
 {
   "session_id":     "<uuid>",
-  "seq":            12345,           // last output byte covered by this snapshot
+  "seq":            12345,           // last PTY chunk covered by this snapshot
   "cols":           120,
   "rows":           30,
   "visible_screen": [StyledLine; rows],   // top-to-bottom, exactly `rows` entries

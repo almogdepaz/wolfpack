@@ -20,15 +20,13 @@ use crate::ring_buffer::OutputChunk;
 use crate::router::Router;
 use crate::session::EventSender;
 
-/// Per-connection writer queue depth. Backpressure: if the writer falls
-/// behind by more than this many frames, the broadcast forwarder will
-/// block until the socket drains. The PTY itself is never blocked because
-/// it publishes through the broadcast channel; only this connection's
-/// fanout slows down.
+/// Per-connection queue depth. Control and output use separate queues so PTY
+/// traffic cannot starve request responses; the socket writer prioritises the
+/// control queue while preserving order within each queue.
 const WRITER_QUEUE_CAPACITY: usize = 1024;
-/// Merge adjacent PTY reads before crossing the broker socket. This keeps a
-/// redraw burst from consuming one writer-queue slot per tiny kernel read.
-const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 128 * 1024;
+/// Merge adjacent PTY reads before crossing the broker socket without raising
+/// the writer queue's pre-coalescing memory envelope (1,024 × 8 KiB).
+const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 8 * 1024;
 /// Keep draining live broadcast output while the socket writer is blocked,
 /// but bound per-subscription memory. At the cap we drain queued frames first;
 /// sustained producers then hit the existing broadcast-lag recovery contract.
@@ -49,9 +47,9 @@ pub struct ServerConfig {
     /// session's reaper, and by the router's resize path — see
     /// [`crate::session::EventSender`].
     pub events: EventSender,
-    /// Override the per-connection writer queue depth. `None` → use the
-    /// production default (1024). Only set this in tests that need a small
-    /// queue to trigger backpressure quickly.
+    /// Override each per-connection writer queue depth. `None` → use the
+    /// production default (1024). Only set this in tests that need small
+    /// control/output queues to trigger backpressure quickly.
     pub writer_queue_capacity: Option<usize>,
 }
 
@@ -238,12 +236,11 @@ async fn handle_connection(
     debug!("broker connection opened");
     let (mut read_half, write_half) = stream.into_split();
 
-    // Per-connection writer mpsc + dedicated writer task. Every outbound
-    // frame on this connection — control responses, output_binary live
-    // chunks, events — funnels through this queue so writes are
-    // serialised on the socket and ordering is preserved.
+    // Control responses/events must not queue behind a PTY redraw burst. The
+    // dedicated socket writer prioritises this queue over live/replay output.
     let (writer_tx, writer_rx) = mpsc::channel::<Frame>(writer_queue_cap);
-    let writer_task = tokio::spawn(connection_writer(write_half, writer_rx));
+    let (output_tx, output_rx) = mpsc::channel::<Frame>(writer_queue_cap);
+    let writer_task = tokio::spawn(connection_writer(write_half, writer_rx, output_rx));
 
     // Drain async lifecycle events into this connection's writer queue.
     // Started here (not inside `accept_loop`) so the receiver was already
@@ -272,6 +269,7 @@ async fn handle_connection(
                         router.as_ref(),
                         &registry,
                         &writer_tx,
+                        &output_tx,
                         &mut subs,
                     )
                     .await
@@ -300,12 +298,13 @@ async fn handle_connection(
     }
 
     // Cleanly tear down per-session forwarders, then the event forwarder,
-    // then drop the writer sender so the writer task observes EOF and exits.
+    // then drop both senders so the writer task observes EOF and exits.
     for (_, h) in subs.drain() {
         h.abort();
     }
     event_task.abort();
     drop(writer_tx);
+    drop(output_tx);
     if let Err(e) = writer_task.await {
         if !e.is_cancelled() {
             warn!(error = %e, "broker writer task join error");
@@ -335,11 +334,21 @@ async fn forward_events(mut rx: broadcast::Receiver<Event>, writer_tx: mpsc::Sen
     }
 }
 
-async fn connection_writer(mut w: tokio::net::unix::OwnedWriteHalf, mut rx: mpsc::Receiver<Frame>) {
-    while let Some(frame) = rx.recv().await {
+async fn connection_writer(
+    mut w: tokio::net::unix::OwnedWriteHalf,
+    mut control_rx: mpsc::Receiver<Frame>,
+    mut output_rx: mpsc::Receiver<Frame>,
+) {
+    loop {
+        let frame = tokio::select! {
+            biased;
+            Some(frame) = control_rx.recv() => frame,
+            Some(frame) = output_rx.recv() => frame,
+            else => return,
+        };
         if let Err(e) = write_frame_async(&mut w, &frame).await {
             warn!(error = %e, "broker writer failed; closing connection");
-            break;
+            return;
         }
     }
 }
@@ -351,11 +360,12 @@ async fn dispatch_frame(
     router: &dyn Router,
     registry: &Arc<Registry>,
     writer_tx: &mpsc::Sender<Frame>,
+    output_tx: &mpsc::Sender<Frame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
     match frame {
         Frame::ControlRequest(req) => match req.method.as_str() {
-            methods::SUBSCRIBE => handle_subscribe(req, registry, writer_tx, subs).await,
+            methods::SUBSCRIBE => handle_subscribe(req, registry, writer_tx, output_tx, subs).await,
             methods::UNSUBSCRIBE => handle_unsubscribe(req, writer_tx, subs).await,
             _ => {
                 let resp = router.handle(req);
@@ -393,12 +403,14 @@ async fn dispatch_frame(
 ///      ring whose seq > since_seq);
 ///   3. then live `output_binary` frames as the drainer publishes them.
 ///
-/// The forwarder task below is spawned only after the response is queued
-/// so the writer mpsc preserves the (response, replay, live...) order.
+/// The forwarder task below is spawned only after the response enters the
+/// prioritised control queue, so it reaches the socket before replay/live
+/// frames from the separate output queue.
 async fn handle_subscribe(
     req: ControlRequest,
     registry: &Arc<Registry>,
     writer_tx: &mpsc::Sender<Frame>,
+    output_tx: &mpsc::Sender<Frame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
     let id = req.id;
@@ -468,12 +480,12 @@ async fn handle_subscribe(
     }
 
     let session_id = params.session_id;
-    let writer_clone = writer_tx.clone();
     let handle = tokio::spawn(forward_output(
         session_id,
         sub.replay,
         sub.receiver,
-        writer_clone,
+        output_tx.clone(),
+        writer_tx.clone(),
     ));
     subs.insert(session_id, handle);
     true
@@ -560,7 +572,8 @@ async fn forward_output(
     session_id: Uuid,
     replay: Vec<OutputChunk>,
     mut rx: tokio::sync::broadcast::Receiver<OutputChunk>,
-    writer_tx: mpsc::Sender<Frame>,
+    output_tx: mpsc::Sender<Frame>,
+    control_tx: mpsc::Sender<Frame>,
 ) {
     let mut pending = VecDeque::new();
     let mut pending_bytes = 0;
@@ -581,7 +594,7 @@ async fn forward_output(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    notify_subscription_lag(&writer_tx, session_id, n).await;
+                    notify_subscription_lag(&control_tx, session_id, n).await;
                     return;
                 }
             }
@@ -595,7 +608,7 @@ async fn forward_output(
                 continue;
             };
             pending_bytes -= frame.data.len();
-            if writer_tx.send(Frame::OutputBinary(frame)).await.is_err() {
+            if output_tx.send(Frame::OutputBinary(frame)).await.is_err() {
                 return;
             }
             continue;
@@ -610,11 +623,11 @@ async fn forward_output(
                     receiver_closed = true;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    notify_subscription_lag(&writer_tx, session_id, n).await;
+                    notify_subscription_lag(&control_tx, session_id, n).await;
                     return;
                 }
             },
-            permit = writer_tx.reserve() => {
+            permit = output_tx.reserve() => {
                 let Ok(permit) = permit else {
                     return;
                 };
@@ -665,9 +678,10 @@ mod tests {
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(CHUNK_COUNT as usize, 256);
         let subscription = bus.subscribe(None).expect("subscribe");
-        let (writer_tx, mut writer_rx) = mpsc::channel(1);
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
 
-        writer_tx
+        output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
                 session_id: Uuid::nil(),
             }))
@@ -678,7 +692,8 @@ mod tests {
             session_id,
             subscription.replay,
             subscription.receiver,
-            writer_tx,
+            output_tx,
+            control_tx,
         ));
         tokio::task::yield_now().await;
 
@@ -692,14 +707,14 @@ mod tests {
         bus.close();
 
         assert!(matches!(
-            writer_rx.recv().await,
+            output_rx.recv().await,
             Some(Frame::Event(Event::SnapshotInvalidated { .. }))
         ));
 
         let mut output = Vec::new();
         let mut output_seqs = Vec::new();
         while output.len() < CHUNK_COUNT as usize {
-            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), writer_rx.recv())
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
                 .await
                 .expect("forwarder response timeout")
                 .expect("writer queue closed");
@@ -721,6 +736,165 @@ mod tests {
             .await
             .expect("forwarder did not stop after bus close")
             .expect("forwarder task failed");
+    }
+
+    #[tokio::test]
+    async fn replay_precedes_live_output_when_coalesced_under_backpressure() {
+        let session_id = Uuid::new_v4();
+        let bus = crate::output_bus::OutputBus::new(8, 8);
+        for (seq, byte) in [(1, b'a'), (2, b'b')] {
+            bus.publish(OutputChunk {
+                seq,
+                data: Arc::new(vec![byte]),
+            });
+        }
+        let subscription = bus.subscribe(Some(0)).expect("subscribe");
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        output_tx
+            .send(Frame::Event(Event::SnapshotInvalidated {
+                session_id: Uuid::nil(),
+            }))
+            .await
+            .expect("fill output queue");
+
+        let forwarder = tokio::spawn(forward_output(
+            session_id,
+            subscription.replay,
+            subscription.receiver,
+            output_tx,
+            control_tx,
+        ));
+        for (seq, byte) in [(3, b'c'), (4, b'd')] {
+            bus.publish(OutputChunk {
+                seq,
+                data: Arc::new(vec![byte]),
+            });
+        }
+        bus.close();
+
+        assert!(matches!(
+            output_rx.recv().await,
+            Some(Frame::Event(Event::SnapshotInvalidated { .. }))
+        ));
+        let mut output = Vec::new();
+        let mut output_seqs = Vec::new();
+        while output.len() < 4 {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
+                .await
+                .expect("coalesced replay/live output timeout")
+                .expect("output queue closed");
+            if let Frame::OutputBinary(frame) = frame {
+                output.extend_from_slice(&frame.data);
+                output_seqs.push(frame.seq);
+            }
+        }
+        assert_eq!(output, b"abcd");
+        assert!(output_seqs.windows(2).all(|seqs| seqs[0] < seqs[1]));
+        assert_eq!(output_seqs.last(), Some(&4));
+        tokio::time::timeout(std::time::Duration::from_secs(1), forwarder)
+            .await
+            .expect("forwarder did not stop after bus close")
+            .expect("forwarder task failed");
+    }
+
+    #[tokio::test]
+    async fn sustained_output_beyond_local_cap_uses_lag_recovery() {
+        const CHUNK_BYTES: usize = 8 * 1024;
+        const CHUNKS_TO_CAP: u64 = (OUTPUT_FORWARD_BUFFER_MAX_BYTES / CHUNK_BYTES) as u64;
+        let session_id = Uuid::new_v4();
+        let bus = crate::output_bus::OutputBus::new(64, 64);
+        let subscription = bus.subscribe(None).expect("subscribe");
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        output_tx
+            .send(Frame::Event(Event::SnapshotInvalidated {
+                session_id: Uuid::nil(),
+            }))
+            .await
+            .expect("fill output queue");
+
+        let forwarder = tokio::spawn(forward_output(
+            session_id,
+            subscription.replay,
+            subscription.receiver,
+            output_tx,
+            control_tx,
+        ));
+        for seq in 1..=CHUNKS_TO_CAP {
+            bus.publish(OutputChunk {
+                seq,
+                data: Arc::new(vec![b'x'; CHUNK_BYTES]),
+            });
+            tokio::task::yield_now().await;
+        }
+        for seq in (CHUNKS_TO_CAP + 1)..=(CHUNKS_TO_CAP + 128) {
+            bus.publish(OutputChunk {
+                seq,
+                data: Arc::new(vec![b'y'; CHUNK_BYTES]),
+            });
+        }
+
+        assert!(matches!(
+            output_rx.recv().await,
+            Some(Frame::Event(Event::SnapshotInvalidated { .. }))
+        ));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), control_rx.recv())
+            .await
+            .expect("lag recovery event timeout")
+            .expect("control queue closed");
+        assert!(matches!(
+            event,
+            Frame::Event(Event::SubscriptionDropped {
+                session_id: dropped_session,
+                lagged,
+            }) if dropped_session == session_id && lagged > 0
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), forwarder)
+            .await
+            .expect("forwarder did not stop after lag recovery")
+            .expect("forwarder task failed");
+    }
+
+    #[tokio::test]
+    async fn output_burst_leaves_writer_capacity_for_control_response() {
+        const OUTPUT_CHUNKS: u64 = 400;
+        let session_id = Uuid::new_v4();
+        let bus = crate::output_bus::OutputBus::new(512, 512);
+        let subscription = bus.subscribe(None).expect("subscribe");
+        let (output_tx, _output_rx) = mpsc::channel(18);
+        let (control_tx, mut control_rx) = mpsc::channel(18);
+
+        let forwarder = tokio::spawn(forward_output(
+            session_id,
+            subscription.replay,
+            subscription.receiver,
+            output_tx,
+            control_tx.clone(),
+        ));
+        for seq in 1..=OUTPUT_CHUNKS {
+            bus.publish(OutputChunk {
+                seq,
+                data: Arc::new(vec![b'x'; 8 * 1024]),
+            });
+        }
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            control_tx.send(Frame::ControlResponse(unknown_session(7, Uuid::nil()))),
+        )
+        .await
+        .expect("output saturated the writer queue and starved a control response")
+        .expect("control queue closed");
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(Frame::ControlResponse(ControlResponse { id: 7, .. }))
+        ));
+
+        forwarder.abort();
     }
 
     #[test]

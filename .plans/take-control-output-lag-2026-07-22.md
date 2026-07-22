@@ -1,6 +1,6 @@
 # take-control output lag loop — 2026-07-22
 
-status: broker fix and stacked PR #196 client candidate deployed for manual verification
+status: review findings addressed locally; awaiting repeat sub-agent review
 branch: fix/take-control-output-lag
 base: PR #196 head 88f603d2d1da3cf9be05fc06e42bf3b6e79c1506
 
@@ -28,13 +28,15 @@ high-volume tui output during takeover must not overflow the broker subscription
 
 - focused regression red before fix: `SubscriptionDropped`, lagged 1 chunk in the deterministic backpressure case.
 - focused regression green after fix: 2,000 one-byte chunks arrive in one coalesced frame with seq 2,000 and no drop event.
-- full Rust broker suite: 174 passed, 0 failed (138 lib + 3 bin + 27 socket integration + 6 fixtures).
-- full Bun suite: 1,835 passed, 0 failed.
+- full Rust broker suite after review fixes: 177 passed, 0 failed (141 lib + 3 bin + 27 socket integration + 6 fixtures).
+- full Bun suite on the stacked candidate: 1,827 passed, 0 failed.
 - full Playwright run: 100 passed, 123 skipped, 2 failures in `broker-shell-reconnect`; the same `/tmp/marker.txt` → `/tmp/markerxt` mobile-proxy failure reproduces unchanged on pristine 921e46e and is unrelated to broker output forwarding.
-- relevant fixed-binary E2E passed: broker take-control A → B → A and broker TUI reconnect on both mobile projects.
+- real-browser multi-session redraw takeover is red against the old broker (four lagged subscriptions) and green 3/3 against the updated broker.
+- full Playwright after review fixes: 105 passed, 126 expected skips.
 - clippy remains blocked by six pre-existing warnings in untouched files; no new clippy finding points at `broker/src/server.rs`.
 - full broker deploy completed: broker PID 34586 → 28214. No post-restart `subscription forwarder lagged broadcast` event has been logged.
-- residual risk: server logged broker request timeouts and one later `replay_truncated`; takeover must be manually rechecked before this draft is release-ready.
+- initial deployed version still allowed output to fill the shared writer queue; server logged broker request timeouts and one later `replay_truncated`.
+- follow-up fix separates prioritized control/event traffic from bounded output traffic and restores the pre-coalescing 8 KiB frame limit.
 - rebased onto PR #196 head and deployed server-only for keyboard testing: server PID 62749 → 68020; broker PID 28214 and all four session identities preserved.
 - live app hash: `b2f548b08b293a80be1932659da375c6f05b96b946d09ac8b95103cafd5b2521`.
 - live Ghostty hash: `20a5074d3ef7a4e8aa5555ffc7c2ac936227cd094bd5949a7be08a2711a68f57`; `insertReplacementText` present once and `preventScroll` twice.
@@ -46,4 +48,10 @@ high-volume tui output during takeover must not overflow the broker subscription
 - [x] verify focused broker test with a 2,000-chunk burst
 - [x] verify full broker and Bun suites; relevant takeover/TUI E2E passes
 - [x] review deployment tradeoff with user and perform approved broker restart
-- [ ] manually verify takeover stream and real Android/Gboard input
+- [x] add real-browser/fixed-broker multi-session redraw takeover regression; old broker logs four subscription lags, fixed broker passes without lag or reconnect (3/3 repeat)
+- [x] add replay→live ordering/watermark coverage
+- [x] add sustained-output 8 MiB cap/lag-recovery coverage
+- [x] document coalesced frame seq and prioritized control ordering contracts
+- [x] preserve the writer queue's prior ~8 MiB output memory envelope
+- [ ] repeat all review passes on updated PR
+- [ ] manually verify real Android/Gboard input
