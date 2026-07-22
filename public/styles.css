@@ -228,6 +228,11 @@ header h1 {
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
+#terminal-view.terminal-swipe-peek #input-bar,
+#terminal-view.terminal-swipe-peek #kb-accessory,
+#terminal-view.terminal-swipe-peek #cmd-palette {
+  display: none !important;
+}
 
 .list {
   flex: 1;
@@ -1313,24 +1318,6 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
   padding: 4px;
   background: var(--bg-base);
   overflow: hidden;
-}
-body.mobile-no-ghost-focus #desktop-terminal-container textarea {
-  display: none !important;
-}
-#mobile-kb-proxy {
-  display: none;
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 0;
-  height: 0;
-  opacity: 0;
-  overflow: hidden;
-  border: none;
-  padding: 0;
-  margin: 0;
-  font-size: 16px;
-  caret-color: transparent;
 }
 #desktop-terminal-container.hydrating {
   background: var(--bg-base);

@@ -2196,24 +2196,36 @@ function _sendTerminalInput(bytes) {
   return false;
 }
 
-function sendMobileProxyText(proxy, text) {
-  const pending = text || proxy.value;
-  if (!pending) return true;
-  // Preserve original field content so we don't silently lose buffered chars
-  // when an explicit `text` arg is passed and the send fails (PR #89 review).
-  const savedField = proxy.value;
-  if (_sendTerminalInput(_textEncoder.encode(pending))) {
-    proxy.value = "";
-    return true;
-  }
-  proxy.value = savedField || pending;
-  return false;
+function syncMobileGhosttyKeyboardUi(open: boolean): void {
+  state.kbAccessoryOpen = open;
+  document.getElementById("kb-open-btn")?.classList.toggle("active", open);
+  const cmd = document.getElementById("cmd-palette");
+  if (cmd && cmd.innerHTML) cmd.classList.toggle("visible", open);
 }
 
-function flushMobileKbProxyPendingInput() {
-  const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
-  if (!proxy) return false;
-  return sendMobileProxyText(proxy, proxy.value);
+function setMobileGhosttyKeyboardOpen(open: boolean): boolean {
+  const term = state.terminalController?.term;
+  const input = term?.textarea;
+  if (!term || !input) return false;
+
+  if (open) {
+    state.terminalController?.scrollToBottom();
+    term.options.disableStdin = false;
+    input.readOnly = false;
+    input.tabIndex = 0;
+    input.setAttribute("inputmode", "text");
+    input.blur();
+    input.focus({ preventScroll: true });
+  } else {
+    input.blur();
+    input.readOnly = true;
+    input.tabIndex = -1;
+    input.setAttribute("inputmode", "none");
+    term.options.disableStdin = true;
+  }
+
+  syncMobileGhosttyKeyboardUi(open);
+  return true;
 }
 
 function createConflictOverlay(message, buttonLabel, onClick) {
@@ -3397,13 +3409,28 @@ function removeCachedTerminalPlaceholder(): void {
   document.querySelectorAll("." + CACHED_TERMINAL_PLACEHOLDER_CLASS).forEach((el) => el.remove());
 }
 
+function mobileKeyboardShiftElements(): HTMLElement[] {
+  return [
+    document.getElementById("conn-status"),
+    document.getElementById("desktop-terminal-container"),
+    document.getElementById("desktop-grid-container"),
+    document.getElementById("cmd-palette"),
+    document.getElementById("kb-accessory"),
+  ].filter((el): el is HTMLElement => !!el);
+}
+
+function setMobileKeyboardShift(offsetPx: number): void {
+  const transform = offsetPx > 0 ? `translateY(-${offsetPx}px)` : "";
+  for (const el of mobileKeyboardShiftElements()) el.style.transform = transform;
+}
+
 async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefillMode): Promise<void> {
   if (state.terminalController) return;
   // Defensive: clear stale timer from a prior session that wasn't properly destroyed
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
-  const kbProxy = document.getElementById("mobile-kb-proxy");
+  document.getElementById("terminal-view")?.classList.remove("terminal-swipe-peek");
   const soloPrefillMode = prefillModeOverride ?? (isMobile
     ? (wpSettings.soloPrefillMode === TERMINAL_PREFILL_MODE.FULL ? TERMINAL_PREFILL_MODE.FULL : TERMINAL_PREFILL_MODE.VIEWPORT)
     : TERMINAL_PREFILL_MODE.FULL);
@@ -3427,18 +3454,6 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
   document.getElementById("input-bar").style.display = "none";
   document.getElementById("cmd-palette").classList.remove("visible");
   document.getElementById("msg-preview").style.display = "none";
-
-  if (isMobile) {
-    kbProxy.style.display = "block";
-    // Start with inputmode=none so the browser never shows a virtual keyboard
-    // on focus. kb-open-btn switches to inputmode=text when user wants to type.
-    kbProxy.setAttribute("inputmode", "none");
-    kbProxy.setAttribute("readonly", "");
-    // Hide ghostty-web's textarea on mobile to prevent focus stealing
-    document.body.classList.add("mobile-no-ghost-focus");
-  } else {
-    kbProxy.style.display = "none";
-  }
 
   _tcState = { displaced: false, autoTakeControl: false };
   let _cachedPendingReset = showCachedPlaceholder;
@@ -3475,7 +3490,6 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       setConnState("live");
     },
     onPtyReady: () => {
-      flushMobileKbProxyPendingInput();
       // Force a full canvas repaint after prefill completes. FitAddon.fit() and
       // Terminal.resize() both no-op when dimensions haven't changed, so sendFitResize
       // does nothing if the terminal is the same size as before the session switch.
@@ -3524,11 +3538,8 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       removeDesktopConflictOverlay();
       setTerminalLoadVisualState(container, "hydrating");
       slowLoad.start("restoring terminal control");
-      if (state.terminalController) state.terminalController.focus();
-      if (isMobile) {
-        const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
-        if (proxy && proxy.style.display !== "none") proxy.focus({ preventScroll: true });
-      }
+      if (isMobile) setMobileGhosttyKeyboardOpen(state.kbAccessoryOpen);
+      else if (state.terminalController) state.terminalController.focus();
     },
     onDisconnected: (code, reason) => {
       removeDesktopConflictOverlay();
@@ -3587,71 +3598,32 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
     return;
   }
 
-  // Mobile: attach touch scroll handler + blur any auto-focused element
+  // Mobile: Ghostty owns input semantics; Wolfpack only gates whether its
+  // native textarea is allowed to open the virtual keyboard.
   if (isMobile && state.terminalController.term) {
+    container.setAttribute("inputmode", "none");
+    setMobileGhosttyKeyboardOpen(false);
     state._touchCleanup = setupTouchScrollHandler(
       container, state.terminalController.term,
       (data) => state.terminalController && state.terminalController.send(data),
       () => !!(state.terminalController && state.terminalController.isConnected),
+      () => {
+        setMobileGhosttyKeyboardOpen(false);
+      },
     );
-    // ghostty-web sets contentEditable + role=textbox on the container, which
-    // causes mobile browsers to show the keyboard on any touch. Adding
-    // inputmode=none suppresses the keyboard while preserving ghostty's internals.
-    function neutralizeGhostFocus() {
-      if (container.getAttribute("contenteditable") && !container.getAttribute("inputmode")) {
-        container.setAttribute("inputmode", "none");
-      }
-      container.querySelectorAll("textarea, input").forEach((el) => {
-        const htmlEl = el as HTMLElement;
-        if (!htmlEl.hasAttribute("readonly")) {
-          htmlEl.setAttribute("tabindex", "-1");
-          el.setAttribute("inputmode", "none");
-          el.setAttribute("readonly", "");
-        }
-      });
-    }
-    neutralizeGhostFocus();
-    // ghostty-web may re-apply attributes or add new elements on reconnect.
-    // Debounce to avoid jank from high-frequency DOM mutations during output.
-    let _ghostDebounce = null;
-    state._ghostInputObserver = new MutationObserver(() => {
-      if (_ghostDebounce) return;
-      _ghostDebounce = requestAnimationFrame(() => {
-        _ghostDebounce = null;
-        neutralizeGhostFocus();
-      });
-    });
-    state._ghostInputObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["contenteditable"] });
-    // Blur anything that auto-focused during mount (prevents keyboard auto-open)
-    if (document.activeElement && document.activeElement !== document.body) {
-      (document.activeElement as HTMLElement).blur();
-    }
   }
 
   if (window.visualViewport && isMobile) {
-    const termView = document.getElementById("terminal-view");
     const vvHandler = () => {
       const kbHeight = window.innerHeight - window.visualViewport.height;
       const kbOpen = kbHeight > 150;
-      // Option A: translateY slides the terminal up without changing its height.
+      // Shift terminal sub-elements without changing their layout height.
       // ghostty-web sees no container resize → no reflow → no scroll-through.
-      // The bottom portion of the terminal is clipped behind the keyboard.
-      termView.style.transform = kbOpen ? `translateY(-${kbHeight}px)` : "";
-      // Toggle visual state on keyboard button + sync accessory state
-      const kbBtn = document.getElementById("kb-open-btn");
-      if (kbBtn) kbBtn.classList.toggle("active", kbOpen);
-      if (state.kbAccessoryOpen !== kbOpen) {
-        state.kbAccessoryOpen = kbOpen;
-        const cmd = document.getElementById("cmd-palette");
-        if (cmd && cmd.innerHTML) cmd.classList.toggle("visible", kbOpen);
-        if (!kbOpen) {
-          const p = document.getElementById("mobile-kb-proxy");
-          if (p && document.activeElement !== p) {
-            p.setAttribute("readonly", "");
-            p.setAttribute("inputmode", "none");
-          }
-        }
-      }
+      // Keep #terminal-view transform reserved for mobile view/swipe navigation.
+      setMobileKeyboardShift(kbOpen ? kbHeight : 0);
+      // Viewport is authoritative for collapse only. Opening remains an
+      // explicit keyboard-button action so layout changes cannot enable stdin.
+      if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
     };
     window.visualViewport.addEventListener("resize", vvHandler);
     state.visualViewportHandler = vvHandler;
@@ -3686,30 +3658,26 @@ function hideTerminalCanvasForTeardown(): void {
 
 function destroyTerminal() {
   hideTerminalCanvasForTeardown();
-  if (state._ghostInputObserver) { state._ghostInputObserver.disconnect(); state._ghostInputObserver = null; }
   if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
   // Always flush snapshot before disposing terminal — even if no timer was
   // pending, the terminal has content worth persisting for instant restore.
   flushSnapshot();
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
+  if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
   if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
     state.visualViewportHandler = null;
   }
-  // Reset termView positioning
+  // Reset terminal positioning
   const termView = document.getElementById("terminal-view");
   if (termView) { termView.style.bottom = ""; termView.style.transform = ""; }
+  setMobileKeyboardShift(0);
   if (state.kbResizeTimer) { clearTimeout(state.kbResizeTimer); state.kbResizeTimer = null; }
-  // Blur and hide mobile-kb-proxy
-  const kbProxy = document.getElementById("mobile-kb-proxy");
-  if (kbProxy) { kbProxy.blur(); kbProxy.style.display = "none"; }
-  // Remove mobile ghost focus suppression
-  document.body.classList.remove("mobile-no-ghost-focus");
-
   const container = document.getElementById("desktop-terminal-container");
+  container.removeAttribute("inputmode");
   container.style.display = "none";
   container.classList.remove("hydrating", "hydrated");
   container.innerHTML = "";
@@ -3806,19 +3774,10 @@ function updatePreview() {
   }
 }
 
-let _mobileKbProxySentTail = "";
-
-function rememberMobileTerminalText(text: string): void {
-  _mobileKbProxySentTail = WP.updateMobileSentTail(_mobileKbProxySentTail, text);
-}
-
 function sendTerminalText(text: string): void {
   if (!state.currentSession) return;
   wpMetrics.sendCount++;
-  if (_sendTerminalInput(_textEncoder.encode(text))) {
-    rememberMobileTerminalText(text);
-    return;
-  }
+  if (_sendTerminalInput(_textEncoder.encode(text))) return;
   wpMetrics.sendFailCount++;
 }
 
@@ -4433,122 +4392,16 @@ function insertMessageInputNewline(): void {
   });
 })();
 
-(function setupMobileKbProxy() {
-  const proxy = document.getElementById("mobile-kb-proxy") as HTMLInputElement | null;
-  if (!proxy) return;
-  let _composing = false;
-  let _skipNextInput = false;
-
-  function rememberSentText(text: string): void {
-    rememberMobileTerminalText(text);
-  }
-
-  function sendRememberedProxyText(text: string): boolean {
-    const sent = text || proxy.value;
-    const ok = sendMobileProxyText(proxy, text);
-    if (ok) rememberSentText(sent);
-    return ok;
-  }
-
-  function sendMobileAutocompleteCommitText(committedText: string): boolean {
-    const text = WP.textToSendForMobileAutocompleteCommit({
-      alreadySentTail: _mobileKbProxySentTail,
-      committedText,
-      requirePrefixExtension: true,
-    });
-    if (!text) {
-      proxy.value = "";
-      return true;
-    }
-    const ok = sendMobileProxyText(proxy, text);
-    if (ok) rememberSentText(text);
-    return ok;
-  }
-
-  // Send every character immediately — don't wait for composition to finish.
-  // The proxy is invisible so we don't need composed text; the terminal wants
-  // each keystroke as it happens. On compositionend we flush any remaining
-  // buffered text (e.g. autocomplete selection that inserts multiple chars).
-  proxy.addEventListener("compositionstart", () => { _composing = true; });
-  proxy.addEventListener("compositionend", () => {
-    _composing = false;
-    if (proxy.value) {
-      _skipNextInput = sendMobileAutocompleteCommitText(proxy.value);
-    }
-  });
-
-  proxy.addEventListener("input", (e) => {
-    if (_skipNextInput) {
-      _skipNextInput = false;
-      return;
-    }
-    // Skip deleteContentBackward — keydown handler already sent \x7f
-    if (e.inputType === "deleteContentBackward") return;
-    // Skip insertLineBreak/insertParagraph — keydown handler already sent \r
-    if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") return;
-    // During composition: send the newest char immediately (last char in value).
-    // Autocomplete/predictive text may later commit the full word, so track
-    // what already went to the terminal and trim that prefix from the commit.
-    if (_composing && proxy.value) {
-      const last = proxy.value.slice(-1);
-      sendRememberedProxyText(last);
-      return;
-    }
-    const pending = proxy.value || e.data || "";
-    if (e.inputType === "insertReplacementText" || e.inputType === "insertFromComposition" || (e.inputType === "insertText" && pending.length > 1)) {
-      sendMobileAutocompleteCommitText(pending);
-      return;
-    }
-    sendRememberedProxyText(pending);
-  });
-
-  proxy.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      if (_sendTerminalInput(_textEncoder.encode("\r"))) {
-        rememberSentText("\r");
-        e.preventDefault();
-      }
-    } else if (e.key === "Backspace") {
-      const sentBackspace = _sendTerminalInput(_textEncoder.encode("\x7f"));
-      if (sentBackspace) rememberSentText("\x7f");
-      if (sentBackspace || !proxy.value) {
-        e.preventDefault();
-      }
-    } else if (e.key === "Escape") {
-      if (_sendTerminalInput(_textEncoder.encode("\x1b"))) e.preventDefault();
-    }
-  });
-
-  // Keyboard toggle button — explicit open/close instead of tap-on-terminal
-  // (tap-to-focus was unreliable: scroll gestures triggered keyboard open)
+(function setupMobileGhosttyKeyboard() {
   const kbOpenBtn = document.getElementById("kb-open-btn");
-  if (kbOpenBtn) {
-    function toggleMobileKeyboard() {
-      if (proxy.style.display === "none") return;
-      const opening = document.activeElement !== proxy;
-      if (opening) {
-        state.terminalController?.scrollToBottom();
-        proxy.removeAttribute("readonly");
-        proxy.setAttribute("inputmode", "text");
-        proxy.focus({ preventScroll: true });
-      } else {
-        proxy.blur();
-        proxy.setAttribute("readonly", "");
-        proxy.setAttribute("inputmode", "none");
-      }
-      // Sync kbAccessoryOpen so cmd-palette visibility tracks keyboard state
-      state.kbAccessoryOpen = opening;
-      const cmd = document.getElementById("cmd-palette");
-      if (cmd && cmd.innerHTML) cmd.classList.toggle("visible", opening);
-    }
-    kbOpenBtn.addEventListener("mousedown", (e) => e.preventDefault());
-    kbOpenBtn.addEventListener("touchstart", () => {
-      haptic([15]);
-    }, { passive: true });
-    kbOpenBtn.addEventListener("click", () => {
-      toggleMobileKeyboard();
-    });
-  }
+  if (!kbOpenBtn) return;
+  kbOpenBtn.addEventListener("mousedown", (event) => event.preventDefault());
+  kbOpenBtn.addEventListener("touchstart", () => {
+    haptic([15]);
+  }, { passive: true });
+  kbOpenBtn.addEventListener("click", () => {
+    setMobileGhosttyKeyboardOpen(!state.kbAccessoryOpen);
+  });
 })();
 
 
@@ -4736,6 +4589,7 @@ if (!isDesktop()) {
   let isBack = false;
   let fgEl = null, bgEl = null;
   let swipeCard = null;
+  let forwardTargetView: string | null = null;
   const W = () => window.innerWidth;
 
   const BACK_TARGET = {
@@ -4762,7 +4616,7 @@ if (!isDesktop()) {
     sx = e.touches[0].clientX; sy = e.touches[0].clientY;
     st = Date.now(); dx = 0;
     locked = false; scrolling = false;
-    fgEl = null; bgEl = null; swipeCard = null;
+    fgEl = null; bgEl = null; swipeCard = null; forwardTargetView = null;
   }, { passive: true });
 
   vc.addEventListener("touchmove", (e) => {
@@ -4790,9 +4644,9 @@ if (!isDesktop()) {
         isBack = false;
         fgEl = document.getElementById(state.currentView + "-view");
         const isRalphCard = card.classList.contains("ralph-card");
-        const targetView = state.currentView === "sessions" ? (isRalphCard ? "ralph-detail" : "terminal") : null;
-        if (!targetView) { scrolling = true; return; }
-        bgEl = document.getElementById(targetView + "-view");
+        forwardTargetView = state.currentView === "sessions" ? (isRalphCard ? "ralph-detail" : "terminal") : null;
+        if (!forwardTargetView) { scrolling = true; return; }
+        bgEl = document.getElementById(forwardTargetView + "-view");
       } else { scrolling = true; return; }
 
       vc.classList.add("swipe-active");
@@ -4807,6 +4661,7 @@ if (!isDesktop()) {
         // forward: card drags independently, terminal peeks behind
         bgEl.style.transform = "translate3d(100%, 0, 0)";
         bgEl.classList.add("visible");
+        if (forwardTargetView === "terminal") bgEl.classList.add("terminal-swipe-peek");
         bgEl.style.zIndex = "2";
         fgEl.style.zIndex = "1";
       }
@@ -4836,7 +4691,7 @@ if (!isDesktop()) {
     if (card) { card.style.transform = ""; }
 
     if (!shouldComplete) {
-      bg.classList.remove("visible");
+      bg.classList.remove("visible", "terminal-swipe-peek");
       [fg, bg].forEach(el => {
         el.style.zIndex = ""; el.style.transform = ""; el.classList.remove("swiping");
       });
@@ -4863,7 +4718,7 @@ if (!isDesktop()) {
     }
 
     vc.classList.remove("swipe-active");
-    fgEl = null; bgEl = null; swipeCard = null;
+    fgEl = null; bgEl = null; swipeCard = null; forwardTargetView = null;
   }, { passive: true });
 }
 

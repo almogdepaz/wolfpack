@@ -204,7 +204,7 @@ test("wolfpack restart: broker session survives and prefill restores marker", as
   }
 
   await page1.locator("#kb-open-btn").click();
-  await page1.locator("#mobile-kb-proxy").focus();
+  await page1.locator("#desktop-terminal-container textarea").focus();
   await page1.keyboard.type(`echo ${marker}`);
   await page1.keyboard.press("Enter");
 

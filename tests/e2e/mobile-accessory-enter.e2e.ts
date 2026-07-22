@@ -14,6 +14,23 @@ test.afterAll(async () => {
 test("mobile accessory Enter inserts line-feed while native Enter still sends carriage-return", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only accessory keyboard behavior");
 
+  const sentBytes: number[][] = [];
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") {
+        sentBytes.push(Array.from(Buffer.from(message)));
+        return;
+      }
+      let parsed: { readonly type?: string; readonly prefillMode?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 
@@ -21,31 +38,13 @@ test("mobile accessory Enter inserts line-feed while native Enter still sends ca
   await expect(page.locator("#terminal-view")).toBeVisible();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5000 });
 
-  await page.evaluate(() => {
-    const win = window as unknown as {
-      __sentBytes: number[][];
-      state: { terminalController: { send: (bytes: Uint8Array) => void; isConnected: boolean } };
-    };
-    win.__sentBytes = [];
-    win.state.terminalController.send = (bytes: Uint8Array) => {
-      win.__sentBytes.push(Array.from(bytes));
-    };
-    Object.defineProperty(win.state.terminalController, "isConnected", {
-      configurable: true,
-      value: true,
-    });
-  });
-
   await page.locator("#kb-open-btn").click();
-  await expect(page.locator("#mobile-kb-proxy")).toBeFocused();
+  await expect(page.locator("#desktop-terminal-container textarea")).toBeFocused();
 
   await page.keyboard.press("Enter");
-  await expect.poll(async () => page.evaluate(() => (window as unknown as { __sentBytes: number[][] }).__sentBytes)).toEqual([[13]]);
+  await expect.poll(() => sentBytes).toEqual([[13]]);
 
-  await page.evaluate(() => {
-    (window as unknown as { __sentBytes: number[][] }).__sentBytes = [];
-  });
-
+  sentBytes.length = 0;
   await page.locator("#kb-accessory .kb-enter").click();
-  await expect.poll(async () => page.evaluate(() => (window as unknown as { __sentBytes: number[][] }).__sentBytes)).toEqual([[10]]);
+  await expect.poll(() => sentBytes).toEqual([[10]]);
 });

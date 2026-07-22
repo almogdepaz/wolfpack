@@ -156,7 +156,7 @@ test("broker shell: reconnect restores marker transcript", async ({
 
   // ── Type marker command ──
   await page.locator("#kb-open-btn").click();
-  await page.locator("#mobile-kb-proxy").focus();
+  await page.locator("#desktop-terminal-container textarea").focus();
   await page.keyboard.type(MARKER_CMD);
   await page.keyboard.press("Enter");
 

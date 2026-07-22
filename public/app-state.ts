@@ -317,7 +317,6 @@ export const state = {
   notificationUnsubscribeInFlight: false,
   kbAccessoryOpen: false,
   _cachedFallbackTimer: null,
-  _ghostInputObserver: null,
   // peer health: { [machineUrl]: { failures } }. A peer that fails repeatedly
   // drops to a shorter fetch timeout so it doesn't dominate UI refresh time.
   // Intentionally NOT persisted across page reloads — stale failure state
