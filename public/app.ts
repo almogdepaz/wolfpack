@@ -29,6 +29,7 @@ import {
 } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
+import { filterProjectNames } from "./project-picker";
 import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
@@ -3061,6 +3062,26 @@ async function openSession(name, machineUrl) {
 
 // ── Project picker ──
 
+let projectNames: readonly string[] | null = null;
+
+function renderProjectNames(projects: readonly string[]): void {
+  const list = document.getElementById("project-list");
+  if (!projects.length) {
+    list.innerHTML = '<div class="empty">No matching projects</div>';
+    return;
+  }
+  list.innerHTML = projects
+    .map(
+      (project) => `
+<div class="card" onclick="selectProject('${escAttr(project)}')">
+  <div class="dot brand" title="project"></div>
+  <div class="card-name">${esc(project)}</div>
+</div>
+    `,
+    )
+    .join("");
+}
+
 function returnFromProjectPicker(): void {
   if (state.viewBeforePicker === "sessions") {
     backToSessions();
@@ -3080,28 +3101,23 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
-  (document.getElementById("new-project-name") as HTMLInputElement).value = "";
-  const el = document.getElementById("project-list");
-  el.innerHTML = '<div class="empty">Loading...</div>';
+  const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
+  projectNameInput.value = "";
+  projectNameInput.focus({ preventScroll: true });
+  const list = document.getElementById("project-list");
+  projectNames = null;
+  list.innerHTML = '<div class="empty">Loading...</div>';
 
   try {
     const data = await api<ProjectsResponse>("/projects", undefined, state.projectMachine);
-    if (!data.projects?.length) {
-      el.innerHTML = '<div class="empty">No projects in ~/Dev</div>';
+    projectNames = data.projects ?? [];
+    if (!projectNames.length) {
+      list.innerHTML = '<div class="empty">No projects in ~/Dev</div>';
       return;
     }
-    el.innerHTML = data.projects
-      .map(
-        (p) => `
-<div class="card" onclick="selectProject('${escAttr(p)}')">
-  <div class="dot brand" title="project"></div>
-  <div class="card-name">${esc(p)}</div>
-</div>
-    `,
-      )
-      .join("");
+    renderProjectNames(projectNames);
   } catch {
-    el.innerHTML = '<div class="empty">Failed to load projects</div>';
+    list.innerHTML = '<div class="empty">Failed to load projects</div>';
   }
 }
 
@@ -4491,11 +4507,14 @@ document.addEventListener("keydown", (e) => {
   }
 }, true);
 
-document
-  .getElementById("new-project-name")
-  .addEventListener("keydown", (e) => {
-    if (e.key === "Enter") selectNewProject();
-  });
+const newProjectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
+newProjectNameInput.addEventListener("input", () => {
+  if (projectNames === null) return;
+  renderProjectNames(filterProjectNames(projectNames, newProjectNameInput.value));
+});
+newProjectNameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") selectNewProject();
+});
 
 // ── Settings ──
 

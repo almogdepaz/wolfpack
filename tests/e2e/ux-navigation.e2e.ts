@@ -71,6 +71,41 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(4)).not.toHaveAttribute("data-parent-session", /.+/);
 });
 
+test("project picker filters fetched projects by typed prefix without refetching", async ({ page }) => {
+  let projectRequests = 0;
+  await page.route("**/api/projects", async (route) => {
+    projectRequests++;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ projects: ["loom", "LoopTools", "catalog", "LOOKOUT"] }),
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  const projectNameInput = page.locator("#new-project-name");
+  await expect(projectNameInput).toBeFocused();
+  await expect(projectNameInput).toHaveAttribute("placeholder", "Project name");
+  const projectNames = page.locator("#project-list .card-name");
+  await expect(projectNames).toHaveText(["loom", "LoopTools", "catalog", "LOOKOUT"]);
+
+  await projectNameInput.fill("loo");
+  await expect(projectNames).toHaveText(["loom", "LoopTools", "LOOKOUT"]);
+  expect(projectRequests).toBe(1);
+
+  await projectNameInput.fill("log");
+  await expect(projectNames).toHaveCount(0);
+  await expect(page.locator("#project-list")).toHaveText("No matching projects");
+
+  await projectNameInput.fill("  ");
+  await expect(projectNames).toHaveText(["loom", "LoopTools", "catalog", "LOOKOUT"]);
+  expect(projectRequests).toBe(1);
+
+  await projectNameInput.fill("LOOPT");
+  await page.locator("#project-list .card").click();
+  await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+});
+
 test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop expanded-session regression");
 
