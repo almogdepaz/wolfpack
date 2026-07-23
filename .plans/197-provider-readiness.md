@@ -82,16 +82,17 @@ follow-up verification:
 - `scripts/deploy-local.sh --broker=no` — pass; server pid 90192, broker pid 36530, 8 sessions preserved
 - live readiness/settings smoke — pass
 
-shell invariant regression:
+shell discoverability follow-up:
 
-- root cause: persisted command arrays could omit/disable shell, and both API operations were permitted
-- shell is now normalized enabled on load, always included in effective commands, and protected from remove/disable operations
-- settings UI disables shell controls
-- red: 6 focused settings/API failures reproduced the missing invariant
-- focused settings/API tests — 145 pass, 0 fail
+- shell remains removable and toggleable like other configured commands
+- provider readiness always shows shell as a built-in command and can re-add it through `POST /api/settings`
+- the existing shell fallback remains when no command is enabled
+- red: 4 focused settings/API failures reproduced the over-constrained shell behavior
+- focused settings/API tests — 143 pass, 0 fail
+- taxonomy ownership — 4 pass, 0 fail
 - desktop settings e2e — 1 pass
 - `bun run typecheck` — pass
-- `bun test` — 1845 pass, 0 fail across 123 files
+- `bun test` — 1843 pass, 0 fail across 123 files
 
 ## constraints
 

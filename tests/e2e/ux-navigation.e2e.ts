@@ -166,17 +166,24 @@ test("settings shows provider readiness and adds an installed provider", async (
   test.skip(testInfo.project.name !== "desktop", "desktop provider readiness");
 
   let configuredCommands = [{ cmd: "shell", enabled: true }];
-  let updateBody: unknown = null;
+  const updateBodies: unknown[] = [];
   await page.route("**/api/settings", async (route) => {
     if (route.request().method() === "POST") {
-      updateBody = route.request().postDataJSON();
-      configuredCommands = [...configuredCommands, { cmd: "codex", enabled: true }];
+      const body = route.request().postDataJSON() as { addCmd?: string; removeCmd?: string };
+      updateBodies.push(body);
+      if (body.addCmd && !configuredCommands.some((entry) => entry.cmd === body.addCmd)) {
+        configuredCommands = [...configuredCommands, { cmd: body.addCmd, enabled: true }];
+      }
+      if (body.removeCmd) {
+        configuredCommands = configuredCommands.filter((entry) => entry.cmd !== body.removeCmd);
+      }
     }
+    const effectiveCommands = configuredCommands.filter((entry) => entry.enabled).map((entry) => entry.cmd);
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         settings: { agentCmd: "shell", cmds: configuredCommands },
-        effective: { agentCmd: "shell", cmds: configuredCommands.map((entry) => entry.cmd), ralphAgents: [] },
+        effective: { agentCmd: "shell", cmds: effectiveCommands.length > 0 ? effectiveCommands : ["shell"], ralphAgents: [] },
       }),
     });
   });
@@ -211,8 +218,16 @@ test("settings shows provider readiness and adds an installed provider", async (
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showView("settings"));
 
   const shellRow = page.locator("#agents-list .agent-row").filter({ hasText: "shell" });
-  await expect(shellRow.locator(".agent-row-checkbox")).toBeDisabled();
-  await expect(shellRow.locator(".agent-row-delete")).toHaveCount(0);
+  await expect(shellRow.locator(".agent-row-checkbox")).toBeEnabled();
+  await expect(shellRow.locator(".agent-row-delete")).toHaveCount(1);
+
+  const shell = page.locator('[data-provider-id="shell"]');
+  await expect(shell.getByRole("button", { name: "Shell added" })).toBeDisabled();
+  await shellRow.locator(".agent-row-delete").click();
+  expect(updateBodies).toEqual([{ removeCmd: "shell" }]);
+  await shell.getByRole("button", { name: "Add Shell" }).click();
+  expect(updateBodies).toEqual([{ removeCmd: "shell" }, { addCmd: "shell" }]);
+  await expect(shell.getByRole("button", { name: "Shell added" })).toBeDisabled();
 
   const codex = page.locator('[data-provider-id="codex"]');
   await expect(codex).toContainText("Codex");
@@ -225,7 +240,11 @@ test("settings shows provider readiness and adds an installed provider", async (
 
   await codex.getByRole("button", { name: "Add Codex" }).click();
 
-  expect(updateBody).toEqual({ addCmd: "codex" });
+  expect(updateBodies).toEqual([
+    { removeCmd: "shell" },
+    { addCmd: "shell" },
+    { addCmd: "codex" },
+  ]);
   await expect(codex.getByRole("button", { name: "Codex added" })).toBeDisabled();
   await expect(page.locator("#agents-list")).toContainText("codex");
 });

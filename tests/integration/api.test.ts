@@ -1300,19 +1300,6 @@ describe("GET /api/settings", () => {
     expect(data.presets).toBeUndefined();
   });
 
-  test("always returns shell enabled when persisted settings omit it", async () => {
-    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
-      agentCmd: "pi",
-      cmds: [{ cmd: "pi", enabled: true }],
-    }));
-
-    const data = await (await get("/api/settings")).json();
-    expect(data.settings.cmds).toEqual([
-      { cmd: "shell", enabled: true },
-      { cmd: "pi", enabled: true },
-    ]);
-    expect(data.effective.cmds).toEqual(["shell", "pi"]);
-  });
 });
 
 describe("POST /api/settings — addCmd", () => {
@@ -1361,10 +1348,10 @@ describe("POST /api/settings — removeCmd", () => {
     expect(cmdNames).not.toContain("throwaway");
   });
 
-  test("rejects removing shell", async () => {
+  test("allows removing shell", async () => {
     const res = await post("/api/settings", { removeCmd: "shell" });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "shell is always enabled" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).settings.cmds).not.toContainEqual({ cmd: "shell", enabled: true });
   });
 
   test("removing the current agentCmd falls through to first enabled", async () => {
@@ -1388,10 +1375,10 @@ describe("POST /api/settings — setCmdEnabled", () => {
     expect(data.effective.cmds).not.toContain("claude");
   });
 
-  test("rejects disabling shell", async () => {
+  test("allows disabling shell", async () => {
     const res = await post("/api/settings", { setCmdEnabled: { cmd: "shell", enabled: false } });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "shell is always enabled" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).settings.cmds).toContainEqual({ cmd: "shell", enabled: false });
   });
 
   test("disabling all cmds → effective.cmds is [\"shell\"] fallback", async () => {

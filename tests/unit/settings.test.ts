@@ -109,13 +109,6 @@ describe("effectiveCmds", () => {
     expect(effectiveCmds(s)).toEqual(["shell"]);
   });
 
-  test("always includes shell when other commands are enabled", () => {
-    expect(effectiveCmds({
-      agentCmd: "pi",
-      cmds: [{ cmd: "pi", enabled: true }],
-    })).toEqual(["shell", "pi"]);
-  });
-
   test("returns [\"shell\"] when cmds is empty", () => {
     expect(effectiveCmds({ agentCmd: "shell", cmds: [] })).toEqual(["shell"]);
   });
@@ -147,10 +140,10 @@ describe("loadSettingsWithRalphAgents", () => {
     });
   });
 
-  test("adds required shell without authorizing a Ralph agent", () => {
+  test("preserves an explicitly empty persisted command list", () => {
     withSettingsFile({ agentCmd: "shell", cmds: [] }, () => {
       const loaded = loadSettingsWithRalphAgents();
-      expect(loaded.settings.cmds).toEqual([{ cmd: "shell", enabled: true }]);
+      expect(loaded.settings.cmds).toEqual([]);
       expect(loaded.ralphAgents).toEqual([]);
     });
   });
@@ -254,20 +247,11 @@ describe("loadSettings — new shape", () => {
     );
   });
 
-  test("normalizes missing or disabled shell to enabled", () => {
+  test("preserves an explicitly empty cmds array", () => {
     withSettingsFile(
-      {
-        agentCmd: "pi",
-        cmds: [
-          { cmd: "pi", enabled: true },
-          { cmd: "shell", enabled: false },
-        ],
-      },
+      { agentCmd: "shell", cmds: [] },
       () => {
-        expect(loadSettings().cmds).toEqual([
-          { cmd: "shell", enabled: true },
-          { cmd: "pi", enabled: true },
-        ]);
+        expect(loadSettings().cmds).toEqual([]);
       },
     );
   });

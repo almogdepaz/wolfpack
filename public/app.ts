@@ -3274,20 +3274,17 @@ function renderAgentsList(data: SettingsResponse): void {
     return;
   }
   list.innerHTML = cmds.map(c => {
-    const isShell = c.cmd === AGENT_KIND.SHELL;
     const isDefault = c.cmd === defaultCmd && c.enabled;
-    const removeButton = isShell ? "" : `<button class="agent-row-delete"
-        onclick="removeAgent('${escAttr(c.cmd)}')"
-        title="Remove" aria-label="Remove ${escAttr(c.cmd)}">&times;</button>`;
     return `<div class="agent-row${c.enabled ? "" : " disabled"}">
       <input type="checkbox" class="agent-row-checkbox"
         ${c.enabled ? "checked" : ""}
-        ${isShell ? 'disabled title="Shell is always enabled"' : ""}
         onchange="toggleAgentEnabled('${escAttr(c.cmd)}', this.checked)"
         aria-label="Enable ${escAttr(c.cmd)}">
       <span class="agent-row-cmd">${esc(c.cmd)}</span>
       ${isDefault ? '<span class="agent-row-default">default</span>' : ""}
-      ${removeButton}
+      <button class="agent-row-delete"
+        onclick="removeAgent('${escAttr(c.cmd)}')"
+        title="Remove" aria-label="Remove ${escAttr(c.cmd)}">&times;</button>
     </div>`;
   }).join("");
 }
@@ -3299,7 +3296,18 @@ function renderProviderReadiness(
   const list = document.getElementById("provider-readiness-list");
   if (!list) return;
   const configured = new Set((settings?.settings?.cmds || []).map((entry) => entry.cmd));
-  list.innerHTML = providers.map((provider) => {
+  const shellAdded = configured.has(AGENT_KIND.SHELL);
+  const shell = `<div class="provider-row installed" data-provider-id="${escAttr(AGENT_KIND.SHELL)}">
+    <div class="provider-row-header">
+      <span class="provider-name">Shell</span>
+      <span class="provider-badge installed">built-in</span>
+      <button class="provider-add-btn" data-provider-command="${escAttr(AGENT_KIND.SHELL)}"
+        aria-label="${shellAdded ? "Shell added" : "Add Shell"}"
+        ${shellAdded ? "disabled" : ""}>${shellAdded ? "added" : "+ add"}</button>
+    </div>
+    <div class="provider-guidance">Always available as Wolfpack's local terminal fallback.</div>
+  </div>`;
+  list.innerHTML = shell + providers.map((provider) => {
     if (provider.status === "missing") {
       return `<div class="provider-row missing" data-provider-id="${escAttr(provider.id)}">
         <div class="provider-row-header">
