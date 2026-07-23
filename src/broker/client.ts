@@ -422,6 +422,11 @@ export class BrokerClient {
     return this.activeSubscriptions.size;
   }
 
+  /** Replay-safe cursor from the caller's initial floor or last delivered output frame. */
+  outputSequence(sessionId: string): bigint | undefined {
+    return this.activeSubscriptionSeq.get(sessionId);
+  }
+
   private clearSubscriptionState(sessionId: string): void {
     this.activeSubscriptions.delete(sessionId);
     this.activeSubscriptionSeq.delete(sessionId);

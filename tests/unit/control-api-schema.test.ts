@@ -8,6 +8,7 @@ import {
   generateControlApiSchemaText,
   validateControlApiSchemaArtifact,
 } from "../../scripts/gen-control-api-schema.ts";
+import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -162,6 +163,49 @@ describe("control api schema compatibility samples", () => {
       maxLength: 32768,
     });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+  });
+
+  test("atomic prompt wait publishes the output-only predicate and every phase-1 outcome", () => {
+    const operation = httpOperation("promptSessionAndWaitForOutput");
+    const request = httpRequest("promptSessionAndWaitForOutput");
+    const response = httpResponse("promptSessionAndWaitForOutput");
+
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(resolveRef((request.properties as JsonObject).session as JsonObject, artifact)).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: SESSION_PROMPT_SELECTOR_MAX_CHARS,
+    });
+    expect(operation.errors).toContain("413 ErrorEnvelope");
+    expect(validate(request, {
+      session: "id-alpha",
+      prompt: "run the check",
+      outputContains: "READY",
+      noEnter: false,
+      timeoutMs: 250,
+    }, artifact)).toEqual([]);
+    expect(validate(request, {
+      session: "id-alpha",
+      prompt: "run the check",
+      agentState: "idle",
+    }, artifact)).not.toEqual([]);
+
+    for (const outcome of [
+      "matched",
+      "timed_out",
+      "target_exited",
+      "target_unavailable",
+      "replay_gap",
+      "backend_unavailable",
+    ]) {
+      expect(validate(response, {
+        ok: outcome === "matched",
+        session: "alpha",
+        sessionId: "id-alpha",
+        outcome,
+        outputBoundarySeq: "42",
+      }, artifact), outcome).toEqual([]);
+    }
   });
 
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {

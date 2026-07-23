@@ -50,7 +50,18 @@ import pkg from "../../package.json";
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
-import { getBackend, getRouter, DuplicateSessionError } from "./backend.js";
+import {
+  getBackend,
+  getRouter,
+  DuplicateSessionError,
+} from "./backend.js";
+import {
+  SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
+  SESSION_PROMPT_OUTCOME,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_SELECTOR_MAX_CHARS,
+  unicodeCodePointLength,
+} from "../session-prompt-contract.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -166,7 +177,7 @@ import {
   cachedPeers,
   discoverPeers,
 } from "./http.js";
-import type { InvalidBodyResponse } from "./http.js";
+import type { InvalidBodyResponse, ParseBodyOptions } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity, PublicSessionIdentity } from "./session-identity.js";
@@ -196,15 +207,15 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 async function parseObjectBody(
   req: IncomingMessage,
   res: ServerResponse,
-  invalidResponse?: InvalidBodyResponse,
+  options: ParseBodyOptions = {},
 ): Promise<Record<string, unknown> | null> {
-  const body = await parseBody(req, res, invalidResponse);
+  const body = await parseBody(req, res, options);
   if (body === undefined) return null;
   if (!isJsonObject(body)) {
     json(
       res,
-      invalidResponse?.envelope ?? { error: "JSON body must be an object" },
-      invalidResponse?.status ?? 400,
+      options.invalidResponse?.envelope ?? { error: "JSON body must be an object" },
+      options.invalidResponse?.status ?? 400,
     );
     return null;
   }
@@ -260,6 +271,43 @@ function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBo
     && typeof body.project === "string"
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "initialPrompt", "string");
+}
+
+interface SessionPromptBody extends Record<string, unknown> {
+  session: string;
+  prompt: string;
+  outputContains: string;
+  noEnter?: boolean;
+  timeoutMs?: number;
+}
+
+function isSessionPromptBody(body: Record<string, unknown>): body is SessionPromptBody {
+  const allowedKeys = new Set([
+    "session",
+    "prompt",
+    "outputContains",
+    "noEnter",
+    "timeoutMs",
+  ]);
+  if (
+    !Object.keys(body).every(key => allowedKeys.has(key))
+    || typeof body.session !== "string"
+    || typeof body.prompt !== "string"
+    || typeof body.outputContains !== "string"
+    || !hasOptionalType(body, "noEnter", "boolean")
+    || !hasOptionalType(body, "timeoutMs", "number")
+  ) {
+    return false;
+  }
+  const sessionLength = unicodeCodePointLength(body.session);
+  const promptLength = unicodeCodePointLength(body.prompt);
+  const outputContainsLength = unicodeCodePointLength(body.outputContains);
+  return sessionLength > 0
+    && sessionLength <= SESSION_PROMPT_SELECTOR_MAX_CHARS
+    && promptLength > 0
+    && promptLength <= MAX_INITIAL_PROMPT_LENGTH
+    && outputContainsLength > 0
+    && outputContainsLength <= SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS;
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -625,7 +673,8 @@ export const routes: Record<
     }
     if (
       initialPrompt !== undefined
-      && (!initialPrompt.trim() || initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+      && (!initialPrompt.trim()
+        || unicodeCodePointLength(initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
     ) {
       return json(res, {
         error: `initial prompt must be 1..${MAX_INITIAL_PROMPT_LENGTH} characters`,
@@ -706,7 +755,8 @@ export const routes: Record<
       || (body.harness !== undefined && !isOpenableHarness(body.harness))
       || (
         body.initialPrompt !== undefined
-        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+        && (!body.initialPrompt.trim()
+          || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
       )
     ) {
       if (body) json(res, {
@@ -765,7 +815,9 @@ export const routes: Record<
   },
 
   "POST /api/session-open": async (req, res) => {
-    const body = await parseObjectBody(req, res, SESSION_OPEN_INVALID_BODY_RESPONSE);
+    const body = await parseObjectBody(req, res, {
+      invalidResponse: SESSION_OPEN_INVALID_BODY_RESPONSE,
+    });
     if (!body) return;
     if (
       !isSessionOpenBody(body)
@@ -773,7 +825,8 @@ export const routes: Record<
       || !isValidSessionName(body.parentSession)
       || (
         body.initialPrompt !== undefined
-        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+        && (!body.initialPrompt.trim()
+          || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
       )
     ) {
       return json(
@@ -1017,6 +1070,60 @@ export const routes: Record<
     } catch (e: unknown) {
       log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);
+    }
+  },
+
+  "POST /api/session-control/prompt": async (req, res) => {
+    const body = await parseObjectBody(req, res, {
+      maxBytes: SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
+      respondOnTooLarge: true,
+    });
+    if (!body) return;
+    if (!isSessionPromptBody(body)) {
+      return json(res, { error: "invalid session prompt request" }, 400);
+    }
+    const timeoutMs = parseTimeoutMs(body.timeoutMs);
+    if (timeoutMs === null) {
+      return json(res, {
+        error: `timeoutMs must be an integer from 1 to ${SESSION_WAIT_MAX_TIMEOUT_MS}`,
+      }, 400);
+    }
+    const resolved = await resolveActiveSession(res, body.session);
+    if (!resolved) return;
+    const session = resolved.name;
+    const sessionId = resolved.identity.wolfpackSessionId;
+    const streaming = getRouter().getStreamingBackendForSession(session);
+    if (!streaming) {
+      return json(res, {
+        ok: false,
+        session,
+        sessionId,
+        outcome: SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE,
+        outputBoundarySeq: null,
+      });
+    }
+    try {
+      const result = await streaming.promptAndWaitForOutput(sessionId, {
+        prompt: body.prompt,
+        outputContains: body.outputContains,
+        noEnter: body.noEnter === true,
+        timeoutMs,
+      });
+      json(res, {
+        ok: result.outcome === SESSION_PROMPT_OUTCOME.MATCHED,
+        session,
+        sessionId,
+        ...result,
+      });
+    } catch (error: unknown) {
+      log.warn("session-control prompt failed", { session, sessionId, error: errMsg(error) });
+      json(res, {
+        ok: false,
+        session,
+        sessionId,
+        outcome: SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE,
+        outputBoundarySeq: null,
+      });
     }
   },
 

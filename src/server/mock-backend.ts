@@ -4,8 +4,16 @@
  * Provides a fully controllable backend that can be injected via
  * __setTestBackend(). No real broker daemon needed.
  */
-import type { SessionBackend, SessionLaunchOptions } from "./backend.js";
+import type {
+  SessionBackend,
+  SessionLaunchOptions,
+} from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
+import { SESSION_PROMPT_OUTCOME } from "../session-prompt-contract.js";
+import type {
+  SessionPromptWaitOptions,
+  SessionPromptWaitResult,
+} from "../session-prompt-contract.js";
 import { stripAnsi } from "./strip-ansi.js";
 import { inferAgentKind } from "./session-identity.js";
 import { AGENT_KIND } from "../agent-kind.js";
@@ -156,6 +164,53 @@ export class MockBackend implements SessionBackend {
 
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     this.lastSendArgs = { name, text, noEnter };
+  }
+
+  async promptAndWaitForOutput(
+    sessionId: string,
+    options: SessionPromptWaitOptions,
+  ): Promise<SessionPromptWaitResult> {
+    const identities = await this.listIdentities();
+    const identity = Object.values(identities).find(
+      candidate => candidate.wolfpackSessionId === sessionId,
+    );
+    if (!identity || !this._sessions.has(identity.wolfpackSessionName)) {
+      return {
+        outcome: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        outputBoundarySeq: null,
+      };
+    }
+
+    const name = identity.wolfpackSessionName;
+    const outputBoundarySeq = (this._nextOutputSeq - 1n).toString();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    return await new Promise((resolve) => {
+      let settled = false;
+      let unsubscribe: (() => void) | null = null;
+      const finish = (outcome: SessionPromptWaitResult["outcome"]): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe?.();
+        resolve({ outcome, outputBoundarySeq });
+      };
+      const timer = setTimeout(
+        () => finish(SESSION_PROMPT_OUTCOME.TIMED_OUT),
+        options.timeoutMs,
+      );
+      unsubscribe = this.onSessionData(name, (data) => {
+        buffer += decoder.decode(data, { stream: true });
+        if (buffer.includes(options.outputContains)) {
+          finish(SESSION_PROMPT_OUTCOME.MATCHED);
+        }
+      }, { onSubscribeError: () => finish(SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE) });
+      if (!unsubscribe) {
+        finish(SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE);
+        return;
+      }
+      void this.send(name, options.prompt, options.noEnter);
+    });
   }
 
   async sendKey(): Promise<void> {

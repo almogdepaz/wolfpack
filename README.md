@@ -108,7 +108,7 @@ wolfpack setup           Re-run the setup wizard
 wolfpack list [--json]   List active broker sessions
 wolfpack session create  Create a top-level project session
 wolfpack agent spawn     Spawn a same-harness child agent
-wolfpack session ...     Status/read/send/wait helpers for agent automation
+wolfpack session ...     Status/read/send/wait/prompt helpers for agent automation
 wolfpack attach [name]   Attach the local terminal to an existing session
 wolfpack kill <name|id>  Kill a session
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale

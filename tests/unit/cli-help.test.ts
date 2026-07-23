@@ -71,7 +71,7 @@ describe("cli help dispatch", () => {
       const child = runCli(alias);
 
       expect(child.exitCode).toBe(0);
-      for (const command of ["create", "status", "open", "read", "send", "wait", "current-context"]) {
+      for (const command of ["create", "status", "open", "read", "send", "wait", "prompt", "current-context"]) {
         expect(child.stdout).toContain(`wolfpack session ${command}`);
       }
       expect(child.stdout).not.toContain("No valid config found");

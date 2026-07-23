@@ -8,6 +8,10 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
+import {
+  BrokerNotConnectedError,
+  BrokerSubscribeError,
+} from "../../src/broker/client";
 import type { OutputSubscriber } from "../../src/broker/client";
 import {
   DuplicateSessionError,
@@ -15,6 +19,7 @@ import {
   type SessionLifecycleEvent,
 } from "../../src/server/backend";
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
+import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -50,6 +55,12 @@ class FakeBrokerClient implements BrokerClientApi {
   requestError: Error | null = null;
   /** When set, writeInput throws this error. */
   inputError: Error | null = null;
+  /** Optional hook for output emitted synchronously with input. */
+  onWriteInput: ((sessionId: string, data: Uint8Array) => void) | null = null;
+  /** Optional gate used to prove input waits for subscribe readiness. */
+  subscribeGate: Promise<void> | null = null;
+  /** Last output sequence observed by the fake subscription. */
+  outputSeqs = new Map<string, bigint>();
 
   setHandler(method: string, h: (params: unknown) => ControlResponse | Promise<ControlResponse>): void {
     this.handlers.set(method, h);
@@ -69,6 +80,7 @@ class FakeBrokerClient implements BrokerClientApi {
     const copy = new Uint8Array(data.length);
     copy.set(data);
     this.inputs.push({ sessionId, data: copy });
+    this.onWriteInput?.(sessionId, copy);
   }
 
   subscribeOutput(sessionId: string, cb: OutputSubscriber): () => void {
@@ -89,13 +101,19 @@ class FakeBrokerClient implements BrokerClientApi {
   async subscribe(sessionId: string, opts?: { sinceSeq?: bigint }): Promise<ControlResponse> {
     this.subscribeCallCount++;
     this.subscribeSeqs.set(sessionId, opts?.sinceSeq);
+    if (opts?.sinceSeq !== undefined) this.outputSeqs.set(sessionId, opts.sinceSeq);
+    await this.subscribeGate;
     if (this.nextSubscribeError) {
       const err = this.nextSubscribeError;
       this.nextSubscribeError = null;
       throw err;
     }
     this.activeSubscriptions.add(sessionId);
-    return okResp({ kind: "subscribe", ok: true });
+    return okResp({ kind: "subscribe", ok: true, current_seq: 17 });
+  }
+
+  outputSequence(sessionId: string): bigint | undefined {
+    return this.outputSeqs.get(sessionId);
   }
 
   async unsubscribe(sessionId: string): Promise<void> {
@@ -105,6 +123,7 @@ class FakeBrokerClient implements BrokerClientApi {
 
   /** Push an output_binary frame to every subscriber for `sessionId`. */
   emit(sessionId: string, data: Uint8Array, seq = 1n): void {
+    this.outputSeqs.set(sessionId, seq);
     const set = this.outputSubs.get(sessionId);
     if (!set) return;
     const frame: OutputBinaryFrame = { sessionId, seq, data };
@@ -618,6 +637,206 @@ describe("BrokerBackend.isSessionAlive", () => {
   });
 });
 
+interface PromptWaitBackend {
+  promptAndWaitForOutput(
+    sessionId: string,
+    options: {
+      readonly prompt: string;
+      readonly outputContains: string;
+      readonly noEnter: boolean;
+      readonly timeoutMs: number;
+    },
+  ): Promise<{ readonly outcome: string; readonly outputBoundarySeq: string }>;
+}
+
+describe("BrokerBackend.promptAndWaitForOutput", () => {
+  beforeEach(async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })],
+    }));
+    await backend.list();
+  });
+
+  test("pins the stable id, waits for subscription readiness, and catches immediate output", async () => {
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, new TextEncoder().encode("instant READY output"), 18n);
+    };
+
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run now", outputContains: "READY", noEnter: false, timeoutMs: 100 },
+    );
+    await Promise.resolve();
+    expect(client.inputs).toEqual([]);
+
+    releaseSubscribe();
+    expect(await operation).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+    expect(client.inputs).toHaveLength(1);
+    expect(client.inputs[0]?.sessionId).toBe(SESSION_UUID_1);
+    expect(new TextDecoder().decode(client.inputs[0]?.data)).toBe("run now\r");
+  });
+
+  test("matches UTF-8 output split across post-boundary frames", async () => {
+    client.onWriteInput = (sessionId) => {
+      const output = new TextEncoder().encode("café READY");
+      client.emit(sessionId, output.slice(0, 4), 18n);
+      client.emit(sessionId, output.slice(4), 19n);
+    };
+
+    expect(await (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: "café READY", noEnter: false, timeoutMs: 100 },
+    )).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+  });
+
+  test("matches an astral needle larger than 32,768 UTF-16 pairs", async () => {
+    const needle = "🚀".repeat(32_769);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, new TextEncoder().encode(needle), 18n);
+    };
+
+    expect(await (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: needle, noEnter: false, timeoutMs: 20 },
+    )).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+  });
+
+  test("retains a multibyte needle larger than 65,536 bytes until readiness", async () => {
+    const needle = "é".repeat(40_000);
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: needle, noEnter: false, timeoutMs: 20 },
+    );
+    await Promise.resolve();
+    client.emit(SESSION_UUID_1, new TextEncoder().encode(needle), 18n);
+    releaseSubscribe();
+
+    expect(await operation).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+  });
+
+  test("retains a worst-case UTF-8 needle after trimming at decoder alignment", async () => {
+    const needle = "🚀".repeat(SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS);
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: needle, noEnter: false, timeoutMs: 20 },
+    );
+    await Promise.resolve();
+    client.emit(SESSION_UUID_1, new TextEncoder().encode("🚀"), 18n);
+    client.emit(SESSION_UUID_1, new TextEncoder().encode(needle), 19n);
+    releaseSubscribe();
+
+    expect(await operation).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+  });
+
+  test("pending shared replay at the subscribe watermark cannot satisfy the prompt", async () => {
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+    backend.onSessionData("live", () => {}, {
+      sinceSeq: 10n,
+      onSubscribeError: () => {},
+    });
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, new TextEncoder().encode("old READY replay"), 17n);
+    };
+
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: "READY", noEnter: false, timeoutMs: 10 },
+    );
+    releaseSubscribe();
+
+    expect(await operation).toEqual({ outcome: "timed_out", outputBoundarySeq: "17" });
+    expect(client.subscribeCallCount).toBe(1);
+  });
+
+  test("freezes an existing subscription boundary when the callback is registered", async () => {
+    backend.onSessionData("live", () => {}, { onSubscribeError: () => {} });
+    await Promise.resolve();
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, new TextEncoder().encode("READY"), 24n);
+    };
+
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: "READY", noEnter: false, timeoutMs: 100 },
+    );
+    client.emit(SESSION_UUID_1, new TextEncoder().encode("pre-send output"), 23n);
+
+    expect(await operation).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+  });
+
+  test("does not retarget input when a visible name is reused", async () => {
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, new TextEncoder().encode("done"), 18n);
+    };
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: "done", noEnter: true, timeoutMs: 100 },
+    );
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_2 })],
+    }));
+    await backend.list();
+
+    expect((await operation).outcome).toBe("matched");
+    expect(client.inputs[0]?.sessionId).toBe(SESSION_UUID_1);
+  });
+
+  for (const [code, outcome] of [
+    ["unknown_session", "target_unavailable"],
+    ["session_not_alive", "target_exited"],
+  ] as const) {
+    test(`maps reconnect ${code} failure instead of timing out`, async () => {
+      const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+        SESSION_UUID_1,
+        { prompt: "run", outputContains: "never", noEnter: false, timeoutMs: 20 },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(client.inputs).toHaveLength(1);
+
+      backend.handleResubscribeError(
+        SESSION_UUID_1,
+        new BrokerSubscribeError(code, "session is gone"),
+      );
+
+      expect(await operation).toEqual({ outcome, outputBoundarySeq: "17" });
+      expect(client.outputSubs.has(SESSION_UUID_1)).toBe(false);
+    });
+  }
+
+  test("returns bounded typed outcomes for timeout, exit, replay gap, unavailable, and input failure", async () => {
+    const invoke = () => (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: "never", noEnter: false, timeoutMs: 5 },
+    );
+
+    expect((await invoke()).outcome).toBe("timed_out");
+
+    const exit = invoke();
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect((await exit).outcome).toBe("target_exited");
+    await backend.list();
+
+    const gap = invoke();
+    backend.handleReplayTruncated(SESSION_UUID_1);
+    expect((await gap).outcome).toBe("replay_gap");
+
+    client.nextSubscribeError = new BrokerSubscribeError("unknown_session", "unknown session");
+    expect((await invoke()).outcome).toBe("target_unavailable");
+
+    client.inputError = new BrokerNotConnectedError("broker disconnected");
+    expect((await invoke()).outcome).toBe("backend_unavailable");
+  });
+});
+
 describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   // Tests below that don't care about subscribe-error semantics still need
   // to satisfy the now-required onSubscribeError contract. This noop is
@@ -769,6 +988,29 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
 
     backend.onSessionData("live", () => {}, noopErr);
     await new Promise((r) => setTimeout(r, 0));
+    expect(client.subscribeCallCount).toBe(2);
+  });
+
+  test("resubscribe failure notifies shared subscribers once and releases the ref", async () => {
+    const firstErrors: unknown[] = [];
+    const secondErrors: unknown[] = [];
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (error) => firstErrors.push(error),
+    });
+    backend.onSessionData("live", () => {}, {
+      onSubscribeError: (error) => secondErrors.push(error),
+    });
+    await Promise.resolve();
+    const error = new BrokerSubscribeError("unknown_session", "gone");
+
+    backend.handleResubscribeError(SESSION_UUID_1, error);
+    backend.handleResubscribeError(SESSION_UUID_1, error);
+
+    expect(firstErrors).toEqual([error]);
+    expect(secondErrors).toEqual([error]);
+    expect(client.outputSubs.has(SESSION_UUID_1)).toBe(false);
+    backend.onSessionData("live", () => {}, noopErr);
+    await Promise.resolve();
     expect(client.subscribeCallCount).toBe(2);
   });
 

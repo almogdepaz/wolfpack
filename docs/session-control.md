@@ -66,11 +66,15 @@ wolfpack session read <session-or-id> [--json]
 ```bash
 wolfpack session send <session-or-id> <text...> [--no-enter] [--json]
 wolfpack session wait <session-or-id> <text> [--timeout-ms <1..600000>] [--json]
+wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] [--timeout-ms <1..600000>] [--json]
 ```
 
 - `send` writes through the broker input plane and appends Enter unless `--no-enter` is set.
 - `wait` checks the current snapshot, then subscribes from its sequence number with a bounded buffer and timeout.
-- JSON responses return the canonical `session` and stable `sessionId`; wait also returns `matched`.
+- `prompt` performs one `POST /api/session-control/prompt` request. The server resolves the selector once, pins the returned `sessionId`, registers broker output observation, waits for subscription readiness, records `outputBoundarySeq`, and only then writes input to that stable ID.
+- `prompt --until` is explicitly an `output contains` terminal primitive. It does not infer agent or task completion. Typed agent-state and delegated-task predicates remain deferred to #209 and #211.
+- prompt outcomes are `matched`, `timed_out`, `target_exited`, `target_unavailable`, `replay_gap`, or `backend_unavailable`. The bounded JSON envelope always includes canonical `session`, stable `sessionId`, `outcome`, and nullable `outputBoundarySeq`.
+- JSON responses from standalone send/wait retain their existing shape for backward compatibility.
 
 `wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`.
 

@@ -14,6 +14,16 @@ import {
 } from "../session-create-contract.js";
 import type { SessionCreateErrorCode } from "../session-create-contract.js";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.js";
+import {
+  SESSION_PROMPT_MAX_TIMEOUT_MS,
+  SESSION_PROMPT_OUTCOME,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  unicodeCodePointLength,
+} from "../session-prompt-contract.js";
+import type {
+  SessionPromptOutcome,
+  SessionPromptWaitResult,
+} from "../session-prompt-contract.js";
 import { call as callApi } from "./api.js";
 import { print, red, yellow } from "./formatting.js";
 
@@ -28,7 +38,7 @@ export const SESSION_EXIT = {
 } as const;
 
 type OutputMode = "plain" | "json" | "shell";
-type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "current-context";
+type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "prompt" | "current-context";
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
@@ -63,6 +73,7 @@ Commands:
   wolfpack session read <session-or-id> [--json]
   wolfpack session send <session-or-id> <text...> [--no-enter] [--json]
   wolfpack session wait <session-or-id> <text> [--timeout-ms <1..600000>] [--json]
+  wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] [--timeout-ms <1..600000>] [--json]
   wolfpack session current-context [--json|--shell]
   wolfpack session open <project> ...  Deprecated alias for 'wolfpack agent spawn'
 
@@ -94,6 +105,7 @@ export type ParsedSessionCommand =
   | { readonly ok: true; readonly action: "read"; readonly session: string; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "send"; readonly session: string; readonly text: string; readonly noEnter: boolean; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "wait"; readonly session: string; readonly text: string; readonly timeoutMs: number; readonly output: OutputMode }
+  | { readonly ok: true; readonly action: "prompt"; readonly session: string; readonly prompt: string; readonly outputContains: string; readonly noEnter: boolean; readonly timeoutMs: number; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "current-context"; readonly output: OutputMode }
   | { readonly ok: false; readonly message: string };
 
@@ -227,8 +239,8 @@ function parseOutputMode(args: string[]): { mode: OutputMode; shellRequested: bo
 export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
   const args = [...argv];
   const action = args.shift() as SessionAction | undefined;
-  if (!action) return { ok: false, message: "Usage: wolfpack session <create|status|read|send|wait|current-context> ..." };
-  if (!["create", "open", "status", "read", "send", "wait", "current-context"].includes(action)) {
+  if (!action) return { ok: false, message: "Usage: wolfpack session <create|status|read|send|wait|prompt|current-context> ..." };
+  if (!["create", "open", "status", "read", "send", "wait", "prompt", "current-context"].includes(action)) {
     return { ok: false, message: `Unknown session command: ${action}` };
   }
   const isLaunch = action === "create" || action === "open";
@@ -249,7 +261,8 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       : undefined;
     const promptSources = [promptValue, promptFileValue, planValue].filter(value => value !== null);
     const validPrompt = prompt === undefined
-      || (prompt.trim().length > 0 && prompt.length <= MAX_INITIAL_PROMPT_LENGTH);
+      || (prompt.trim().length > 0
+        && unicodeCodePointLength(prompt) <= MAX_INITIAL_PROMPT_LENGTH);
     const validPromptFile = promptFileValue === null || Boolean(promptFileValue.trim());
     const validPlan = planValue === null || Boolean(planValue.trim());
     const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
@@ -304,6 +317,37 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const text = args.join(" ");
     if (!text) return { ok: false, message: "Usage: wolfpack session send <session> <text...> [--no-enter] [--json]" };
     return { ok: true, action, session, text, noEnter, output };
+  }
+  if (action === "prompt") {
+    const noEnter = consumeFlag(args, "--no-enter");
+    const outputContains = consumeValue(args, "--until");
+    const timeoutRaw = consumeValue(args, "--timeout-ms");
+    const timeoutMs = timeoutRaw == null ? 30_000 : Number(timeoutRaw);
+    const prompt = args.join(" ");
+    if (
+      !prompt
+      || unicodeCodePointLength(prompt) > MAX_INITIAL_PROMPT_LENGTH
+      || !outputContains
+      || unicodeCodePointLength(outputContains) > SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS
+      || !Number.isInteger(timeoutMs)
+      || timeoutMs < 1
+      || timeoutMs > SESSION_PROMPT_MAX_TIMEOUT_MS
+    ) {
+      return {
+        ok: false,
+        message: "Usage: wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] [--timeout-ms <1..600000>] [--json]",
+      };
+    }
+    return {
+      ok: true,
+      action,
+      session,
+      prompt,
+      outputContains,
+      noEnter,
+      timeoutMs,
+      output,
+    };
   }
   const timeoutRaw = consumeValue(args, "--timeout-ms");
   const timeoutMs = timeoutRaw == null ? 30_000 : Number(timeoutRaw);
@@ -383,6 +427,21 @@ interface SessionLaunchResponse {
   readonly project: string;
   readonly harness: string;
 }
+
+interface SessionPromptResponse extends SessionPromptWaitResult {
+  readonly ok: boolean;
+  readonly session: string;
+  readonly sessionId: string;
+}
+
+const SESSION_PROMPT_EXIT: Readonly<Record<SessionPromptOutcome, number>> = {
+  [SESSION_PROMPT_OUTCOME.MATCHED]: SESSION_EXIT.OK,
+  [SESSION_PROMPT_OUTCOME.TIMED_OUT]: SESSION_EXIT.TIMEOUT,
+  [SESSION_PROMPT_OUTCOME.TARGET_EXITED]: SESSION_EXIT.NOT_FOUND,
+  [SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE]: SESSION_EXIT.NOT_FOUND,
+  [SESSION_PROMPT_OUTCOME.REPLAY_GAP]: SESSION_EXIT.GENERAL,
+  [SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE]: SESSION_EXIT.BACKEND_UNAVAILABLE,
+};
 
 interface SessionStatusResponse {
   readonly ok: true;
@@ -564,7 +623,10 @@ async function materializeInitialPrompt(source: LaunchPromptSource): Promise<str
     prompt = prompt !== undefined ? `${prompt} ${NOTIFY_PARENT_PROMPT}` : NOTIFY_PARENT_PROMPT;
   }
 
-  if (prompt !== undefined && (!prompt.trim() || prompt.length > MAX_INITIAL_PROMPT_LENGTH)) {
+  if (
+    prompt !== undefined
+    && (!prompt.trim() || unicodeCodePointLength(prompt) > MAX_INITIAL_PROMPT_LENGTH)
+  ) {
     return writeOpenError(source.output, "INVALID_PROMPT", "invalid initial prompt", SESSION_EXIT.USAGE);
   }
   return prompt;
@@ -744,6 +806,21 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
       });
       if (parsed.output === "json") jsonOut(data);
       return SESSION_EXIT.OK;
+    }
+    if (parsed.action === "prompt") {
+      const data = await call("/api/session-control/prompt", {
+        method: "POST",
+        body: JSON.stringify({
+          session: parsed.session,
+          prompt: parsed.prompt,
+          outputContains: parsed.outputContains,
+          noEnter: parsed.noEnter,
+          timeoutMs: parsed.timeoutMs,
+        }),
+      }) as SessionPromptResponse;
+      if (parsed.output === "json") jsonOut(data);
+      else if (data.outcome !== SESSION_PROMPT_OUTCOME.MATCHED) print(yellow(data.outcome));
+      return SESSION_PROMPT_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;
     }
     const data = await call("/api/session-control/wait", {
       method: "POST",
