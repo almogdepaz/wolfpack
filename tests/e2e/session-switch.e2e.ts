@@ -760,9 +760,7 @@ function mockPrefillWebSocket(mode: "full" | "viewport"): (ws: WebSocketRoute) =
   };
 }
 
-test("desktop terminal sends layout_stable after attach ack", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
-
+test("terminal renders its final PTY column and sends final-width layout_stable", async ({ page }) => {
   const messages: Array<{ type?: string; cols?: number; rows?: number }> = [];
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     ws.onMessage((message) => {
@@ -771,8 +769,10 @@ test("desktop terminal sends layout_stable after attach ack", async ({ page }, t
       try { parsed = JSON.parse(message); } catch { return; }
       messages.push(parsed);
       if (parsed.type !== "attach") return;
+      const cols = parsed.cols ?? 1;
+      const rows = parsed.rows ?? 1;
       ws.send(JSON.stringify({ type: "attach_ack" }));
-      ws.send(Buffer.from("FULL-PREFILL\n"));
+      ws.send(Buffer.from(`${"history\r\n".repeat(rows + 1)}\x1b[2J\x1b[H${"X".repeat(cols)}\r\n`));
       setTimeout(() => ws.send(JSON.stringify({ type: "prefill_done" })), 30);
       setTimeout(() => ws.send(JSON.stringify({ type: "pty_ready" })), 40);
     });
@@ -781,6 +781,7 @@ test("desktop terminal sends layout_stable after attach ack", async ({ page }, t
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
     localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
@@ -791,14 +792,57 @@ test("desktop terminal sends layout_stable after attach ack", async ({ page }, t
     openSession("test-project", "");
   });
 
+  const terminalContainer = page.locator("#desktop-terminal-container");
+  await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
   await expect.poll(() => messages.some((message) => message.type === "layout_stable"), { timeout: 5000 }).toBe(true);
+  await page.waitForTimeout(350);
+
   const stableIndex = messages.findIndex((message) => message.type === "layout_stable");
   const stable = messages[stableIndex];
   const latestSizeMessage = messages
     .slice(0, stableIndex)
     .filter((message) => message.type === "attach" || message.type === "resize")
     .at(-1);
+  const finalGeometry = await page.evaluate(() => {
+    const appState = (window as unknown as {
+      state: { terminalController?: { term?: { cols: number; rows: number; renderer?: { getMetrics?: () => { width: number; height: number } } } } };
+    }).state;
+    const term = appState.terminalController?.term;
+    const canvas = document.querySelector<HTMLCanvasElement>("#desktop-terminal-container canvas");
+    const metrics = term?.renderer?.getMetrics?.();
+    const context = canvas?.getContext("2d", { willReadFrequently: true });
+    const pixelRatio = canvas ? canvas.width / canvas.getBoundingClientRect().width : 1;
+    const cellInk = (column: number): number => {
+      if (!context || !metrics) return 0;
+      const pixels = context.getImageData(
+        Math.round(column * metrics.width * pixelRatio),
+        0,
+        Math.round(metrics.width * pixelRatio),
+        Math.round(metrics.height * pixelRatio),
+      ).data;
+      let count = 0;
+      for (let index = 0; index < pixels.length; index += 4) {
+        if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 300) count += 1;
+      }
+      return count;
+    };
+    return {
+      cols: term?.cols,
+      rows: term?.rows,
+      cellWidth: metrics?.width,
+      canvasWidth: canvas?.getBoundingClientRect().width,
+      referenceCellInk: term ? cellInk(term.cols - 3) : 0,
+      lastCellInk: term ? cellInk(term.cols - 1) : 0,
+    };
+  });
+  const postStableResizes = messages.slice(stableIndex + 1).filter((message) => message.type === "resize");
+
   expect(stable).toEqual(expect.objectContaining({ cols: latestSizeMessage?.cols, rows: latestSizeMessage?.rows }));
+  expect(stable).toEqual(expect.objectContaining({ cols: finalGeometry.cols, rows: finalGeometry.rows }));
+  expect(postStableResizes).toEqual([]);
+  expect(finalGeometry.canvasWidth).toBe((finalGeometry.cols ?? 0) * (finalGeometry.cellWidth ?? 0));
+  expect(finalGeometry.referenceCellInk).toBeGreaterThan(0);
+  expect(finalGeometry.lastCellInk).toBeGreaterThanOrEqual(finalGeometry.referenceCellInk * 0.8);
 });
 
 test("debug layout-stable immediate mode sends an early stable signal before attach ack", async ({ page }, testInfo) => {
