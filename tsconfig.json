@@ -10,6 +10,6 @@
     "types": ["bun-types"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "extensions/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/public-assets.ts"]
 }

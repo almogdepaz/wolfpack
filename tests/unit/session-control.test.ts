@@ -56,6 +56,19 @@ describe("session control cli parsing", () => {
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", " "]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", "x".repeat(32_769)]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--harness", "claude"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "wolfpack", "--grid"]).ok).toBe(false);
+  });
+
+  test("parses explicit shell creation with grid parenting", () => {
+    expect(parseSessionCommand(["create", "wolfpack", "--harness", "shell", "--grid", "--json"])).toEqual({
+      ok: true,
+      action: "create",
+      project: "wolfpack",
+      harness: "shell",
+      prompt: undefined,
+      grid: true,
+      output: "json",
+    });
   });
 
   test("parses read with json output", () => {

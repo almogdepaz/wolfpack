@@ -10,6 +10,12 @@ import {
   SESSION_OPEN_HTTP_STATUS,
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
+import {
+  SESSION_CREATE_ERROR,
+  SESSION_CREATE_HARNESSES,
+  SESSION_CREATE_HTTP_STATUS,
+} from "../session-create-contract.ts";
+import type { SessionCreateErrorCode } from "../session-create-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
@@ -92,10 +98,13 @@ const nullable = (schema: JsonSchema): JsonSchema => ({
 
 const ref = (name: string): JsonSchema => ({ $ref: `#/$defs/${name}` });
 
-function sessionOpenErrorLines(): readonly string[] {
-  const codesByStatus = new Map<number, SessionOpenErrorCode[]>();
-  for (const code of Object.values(SESSION_OPEN_ERROR)) {
-    const status = SESSION_OPEN_HTTP_STATUS[code];
+function errorLines<Code extends string>(
+  errorCodes: readonly Code[],
+  statusByCode: Readonly<Record<Code, number>>,
+): readonly string[] {
+  const codesByStatus = new Map<number, Code[]>();
+  for (const code of errorCodes) {
+    const status = statusByCode[code];
     const codes = codesByStatus.get(status) ?? [];
     codes.push(code);
     codesByStatus.set(status, codes);
@@ -103,6 +112,14 @@ function sessionOpenErrorLines(): readonly string[] {
   return [...codesByStatus.entries()]
     .sort(([left], [right]) => left - right)
     .map(([status, codes]) => `${status} ${codes.sort().join("|")}`);
+}
+
+function sessionOpenErrorLines(): readonly string[] {
+  return errorLines<SessionOpenErrorCode>(Object.values(SESSION_OPEN_ERROR), SESSION_OPEN_HTTP_STATUS);
+}
+
+function sessionCreateErrorLines(): readonly string[] {
+  return errorLines<SessionCreateErrorCode>(Object.values(SESSION_CREATE_ERROR), SESSION_CREATE_HTTP_STATUS);
 }
 
 const object = (
@@ -155,6 +172,7 @@ export const controlApiSource: ControlApiSource = {
     BranchName: { type: "string", pattern: "^[A-Za-z0-9._/-]+$" },
     Command: { type: "string", minLength: 1 },
     OpenableHarness: { enum: [...OPENABLE_HARNESSES] },
+    SessionCreateHarness: { enum: [...SESSION_CREATE_HARNESSES] },
     TriageStatus: { enum: ["running", "idle"] },
     ParentSessionIdentity: object({
       wolfpackSessionId: string(),
@@ -348,12 +366,13 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       request: object({
         project: ref("ProjectName"),
-        harness: ref("OpenableHarness"),
+        harness: ref("SessionCreateHarness"),
         initialPrompt: {
           type: "string",
           minLength: 1,
           maxLength: MAX_INITIAL_PROMPT_LENGTH,
         },
+        parentSession: ref("SessionName"),
       }, ["project"]),
       response: object({
         ok: { const: true },
@@ -362,7 +381,7 @@ export const controlApiSource: ControlApiSource = {
         project: ref("ProjectName"),
         harness: string(),
       }, ["ok", "session", "sessionId", "project", "harness"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+      errors: sessionCreateErrorLines(),
     },
     "POST /api/session-open": {
       operationId: "openSession",

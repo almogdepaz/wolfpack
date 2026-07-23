@@ -17,6 +17,7 @@
     "docs/agent-skills.md",
     "docs/cli-attach.md",
     "docs/session-control.md",
+    "extensions",
     "skills"
   ],
   "scripts": {
@@ -56,13 +57,18 @@
     "tailnet",
     "terminal",
     "terminal-dashboard",
-    "web-terminal"
+    "web-terminal",
+    "pi-package"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/almogdepaz/wolfpack"
   },
   "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/hunk.ts"],
+    "skills": ["./skills"]
+  },
   "dependencies": {
     "ghostty-web": "0.4.0",
     "qrcode-terminal": "^0.12.0",

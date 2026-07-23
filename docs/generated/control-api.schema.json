@@ -236,12 +236,15 @@
             "$ref": "#/$defs/ProjectName"
           },
           "harness": {
-            "$ref": "#/$defs/OpenableHarness"
+            "$ref": "#/$defs/SessionCreateHarness"
           },
           "initialPrompt": {
             "type": "string",
             "minLength": 1,
             "maxLength": 32768
+          },
+          "parentSession": {
+            "$ref": "#/$defs/SessionName"
           }
         },
         "required": [
@@ -281,10 +284,10 @@
         "additionalProperties": false
       },
       "errors": [
-        "400 ErrorEnvelope",
-        "404 ErrorEnvelope",
-        "409 ErrorEnvelope",
-        "503 ErrorEnvelope"
+        "400 INVALID_REQUEST|UNSUPPORTED_HARNESS",
+        "404 PARENT_SESSION_NOT_FOUND|PROJECT_NOT_FOUND",
+        "409 NAME_COLLISION|PARENT_SESSION_CHANGED",
+        "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE"
       ]
     },
     "openSession": {
@@ -1838,6 +1841,16 @@
         "codex",
         "gemini",
         "cursor"
+      ]
+    },
+    "SessionCreateHarness": {
+      "enum": [
+        "pi",
+        "claude",
+        "codex",
+        "gemini",
+        "cursor",
+        "shell"
       ]
     },
     "TriageStatus": {

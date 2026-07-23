@@ -364,6 +364,9 @@ describe("agent-native top-level session control", () => {
     mockBackend.setCapturePane(async (session: string) => `output for ${session}`);
     mockBackend.lastCreateArgs = null;
     mockBackend.lastSendArgs = null;
+    mockBackend.setOnBeforeCreate(null);
+    mockBackend.setSessionId("wolf-1", null);
+    mockBackend.setSessionId("wolf-2", null);
     process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
   });
 
@@ -402,6 +405,150 @@ describe("agent-native top-level session control", () => {
 
     expect(res.status).toBe(400);
     expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("creates a shell session beside an active parent only after creation succeeds", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "my-app",
+      sessionId: "mock:my-app",
+      project: "my-app",
+      harness: "shell",
+    });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "my-app",
+      cwd: join(TEST_DEV_DIR, "my-app"),
+      cmd: "shell",
+      agentKind: "shell",
+      parentSession: {
+        wolfpackSessionId: "mock:wolf-1",
+        wolfpackSessionName: "wolf-1",
+      },
+      initialPrompt: undefined,
+    });
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "sub_session_opened",
+      parentSession: "wolf-1",
+      session: "my-app",
+    });
+  });
+
+  test("creates a shell grid child when the unchanged parent has no attached viewer", async () => {
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "my-app",
+      sessionId: "mock:my-app",
+      project: "my-app",
+      harness: "shell",
+    });
+    expect(mockBackend.lastCreateArgs?.parentSession).toEqual({
+      wolfpackSessionId: "mock:wolf-1",
+      wolfpackSessionName: "wolf-1",
+    });
+  });
+
+  test("fails closed without notifying when the parent disappears after shell creation", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    mockBackend.setOnBeforeCreate(() => {
+      mockBackend.setSessions(["wolf-2"]);
+    });
+
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "parent session not found after creating session",
+      code: "PARENT_SESSION_NOT_FOUND",
+      createdSession: {
+        session: "my-app",
+        sessionId: "mock:my-app",
+        project: "my-app",
+        harness: "shell",
+      },
+    });
+    expect(frames).toEqual([]);
+  });
+
+  test("fails closed without notifying when the parent name is replaced after shell creation", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    mockBackend.setOnBeforeCreate(() => {
+      mockBackend.setSessionId("wolf-1", "mock:wolf-1-replacement");
+    });
+
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "parent session changed after creating session",
+      code: "PARENT_SESSION_CHANGED",
+      createdSession: {
+        session: "my-app",
+        sessionId: "mock:my-app",
+        project: "my-app",
+        harness: "shell",
+      },
+    });
+    expect(frames).toEqual([]);
+  });
+
+  test("does not notify parent when shell session creation fails", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    mockBackend.setOnBeforeCreate((name) => {
+      mockBackend.setSessions(["wolf-1", name]);
+    });
+
+    try {
+      const res = await post("/api/session-create", {
+        project: "my-app",
+        harness: "shell",
+        parentSession: "wolf-1",
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: "could not allocate a session name",
+        code: "NAME_COLLISION",
+      });
+      expect(frames).toEqual([]);
+    } finally {
+      mockBackend.setOnBeforeCreate(null);
+    }
+  });
+
+  test("rejects grid parent context that is absent or malformed", async () => {
+    for (const parentSession of ["missing-parent", "bad parent", 42]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-create", {
+        project: "my-app",
+        harness: "shell",
+        parentSession,
+      });
+      expect(res.status).toBe(parentSession === "missing-parent" ? 404 : 400);
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
   });
 
   test("resolves stable ids for list, status, read, send, wait, and kill", async () => {

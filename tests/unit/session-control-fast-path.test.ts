@@ -28,6 +28,20 @@ describe("session control fast-path parsing", () => {
     });
   });
 
+  test("parses shell top-level create and rejects invalid grid combinations", () => {
+    expect(parseSessionCommand(["create", "branchout", "--harness", "shell", "--grid", "--json"])).toEqual({
+      ok: true,
+      action: "create",
+      project: "branchout",
+      harness: "shell",
+      prompt: undefined,
+      grid: true,
+      output: "json",
+    });
+    expect(parseSessionCommand(["create", "branchout", "--harness", "shell", "--prompt", "run this"]).ok).toBe(false);
+    expect(parseSessionCommand(["status", "branchout", "--grid"]).ok).toBe(false);
+  });
+
   test("parses concise status by opaque selector", () => {
     expect(parseSessionCommand(["status", "broker-session-id", "--json"])).toEqual({
       ok: true,
@@ -132,6 +146,67 @@ describe("session control fast-path requests", () => {
     });
   });
 
+  test("grid create sends structured parent context from Wolfpack env", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      const calls = [];
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return Response.json({
+          ok: true,
+          session: "branchout-hunk",
+          sessionId: "id-hunk",
+          project: "branchout",
+          harness: "shell",
+        });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      const code = await runSessionCommand(["create", "branchout", "--harness", "shell", "--grid", "--json"]);
+      const expected = [{
+        url: "http://127.0.0.1:18790/api/session-create",
+        method: "POST",
+        body: { project: "branchout", harness: "shell", parentSession: "pi-main" },
+      }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) {
+        console.error(JSON.stringify({ calls, expected }));
+        process.exit(99);
+      }
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout.toString()).sessionId).toBe("id-hunk");
+  });
+
+  test("grid create refuses to run without current Wolfpack session context", () => {
+    const script = `
+      delete process.env.WOLFPACK_SESSION_NAME;
+      globalThis.fetch = async () => { throw new Error("fetch must not run"); };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["create", "branchout", "--harness", "shell", "--grid", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "MISSING_PARENT_SESSION",
+        message: "wolfpack session context is missing",
+      },
+    });
+  });
+
   test("create reports create-specific structured failures", () => {
     const script = `
       globalThis.fetch = async () => Response.json({
@@ -153,6 +228,112 @@ describe("session control fast-path requests", () => {
       error: {
         code: "UNSUPPORTED_HARNESS",
         message: "selected session command cannot accept an initial prompt",
+      },
+    });
+  });
+
+  test("grid create preserves validated post-create partial session identities", () => {
+    const changedScript = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      globalThis.fetch = async () => Response.json({
+        error: "parent session changed after creating session",
+        code: "PARENT_SESSION_CHANGED",
+        createdSession: {
+          session: "branchout-hunk",
+          sessionId: "id-hunk",
+          project: "branchout",
+          harness: "shell",
+        },
+      }, { status: 409 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["create", "branchout", "--harness", "shell", "--grid", "--json"]));
+    `;
+    const changed = Bun.spawnSync([process.execPath, "-e", changedScript], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(changed.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(changed.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "PARENT_SESSION_CHANGED",
+        message: "parent Wolfpack session changed",
+      },
+      createdSession: {
+        session: "branchout-hunk",
+        sessionId: "id-hunk",
+        project: "branchout",
+        harness: "shell",
+      },
+    });
+
+    const missingScript = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      globalThis.fetch = async () => Response.json({
+        error: "parent session not found after creating session",
+        code: "PARENT_SESSION_NOT_FOUND",
+        createdSession: {
+          session: "branchout-hunk",
+          sessionId: "id-hunk",
+          project: "branchout",
+          harness: "shell",
+        },
+      }, { status: 404 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["create", "branchout", "--harness", "shell", "--grid", "--json"]));
+    `;
+    const missing = Bun.spawnSync([process.execPath, "-e", missingScript], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(missing.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(missing.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "PARENT_SESSION_NOT_FOUND",
+        message: "parent Wolfpack session is not active",
+      },
+      createdSession: {
+        session: "branchout-hunk",
+        sessionId: "id-hunk",
+        project: "branchout",
+        harness: "shell",
+      },
+    });
+  });
+
+  test("grid create does not trust malformed partial session identities", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      globalThis.fetch = async () => Response.json({
+        error: "parent session changed after creating session",
+        code: "PARENT_SESSION_CHANGED",
+        createdSession: {
+          session: "branchout-hunk",
+          sessionId: "",
+          project: "branchout",
+          harness: "shell",
+        },
+      }, { status: 409 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["create", "branchout", "--harness", "shell", "--grid", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "PARENT_SESSION_CHANGED",
+        message: "parent Wolfpack session changed",
       },
     });
   });

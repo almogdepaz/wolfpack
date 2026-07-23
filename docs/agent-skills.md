@@ -113,11 +113,27 @@ control skill documents the tailnet/global auth boundary and references
 canonical session-control and identity docs instead of duplicating those
 contracts.
 
+## Pi `/hunk` extension
+
+The npm package declares `extensions/hunk.ts` as a Pi extension. After installing
+Wolfpack as a Pi package, `/reload` in Pi makes `/hunk` available.
+
+`/hunk` is zero-model-turn glue: it requires Pi to be running inside a Wolfpack
+session with `WOLFPACK_PROJECT_DIR` and `WOLFPACK_SESSION_NAME`, checks that the
+host has `hunk` on `PATH`, runs `wolfpack session create <project> --harness
+shell --grid --json`, then sends `exec hunk diff --watch` to the returned stable
+session id. Exiting Hunk exits that Wolfpack shell session.
+
+Hunk is an external prerequisite and is not installed by Wolfpack. Pi, Wolfpack,
+and Hunk must run on the same host. If session creation succeeds but command
+send fails, the extension reports the surviving Wolfpack session name/id and
+leaves cleanup to the user.
+
 ## Distribution boundary
 
-The npm package includes `skills/` so users inspecting that package can read the
-same repository files. Platform binary packages only contain executables, and
-platform binaries do not install skills. This is intentional: there is no
-binary-embedded skill payload, skill installer, network download, or automatic
-overwrite of a user's skill directories. The cloned repository remains the
-auditable source of truth.
+The npm package includes `skills/` and `extensions/` so users inspecting that
+package can read the same repository files. Platform binary packages only
+contain executables, and platform binaries do not install skills or extensions.
+This is intentional: there is no binary-embedded skill payload, skill installer,
+network download, or automatic overwrite of a user's skill directories. The
+cloned repository remains the auditable source of truth.

@@ -5,18 +5,21 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 ## Create a top-level session
 
 ```bash
-wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+wolfpack session create <project> [--harness <agent|shell>] [--prompt|--prompt-file|--plan <value>] [--grid] [--json]
 ```
 
 - performs one `POST /api/session-create` request.
 - requires an exact existing project under `WOLFPACK_DEV_DIR`.
 - selects the configured default command when `--harness` is omitted.
-- accepts `pi`, `claude`, `codex`, `gemini`, or `cursor` as explicit harnesses.
+- accepts `pi`, `claude`, `codex`, `gemini`, `cursor`, or `shell` as explicit creation harnesses.
 - allocates `<project>`, then `<project>-2`, `<project>-3`, and so on with bounded collision retries.
 - passes one explicit prompt as an opaque argv value when the harness starts; no terminal-readiness send race is involved.
 - `--prompt-file <file>` reads instruction text from disk to avoid shell heredoc/quoting failures.
 - `--plan <file>` verifies the file exists and generates a compact "read and implement this plan" startup prompt without copying plan contents.
 - rejects prompts when the effective command is a plain shell.
+- `--grid` requires `WOLFPACK_SESSION_NAME`, records that active session as the parent, then rechecks the same parent session id after creation before emitting the existing `sub_session_opened` browser notification.
+- if the parent disappears or its name is replaced after successful shell creation, the API fails closed (`PARENT_SESSION_NOT_FOUND` or `PARENT_SESSION_CHANGED`), emits no grid notification, and includes `createdSession` in the error body because the created shell may still survive. `wolfpack session create --grid --json` preserves that validated `createdSession` field in its JSON error output.
+- existing browser grid limits and view guards still decide whether the notification becomes a visible grid; the CLI does not control browser state.
 - json success: `{ "ok": true, "session": string, "sessionId": string, "project": string, "harness": string }`.
 
 ## Spawn a child agent

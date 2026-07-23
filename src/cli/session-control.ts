@@ -1,4 +1,5 @@
 import { access, readFile } from "node:fs/promises";
+import { AGENT_KIND } from "../agent-kind.js";
 import {
   isOpenableHarness,
   isSessionOpenErrorCode,
@@ -10,9 +11,13 @@ import type {
 } from "../session-open-contract.js";
 import {
   isSessionCreateErrorCode,
+  isSessionCreateHarness,
   SESSION_CREATE_ERROR,
 } from "../session-create-contract.js";
-import type { SessionCreateErrorCode } from "../session-create-contract.js";
+import type {
+  SessionCreateErrorCode,
+  SessionCreateHarness,
+} from "../session-create-contract.js";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.js";
 import { call as callApi } from "./api.js";
 import { print, red, yellow } from "./formatting.js";
@@ -32,10 +37,10 @@ type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
-  return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+  return `Usage: wolfpack session create <project> [--harness <agent|shell>] [--prompt|--prompt-file|--plan <value>] [--grid] [--json]
 
 Creates a top-level session. The server owns validation, naming, identity, and launch.
-The optional prompt is passed to the agent harness at process startup.`;
+The optional prompt is passed to the agent harness at process startup. --grid attaches the new session to the current Wolfpack parent.`;
 }
 
 export function sessionOpenUsage(): string {
@@ -58,7 +63,7 @@ export function sessionUsage(): string {
   return `Usage: wolfpack session <command> [options]
 
 Commands:
-  wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+  wolfpack session create <project> [--harness <agent|shell>] [--prompt|--prompt-file|--plan <value>] [--grid] [--json]
   wolfpack session status <session-or-id> [--json]
   wolfpack session read <session-or-id> [--json]
   wolfpack session send <session-or-id> <text...> [--no-enter] [--json]
@@ -74,10 +79,11 @@ export type ParsedSessionCommand =
     readonly ok: true;
     readonly action: "create";
     readonly project: string;
-    readonly harness: OpenableHarness | undefined;
+    readonly harness: SessionCreateHarness | undefined;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
+    readonly grid?: true;
     readonly output: OutputMode;
   }
   | {
@@ -124,6 +130,14 @@ export type SessionOpenContext =
     readonly message: string;
   };
 
+export type SessionCreateGridContext =
+  | { readonly ok: true; readonly parentSession: string }
+  | {
+    readonly ok: false;
+    readonly code: "MISSING_PARENT_SESSION";
+    readonly message: string;
+  };
+
 export function resolveSessionOpenContext(env: Readonly<Record<string, string | undefined>>): SessionOpenContext {
   const parentSession = env.WOLFPACK_SESSION_NAME?.trim();
   if (!parentSession) {
@@ -140,21 +154,62 @@ export function resolveSessionOpenContext(env: Readonly<Record<string, string | 
   return { ok: true, parentSession, harness };
 }
 
+export function resolveSessionCreateGridContext(env: Readonly<Record<string, string | undefined>>): SessionCreateGridContext {
+  const parentSession = env.WOLFPACK_SESSION_NAME?.trim();
+  if (!parentSession) {
+    return { ok: false, code: "MISSING_PARENT_SESSION", message: "wolfpack session context is missing" };
+  }
+  return { ok: true, parentSession };
+}
+
 interface ApiError {
   readonly status: number;
   readonly body: string;
   readonly code?: string;
 }
 
-function structuredErrorCode(body: string): string | undefined {
+interface CreatedSessionIdentity {
+  readonly session: string;
+  readonly sessionId: string;
+  readonly project: string;
+  readonly harness: string;
+}
+
+function parseJsonObject(body: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(body);
-    if (!parsed || typeof parsed !== "object") return undefined;
-    const code = (parsed as { readonly code?: unknown }).code;
-    return typeof code === "string" ? code : undefined;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
   } catch {
-    return undefined;
+    return null;
   }
+}
+
+function validateCreatedSessionIdentity(value: unknown): CreatedSessionIdentity | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const created = value as Record<string, unknown>;
+  if (
+    typeof created.session !== "string"
+    || typeof created.sessionId !== "string"
+    || typeof created.project !== "string"
+    || typeof created.harness !== "string"
+    || !created.session.trim()
+    || !created.sessionId.trim()
+    || !created.project.trim()
+    || !created.harness.trim()
+  ) return undefined;
+  return {
+    session: created.session,
+    sessionId: created.sessionId,
+    project: created.project,
+    harness: created.harness,
+  };
+}
+
+function structuredErrorCode(body: string): string | undefined {
+  const parsed = parseJsonObject(body);
+  const code = parsed?.code;
+  return typeof code === "string" ? code : undefined;
 }
 
 async function call(path: string, init: RequestInit = {}): Promise<unknown> {
@@ -195,6 +250,7 @@ const LAUNCH_KNOWN_OPTIONS = new Set([
   "--plan",
   "--notify-parent",
   "--harness",
+  "--grid",
   "--message",
 ]);
 
@@ -236,6 +292,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   const promptFileValue = isLaunch ? consumeLaunchValue(args, "--prompt-file") : null;
   const planValue = isLaunch ? consumeLaunchValue(args, "--plan") : null;
   const notifyParent = isLaunch ? consumeFlag(args, "--notify-parent") : false;
+  const grid = isLaunch ? consumeFlag(args, "--grid") : false;
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
   if (isLaunch) {
@@ -244,7 +301,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const promptFile = promptFileValue ?? undefined;
     const plan = planValue ?? undefined;
     const project = args.shift();
-    const harness = harnessValue !== null && isOpenableHarness(harnessValue)
+    const harness = harnessValue !== null && isSessionCreateHarness(harnessValue)
       ? harnessValue
       : undefined;
     const promptSources = [promptValue, promptFileValue, planValue].filter(value => value !== null);
@@ -257,7 +314,11 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       || harnessValue === null
       || harness !== undefined;
     const validNotify = action !== "create" || !notifyParent;
-    if (!project || args.length > 0 || !validPrompt || !validPromptSources || !validHarness || !validNotify) {
+    const validGrid = action === "create" || !grid;
+    const validExplicitShellPrompt = action !== "create"
+      || harnessValue !== AGENT_KIND.SHELL
+      || promptSources.length === 0;
+    if (!project || args.length > 0 || !validPrompt || !validPromptSources || !validHarness || !validNotify || !validGrid || !validExplicitShellPrompt) {
       return {
         ok: false,
         message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -272,6 +333,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
         prompt,
         ...(promptFile !== undefined && { promptFile }),
         ...(plan !== undefined && { plan }),
+        ...(grid && { grid: true }),
         output,
       };
     }
@@ -402,9 +464,20 @@ function writeOpenError(
   code: string,
   message: string,
   exitCode: number,
+  createdSession?: CreatedSessionIdentity,
 ): number {
-  if (output === "json") jsonOut({ ok: false, error: { code, message } });
-  else print(red(message));
+  if (output === "json") {
+    jsonOut({
+      ok: false,
+      error: { code, message },
+      ...(createdSession && { createdSession }),
+    });
+  } else {
+    const survivor = createdSession
+      ? `; created session ${createdSession.session} (${createdSession.sessionId}) may still be running`
+      : "";
+    print(red(`${message}${survivor}`));
+  }
   return exitCode;
 }
 
@@ -461,6 +534,18 @@ const CREATE_API_ERRORS: Readonly<Record<SessionCreateErrorCode, CliErrorDescrip
     message: "project not found",
     exitCode: SESSION_EXIT.NOT_FOUND,
   },
+  [SESSION_CREATE_ERROR.PARENT_SESSION_NOT_FOUND]: {
+    message: "parent Wolfpack session is not active",
+    exitCode: SESSION_EXIT.NOT_FOUND,
+  },
+  [SESSION_CREATE_ERROR.PARENT_SESSION_CHANGED]: {
+    message: "parent Wolfpack session changed",
+    exitCode: SESSION_EXIT.GENERAL,
+  },
+  [SESSION_CREATE_ERROR.PARENT_IDENTITY_UNAVAILABLE]: {
+    message: "parent Wolfpack session identity unavailable",
+    exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
+  },
   [SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS]: {
     message: "selected session command cannot accept an initial prompt",
     exitCode: SESSION_EXIT.GENERAL,
@@ -475,6 +560,15 @@ const CREATE_API_ERRORS: Readonly<Record<SessionCreateErrorCode, CliErrorDescrip
   },
 };
 
+function sessionCreatePartialIdentity(apiError: Partial<ApiError>): CreatedSessionIdentity | undefined {
+  if (
+    apiError.code !== SESSION_CREATE_ERROR.PARENT_SESSION_CHANGED
+    && apiError.code !== SESSION_CREATE_ERROR.PARENT_SESSION_NOT_FOUND
+  ) return undefined;
+  const parsed = typeof apiError.body === "string" ? parseJsonObject(apiError.body) : null;
+  return validateCreatedSessionIdentity(parsed?.createdSession);
+}
+
 function mapCreateApiError(output: OutputMode, error: unknown): number {
   const apiError = error as Partial<ApiError>;
   if (apiError.status === 401) {
@@ -482,7 +576,7 @@ function mapCreateApiError(output: OutputMode, error: unknown): number {
   }
   if (apiError.code && isSessionCreateErrorCode(apiError.code)) {
     const known = CREATE_API_ERRORS[apiError.code];
-    return writeOpenError(output, apiError.code, known.message, known.exitCode);
+    return writeOpenError(output, apiError.code, known.message, known.exitCode, sessionCreatePartialIdentity(apiError));
   }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }
@@ -609,6 +703,10 @@ async function runSessionCreate(
 ): Promise<number> {
   const initialPrompt = await materializeInitialPrompt(parsed);
   if (typeof initialPrompt === "number") return initialPrompt;
+  const gridContext = parsed.grid ? resolveSessionCreateGridContext(process.env) : undefined;
+  if (gridContext && !gridContext.ok) {
+    return writeOpenError(parsed.output, gridContext.code, gridContext.message, SESSION_EXIT.NOT_FOUND);
+  }
 
   try {
     const response = await call("/api/session-create", {
@@ -617,6 +715,7 @@ async function runSessionCreate(
         project: parsed.project,
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
         ...(initialPrompt !== undefined && { initialPrompt }),
+        ...(gridContext?.ok && { parentSession: gridContext.parentSession }),
       }),
     }) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response);

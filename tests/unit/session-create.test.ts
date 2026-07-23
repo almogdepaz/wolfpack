@@ -59,6 +59,48 @@ describe("top-level session creation", () => {
     });
   });
 
+  test("creates a shell child with explicit parent identity and no prompt", async () => {
+    const creates: unknown[] = [];
+    const parentSession = {
+      wolfpackSessionId: "id:parent",
+      wolfpackSessionName: "pi-main",
+    };
+    const result = await createTopLevelSession({
+      backend: {
+        list: async () => ["pi-main"],
+        createSession: async (name, cwd, cmd, _settings, options) => {
+          creates.push({ name, cwd, cmd, options });
+          return {
+            ...identity(name, "shell"),
+            parentSession,
+          };
+        },
+      },
+      project: "branchout",
+      projectDir: "/dev/branchout",
+      command: "shell",
+      parentSession,
+      loadSettings: () => ({ agentCmd: "pi" }),
+    });
+
+    expect(creates).toEqual([{
+      name: "branchout",
+      cwd: "/dev/branchout",
+      cmd: "shell",
+      options: {
+        agentKind: "shell",
+        parentSession,
+      },
+    }]);
+    expect(result).toEqual({
+      ok: true,
+      session: "branchout",
+      sessionId: "id:branchout",
+      project: "branchout",
+      harness: "shell",
+    });
+  });
+
   test("bounds concurrent name-collision retries", async () => {
     let calls = 0;
     const promise = createTopLevelSession({

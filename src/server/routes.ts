@@ -171,12 +171,15 @@ import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websoc
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity, PublicSessionIdentity } from "./session-identity.js";
 import {
-  isOpenableHarness,
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
 } from "../session-open-contract.js";
 import { openSubSession, SessionOpenError } from "./session-open.js";
-import { SESSION_CREATE_ERROR } from "../session-create-contract.js";
+import {
+  isSessionCreateHarness,
+  SESSION_CREATE_ERROR,
+  SESSION_CREATE_HTTP_STATUS,
+} from "../session-create-contract.js";
 import { createTopLevelSession } from "./session-create.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
@@ -238,14 +241,80 @@ interface SessionCreateBody extends Record<string, unknown> {
   project: string;
   harness?: string;
   initialPrompt?: string;
+  parentSession?: string;
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "harness", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "harness", "initialPrompt", "parentSession"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && typeof body.project === "string"
     && hasOptionalType(body, "harness", "string")
-    && hasOptionalType(body, "initialPrompt", "string");
+    && hasOptionalType(body, "initialPrompt", "string")
+    && hasOptionalType(body, "parentSession", "string");
+}
+
+interface SessionCreateParentReadFailure {
+  readonly ok: false;
+  readonly error: string;
+  readonly code: typeof SESSION_CREATE_ERROR.PARENT_SESSION_NOT_FOUND
+    | typeof SESSION_CREATE_ERROR.PARENT_SESSION_CHANGED
+    | typeof SESSION_CREATE_ERROR.PARENT_IDENTITY_UNAVAILABLE
+    | typeof SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE;
+}
+
+async function readSessionCreateParentIdentity(parentName: string): Promise<
+  | { readonly ok: true; readonly identity: ParentSessionIdentity }
+  | SessionCreateParentReadFailure
+> {
+  try {
+    if (!(await isAllowedSession(parentName))) {
+      return {
+        ok: false,
+        error: "parent session not found",
+        code: SESSION_CREATE_ERROR.PARENT_SESSION_NOT_FOUND,
+      };
+    }
+    const activeParentIdentity = (await getBackend().listIdentities?.())?.[parentName];
+    if (!activeParentIdentity) {
+      return {
+        ok: false,
+        error: "parent session identity unavailable",
+        code: SESSION_CREATE_ERROR.PARENT_IDENTITY_UNAVAILABLE,
+      };
+    }
+    return {
+      ok: true,
+      identity: {
+        wolfpackSessionId: activeParentIdentity.wolfpackSessionId,
+        wolfpackSessionName: activeParentIdentity.wolfpackSessionName,
+      },
+    };
+  } catch {
+    return {
+      ok: false,
+      error: "backend unavailable",
+      code: SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE,
+    };
+  }
+}
+
+function sessionCreatePartialIdentity(result: {
+  readonly session: string;
+  readonly sessionId: string;
+  readonly project: string;
+  readonly harness: string;
+}): {
+  readonly session: string;
+  readonly sessionId: string;
+  readonly project: string;
+  readonly harness: string;
+} {
+  return {
+    session: result.session,
+    sessionId: result.sessionId,
+    project: result.project,
+    harness: result.harness,
+  };
 }
 
 interface SessionOpenBody extends Record<string, unknown> {
@@ -703,7 +772,7 @@ export const routes: Record<
       !body
       || !isSessionCreateBody(body)
       || !isValidProjectName(body.project)
-      || (body.harness !== undefined && !isOpenableHarness(body.harness))
+      || (body.harness !== undefined && !isSessionCreateHarness(body.harness))
       || (
         body.initialPrompt !== undefined
         && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
@@ -712,22 +781,23 @@ export const routes: Record<
       if (body) json(res, {
         error: "invalid session-create request",
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
-      }, 400);
+      }, SESSION_CREATE_HTTP_STATUS[SESSION_CREATE_ERROR.INVALID_REQUEST]);
       return;
     }
 
     const projectDir = join(DEV_DIR, body.project);
     const projectValidation = validateProjectDirPure(projectDir);
     if (!projectValidation.ok) {
+      const code = projectValidation.code === "not_found"
+        ? SESSION_CREATE_ERROR.PROJECT_NOT_FOUND
+        : SESSION_CREATE_ERROR.INVALID_REQUEST;
       return json(
         res,
         {
           error: projectValidation.code === "not_found" ? "project not found" : "invalid project",
-          code: projectValidation.code === "not_found"
-            ? SESSION_CREATE_ERROR.PROJECT_NOT_FOUND
-            : SESSION_CREATE_ERROR.INVALID_REQUEST,
+          code,
         },
-        projectValidation.code === "not_found" ? 404 : 400,
+        SESSION_CREATE_HTTP_STATUS[code],
       );
     }
 
@@ -736,7 +806,26 @@ export const routes: Record<
       return json(res, {
         error: "initial prompt requires an agent harness",
         code: SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS,
-      }, 400);
+      }, SESSION_CREATE_HTTP_STATUS[SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS]);
+    }
+
+    let parentIdentity: ParentSessionIdentity | undefined;
+    const parentName = body.parentSession?.trim();
+    if (body.parentSession !== undefined) {
+      if (!parentName || !isValidSessionName(parentName)) {
+        return json(res, {
+          error: "invalid session-create request",
+          code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+        }, SESSION_CREATE_HTTP_STATUS[SESSION_CREATE_ERROR.INVALID_REQUEST]);
+      }
+      const parentRead = await readSessionCreateParentIdentity(parentName);
+      if (!parentRead.ok) {
+        return json(res, {
+          error: parentRead.error,
+          code: parentRead.code,
+        }, SESSION_CREATE_HTTP_STATUS[parentRead.code]);
+      }
+      parentIdentity = parentRead.identity;
     }
 
     try {
@@ -746,21 +835,42 @@ export const routes: Record<
         projectDir,
         command: configuredCommand,
         initialPrompt: body.initialPrompt,
+        parentSession: parentIdentity,
         loadSettings: () => ({ agentCmd: configuredCommand }),
       });
+      if (parentName && parentIdentity) {
+        const parentRead = await readSessionCreateParentIdentity(parentName);
+        if (!parentRead.ok) {
+          const code = parentRead.code;
+          return json(res, {
+            error: `${parentRead.error} after creating session`,
+            code,
+            createdSession: sessionCreatePartialIdentity(result),
+          }, SESSION_CREATE_HTTP_STATUS[code]);
+        }
+        if (parentRead.identity.wolfpackSessionId !== parentIdentity.wolfpackSessionId) {
+          const code = SESSION_CREATE_ERROR.PARENT_SESSION_CHANGED;
+          return json(res, {
+            error: "parent session changed after creating session",
+            code,
+            createdSession: sessionCreatePartialIdentity(result),
+          }, SESSION_CREATE_HTTP_STATUS[code]);
+        }
+        notifySubSessionOpened(parentName, result.session);
+      }
       json(res, result);
     } catch (error: unknown) {
       if (error instanceof DuplicateSessionError) {
         return json(res, {
           error: "could not allocate a session name",
           code: SESSION_CREATE_ERROR.NAME_COLLISION,
-        }, 409);
+        }, SESSION_CREATE_HTTP_STATUS[SESSION_CREATE_ERROR.NAME_COLLISION]);
       }
       log.warn("session-create failed", { error: errMsg(error) });
       json(res, {
         error: "backend unavailable",
         code: SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE,
-      }, 503);
+      }, SESSION_CREATE_HTTP_STATUS[SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE]);
     }
   },
 

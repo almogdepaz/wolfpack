@@ -26,6 +26,7 @@ export class MockBackend implements SessionBackend {
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
   private readonly _parentSessions = new Map<string, ParentSessionIdentity>();
+  private readonly _sessionIds = new Map<string, string>();
   /** Per-session alive override — when set, isSessionAlive() returns this
    *  instead of `_sessions.has(name)`. Used by tests to simulate a session
    *  that's listed (so WS upgrade passes) but whose backing process has
@@ -82,7 +83,7 @@ export class MockBackend implements SessionBackend {
     const out: Record<string, PublicSessionIdentity> = {};
     for (const name of this._sessions) {
       out[name] = {
-        wolfpackSessionId: `mock:${name}`,
+        wolfpackSessionId: this._sessionIds.get(name) ?? `mock:${name}`,
         wolfpackSessionName: name,
         projectPath: "",
         agentKind: AGENT_KIND.UNKNOWN,
@@ -92,6 +93,11 @@ export class MockBackend implements SessionBackend {
       };
     }
     return out;
+  }
+
+  setSessionId(name: string, sessionId: string | null): void {
+    if (sessionId === null) this._sessionIds.delete(name);
+    else this._sessionIds.set(name, sessionId);
   }
 
   /** Set hook called inside createSession before adding to set. */
@@ -122,7 +128,7 @@ export class MockBackend implements SessionBackend {
     if (options?.parentSession) this._parentSessions.set(name, options.parentSession);
     const now = new Date(0).toISOString();
     return {
-      wolfpackSessionId: `mock:${name}`,
+      wolfpackSessionId: this._sessionIds.get(name) ?? `mock:${name}`,
       wolfpackSessionName: name,
       projectPath: cwd,
       agentKind: options?.agentKind ?? inferAgentKind(cmd),

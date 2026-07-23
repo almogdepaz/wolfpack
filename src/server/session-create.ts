@@ -1,6 +1,7 @@
 import { MAX_SESSION_NAME_LENGTH } from "../validation.js";
 import { DuplicateSessionError } from "./backend.js";
 import type { SessionLaunchOptions } from "./backend.js";
+import type { ParentSessionIdentity } from "./session-identity.js";
 import { inferAgentKind } from "./session-identity.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 
@@ -31,6 +32,7 @@ interface CreateTopLevelSessionInput {
   readonly projectDir: string;
   readonly command?: string;
   readonly initialPrompt?: string;
+  readonly parentSession?: ParentSessionIdentity;
   readonly loadSettings: () => { agentCmd: string };
 }
 
@@ -57,15 +59,17 @@ export async function createTopLevelSession(
   for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt++) {
     const session = chooseTopLevelSessionName(input.project, await input.backend.list());
     try {
+      const launchOptions: SessionLaunchOptions = {
+        agentKind: harness,
+        ...(input.initialPrompt !== undefined && { initialPrompt: input.initialPrompt }),
+        ...(input.parentSession !== undefined && { parentSession: input.parentSession }),
+      };
       const identity = await input.backend.createSession(
         session,
         input.projectDir,
         input.command,
         loadSettings,
-        {
-          agentKind: harness,
-          initialPrompt: input.initialPrompt,
-        },
+        launchOptions,
       );
       return {
         ok: true,
