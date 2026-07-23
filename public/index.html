@@ -196,8 +196,14 @@
         <div class="settings-section">
           <div class="settings-label">Agents</div>
           <div class="settings-description">
-            Commands shown when creating a session. Toggle to enable, × to remove. If you disable everything, the picker falls back to <code>shell</code>.
+            Commands shown when creating a session. <code>shell</code> is always enabled; other commands can be toggled or removed.
           </div>
+          <div class="provider-readiness-header">
+            <span>Provider readiness</span>
+            <button id="provider-refresh-btn" class="provider-refresh-btn">refresh</button>
+          </div>
+          <div id="provider-readiness-list" class="provider-readiness-list"></div>
+          <div class="configured-agents-label">Configured commands</div>
           <div id="agents-list" class="agents-list"></div>
           <div class="agent-add-row">
             <input type="text" id="agent-add-input" class="agent-add-input" placeholder="e.g. claude, gemini --context…" autocomplete="off">

@@ -356,6 +356,30 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE"
       ]
     },
+    "listProviderReadiness": {
+      "route": "GET /api/providers",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listProviderReadiness:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listProviderReadiness response",
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ProviderReadiness"
+            }
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
     "getSettings": {
       "route": "GET /api/settings",
       "stable": true,
@@ -2006,6 +2030,85 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "ralphAgents"
       ],
       "additionalProperties": false
+    },
+    "ProviderReadiness": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/OpenableHarness"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "status": {
+              "const": "installed"
+            },
+            "executablePath": {
+              "type": "string"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "authStatus": {
+              "const": "unknown"
+            },
+            "loginCommand": {
+              "$ref": "#/$defs/Command"
+            }
+          },
+          "required": [
+            "id",
+            "displayName",
+            "command",
+            "status",
+            "executablePath",
+            "version",
+            "authStatus",
+            "loginCommand"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/OpenableHarness"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "status": {
+              "const": "missing"
+            },
+            "installGuidance": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "displayName",
+            "command",
+            "status",
+            "installGuidance"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "SessionSummary": {
       "type": "object",

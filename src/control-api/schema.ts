@@ -119,6 +119,11 @@ const object = (
 
 const ok = object({ ok: boolean() }, ["ok"]);
 const error = ref("ErrorEnvelope");
+const providerIdentityProperties = {
+  id: ref("OpenableHarness"),
+  displayName: string(),
+  command: ref("Command"),
+} as const;
 
 export const controlApiSource: ControlApiSource = {
   schemaVersion: CONTROL_API_SCHEMA_VERSION,
@@ -191,6 +196,23 @@ export const controlApiSource: ControlApiSource = {
       cmds: arrayOf(ref("Command")),
       ralphAgents: arrayOf(string()),
     }, ["agentCmd", "cmds", "ralphAgents"]),
+    ProviderReadiness: {
+      anyOf: [
+        object({
+          ...providerIdentityProperties,
+          status: { const: "installed" },
+          executablePath: string(),
+          version: nullable(string()),
+          authStatus: { const: "unknown" },
+          loginCommand: ref("Command"),
+        }, ["id", "displayName", "command", "status", "executablePath", "version", "authStatus", "loginCommand"]),
+        object({
+          ...providerIdentityProperties,
+          status: { const: "missing" },
+          installGuidance: string(),
+        }, ["id", "displayName", "command", "status", "installGuidance"]),
+      ],
+    },
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -385,6 +407,15 @@ export const controlApiSource: ControlApiSource = {
         harness: ref("OpenableHarness"),
       }, ["ok", "session", "sessionId", "project", "harness"]),
       errors: sessionOpenErrorLines(),
+    },
+    "GET /api/providers": {
+      operationId: "listProviderReadiness",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: object({
+        providers: arrayOf(ref("ProviderReadiness")),
+      }, ["providers"]),
+      errors: [],
     },
     "GET /api/settings": {
       operationId: "getSettings",

@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
@@ -1245,6 +1245,41 @@ async function resetSettingsToDefaults() {
   await post("/api/settings", { agentCmd: "shell" });
 }
 
+describe("GET /api/providers", () => {
+  test("reports allowlisted provider readiness without probing user commands", async () => {
+    const providerBin = join(TEST_DEV_DIR, "provider-bin");
+    mkdirSync(providerBin, { recursive: true });
+    const codexBin = join(providerBin, "codex");
+    writeFileSync(codexBin, "#!/bin/sh\nprintf 'codex-cli 7.6.5\\n'\n");
+    chmodSync(codexBin, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = providerBin;
+    try {
+      const res = await get("/api/providers");
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.providers).toHaveLength(5);
+      expect(data.providers.find((provider: { id: string }) => provider.id === "codex")).toEqual({
+        id: "codex",
+        displayName: "Codex",
+        command: "codex",
+        status: "installed",
+        executablePath: codexBin,
+        version: "codex-cli 7.6.5",
+        authStatus: "unknown",
+        loginCommand: "codex login",
+      });
+      expect(data.providers.find((provider: { id: string }) => provider.id === "claude")).toMatchObject({
+        status: "missing",
+        installGuidance: "npm install -g @anthropic-ai/claude-code",
+      });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+  });
+});
+
 describe("GET /api/settings", () => {
   beforeEach(async () => { await resetSettingsToDefaults(); });
 
@@ -1263,6 +1298,20 @@ describe("GET /api/settings", () => {
   test("does NOT include the legacy `presets` key", async () => {
     const data = await (await get("/api/settings")).json();
     expect(data.presets).toBeUndefined();
+  });
+
+  test("always returns shell enabled when persisted settings omit it", async () => {
+    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
+      agentCmd: "pi",
+      cmds: [{ cmd: "pi", enabled: true }],
+    }));
+
+    const data = await (await get("/api/settings")).json();
+    expect(data.settings.cmds).toEqual([
+      { cmd: "shell", enabled: true },
+      { cmd: "pi", enabled: true },
+    ]);
+    expect(data.effective.cmds).toEqual(["shell", "pi"]);
   });
 });
 
@@ -1312,6 +1361,12 @@ describe("POST /api/settings — removeCmd", () => {
     expect(cmdNames).not.toContain("throwaway");
   });
 
+  test("rejects removing shell", async () => {
+    const res = await post("/api/settings", { removeCmd: "shell" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "shell is always enabled" });
+  });
+
   test("removing the current agentCmd falls through to first enabled", async () => {
     await post("/api/settings", { agentCmd: "claude" });
     const res = await post("/api/settings", { removeCmd: "claude" });
@@ -1331,6 +1386,12 @@ describe("POST /api/settings — setCmdEnabled", () => {
     const claude = data.settings.cmds.find((c: { cmd: string }) => c.cmd === "claude");
     expect(claude.enabled).toBe(false);
     expect(data.effective.cmds).not.toContain("claude");
+  });
+
+  test("rejects disabling shell", async () => {
+    const res = await post("/api/settings", { setCmdEnabled: { cmd: "shell", enabled: false } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "shell is always enabled" });
   });
 
   test("disabling all cmds → effective.cmds is [\"shell\"] fallback", async () => {

@@ -20,6 +20,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
+import { detectProviderReadiness } from "../provider-readiness.js";
 import {
   configuredRalphAgents,
   selectConfiguredRalphAgent,
@@ -440,12 +441,12 @@ export function loadSettingsWithRalphAgents(): LoadedSettings {
     ? raw.agentCmd
     : "shell";
 
-  // A persisted `cmds` array is authoritative, including an explicitly empty
-  // array. Synthesizing built-ins here would make unconfigured commands look
-  // user-configured to Ralph authorization.
+  // Persisted provider commands are authoritative, but shell is a required
+  // local fallback. It is not a Ralph agent, so restoring it does not broaden
+  // delegated-agent authorization.
   if (raw && Array.isArray(raw.cmds)) {
-    const cmds: CmdEntry[] = [];
-    const seen = new Set<string>();
+    const cmds: CmdEntry[] = [{ cmd: AGENT_KIND.SHELL, enabled: true }];
+    const seen = new Set<string>([AGENT_KIND.SHELL]);
     for (const entry of raw.cmds as unknown[]) {
       if (!entry || typeof entry !== "object") continue;
       const obj = entry as Record<string, unknown>;
@@ -500,11 +501,13 @@ export function effectiveAgentCmd(s: Settings): string {
   return AGENT_KIND.SHELL;
 }
 
-/** What the session-create picker should show: enabled cmds, or ["shell"] if
- *  the user has disabled everything (always-on fallback). */
+/** What the session-create picker should show. Shell is always first and
+ * available even when persisted settings are stale or malformed. */
 export function effectiveCmds(s: Settings): string[] {
-  const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
-  return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL];
+  const enabled = s.cmds
+    .filter(c => c.enabled && c.cmd !== AGENT_KIND.SHELL)
+    .map(c => c.cmd);
+  return [AGENT_KIND.SHELL, ...enabled];
 }
 
 export function effectiveRalphAgents(s: Settings): RalphAgent[] {
@@ -840,6 +843,11 @@ export const routes: Record<
     }
   },
 
+  "GET /api/providers": async (_req, res) => {
+    const providers = await detectProviderReadiness({ path: process.env.PATH });
+    json(res, { providers });
+  },
+
   "GET /api/settings": async (_req, res) => {
     const loaded = loadSettingsWithRalphAgents();
     const settings = loaded.settings;
@@ -892,6 +900,9 @@ export const routes: Record<
 
     if (body.removeCmd != null) {
       const cmd = body.removeCmd;
+      if (cmd === AGENT_KIND.SHELL) {
+        return json(res, { error: "shell is always enabled" }, 400);
+      }
       settings.cmds = settings.cmds.filter(c => c.cmd !== cmd);
       // If we removed the current default, drop it back to whatever
       // effectiveAgentCmd would resolve next time — setting it to "" lets the
@@ -901,6 +912,9 @@ export const routes: Record<
 
     if (body.setCmdEnabled != null) {
       const target = body.setCmdEnabled;
+      if (target.cmd === AGENT_KIND.SHELL && !target.enabled) {
+        return json(res, { error: "shell is always enabled" }, 400);
+      }
       const entry = settings.cmds.find(c => c.cmd === target.cmd);
       if (entry) entry.enabled = target.enabled;
     }
