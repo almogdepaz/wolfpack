@@ -14,7 +14,7 @@ import {
   readSync,
   closeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -177,6 +177,17 @@ import {
 } from "../session-open-contract.js";
 import { openSubSession, SessionOpenError } from "./session-open.js";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.js";
+import {
+  isBoundedSessionStatusIdentity,
+  SESSION_STATUS_ERROR,
+  SESSION_STATUS_ERROR_MESSAGE,
+  SESSION_TERMINAL_STATUS,
+} from "../session-status-contract.js";
+import type {
+  SessionInspectionResult,
+  SessionStatusErrorCode,
+  SessionTerminalLiveness,
+} from "../session-status-contract.js";
 import { createTopLevelSession } from "./session-create.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
@@ -311,7 +322,10 @@ async function resolveActiveSession(
     if (!resolved.ok) {
       json(
         res,
-        { error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found" },
+        {
+          error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found",
+          code: resolved.code === "AMBIGUOUS" ? "AMBIGUOUS_SELECTOR" : "SESSION_NOT_FOUND",
+        },
         resolved.code === "AMBIGUOUS" ? 409 : 404,
       );
       return null;
@@ -324,20 +338,76 @@ async function resolveActiveSession(
   }
 }
 
-function sessionStatusPayload(name: string, identity: PublicSessionIdentity) {
+function sessionTerminalLiveness(name: string): SessionTerminalLiveness {
+  const streaming = getRouter().getStreamingBackendForSession(name);
+  if (!streaming) {
+    return { exists: true, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE };
+  }
+  const alive = streaming.isSessionAlive(name);
+  return {
+    exists: true,
+    alive,
+    status: alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
+  };
+}
+
+function sessionStatusPayload(name: string, identity: PublicSessionIdentity, selector: string = name) {
+  const terminal = sessionTerminalLiveness(name);
   return {
     ok: true as const,
+    selector,
     session: name,
     sessionId: identity.wolfpackSessionId,
     state: "active" as const,
+    project: basename(identity.projectPath),
     projectPath: identity.projectPath,
+    projectDir: identity.projectPath,
     harness: identity.agentKind,
+    terminal,
     ...(identity.parentSession && {
       parentSession: {
         session: identity.parentSession.wolfpackSessionName,
         sessionId: identity.parentSession.wolfpackSessionId,
       },
     }),
+  };
+}
+
+type SuccessfulSessionInspection = Extract<SessionInspectionResult, { readonly ok: true }>;
+
+function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection) {
+  const terminal: SessionTerminalLiveness = {
+    exists: true,
+    alive: inspection.alive,
+    status: inspection.alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
+  };
+  return {
+    ok: true as const,
+    selector,
+    session: inspection.session,
+    sessionId: inspection.sessionId,
+    state: "active" as const,
+    project: basename(inspection.projectPath),
+    projectPath: inspection.projectPath,
+    projectDir: inspection.projectPath,
+    harness: inspection.harness,
+    terminal,
+    ...(inspection.parentSession && { parentSession: inspection.parentSession }),
+  };
+}
+
+function sessionStatusFailure(
+  selector: string | undefined,
+  code: SessionStatusErrorCode,
+  terminal?: SessionTerminalLiveness,
+  identity?: { readonly session: string; readonly sessionId: string },
+) {
+  return {
+    ok: false as const,
+    ...(isBoundedSessionStatusIdentity(selector) && { selector }),
+    ...(identity && { session: identity.session, sessionId: identity.sessionId }),
+    ...(terminal && { terminal }),
+    error: { code, message: SESSION_STATUS_ERROR_MESSAGE[code] },
   };
 }
 
@@ -972,11 +1042,63 @@ export const routes: Record<
 
   "GET /api/session-control/status": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const selector = url.searchParams.get("session");
-    if (!selector) return json(res, { error: "missing session" }, 400);
-    const resolved = await resolveActiveSession(res, selector);
-    if (!resolved) return;
-    json(res, sessionStatusPayload(resolved.name, resolved.identity));
+    const selector = url.searchParams.get("session") ?? undefined;
+    if (!selector) {
+      return json(res, sessionStatusFailure(undefined, SESSION_STATUS_ERROR.INVALID_REQUEST), 400);
+    }
+    try {
+      const backend = getBackend();
+      const inspect = backend.inspectSession;
+      if (!inspect) {
+        return json(
+          res,
+          sessionStatusFailure(
+            selector,
+            SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE,
+            { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+          ),
+          503,
+        );
+      }
+      const inspection = await inspect.call(backend, selector);
+      if (!inspection.ok) {
+        const ambiguous = inspection.code === "AMBIGUOUS";
+        return json(
+          res,
+          sessionStatusFailure(
+            selector,
+            ambiguous ? SESSION_STATUS_ERROR.AMBIGUOUS : SESSION_STATUS_ERROR.NOT_FOUND,
+            { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+          ),
+          ambiguous ? 409 : 404,
+        );
+      }
+      const status = inspectedSessionStatusPayload(selector, inspection);
+      if (!inspection.alive) {
+        return json(
+          res,
+          sessionStatusFailure(
+            selector,
+            SESSION_STATUS_ERROR.DEAD,
+            status.terminal,
+            { session: status.session, sessionId: status.sessionId },
+          ),
+          410,
+        );
+      }
+      return json(res, status);
+    } catch (error: unknown) {
+      log.warn("session status inspection failed", { error: errMsg(error) });
+      return json(
+        res,
+        sessionStatusFailure(
+          selector,
+          SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE,
+          { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+        ),
+        503,
+      );
+    }
   },
 
   "GET /api/session-control/read": async (req, res) => {

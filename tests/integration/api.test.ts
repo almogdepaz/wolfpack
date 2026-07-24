@@ -413,11 +413,15 @@ describe("agent-native top-level session control", () => {
     );
     expect(listed).toEqual({
       ok: true,
+      selector: "wolf-1",
       session: "wolf-1",
       sessionId: "mock:wolf-1",
       state: "active",
+      project: "",
       projectPath: "",
+      projectDir: "",
       harness: "unknown",
+      terminal: { exists: true, alive: true, status: "ready" },
     });
     expect(listed).not.toHaveProperty("lastLine");
 
@@ -425,11 +429,15 @@ describe("agent-native top-level session control", () => {
     expect(status.status).toBe(200);
     expect(await status.json()).toEqual({
       ok: true,
+      selector: "mock:wolf-1",
       session: "wolf-1",
       sessionId: "mock:wolf-1",
       state: "active",
+      project: "",
       projectPath: "",
+      projectDir: "",
       harness: "unknown",
+      terminal: { exists: true, alive: true, status: "ready" },
     });
 
     const read = await get(`/api/session-control/read?session=${selector}`);
@@ -1070,6 +1078,98 @@ describe("session control API", () => {
     mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
     mockBackend.setOnAfterPrefill(null);
     mockBackend.lastSendArgs = null;
+  });
+
+  test("status exposes stable liveness/project facts by name without reading terminal output", async () => {
+    const originalListIdentities = mockBackend.listIdentities.bind(mockBackend);
+    mockBackend.listIdentities = async () => {
+      const identities = await originalListIdentities();
+      return {
+        ...identities,
+        "wolf-1": {
+          ...identities["wolf-1"]!,
+          projectPath: join(TEST_DEV_DIR, "my-app"),
+          agentKind: "pi",
+        },
+      };
+    };
+    mockBackend.setCapturePane(async () => {
+      throw new Error("status must not read terminal output");
+    });
+    try {
+      const res = await get("/api/session-control/status?session=wolf-1");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        selector: "wolf-1",
+        session: "wolf-1",
+        sessionId: "mock:wolf-1",
+        state: "active",
+        project: "my-app",
+        projectPath: join(TEST_DEV_DIR, "my-app"),
+        projectDir: join(TEST_DEV_DIR, "my-app"),
+        harness: "pi",
+        terminal: { exists: true, alive: true, status: "ready" },
+      });
+    } finally {
+      mockBackend.listIdentities = originalListIdentities;
+    }
+  });
+
+  test("status resolves stable ids and fails closed for dead listed sessions", async () => {
+    mockBackend.setSessionAlive("wolf-2", false);
+    const res = await get("/api/session-control/status?session=mock%3Awolf-2");
+    mockBackend.setSessionAlive("wolf-2", null);
+
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({
+      ok: false,
+      selector: "mock:wolf-2",
+      session: "wolf-2",
+      sessionId: "mock:wolf-2",
+      terminal: { exists: true, alive: false, status: "dead" },
+      error: { code: "SESSION_DEAD", message: "session is not alive" },
+    });
+  });
+
+  test("status returns uniform bounded failures for missing, unknown, ambiguous, and unavailable targets", async () => {
+    const missing = await get("/api/session-control/status");
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "missing session selector" },
+    });
+
+    const unknown = await get("/api/session-control/status?session=missing-agent");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({
+      ok: false,
+      selector: "missing-agent",
+      terminal: { exists: false, alive: false, status: "unavailable" },
+      error: { code: "SESSION_NOT_FOUND", message: "session not found" },
+    });
+
+    const originalInspectSession = mockBackend.inspectSession.bind(mockBackend);
+    mockBackend.inspectSession = async () => ({ ok: false, code: "AMBIGUOUS" });
+    const ambiguous = await get("/api/session-control/status?session=ambiguous-agent");
+    expect(ambiguous.status).toBe(409);
+    expect(await ambiguous.json()).toEqual({
+      ok: false,
+      selector: "ambiguous-agent",
+      terminal: { exists: false, alive: false, status: "unavailable" },
+      error: { code: "AMBIGUOUS_SELECTOR", message: "ambiguous session selector" },
+    });
+
+    mockBackend.inspectSession = async () => { throw new Error("transport details must stay private"); };
+    const unavailable = await get("/api/session-control/status?session=wolf-1");
+    mockBackend.inspectSession = originalInspectSession;
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({
+      ok: false,
+      selector: "wolf-1",
+      terminal: { exists: false, alive: false, status: "unavailable" },
+      error: { code: "BACKEND_UNAVAILABLE", message: "backend unavailable" },
+    });
   });
 
   test("reads current output from backend snapshot", async () => {

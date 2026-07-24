@@ -13,6 +13,8 @@ import type {
   ParentSessionIdentity,
   PublicSessionIdentity,
 } from "./session-identity.js";
+import type { SessionInspectionResult } from "../session-status-contract.js";
+import { resolveSessionSelector } from "./session-selector.js";
 
 export interface MockBackendOptions {
   sessions?: string[];
@@ -92,6 +94,26 @@ export class MockBackend implements SessionBackend {
       };
     }
     return out;
+  }
+
+  async inspectSession(selector: string): Promise<SessionInspectionResult> {
+    const identities = await this.listIdentities();
+    const resolved = resolveSessionSelector(selector, [...this._sessions], identities);
+    if (!resolved.ok) return resolved;
+    return {
+      ok: true,
+      session: resolved.name,
+      sessionId: resolved.identity.wolfpackSessionId,
+      projectPath: resolved.identity.projectPath,
+      harness: resolved.identity.agentKind,
+      alive: this.isSessionAlive(resolved.name),
+      ...(resolved.identity.parentSession && {
+        parentSession: {
+          session: resolved.identity.parentSession.wolfpackSessionName,
+          sessionId: resolved.identity.parentSession.wolfpackSessionId,
+        },
+      }),
+    };
   }
 
   /** Set hook called inside createSession before adding to set. */

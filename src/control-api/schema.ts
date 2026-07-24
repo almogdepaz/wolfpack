@@ -10,6 +10,11 @@ import {
   SESSION_OPEN_HTTP_STATUS,
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
+import {
+  SESSION_STATUS_ERROR,
+  SESSION_STATUS_ERROR_MESSAGE_MAX_CODE_POINTS,
+  SESSION_TERMINAL_STATUSES,
+} from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
@@ -201,15 +206,50 @@ export const controlApiSource: ControlApiSource = {
       session: ref("SessionName"),
       sessionId: ref("SessionId"),
     }, ["session", "sessionId"]),
+    SessionTerminalStatus: { enum: [...SESSION_TERMINAL_STATUSES] },
+    SessionTerminalLiveness: object({
+      exists: boolean(),
+      alive: boolean(),
+      status: ref("SessionTerminalStatus"),
+    }, ["exists", "alive", "status"]),
+    SessionStatusFailure: object({
+      ok: { const: false },
+      selector: ref("SessionSelector"),
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+      terminal: ref("SessionTerminalLiveness"),
+      error: object({
+        code: { enum: Object.values(SESSION_STATUS_ERROR) },
+        message: {
+          type: "string",
+          maxLength: SESSION_STATUS_ERROR_MESSAGE_MAX_CODE_POINTS,
+        },
+      }, ["code", "message"]),
+    }, ["ok", "error"]),
     SessionStatus: object({
       ok: { const: true },
+      selector: ref("SessionSelector"),
       session: ref("SessionName"),
       sessionId: ref("SessionId"),
       state: { const: "active" },
+      project: string(),
       projectPath: string(),
+      projectDir: string(),
       harness: string(),
+      terminal: ref("SessionTerminalLiveness"),
       parentSession: ref("SessionControlIdentity"),
-    }, ["ok", "session", "sessionId", "state", "projectPath", "harness"]),
+    }, [
+      "ok",
+      "selector",
+      "session",
+      "sessionId",
+      "state",
+      "project",
+      "projectPath",
+      "projectDir",
+      "harness",
+      "terminal",
+    ]),
     Peer: object({
       name: string(),
       url: string(),
@@ -454,7 +494,13 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       request: object({ session: ref("SessionSelector") }, ["session"]),
       response: ref("SessionStatus"),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
     },
     "GET /api/session-control/read": {
       operationId: "readSession",

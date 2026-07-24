@@ -308,17 +308,21 @@ describe("session control fast-path requests", () => {
     });
   });
 
-  test("status preserves canonical name and id returned for an id selector", () => {
+  test("status preserves canonical name/id and exposes bounded terminal liveness facts for an id selector", () => {
     const script = `
       globalThis.fetch = async (url) => {
         if (!String(url).includes("/api/session-control/status?session=id-branchout")) process.exit(98);
         return Response.json({
           ok: true,
+          selector: "id-branchout",
           session: "branchout",
           sessionId: "id-branchout",
           state: "active",
+          project: "branchout",
           projectPath: "/tmp/branchout",
+          projectDir: "/tmp/branchout",
           harness: "pi",
+          terminal: { exists: true, alive: true, status: "ready" },
         });
       };
       const { runSessionCommand } = await import("./src/cli/session-control.ts");
@@ -332,10 +336,71 @@ describe("session control fast-path requests", () => {
     });
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(child.stdout.toString())).toMatchObject({
+      selector: "id-branchout",
       session: "branchout",
       sessionId: "id-branchout",
       state: "active",
+      project: "branchout",
+      projectDir: "/tmp/branchout",
       harness: "pi",
+      terminal: { exists: true, alive: true, status: "ready" },
     });
+  });
+
+  test("status maps structured dead-session liveness failures without terminal output", () => {
+    const script = `
+      globalThis.fetch = async () => Response.json({
+        ok: false,
+        selector: "id-dead",
+        session: "dead-session",
+        sessionId: "id-dead",
+        terminal: { exists: true, alive: false, status: "dead" },
+        error: { code: "SESSION_DEAD", message: "session is not alive" },
+      }, { status: 410 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["status", "id-dead", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      selector: "id-dead",
+      session: "dead-session",
+      sessionId: "id-dead",
+      terminal: { exists: true, alive: false, status: "dead" },
+      error: { code: "SESSION_DEAD", message: "session is not alive" },
+    });
+  });
+
+  test("status bounds untrusted structured failure messages", () => {
+    const script = `
+      globalThis.fetch = async () => Response.json({
+        ok: false,
+        selector: "id-dead",
+        session: "dead-session",
+        sessionId: "id-dead",
+        terminal: { exists: true, alive: false, status: "dead" },
+        error: { code: "SESSION_DEAD", message: "x".repeat(10_000) },
+      }, { status: 410 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["status", "id-dead", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toMatchObject({
+      ok: false,
+      error: { code: "SESSION_DEAD", message: "session is not alive" },
+    });
+    expect(child.stdout.length).toBeLessThan(1_000);
   });
 });
