@@ -23,11 +23,23 @@ import {
   isGridActive, updateGridLayout, renderGridCells, getGridCellElement,
   hasPreservedGrid, clearPreservedGrid, setCurrentSessionFromGridFocus,
   returnToTerminalView, setGridFocus, suspendGridMode, restorePreservedGrid,
-  backFromRalph, backFromSettings, addToGrid, removeFromGrid, exitGridMode,
+  backFromRalph, backFromSettings, openGridComposition, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
 } from "./app-grid";
 
+import {
+  initNamedViewDeps,
+  renderNamedViewsSection,
+  loadNamedViews,
+  refreshNamedViews,
+  saveNamedViewFromActiveGrid,
+  openNamedViewById,
+  openNamedViewMember,
+  updateNamedViewFromActiveGrid,
+  duplicateNamedView,
+  deleteNamedView,
+} from "./app-named-views";
 import { setupTouchScrollHandler } from "./app-touch";
 import { filterProjectNames } from "./project-picker";
 import {
@@ -2894,6 +2906,17 @@ function fetchMachine(machineUrl, machineMeta) {
     });
 }
 
+function updateNamedViewsSectionInList(el: HTMLElement): void {
+  const html = renderNamedViewsSection(isDesktop() ? "desktop" : "mobile");
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  const next = tmp.firstElementChild;
+  if (!next) return;
+  const existing = el.querySelector(".named-view-section");
+  if (existing) existing.replaceWith(next);
+  else el.prepend(next);
+}
+
 async function loadSessions() {
   const myEpoch = ++state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
@@ -2906,7 +2929,7 @@ async function loadSessions() {
     if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
-    const html = renderMachineGroupHtml(g, false);
+    const html = renderNamedViewsSection(isDesktop() ? "desktop" : "mobile") + renderMachineGroupHtml(g, false);
     if (html !== state.lastSessionsHtml) { el.innerHTML = html; state.lastSessionsHtml = html; }
     checkStateTransitions([g]);
     state.firstLoad = false;
@@ -2921,9 +2944,11 @@ async function loadSessions() {
 
   // Show placeholders on first load
   if (state.firstLoad) {
-    el.innerHTML = allMachines.map(m =>
+    el.innerHTML = renderNamedViewsSection(isDesktop() ? "desktop" : "mobile") + allMachines.map(m =>
       renderMachineGroupHtml({ machine: { ...m.meta, url: m.url }, sessions: [], online: false, pending: true }, true)
     ).join("");
+  } else {
+    updateNamedViewsSectionInList(el);
   }
 
   const groups = new Array(allMachines.length);
@@ -4770,7 +4795,7 @@ function _renderSidebarNow() {
   const machines = getMachines();
   const multiMachine = machines.length > 0;
 
-  let html = "";
+  let html = renderNamedViewsSection("desktop");
   if (!multiMachine) {
     // Single machine — simple list with + New + Ralph
     const g = groups[0];
@@ -5098,6 +5123,14 @@ initRalphDeps({
   getSidebarRefreshTimer: () => sidebarRefreshTimer,
   setSidebarRefreshTimer: (v) => { sidebarRefreshTimer = v; },
 });
+initNamedViewDeps({
+  api, loadSessions, openSession, openGridComposition,
+  state, isDesktop, esc, escAttr,
+  renderNamedViewSurfaces: () => {
+    renderSidebar();
+    if (!isDesktop() || state.sessionsExpanded) void loadSessions();
+  },
+});
 initSettings();
 cleanStaleSnapshots();
 renderCmdPalette();
@@ -5112,6 +5145,7 @@ if (isDesktop() && state.sessionsExpanded) {
 }
 showView("sessions", true);
 loadSessions().then(renderSidebar);
+void loadNamedViews();
 scheduleGhosttyPrewarm();
 
 // Unregister stale service workers but keep our push SW
@@ -5139,4 +5173,7 @@ Object.assign(window, {
   // grid + view (used by onclick and e2e page.evaluate)
   toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
   showView, state,
+  loadNamedViews, refreshNamedViews, saveNamedViewFromActiveGrid,
+  openNamedViewById, openNamedViewMember, updateNamedViewFromActiveGrid,
+  duplicateNamedView, deleteNamedView,
 });

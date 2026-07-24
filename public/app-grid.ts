@@ -39,6 +39,9 @@ interface GridSession {
   _displaced?: boolean;
   _autoTakeControl?: boolean;
   _slowLoad?: ReturnType<typeof createTerminalSlowPathIndicator> | null;
+  _namedViewUnavailable?: boolean;
+  _namedViewSessionId?: string;
+  _namedViewLabel?: string;
   [field: string]: unknown;
 }
 
@@ -62,6 +65,52 @@ let deps: GridDeps;
 
 export function initGridDeps(d: GridDeps) {
   deps = d;
+}
+
+function namedViewSessionIdentityId(session: unknown): string | null {
+  if (!session || typeof session !== "object") return null;
+  const identity = (session as Record<string, unknown>).identity;
+  if (!identity || typeof identity !== "object") return null;
+  const id = (identity as Record<string, unknown>).wolfpackSessionId;
+  return typeof id === "string" && id ? id : null;
+}
+
+function findLiveNamedViewSession(machine: string, stableSessionId: string): { name: string; machineUrl: string } | null {
+  const sessions = Array.isArray(state.allSessions) ? state.allSessions : [];
+  for (const session of sessions) {
+    if (!session || typeof session !== "object") continue;
+    const record = session as Record<string, unknown>;
+    const sessionMachine = typeof record.machineUrl === "string" ? record.machineUrl : "";
+    const name = typeof record.name === "string" ? record.name : "";
+    if (sessionMachine !== machine || !name) continue;
+    if (namedViewSessionIdentityId(session) !== stableSessionId) continue;
+    return { name, machineUrl: sessionMachine };
+  }
+  return null;
+}
+
+function resetNamedViewGridCell(gs): void {
+  clearGridCellTakeControlTimer(gs);
+  if (gs.controller) { gs.controller.dispose(); gs.controller = null; }
+  if (gs._cellElement) { gs._cellElement.remove(); gs._cellElement = null; }
+}
+
+function guardNamedViewGridSession(gs): void {
+  const stableSessionId = typeof gs._namedViewSessionId === "string" ? gs._namedViewSessionId : "";
+  if (!stableSessionId) return;
+  const wasUnavailable = !!gs._namedViewUnavailable;
+  const live = findLiveNamedViewSession(gs.machine || "", stableSessionId);
+  if (live) {
+    gs.session = live.name;
+    gs.machine = live.machineUrl;
+    delete gs._namedViewUnavailable;
+  } else {
+    gs._namedViewUnavailable = true;
+    if (!gs._namedViewLabel) gs._namedViewLabel = gs.session;
+  }
+  if (wasUnavailable !== !!gs._namedViewUnavailable && gs._cellElement) {
+    resetNamedViewGridCell(gs);
+  }
 }
 
 // ── Relayout transition helpers ──
@@ -118,18 +167,25 @@ export function updateGridLayout() {
 }
 
 function createGridCell(gs, idx) {
+  guardNamedViewGridSession(gs);
   const existingTrace = __wfTraceGet(gs.session, gs.machine || "");
   const trace = existingTrace?._meta.mode === "grid" && existingTrace.events.some((event) => event.kind === "addToGrid.start")
     ? existingTrace
     : __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
   __wfTraceEvent(trace, "dom.cell.created", { gridIndex: idx });
   const cell = document.createElement("div");
-  cell.className = "grid-cell" + (idx === state.gridFocusIndex ? " grid-focused" : "") + (gs._loading ? " grid-loading" : "");
+  const unavailable = !!gs._namedViewUnavailable;
+  cell.className = "grid-cell" + (idx === state.gridFocusIndex ? " grid-focused" : "") + (gs._loading ? " grid-loading" : "") + (unavailable ? " grid-unavailable" : "");
   cell.dataset.gridIndex = idx;
-  cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
-  setTerminalLoadVisualState(cell, "prefill-loading");
-  gs._slowLoad = createTerminalSlowPathIndicator(cell);
-  gs._slowLoad.start("waiting for grid cell snapshot");
+  const label = gs._namedViewLabel || gs.session;
+  cell.innerHTML = unavailable
+    ? '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(label) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-unavailable"><div class="grid-cell-unavailable-title">session unavailable</div><div class="grid-cell-unavailable-meta">saved id: ' + esc(gs._namedViewSessionId || "") + '</div></div>'
+    : '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
+  if (!unavailable) {
+    setTerminalLoadVisualState(cell, "prefill-loading");
+    gs._slowLoad = createTerminalSlowPathIndicator(cell);
+    gs._slowLoad.start("waiting for grid cell snapshot");
+  }
   cell.addEventListener("click", (e) => {
     const tgt = e.target as HTMLElement | null;
     if (tgt && tgt.classList.contains("grid-cell-close")) return;
@@ -148,6 +204,8 @@ function createGridCell(gs, idx) {
 }
 
 async function mountGridController(gs, cell, idx) {
+  guardNamedViewGridSession(gs);
+  if (gs._namedViewUnavailable) return;
   if (gs.controller) return; // already mounted
   const cached = deps.loadSnapshot ? deps.loadSnapshot(gs.machine || "", gs.session) : null;
   if (cached) {
@@ -287,11 +345,12 @@ export function renderGridCells() {
   const existingCellSessions = [];
   const renderGen = ++_gridRenderGeneration;
   state.gridSessions.forEach((gs, idx) => {
-    if (gs._cellElement && gs._cellElement.parentNode === container && gs.controller) {
+    guardNamedViewGridSession(gs);
+    if (gs._cellElement && gs._cellElement.parentNode === container && (gs.controller || gs._namedViewUnavailable)) {
       // Existing cell — just update index and focus state
       gs._cellElement.dataset.gridIndex = idx;
       gs._cellElement.classList.toggle("grid-focused", idx === state.gridFocusIndex);
-      existingCellSessions.push(gs);
+      if (gs.controller) existingCellSessions.push(gs);
     } else {
       // New cell needed — show loading synchronously before async WASM mount
       // can reveal stale cached/full-width terminal content in the new grid size.
@@ -487,7 +546,11 @@ export function restorePreservedGrid() {
     session: gs.session,
     machine: gs.machine || "",
     controller: null,
+    ...(gs._namedViewUnavailable ? { _namedViewUnavailable: true } : {}),
+    ...(gs._namedViewSessionId ? { _namedViewSessionId: gs._namedViewSessionId } : {}),
+    ...(gs._namedViewLabel ? { _namedViewLabel: gs._namedViewLabel } : {}),
   }));
+  state.gridSessions.forEach(guardNamedViewGridSession);
   state.gridFocusIndex = restored.focusIndex;
   clearPreservedGrid();
   state.sidebarResizeDone = false;
@@ -525,6 +588,30 @@ export function backFromSettings() {
     return;
   }
   deps.showView(state.viewBeforeSettings || "sessions");
+}
+
+export function openGridComposition(sessions: readonly GridSession[], focusIndex: number): void {
+  if (!isDesktop()) return;
+  const gridSessions = sessions.slice(0, MAX_GRID_CELLS).map((session) => ({
+    session: session.session,
+    machine: session.machine || "",
+    controller: null,
+    ...(session._namedViewUnavailable ? { _namedViewUnavailable: true } : {}),
+    ...(session._namedViewSessionId ? { _namedViewSessionId: session._namedViewSessionId } : {}),
+    ...(session._namedViewLabel ? { _namedViewLabel: session._namedViewLabel } : {}),
+  }));
+  if (gridSessions.length < 2) return;
+  gridSessions.forEach(guardNamedViewGridSession);
+  if (state.gridSessions.length) exitGridMode(true);
+  else deps.destroyTerminal();
+  state.gridSessions = gridSessions;
+  state.gridFocusIndex = Math.max(0, Math.min(focusIndex, state.gridSessions.length - 1));
+  state.sidebarResizeDone = false;
+  setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
+  deps.showView("terminal", true);
+  updateGridLayout();
+  renderGridCells();
+  deps.renderSidebar();
 }
 
 export function addToGrid(session: string, machine?: string): void {
@@ -649,8 +736,15 @@ export function removeFromGrid(idx) {
     state.gridFocusIndex = Math.max(0, state.gridSessions.length - 1);
   }
   if (state.gridSessions.length <= 1) {
-    // Exit grid mode → single terminal
-    exitGridMode();
+    const remaining = state.gridSessions[0];
+    if (remaining?._namedViewUnavailable) {
+      exitGridMode(true);
+      setState({ currentSession: null, currentMachine: "" });
+      deps.showView("sessions", true);
+    } else {
+      // Exit grid mode → single terminal
+      exitGridMode();
+    }
   } else {
     // Update layout and indices without full renderGridCells
     state.gridSessions.forEach((g, i) => {

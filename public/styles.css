@@ -2474,6 +2474,32 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
 .custom-cmd-input { flex: 1; background: var(--bg-surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 12px; color: var(--accent); font-family: inherit; font-size: 14px; outline: none; min-height: 44px; caret-color: var(--accent); }
 .custom-cmd-add-btn { background: var(--bg-elevated); border: 1px solid var(--accent-border); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--accent); font-size: 11px; font-family: inherit; cursor: pointer; white-space: nowrap; }
 
+.named-view-section { border-bottom: 1px solid var(--border-subtle); margin-bottom: 6px; padding-bottom: 6px; }
+.named-view-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 4px; color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; }
+.named-view-header-actions { display: flex; gap: 4px; align-items: center; }
+.named-view-btn { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.12); border-radius: var(--radius-sm); color: var(--text-muted); font-family: inherit; font-size: 10px; padding: 4px 7px; cursor: pointer; text-transform: uppercase; }
+.named-view-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-border); background: rgba(0,255,65,0.08); }
+.named-view-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.named-view-btn.danger { color: var(--danger); }
+.named-view-error, .named-view-empty { padding: 6px 4px; color: var(--text-dim); font-size: 10px; }
+.named-view-error { color: var(--danger); }
+.named-view-row { display: flex; align-items: stretch; gap: 4px; margin-bottom: 3px; }
+.named-view-open { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; background: var(--bg-surface-gradient); border: 1px solid var(--border); border-left: 2px solid var(--accent-muted); border-radius: var(--radius-sm); color: var(--text-secondary); font-family: inherit; padding: 6px 8px; cursor: pointer; }
+.named-view-open:hover { border-left-color: var(--accent); background: var(--bg-hover); }
+.named-view-name { color: var(--accent); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.named-view-count { color: var(--text-dim); font-size: 9px; white-space: nowrap; }
+.named-view-card { background: var(--bg-surface-gradient); border: 1px solid var(--border); border-left: 3px solid var(--accent-muted); border-radius: var(--radius-sm); margin-bottom: 8px; padding: 10px; }
+.named-view-card-title { color: var(--accent); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.4px; margin-bottom: 8px; }
+.named-view-members { display: flex; flex-direction: column; gap: 5px; }
+.named-view-member { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-secondary); font-family: inherit; padding: 10px; cursor: pointer; }
+.named-view-member.disabled { opacity: 0.45; cursor: not-allowed; }
+.named-view-member-name { color: var(--text-primary); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+.named-view-member-meta { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
+.grid-cell.grid-unavailable { background: var(--bg-deep); border-style: dashed; }
+.grid-cell-unavailable { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-dim); text-align: center; padding: 16px; }
+.grid-cell-unavailable-title { color: var(--warning); font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; }
+.grid-cell-unavailable-meta { max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--text-ghost); font-size: 10px; }
+
 /* ── JS template literal utilities ── */
 .qc-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
 .qc-label { color: var(--cmd-accent); font-size: 12px; font-weight: 600; min-width: 60px; }

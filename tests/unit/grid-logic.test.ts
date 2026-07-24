@@ -210,6 +210,20 @@ describe("suspendGridState", () => {
     expect(result.focusIndex).toBe(1);
     expect(result.focusedSession).toEqual({ session: "b", machine: "" });
   });
+
+  test("preserves named-view stable identity and unavailable metadata", () => {
+    const namedGrid = [
+      { session: "test-project", machine: "", _namedViewSessionId: "mock:test-project", _namedViewLabel: "test-project" },
+      { session: "another-project", machine: "", _namedViewSessionId: "stale:another-project", _namedViewLabel: "another-project", _namedViewUnavailable: true },
+    ] as GridSession[];
+
+    const result = suspendGridState(namedGrid, 1);
+
+    expect(result.sessions).toEqual(namedGrid);
+    expect(result.focusedSession).toEqual(namedGrid[1]);
+    expect(result.sessions).not.toBe(namedGrid);
+    expect(result.sessions[1]).not.toBe(namedGrid[1]);
+  });
 });
 
 describe("resumeGridState", () => {
@@ -243,6 +257,20 @@ describe("resumeGridState", () => {
     expect(resumed.sessions.map(s => s.session)).toEqual(["a", "b", "c"]);
     expect(resumed.focusIndex).toBe(2);
     expect(resumed.focusedSession?.session).toBe("c");
+  });
+
+  test("restores named-view stable identity and unavailable metadata", () => {
+    const preserved = [
+      { session: "test-project", machine: "", _namedViewSessionId: "mock:test-project", _namedViewLabel: "test-project" },
+      { session: "another-project", machine: "", _namedViewSessionId: "stale:another-project", _namedViewLabel: "another-project", _namedViewUnavailable: true },
+    ] as GridSession[];
+
+    const result = resumeGridState(preserved, 1);
+
+    expect(result.sessions).toEqual(preserved);
+    expect(result.focusedSession).toEqual(preserved[1]);
+    expect(result.sessions).not.toBe(preserved);
+    expect(result.sessions[1]).not.toBe(preserved[1]);
   });
 });
 

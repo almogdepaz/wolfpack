@@ -165,7 +165,13 @@ function removeFromGridState(gridSessions, idx, focusIndex) {
   return { sessions: newSessions, focusIndex: newFocus, exitGrid: false };
 }
 function cloneGridState(sessions, focusIndex) {
-  const cloned = sessions.map((gs) => ({ session: gs.session, machine: gs.machine }));
+  const cloned = sessions.map((gs) => ({
+    session: gs.session,
+    machine: gs.machine,
+    ...gs._namedViewUnavailable ? { _namedViewUnavailable: true } : {},
+    ...gs._namedViewSessionId ? { _namedViewSessionId: gs._namedViewSessionId } : {},
+    ...gs._namedViewLabel ? { _namedViewLabel: gs._namedViewLabel } : {}
+  }));
   if (!cloned.length)
     return { sessions: [], focusIndex: 0 };
   const clamped = Math.max(0, Math.min(focusIndex, cloned.length - 1));

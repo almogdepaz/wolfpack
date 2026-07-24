@@ -9,6 +9,9 @@ export const MAX_GRID_CELLS = 6;
 export interface GridSession {
   session: string;
   machine: string;
+  _namedViewUnavailable?: boolean;
+  _namedViewSessionId?: string;
+  _namedViewLabel?: string;
 }
 
 export function gridLayoutClass(count: number): string {
@@ -98,7 +101,13 @@ type ClonedGridState = {
 };
 
 function cloneGridState(sessions: GridSession[], focusIndex: number): ClonedGridState {
-  const cloned = sessions.map(gs => ({ session: gs.session, machine: gs.machine }));
+  const cloned = sessions.map(gs => ({
+    session: gs.session,
+    machine: gs.machine,
+    ...(gs._namedViewUnavailable ? { _namedViewUnavailable: true } : {}),
+    ...(gs._namedViewSessionId ? { _namedViewSessionId: gs._namedViewSessionId } : {}),
+    ...(gs._namedViewLabel ? { _namedViewLabel: gs._namedViewLabel } : {}),
+  }));
   if (!cloned.length) return { sessions: [], focusIndex: 0 };
   const clamped = Math.max(0, Math.min(focusIndex, cloned.length - 1));
   return { sessions: cloned, focusIndex: clamped, focusedSession: cloned[clamped] };
