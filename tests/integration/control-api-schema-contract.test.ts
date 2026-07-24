@@ -14,6 +14,7 @@ mkdirSync(rawTmpDir, { recursive: true });
 const TEST_DEV_DIR = realpathSync(rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+process.env.WOLFPACK_NAMED_VIEW_PATH = join(TEST_DEV_DIR, ".wolfpack", `schema-named-views-${process.pid}.json`);
 
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
@@ -158,6 +159,7 @@ describe("control api generated schema against runtime responses", () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", await getJson("/api/info")],
       ["listSessions", await getJson("/api/sessions")],
+      ["listNamedViews", await getJson("/api/named-views")],
       ["getSettings", await getJson("/api/settings")],
       ["createTopLevelSession", await postJson("/api/session-create", {
         project: "wolfpack",

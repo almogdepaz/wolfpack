@@ -30,7 +30,8 @@
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients",
-    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer"
+    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
+    "named-view machineUrl is a stored HTTPS tailnet origin only; clients must resolve members by (machineUrl, sessionId), never by display name"
   ],
   "http": {
     "getInfo": {
@@ -105,6 +106,130 @@
         "additionalProperties": false
       },
       "errors": []
+    },
+    "listNamedViews": {
+      "route": "GET /api/named-views",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listNamedViews:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listNamedViews response",
+        "type": "object",
+        "properties": {
+          "views": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/NamedViewRecord"
+            }
+          }
+        },
+        "required": [
+          "views"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "500 ErrorEnvelope"
+      ]
+    },
+    "createNamedView": {
+      "route": "POST /api/named-views",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:createNamedView:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "createNamedView request",
+        "$ref": "#/$defs/NamedViewInput"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:createNamedView:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "createNamedView response",
+        "type": "object",
+        "properties": {
+          "view": {
+            "$ref": "#/$defs/NamedViewRecord"
+          }
+        },
+        "required": [
+          "view"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "updateNamedView": {
+      "route": "PUT /api/named-views",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:updateNamedView:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateNamedView request",
+        "$ref": "#/$defs/NamedViewUpdateInput"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:updateNamedView:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateNamedView response",
+        "type": "object",
+        "properties": {
+          "view": {
+            "$ref": "#/$defs/NamedViewRecord"
+          }
+        },
+        "required": [
+          "view"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
+    },
+    "deleteNamedView": {
+      "route": "DELETE /api/named-views",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:deleteNamedView:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "deleteNamedView request",
+        "$ref": "#/$defs/NamedViewDeleteInput"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:deleteNamedView:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "deleteNamedView response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "id": {
+            "$ref": "#/$defs/NamedViewId"
+          }
+        },
+        "required": [
+          "ok",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "500 ErrorEnvelope"
+      ]
     },
     "nextSessionName": {
       "route": "GET /api/next-session-name",
@@ -1923,6 +2048,175 @@
         "wolfpackSessionName",
         "projectPath",
         "agentKind",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "NamedViewId": {
+      "type": "string",
+      "description": "Server-generated opaque named-view identifier",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "NamedViewName": {
+      "type": "string",
+      "description": "Trimmed display name; 1..64 Unicode code points at runtime",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "NamedViewSessionId": {
+      "type": "string",
+      "description": "Stable opaque local or peer session identifier",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "NamedViewSessionName": {
+      "type": "string",
+      "description": "Last-known display hint only; never sufficient for matching",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "NamedViewMachineUrl": {
+      "type": "string",
+      "description": "Empty string for local machine or HTTPS tailnet origin for a peer",
+      "maxLength": 256
+    },
+    "NamedViewMemberReference": {
+      "type": "object",
+      "properties": {
+        "machineUrl": {
+          "$ref": "#/$defs/NamedViewMachineUrl"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/NamedViewSessionId"
+        },
+        "sessionName": {
+          "$ref": "#/$defs/NamedViewSessionName"
+        }
+      },
+      "required": [
+        "machineUrl",
+        "sessionId",
+        "sessionName"
+      ],
+      "additionalProperties": false
+    },
+    "NamedViewFocusReference": {
+      "type": "object",
+      "properties": {
+        "machineUrl": {
+          "$ref": "#/$defs/NamedViewMachineUrl"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/NamedViewSessionId"
+        }
+      },
+      "required": [
+        "machineUrl",
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "NamedViewInput": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/NamedViewName"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedViewMemberReference"
+          },
+          "minItems": 1,
+          "maxItems": 6
+        },
+        "focused": {
+          "$ref": "#/$defs/NamedViewFocusReference"
+        }
+      },
+      "required": [
+        "name",
+        "members"
+      ],
+      "additionalProperties": false
+    },
+    "NamedViewUpdateInput": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/NamedViewId"
+        },
+        "name": {
+          "$ref": "#/$defs/NamedViewName"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedViewMemberReference"
+          },
+          "minItems": 1,
+          "maxItems": 6
+        },
+        "focused": {
+          "$ref": "#/$defs/NamedViewFocusReference"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "members"
+      ],
+      "additionalProperties": false
+    },
+    "NamedViewDeleteInput": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/NamedViewId"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "NamedViewRecord": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "$ref": "#/$defs/NamedViewId"
+        },
+        "name": {
+          "$ref": "#/$defs/NamedViewName"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedViewMemberReference"
+          },
+          "minItems": 1,
+          "maxItems": 6
+        },
+        "focused": {
+          "$ref": "#/$defs/NamedViewFocusReference"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "name",
+        "members",
         "createdAt",
         "updatedAt"
       ],

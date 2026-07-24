@@ -164,6 +164,48 @@ describe("control api schema compatibility samples", () => {
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
   });
 
+  test("named-view CRUD publishes strict ordinary-auth semantic contracts", () => {
+    const listOperation = httpOperation("listNamedViews");
+    const createRequest = httpRequest("createNamedView");
+    const updateRequest = httpRequest("updateNamedView");
+    const deleteRequest = httpRequest("deleteNamedView");
+    const sampleView = {
+      schemaVersion: 1,
+      id: "nv_11111111-1111-4111-8111-111111111111",
+      name: "Release view",
+      members: [{
+        machineUrl: "https://peer.tailnet.ts.net",
+        sessionId: "peer-session-id",
+        sessionName: "peer-session",
+      }],
+      focused: { machineUrl: "https://peer.tailnet.ts.net", sessionId: "peer-session-id" },
+      createdAt: "2026-07-24T00:00:00.000Z",
+      updatedAt: "2026-07-24T00:00:01.000Z",
+    };
+
+    expect(listOperation.auth).toBe("jwt-when-configured");
+    expect(validate(createRequest, {
+      name: "Release view",
+      members: sampleView.members,
+      focused: sampleView.focused,
+    }, artifact)).toEqual([]);
+    expect(validate(createRequest, {
+      name: "Release view",
+      members: sampleView.members,
+      focused: sampleView.focused,
+      viewport: { cols: 120 },
+    }, artifact)).not.toEqual([]);
+    expect(validate(updateRequest, {
+      id: sampleView.id,
+      name: "Release view",
+      members: sampleView.members,
+    }, artifact)).toEqual([]);
+    expect(validate(deleteRequest, { id: sampleView.id }, artifact)).toEqual([]);
+    expect(validate(httpResponse("listNamedViews"), { views: [sampleView] }, artifact)).toEqual([]);
+    expect(validate(httpResponse("createNamedView"), { view: sampleView }, artifact)).toEqual([]);
+    expect(validate(httpResponse("deleteNamedView"), { ok: true, id: sampleView.id }, artifact)).toEqual([]);
+  });
+
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
     const operation = httpOperation("openSession");
     const request = httpRequest("openSession");
@@ -201,6 +243,7 @@ describe("control api schema compatibility samples", () => {
   test("representative http responses satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", { name: "devbox", version: "1.6.6" }],
+      ["listNamedViews", { views: [] }],
       ["listSessions", { sessions: [{
         name: "wolf-1-sub-agent",
         lastLine: "ready",

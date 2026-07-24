@@ -18,6 +18,7 @@ The generated schema is a client integration contract. Runtime routes remain aut
 - project directory containment stays in `src/server/validate-project-dir.ts`.
 - broker JSON/RPC wire compatibility stays covered by broker protocol/codec tests.
 - peer Ralph loop responses remain sanitized before aggregation.
+- named dashboard views store only semantic `(machineUrl, sessionId)` references; runtime validation rejects terminal/controller/grid state and non-tailnet peer URL shapes.
 
 Compatibility rules:
 

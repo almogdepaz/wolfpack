@@ -133,6 +133,10 @@ describe("JWT auth middleware", () => {
       { method: "POST", path: "/api/resize" },
       { method: "POST", path: "/api/session-create" },
       { method: "POST", path: "/api/session-open" },
+      { method: "GET", path: "/api/named-views" },
+      { method: "POST", path: "/api/named-views" },
+      { method: "PUT", path: "/api/named-views" },
+      { method: "DELETE", path: "/api/named-views" },
       { method: "POST", path: "/api/ralph/start" },
       { method: "POST", path: "/api/ralph/cancel" },
     ] as const;

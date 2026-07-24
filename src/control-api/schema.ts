@@ -9,6 +9,15 @@ import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
 } from "../session-open-contract.ts";
+import {
+  MAX_NAMED_VIEW_ID_LENGTH,
+  MAX_NAMED_VIEW_MACHINE_URL_LENGTH,
+  MAX_NAMED_VIEW_MEMBERS,
+  MAX_NAMED_VIEW_NAME_CODE_POINTS,
+  MAX_NAMED_VIEW_SESSION_ID_LENGTH,
+  MAX_NAMED_VIEW_SESSION_NAME_CODE_POINTS,
+  NAMED_VIEW_SCHEMA_VERSION,
+} from "../named-views.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 
@@ -135,6 +144,7 @@ export const controlApiSource: ControlApiSource = {
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
+    "named-view machineUrl is a stored HTTPS tailnet origin only; clients must resolve members by (machineUrl, sessionId), never by display name",
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
@@ -176,6 +186,72 @@ export const controlApiSource: ControlApiSource = {
         source: { enum: ["env", "broker_env", "ralph_launch"] },
       }, ["provider", "redactedId", "capturedAt", "source"]),
     }, ["wolfpackSessionId", "wolfpackSessionName", "projectPath", "agentKind", "createdAt", "updatedAt"]),
+    NamedViewId: {
+      ...string("Server-generated opaque named-view identifier"),
+      minLength: 1,
+      maxLength: MAX_NAMED_VIEW_ID_LENGTH,
+    },
+    NamedViewName: {
+      ...string("Trimmed display name; 1..64 Unicode code points at runtime"),
+      minLength: 1,
+      maxLength: MAX_NAMED_VIEW_NAME_CODE_POINTS,
+    },
+    NamedViewSessionId: {
+      ...string("Stable opaque local or peer session identifier"),
+      minLength: 1,
+      maxLength: MAX_NAMED_VIEW_SESSION_ID_LENGTH,
+    },
+    NamedViewSessionName: {
+      ...string("Last-known display hint only; never sufficient for matching"),
+      minLength: 1,
+      maxLength: MAX_NAMED_VIEW_SESSION_NAME_CODE_POINTS,
+    },
+    NamedViewMachineUrl: {
+      ...string("Empty string for local machine or HTTPS tailnet origin for a peer"),
+      maxLength: MAX_NAMED_VIEW_MACHINE_URL_LENGTH,
+    },
+    NamedViewMemberReference: object({
+      machineUrl: ref("NamedViewMachineUrl"),
+      sessionId: ref("NamedViewSessionId"),
+      sessionName: ref("NamedViewSessionName"),
+    }, ["machineUrl", "sessionId", "sessionName"]),
+    NamedViewFocusReference: object({
+      machineUrl: ref("NamedViewMachineUrl"),
+      sessionId: ref("NamedViewSessionId"),
+    }, ["machineUrl", "sessionId"]),
+    NamedViewInput: object({
+      name: ref("NamedViewName"),
+      members: {
+        ...arrayOf(ref("NamedViewMemberReference")),
+        minItems: 1,
+        maxItems: MAX_NAMED_VIEW_MEMBERS,
+      },
+      focused: ref("NamedViewFocusReference"),
+    }, ["name", "members"]),
+    NamedViewUpdateInput: object({
+      id: ref("NamedViewId"),
+      name: ref("NamedViewName"),
+      members: {
+        ...arrayOf(ref("NamedViewMemberReference")),
+        minItems: 1,
+        maxItems: MAX_NAMED_VIEW_MEMBERS,
+      },
+      focused: ref("NamedViewFocusReference"),
+    }, ["id", "name", "members"]),
+    NamedViewDeleteInput: object({ id: ref("NamedViewId") }, ["id"]),
+    NamedViewRecord: object({
+      schemaVersion: { const: NAMED_VIEW_SCHEMA_VERSION },
+      id: ref("NamedViewId"),
+      name: ref("NamedViewName"),
+      members: {
+        ...arrayOf(ref("NamedViewMemberReference")),
+        minItems: 1,
+        maxItems: MAX_NAMED_VIEW_MEMBERS,
+      },
+      focused: ref("NamedViewFocusReference"),
+      createdAt: string(),
+      updatedAt: string(),
+    }, ["schemaVersion", "id", "name", "members", "createdAt", "updatedAt"]),
     PrefillMode: { enum: [...TERMINAL_PREFILL_MODES] },
     WorktreeMode: { enum: [false, ...Object.values(RALPH_WORKTREE_MODE)] },
     CmdEntry: object({
@@ -305,6 +381,40 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       response: object({ projects: arrayOf(ref("ProjectName")) }, ["projects"]),
       errors: [],
+    },
+    "GET /api/named-views": {
+      operationId: "listNamedViews",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: object({ views: arrayOf(ref("NamedViewRecord")) }, ["views"]),
+      errors: ["500 ErrorEnvelope"],
+    },
+    "POST /api/named-views": {
+      operationId: "createNamedView",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: ref("NamedViewInput"),
+      response: object({ view: ref("NamedViewRecord") }, ["view"]),
+      errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "500 ErrorEnvelope"],
+    },
+    "PUT /api/named-views": {
+      operationId: "updateNamedView",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: ref("NamedViewUpdateInput"),
+      response: object({ view: ref("NamedViewRecord") }, ["view"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "500 ErrorEnvelope"],
+    },
+    "DELETE /api/named-views": {
+      operationId: "deleteNamedView",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: ref("NamedViewDeleteInput"),
+      response: object({
+        ok: { const: true },
+        id: ref("NamedViewId"),
+      }, ["ok", "id"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "500 ErrorEnvelope"],
     },
     "GET /api/next-session-name": {
       operationId: "nextSessionName",

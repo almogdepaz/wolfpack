@@ -170,6 +170,18 @@ import type { InvalidBodyResponse } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity, PublicSessionIdentity } from "./session-identity.js";
+import { parseNamedViewInput } from "../named-views.js";
+import {
+  NAMED_VIEW_ERROR,
+  NamedViewStoreConflictError,
+  NamedViewPersistenceWriteError,
+  NamedViewStoreLimitError,
+  NamedViewStoreNotFoundError,
+  getNamedViewStore,
+  parseNamedViewDeleteInput,
+  parseNamedViewUpdateInput,
+} from "./named-view-store.js";
+import { PersistenceReadError } from "./persistence.js";
 import {
   isOpenableHarness,
   SESSION_OPEN_ERROR,
@@ -188,6 +200,19 @@ const SESSION_OPEN_INVALID_BODY_RESPONSE = {
   },
   status: SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST],
 } as const satisfies InvalidBodyResponse;
+
+const NAMED_VIEW_INVALID_RESPONSE = {
+  error: "invalid named-view request",
+  code: NAMED_VIEW_ERROR.INVALID_REQUEST,
+} as const;
+const NAMED_VIEW_NOT_FOUND_RESPONSE = {
+  error: "named view not found",
+  code: NAMED_VIEW_ERROR.NOT_FOUND,
+} as const;
+const NAMED_VIEW_PERSISTENCE_RESPONSE = {
+  error: "named view persistence unavailable",
+  code: NAMED_VIEW_ERROR.PERSISTENCE_UNAVAILABLE,
+} as const;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -599,6 +624,73 @@ export const routes: Record<
   "GET /api/projects": async (_req, res) => {
     const projects = listDevProjects();
     json(res, { projects });
+  },
+
+  "GET /api/named-views": async (_req, res) => {
+    try {
+      json(res, { views: getNamedViewStore().list() });
+    } catch (error: unknown) {
+      if (error instanceof PersistenceReadError) return json(res, NAMED_VIEW_PERSISTENCE_RESPONSE, 500);
+      throw error;
+    }
+  },
+
+  "POST /api/named-views": async (req, res) => {
+    const body = await parseObjectBody(req, res);
+    if (!body) return;
+    const parsed = parseNamedViewInput(body);
+    if (!parsed.ok) return json(res, NAMED_VIEW_INVALID_RESPONSE, 400);
+    try {
+      const view = getNamedViewStore().create(parsed.value);
+      json(res, { view });
+    } catch (error: unknown) {
+      if (error instanceof NamedViewStoreConflictError) {
+        return json(res, { error: error.message, code: error.code }, 409);
+      }
+      if (error instanceof NamedViewStoreLimitError) {
+        return json(res, { error: error.message, code: error.code }, 409);
+      }
+      if (error instanceof PersistenceReadError || error instanceof NamedViewPersistenceWriteError) {
+        return json(res, NAMED_VIEW_PERSISTENCE_RESPONSE, 500);
+      }
+      return json(res, NAMED_VIEW_INVALID_RESPONSE, 400);
+    }
+  },
+
+  "PUT /api/named-views": async (req, res) => {
+    const body = await parseObjectBody(req, res);
+    if (!body) return;
+    const input = parseNamedViewUpdateInput(body);
+    if (!input) return json(res, NAMED_VIEW_INVALID_RESPONSE, 400);
+    try {
+      const view = getNamedViewStore().update(input);
+      json(res, { view });
+    } catch (error: unknown) {
+      if (error instanceof NamedViewStoreConflictError) {
+        return json(res, { error: error.message, code: error.code }, 409);
+      }
+      if (error instanceof PersistenceReadError || error instanceof NamedViewPersistenceWriteError) {
+        return json(res, NAMED_VIEW_PERSISTENCE_RESPONSE, 500);
+      }
+      if (error instanceof NamedViewStoreNotFoundError) return json(res, NAMED_VIEW_NOT_FOUND_RESPONSE, 404);
+      return json(res, NAMED_VIEW_INVALID_RESPONSE, 400);
+    }
+  },
+
+  "DELETE /api/named-views": async (req, res) => {
+    const body = await parseObjectBody(req, res);
+    if (!body) return;
+    const id = parseNamedViewDeleteInput(body);
+    if (!id) return json(res, NAMED_VIEW_INVALID_RESPONSE, 400);
+    try {
+      if (!getNamedViewStore().delete(id)) return json(res, NAMED_VIEW_NOT_FOUND_RESPONSE, 404);
+      json(res, { ok: true, id });
+    } catch (error: unknown) {
+      if (error instanceof PersistenceReadError || error instanceof NamedViewPersistenceWriteError) {
+        return json(res, NAMED_VIEW_PERSISTENCE_RESPONSE, 500);
+      }
+      return json(res, NAMED_VIEW_INVALID_RESPONSE, 400);
+    }
   },
 
   "GET /api/next-session-name": async (req, res) => {

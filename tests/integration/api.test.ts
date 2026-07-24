@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
@@ -23,6 +23,8 @@ mkdirSync(_rawTmpDir, { recursive: true });
 const TEST_DEV_DIR = realpathSync(_rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(process.cwd(), ".wolfpack", `api-session-identities-${process.pid}.json`);
+const TEST_NAMED_VIEW_PATH = join(TEST_DEV_DIR, ".wolfpack", `api-named-views-${process.pid}.json`);
+process.env.WOLFPACK_NAMED_VIEW_PATH = TEST_NAMED_VIEW_PATH;
 // Isolate the settings file so the /api/settings tests don't mutate the
 // developer's real ~/.wolfpack/bridge-settings.json. The path is read at
 // every loadSettings/saveSettings call so this works as long as it's set
@@ -54,6 +56,7 @@ const {
 } = await import("../../src/server/index.ts") as any;
 const { _testing: pushTesting } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
+const { __resetNamedViewStoreForTest } = await import("../../src/server/named-view-store.ts");
 
 const { server } = createServerInstance();
 
@@ -96,6 +99,8 @@ beforeEach(() => {
   // depend on execution order (see TEST-01).
   pushTesting.resetDebounce();
   activePtySessions.clear();
+  rmSync(process.env.WOLFPACK_NAMED_VIEW_PATH!, { force: true });
+  __resetNamedViewStoreForTest();
 });
 
 afterAll(() => {
@@ -118,6 +123,34 @@ function post(path: string, body: unknown, headers?: Record<string, string>) {
 
 function get(path: string, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, { headers });
+}
+
+function put(path: string, body: unknown, headers?: Record<string, string>) {
+  return fetch(`${base}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+function deleteJson(path: string, body: unknown, headers?: Record<string, string>) {
+  return fetch(`${base}${path}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+async function withNamedViewPath<T>(path: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.WOLFPACK_NAMED_VIEW_PATH;
+  process.env.WOLFPACK_NAMED_VIEW_PATH = path;
+  __resetNamedViewStoreForTest();
+  try {
+    return await run();
+  } finally {
+    process.env.WOLFPACK_NAMED_VIEW_PATH = previous ?? TEST_NAMED_VIEW_PATH;
+    __resetNamedViewStoreForTest();
+  }
 }
 
 function attachNotificationViewer(session: string): string[] {
@@ -158,6 +191,146 @@ describe("GET /api/info", () => {
   test("response is application/json", async () => {
     const res = await get("/api/info");
     expect(res.headers.get("content-type")).toBe("application/json");
+  });
+});
+
+describe("/api/named-views", () => {
+  const localMember = { machineUrl: "", sessionId: "local-session-id", sessionName: "local-session" };
+  const peerMember = {
+    machineUrl: "https://peer.tailnet.ts.net",
+    sessionId: "peer-session-id",
+    sessionName: "peer-session",
+  };
+
+  test("lists an empty collection before persistence exists", async () => {
+    const res = await get("/api/named-views");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ views: [] });
+  });
+
+  test("creates, lists, updates, and deletes a named view", async () => {
+    const create = await post("/api/named-views", {
+      name: "  Release view  ",
+      members: [localMember, peerMember],
+      focused: { machineUrl: "", sessionId: "local-session-id" },
+    });
+    expect(create.status).toBe(200);
+    const createBody = await create.json() as { view: Record<string, unknown> };
+    expect(createBody.view).toMatchObject({
+      schemaVersion: 1,
+      name: "Release view",
+      members: [localMember, peerMember],
+      focused: { machineUrl: "", sessionId: "local-session-id" },
+    });
+    expect(typeof createBody.view.id).toBe("string");
+    expect(typeof createBody.view.createdAt).toBe("string");
+    expect(createBody.view.updatedAt).toBe(createBody.view.createdAt);
+
+    const duplicate = await post("/api/named-views", { name: "release view", members: [localMember] });
+    expect(duplicate.status).toBe(409);
+    expect(await duplicate.json()).toEqual({
+      error: "named view name already exists",
+      code: "DUPLICATE_NAME",
+    });
+
+    const list = await get("/api/named-views");
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({ views: [createBody.view] });
+
+    const update = await put("/api/named-views", {
+      id: createBody.view.id,
+      name: "Release renamed",
+      members: [peerMember],
+      focused: { machineUrl: "https://peer.tailnet.ts.net", sessionId: "peer-session-id" },
+    });
+    expect(update.status).toBe(200);
+    const updateBody = await update.json() as { view: Record<string, unknown> };
+    expect(updateBody.view.id).toBe(createBody.view.id);
+    expect(updateBody.view.createdAt).toBe(createBody.view.createdAt);
+    expect(updateBody.view.updatedAt).not.toBe(createBody.view.updatedAt);
+    expect(updateBody.view).toMatchObject({
+      name: "Release renamed",
+      members: [peerMember],
+      focused: { machineUrl: "https://peer.tailnet.ts.net", sessionId: "peer-session-id" },
+    });
+
+    const remove = await deleteJson("/api/named-views", { id: createBody.view.id });
+    expect(remove.status).toBe(200);
+    expect(await remove.json()).toEqual({ ok: true, id: createBody.view.id });
+    expect(await (await get("/api/named-views")).json()).toEqual({ views: [] });
+
+    const missing = await deleteJson("/api/named-views", { id: createBody.view.id });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({
+      error: "named view not found",
+      code: "NOT_FOUND",
+    });
+  });
+
+  test("rejects malformed bodies, unknown fields, and invalid persisted peer URLs", async () => {
+    const malformedCases: Array<[string, () => Promise<Response>]> = [
+      ["unknown create field", () => post("/api/named-views", { name: "bad", members: [localMember], grid: true })],
+      ["invalid peer url", () => post("/api/named-views", {
+        name: "bad url",
+        members: [{ ...peerMember, machineUrl: "https://peer.tailnet.ts.net/path" }],
+      })],
+      ["focused missing member", () => post("/api/named-views", {
+        name: "bad focus",
+        members: [localMember],
+        focused: { machineUrl: "", sessionId: "missing" },
+      })],
+      ["unknown update field", () => put("/api/named-views", {
+        id: "nv_missing",
+        name: "bad update",
+        members: [localMember],
+        terminalState: {},
+      })],
+      ["malformed delete body", () => deleteJson("/api/named-views", { id: "" })],
+    ];
+
+    for (const [label, request] of malformedCases) {
+      const res = await request();
+      expect(res.status, label).toBe(400);
+      expect(await res.json(), label).toEqual({
+        error: "invalid named-view request",
+        code: "INVALID_REQUEST",
+      });
+    }
+  });
+
+  test("maps real persistence write failures to a bounded 500 envelope", async () => {
+    const dir = mkdtempSync(join(TEST_DEV_DIR, "named-view-readonly-"));
+    const path = join(dir, "named-views.json");
+
+    await withNamedViewPath(path, async () => {
+      const create = await post("/api/named-views", { name: "Release", members: [localMember] });
+      expect(create.status).toBe(200);
+      const created = await create.json() as { view: { id: string } };
+
+      chmodSync(dir, 0o555);
+      try {
+        const writeFailureCases: Array<[string, () => Promise<Response>]> = [
+          ["POST", () => post("/api/named-views", { name: "Second", members: [localMember] })],
+          ["PUT", () => put("/api/named-views", {
+            id: created.view.id,
+            name: "Renamed",
+            members: [localMember],
+          })],
+          ["DELETE", () => deleteJson("/api/named-views", { id: created.view.id })],
+        ];
+
+        for (const [label, request] of writeFailureCases) {
+          const res = await request();
+          expect(res.status, label).toBe(500);
+          expect(await res.json(), label).toEqual({
+            error: "named view persistence unavailable",
+            code: "PERSISTENCE_UNAVAILABLE",
+          });
+        }
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    });
   });
 });
 
@@ -1691,7 +1864,7 @@ describe("CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(base);
     expect(res.headers.get("access-control-allow-methods")).toBe(
-      "GET, POST, OPTIONS",
+      "GET, POST, PUT, DELETE, OPTIONS",
     );
   });
 
