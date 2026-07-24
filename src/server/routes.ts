@@ -44,6 +44,11 @@ import {
 import { cleanupAllExceptFinal } from "../worktree.js";
 import { assets } from "../public-assets.js";
 import { isJunkLine, type TriageStatus } from "../triage.js";
+import {
+  collectAgentStatusSources,
+  getAgentRuntimeStateStore,
+} from "./agent-status.js";
+import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkRalphLoopTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
@@ -267,6 +272,21 @@ interface SettingsBody extends Record<string, unknown> {
   addCmd?: string;
   removeCmd?: string;
   setCmdEnabled?: { cmd: string; enabled: boolean };
+}
+
+interface AgentRuntimeAckBody extends Record<string, unknown> {
+  sessionId: string;
+  transitionSequence: number;
+}
+
+function isAgentRuntimeAckBody(body: Record<string, unknown>): body is AgentRuntimeAckBody {
+  const allowedKeys = new Set(["sessionId", "transitionSequence"]);
+  return Object.keys(body).every(key => allowedKeys.has(key))
+    && typeof body.sessionId === "string"
+    && body.sessionId.length > 0
+    && typeof body.transitionSequence === "number"
+    && Number.isInteger(body.transitionSequence)
+    && body.transitionSequence > 0;
 }
 
 function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
@@ -556,6 +576,7 @@ export const routes: Record<
     const sessions = await getBackend().list();
     const identities = await getBackend().listIdentities?.() ?? {};
     const activeNames = new Set<string>();
+    const activeSessionKeys = new Set<string>();
     const results = await Promise.all(
       sessions.map(async (name) => {
         activeNames.add(name);
@@ -574,15 +595,35 @@ export const routes: Record<
 
         // Content-diff triage
         const prev = prevPaneContent.get(name);
+        const rawOutputChanged = prev !== content;
         let triage: TriageStatus;
-        if (prev !== content) {
+        if (rawOutputChanged) {
           triage = "running";
           prevPaneContent.set(name, content);
         } else {
           triage = "idle";
         }
 
-        return { name, lastLine, triage, ...(identities[name] && { identity: identities[name] }) };
+        const identity = identities[name];
+        const sessionKey = identity?.wolfpackSessionId ?? name;
+        activeSessionKeys.add(sessionKey);
+        const observedAt = new Date().toISOString();
+        const runtimeState = getAgentRuntimeStateStore().reduce({
+          sessionKey,
+          broker: { state: "alive", observedAt },
+          sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
+            state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+            stale: false,
+            observedAt,
+          }) : [],
+          fallback: { rawOutputChanged, observedAt, preview: lastLine },
+          currentRun: {
+            runId: identity?.wolfpackSessionId,
+            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+          },
+        });
+
+        return { name, lastLine, triage, runtimeState, ...(identity && { identity }) };
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
@@ -590,10 +631,22 @@ export const routes: Record<
     for (const key of prevPaneContent.keys()) {
       if (!activeNames.has(key)) prevPaneContent.delete(key);
     }
+    getAgentRuntimeStateStore().prune(activeSessionKeys);
     json(res, { sessions: results });
 
     // Fire push notifications for running → idle transitions (async, don't block response)
     checkSessionTransitions(results);
+  },
+
+  "POST /api/agent-runtime-state/ack": async (req, res) => {
+    const body = await parseObjectBody(req, res);
+    if (!body) return;
+    if (!isAgentRuntimeAckBody(body)) {
+      return json(res, { error: "sessionId and positive integer transitionSequence required" }, 400);
+    }
+    const runtimeState = getAgentRuntimeStateStore().acknowledge(body.sessionId, body.transitionSequence);
+    if (!runtimeState) return json(res, { error: "runtime state not found" }, 404);
+    json(res, { ok: true, runtimeState });
   },
 
   "GET /api/projects": async (_req, res) => {

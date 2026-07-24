@@ -23,6 +23,7 @@ mkdirSync(_rawTmpDir, { recursive: true });
 const TEST_DEV_DIR = realpathSync(_rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(process.cwd(), ".wolfpack", `api-session-identities-${process.pid}.json`);
+process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DEV_DIR, `api-agent-runtime-state-${process.pid}.json`);
 // Isolate the settings file so the /api/settings tests don't mutate the
 // developer's real ~/.wolfpack/bridge-settings.json. The path is read at
 // every loadSettings/saveSettings call so this works as long as it's set
@@ -54,6 +55,7 @@ const {
 } = await import("../../src/server/index.ts") as any;
 const { _testing: pushTesting } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
+const { __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
 
 const { server } = createServerInstance();
 
@@ -96,6 +98,8 @@ beforeEach(() => {
   // depend on execution order (see TEST-01).
   pushTesting.resetDebounce();
   activePtySessions.clear();
+  rmSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, { force: true });
+  __resetAgentRuntimeStateStoreForTests();
 });
 
 afterAll(() => {
@@ -251,6 +255,59 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[1].triage).toBe("idle");
     expect(data.sessions[2].name).toBe("running-sess");
     expect(data.sessions[2].triage).toBe("running");
+  });
+
+  test("returns canonical runtime state while preserving legacy triage", async () => {
+    mockBackend.setCapturePane(async () => "compiling...\n");
+    const first = await (await get("/api/sessions")).json();
+    expect(first.sessions[0].triage).toBe("running");
+    expect(first.sessions[0].runtimeState).toMatchObject({
+      state: "output",
+      authority: "fallback",
+      source: "screen-fallback",
+      transitionSequence: 1,
+      unseen: true,
+    });
+
+    const second = await (await get("/api/sessions")).json();
+    expect(second.sessions[0].triage).toBe("idle");
+    expect(second.sessions[0].runtimeState).toMatchObject({
+      state: "idle",
+      authority: "fallback",
+      transitionSequence: 2,
+    });
+  });
+
+  test("does not infer semantic state from terminal prose", async () => {
+    mockBackend.setCapturePane(async () => "DONE: failed, approve? needs input\n");
+    await get("/api/sessions");
+    const data = await (await get("/api/sessions")).json();
+
+    expect(data.sessions[0].runtimeState.state).toBe("idle");
+    expect(data.sessions[0].runtimeState.state).not.toBe("needs-input");
+    expect(data.sessions[0].runtimeState.state).not.toBe("done");
+    expect(data.sessions[0].runtimeState.state).not.toBe("failed");
+  });
+
+  test("acknowledges runtime transition and invalidates on a newer transition", async () => {
+    mockBackend.setCapturePane(async () => "waiting\n");
+    const initial = await (await get("/api/sessions")).json();
+    const runtimeState = initial.sessions[0].runtimeState;
+    const sessionId = initial.sessions[0].identity.wolfpackSessionId;
+
+    const ackRes = await post("/api/agent-runtime-state/ack", {
+      sessionId,
+      transitionSequence: runtimeState.transitionSequence,
+    });
+    expect(ackRes.status).toBe(200);
+    const acked = await ackRes.json();
+    expect(acked.runtimeState.unseen).toBe(false);
+    expect(acked.runtimeState.acknowledgedSequence).toBe(runtimeState.transitionSequence);
+
+    mockBackend.setCapturePane(async () => "new output\n");
+    const next = await (await get("/api/sessions")).json();
+    expect(next.sessions[0].runtimeState.transitionSequence).toBeGreaterThan(runtimeState.transitionSequence);
+    expect(next.sessions[0].runtimeState.unseen).toBe(true);
   });
 });
 

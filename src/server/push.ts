@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
 import type { TriageStatus } from "../triage.js";
+import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import type { AgentStatusState } from "../agent-status-contract.js";
 import { readValidatedJsonFile } from "./persistence.js";
 
 const log = createLogger("push");
@@ -442,7 +444,9 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
 // ── Push state tracking (transition-based notifications) ──
 
-const prevTriageState = new Map<string, TriageStatus>();
+type SessionNotificationState = TriageStatus | AgentStatusState;
+
+const prevTriageState = new Map<string, SessionNotificationState>();
 const lastSessionPushTime = new Map<string, number>();
 const lastRalphPushTime = new Map<string, number>();
 const PUSH_DEBOUNCE_MS = 30_000;
@@ -458,20 +462,44 @@ function ralphLoopStatus(loop: { active: boolean; completed: boolean; audit?: bo
   return "idle";
 }
 
-/** Check session triage transitions and fire push notifications for running → idle. */
-export function checkSessionTransitions(sessions: Array<{ name: string; triage: TriageStatus }>): void {
+const SESSION_RUNNING_STATES = new Set<SessionNotificationState>([
+  "running",
+  AGENT_STATUS_STATE.WORKING,
+  AGENT_STATUS_STATE.AUDIT,
+  AGENT_STATUS_STATE.CLEANUP,
+  AGENT_STATUS_STATE.OUTPUT,
+]);
+
+function sessionNotificationState(session: {
+  readonly triage: TriageStatus;
+  readonly runtimeState?: { readonly state?: AgentStatusState };
+}): SessionNotificationState {
+  return session.runtimeState?.state ?? session.triage;
+}
+
+function sessionNotificationLabel(state: SessionNotificationState): string {
+  if (state === AGENT_STATUS_STATE.NEEDS_INPUT) return "Needs input";
+  if (state === AGENT_STATUS_STATE.DONE) return "Done";
+  if (state === AGENT_STATUS_STATE.FAILED) return "Failed";
+  if (state === AGENT_STATUS_STATE.OFF || state === AGENT_STATUS_STATE.STOPPED || state === AGENT_STATUS_STATE.IDLE) return "Stopped";
+  if (state === AGENT_STATUS_STATE.UNKNOWN) return "Unknown";
+  return "Stopped";
+}
+
+/** Check session runtime transitions and fire push notifications when an active session stops needing live watch. */
+export function checkSessionTransitions(sessions: Array<{ name: string; triage: TriageStatus; runtimeState?: { state?: AgentStatusState } }>): void {
   if (getSubscriptionCount() === 0) return;
   const now = Date.now();
   const activeNames = new Set(sessions.map(s => s.name));
   for (const s of sessions) {
     const prev = prevTriageState.get(s.name);
-    prevTriageState.set(s.name, s.triage);
-    if (prev === "running" && s.triage === "idle") {
+    const current = sessionNotificationState(s);
+    prevTriageState.set(s.name, current);
+    if (prev && SESSION_RUNNING_STATES.has(prev) && !SESSION_RUNNING_STATES.has(current)) {
       const last = lastSessionPushTime.get(s.name) || 0;
       if (now - last > PUSH_DEBOUNCE_MS) {
         lastSessionPushTime.set(s.name, now);
-        // "Stopped" covers both finished-and-exited and blocked-at-prompt — binary triage can't distinguish.
-        sendPush({ title: `Wolfpack: ${s.name}`, body: "Stopped", tag: `session-${s.name}` }).catch(() => {});
+        sendPush({ title: `Wolfpack: ${s.name}`, body: sessionNotificationLabel(current), tag: `session-${s.name}` }).catch(() => {});
       }
     }
   }

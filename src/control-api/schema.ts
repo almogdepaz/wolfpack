@@ -11,6 +11,12 @@ import {
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import {
+  AGENT_STATUS_AUTHORITIES,
+  AGENT_STATUS_FRESHNESSES,
+  AGENT_STATUS_SOURCES,
+  AGENT_STATUS_STATES,
+} from "../agent-status-contract.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -119,6 +125,18 @@ const object = (
 
 const ok = object({ ok: boolean() }, ["ok"]);
 const error = ref("ErrorEnvelope");
+const AGENT_RUNTIME_STATE_REQUIRED = {
+  state: "state",
+  authority: "authority",
+  freshness: "freshness",
+  source: "source",
+  label: "label",
+  stale: "stale",
+  observedAt: "observedAt",
+  changedAt: "changedAt",
+  transitionSequence: "transitionSequence",
+  unseen: "unseen",
+} as const;
 
 export const controlApiSource: ControlApiSource = {
   schemaVersion: CONTROL_API_SCHEMA_VERSION,
@@ -156,6 +174,10 @@ export const controlApiSource: ControlApiSource = {
     Command: { type: "string", minLength: 1 },
     OpenableHarness: { enum: [...OPENABLE_HARNESSES] },
     TriageStatus: { enum: ["running", "idle"] },
+    AgentStatusState: { enum: [...AGENT_STATUS_STATES] },
+    AgentStatusAuthority: { enum: [...AGENT_STATUS_AUTHORITIES] },
+    AgentStatusFreshness: { enum: [...AGENT_STATUS_FRESHNESSES] },
+    AgentStatusSource: { enum: [...AGENT_STATUS_SOURCES] },
     ParentSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
@@ -191,11 +213,30 @@ export const controlApiSource: ControlApiSource = {
       cmds: arrayOf(ref("Command")),
       ralphAgents: arrayOf(string()),
     }, ["agentCmd", "cmds", "ralphAgents"]),
+    AgentRuntimeState: object({
+      state: ref("AgentStatusState"),
+      authority: ref("AgentStatusAuthority"),
+      freshness: ref("AgentStatusFreshness"),
+      source: ref("AgentStatusSource"),
+      label: string(),
+      stale: boolean(),
+      observedAt: string(),
+      changedAt: string(),
+      transitionSequence: integer(),
+      acknowledgedAt: string(),
+      acknowledgedSequence: integer(),
+      unseen: boolean(),
+      runId: string(),
+      runOrder: number(),
+      signalSequence: number(),
+      message: string(),
+    }, Object.values(AGENT_RUNTIME_STATE_REQUIRED)),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
       triage: ref("TriageStatus"),
       identity: ref("PublicSessionIdentity"),
+      runtimeState: ref("AgentRuntimeState"),
     }, ["name", "lastLine", "triage"]),
     SessionControlIdentity: object({
       session: ref("SessionName"),
@@ -298,6 +339,20 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       response: object({ sessions: arrayOf(ref("SessionSummary")) }, ["sessions"]),
       errors: [],
+    },
+    "POST /api/agent-runtime-state/ack": {
+      operationId: "ackAgentRuntimeState",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        sessionId: ref("SessionId"),
+        transitionSequence: integer(),
+      }, ["sessionId", "transitionSequence"]),
+      response: object({
+        ok: { const: true },
+        runtimeState: ref("AgentRuntimeState"),
+      }, ["ok", "runtimeState"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
     },
     "GET /api/projects": {
       operationId: "listProjects",
