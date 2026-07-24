@@ -356,6 +356,59 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("cold broker-unavailable restart projects legacy persisted runtime states as unknown", async () => {
+    const sessionKey = "legacy-runtime-session";
+    writeFileSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, JSON.stringify({
+      schemaVersion: 1,
+      sessions: {
+        [sessionKey]: {
+          state: "idle",
+          authority: "fallback",
+          freshness: "fresh",
+          source: "screen-fallback",
+          label: "bounded activity idle",
+          stale: false,
+          observedAt: "2026-07-25T00:00:00.000Z",
+          changedAt: "2026-07-25T00:00:00.000Z",
+          transitionSequence: 3,
+          acknowledgedAt: "2026-07-25T00:01:00.000Z",
+          acknowledgedSequence: 3,
+          unseen: false,
+          runOrder: 7,
+        },
+      },
+    }));
+    __resetAgentRuntimeStateStoreForTests();
+    __resetSessionObservationForTests();
+    const originalList = mockBackend.list.bind(mockBackend);
+    (mockBackend as any).list = async () => { throw new Error("broker unavailable after restart"); };
+    try {
+      const unavailable = await (await get("/api/sessions")).json();
+
+      expect(unavailable.sessions).toHaveLength(1);
+      expect(unavailable.sessions[0]).toMatchObject({
+        name: sessionKey,
+        lastLine: "",
+        runtimeState: {
+          state: "unknown",
+          authority: "liveness",
+          source: "broker-liveness",
+          transitionSequence: 4,
+          acknowledgedSequence: 3,
+          unseen: true,
+          runOrder: 7,
+        },
+      });
+    } finally {
+      (mockBackend as any).list = originalList;
+    }
+
+    mockBackend.setSessions([]);
+    const recovered = await (await get("/api/sessions")).json();
+    expect(recovered.sessions).toHaveLength(0);
+    expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
+  });
+
   test("authoritative empty broker list prunes durable runtime state", async () => {
     const sessionKey = "mock:gone-session";
     const store = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!);

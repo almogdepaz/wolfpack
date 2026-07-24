@@ -44,6 +44,18 @@
   - diff check: `git diff --check` => ok
   - full: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test` => 1842 pass, 21 skip, 0 fail
 
+## review round 2
+- [x] PR222-R2-BLOCK-001 runOrder-only sequence reset — red: runOrder 2 / signalSequence 1 stayed old runOrder 1 / sequence 5; green: runOrder-only focused + full reducer tests pass
+- [x] PR222-R2-BLOCK-002 cold broker-unavailable persisted projection — red: cold unavailable returned `sessions: []`; green: legacy persisted state projects as broker unknown and authoritative recovery prunes
+- [x] verification: prior round regressions, typecheck, deterministic schema/assets, diff check, full suite, self-review
+  - focused: `WOLFPACK_TEST=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test tests/unit/agent-runtime-state.test.ts tests/integration/api.test.ts tests/unit/peer-validation.test.ts tests/unit/control-api-schema.test.ts tests/unit/push.test.ts tests/unit/taxonomy-ownership.test.ts` => 203 pass
+  - typecheck: `bunx tsc --noEmit -p .` and `bunx tsc --noEmit -p public/` => ok, 0 bytes output
+  - schema deterministic twice: `bun run gen:schema` stable `466cada6...`
+  - assets deterministic twice: `bun run scripts/gen-assets.ts` stable `5c85f671...`
+  - diff check: `git diff --check` => ok
+  - full: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test` => 1846 pass, 21 skip, 0 fail
+
 ## status
 - 2026-07-25: worktree created from refreshed main at `/private/tmp/wolfpack-209-canonical-agent-runtime-state`, branch `209-canonical-agent-runtime-state`.
 - 2026-07-25: review round 1 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777269871.
+- 2026-07-25: review round 2 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777377563.

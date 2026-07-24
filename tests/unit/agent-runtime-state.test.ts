@@ -163,6 +163,76 @@ describe("agent runtime state reducer", () => {
     expect(next.runId).toBe("run-2");
   });
 
+  test("runOrder-only newer run accepts reset signal sequence and invalidates acknowledgement", () => {
+    const first = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.NEEDS_INPUT, runId: undefined, runOrder: 1, signalSequence: 5 })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runOrder: 1 },
+    });
+    const acknowledged = { ...first, acknowledgedSequence: first.transitionSequence, acknowledgedAt: "2026-07-25T00:01:00.000Z", unseen: false };
+    const next = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: "2026-07-25T00:02:00.000Z" },
+      sources: [source({ state: AGENT_STATUS_STATE.DONE, runId: undefined, runOrder: 2, signalSequence: 1, observedAt: "2026-07-25T00:02:00.000Z" })],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:02:00.000Z" },
+      currentRun: { runOrder: 2 },
+      previous: acknowledged,
+    });
+
+    expect(next.state).toBe(AGENT_STATUS_STATE.DONE);
+    expect(next.runOrder).toBe(2);
+    expect(next.signalSequence).toBe(1);
+    expect(next.transitionSequence).toBe(first.transitionSequence + 1);
+    expect(next.acknowledgedSequence).toBe(first.transitionSequence);
+    expect(next.unseen).toBe(true);
+  });
+
+  test("runOrder-only older run cannot overwrite newer accepted state", () => {
+    const accepted = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.DONE, runId: undefined, runOrder: 2, signalSequence: 1 })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runOrder: 2 },
+    });
+    const older = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: "2026-07-25T00:02:00.000Z" },
+      sources: [source({ state: AGENT_STATUS_STATE.NEEDS_INPUT, runId: undefined, runOrder: 1, signalSequence: 9, observedAt: "2026-07-25T00:02:00.000Z" })],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:02:00.000Z" },
+      currentRun: { runOrder: 2 },
+      previous: accepted,
+    });
+
+    expect(older.state).not.toBe(AGENT_STATUS_STATE.NEEDS_INPUT);
+    expect(older.signalSequence).not.toBe(9);
+    expect(older.runOrder).toBe(2);
+  });
+
+  test("runOrder-only equal run applies signal sequence monotonicity", () => {
+    const accepted = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.NEEDS_INPUT, runId: undefined, runOrder: 2, signalSequence: 5 })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runOrder: 2 },
+    });
+    const equal = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: "2026-07-25T00:02:00.000Z" },
+      sources: [source({ state: AGENT_STATUS_STATE.DONE, runId: undefined, runOrder: 2, signalSequence: 5, observedAt: "2026-07-25T00:02:00.000Z" })],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:02:00.000Z" },
+      currentRun: { runOrder: 2 },
+      previous: accepted,
+    });
+
+    expect(equal.state).toBe(AGENT_STATUS_STATE.NEEDS_INPUT);
+    expect(equal.signalSequence).toBe(5);
+    expect(equal.transitionSequence).toBe(accepted.transitionSequence);
+  });
+
   test("higher same-state structured signal sequence invalidates acknowledgement", () => {
     const first = deriveAgentRuntimeState({
       sessionKey: "s1",

@@ -659,16 +659,24 @@ export const routes: Record<
 
     if (!brokerAvailable) {
       const observedAt = new Date().toISOString();
-      const results = Array.from(knownSessionSummaries.values()).map(({ name, lastLine, identity }) => {
-        const sessionKey = identity?.wolfpackSessionId ?? name;
-        const runtimeState = getAgentRuntimeStateStore().reduce({
+      const store = getAgentRuntimeStateStore();
+      const summariesBySessionKey = new Map<string, KnownSessionSummary>();
+      for (const summary of knownSessionSummaries.values()) {
+        summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
+      }
+      for (const sessionKey of Object.keys(store.snapshot().sessions)) {
+        if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
+      }
+      const results = Array.from(summariesBySessionKey.entries()).map(([sessionKey, { name, lastLine, identity }]) => {
+        const previous = store.get(sessionKey);
+        const runtimeState = store.reduce({
           sessionKey,
           broker: { state: "unavailable", observedAt },
           sources: [],
           fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
           currentRun: {
-            runId: identity?.wolfpackSessionId,
-            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+            runId: identity?.wolfpackSessionId ?? previous?.runId,
+            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
           },
         });
         return { name, lastLine, triage: "idle" as TriageStatus, runtimeState, ...(identity && { identity }) };

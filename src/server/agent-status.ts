@@ -391,25 +391,48 @@ function runtimeRunId(next: AgentStatusSource, run: AgentRuntimeStateInput["curr
   return run?.runId ?? next.runId;
 }
 
+function runtimeRunOrder(next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): number | undefined {
+  return typeof run?.runOrder === "number" ? run.runOrder : next.runOrder;
+}
+
+function sameSourceAuthority(previous: AgentRuntimeState | undefined, next: AgentStatusSource): boolean {
+  return !!previous && previous.authority === next.authority && previous.source === next.source;
+}
+
+function runOrderDelta(previous: AgentRuntimeState, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): number | null {
+  const nextRunId = runtimeRunId(next, run);
+  if (previous.runId || nextRunId) return null;
+  const nextRunOrder = runtimeRunOrder(next, run);
+  if (typeof previous.runOrder !== "number" || typeof nextRunOrder !== "number") return null;
+  return nextRunOrder - previous.runOrder;
+}
+
 function sameStructuredSequenceContext(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
   if (!previous) return false;
   if (typeof previous.signalSequence !== "number" || typeof next.signalSequence !== "number") return false;
-  return previous.authority === next.authority
-    && previous.source === next.source
-    && previous.runId === runtimeRunId(next, run);
+  if (!sameSourceAuthority(previous, next)) return false;
+  const nextRunId = runtimeRunId(next, run);
+  if (previous.runId || nextRunId) return previous.runId === nextRunId;
+  const delta = runOrderDelta(previous, next, run);
+  return delta === null || delta === 0;
 }
 
 function staleStructuredSignal(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
-  return sameStructuredSequenceContext(previous, next, run)
-    && typeof previous?.signalSequence === "number"
-    && typeof next.signalSequence === "number"
+  if (!previous || !sameSourceAuthority(previous, next) || typeof next.signalSequence !== "number") return false;
+  const delta = runOrderDelta(previous, next, run);
+  if (delta !== null && delta < 0) return true;
+  if (delta !== null && delta > 0) return false;
+  return typeof previous.signalSequence === "number"
+    && sameStructuredSequenceContext(previous, next, run)
     && next.signalSequence <= previous.signalSequence;
 }
 
 function structuredSignalAdvanced(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
-  return sameStructuredSequenceContext(previous, next, run)
-    && typeof previous?.signalSequence === "number"
-    && typeof next.signalSequence === "number"
+  if (!previous || !sameSourceAuthority(previous, next) || typeof next.signalSequence !== "number") return false;
+  const delta = runOrderDelta(previous, next, run);
+  if (delta !== null && delta > 0) return true;
+  return typeof previous.signalSequence === "number"
+    && sameStructuredSequenceContext(previous, next, run)
     && next.signalSequence > previous.signalSequence;
 }
 
@@ -419,7 +442,8 @@ function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: Agen
     || previous.authority !== next.authority
     || previous.source !== next.source
     || previous.freshness !== next.freshness
-    || previous.runId !== runtimeRunId(next, run);
+    || previous.runId !== runtimeRunId(next, run)
+    || previous.runOrder !== runtimeRunOrder(next, run);
 }
 
 export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRuntimeState {
