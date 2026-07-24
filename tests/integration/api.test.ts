@@ -55,7 +55,9 @@ const {
 } = await import("../../src/server/index.ts") as any;
 const { _testing: pushTesting } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
-const { __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
+const { AgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
+
+const { __resetSessionObservationForTests } = await import("../../src/server/routes.ts");
 
 const { server } = createServerInstance();
 
@@ -100,6 +102,7 @@ beforeEach(() => {
   activePtySessions.clear();
   rmSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, { force: true });
   __resetAgentRuntimeStateStoreForTests();
+  __resetSessionObservationForTests();
 });
 
 afterAll(() => {
@@ -196,10 +199,11 @@ describe("GET /api/sessions", () => {
   });
 
   test("classifies running when content changes", async () => {
-    mockBackend.setCapturePane(async () => "compiling...\n");
+    mockBackend.setCapturePane(async () => "compiling step 1...\n");
+    await get("/api/sessions");
+    mockBackend.setCapturePane(async () => "compiling step 2...\n");
     const res = await get("/api/sessions");
     const data = await res.json();
-    // First call — no previous content, so content differs → running
     expect(data.sessions[0].triage).toBe("running");
   });
 
@@ -258,24 +262,135 @@ describe("GET /api/sessions", () => {
   });
 
   test("returns canonical runtime state while preserving legacy triage", async () => {
-    mockBackend.setCapturePane(async () => "compiling...\n");
+    mockBackend.setCapturePane(async () => "compiling step 1...\n");
     const first = await (await get("/api/sessions")).json();
-    expect(first.sessions[0].triage).toBe("running");
+    expect(first.sessions[0].triage).toBe("idle");
     expect(first.sessions[0].runtimeState).toMatchObject({
-      state: "output",
+      state: "idle",
       authority: "fallback",
       source: "screen-fallback",
       transitionSequence: 1,
       unseen: true,
     });
 
+    mockBackend.setCapturePane(async () => "compiling step 2...\n");
     const second = await (await get("/api/sessions")).json();
-    expect(second.sessions[0].triage).toBe("idle");
+    expect(second.sessions[0].triage).toBe("running");
     expect(second.sessions[0].runtimeState).toMatchObject({
-      state: "idle",
+      state: "output",
       authority: "fallback",
       transitionSequence: 2,
     });
+  });
+
+  test("first fallback snapshot initializes baseline without reporting recent output", async () => {
+    mockBackend.setSessions(["fresh-baseline"]);
+    mockBackend.setCapturePane(async () => "quiet existing screen\n");
+
+    const data = await (await get("/api/sessions")).json();
+
+    expect(data.sessions).toHaveLength(1);
+    expect(data.sessions[0].triage).toBe("idle");
+    expect(data.sessions[0].runtimeState).toMatchObject({
+      state: "idle",
+      authority: "fallback",
+      source: "screen-fallback",
+      transitionSequence: 1,
+    });
+  });
+
+  test("restored acknowledged fallback snapshot stays seen on first sample after restart", async () => {
+    mockBackend.setSessions(["restored-baseline"]);
+    mockBackend.setCapturePane(async () => "quiet existing screen\n");
+    const sessionKey = "mock:restored-baseline";
+    const store = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!);
+    const idle = store.reduce({
+      sessionKey,
+      broker: { state: "alive", observedAt: "2026-07-25T00:00:00.000Z" },
+      sources: [],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:00:00.000Z" },
+      currentRun: { runId: sessionKey, runOrder: 0 },
+    });
+    expect(store.acknowledge(sessionKey, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
+    __resetAgentRuntimeStateStoreForTests();
+
+    const data = await (await get("/api/sessions")).json();
+
+    expect(data.sessions[0].runtimeState).toMatchObject({
+      state: "idle",
+      transitionSequence: idle.transitionSequence,
+      acknowledgedSequence: idle.transitionSequence,
+      unseen: false,
+    });
+  });
+
+  test("preserves known sessions as unknown without pruning ack state when broker list is unavailable", async () => {
+    mockBackend.setSessions(["broker-unavailable"]);
+    mockBackend.setCapturePane(async () => "quiet existing screen\n");
+    const seeded = await (await get("/api/sessions")).json();
+    const sessionId = seeded.sessions[0].identity.wolfpackSessionId;
+    const sequence = seeded.sessions[0].runtimeState.transitionSequence;
+    expect((await post("/api/agent-runtime-state/ack", { sessionId, transitionSequence: sequence })).status).toBe(200);
+
+    const originalList = mockBackend.list.bind(mockBackend);
+    (mockBackend as any).list = async () => { throw new Error("broker unavailable"); };
+    try {
+      const unavailable = await (await get("/api/sessions")).json();
+
+      expect(unavailable.sessions).toHaveLength(1);
+      expect(unavailable.sessions[0]).toMatchObject({
+        name: "broker-unavailable",
+        runtimeState: {
+          state: "unknown",
+          authority: "liveness",
+          source: "broker-liveness",
+          acknowledgedSequence: sequence,
+          unseen: true,
+        },
+      });
+      const persisted = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId);
+      expect(persisted?.state).toBe("unknown");
+      expect(persisted?.acknowledgedSequence).toBe(sequence);
+    } finally {
+      (mockBackend as any).list = originalList;
+    }
+  });
+
+  test("authoritative empty broker list prunes durable runtime state", async () => {
+    const sessionKey = "mock:gone-session";
+    const store = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!);
+    store.reduce({
+      sessionKey,
+      broker: { state: "alive", observedAt: "2026-07-25T00:00:00.000Z" },
+      sources: [],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:00:00.000Z" },
+      currentRun: { runId: sessionKey, runOrder: 0 },
+    });
+    __resetAgentRuntimeStateStoreForTests();
+    mockBackend.setSessions([]);
+
+    const data = await (await get("/api/sessions")).json();
+
+    expect(data.sessions).toHaveLength(0);
+    expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
+  });
+
+  test("authoritative dead session fact projects off through runtime state", async () => {
+    mockBackend.setSessions(["dead-session"]);
+    mockBackend.setSessionAlive("dead-session", false);
+    mockBackend.setCapturePane(async () => "old screen\n");
+    try {
+      const data = await (await get("/api/sessions")).json();
+
+      expect(data.sessions).toHaveLength(1);
+      expect(data.sessions[0].runtimeState).toMatchObject({
+        state: "off",
+        authority: "liveness",
+        source: "broker-liveness",
+      });
+    } finally {
+      mockBackend.setSessionAlive("dead-session", null);
+    }
   });
 
   test("does not infer semantic state from terminal prose", async () => {

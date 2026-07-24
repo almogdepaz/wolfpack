@@ -163,6 +163,55 @@ describe("agent runtime state reducer", () => {
     expect(next.runId).toBe("run-2");
   });
 
+  test("higher same-state structured signal sequence invalidates acknowledgement", () => {
+    const first = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.NEEDS_INPUT, signalSequence: 1 })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+    const acknowledged = { ...first, acknowledgedSequence: first.transitionSequence, acknowledgedAt: "2026-07-25T00:01:00.000Z", unseen: false };
+    const next = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: "2026-07-25T00:02:00.000Z" },
+      sources: [source({ state: AGENT_STATUS_STATE.NEEDS_INPUT, signalSequence: 2, observedAt: "2026-07-25T00:02:00.000Z" })],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:02:00.000Z" },
+      currentRun: { runId: "run-1", runOrder: 1 },
+      previous: acknowledged,
+    });
+
+    expect(next.state).toBe(AGENT_STATUS_STATE.NEEDS_INPUT);
+    expect(next.signalSequence).toBe(2);
+    expect(next.transitionSequence).toBe(first.transitionSequence + 1);
+    expect(next.acknowledgedSequence).toBe(first.transitionSequence);
+    expect(next.unseen).toBe(true);
+  });
+
+  test("older structured signal sequence cannot overwrite accepted same-run state", () => {
+    const accepted = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.NEEDS_INPUT, signalSequence: 5 })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+    const acknowledged = { ...accepted, acknowledgedSequence: accepted.transitionSequence, acknowledgedAt: "2026-07-25T00:01:00.000Z", unseen: false };
+    const older = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: "2026-07-25T00:02:00.000Z" },
+      sources: [source({ state: AGENT_STATUS_STATE.DONE, signalSequence: 4, observedAt: "2026-07-25T00:02:00.000Z" })],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:02:00.000Z" },
+      currentRun: { runId: "run-1", runOrder: 1 },
+      previous: acknowledged,
+    });
+
+    expect(older.state).toBe(AGENT_STATUS_STATE.NEEDS_INPUT);
+    expect(older.signalSequence).toBe(5);
+    expect(older.transitionSequence).toBe(accepted.transitionSequence);
+    expect(older.unseen).toBe(false);
+  });
+
   test("transition sequence increments only for effective state transitions", () => {
     const first = deriveAgentRuntimeState({
       sessionKey: "s1",

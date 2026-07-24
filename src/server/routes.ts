@@ -48,7 +48,14 @@ import {
   collectAgentStatusSources,
   getAgentRuntimeStateStore,
 } from "./agent-status.js";
-import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import {
+  AGENT_STATUS_AUTHORITIES,
+  AGENT_STATUS_CAPABILITIES,
+  AGENT_STATUS_FRESHNESSES,
+  AGENT_STATUS_SOURCES,
+  AGENT_STATUS_STATE,
+  AGENT_STATUS_STATES,
+} from "../agent-status-contract.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkRalphLoopTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
@@ -75,7 +82,9 @@ const SESSION_WAIT_BUFFER_MAX_CHARS = 128 * 1024;
 // ── Peer ralph-response validation ──
 
 /** Allowed keys on a ralph loop entry from a remote peer. */
-const RALPH_LOOP_SCHEMA: Record<string, "string" | "number" | "boolean" | "object" | "array"> = {
+type PeerFieldType = "string" | "number" | "boolean" | "object" | "array";
+
+const RALPH_LOOP_SCHEMA: Record<string, PeerFieldType> = {
   project: "string",
   active: "boolean",
   completed: "boolean",
@@ -100,6 +109,39 @@ const RALPH_LOOP_SCHEMA: Record<string, "string" | "number" | "boolean" | "objec
   statusSource: "object",
   statusSources: "array",
 };
+
+function stringIn(values: readonly string[], value: unknown): value is string {
+  return typeof value === "string" && values.includes(value);
+}
+
+function sanitizePeerStatusSource(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const obj = value as Record<string, unknown>;
+  if (!stringIn(AGENT_STATUS_STATES, obj.state)) return null;
+  if (!stringIn(AGENT_STATUS_AUTHORITIES, obj.authority)) return null;
+  if (!stringIn(AGENT_STATUS_FRESHNESSES, obj.freshness)) return null;
+  if (!stringIn(AGENT_STATUS_SOURCES, obj.source)) return null;
+  if (typeof obj.label !== "string" || typeof obj.stale !== "boolean" || typeof obj.observedAt !== "string") return null;
+  const clean: Record<string, unknown> = {
+    state: obj.state,
+    authority: obj.authority,
+    freshness: obj.freshness,
+    source: obj.source,
+    label: obj.label,
+    stale: obj.stale,
+    observedAt: obj.observedAt,
+  };
+  if (typeof obj.path === "string") clean.path = obj.path;
+  if (typeof obj.message === "string") clean.message = obj.message;
+  if (Array.isArray(obj.capabilities)) {
+    const capabilities = obj.capabilities.filter((item): item is string => stringIn(AGENT_STATUS_CAPABILITIES, item));
+    if (capabilities.length) clean.capabilities = capabilities;
+  }
+  if (typeof obj.runId === "string") clean.runId = obj.runId;
+  if (typeof obj.runOrder === "number") clean.runOrder = obj.runOrder;
+  if (typeof obj.signalSequence === "number") clean.signalSequence = obj.signalSequence;
+  return clean;
+}
 
 /**
  * Validate and sanitize a peer's ralph response.
@@ -130,11 +172,24 @@ export function validatePeerLoops(peerName: string, data: unknown): Record<strin
     }
     const clean: Record<string, unknown> = {};
     for (const [key, expectedType] of Object.entries(RALPH_LOOP_SCHEMA)) {
-      if (key in obj && (
-        (expectedType === "array" && Array.isArray(obj[key])) ||
+      if (!(key in obj)) continue;
+      if (key === "statusSource") {
+        const statusSource = sanitizePeerStatusSource(obj[key]);
+        if (statusSource) clean[key] = statusSource;
+        continue;
+      }
+      if (key === "statusSources") {
+        if (!Array.isArray(obj[key])) continue;
+        const statusSources = obj[key]
+          .map(sanitizePeerStatusSource)
+          .filter((item): item is Record<string, unknown> => item !== null);
+        clean[key] = statusSources;
+        continue;
+      }
+      if ((expectedType === "array" && Array.isArray(obj[key])) ||
         (expectedType === "object" && typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) ||
         (expectedType !== "array" && expectedType !== "object" && typeof obj[key] === expectedType)
-      )) {
+      ) {
         clean[key] = obj[key];
       }
     }
@@ -411,6 +466,20 @@ function settingsPath(): string {
 /** Previous pane content per session — used for content-diff triage. */
 const prevPaneContent = new Map<string, string>();
 
+interface KnownSessionSummary {
+  readonly name: string;
+  readonly lastLine: string;
+  readonly identity?: PublicSessionIdentity;
+}
+
+const knownSessionSummaries = new Map<string, KnownSessionSummary>();
+
+export function __resetSessionObservationForTests(): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
+  prevPaneContent.clear();
+  knownSessionSummaries.clear();
+}
+
 /**
  * Default agent commands shown in a fresh install. Order matters — it's
  * the order they appear in the settings list and the session-create picker.
@@ -573,14 +642,50 @@ export const routes: Record<
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const sessions = await getBackend().list();
-    const identities = await getBackend().listIdentities?.() ?? {};
+    const backend = getBackend();
+    const router = getRouter();
+    const routerOwnsBackend = backend === router;
+    let brokerAvailable = !(routerOwnsBackend && !router.isBrokerAvailable());
+    let sessions: string[] = [];
+    let identities: Record<string, PublicSessionIdentity> = {};
+    if (brokerAvailable) {
+      try {
+        sessions = await backend.list();
+        identities = await backend.listIdentities?.() ?? {};
+      } catch {
+        brokerAvailable = false;
+      }
+    }
+
+    if (!brokerAvailable) {
+      const observedAt = new Date().toISOString();
+      const results = Array.from(knownSessionSummaries.values()).map(({ name, lastLine, identity }) => {
+        const sessionKey = identity?.wolfpackSessionId ?? name;
+        const runtimeState = getAgentRuntimeStateStore().reduce({
+          sessionKey,
+          broker: { state: "unavailable", observedAt },
+          sources: [],
+          fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
+          currentRun: {
+            runId: identity?.wolfpackSessionId,
+            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+          },
+        });
+        return { name, lastLine, triage: "idle" as TriageStatus, runtimeState, ...(identity && { identity }) };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+      json(res, { sessions: results });
+      checkSessionTransitions(results);
+      return;
+    }
+
     const activeNames = new Set<string>();
     const activeSessionKeys = new Set<string>();
+    const livenessBackend = backend as Partial<{ isSessionAlive: (name: string) => boolean }>;
     const results = await Promise.all(
       sessions.map(async (name) => {
         activeNames.add(name);
-        const pane = await getBackend().capturePaneForTriage(name);
+        const brokerState = typeof livenessBackend.isSessionAlive === "function" && !livenessBackend.isSessionAlive(name) ? "dead" : "alive";
+        const pane = brokerState === "dead" ? "" : await backend.capturePaneForTriage(name);
         const content = pane.trimEnd();
 
         // Walk lines from bottom, skip junk, take first real line for preview
@@ -593,15 +698,16 @@ export const routes: Record<
           }
         }
 
-        // Content-diff triage
+        // Content-diff triage. Missing baseline is just initialization, not evidence of new bytes.
         const prev = prevPaneContent.get(name);
-        const rawOutputChanged = prev !== content;
+        const rawOutputChanged = brokerState === "alive" && prev !== undefined && prev !== content;
         let triage: TriageStatus;
         if (rawOutputChanged) {
           triage = "running";
           prevPaneContent.set(name, content);
         } else {
           triage = "idle";
+          if (prev === undefined) prevPaneContent.set(name, content);
         }
 
         const identity = identities[name];
@@ -610,7 +716,7 @@ export const routes: Record<
         const observedAt = new Date().toISOString();
         const runtimeState = getAgentRuntimeStateStore().reduce({
           sessionKey,
-          broker: { state: "alive", observedAt },
+          broker: { state: brokerState, observedAt },
           sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
             state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
             stale: false,
@@ -623,13 +729,18 @@ export const routes: Record<
           },
         });
 
-        return { name, lastLine, triage, runtimeState, ...(identity && { identity }) };
+        const summary = { name, lastLine, triage, runtimeState, ...(identity && { identity }) };
+        knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
+        return summary;
       }),
     );
     results.sort((a, b) => a.name.localeCompare(b.name));
-    // prune prevPaneContent for sessions that no longer exist
+    // prune prevPaneContent and known sessions for sessions that no longer exist in authoritative broker truth
     for (const key of prevPaneContent.keys()) {
       if (!activeNames.has(key)) prevPaneContent.delete(key);
+    }
+    for (const key of knownSessionSummaries.keys()) {
+      if (!activeNames.has(key)) knownSessionSummaries.delete(key);
     }
     getAgentRuntimeStateStore().prune(activeSessionKeys);
     json(res, { sessions: results });

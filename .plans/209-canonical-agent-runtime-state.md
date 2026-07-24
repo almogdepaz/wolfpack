@@ -30,5 +30,20 @@
   - generation: `bun run gen:schema` hash stable `466cada6...` before/after
   - full: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test` => 1834 pass, 21 skip, 0 fail
 
+## review round 1
+- [x] PR222-BLOCK-001 generated assets stale — `bun run scripts/gen-assets.ts` reproduced deterministic generated diff in `src/public-assets.ts`; second generation hash stable `5c85f671...`
+- [x] PR222-BLOCK-002 structured ordering/ack invalidation — red: same-state higher sequence stayed `transitionSequence: 1`; lower sequence overwrote to `done`; green: focused reducer tests pass
+- [x] PR222-BLOCK-003 first/restored fallback false output — red: first/restored snapshots returned `running`/`output`; green: focused API regressions pass
+- [x] PR222-BLOCK-004 broker unavailable/dead route projection/pruning — red: unavailable route 500/pruned path and dead session stayed fallback idle; green: focused route regressions pass, full `tests/integration/api.test.ts` 127 pass
+- [x] PR222-NB-001 peer status sanitization — addressed surgically with nested contract validation; red invalid peer status passed through, green `tests/unit/peer-validation.test.ts` 11 pass
+- [x] verification: focused per finding, typecheck, deterministic schema/assets, diff check, full suite, self-review
+  - focused: `WOLFPACK_TEST=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test tests/unit/agent-runtime-state.test.ts tests/integration/api.test.ts tests/unit/peer-validation.test.ts tests/unit/control-api-schema.test.ts tests/unit/push.test.ts tests/unit/taxonomy-ownership.test.ts` => 199 pass
+  - typecheck: `bunx tsc --noEmit -p .` and `bunx tsc --noEmit -p public/` => ok, 0 bytes output
+  - schema deterministic: `bun run gen:schema` hash stable `466cada6...`
+  - assets deterministic: `bun run scripts/gen-assets.ts` hash stable `5c85f671...`
+  - diff check: `git diff --check` => ok
+  - full: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test` => 1842 pass, 21 skip, 0 fail
+
 ## status
 - 2026-07-25: worktree created from refreshed main at `/private/tmp/wolfpack-209-canonical-agent-runtime-state`, branch `209-canonical-agent-runtime-state`.
+- 2026-07-25: review round 1 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777269871.

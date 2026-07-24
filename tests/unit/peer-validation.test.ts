@@ -95,6 +95,27 @@ describe("validatePeerLoops", () => {
     expect(result![1].project).toBe("also-good");
   });
 
+  test("validates nested peer status source fields against the shared contract", () => {
+    const result = validatePeerLoops("peer1", {
+      loops: [
+        {
+          project: "myapp",
+          statusSource: { state: "pwned", authority: "fallback", freshness: "fresh", source: "screen-fallback", label: "bad", stale: false, observedAt: "now" },
+          statusSources: [
+            { state: "idle", authority: "fallback", freshness: "fresh", source: "screen-fallback", label: "ok", stale: false, observedAt: "now", capabilities: ["semantic-state", "evil"] },
+            { state: "idle", authority: "evil", freshness: "fresh", source: "screen-fallback", label: "bad", stale: false, observedAt: "now" },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect("statusSource" in result![0]).toBe(false);
+    expect(result![0].statusSources).toEqual([
+      { state: "idle", authority: "fallback", freshness: "fresh", source: "screen-fallback", label: "ok", stale: false, observedAt: "now", capabilities: ["semantic-state"] },
+    ]);
+  });
+
   test("validates all RalphStatus fields when present", () => {
     const fullEntry = {
       project: "test",

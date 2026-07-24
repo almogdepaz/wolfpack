@@ -387,13 +387,39 @@ function brokerRuntimeSource(input: AgentRuntimeStateInput): AgentStatusSource |
   });
 }
 
+function runtimeRunId(next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): string | undefined {
+  return run?.runId ?? next.runId;
+}
+
+function sameStructuredSequenceContext(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
+  if (!previous) return false;
+  if (typeof previous.signalSequence !== "number" || typeof next.signalSequence !== "number") return false;
+  return previous.authority === next.authority
+    && previous.source === next.source
+    && previous.runId === runtimeRunId(next, run);
+}
+
+function staleStructuredSignal(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
+  return sameStructuredSequenceContext(previous, next, run)
+    && typeof previous?.signalSequence === "number"
+    && typeof next.signalSequence === "number"
+    && next.signalSequence <= previous.signalSequence;
+}
+
+function structuredSignalAdvanced(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
+  return sameStructuredSequenceContext(previous, next, run)
+    && typeof previous?.signalSequence === "number"
+    && typeof next.signalSequence === "number"
+    && next.signalSequence > previous.signalSequence;
+}
+
 function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
   if (!previous) return true;
   return previous.state !== next.state
     || previous.authority !== next.authority
     || previous.source !== next.source
     || previous.freshness !== next.freshness
-    || previous.runId !== run?.runId;
+    || previous.runId !== runtimeRunId(next, run);
 }
 
 export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRuntimeState {
@@ -401,12 +427,14 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ?? chooseSemanticRuntimeSource(input)
     ?? fallbackRuntimeSource(input);
   const previous = input.previous;
+  if (previous && staleStructuredSignal(previous, selected, input.currentRun)) return previous;
   const stateChanged = runtimeStateChanged(previous, selected, input.currentRun);
+  const sequenceAdvanced = structuredSignalAdvanced(previous, selected, input.currentRun);
   const acknowledgedOutputAdvanced = !stateChanged
     && selected.state === AGENT_STATUS_STATE.OUTPUT
     && input.fallback.rawOutputChanged
     && previous?.acknowledgedSequence === previous?.transitionSequence;
-  const changed = stateChanged || acknowledgedOutputAdvanced;
+  const changed = stateChanged || sequenceAdvanced || acknowledgedOutputAdvanced;
   const transitionSequence = changed ? (previous?.transitionSequence ?? 0) + 1 : previous?.transitionSequence ?? 1;
   const acknowledgedSequence = previous?.acknowledgedSequence;
   const acknowledgedAt = previous?.acknowledgedAt;
