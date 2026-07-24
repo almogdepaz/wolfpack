@@ -98,6 +98,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
 
   // SessionBackend
   async list(): Promise<string[]> { return [...this.alive]; }
+  async listSessionFacts(): Promise<Array<{ name: string; alive: boolean }>> { return [...this.alive].map((name) => ({ name, alive: true })); }
   async createSession(): Promise<never> { throw new Error("not implemented in attach tests"); }
   async killSession(name: string): Promise<void> { this.alive.delete(name); }
   async hasSession(name: string): Promise<boolean> { return this.alive.has(name); }

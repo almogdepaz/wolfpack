@@ -4,7 +4,7 @@
  * Provides a fully controllable backend that can be injected via
  * __setTestBackend(). No real broker daemon needed.
  */
-import type { SessionBackend, SessionLaunchOptions } from "./backend.js";
+import type { SessionBackend, SessionLaunchOptions, SessionListFact } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { stripAnsi } from "./strip-ansi.js";
 import { inferAgentKind } from "./session-identity.js";
@@ -75,6 +75,12 @@ export class MockBackend implements SessionBackend {
 
   async list(): Promise<string[]> {
     return Array.from(this._sessions);
+  }
+
+  async listSessionFacts(): Promise<SessionListFact[]> {
+    const names = await this.list();
+    const identities = await this.listIdentities();
+    return names.map((name) => ({ name, alive: this.isSessionAlive(name), ...(identities[name] && { identity: identities[name] }) }));
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {

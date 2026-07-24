@@ -55,7 +55,19 @@
   - diff check: `git diff --check` => ok
   - full: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test` => 1846 pass, 21 skip, 0 fail
 
+## review round 3
+- [x] PR222-R3-BLOCK-001 production broker-dead sessions filtered before route off projection — red: BrokerBackend lacked authoritative facts method and route returned `sessions: []` when live-only list omitted a dead fact; green: backend facts retain alive:false and `/api/sessions` projects off/preserves ack until omission
+- [x] verification: prior runtime/order/baseline/unavailable/peer tests, broker-backend tests, route/API tests, typecheck, deterministic schema/assets, diff check, full suite, self-review
+  - focused: `WOLFPACK_TEST=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test tests/unit/agent-runtime-state.test.ts tests/integration/api.test.ts tests/unit/peer-validation.test.ts tests/unit/control-api-schema.test.ts tests/unit/push.test.ts tests/unit/taxonomy-ownership.test.ts tests/unit/broker-backend.test.ts tests/unit/broker-ws-attach.test.ts` => 298 pass
+  - broker integration: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test tests/integration/broker-backend.test.ts` => 0 pass, 8 broker-binary-gated skips, 0 fail
+  - typecheck: `bunx tsc --noEmit -p .` and `bunx tsc --noEmit -p public/` => ok, 0 bytes output
+  - schema deterministic twice: `bun run gen:schema` stable `466cada6...`
+  - assets deterministic twice: `bun run scripts/gen-assets.ts` stable `44d62bb4...`
+  - diff check: `git diff --check` => ok
+  - full: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false bun test` => 1849 pass, 21 skip, 0 fail
+
 ## status
 - 2026-07-25: worktree created from refreshed main at `/private/tmp/wolfpack-209-canonical-agent-runtime-state`, branch `209-canonical-agent-runtime-state`.
 - 2026-07-25: review round 1 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777269871.
 - 2026-07-25: review round 2 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777377563.
+- 2026-07-25: review round 3 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777482625.

@@ -52,8 +52,17 @@ export interface SessionLaunchOptions {
   readonly initialPrompt?: string;
 }
 
+export interface SessionListFact {
+  readonly name: string;
+  readonly alive: boolean;
+  readonly identity?: PublicSessionIdentity;
+}
+
 export interface SessionBackend {
+  /** Live-only session names for terminal attach/control consumers. */
   list(): Promise<string[]>;
+  /** Authoritative complete session table for canonical runtime projection. */
+  listSessionFacts(): Promise<SessionListFact[]>;
   listIdentities?(): Promise<Record<string, PublicSessionIdentity>>;
   createSession(
     name: string,
@@ -384,6 +393,11 @@ export class BackendRouter implements SessionBackend {
   async list(): Promise<string[]> {
     const sessions = this.broker ? await this.broker.list() : [];
     return [...sessions].sort();
+  }
+
+  async listSessionFacts(): Promise<SessionListFact[]> {
+    const facts = this.broker ? await this.broker.listSessionFacts() : [];
+    return [...facts].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {

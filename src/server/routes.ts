@@ -62,7 +62,7 @@ import pkg from "../../package.json";
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
-import { getBackend, getRouter, DuplicateSessionError } from "./backend.js";
+import { getBackend, getRouter, DuplicateSessionError, type SessionListFact } from "./backend.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -646,12 +646,10 @@ export const routes: Record<
     const router = getRouter();
     const routerOwnsBackend = backend === router;
     let brokerAvailable = !(routerOwnsBackend && !router.isBrokerAvailable());
-    let sessions: string[] = [];
-    let identities: Record<string, PublicSessionIdentity> = {};
+    let sessionFacts: SessionListFact[] = [];
     if (brokerAvailable) {
       try {
-        sessions = await backend.list();
-        identities = await backend.listIdentities?.() ?? {};
+        sessionFacts = await backend.listSessionFacts();
       } catch {
         brokerAvailable = false;
       }
@@ -688,11 +686,11 @@ export const routes: Record<
 
     const activeNames = new Set<string>();
     const activeSessionKeys = new Set<string>();
-    const livenessBackend = backend as Partial<{ isSessionAlive: (name: string) => boolean }>;
     const results = await Promise.all(
-      sessions.map(async (name) => {
+      sessionFacts.map(async (fact) => {
+        const name = fact.name;
         activeNames.add(name);
-        const brokerState = typeof livenessBackend.isSessionAlive === "function" && !livenessBackend.isSessionAlive(name) ? "dead" : "alive";
+        const brokerState = fact.alive ? "alive" : "dead";
         const pane = brokerState === "dead" ? "" : await backend.capturePaneForTriage(name);
         const content = pane.trimEnd();
 
@@ -718,7 +716,7 @@ export const routes: Record<
           if (prev === undefined) prevPaneContent.set(name, content);
         }
 
-        const identity = identities[name];
+        const identity = fact.identity;
         const sessionKey = identity?.wolfpackSessionId ?? name;
         activeSessionKeys.add(sessionKey);
         const observedAt = new Date().toISOString();

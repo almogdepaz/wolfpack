@@ -11,6 +11,7 @@ import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
 } from "../../src/session-open-contract.ts";
+import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
@@ -125,6 +126,73 @@ function post(path: string, body: unknown, headers?: Record<string, string>) {
 
 function get(path: string, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, { headers });
+}
+
+interface TestSessionFact {
+  readonly name: string;
+  readonly alive: boolean;
+  readonly identity?: PublicSessionIdentity;
+}
+
+class FactBackend extends MockBackend {
+  private facts: TestSessionFact[];
+  private failFacts = false;
+  private readonly panes = new Map<string, string>();
+
+  constructor(facts: TestSessionFact[]) {
+    super({ sessions: facts.filter((fact) => fact.alive).map((fact) => fact.name) });
+    this.facts = facts;
+  }
+
+  setFacts(facts: TestSessionFact[]): void {
+    this.facts = facts;
+    this.setSessions(facts.filter((fact) => fact.alive).map((fact) => fact.name));
+  }
+
+  setFactsUnavailable(unavailable: boolean): void {
+    this.failFacts = unavailable;
+  }
+
+  setPane(name: string, pane: string): void {
+    this.panes.set(name, pane);
+  }
+
+  async list(): Promise<string[]> {
+    return this.facts.filter((fact) => fact.alive).map((fact) => fact.name);
+  }
+
+  async listSessionFacts(): Promise<TestSessionFact[]> {
+    if (this.failFacts) throw new Error("session facts unavailable");
+    return this.facts;
+  }
+
+  async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
+    const out: Record<string, PublicSessionIdentity> = {};
+    for (const fact of this.facts) {
+      if (fact.alive && fact.identity) out[fact.name] = fact.identity;
+    }
+    return out;
+  }
+
+  async capturePane(name: string): Promise<string> {
+    return this.panes.get(name) ?? "";
+  }
+
+  async capturePaneForTriage(name: string): Promise<string> {
+    return this.capturePane(name);
+  }
+}
+
+function testIdentity(name: string, id: string): PublicSessionIdentity {
+  const timestamp = new Date(0).toISOString();
+  return {
+    wolfpackSessionId: id,
+    wolfpackSessionName: name,
+    projectPath: "",
+    agentKind: "unknown",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
 }
 
 function attachNotificationViewer(session: string): string[] {
@@ -443,6 +511,84 @@ describe("GET /api/sessions", () => {
       });
     } finally {
       mockBackend.setSessionAlive("dead-session", null);
+    }
+  });
+
+  test("backend authoritative dead facts project off and preserve ack until omitted", async () => {
+    const sessionName = "fact-dead-session";
+    const sessionId = "fact-session-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: false, identity: testIdentity(sessionName, sessionId) },
+    ]);
+    __setTestBackend(factBackend);
+    const store = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!);
+    const idle = store.reduce({
+      sessionKey: sessionId,
+      broker: { state: "alive", observedAt: "2026-07-25T00:00:00.000Z" },
+      sources: [],
+      fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:00:00.000Z" },
+      currentRun: { runId: sessionId, runOrder: 0 },
+    });
+    expect(store.acknowledge(sessionId, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
+    __resetAgentRuntimeStateStoreForTests();
+    try {
+      const dead = await (await get("/api/sessions")).json();
+
+      expect(dead.sessions).toHaveLength(1);
+      expect(dead.sessions[0]).toMatchObject({
+        name: sessionName,
+        lastLine: "",
+        identity: { wolfpackSessionId: sessionId, wolfpackSessionName: sessionName },
+        runtimeState: {
+          state: "off",
+          authority: "liveness",
+          source: "broker-liveness",
+          acknowledgedSequence: idle.transitionSequence,
+          unseen: true,
+        },
+      });
+      expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "off" });
+
+      factBackend.setFacts([]);
+      const omitted = await (await get("/api/sessions")).json();
+      expect(omitted.sessions).toHaveLength(0);
+      expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toBeUndefined();
+    } finally {
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("backend authoritative fact failures preserve known sessions as unknown", async () => {
+    const sessionName = "fact-unavailable-session";
+    const sessionId = "fact-unavailable-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "quiet screen\n");
+    __setTestBackend(factBackend);
+    try {
+      const seeded = await (await get("/api/sessions")).json();
+      expect(seeded.sessions).toHaveLength(1);
+      const sequence = seeded.sessions[0].runtimeState.transitionSequence;
+      expect((await post("/api/agent-runtime-state/ack", { sessionId, transitionSequence: sequence })).status).toBe(200);
+
+      factBackend.setFactsUnavailable(true);
+      const unavailable = await (await get("/api/sessions")).json();
+
+      expect(unavailable.sessions).toHaveLength(1);
+      expect(unavailable.sessions[0]).toMatchObject({
+        name: sessionName,
+        runtimeState: {
+          state: "unknown",
+          authority: "liveness",
+          source: "broker-liveness",
+          acknowledgedSequence: sequence,
+          unseen: true,
+        },
+      });
+      expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "unknown" });
+    } finally {
+      __setTestBackend(mockBackend);
     }
   });
 
