@@ -1,7 +1,7 @@
 # issue #213 — persistent named dashboard views
 
 status: completed
-branch: `213-named-dashboard-views`
+branch: `213-persistent-named-views`
 base: `main` @ `4dbe7fcc7fcdc7c98e12298f6ca4dddbb72ad37e`
 issue: https://github.com/almogdepaz/wolfpack/issues/213
 
@@ -113,6 +113,18 @@ owner: orchestrator/reviewer
 - [x] final holistic `edc-delivery-review`
 - [x] document completed/deferred/intentionally omitted work
 
+### m4 — post-deployment identity-rebind UX fix
+
+status: completed
+owner: orchestrator
+
+- [x] remove the redundant manual refresh control
+- [x] refresh server-owned views when the browser returns to the foreground or sessions UI
+- [x] make explicit update rebind a missing identity to the current same-name session on the same machine
+- [x] preserve strict id-only resolution during ordinary open
+- [x] add unit and browser regressions, then run focused and broad verification
+- [x] prepare the verified fix for PR-branch publication and separate `dev_new` integration
+
 ## baseline evidence
 
 - repository instructions, EDC routing manifest, and server/browser/terminal/core/tests/docs modules read
@@ -163,6 +175,9 @@ owner: orchestrator/reviewer
 - 2026-07-24: final Playwright evidence passed: named views 5 pass/5 expected device skips, existing grid 22 pass, UX navigation 9 pass/7 expected device skips.
 - 2026-07-24: real two-process server restart smoke preserved the exact named-view id/record; full four-target build passed; schema/assets were deterministic; final `git diff --check` passed.
 - 2026-07-24: final holistic EDC delivery review: delivery `delivered`, architecture `fits`, no unresolved findings. m1/m2 security reviews both `APPROVE`; differential antipattern findings 0.
+- 2026-07-24: post-deployment evidence identified a replaced `looper-ai-2-sub-agent` identity (`d2b4…` saved versus `b338…` live). ordinary open correctly failed closed, but explicit update incorrectly preserved the stale id.
+- 2026-07-24: m4 red evidence: unit tests failed because the refresh control still rendered and no explicit-update rebind function existed; focused Playwright failed because foreground did not refresh and update retained `stale:another-project`.
+- 2026-07-24: m4 green evidence: 4 focused unit tests, 8 named-view Playwright cases with 6 expected device skips, 22 grid E2E cases, 9 UX navigation cases with 7 expected device skips, typecheck, deterministic assets, and `git diff --check` passed. full Bun suite passed with 1851 pass and 0 fail using a freshly built real broker.
 
 ## final artifact evidence
 

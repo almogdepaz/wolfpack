@@ -109,11 +109,28 @@ export function collectNamedViewMembersFromGrid(
   gridSessions: readonly NamedViewGridSession[],
   liveSessions: readonly BrowserNamedViewSession[],
 ): readonly NamedViewMemberReference[] | null {
+  return collectGridMembers(gridSessions, liveSessions, false);
+}
+
+export function collectUpdatedNamedViewMembersFromGrid(
+  gridSessions: readonly NamedViewGridSession[],
+  liveSessions: readonly BrowserNamedViewSession[],
+): readonly NamedViewMemberReference[] | null {
+  return collectGridMembers(gridSessions, liveSessions, true);
+}
+
+function collectGridMembers(
+  gridSessions: readonly NamedViewGridSession[],
+  liveSessions: readonly BrowserNamedViewSession[],
+  rebindReplacedSessions: boolean,
+): readonly NamedViewMemberReference[] | null {
   if (gridSessions.length < 1 || gridSessions.length > MAX_NAMED_VIEW_MEMBERS) return null;
   const liveByName = new Map<string, BrowserNamedViewSession>();
+  const liveByStableKey = new Map<string, BrowserNamedViewSession>();
   for (const session of liveSessions) {
     if (!isValidNamedViewMachineUrl(session.machineUrl)) continue;
     liveByName.set(namedViewNameKey(session.machineUrl, session.sessionName), session);
+    liveByStableKey.set(namedViewStableKey(session.machineUrl, session.sessionId), session);
   }
 
   const members: NamedViewMemberReference[] = [];
@@ -122,7 +139,15 @@ export function collectNamedViewMembersFromGrid(
     if (!isValidNamedViewMachineUrl(machineUrl)) return null;
     const preservedSessionId = gridSession._namedViewSessionId;
     if (preservedSessionId) {
-      members.push({
+      const preservedSessionIsLive = liveByStableKey.has(namedViewStableKey(machineUrl, preservedSessionId));
+      const replacement = rebindReplacedSessions && !preservedSessionIsLive
+        ? liveByName.get(namedViewNameKey(machineUrl, gridSession.session))
+        : undefined;
+      members.push(replacement ? {
+        machineUrl: replacement.machineUrl,
+        sessionId: replacement.sessionId,
+        sessionName: replacement.sessionName,
+      } : {
         machineUrl,
         sessionId: preservedSessionId,
         sessionName: gridSession._namedViewLabel || gridSession.session,
@@ -157,12 +182,11 @@ export function renderNamedViewsSection(mode: "desktop" | "mobile"): string {
   const views = namedViews;
   const appState = currentAppState();
   const canSaveGrid = desktop() && appState.gridSessions.length >= 2 && appState.gridSessions.length <= MAX_NAMED_VIEW_MEMBERS;
-  const refreshButton = `<button class="named-view-btn" onclick="refreshNamedViews(event)">↻</button>`;
   const saveButton = mode === "desktop"
     ? `<button class="named-view-btn named-view-save" ${canSaveGrid ? "" : "disabled"} onclick="saveNamedViewFromActiveGrid(event)">save grid</button>`
     : "";
   let html = `<section class="named-view-section named-view-${mode}">
-    <div class="named-view-header"><span>named views</span><div class="named-view-header-actions">${saveButton}${refreshButton}</div></div>`;
+    <div class="named-view-header"><span>named views</span><div class="named-view-header-actions">${saveButton}</div></div>`;
   if (namedViewError) {
     html += `<div class="named-view-error">${escapeHtml(namedViewError)}</div>`;
   } else if (!views.length) {
@@ -174,11 +198,6 @@ export function renderNamedViewsSection(mode: "desktop" | "mobile"): string {
   }
   html += "</section>";
   return html;
-}
-
-export async function refreshNamedViews(event?: Event): Promise<void> {
-  event?.stopPropagation();
-  await loadNamedViews();
 }
 
 export async function saveNamedViewFromActiveGrid(event?: Event): Promise<void> {
@@ -269,7 +288,7 @@ export async function updateNamedViewFromActiveGrid(id: string, event?: Event): 
     return;
   }
   await deps.loadSessions();
-  const input = namedViewInputFromCurrentGrid(existing.name);
+  const input = namedViewInputFromCurrentGrid(existing.name, true);
   if (!input) {
     window.alert("cannot update view until every live grid cell has a stable session identity");
     return;
@@ -356,9 +375,12 @@ function renderMobileNamedView(view: NamedViewRecord): string {
   </div>`;
 }
 
-function namedViewInputFromCurrentGrid(name: string): NamedViewInput | null {
+function namedViewInputFromCurrentGrid(name: string, rebindReplacedSessions = false): NamedViewInput | null {
   const appState = currentAppState();
-  const members = collectNamedViewMembersFromGrid(appState.gridSessions, currentLiveSessions());
+  const liveSessions = currentLiveSessions();
+  const members = rebindReplacedSessions
+    ? collectUpdatedNamedViewMembersFromGrid(appState.gridSessions, liveSessions)
+    : collectNamedViewMembersFromGrid(appState.gridSessions, liveSessions);
   if (!members) return null;
   const focusMember = members[Math.max(0, Math.min(appState.gridFocusIndex, members.length - 1))] || members[0];
   const focused: NamedViewFocusReference | undefined = focusMember

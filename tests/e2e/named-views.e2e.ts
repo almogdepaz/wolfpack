@@ -154,6 +154,56 @@ test("desktop saves the active grid and opens ordered stable views with unavaila
   expect(attaches).toEqual(["test-project"]);
 });
 
+test("foreground refreshes named views without a manual refresh control", async ({ page }) => {
+  await loadApp(page);
+  const unique = `Foreground ${Date.now()}`;
+  await createNamedView(page, {
+    name: unique,
+    members: [{ machineUrl: "", sessionId: "mock:test-project", sessionName: "test-project" }],
+  });
+
+  const viewLabel = page.getByText(unique, { exact: true });
+  await expect(viewLabel).toHaveCount(0);
+  await expect(page.locator(`[onclick*="refreshNamedViews"]`)).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(viewLabel.first()).toBeVisible();
+});
+
+test("explicit update rebinds a replaced same-name session without weakening open", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop named-view update behavior");
+  const attaches = await routeHydratedPty(page);
+  await loadApp(page);
+  const unique = `Rebind ${Date.now()}`;
+  const stale = await createNamedView(page, {
+    name: unique,
+    members: [
+      { machineUrl: "", sessionId: "mock:test-project", sessionName: "test-project" },
+      { machineUrl: "", sessionId: "stale:another-project", sessionName: "another-project" },
+    ],
+    focused: { machineUrl: "", sessionId: "stale:another-project" },
+  });
+  await page.evaluate(async (id) => {
+    const w = window as unknown as {
+      loadNamedViews: () => Promise<void>;
+      openNamedViewById: (viewId: string) => Promise<void>;
+    };
+    await w.loadNamedViews();
+    await w.openNamedViewById(id);
+  }, stale.id);
+
+  await expect(page.locator("#desktop-grid-container .grid-cell.grid-unavailable")).toHaveCount(1);
+  expect(attaches).toEqual(["test-project"]);
+  await page.locator(`#desktop-sidebar .named-view-row[data-view-id="${stale.id}"] .named-view-btn`, { hasText: "update" }).click();
+  await expect.poll(async () => {
+    const updated = (await listNamedViews(page)).find((candidate) => candidate.id === stale.id);
+    return updated?.members;
+  }).toMatchObject([
+    { machineUrl: "", sessionId: "mock:test-project", sessionName: "test-project" },
+    { machineUrl: "", sessionId: "mock:another-project", sessionName: "another-project" },
+  ]);
+  expect(attaches).toEqual(["test-project"]);
+});
+
 test("named-view unavailable slots survive suspend/restore without stale-name PTY attach", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop named-view grid lifecycle behavior");
   const attaches = await routeHydratedPty(page);
@@ -313,13 +363,14 @@ test("mobile renders named-view members in order and keeps unavailable members d
     await w.loadNamedViews();
   });
 
-  await expect(page.locator(".named-view-mobile .named-view-member")).toHaveText([
+  const mobileView = page.locator(".named-view-card", { hasText: "Mobile release" });
+  await expect(mobileView.locator(".named-view-member")).toHaveText([
     /test-project[\s\S]*open/,
     /another-project[\s\S]*unavailable/,
   ]);
-  await expect(page.locator(".named-view-mobile .named-view-member").nth(1)).toHaveClass(/disabled/);
+  await expect(mobileView.locator(".named-view-member").nth(1)).toHaveClass(/disabled/);
 
-  await page.locator(".named-view-mobile .named-view-member").first().click();
+  await mobileView.locator(".named-view-member").first().click();
   await expect.poll(() => page.evaluate(() => {
     const w = window as unknown as { state: { currentView: string; currentSession: string } };
     return { view: w.state.currentView, session: w.state.currentSession };

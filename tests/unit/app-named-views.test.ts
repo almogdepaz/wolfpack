@@ -18,6 +18,8 @@ const storage = new Map<string, string>();
 
 const {
   collectNamedViewMembersFromGrid,
+  collectUpdatedNamedViewMembersFromGrid,
+  renderNamedViewsSection,
   resolveNamedViewMembers,
 } = await import("../../public/app-named-views.ts");
 
@@ -66,6 +68,11 @@ describe("browser named-view resolution", () => {
     ]);
   });
 
+  test("renders no manual refresh control", () => {
+    expect(renderNamedViewsSection("desktop")).not.toContain("refreshNamedViews");
+    expect(renderNamedViewsSection("desktop")).not.toContain(">↻</button>");
+  });
+
   test("collects active grid members from live identities while preserving unavailable named-view slots", () => {
     const members = collectNamedViewMembersFromGrid(
       [
@@ -88,5 +95,28 @@ describe("browser named-view resolution", () => {
       { machineUrl: "", sessionId: "mock:test-project", sessionName: "test-project" },
       { machineUrl: "https://peer.tailnet.ts.net", sessionId: "peer-stale-id", sessionName: "peer-old-name" },
     ]);
+  });
+
+  test("explicit update rebinds a missing stable identity to the current same-name session", () => {
+    const members = collectUpdatedNamedViewMembersFromGrid(
+      [{
+        machine: "",
+        session: "looper-ai-2-sub-agent",
+        _namedViewSessionId: "d2b4e74f-c9f7-4901-873e-64554cbee4ec",
+        _namedViewLabel: "looper-ai-2-sub-agent",
+        _namedViewUnavailable: true,
+      }],
+      [{
+        machineUrl: "",
+        sessionName: "looper-ai-2-sub-agent",
+        sessionId: "b3381ef8-e1f5-4cc9-a383-5b03f22b03d8",
+      }],
+    );
+
+    expect(members).toEqual([{
+      machineUrl: "",
+      sessionId: "b3381ef8-e1f5-4cc9-a383-5b03f22b03d8",
+      sessionName: "looper-ai-2-sub-agent",
+    }]);
   });
 });

@@ -32,7 +32,6 @@ import {
   initNamedViewDeps,
   renderNamedViewsSection,
   loadNamedViews,
-  refreshNamedViews,
   saveNamedViewFromActiveGrid,
   openNamedViewById,
   openNamedViewMember,
@@ -2658,7 +2657,9 @@ function showView(name: string, skipAnimation?: boolean): void {
     if (ralphDetailBackBtn) ralphDetailBackBtn.style.display = effectiveName === "ralph-detail" ? "inline-block" : "none";
     const ralphStartBackBtn = document.getElementById("ralph-start-back-btn");
     if (ralphStartBackBtn) ralphStartBackBtn.style.display = effectiveName === "ralph-start" ? "inline-block" : "none";
-    if (effectiveName === "settings") {
+    if (effectiveName === "sessions") {
+      void loadNamedViews();
+    } else if (effectiveName === "settings") {
       renderQuickCmdSettings();
       loadAgentsSettings();
     } else if (effectiveName === "ralph-detail") {
@@ -2690,6 +2691,7 @@ function showView(name: string, skipAnimation?: boolean): void {
       back.onclick = null;
       gear.style.display = "";
       title.textContent = "wolfpack";
+      void loadNamedViews();
       loadSessions(); // immediate refresh on entering sessions view
       state.sessionRefreshTimer = setInterval(loadSessions, 5000);
     } else if (name === "projects") {
@@ -4168,6 +4170,7 @@ const DESKTOP_STALE_THRESHOLD_MS = 60_000;
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    void loadNamedViews();
     const hiddenDuration = _hiddenAt ? Date.now() - _hiddenAt : 0;
     _hiddenAt = 0;
     if (isDesktop() && !sidebarRefreshTimer) {
@@ -4261,7 +4264,10 @@ function _wfRepaintAllTerminals() {
   }
 }
 
-window.addEventListener("focus", _wfRepaintAllTerminals);
+window.addEventListener("focus", () => {
+  _wfRepaintAllTerminals();
+  void loadNamedViews();
+});
 window.addEventListener("pageshow", (e: PageTransitionEvent) => {
   if (e.persisted) _wfRepaintAllTerminals();
 });
@@ -5145,7 +5151,6 @@ if (isDesktop() && state.sessionsExpanded) {
 }
 showView("sessions", true);
 loadSessions().then(renderSidebar);
-void loadNamedViews();
 scheduleGhosttyPrewarm();
 
 // Unregister stale service workers but keep our push SW
@@ -5173,7 +5178,7 @@ Object.assign(window, {
   // grid + view (used by onclick and e2e page.evaluate)
   toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
   showView, state,
-  loadNamedViews, refreshNamedViews, saveNamedViewFromActiveGrid,
+  loadNamedViews, saveNamedViewFromActiveGrid,
   openNamedViewById, openNamedViewMember, updateNamedViewFromActiveGrid,
   duplicateNamedView, deleteNamedView,
 });
