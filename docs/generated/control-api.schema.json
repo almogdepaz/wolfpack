@@ -400,6 +400,30 @@
         "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE"
       ]
     },
+    "listProviderReadiness": {
+      "route": "GET /api/providers",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listProviderReadiness:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listProviderReadiness response",
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ProviderReadiness"
+            }
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
     "getSettings": {
       "route": "GET /api/settings",
       "stable": true,
@@ -630,10 +654,11 @@
         "$ref": "#/$defs/SessionStatus"
       },
       "errors": [
-        "400 ErrorEnvelope",
-        "404 ErrorEnvelope",
-        "409 ErrorEnvelope",
-        "503 ErrorEnvelope"
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure"
       ]
     },
     "readSession": {
@@ -738,6 +763,92 @@
         "400 ErrorEnvelope",
         "404 ErrorEnvelope",
         "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
+    "promptSessionAndWaitForOutput": {
+      "route": "POST /api/session-control/prompt",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:promptSessionAndWaitForOutput:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "promptSessionAndWaitForOutput request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionPromptSelector"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          },
+          "outputContains": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "noEnter": {
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600000
+          }
+        },
+        "required": [
+          "session",
+          "prompt",
+          "outputContains"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:promptSessionAndWaitForOutput:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "promptSessionAndWaitForOutput response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "outcome": {
+            "$ref": "#/$defs/SessionPromptOutcome"
+          },
+          "outputBoundarySeq": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "Pre-send broker output sequence boundary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "outcome",
+          "outputBoundarySeq"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "413 ErrorEnvelope",
         "503 ErrorEnvelope"
       ]
     },
@@ -1862,6 +1973,22 @@
       "description": "Active session name or stable opaque session identifier",
       "minLength": 1
     },
+    "SessionPromptSelector": {
+      "type": "string",
+      "description": "Active session name or stable opaque session identifier for an atomic prompt",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "SessionPromptOutcome": {
+      "enum": [
+        "matched",
+        "timed_out",
+        "target_exited",
+        "target_unavailable",
+        "replay_gap",
+        "backend_unavailable"
+      ]
+    },
     "ProjectName": {
       "type": "string",
       "pattern": "^[a-zA-Z0-9._-]+$"
@@ -2160,6 +2287,85 @@
       ],
       "additionalProperties": false
     },
+    "ProviderReadiness": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/OpenableHarness"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "status": {
+              "const": "installed"
+            },
+            "executablePath": {
+              "type": "string"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "authStatus": {
+              "const": "unknown"
+            },
+            "loginCommand": {
+              "$ref": "#/$defs/Command"
+            }
+          },
+          "required": [
+            "id",
+            "displayName",
+            "command",
+            "status",
+            "executablePath",
+            "version",
+            "authStatus",
+            "loginCommand"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/OpenableHarness"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "status": {
+              "const": "missing"
+            },
+            "installGuidance": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "displayName",
+            "command",
+            "status",
+            "installGuidance"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "SessionSummary": {
       "type": "object",
       "properties": {
@@ -2202,11 +2408,89 @@
       ],
       "additionalProperties": false
     },
+    "SessionTerminalStatus": {
+      "enum": [
+        "ready",
+        "dead",
+        "unavailable"
+      ]
+    },
+    "SessionTerminalLiveness": {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "alive": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionTerminalStatus"
+        }
+      },
+      "required": [
+        "exists",
+        "alive",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "SessionStatusFailure": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "selector": {
+          "$ref": "#/$defs/SessionSelector"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "terminal": {
+          "$ref": "#/$defs/SessionTerminalLiveness"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "INVALID_REQUEST",
+                "SESSION_NOT_FOUND",
+                "AMBIGUOUS_SELECTOR",
+                "SESSION_DEAD",
+                "BACKEND_UNAVAILABLE"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 160
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "error"
+      ],
+      "additionalProperties": false
+    },
     "SessionStatus": {
       "type": "object",
       "properties": {
         "ok": {
           "const": true
+        },
+        "selector": {
+          "$ref": "#/$defs/SessionSelector"
         },
         "session": {
           "$ref": "#/$defs/SessionName"
@@ -2217,11 +2501,20 @@
         "state": {
           "const": "active"
         },
+        "project": {
+          "type": "string"
+        },
         "projectPath": {
+          "type": "string"
+        },
+        "projectDir": {
           "type": "string"
         },
         "harness": {
           "type": "string"
+        },
+        "terminal": {
+          "$ref": "#/$defs/SessionTerminalLiveness"
         },
         "parentSession": {
           "$ref": "#/$defs/SessionControlIdentity"
@@ -2229,11 +2522,15 @@
       },
       "required": [
         "ok",
+        "selector",
         "session",
         "sessionId",
         "state",
+        "project",
         "projectPath",
-        "harness"
+        "projectDir",
+        "harness",
+        "terminal"
       ],
       "additionalProperties": false
     },

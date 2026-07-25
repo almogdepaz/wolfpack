@@ -10,7 +10,18 @@ import {
   SESSION_OPEN_HTTP_STATUS,
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
+import {
+  SESSION_STATUS_ERROR,
+  SESSION_STATUS_ERROR_MESSAGE_MAX_CODE_POINTS,
+  SESSION_TERMINAL_STATUSES,
+} from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import {
+  SESSION_PROMPT_MAX_TIMEOUT_MS,
+  SESSION_PROMPT_OUTCOME,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_SELECTOR_MAX_CHARS,
+} from "../session-prompt-contract.ts";
 import {
   AGENT_STATUS_AUTHORITIES,
   AGENT_STATUS_FRESHNESSES,
@@ -138,6 +149,12 @@ const AGENT_RUNTIME_STATE_REQUIRED = {
   unseen: "unseen",
 } as const;
 
+const providerIdentityProperties = {
+  id: ref("OpenableHarness"),
+  displayName: string(),
+  command: ref("Command"),
+} as const;
+
 export const controlApiSource: ControlApiSource = {
   schemaVersion: CONTROL_API_SCHEMA_VERSION,
   artifactPath: CONTROL_API_SCHEMA_ARTIFACT,
@@ -165,6 +182,12 @@ export const controlApiSource: ControlApiSource = {
       ...string("Active session name or stable opaque session identifier"),
       minLength: 1,
     },
+    SessionPromptSelector: {
+      ...string("Active session name or stable opaque session identifier for an atomic prompt"),
+      minLength: 1,
+      maxLength: SESSION_PROMPT_SELECTOR_MAX_CHARS,
+    },
+    SessionPromptOutcome: { enum: Object.values(SESSION_PROMPT_OUTCOME) },
     ProjectName: { type: "string", pattern: "^[a-zA-Z0-9._-]+$" },
     PlanFile: {
       type: "string",
@@ -231,6 +254,23 @@ export const controlApiSource: ControlApiSource = {
       signalSequence: number(),
       message: string(),
     }, Object.values(AGENT_RUNTIME_STATE_REQUIRED)),
+    ProviderReadiness: {
+      anyOf: [
+        object({
+          ...providerIdentityProperties,
+          status: { const: "installed" },
+          executablePath: string(),
+          version: nullable(string()),
+          authStatus: { const: "unknown" },
+          loginCommand: ref("Command"),
+        }, ["id", "displayName", "command", "status", "executablePath", "version", "authStatus", "loginCommand"]),
+        object({
+          ...providerIdentityProperties,
+          status: { const: "missing" },
+          installGuidance: string(),
+        }, ["id", "displayName", "command", "status", "installGuidance"]),
+      ],
+    },
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -242,15 +282,50 @@ export const controlApiSource: ControlApiSource = {
       session: ref("SessionName"),
       sessionId: ref("SessionId"),
     }, ["session", "sessionId"]),
+    SessionTerminalStatus: { enum: [...SESSION_TERMINAL_STATUSES] },
+    SessionTerminalLiveness: object({
+      exists: boolean(),
+      alive: boolean(),
+      status: ref("SessionTerminalStatus"),
+    }, ["exists", "alive", "status"]),
+    SessionStatusFailure: object({
+      ok: { const: false },
+      selector: ref("SessionSelector"),
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+      terminal: ref("SessionTerminalLiveness"),
+      error: object({
+        code: { enum: Object.values(SESSION_STATUS_ERROR) },
+        message: {
+          type: "string",
+          maxLength: SESSION_STATUS_ERROR_MESSAGE_MAX_CODE_POINTS,
+        },
+      }, ["code", "message"]),
+    }, ["ok", "error"]),
     SessionStatus: object({
       ok: { const: true },
+      selector: ref("SessionSelector"),
       session: ref("SessionName"),
       sessionId: ref("SessionId"),
       state: { const: "active" },
+      project: string(),
       projectPath: string(),
+      projectDir: string(),
       harness: string(),
+      terminal: ref("SessionTerminalLiveness"),
       parentSession: ref("SessionControlIdentity"),
-    }, ["ok", "session", "sessionId", "state", "projectPath", "harness"]),
+    }, [
+      "ok",
+      "selector",
+      "session",
+      "sessionId",
+      "state",
+      "project",
+      "projectPath",
+      "projectDir",
+      "harness",
+      "terminal",
+    ]),
     Peer: object({
       name: string(),
       url: string(),
@@ -441,6 +516,15 @@ export const controlApiSource: ControlApiSource = {
       }, ["ok", "session", "sessionId", "project", "harness"]),
       errors: sessionOpenErrorLines(),
     },
+    "GET /api/providers": {
+      operationId: "listProviderReadiness",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: object({
+        providers: arrayOf(ref("ProviderReadiness")),
+      }, ["providers"]),
+      errors: [],
+    },
     "GET /api/settings": {
       operationId: "getSettings",
       stable: true,
@@ -509,7 +593,13 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       request: object({ session: ref("SessionSelector") }, ["session"]),
       response: ref("SessionStatus"),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
     },
     "GET /api/session-control/read": {
       operationId: "readSession",
@@ -538,6 +628,38 @@ export const controlApiSource: ControlApiSource = {
         sessionId: ref("SessionId"),
       }, ["ok", "session", "sessionId"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-control/prompt": {
+      operationId: "promptSessionAndWaitForOutput",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionPromptSelector"),
+        prompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+        outputContains: {
+          type: "string",
+          minLength: 1,
+          maxLength: SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+        },
+        noEnter: boolean(),
+        timeoutMs: {
+          type: "integer",
+          minimum: 1,
+          maximum: SESSION_PROMPT_MAX_TIMEOUT_MS,
+        },
+      }, ["session", "prompt", "outputContains"]),
+      response: object({
+        ok: boolean(),
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        outcome: ref("SessionPromptOutcome"),
+        outputBoundarySeq: nullable(string("Pre-send broker output sequence boundary")),
+      }, ["ok", "session", "sessionId", "outcome", "outputBoundarySeq"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "413 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/session-control/wait": {
       operationId: "waitForSessionText",

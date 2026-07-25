@@ -2492,6 +2492,31 @@ interface SettingsResponse {
   };
 }
 
+interface InstalledProviderReadiness {
+  readonly id: string;
+  readonly displayName: string;
+  readonly command: string;
+  readonly status: "installed";
+  readonly executablePath: string;
+  readonly version: string | null;
+  readonly authStatus: "unknown";
+  readonly loginCommand: string;
+}
+
+interface MissingProviderReadiness {
+  readonly id: string;
+  readonly displayName: string;
+  readonly command: string;
+  readonly status: "missing";
+  readonly installGuidance: string;
+}
+
+type ProviderReadiness = InstalledProviderReadiness | MissingProviderReadiness;
+
+interface ProviderReadinessResponse {
+  readonly providers?: ProviderReadiness[];
+}
+
 interface NextSessionNameResponse {
   readonly name?: string;
 }
@@ -3190,22 +3215,48 @@ async function showAgentPicker() {
 // a session). This is where the user toggles enabled/disabled, adds new
 // commands, and removes them. All ops hit /api/settings on the local
 // machine — agent settings are per-machine, not synced across peers.
-async function loadAgentsSettings() {
+let latestSettingsResponse: SettingsResponse | null = null;
+let providerReadinessCache: ProviderReadiness[] = [];
+
+async function loadAgentsSettings(): Promise<void> {
   const list = document.getElementById("agents-list");
   if (!list) return;
   list.innerHTML = '<div class="empty">Loading...</div>';
+  latestSettingsResponse = null;
+  providerReadinessCache = [];
+  void loadProviderReadiness();
   try {
-    const data = await api<SettingsResponse>("/settings");
-    renderAgentsList(data);
+    applySettingsResponse(await api<SettingsResponse>("/settings"));
   } catch (e) {
     list.innerHTML = `<div class="empty">Failed to load: ${esc(errorMessage(e))}</div>`;
   }
 }
 
-function renderAgentsList(data) {
+async function loadProviderReadiness(): Promise<void> {
+  const list = document.getElementById("provider-readiness-list");
+  if (!list) return;
+  list.innerHTML = '<div class="empty">Checking providers...</div>';
+  try {
+    const data = await api<ProviderReadinessResponse>("/providers");
+    providerReadinessCache = data.providers || [];
+    renderProviderReadiness(providerReadinessCache, latestSettingsResponse);
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Provider check failed: ${esc(errorMessage(e))}</div>`;
+  }
+}
+
+function applySettingsResponse(data: SettingsResponse): void {
+  latestSettingsResponse = data;
+  renderAgentsList(data);
+  if (providerReadinessCache.length > 0) {
+    renderProviderReadiness(providerReadinessCache, data);
+  }
+}
+
+function renderAgentsList(data: SettingsResponse): void {
   const list = document.getElementById("agents-list");
   if (!list) return;
-  const cmds = (data.settings?.cmds || []);
+  const cmds = data.settings?.cmds || [];
   const defaultCmd = data.effective?.agentCmd;
   if (cmds.length === 0) {
     list.innerHTML = '<div class="empty">No agents — add one below.</div>';
@@ -3227,14 +3278,62 @@ function renderAgentsList(data) {
   }).join("");
 }
 
+function renderProviderReadiness(
+  providers: readonly ProviderReadiness[],
+  settings: SettingsResponse | null,
+): void {
+  const list = document.getElementById("provider-readiness-list");
+  if (!list) return;
+  const configured = new Set((settings?.settings?.cmds || []).map((entry) => entry.cmd));
+  const shellAdded = configured.has(AGENT_KIND.SHELL);
+  const shell = `<div class="provider-row installed" data-provider-id="${escAttr(AGENT_KIND.SHELL)}">
+    <div class="provider-row-header">
+      <span class="provider-name">Shell</span>
+      <span class="provider-badge installed">built-in</span>
+      <button class="provider-add-btn" data-provider-command="${escAttr(AGENT_KIND.SHELL)}"
+        aria-label="${shellAdded ? "Shell added" : "Add Shell"}"
+        ${shellAdded ? "disabled" : ""}>${shellAdded ? "added" : "+ add"}</button>
+    </div>
+    <div class="provider-guidance">Always available as Wolfpack's local terminal fallback.</div>
+  </div>`;
+  list.innerHTML = shell + providers.map((provider) => {
+    if (provider.status === "missing") {
+      return `<div class="provider-row missing" data-provider-id="${escAttr(provider.id)}">
+        <div class="provider-row-header">
+          <span class="provider-name">${esc(provider.displayName)}</span>
+          <span class="provider-badge missing">missing</span>
+        </div>
+        <div class="provider-guidance">install: <code>${esc(provider.installGuidance)}</code></div>
+      </div>`;
+    }
+    const added = configured.has(provider.command);
+    const version = provider.version || "version unavailable";
+    return `<div class="provider-row installed" data-provider-id="${escAttr(provider.id)}">
+      <div class="provider-row-header">
+        <span class="provider-name">${esc(provider.displayName)}</span>
+        <span class="provider-badge installed">installed</span>
+        <button class="provider-add-btn" data-provider-command="${escAttr(provider.command)}"
+          aria-label="${escAttr(added ? `${provider.displayName} added` : `Add ${provider.displayName}`)}"
+          ${added ? "disabled" : ""}>${added ? "added" : "+ add"}</button>
+      </div>
+      <div class="provider-version">${esc(version)}</div>
+      <div class="provider-path">${esc(provider.executablePath)}</div>
+      <div class="provider-guidance">auth unknown · run <code>${esc(provider.loginCommand)}</code> to authenticate or confirm access</div>
+    </div>`;
+  }).join("");
+}
+
+async function updateAgentSettings(body: Record<string, unknown>): Promise<SettingsResponse> {
+  return api<SettingsResponse>("/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 async function toggleAgentEnabled(cmd, enabled) {
   try {
-    const data = await api<SettingsResponse>("/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ setCmdEnabled: { cmd, enabled } }),
-    });
-    renderAgentsList(data);
+    applySettingsResponse(await updateAgentSettings({ setCmdEnabled: { cmd, enabled } }));
   } catch (e) {
     showAgentAddError("Failed to toggle: " + errorMessage(e));
     loadAgentsSettings();  // refetch to undo optimistic checkbox flip
@@ -3243,14 +3342,18 @@ async function toggleAgentEnabled(cmd, enabled) {
 
 async function removeAgent(cmd) {
   try {
-    const data = await api<SettingsResponse>("/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ removeCmd: cmd }),
-    });
-    renderAgentsList(data);
+    applySettingsResponse(await updateAgentSettings({ removeCmd: cmd }));
   } catch (e) {
     showAgentAddError("Failed to remove: " + errorMessage(e));
+  }
+}
+
+async function addDetectedProvider(command: string): Promise<void> {
+  showAgentAddError("");
+  try {
+    applySettingsResponse(await updateAgentSettings({ addCmd: command }));
+  } catch (e) {
+    showAgentAddError("Could not add provider: " + errorMessage(e));
   }
 }
 
@@ -3260,13 +3363,8 @@ async function addAgent() {
   if (!cmd) return;
   showAgentAddError("");
   try {
-    const data = await api<SettingsResponse>("/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ addCmd: cmd }),
-    });
+    applySettingsResponse(await updateAgentSettings({ addCmd: cmd }));
     input.value = "";
-    renderAgentsList(data);
   } catch (e) {
     // Server returns 400 for invalid characters; surface inline rather than alert.
     showAgentAddError("Could not add: " + errorMessage(e));
@@ -3278,14 +3376,24 @@ function showAgentAddError(msg: string): void {
   if (el) el.textContent = msg;
 }
 
-// Wire up the add button + enter-to-submit when the settings page first mounts.
+// Wire up provider and custom-command actions when the settings page mounts.
 (function bindAgentSettings() {
   const btn = document.getElementById("agent-add-btn");
   const input = document.getElementById("agent-add-input");
+  const providers = document.getElementById("provider-readiness-list");
+  const refresh = document.getElementById("provider-refresh-btn");
   if (btn) btn.addEventListener("click", () => addAgent());
   if (input) input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addAgent(); }
   });
+  if (providers) providers.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const addButton = target.closest<HTMLButtonElement>("[data-provider-command]");
+    const command = addButton?.dataset.providerCommand;
+    if (command && !addButton.disabled) void addDetectedProvider(command);
+  });
+  if (refresh) refresh.addEventListener("click", () => { void loadProviderReadiness(); });
 })();
 
 // Legacy compatibility: older versions of the picker used these names.

@@ -128,11 +128,13 @@ describe("JWT auth middleware", () => {
       { method: "GET", path: "/api/session-control/list" },
       { method: "GET", path: "/api/session-control/status?session=auth-session" },
       { method: "GET", path: "/api/settings" },
+      { method: "GET", path: "/api/providers" },
       { method: "GET", path: "/api/discover" },
       { method: "GET", path: "/api/ralph" },
       { method: "POST", path: "/api/resize" },
       { method: "POST", path: "/api/session-create" },
       { method: "POST", path: "/api/session-open" },
+      { method: "POST", path: "/api/session-control/prompt" },
       { method: "POST", path: "/api/ralph/start" },
       { method: "POST", path: "/api/ralph/cancel" },
     ] as const;

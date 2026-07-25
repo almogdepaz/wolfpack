@@ -10,12 +10,17 @@ import { createLogger, errMsg } from "../log.js";
 import { defaultBrokerSocketPath } from "../broker/client.js";
 import type { BrokerBackend } from "./broker-backend.js";
 import type { EventBody } from "../broker/codec.js";
+import type { SessionInspectionResult } from "../session-status-contract.js";
 import type {
   AgentKind,
   CaptureSessionIdentityInput,
   ParentSessionIdentity,
   PublicSessionIdentity,
 } from "./session-identity.js";
+import type {
+  SessionPromptWaitOptions,
+  SessionPromptWaitResult,
+} from "../session-prompt-contract.js";
 
 const log = createLogger("backend");
 
@@ -64,6 +69,7 @@ export interface SessionBackend {
   /** Authoritative complete session table for canonical runtime projection. */
   listSessionFacts(): Promise<SessionListFact[]>;
   listIdentities?(): Promise<Record<string, PublicSessionIdentity>>;
+  inspectSession?(selector: string): Promise<SessionInspectionResult>;
   createSession(
     name: string,
     cwd: string,
@@ -146,6 +152,17 @@ export interface PtyBackendMethods {
   ): (() => void) | null;
 }
 
+export interface SessionPromptBackendMethods {
+  /**
+   * Register output observation for a pinned broker UUID before writing input,
+   * then wait only for explicit output containment.
+   */
+  promptAndWaitForOutput(
+    sessionId: string,
+    options: SessionPromptWaitOptions,
+  ): Promise<SessionPromptWaitResult>;
+}
+
 // ── Backend Router ──
 
 /** Sync probe: does the broker socket file exist? Cheap; never opens it. */
@@ -205,6 +222,9 @@ export class BackendRouter implements SessionBackend {
       // snapshot — closing the stale-prefill gap.
       onReplayTruncated: (sessionId: string) => {
         this.broker?.handleReplayTruncated(sessionId);
+      },
+      onResubscribeError: (sessionId: string, error: Error) => {
+        this.broker?.handleResubscribeError(sessionId, error);
       },
       // Surface circuit-breaker trips at warn level so a zombie-broker
       // recovery is visible in the server log. The breaker has already
@@ -377,7 +397,9 @@ export class BackendRouter implements SessionBackend {
   // ── Streaming-backend accessor (for websocket.ts) ──
 
   /** Streaming backend that can serve a `/ws/pty` attach for the given session. */
-  getStreamingBackendForSession(_name: string): (SessionBackend & PtyBackendMethods) | null {
+  getStreamingBackendForSession(
+    _name: string,
+  ): (SessionBackend & PtyBackendMethods & SessionPromptBackendMethods) | null {
     return this.broker;
   }
 
@@ -403,6 +425,10 @@ export class BackendRouter implements SessionBackend {
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
     if (!this.broker) return {};
     return this.broker.listIdentities();
+  }
+
+  async inspectSession(selector: string): Promise<SessionInspectionResult> {
+    return this.requireBroker().inspectSession(selector);
   }
 
   async createSession(

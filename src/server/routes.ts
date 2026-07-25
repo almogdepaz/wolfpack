@@ -14,12 +14,13 @@ import {
   readSync,
   closeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { hostname, homedir } from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
+import { detectProviderReadiness } from "../provider-readiness.js";
 import {
   configuredRalphAgents,
   selectConfiguredRalphAgent,
@@ -62,7 +63,19 @@ import pkg from "../../package.json";
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
-import { getBackend, getRouter, DuplicateSessionError, type SessionListFact } from "./backend.js";
+import {
+  getBackend,
+  getRouter,
+  DuplicateSessionError,
+  type SessionListFact,
+} from "./backend.js";
+import {
+  SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
+  SESSION_PROMPT_OUTCOME,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_SELECTOR_MAX_CHARS,
+  unicodeCodePointLength,
+} from "../session-prompt-contract.js";
 import {
   listDevProjects,
   parseRalphLog,
@@ -226,7 +239,7 @@ import {
   cachedPeers,
   discoverPeers,
 } from "./http.js";
-import type { InvalidBodyResponse } from "./http.js";
+import type { InvalidBodyResponse, ParseBodyOptions } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity, PublicSessionIdentity } from "./session-identity.js";
@@ -237,6 +250,17 @@ import {
 } from "../session-open-contract.js";
 import { openSubSession, SessionOpenError } from "./session-open.js";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.js";
+import {
+  isBoundedSessionStatusIdentity,
+  SESSION_STATUS_ERROR,
+  SESSION_STATUS_ERROR_MESSAGE,
+  SESSION_TERMINAL_STATUS,
+} from "../session-status-contract.js";
+import type {
+  SessionInspectionResult,
+  SessionStatusErrorCode,
+  SessionTerminalLiveness,
+} from "../session-status-contract.js";
 import { createTopLevelSession } from "./session-create.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
@@ -256,15 +280,15 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 async function parseObjectBody(
   req: IncomingMessage,
   res: ServerResponse,
-  invalidResponse?: InvalidBodyResponse,
+  options: ParseBodyOptions = {},
 ): Promise<Record<string, unknown> | null> {
-  const body = await parseBody(req, res, invalidResponse);
+  const body = await parseBody(req, res, options);
   if (body === undefined) return null;
   if (!isJsonObject(body)) {
     json(
       res,
-      invalidResponse?.envelope ?? { error: "JSON body must be an object" },
-      invalidResponse?.status ?? 400,
+      options.invalidResponse?.envelope ?? { error: "JSON body must be an object" },
+      options.invalidResponse?.status ?? 400,
     );
     return null;
   }
@@ -320,6 +344,43 @@ function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBo
     && typeof body.project === "string"
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "initialPrompt", "string");
+}
+
+interface SessionPromptBody extends Record<string, unknown> {
+  session: string;
+  prompt: string;
+  outputContains: string;
+  noEnter?: boolean;
+  timeoutMs?: number;
+}
+
+function isSessionPromptBody(body: Record<string, unknown>): body is SessionPromptBody {
+  const allowedKeys = new Set([
+    "session",
+    "prompt",
+    "outputContains",
+    "noEnter",
+    "timeoutMs",
+  ]);
+  if (
+    !Object.keys(body).every(key => allowedKeys.has(key))
+    || typeof body.session !== "string"
+    || typeof body.prompt !== "string"
+    || typeof body.outputContains !== "string"
+    || !hasOptionalType(body, "noEnter", "boolean")
+    || !hasOptionalType(body, "timeoutMs", "number")
+  ) {
+    return false;
+  }
+  const sessionLength = unicodeCodePointLength(body.session);
+  const promptLength = unicodeCodePointLength(body.prompt);
+  const outputContainsLength = unicodeCodePointLength(body.outputContains);
+  return sessionLength > 0
+    && sessionLength <= SESSION_PROMPT_SELECTOR_MAX_CHARS
+    && promptLength > 0
+    && promptLength <= MAX_INITIAL_PROMPT_LENGTH
+    && outputContainsLength > 0
+    && outputContainsLength <= SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS;
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -386,7 +447,10 @@ async function resolveActiveSession(
     if (!resolved.ok) {
       json(
         res,
-        { error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found" },
+        {
+          error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found",
+          code: resolved.code === "AMBIGUOUS" ? "AMBIGUOUS_SELECTOR" : "SESSION_NOT_FOUND",
+        },
         resolved.code === "AMBIGUOUS" ? 409 : 404,
       );
       return null;
@@ -399,20 +463,76 @@ async function resolveActiveSession(
   }
 }
 
-function sessionStatusPayload(name: string, identity: PublicSessionIdentity) {
+function sessionTerminalLiveness(name: string): SessionTerminalLiveness {
+  const streaming = getRouter().getStreamingBackendForSession(name);
+  if (!streaming) {
+    return { exists: true, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE };
+  }
+  const alive = streaming.isSessionAlive(name);
+  return {
+    exists: true,
+    alive,
+    status: alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
+  };
+}
+
+function sessionStatusPayload(name: string, identity: PublicSessionIdentity, selector: string = name) {
+  const terminal = sessionTerminalLiveness(name);
   return {
     ok: true as const,
+    selector,
     session: name,
     sessionId: identity.wolfpackSessionId,
     state: "active" as const,
+    project: basename(identity.projectPath),
     projectPath: identity.projectPath,
+    projectDir: identity.projectPath,
     harness: identity.agentKind,
+    terminal,
     ...(identity.parentSession && {
       parentSession: {
         session: identity.parentSession.wolfpackSessionName,
         sessionId: identity.parentSession.wolfpackSessionId,
       },
     }),
+  };
+}
+
+type SuccessfulSessionInspection = Extract<SessionInspectionResult, { readonly ok: true }>;
+
+function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection) {
+  const terminal: SessionTerminalLiveness = {
+    exists: true,
+    alive: inspection.alive,
+    status: inspection.alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
+  };
+  return {
+    ok: true as const,
+    selector,
+    session: inspection.session,
+    sessionId: inspection.sessionId,
+    state: "active" as const,
+    project: basename(inspection.projectPath),
+    projectPath: inspection.projectPath,
+    projectDir: inspection.projectPath,
+    harness: inspection.harness,
+    terminal,
+    ...(inspection.parentSession && { parentSession: inspection.parentSession }),
+  };
+}
+
+function sessionStatusFailure(
+  selector: string | undefined,
+  code: SessionStatusErrorCode,
+  terminal?: SessionTerminalLiveness,
+  identity?: { readonly session: string; readonly sessionId: string },
+) {
+  return {
+    ok: false as const,
+    ...(isBoundedSessionStatusIdentity(selector) && { selector }),
+    ...(identity && { session: identity.session, sessionId: identity.sessionId }),
+    ...(terminal && { terminal }),
+    error: { code, message: SESSION_STATUS_ERROR_MESSAGE[code] },
   };
 }
 
@@ -795,7 +915,8 @@ export const routes: Record<
     }
     if (
       initialPrompt !== undefined
-      && (!initialPrompt.trim() || initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+      && (!initialPrompt.trim()
+        || unicodeCodePointLength(initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
     ) {
       return json(res, {
         error: `initial prompt must be 1..${MAX_INITIAL_PROMPT_LENGTH} characters`,
@@ -876,7 +997,8 @@ export const routes: Record<
       || (body.harness !== undefined && !isOpenableHarness(body.harness))
       || (
         body.initialPrompt !== undefined
-        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+        && (!body.initialPrompt.trim()
+          || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
       )
     ) {
       if (body) json(res, {
@@ -935,7 +1057,9 @@ export const routes: Record<
   },
 
   "POST /api/session-open": async (req, res) => {
-    const body = await parseObjectBody(req, res, SESSION_OPEN_INVALID_BODY_RESPONSE);
+    const body = await parseObjectBody(req, res, {
+      invalidResponse: SESSION_OPEN_INVALID_BODY_RESPONSE,
+    });
     if (!body) return;
     if (
       !isSessionOpenBody(body)
@@ -943,7 +1067,8 @@ export const routes: Record<
       || !isValidSessionName(body.parentSession)
       || (
         body.initialPrompt !== undefined
-        && (!body.initialPrompt.trim() || body.initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH)
+        && (!body.initialPrompt.trim()
+          || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
       )
     ) {
       return json(
@@ -1008,6 +1133,11 @@ export const routes: Record<
         code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE,
       }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]);
     }
+  },
+
+  "GET /api/providers": async (_req, res) => {
+    const providers = await detectProviderReadiness({ path: process.env.PATH });
+    json(res, { providers });
   },
 
   "GET /api/settings": async (_req, res) => {
@@ -1142,11 +1272,63 @@ export const routes: Record<
 
   "GET /api/session-control/status": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const selector = url.searchParams.get("session");
-    if (!selector) return json(res, { error: "missing session" }, 400);
-    const resolved = await resolveActiveSession(res, selector);
-    if (!resolved) return;
-    json(res, sessionStatusPayload(resolved.name, resolved.identity));
+    const selector = url.searchParams.get("session") ?? undefined;
+    if (!selector) {
+      return json(res, sessionStatusFailure(undefined, SESSION_STATUS_ERROR.INVALID_REQUEST), 400);
+    }
+    try {
+      const backend = getBackend();
+      const inspect = backend.inspectSession;
+      if (!inspect) {
+        return json(
+          res,
+          sessionStatusFailure(
+            selector,
+            SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE,
+            { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+          ),
+          503,
+        );
+      }
+      const inspection = await inspect.call(backend, selector);
+      if (!inspection.ok) {
+        const ambiguous = inspection.code === "AMBIGUOUS";
+        return json(
+          res,
+          sessionStatusFailure(
+            selector,
+            ambiguous ? SESSION_STATUS_ERROR.AMBIGUOUS : SESSION_STATUS_ERROR.NOT_FOUND,
+            { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+          ),
+          ambiguous ? 409 : 404,
+        );
+      }
+      const status = inspectedSessionStatusPayload(selector, inspection);
+      if (!inspection.alive) {
+        return json(
+          res,
+          sessionStatusFailure(
+            selector,
+            SESSION_STATUS_ERROR.DEAD,
+            status.terminal,
+            { session: status.session, sessionId: status.sessionId },
+          ),
+          410,
+        );
+      }
+      return json(res, status);
+    } catch (error: unknown) {
+      log.warn("session status inspection failed", { error: errMsg(error) });
+      return json(
+        res,
+        sessionStatusFailure(
+          selector,
+          SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE,
+          { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+        ),
+        503,
+      );
+    }
   },
 
   "GET /api/session-control/read": async (req, res) => {
@@ -1187,6 +1369,60 @@ export const routes: Record<
     } catch (e: unknown) {
       log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);
+    }
+  },
+
+  "POST /api/session-control/prompt": async (req, res) => {
+    const body = await parseObjectBody(req, res, {
+      maxBytes: SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
+      respondOnTooLarge: true,
+    });
+    if (!body) return;
+    if (!isSessionPromptBody(body)) {
+      return json(res, { error: "invalid session prompt request" }, 400);
+    }
+    const timeoutMs = parseTimeoutMs(body.timeoutMs);
+    if (timeoutMs === null) {
+      return json(res, {
+        error: `timeoutMs must be an integer from 1 to ${SESSION_WAIT_MAX_TIMEOUT_MS}`,
+      }, 400);
+    }
+    const resolved = await resolveActiveSession(res, body.session);
+    if (!resolved) return;
+    const session = resolved.name;
+    const sessionId = resolved.identity.wolfpackSessionId;
+    const streaming = getRouter().getStreamingBackendForSession(session);
+    if (!streaming) {
+      return json(res, {
+        ok: false,
+        session,
+        sessionId,
+        outcome: SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE,
+        outputBoundarySeq: null,
+      });
+    }
+    try {
+      const result = await streaming.promptAndWaitForOutput(sessionId, {
+        prompt: body.prompt,
+        outputContains: body.outputContains,
+        noEnter: body.noEnter === true,
+        timeoutMs,
+      });
+      json(res, {
+        ok: result.outcome === SESSION_PROMPT_OUTCOME.MATCHED,
+        session,
+        sessionId,
+        ...result,
+      });
+    } catch (error: unknown) {
+      log.warn("session-control prompt failed", { session, sessionId, error: errMsg(error) });
+      json(res, {
+        ok: false,
+        session,
+        sessionId,
+        outcome: SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE,
+        outputBoundarySeq: null,
+      });
     }
   },
 

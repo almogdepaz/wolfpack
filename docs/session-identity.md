@@ -19,7 +19,7 @@ Stored fields:
 
 For `POST /api/session-open`, the server derives the child harness from the active parent's structured `agentKind`; the client cannot override the harness, command, or child name. `POST /api/session-create` creates top-level sessions and likewise keeps naming and stable broker identity server-owned. These operations follow the ordinary global API auth policy when configured and add no inter-session authorization layer. Tailnet/global Wolfpack access remains the trust boundary.
 
-Create, spawn, list, and status responses expose the stable broker session id as `sessionId`. Scriptable status/read/send/wait/kill routes accept either that id or the active visible name, resolve it against structured identity, and fail closed when a selector is ambiguous.
+Create, spawn, list, and status responses expose the stable broker session id as `sessionId`. Scriptable status/read/send/wait/prompt/kill routes accept either that id or the active visible name, resolve it against structured identity, and fail closed when a selector is ambiguous. Atomic prompt-and-wait resolves once and uses only the pinned broker ID after that boundary, so a reused visible name cannot retarget input or satisfy the output wait.
 
 External agent ids are never scraped from terminal prose. Wolfpack captures them only from structured launch/discovery metadata such as `WOLFPACK_EXTERNAL_AGENT_ID` and returns a redacted value from public APIs.
 

@@ -71,3 +71,4 @@
 - 2026-07-25: review round 1 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777269871.
 - 2026-07-25: review round 2 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777377563.
 - 2026-07-25: review round 3 assigned from PR review https://github.com/almogdepaz/wolfpack/pull/222#pullrequestreview-4777482625.
+- 2026-07-25: merged current `main` into PR #222, resolved control schema/session-runtime/provider-readiness/session-prompt conflicts, regenerated schema/assets/snapshot, and verified full suite.

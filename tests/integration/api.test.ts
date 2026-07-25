@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
@@ -12,6 +12,12 @@ import {
   SESSION_OPEN_HTTP_STATUS,
 } from "../../src/session-open-contract.ts";
 import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
+import {
+  SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_SELECTOR_MAX_CHARS,
+} from "../../src/session-prompt-contract.ts";
+import { MAX_INITIAL_PROMPT_LENGTH } from "../../src/validation.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
@@ -784,11 +790,15 @@ describe("agent-native top-level session control", () => {
     );
     expect(listed).toEqual({
       ok: true,
+      selector: "wolf-1",
       session: "wolf-1",
       sessionId: "mock:wolf-1",
       state: "active",
+      project: "",
       projectPath: "",
+      projectDir: "",
       harness: "unknown",
+      terminal: { exists: true, alive: true, status: "ready" },
     });
     expect(listed).not.toHaveProperty("lastLine");
 
@@ -796,11 +806,15 @@ describe("agent-native top-level session control", () => {
     expect(status.status).toBe(200);
     expect(await status.json()).toEqual({
       ok: true,
+      selector: "mock:wolf-1",
       session: "wolf-1",
       sessionId: "mock:wolf-1",
       state: "active",
+      project: "",
       projectPath: "",
+      projectDir: "",
       harness: "unknown",
+      terminal: { exists: true, alive: true, status: "ready" },
     });
 
     const read = await get(`/api/session-control/read?session=${selector}`);
@@ -1443,6 +1457,98 @@ describe("session control API", () => {
     mockBackend.lastSendArgs = null;
   });
 
+  test("status exposes stable liveness/project facts by name without reading terminal output", async () => {
+    const originalListIdentities = mockBackend.listIdentities.bind(mockBackend);
+    mockBackend.listIdentities = async () => {
+      const identities = await originalListIdentities();
+      return {
+        ...identities,
+        "wolf-1": {
+          ...identities["wolf-1"]!,
+          projectPath: join(TEST_DEV_DIR, "my-app"),
+          agentKind: "pi",
+        },
+      };
+    };
+    mockBackend.setCapturePane(async () => {
+      throw new Error("status must not read terminal output");
+    });
+    try {
+      const res = await get("/api/session-control/status?session=wolf-1");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        selector: "wolf-1",
+        session: "wolf-1",
+        sessionId: "mock:wolf-1",
+        state: "active",
+        project: "my-app",
+        projectPath: join(TEST_DEV_DIR, "my-app"),
+        projectDir: join(TEST_DEV_DIR, "my-app"),
+        harness: "pi",
+        terminal: { exists: true, alive: true, status: "ready" },
+      });
+    } finally {
+      mockBackend.listIdentities = originalListIdentities;
+    }
+  });
+
+  test("status resolves stable ids and fails closed for dead listed sessions", async () => {
+    mockBackend.setSessionAlive("wolf-2", false);
+    const res = await get("/api/session-control/status?session=mock%3Awolf-2");
+    mockBackend.setSessionAlive("wolf-2", null);
+
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({
+      ok: false,
+      selector: "mock:wolf-2",
+      session: "wolf-2",
+      sessionId: "mock:wolf-2",
+      terminal: { exists: true, alive: false, status: "dead" },
+      error: { code: "SESSION_DEAD", message: "session is not alive" },
+    });
+  });
+
+  test("status returns uniform bounded failures for missing, unknown, ambiguous, and unavailable targets", async () => {
+    const missing = await get("/api/session-control/status");
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "missing session selector" },
+    });
+
+    const unknown = await get("/api/session-control/status?session=missing-agent");
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({
+      ok: false,
+      selector: "missing-agent",
+      terminal: { exists: false, alive: false, status: "unavailable" },
+      error: { code: "SESSION_NOT_FOUND", message: "session not found" },
+    });
+
+    const originalInspectSession = mockBackend.inspectSession.bind(mockBackend);
+    mockBackend.inspectSession = async () => ({ ok: false, code: "AMBIGUOUS" });
+    const ambiguous = await get("/api/session-control/status?session=ambiguous-agent");
+    expect(ambiguous.status).toBe(409);
+    expect(await ambiguous.json()).toEqual({
+      ok: false,
+      selector: "ambiguous-agent",
+      terminal: { exists: false, alive: false, status: "unavailable" },
+      error: { code: "AMBIGUOUS_SELECTOR", message: "ambiguous session selector" },
+    });
+
+    mockBackend.inspectSession = async () => { throw new Error("transport details must stay private"); };
+    const unavailable = await get("/api/session-control/status?session=wolf-1");
+    mockBackend.inspectSession = originalInspectSession;
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({
+      ok: false,
+      selector: "wolf-1",
+      terminal: { exists: false, alive: false, status: "unavailable" },
+      error: { code: "BACKEND_UNAVAILABLE", message: "backend unavailable" },
+    });
+  });
+
   test("reads current output from backend snapshot", async () => {
     const res = await get("/api/session-control/read?session=wolf-1");
     expect(res.status).toBe(200);
@@ -1526,6 +1632,139 @@ describe("session control API", () => {
     expect(res.status).toBe(408);
     const data = await res.json();
     expect(data.matched).toBe(false);
+  });
+
+  test("prompt resolves once, pins the stable id, and returns the pre-send boundary", async () => {
+    const originalList = mockBackend.list.bind(mockBackend);
+    let listCalls = 0;
+    const calls: unknown[] = [];
+    mockBackend.list = async () => {
+      listCalls++;
+      return originalList();
+    };
+    const atomicBackend = mockBackend as unknown as {
+      promptAndWaitForOutput: (sessionId: string, options: unknown) => Promise<unknown>;
+    };
+    atomicBackend.promptAndWaitForOutput = async (sessionId, options) => {
+      calls.push({ sessionId, options });
+      return { outcome: "matched", outputBoundarySeq: "41" };
+    };
+
+    try {
+      const res = await post("/api/session-control/prompt", {
+        session: "wolf-1",
+        prompt: "run the check",
+        outputContains: "READY",
+        noEnter: false,
+        timeoutMs: 250,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        session: "wolf-1",
+        sessionId: "mock:wolf-1",
+        outcome: "matched",
+        outputBoundarySeq: "41",
+      });
+      expect(listCalls).toBe(1);
+      expect(calls).toEqual([{
+        sessionId: "mock:wolf-1",
+        options: {
+          prompt: "run the check",
+          outputContains: "READY",
+          noEnter: false,
+          timeoutMs: 250,
+        },
+      }]);
+      expect(mockBackend.lastSendArgs).toBeNull();
+    } finally {
+      mockBackend.list = originalList;
+      delete (atomicBackend as { promptAndWaitForOutput?: unknown }).promptAndWaitForOutput;
+    }
+  });
+
+  test("prompt accepts schema maxima through the real body parser", async () => {
+    const session = "s".repeat(SESSION_PROMPT_SELECTOR_MAX_CHARS);
+    const escapedPrompt = "\\u0000".repeat(MAX_INITIAL_PROMPT_LENGTH);
+    const escapedOutput = "\\ud83d\\ude80".repeat(SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS);
+    mockBackend.setSessions([session]);
+    const rawBody = [
+      `{"session":${JSON.stringify(session)},`,
+      `"prompt":"${escapedPrompt}",`,
+      `"outputContains":"${escapedOutput}",`,
+      '"noEnter":false,"timeoutMs":600000}',
+    ].join("");
+    const encodedBytes = Buffer.byteLength(rawBody);
+    expect(encodedBytes).toBeGreaterThan(64 * 1024);
+    expect(encodedBytes).toBeLessThanOrEqual(SESSION_PROMPT_MAX_REQUEST_BODY_BYTES);
+    const atomicBackend = mockBackend as unknown as {
+      promptAndWaitForOutput: (sessionId: string, options: {
+        prompt: string;
+        outputContains: string;
+      }) => Promise<unknown>;
+    };
+    atomicBackend.promptAndWaitForOutput = async (_sessionId, options) => {
+      expect(Array.from(options.prompt)).toHaveLength(MAX_INITIAL_PROMPT_LENGTH);
+      expect(Array.from(options.outputContains)).toHaveLength(SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS);
+      return { outcome: "matched", outputBoundarySeq: "42" };
+    };
+
+    try {
+      const res = await fetch(`${base}/api/session-control/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: rawBody,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        ok: true,
+        outcome: "matched",
+        outputBoundarySeq: "42",
+      });
+    } finally {
+      delete (atomicBackend as { promptAndWaitForOutput?: unknown }).promptAndWaitForOutput;
+    }
+  });
+
+  test("prompt returns JSON when the route body cap is exceeded", async () => {
+    const res = await post("/api/session-control/prompt", {
+      session: "wolf-1",
+      prompt: "x".repeat(SESSION_PROMPT_MAX_REQUEST_BODY_BYTES),
+      outputContains: "READY",
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "request body too large" });
+  });
+
+  test("prompt returns stable non-match outcomes without HTTP error prose", async () => {
+    const atomicBackend = mockBackend as unknown as {
+      promptAndWaitForOutput: () => Promise<unknown>;
+    };
+    atomicBackend.promptAndWaitForOutput = async () => ({
+      outcome: "target_exited",
+      outputBoundarySeq: "9",
+    });
+    try {
+      const res = await post("/api/session-control/prompt", {
+        session: "mock:wolf-1",
+        prompt: "run",
+        outputContains: "READY",
+        timeoutMs: 100,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: false,
+        session: "wolf-1",
+        sessionId: "mock:wolf-1",
+        outcome: "target_exited",
+        outputBoundarySeq: "9",
+      });
+    } finally {
+      delete (atomicBackend as { promptAndWaitForOutput?: unknown }).promptAndWaitForOutput;
+    }
   });
 });
 
@@ -1616,6 +1855,41 @@ async function resetSettingsToDefaults() {
   await post("/api/settings", { agentCmd: "shell" });
 }
 
+describe("GET /api/providers", () => {
+  test("reports allowlisted provider readiness without probing user commands", async () => {
+    const providerBin = join(TEST_DEV_DIR, "provider-bin");
+    mkdirSync(providerBin, { recursive: true });
+    const codexBin = join(providerBin, "codex");
+    writeFileSync(codexBin, "#!/bin/sh\nprintf 'codex-cli 7.6.5\\n'\n");
+    chmodSync(codexBin, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = providerBin;
+    try {
+      const res = await get("/api/providers");
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.providers).toHaveLength(5);
+      expect(data.providers.find((provider: { id: string }) => provider.id === "codex")).toEqual({
+        id: "codex",
+        displayName: "Codex",
+        command: "codex",
+        status: "installed",
+        executablePath: codexBin,
+        version: "codex-cli 7.6.5",
+        authStatus: "unknown",
+        loginCommand: "codex login",
+      });
+      expect(data.providers.find((provider: { id: string }) => provider.id === "claude")).toMatchObject({
+        status: "missing",
+        installGuidance: "npm install -g @anthropic-ai/claude-code",
+      });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+  });
+});
+
 describe("GET /api/settings", () => {
   beforeEach(async () => { await resetSettingsToDefaults(); });
 
@@ -1635,6 +1909,7 @@ describe("GET /api/settings", () => {
     const data = await (await get("/api/settings")).json();
     expect(data.presets).toBeUndefined();
   });
+
 });
 
 describe("POST /api/settings — addCmd", () => {
@@ -1683,6 +1958,12 @@ describe("POST /api/settings — removeCmd", () => {
     expect(cmdNames).not.toContain("throwaway");
   });
 
+  test("allows removing shell", async () => {
+    const res = await post("/api/settings", { removeCmd: "shell" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).settings.cmds).not.toContainEqual({ cmd: "shell", enabled: true });
+  });
+
   test("removing the current agentCmd falls through to first enabled", async () => {
     await post("/api/settings", { agentCmd: "claude" });
     const res = await post("/api/settings", { removeCmd: "claude" });
@@ -1702,6 +1983,12 @@ describe("POST /api/settings — setCmdEnabled", () => {
     const claude = data.settings.cmds.find((c: { cmd: string }) => c.cmd === "claude");
     expect(claude.enabled).toBe(false);
     expect(data.effective.cmds).not.toContain("claude");
+  });
+
+  test("allows disabling shell", async () => {
+    const res = await post("/api/settings", { setCmdEnabled: { cmd: "shell", enabled: false } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).settings.cmds).toContainEqual({ cmd: "shell", enabled: false });
   });
 
   test("disabling all cmds → effective.cmds is [\"shell\"] fallback", async () => {
@@ -1949,6 +2236,7 @@ describe("JSON body shape validation", () => {
       "/api/settings",
       "/api/kill",
       "/api/session-control/send",
+      "/api/session-control/prompt",
       "/api/session-control/wait",
       "/api/resize",
       "/api/ralph/start",

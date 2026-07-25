@@ -69,6 +69,7 @@ D("BrokerBackend ↔ real broker", () => {
 
   const SESSION = "ralph-it-shell";
   const PROMPT_SESSION = "ralph-it-prompt";
+  const ATOMIC_SESSION = "ralph-it-atomic-prompt";
   const MARKER = `WOLFPACK_MARKER_${process.pid}_${Math.random().toString(36).slice(2, 10)}`;
 
   beforeAll(async () => {
@@ -123,6 +124,7 @@ D("BrokerBackend ↔ real broker", () => {
       if (backend) {
         try { await backend!.killSession(SESSION); } catch { /* swallow */ }
         try { await backend!.killSession(PROMPT_SESSION); } catch { /* swallow */ }
+        try { await backend!.killSession(ATOMIC_SESSION); } catch { /* swallow */ }
       }
     } catch { /* swallow */ }
     try { client?.close(); } catch { /* swallow */ }
@@ -193,6 +195,40 @@ D("BrokerBackend ↔ real broker", () => {
       await wait(100);
     }
     expect(lastSnap).toContain(MARKER);
+  }, 15_000);
+
+  test("atomic prompt observes output emitted immediately after broker input", async () => {
+    const identity = await backend!.createSession(
+      ATOMIC_SESSION,
+      tmpdir,
+      "shell",
+      () => ({ agentCmd: "shell" }),
+    );
+    await wait(300);
+    await backend!.send(ATOMIC_SESSION, "stty -echo");
+    await wait(100);
+    const marker = `ATOMIC_OUTPUT_${process.pid}`;
+
+    const outcome = await (backend! as unknown as {
+      promptAndWaitForOutput: (
+        sessionId: string,
+        options: {
+          readonly prompt: string;
+          readonly outputContains: string;
+          readonly noEnter: boolean;
+          readonly timeoutMs: number;
+        },
+      ) => Promise<{ readonly outcome: string; readonly outputBoundarySeq: string }>;
+    }).promptAndWaitForOutput(identity.wolfpackSessionId, {
+      prompt: `printf '${marker}\\n'`,
+      outputContains: marker,
+      noEnter: false,
+      timeoutMs: 5_000,
+    });
+
+    expect(outcome.outcome).toBe("matched");
+    expect(BigInt(outcome.outputBoundarySeq)).toBeGreaterThanOrEqual(0n);
+    await backend!.killSession(ATOMIC_SESSION);
   }, 15_000);
 
   test("resize changes broker-tracked dimensions without disturbing the session", async () => {
