@@ -58,6 +58,14 @@ import {
 } from "../src/terminal-layout-stable-debug";
 import { AGENT_KIND } from "../src/agent-kind";
 import { sessionRuntimeUi } from "../src/agent-runtime-ui";
+import {
+  delegationChildSummaryText,
+  projectDelegationSessions,
+} from "./delegation-sessions";
+import type {
+  DelegationSessionLike,
+  DelegationSessionRow,
+} from "./delegation-sessions";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 
@@ -2778,68 +2786,42 @@ function triageUi(session): ReturnType<typeof sessionRuntimeUi> {
   return sessionRuntimeUi(session && typeof session === "object" ? session : { triage: session });
 }
 
-interface SessionParentReference {
-  readonly wolfpackSessionId: string;
-  readonly wolfpackSessionName: string;
-}
-
-function sessionIdentityId(session): string | null {
-  const id = session?.identity?.wolfpackSessionId;
-  return typeof id === "string" && id ? id : null;
-}
-
-function sessionParentReference(session): SessionParentReference | null {
-  const parent = session?.identity?.parentSession;
-  if (!parent || typeof parent !== "object") return null;
-  if (typeof parent.wolfpackSessionId !== "string" || !parent.wolfpackSessionId) return null;
-  if (typeof parent.wolfpackSessionName !== "string" || !parent.wolfpackSessionName) return null;
-  return parent;
-}
-
-function groupSessionsByParent(sessions) {
-  const sessionIds = new Set(sessions.map(sessionIdentityId).filter(Boolean));
-  const children = new Map();
-  const roots = [];
-  for (const session of sessions) {
-    const parent = sessionParentReference(session);
-    if (!parent || !sessionIds.has(parent.wolfpackSessionId)) {
-      roots.push(session);
-      continue;
-    }
-    const siblings = children.get(parent.wolfpackSessionId) || [];
-    siblings.push(session);
-    children.set(parent.wolfpackSessionId, siblings);
-  }
-  for (const siblings of children.values()) {
-    siblings.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  }
-
-  const ordered = [];
-  const visited = new Set();
-  const appendTree = (session) => {
-    const id = sessionIdentityId(session);
-    const visitKey = id || session;
-    if (visited.has(visitKey)) return;
-    visited.add(visitKey);
-    ordered.push(session);
-    if (!id) return;
-    for (const child of children.get(id) || []) appendTree(child);
-  };
-  for (const root of roots) appendTree(root);
-  for (const session of sessions) appendTree(session);
-  return ordered;
-}
-
-function subSessionCardAttributes(session, sessions): { readonly className: string; readonly dataAttribute: string } {
-  const parent = sessionParentReference(session);
-  const parentIsActive = parent && sessions.some(
-    (candidate) => sessionIdentityId(candidate) === parent.wolfpackSessionId,
-  );
-  if (!parent || !parentIsActive) return { className: "", dataAttribute: "" };
+function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLike>): { readonly className: string; readonly dataAttribute: string } {
+  const classes: string[] = [];
+  if (row.childSummary) classes.push("delegation-parent-card");
+  if (row.role === "child") classes.push("sub-session-card");
+  if (row.role === "orphan") classes.push("orphan-session-card");
+  const dataAttribute = row.parent
+    ? ` data-parent-session="${esc(row.parent.wolfpackSessionName)}"`
+    : "";
   return {
-    className: " sub-session-card",
-    dataAttribute: ` data-parent-session="${escAttr(parent.wolfpackSessionName)}"`,
+    className: classes.length ? " " + classes.join(" ") : "",
+    dataAttribute,
   };
+}
+
+function delegationParentSummaryHtml(row: DelegationSessionRow<DelegationSessionLike>): string {
+  if (!row.childSummary) return "";
+  return `<div class="delegation-summary">${esc(delegationChildSummaryText(row.childSummary))}</div>`;
+}
+
+function delegationParentJumpHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): string {
+  if (row.role === "child" && row.parent) {
+    const machineAttribute = machineUrl ? ` data-machine-url="${esc(machineUrl)}"` : "";
+    return `<button class="delegation-parent-link" data-parent-session="${esc(row.parent.wolfpackSessionName)}"${machineAttribute} onclick="openDelegationParent(event)">parent: ${esc(row.parent.wolfpackSessionName)}</button>`;
+  }
+  if (row.role === "orphan" && row.parent) {
+    return `<div class="delegation-parent-missing">missing parent: ${esc(row.parent.wolfpackSessionName)}</div>`;
+  }
+  return "";
+}
+
+function openDelegationParent(event: MouseEvent): void {
+  event.stopPropagation();
+  const target = event.currentTarget as HTMLElement | null;
+  const parentSession = target?.dataset.parentSession;
+  if (!parentSession) return;
+  void openSession(parentSession, target.dataset.machineUrl || undefined);
 }
 
 // Shared session groups cache for switcher reuse
@@ -2856,15 +2838,18 @@ function renderMachineGroupHtml(g, multiMachine) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
     if (g.sessions.length) {
-      html += groupSessionsByParent(g.sessions).map((s, i) => {
+      html += projectDelegationSessions(g.sessions).map((row, i) => {
+        const s = row.session;
         const lastLine = s.lastLine || "";
         const ui = triageUi(s);
         const anim = state.firstLoad ? "animate-in" : "";
-        const grouping = subSessionCardAttributes(s, g.sessions);
+        const grouping = delegationCardAttributes(row);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
             <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
+            ${delegationParentSummaryHtml(row)}
+            ${delegationParentJumpHtml(row, g.machine.url || "")}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -4874,7 +4859,7 @@ function _renderSidebarNow() {
     const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div><button class="machine-ralph-btn" onclick="showRalphStart()">&#129355;</button></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
-      html += groupSessionsByParent(g.sessions).map(s => sidebarCardHtml(s, "", g.sessions)).join("");
+      html += projectDelegationSessions(g.sessions).map(row => sidebarCardHtml(row, "")).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
@@ -4891,7 +4876,7 @@ function _renderSidebarNow() {
       html += `<div class="machine-group" data-machine="${mUrl}">`;
       html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${escAttr(g.machine.url)}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += groupSessionsByParent(g.sessions).map(s => sidebarCardHtml(s, g.machine.url, g.sessions)).join("");
+        html += projectDelegationSessions(g.sessions).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -4909,29 +4894,33 @@ function _renderSidebarNow() {
   el.innerHTML = html;
 }
 
-function sidebarCardHtml(s, machineUrl, sessions) {
+function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
+  const s = row.session;
+  const machineUrlAttr = escAttr(machineUrl);
   const lastLine = s.lastLine || "";
   const ui = triageUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
   const onclick = machineUrl
-    ? `openSession('${escAttr(s.name)}', '${escAttr(machineUrl)}')`
+    ? `openSession('${escAttr(s.name)}', '${machineUrlAttr}')`
     : `openSession('${escAttr(s.name)}')`;
   const gridBtnOnclick = machineUrl
-    ? `toggleGrid('${escAttr(s.name)}', '${escAttr(machineUrl)}', event)`
+    ? `toggleGrid('${escAttr(s.name)}', '${machineUrlAttr}', event)`
     : `toggleGrid('${escAttr(s.name)}', '', event)`;
   const gridBtn = `<button class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${inGrid ? 'Remove from grid' : 'Add to grid'}">${inGrid ? '⊠' : '+'}</button>`;
-  const grouping = subSessionCardAttributes(s, sessions);
+  const grouping = delegationCardAttributes(row);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute} onclick="${onclick}">
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
+      ${delegationParentSummaryHtml(row)}
+      ${delegationParentJumpHtml(row, machineUrl)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
-    <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + escAttr(machineUrl) + "'" : ''})">&times;</button>
+    <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + machineUrlAttr + "'" : ''})">&times;</button>
   </div>`;
 }
 
@@ -5228,7 +5217,7 @@ Object.assign(window, {
   // ralph onclick handlers
   openRalphDetail, dismissRalph, cancelRalph, continueRalph, discardRalph, showRalphStart,
   // session/project onclick handlers
-  openSession, killSession, selectProject, showProjectPicker,
+  openSession, openDelegationParent, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
   createSessionWithAgent, deleteCustomCmd, removeMachineUI,
   // agent settings onclick handlers (inline in renderAgentsList)

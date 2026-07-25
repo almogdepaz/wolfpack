@@ -8,6 +8,10 @@ type WolfpackTestWindow = Window & {
   showProjectPicker(machineUrl?: string): void;
   showRalphStart(machineUrl?: string): void;
   showView(name: string): void;
+  state: {
+    currentSession?: string | null;
+    gridSessions: Array<{ readonly session: string; readonly machine?: string }>;
+  };
 };
 
 test.beforeAll(async () => {
@@ -36,16 +40,21 @@ test("desktop groups structured sub-agents directly under their parent", async (
     }),
   });
   const parent = { id: "broker-parent", name: "wolfpack" };
+  const killRequests: unknown[] = [];
+  await page.route("**/api/kill", async (route) => {
+    killRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
   await page.route("**/api/sessions", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         sessions: [
-          { name: "wolfpack", lastLine: "parent", triage: "idle", identity: identity(parent.id, parent.name) },
-          { name: "unrelated", lastLine: "root", triage: "idle", identity: identity("broker-root", "unrelated") },
-          { name: "wolfpack-sub-agent-2", lastLine: "child two", triage: "idle", identity: identity("broker-child-2", "wolfpack-sub-agent-2", parent) },
-          { name: "wolfpack-sub-agent", lastLine: "child one", triage: "idle", identity: identity("broker-child-1", "wolfpack-sub-agent", parent) },
-          { name: "orphan-child", lastLine: "orphan", triage: "idle", identity: identity("broker-orphan", "orphan-child", { id: "missing-parent", name: "gone" }) },
+          { name: "wolfpack", lastLine: "parent", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity(parent.id, parent.name) },
+          { name: "unrelated", lastLine: "root", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("broker-root", "unrelated") },
+          { name: "wolfpack-sub-agent-2", lastLine: "child two", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("broker-child-2", "wolfpack-sub-agent-2", parent) },
+          { name: "wolfpack-sub-agent", lastLine: "child one", triage: "idle", runtimeState: { state: "needs-input", unseen: true }, identity: identity("broker-child-1", "wolfpack-sub-agent", parent) },
+          { name: "orphan-child", lastLine: "orphan", triage: "idle", runtimeState: { state: "working", unseen: true }, identity: identity("broker-orphan", "orphan-child", { id: "missing-parent", name: "gone <parent> & \"quoted\"" }) },
         ],
       }),
     });
@@ -64,12 +73,77 @@ test("desktop groups structured sub-agents directly under their parent", async (
     "unrelated",
     "orphan-child",
   ]);
+  await expect(cards.nth(0)).toContainText("2 children · 1 needs input · 1 idle");
+  await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
+  await expect(cards.nth(1)).toContainText("parent: wolfpack");
   await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(4)).not.toHaveClass(/sub-session-card/);
-  await expect(cards.nth(4)).not.toHaveAttribute("data-parent-session", /.+/);
+  await expect(cards.nth(4)).toHaveClass(/orphan-session-card/);
+  await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
+  await expect(cards.nth(4).locator("script")).toHaveCount(0);
+
+  await cards.nth(1).click();
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack-sub-agent");
+
+  const childSidebarCard = page.locator("#sidebar-session-list .sub-session-card").first();
+  await childSidebarCard.locator(".delegation-parent-link").click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+
+  await childSidebarCard.locator(".grid-btn").click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as WolfpackTestWindow).state.gridSessions.some((entry) => entry.session === "wolfpack-sub-agent"),
+  )).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+
+  await page.evaluate(() => { window.confirm = () => true; });
+  await childSidebarCard.locator(".kill-btn").click();
+  await expect.poll(() => killRequests).toEqual([{ session: "wolfpack-sub-agent" }]);
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+});
+
+test("desktop delegation parent link encodes active parent names in onclick-safe markup", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation escaping");
+
+  const payload = '" autofocus onfocus=globalThis.__delegationXss=1 x="';
+  const identity = (id: string, name: string, parent?: { id: string; name: string }) => ({
+    wolfpackSessionId: id,
+    wolfpackSessionName: name,
+    projectPath: "/repo/wolfpack",
+    agentKind: "pi",
+    createdAt: "2026-07-15T00:00:00.000Z",
+    updatedAt: "2026-07-15T00:00:00.000Z",
+    ...(parent && {
+      parentSession: {
+        wolfpackSessionId: parent.id,
+        wolfpackSessionName: parent.name,
+      },
+    }),
+  });
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "safe-parent", lastLine: "parent", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("parent-id", "safe-parent") },
+          { name: "child", lastLine: "child", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("child-id", "child", { id: "parent-id", name: payload }) },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+  const parentLink = page.locator("#session-list .delegation-parent-link").first();
+  await expect(parentLink).toBeVisible();
+  await expect(parentLink).not.toHaveAttribute("onfocus", /.+/);
+  await expect(parentLink).toHaveAttribute("data-parent-session", payload);
+
+  await parentLink.focus();
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & { __delegationXss?: unknown }).__delegationXss,
+  )).toBeUndefined();
 });
 
 test("project picker filters fetched projects by typed prefix without refetching", async ({ page }) => {
