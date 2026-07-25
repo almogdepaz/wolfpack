@@ -164,6 +164,34 @@ describe("control api schema compatibility samples", () => {
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
   });
 
+  test("provider readiness publishes the authenticated discriminated response", () => {
+    const operation = httpOperation("listProviderReadiness");
+    const response = httpResponse("listProviderReadiness");
+
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(response, {
+      providers: [
+        {
+          id: "codex",
+          displayName: "Codex",
+          command: "codex",
+          status: "installed",
+          executablePath: "/opt/homebrew/bin/codex",
+          version: "codex-cli 7.6.5",
+          authStatus: "unknown",
+          loginCommand: "codex login",
+        },
+        {
+          id: "gemini",
+          displayName: "Gemini CLI",
+          command: "gemini",
+          status: "missing",
+          installGuidance: "npm install -g @google/gemini-cli",
+        },
+      ],
+    }, artifact)).toEqual([]);
+  });
+
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
     const operation = httpOperation("openSession");
     const request = httpRequest("openSession");

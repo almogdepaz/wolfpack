@@ -20,6 +20,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
+import { detectProviderReadiness } from "../provider-readiness.js";
 import {
   configuredRalphAgents,
   selectConfiguredRalphAgent,
@@ -838,6 +839,11 @@ export const routes: Record<
         code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE,
       }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]);
     }
+  },
+
+  "GET /api/providers": async (_req, res) => {
+    const providers = await detectProviderReadiness({ path: process.env.PATH });
+    json(res, { providers });
   },
 
   "GET /api/settings": async (_req, res) => {
