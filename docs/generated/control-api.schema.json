@@ -719,6 +719,92 @@
         "503 ErrorEnvelope"
       ]
     },
+    "promptSessionAndWaitForOutput": {
+      "route": "POST /api/session-control/prompt",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:promptSessionAndWaitForOutput:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "promptSessionAndWaitForOutput request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionPromptSelector"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          },
+          "outputContains": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "noEnter": {
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600000
+          }
+        },
+        "required": [
+          "session",
+          "prompt",
+          "outputContains"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:promptSessionAndWaitForOutput:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "promptSessionAndWaitForOutput response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "outcome": {
+            "$ref": "#/$defs/SessionPromptOutcome"
+          },
+          "outputBoundarySeq": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "Pre-send broker output sequence boundary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "outcome",
+          "outputBoundarySeq"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "413 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "waitForSessionText": {
       "route": "POST /api/session-control/wait",
       "stable": true,
@@ -1839,6 +1925,22 @@
       "type": "string",
       "description": "Active session name or stable opaque session identifier",
       "minLength": 1
+    },
+    "SessionPromptSelector": {
+      "type": "string",
+      "description": "Active session name or stable opaque session identifier for an atomic prompt",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "SessionPromptOutcome": {
+      "enum": [
+        "matched",
+        "timed_out",
+        "target_exited",
+        "target_unavailable",
+        "replay_gap",
+        "backend_unavailable"
+      ]
     },
     "ProjectName": {
       "type": "string",

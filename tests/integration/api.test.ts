@@ -11,6 +11,12 @@ import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
 } from "../../src/session-open-contract.ts";
+import {
+  SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_SELECTOR_MAX_CHARS,
+} from "../../src/session-prompt-contract.ts";
+import { MAX_INITIAL_PROMPT_LENGTH } from "../../src/validation.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
@@ -1256,6 +1262,139 @@ describe("session control API", () => {
     const data = await res.json();
     expect(data.matched).toBe(false);
   });
+
+  test("prompt resolves once, pins the stable id, and returns the pre-send boundary", async () => {
+    const originalList = mockBackend.list.bind(mockBackend);
+    let listCalls = 0;
+    const calls: unknown[] = [];
+    mockBackend.list = async () => {
+      listCalls++;
+      return originalList();
+    };
+    const atomicBackend = mockBackend as unknown as {
+      promptAndWaitForOutput: (sessionId: string, options: unknown) => Promise<unknown>;
+    };
+    atomicBackend.promptAndWaitForOutput = async (sessionId, options) => {
+      calls.push({ sessionId, options });
+      return { outcome: "matched", outputBoundarySeq: "41" };
+    };
+
+    try {
+      const res = await post("/api/session-control/prompt", {
+        session: "wolf-1",
+        prompt: "run the check",
+        outputContains: "READY",
+        noEnter: false,
+        timeoutMs: 250,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        session: "wolf-1",
+        sessionId: "mock:wolf-1",
+        outcome: "matched",
+        outputBoundarySeq: "41",
+      });
+      expect(listCalls).toBe(1);
+      expect(calls).toEqual([{
+        sessionId: "mock:wolf-1",
+        options: {
+          prompt: "run the check",
+          outputContains: "READY",
+          noEnter: false,
+          timeoutMs: 250,
+        },
+      }]);
+      expect(mockBackend.lastSendArgs).toBeNull();
+    } finally {
+      mockBackend.list = originalList;
+      delete (atomicBackend as { promptAndWaitForOutput?: unknown }).promptAndWaitForOutput;
+    }
+  });
+
+  test("prompt accepts schema maxima through the real body parser", async () => {
+    const session = "s".repeat(SESSION_PROMPT_SELECTOR_MAX_CHARS);
+    const escapedPrompt = "\\u0000".repeat(MAX_INITIAL_PROMPT_LENGTH);
+    const escapedOutput = "\\ud83d\\ude80".repeat(SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS);
+    mockBackend.setSessions([session]);
+    const rawBody = [
+      `{"session":${JSON.stringify(session)},`,
+      `"prompt":"${escapedPrompt}",`,
+      `"outputContains":"${escapedOutput}",`,
+      '"noEnter":false,"timeoutMs":600000}',
+    ].join("");
+    const encodedBytes = Buffer.byteLength(rawBody);
+    expect(encodedBytes).toBeGreaterThan(64 * 1024);
+    expect(encodedBytes).toBeLessThanOrEqual(SESSION_PROMPT_MAX_REQUEST_BODY_BYTES);
+    const atomicBackend = mockBackend as unknown as {
+      promptAndWaitForOutput: (sessionId: string, options: {
+        prompt: string;
+        outputContains: string;
+      }) => Promise<unknown>;
+    };
+    atomicBackend.promptAndWaitForOutput = async (_sessionId, options) => {
+      expect(Array.from(options.prompt)).toHaveLength(MAX_INITIAL_PROMPT_LENGTH);
+      expect(Array.from(options.outputContains)).toHaveLength(SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS);
+      return { outcome: "matched", outputBoundarySeq: "42" };
+    };
+
+    try {
+      const res = await fetch(`${base}/api/session-control/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: rawBody,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        ok: true,
+        outcome: "matched",
+        outputBoundarySeq: "42",
+      });
+    } finally {
+      delete (atomicBackend as { promptAndWaitForOutput?: unknown }).promptAndWaitForOutput;
+    }
+  });
+
+  test("prompt returns JSON when the route body cap is exceeded", async () => {
+    const res = await post("/api/session-control/prompt", {
+      session: "wolf-1",
+      prompt: "x".repeat(SESSION_PROMPT_MAX_REQUEST_BODY_BYTES),
+      outputContains: "READY",
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "request body too large" });
+  });
+
+  test("prompt returns stable non-match outcomes without HTTP error prose", async () => {
+    const atomicBackend = mockBackend as unknown as {
+      promptAndWaitForOutput: () => Promise<unknown>;
+    };
+    atomicBackend.promptAndWaitForOutput = async () => ({
+      outcome: "target_exited",
+      outputBoundarySeq: "9",
+    });
+    try {
+      const res = await post("/api/session-control/prompt", {
+        session: "mock:wolf-1",
+        prompt: "run",
+        outputContains: "READY",
+        timeoutMs: 100,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: false,
+        session: "wolf-1",
+        sessionId: "mock:wolf-1",
+        outcome: "target_exited",
+        outputBoundarySeq: "9",
+      });
+    } finally {
+      delete (atomicBackend as { promptAndWaitForOutput?: unknown }).promptAndWaitForOutput;
+    }
+  });
 });
 
 describe("GET /api/next-session-name", () => {
@@ -1726,6 +1865,7 @@ describe("JSON body shape validation", () => {
       "/api/settings",
       "/api/kill",
       "/api/session-control/send",
+      "/api/session-control/prompt",
       "/api/session-control/wait",
       "/api/resize",
       "/api/ralph/start",

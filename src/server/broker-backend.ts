@@ -30,9 +30,24 @@ import type {
   SessionLifecycleEvent,
   SessionPrefill,
   SessionPrefillOptions,
+  SessionPromptBackendMethods,
 } from "./backend.js";
+import {
+  SESSION_PROMPT_OUTCOME,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_PENDING_OUTPUT_MAX_BYTES,
+  unicodeCodePointLength,
+  unicodeCodePointSuffix,
+} from "../session-prompt-contract.js";
+import type {
+  SessionPromptWaitOptions,
+  SessionPromptWaitResult,
+} from "../session-prompt-contract.js";
+import {
+  BrokerSubscribeError,
+} from "../broker/client.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
-import type { ControlResponse, EventBody } from "../broker/codec.js";
+import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import {
   AGENT_KIND,
@@ -95,6 +110,7 @@ export interface BrokerClientApi {
     sessionId: string,
     opts?: { timeoutMs?: number },
   ): Promise<void>;
+  outputSequence(sessionId: string): bigint | undefined;
 }
 
 /** Tmux-style key names → raw byte sequences (mirrors PtyBackend's KEY_MAP). */
@@ -149,8 +165,19 @@ interface SubscriberRegistration {
   readonly onSubscribeError: (error: unknown) => void;
 }
 
+type SubscriptionReady =
+  | { readonly ok: true; readonly outputBoundarySeq: bigint | undefined }
+  | { readonly ok: false; readonly error: unknown };
+
 interface SubscriberRef {
   readonly subscribers: Set<SubscriberRegistration>;
+  readonly ready: Promise<SubscriptionReady>;
+}
+
+interface SubscriberHandle {
+  readonly ready: Promise<SubscriptionReady>;
+  readonly outputBoundarySeq: bigint | undefined;
+  readonly unsubscribe: () => void;
 }
 
 type LifecycleSubscriber = (event: SessionLifecycleEvent) => void;
@@ -193,7 +220,7 @@ function commandAgent(command: string[] | undefined): string | undefined {
   return detectAgentKindFromCommandArgs(command);
 }
 
-export class BrokerBackend implements SessionBackend, PtyBackendMethods {
+export class BrokerBackend implements SessionBackend, PtyBackendMethods, SessionPromptBackendMethods {
   private readonly client: BrokerClientApi;
   private readonly nameToId = new Map<string, string>();
   private readonly idToInfo = new Map<string, BrokerSessionInfo>();
@@ -434,6 +461,146 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     this.client.writeInput(id, TEXT_ENCODER.encode(payload));
   }
 
+  async promptAndWaitForOutput(
+    sessionId: string,
+    options: SessionPromptWaitOptions,
+  ): Promise<SessionPromptWaitResult> {
+    const info = this.idToInfo.get(sessionId);
+    if (!info?.alive) {
+      return {
+        outcome: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        outputBoundarySeq: null,
+      };
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let bufferCodePoints = 0;
+    let inputSent = false;
+    let settled = false;
+    let boundaryEstablished = false;
+    let effectiveBoundarySeq: bigint | undefined;
+    let outputBoundarySeq: string | null = null;
+    const pendingOutput: OutputBinaryFrame[] = [];
+    let pendingOutputBytes = 0;
+    let resolveTerminal!: (result: SessionPromptWaitResult) => void;
+    const terminal = new Promise<SessionPromptWaitResult>((resolve) => {
+      resolveTerminal = resolve;
+    });
+    const finish = (outcome: SessionPromptWaitResult["outcome"]): void => {
+      if (settled) return;
+      settled = true;
+      resolveTerminal({ outcome, outputBoundarySeq });
+    };
+    const appendOutput = (frame: OutputBinaryFrame): void => {
+      if (effectiveBoundarySeq !== undefined && frame.seq <= effectiveBoundarySeq) return;
+      const decoded = decoder.decode(frame.data, { stream: true });
+      buffer += decoded;
+      bufferCodePoints += unicodeCodePointLength(decoded);
+      if (inputSent && buffer.includes(options.outputContains)) {
+        finish(SESSION_PROMPT_OUTCOME.MATCHED);
+      }
+      if (bufferCodePoints > SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS) {
+        buffer = unicodeCodePointSuffix(buffer, SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS);
+        bufferCodePoints = SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS;
+      }
+    };
+    const queuePendingOutput = (frame: OutputBinaryFrame): void => {
+      if (frame.data.length === 0) return;
+      pendingOutput.push(frame);
+      pendingOutputBytes += frame.data.length;
+      let overflow = pendingOutputBytes - SESSION_PROMPT_PENDING_OUTPUT_MAX_BYTES;
+      while (overflow > 0) {
+        const first = pendingOutput[0];
+        if (!first) break;
+        if (first.data.length <= overflow) {
+          pendingOutput.shift();
+          pendingOutputBytes -= first.data.length;
+          overflow -= first.data.length;
+          continue;
+        }
+        pendingOutput[0] = {
+          ...first,
+          data: first.data.slice(overflow),
+        };
+        pendingOutputBytes -= overflow;
+        overflow = 0;
+      }
+    };
+    const timer = setTimeout(
+      () => finish(SESSION_PROMPT_OUTCOME.TIMED_OUT),
+      options.timeoutMs,
+    );
+    const lifecycleUnsubscribe = this.onSessionLifecycleById(sessionId, (event) => {
+      finish(event.kind === "exited"
+        ? SESSION_PROMPT_OUTCOME.TARGET_EXITED
+        : SESSION_PROMPT_OUTCOME.REPLAY_GAP);
+    });
+    const subscriber = this.registerOutputSubscriber(
+      sessionId,
+      info.name,
+      (frame) => {
+        if (boundaryEstablished) appendOutput(frame);
+        else queuePendingOutput(frame);
+      },
+      (error) => {
+        if (error instanceof BrokerSubscribeError) {
+          if (error.code === "session_not_alive") {
+            finish(SESSION_PROMPT_OUTCOME.TARGET_EXITED);
+            return;
+          }
+          if (error.code === "unknown_session") {
+            finish(SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE);
+            return;
+          }
+        }
+        finish(SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE);
+      },
+    );
+
+    try {
+      const readiness = await Promise.race([
+        subscriber.ready.then((value) => ({ kind: "ready" as const, value })),
+        terminal.then((result) => ({ kind: "terminal" as const, result })),
+      ]);
+      if (readiness.kind === "terminal") return readiness.result;
+      if (!readiness.value.ok) return await terminal;
+
+      for (const candidate of [
+        subscriber.outputBoundarySeq,
+        readiness.value.outputBoundarySeq,
+      ]) {
+        if (
+          candidate !== undefined
+          && (effectiveBoundarySeq === undefined || candidate > effectiveBoundarySeq)
+        ) {
+          effectiveBoundarySeq = candidate;
+        }
+      }
+      outputBoundarySeq = effectiveBoundarySeq?.toString() ?? null;
+      boundaryEstablished = true;
+      for (const pending of pendingOutput) appendOutput(pending);
+      pendingOutput.length = 0;
+      if (settled) return await terminal;
+      try {
+        const input = options.noEnter ? options.prompt : `${options.prompt}\r`;
+        this.client.writeInput(sessionId, TEXT_ENCODER.encode(input));
+      } catch {
+        finish(SESSION_PROMPT_OUTCOME.BACKEND_UNAVAILABLE);
+        return await terminal;
+      }
+      inputSent = true;
+      if (buffer.includes(options.outputContains)) {
+        finish(SESSION_PROMPT_OUTCOME.MATCHED);
+      }
+      return await terminal;
+    } finally {
+      clearTimeout(timer);
+      subscriber.unsubscribe();
+      lifecycleUnsubscribe?.();
+    }
+  }
+
   async sendKey(name: string, key: string): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
@@ -481,43 +648,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   ): (() => void) | null {
     const id = this.nameToId.get(name);
     if (!id) return null;
-    const registration: SubscriberRegistration = {
-      unsubscribeData: this.client.subscribeOutput(id, (frame) => cb(frame.data)),
-      onSubscribeError: opts.onSubscribeError,
-    };
-    let ref = this.subscriberRefs.get(id);
-    if (!ref) {
-      ref = { subscribers: new Set() };
-      this.subscriberRefs.set(id, ref);
-      const pendingRef = ref;
-      this.client.subscribe(id, { sinceSeq: opts.sinceSeq }).catch((error: unknown) => {
-        if (this.subscriberRefs.get(id) !== pendingRef) return;
-        this.subscriberRefs.delete(id);
-        log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(error) });
-        for (const subscriber of pendingRef.subscribers) {
-          try { subscriber.unsubscribeData(); } catch { /* ignore */ }
-          try { subscriber.onSubscribeError(error); } catch (callbackError: unknown) {
-            log.debug("onSubscribeError callback threw", { name, id, error: errMsg(callbackError) });
-          }
-        }
-        pendingRef.subscribers.clear();
-      });
-    }
-    ref.subscribers.add(registration);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      try { registration.unsubscribeData(); } catch { /* swallow - sub teardown must not throw */ }
-      if (this.subscriberRefs.get(id) !== ref) return;
-      ref.subscribers.delete(registration);
-      if (ref.subscribers.size === 0) {
-        this.subscriberRefs.delete(id);
-        this.client.unsubscribe(id).catch((error: unknown) => {
-          log.debug("unsubscribe rpc failed", { name, id, error: errMsg(error) });
-        });
-      }
-    };
+    return this.registerOutputSubscriber(
+      id,
+      name,
+      (frame) => cb(frame.data),
+      opts.onSubscribeError,
+      opts.sinceSeq,
+    ).unsubscribe;
   }
 
   writeToTerminal(name: string, data: Buffer | string): boolean {
@@ -563,6 +700,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
   onSessionLifecycle(name: string, cb: LifecycleSubscriber): (() => void) | null {
     const id = this.nameToId.get(name);
     if (!id) return null;
+    return this.onSessionLifecycleById(id, cb);
+  }
+
+  private onSessionLifecycleById(id: string, cb: LifecycleSubscriber): () => void {
     let set = this.lifecycleSubs.get(id);
     if (!set) {
       set = new Set();
@@ -646,7 +787,96 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods {
     }
   }
 
+  handleResubscribeError(id: string, error: Error): void {
+    const name = this.idToInfo.get(id)?.name ?? id;
+    this.failOutputSubscribers(id, name, error);
+  }
+
   // ── Internals ──
+
+  private registerOutputSubscriber(
+    id: string,
+    name: string,
+    cb: OutputSubscriber,
+    onSubscribeError: (error: unknown) => void,
+    sinceSeq?: bigint,
+  ): SubscriberHandle {
+    const registration: SubscriberRegistration = {
+      unsubscribeData: this.client.subscribeOutput(id, cb),
+      onSubscribeError,
+    };
+    let ref = this.subscriberRefs.get(id);
+    const outputBoundarySeq = ref ? this.client.outputSequence(id) : undefined;
+    if (!ref) {
+      let resolveReady!: (result: SubscriptionReady) => void;
+      const ready = new Promise<SubscriptionReady>((resolve) => {
+        resolveReady = resolve;
+      });
+      ref = { subscribers: new Set(), ready };
+      this.subscriberRefs.set(id, ref);
+      const pendingRef = ref;
+      this.client.subscribe(id, { sinceSeq }).then(
+        (response) => {
+          const currentSeq = (response.payload as Record<string, unknown> | undefined)?.current_seq;
+          resolveReady({
+            ok: true,
+            outputBoundarySeq: typeof currentSeq === "number"
+              && Number.isSafeInteger(currentSeq)
+              && currentSeq >= 0
+              ? BigInt(currentSeq)
+              : this.client.outputSequence(id),
+          });
+        },
+        (error: unknown) => {
+          this.failOutputSubscribers(id, name, error, pendingRef);
+          resolveReady({ ok: false, error });
+        },
+      );
+    }
+    ref.subscribers.add(registration);
+
+    let released = false;
+    return {
+      ready: ref.ready,
+      outputBoundarySeq,
+      unsubscribe: () => {
+        if (released) return;
+        released = true;
+        try { registration.unsubscribeData(); } catch { /* teardown must not throw */ }
+        if (this.subscriberRefs.get(id) !== ref) return;
+        ref.subscribers.delete(registration);
+        if (ref.subscribers.size === 0) {
+          this.subscriberRefs.delete(id);
+          this.client.unsubscribe(id).catch((error: unknown) => {
+            log.debug("unsubscribe rpc failed", { name, id, error: errMsg(error) });
+          });
+        }
+      },
+    };
+  }
+
+  private failOutputSubscribers(
+    id: string,
+    name: string,
+    error: unknown,
+    expectedRef?: SubscriberRef,
+  ): void {
+    const ref = this.subscriberRefs.get(id);
+    if (!ref || (expectedRef && ref !== expectedRef)) return;
+    this.subscriberRefs.delete(id);
+    log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(error) });
+    for (const subscriber of ref.subscribers) {
+      try { subscriber.unsubscribeData(); } catch { /* ignore */ }
+      try { subscriber.onSubscribeError(error); } catch (callbackError: unknown) {
+        log.debug("onSubscribeError callback threw", {
+          name,
+          id,
+          error: errMsg(callbackError),
+        });
+      }
+    }
+    ref.subscribers.clear();
+  }
 
   /**
    * Issue a `snapshot` RPC capped at SNAPSHOT_SCROLLBACK_LINES. Returns

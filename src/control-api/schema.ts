@@ -16,6 +16,12 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import {
+  SESSION_PROMPT_MAX_TIMEOUT_MS,
+  SESSION_PROMPT_OUTCOME,
+  SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+  SESSION_PROMPT_SELECTOR_MAX_CHARS,
+} from "../session-prompt-contract.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -157,6 +163,12 @@ export const controlApiSource: ControlApiSource = {
       ...string("Active session name or stable opaque session identifier"),
       minLength: 1,
     },
+    SessionPromptSelector: {
+      ...string("Active session name or stable opaque session identifier for an atomic prompt"),
+      minLength: 1,
+      maxLength: SESSION_PROMPT_SELECTOR_MAX_CHARS,
+    },
+    SessionPromptOutcome: { enum: Object.values(SESSION_PROMPT_OUTCOME) },
     ProjectName: { type: "string", pattern: "^[a-zA-Z0-9._-]+$" },
     PlanFile: {
       type: "string",
@@ -560,6 +572,38 @@ export const controlApiSource: ControlApiSource = {
         sessionId: ref("SessionId"),
       }, ["ok", "session", "sessionId"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/session-control/prompt": {
+      operationId: "promptSessionAndWaitForOutput",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionPromptSelector"),
+        prompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+        outputContains: {
+          type: "string",
+          minLength: 1,
+          maxLength: SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
+        },
+        noEnter: boolean(),
+        timeoutMs: {
+          type: "integer",
+          minimum: 1,
+          maximum: SESSION_PROMPT_MAX_TIMEOUT_MS,
+        },
+      }, ["session", "prompt", "outputContains"]),
+      response: object({
+        ok: boolean(),
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        outcome: ref("SessionPromptOutcome"),
+        outputBoundarySeq: nullable(string("Pre-send broker output sequence boundary")),
+      }, ["ok", "session", "sessionId", "outcome", "outputBoundarySeq"]),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "413 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/session-control/wait": {
       operationId: "waitForSessionText",

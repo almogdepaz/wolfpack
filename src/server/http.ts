@@ -112,21 +112,44 @@ const MAX_BODY = 64 * 1024;
 const PEER_PROBE_TIMEOUT_MS = 3_000;
 const TAILSCALE_MAX_BUFFER = 10 * 1024 * 1024;
 
-export function readBody(req: IncomingMessage): Promise<string> {
+export class RequestBodyTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`request body exceeds ${maxBytes} bytes`);
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+export function readBody(
+  req: IncomingMessage,
+  maxBytes = MAX_BODY,
+  preserveConnectionOnLimit = false,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (c: Buffer) => {
-      size += c.length;
-      if (size > MAX_BODY) {
-        req.destroy();
-        reject(new Error("body too large"));
+    let settled = false;
+    req.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        settled = true;
+        chunks.length = 0;
+        if (!preserveConnectionOnLimit) req.destroy();
+        reject(new RequestBodyTooLargeError(maxBytes));
         return;
       }
-      chunks.push(c);
+      chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    req.on("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }
 
@@ -135,16 +158,26 @@ export interface InvalidBodyResponse {
   readonly status: number;
 }
 
+export interface ParseBodyOptions {
+  readonly invalidResponse?: InvalidBodyResponse;
+  readonly maxBytes?: number;
+  readonly respondOnTooLarge?: boolean;
+}
+
 export async function parseBody(
   req: IncomingMessage,
   res: ServerResponse,
-  invalidResponse?: InvalidBodyResponse,
+  options: ParseBodyOptions = {},
 ): Promise<unknown | undefined> {
   let rawBody: string;
   try {
-    rawBody = await readBody(req);
-  } catch { /* expected: transport failure or oversized body */
-    json(res, { error: "invalid JSON body" }, 400);
+    rawBody = await readBody(req, options.maxBytes, options.respondOnTooLarge === true);
+  } catch (error: unknown) {
+    if (error instanceof RequestBodyTooLargeError && options.respondOnTooLarge === true) {
+      json(res, { error: "request body too large" }, 413);
+    } else {
+      json(res, { error: "invalid JSON body" }, 400);
+    }
     return undefined;
   }
   try {
@@ -152,8 +185,8 @@ export async function parseBody(
   } catch { /* expected: client sent malformed JSON */
     json(
       res,
-      invalidResponse?.envelope ?? { error: "invalid JSON body" },
-      invalidResponse?.status ?? 400,
+      options.invalidResponse?.envelope ?? { error: "invalid JSON body" },
+      options.invalidResponse?.status ?? 400,
     );
     return undefined;
   }

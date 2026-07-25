@@ -498,6 +498,7 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(subscribed).toEqual([SAMPLE_UUID]);
     expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
     expect(client.activeSubscriptionCount()).toBe(1);
+    expect(client.outputSequence(SAMPLE_UUID)).toBeUndefined();
   });
 
   test("subscribe rejects broker error responses without tracking reconnect state", async () => {
@@ -676,7 +677,7 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(new Set(subscribesByConnection[1])).toEqual(new Set([SAMPLE_UUID, otherUuid]));
   });
 
-  test("reconnect re-subscribe includes last observed since_seq", async () => {
+  test("reconnect resumes after the last delivered frame, not the subscribe watermark", async () => {
     const socketPath = makeSocketPath();
     const server1 = await startMockServer(socketPath);
     activeServer = server1;
@@ -686,7 +687,11 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     server1.onRequest = (req, sock) => {
       server1.send(sock, {
         kind: FRAME_KIND_CONTROL_RESPONSE,
-        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+        value: {
+          id: req.id,
+          status: "ok",
+          payload: { kind: req.method, ok: true, current_seq: 99 },
+        },
       });
     };
 

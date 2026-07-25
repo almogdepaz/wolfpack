@@ -89,6 +89,44 @@ describe("session control cli parsing", () => {
     });
   });
 
+  test("accepts an astral prompt below the Unicode code-point maximum", () => {
+    const prompt = "🚀".repeat(20_000);
+    const parsed = parseSessionCommand([
+      "prompt",
+      "alpha",
+      prompt,
+      "--until",
+      "READY",
+    ]);
+
+    expect(parsed).toMatchObject({ ok: true, action: "prompt", prompt });
+  });
+
+  test("parses one-request prompt and output wait", () => {
+    expect(parseSessionCommand([
+      "prompt",
+      "alpha",
+      "run",
+      "the",
+      "check",
+      "--until",
+      "READY",
+      "--timeout-ms",
+      "250",
+      "--no-enter",
+      "--json",
+    ])).toEqual({
+      ok: true,
+      action: "prompt",
+      session: "alpha",
+      prompt: "run the check",
+      outputContains: "READY",
+      timeoutMs: 250,
+      noEnter: true,
+      output: "json",
+    });
+  });
+
   test("rejects invalid wait timeout", () => {
     const parsed = parseSessionCommand(["wait", "alpha", "ready", "--timeout-ms", "0"]);
     expect(parsed.ok).toBe(false);
@@ -105,6 +143,87 @@ describe("session control cli parsing", () => {
   test("rejects shell output for server-backed commands", () => {
     const parsed = parseSessionCommand(["read", "alpha", "--shell"]);
     expect(parsed.ok).toBe(false);
+  });
+
+  test("prompt performs exactly one server-owned prompt-and-wait request", () => {
+    const script = `
+      const calls = [];
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return Response.json({
+          ok: true,
+          session: "alpha",
+          sessionId: "id-alpha",
+          outcome: "matched",
+          outputBoundarySeq: "12",
+        });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      const code = await runSessionCommand([
+        "prompt", "alpha", "run", "check", "--until", "READY", "--timeout-ms", "250", "--json",
+      ]);
+      const expected = [{
+        url: "http://127.0.0.1:18790/api/session-control/prompt",
+        method: "POST",
+        body: {
+          session: "alpha",
+          prompt: "run check",
+          outputContains: "READY",
+          noEnter: false,
+          timeoutMs: 250,
+        },
+      }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: true,
+      session: "alpha",
+      sessionId: "id-alpha",
+      outcome: "matched",
+      outputBoundarySeq: "12",
+    });
+  });
+
+  test("prompt maps every phase-1 terminal outcome to a stable exit code", () => {
+    const cases = [
+      ["matched", SESSION_EXIT.OK],
+      ["timed_out", SESSION_EXIT.TIMEOUT],
+      ["target_exited", SESSION_EXIT.NOT_FOUND],
+      ["target_unavailable", SESSION_EXIT.NOT_FOUND],
+      ["replay_gap", SESSION_EXIT.GENERAL],
+      ["backend_unavailable", SESSION_EXIT.BACKEND_UNAVAILABLE],
+    ] as const;
+
+    for (const [outcome, expectedExit] of cases) {
+      const script = `
+        globalThis.fetch = async () => Response.json({
+          ok: ${outcome === "matched"},
+          session: "alpha",
+          sessionId: "id-alpha",
+          outcome: ${JSON.stringify(outcome)},
+          outputBoundarySeq: "12",
+        });
+        const { runSessionCommand } = await import("./src/cli/session-control.ts");
+        process.exit(await runSessionCommand(["prompt", "alpha", "run", "--until", "READY", "--json"]));
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: process.cwd(),
+        env: { ...process.env, NO_COLOR: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.exitCode, outcome).toBe(expectedExit);
+      expect(JSON.parse(child.stdout.toString()).outcome).toBe(outcome);
+    }
   });
 
   test("open performs exactly one server-owned session-open request", () => {
