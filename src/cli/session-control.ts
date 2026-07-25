@@ -13,6 +13,13 @@ import {
   SESSION_CREATE_ERROR,
 } from "../session-create-contract.js";
 import type { SessionCreateErrorCode } from "../session-create-contract.js";
+import {
+  isBoundedSessionStatusIdentity,
+  isSessionStatusErrorCode,
+  parseSessionTerminalLiveness,
+  SESSION_STATUS_ERROR_MESSAGE,
+} from "../session-status-contract.js";
+import type { SessionTerminalLiveness } from "../session-status-contract.js";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.js";
 import {
   SESSION_PROMPT_MAX_TIMEOUT_MS,
@@ -399,21 +406,54 @@ function shellQuote(value: string): string {
 }
 
 const SESSION_API_FAILURES: Readonly<Record<number, CliErrorDescriptor & { readonly code: string }>> = {
+  400: { code: "INVALID_REQUEST", message: "invalid request", exitCode: SESSION_EXIT.GENERAL },
   401: { code: "AUTH_REQUIRED", message: "auth required", exitCode: SESSION_EXIT.AUTH },
   404: { code: "SESSION_NOT_FOUND", message: "session not found", exitCode: SESSION_EXIT.NOT_FOUND },
   408: { code: "TIMEOUT", message: "timeout", exitCode: SESSION_EXIT.TIMEOUT },
   409: { code: "AMBIGUOUS_SELECTOR", message: "ambiguous session selector", exitCode: SESSION_EXIT.GENERAL },
+  410: { code: "SESSION_DEAD", message: "session is not alive", exitCode: SESSION_EXIT.NOT_FOUND },
   503: { code: "BACKEND_UNAVAILABLE", message: "backend unavailable", exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE },
 };
+
+function parseStructuredFailure(
+  body: string | undefined,
+  failure: CliErrorDescriptor & { readonly code: string },
+): unknown {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const envelope = parsed as Record<string, unknown>;
+    if (envelope.ok !== false || !envelope.error || typeof envelope.error !== "object") return undefined;
+    const error = envelope.error as Record<string, unknown>;
+    if (!isSessionStatusErrorCode(error.code) || error.code !== failure.code) return undefined;
+    const terminal = parseSessionTerminalLiveness(envelope.terminal);
+    return {
+      ok: false,
+      ...(isBoundedSessionStatusIdentity(envelope.selector) && { selector: envelope.selector }),
+      ...(isBoundedSessionStatusIdentity(envelope.session) && { session: envelope.session }),
+      ...(isBoundedSessionStatusIdentity(envelope.sessionId) && { sessionId: envelope.sessionId }),
+      ...(terminal && { terminal }),
+      error: {
+        code: error.code,
+        message: SESSION_STATUS_ERROR_MESSAGE[error.code],
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 function mapApiError(e: unknown, output: OutputMode): number {
   const err = e as Partial<ApiError>;
   const failure = SESSION_API_FAILURES[err.status ?? 0] ?? {
     code: "SESSION_COMMAND_FAILED",
-    message: `session command failed: ${err.body ?? String(e)}`,
+    message: "session command failed",
     exitCode: SESSION_EXIT.GENERAL,
   };
-  if (output === "json") jsonOut({ ok: false, error: { code: failure.code, message: failure.message } });
+  const structured = output === "json" ? parseStructuredFailure(err.body, failure) : undefined;
+  if (structured !== undefined) jsonOut(structured);
+  else if (output === "json") jsonOut({ ok: false, error: { code: failure.code, message: failure.message } });
   else print((failure.exitCode === SESSION_EXIT.NOT_FOUND || failure.exitCode === SESSION_EXIT.TIMEOUT)
     ? yellow(failure.message)
     : red(failure.message));
@@ -445,11 +485,15 @@ const SESSION_PROMPT_EXIT: Readonly<Record<SessionPromptOutcome, number>> = {
 
 interface SessionStatusResponse {
   readonly ok: true;
+  readonly selector: string;
   readonly session: string;
   readonly sessionId: string;
   readonly state: "active";
+  readonly project: string;
   readonly projectPath: string;
+  readonly projectDir: string;
   readonly harness: string;
+  readonly terminal: SessionTerminalLiveness;
   readonly parentSession?: {
     readonly session: string;
     readonly sessionId: string;

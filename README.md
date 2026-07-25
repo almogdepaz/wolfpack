@@ -63,7 +63,7 @@ wolfpack uninstall --yes
 ## First five minutes
 
 1. Run the installer.
-2. Choose your projects directory and port.
+2. Choose your projects directory and port. On a fresh install, setup enables `shell` plus supported providers detected on `PATH`; existing agent settings are never overwritten.
 3. Let setup detect your Tailscale hostname and configure `tailscale serve` for HTTPS remote access.
 4. Install the service when prompted if you want Wolfpack to survive login/reboots.
 5. Scan the QR code, open Wolfpack on your phone, then **Add to Home Screen**.
@@ -83,6 +83,7 @@ It is an AI agent terminal orchestrator for developers who need persistent brows
 - **Desktop grid** — view up to 6 terminals side by side.
 - **PWA UX** — install on your home screen, reconnect on drops, receive notifications when sessions need attention.
 - **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
+- **Provider readiness** — First-run setup enables detected supported CLIs; Settings → Agents shows path/version and login guidance and lets you add providers installed later.
 - **Ralph loop** — optional autonomous plan runner. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
 
 ## Agent recipes
@@ -96,6 +97,8 @@ Configure commands in **Settings → Agents**.
 | Claude Code | `claude` |
 | Codex | `codex` |
 | Gemini | `gemini` |
+| Cursor | `cursor` |
+| Pi | `pi` |
 | Custom wrapper | any command on `PATH`, for example `opencode` or `my-agent --flag` |
 
 `cmd` validation intentionally rejects shell metacharacters for session commands. If you need complex setup, put it in a wrapper script on `PATH` and add that command.

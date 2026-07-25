@@ -159,6 +159,7 @@ describe("control api generated schema against runtime responses", () => {
       ["getInfo", await getJson("/api/info")],
       ["listSessions", await getJson("/api/sessions")],
       ["getSettings", await getJson("/api/settings")],
+      ["listProviderReadiness", await getJson("/api/providers")],
       ["createTopLevelSession", await postJson("/api/session-create", {
         project: "wolfpack",
         harness: "pi",

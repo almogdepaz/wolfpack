@@ -356,6 +356,30 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE"
       ]
     },
+    "listProviderReadiness": {
+      "route": "GET /api/providers",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listProviderReadiness:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listProviderReadiness response",
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ProviderReadiness"
+            }
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
     "getSettings": {
       "route": "GET /api/settings",
       "stable": true,
@@ -586,10 +610,11 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "$ref": "#/$defs/SessionStatus"
       },
       "errors": [
-        "400 ErrorEnvelope",
-        "404 ErrorEnvelope",
-        "409 ErrorEnvelope",
-        "503 ErrorEnvelope"
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure"
       ]
     },
     "readSession": {
@@ -2109,6 +2134,85 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       ],
       "additionalProperties": false
     },
+    "ProviderReadiness": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/OpenableHarness"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "status": {
+              "const": "installed"
+            },
+            "executablePath": {
+              "type": "string"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "authStatus": {
+              "const": "unknown"
+            },
+            "loginCommand": {
+              "$ref": "#/$defs/Command"
+            }
+          },
+          "required": [
+            "id",
+            "displayName",
+            "command",
+            "status",
+            "executablePath",
+            "version",
+            "authStatus",
+            "loginCommand"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/OpenableHarness"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "status": {
+              "const": "missing"
+            },
+            "installGuidance": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "displayName",
+            "command",
+            "status",
+            "installGuidance"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "SessionSummary": {
       "type": "object",
       "properties": {
@@ -2148,11 +2252,89 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       ],
       "additionalProperties": false
     },
+    "SessionTerminalStatus": {
+      "enum": [
+        "ready",
+        "dead",
+        "unavailable"
+      ]
+    },
+    "SessionTerminalLiveness": {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "alive": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionTerminalStatus"
+        }
+      },
+      "required": [
+        "exists",
+        "alive",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "SessionStatusFailure": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "selector": {
+          "$ref": "#/$defs/SessionSelector"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "terminal": {
+          "$ref": "#/$defs/SessionTerminalLiveness"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "INVALID_REQUEST",
+                "SESSION_NOT_FOUND",
+                "AMBIGUOUS_SELECTOR",
+                "SESSION_DEAD",
+                "BACKEND_UNAVAILABLE"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 160
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "error"
+      ],
+      "additionalProperties": false
+    },
     "SessionStatus": {
       "type": "object",
       "properties": {
         "ok": {
           "const": true
+        },
+        "selector": {
+          "$ref": "#/$defs/SessionSelector"
         },
         "session": {
           "$ref": "#/$defs/SessionName"
@@ -2163,11 +2345,20 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "state": {
           "const": "active"
         },
+        "project": {
+          "type": "string"
+        },
         "projectPath": {
+          "type": "string"
+        },
+        "projectDir": {
           "type": "string"
         },
         "harness": {
           "type": "string"
+        },
+        "terminal": {
+          "$ref": "#/$defs/SessionTerminalLiveness"
         },
         "parentSession": {
           "$ref": "#/$defs/SessionControlIdentity"
@@ -2175,11 +2366,15 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       },
       "required": [
         "ok",
+        "selector",
         "session",
         "sessionId",
         "state",
+        "project",
         "projectPath",
-        "harness"
+        "projectDir",
+        "harness",
+        "terminal"
       ],
       "additionalProperties": false
     },

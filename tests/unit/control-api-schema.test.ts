@@ -208,6 +208,34 @@ describe("control api schema compatibility samples", () => {
     }
   });
 
+  test("provider readiness publishes the authenticated discriminated response", () => {
+    const operation = httpOperation("listProviderReadiness");
+    const response = httpResponse("listProviderReadiness");
+
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(response, {
+      providers: [
+        {
+          id: "codex",
+          displayName: "Codex",
+          command: "codex",
+          status: "installed",
+          executablePath: "/opt/homebrew/bin/codex",
+          version: "codex-cli 7.6.5",
+          authStatus: "unknown",
+          loginCommand: "codex login",
+        },
+        {
+          id: "gemini",
+          displayName: "Gemini CLI",
+          command: "gemini",
+          status: "missing",
+          installGuidance: "npm install -g @google/gemini-cli",
+        },
+      ],
+    }, artifact)).toEqual([]);
+  });
+
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
     const operation = httpOperation("openSession");
     const request = httpRequest("openSession");
@@ -242,6 +270,41 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).toEqual([]);
   });
 
+  test("session status requires machine-readable preflight fields", () => {
+    const response = httpResponse("getSessionStatus");
+
+    expect(validate(response, {
+      ok: true,
+      session: "wolf-1-sub-agent",
+      sessionId: "broker-child",
+      state: "active",
+      projectPath: "/repo/wolf-1",
+      harness: "pi",
+    }, artifact)).toEqual(expect.arrayContaining([
+      "$.selector is required",
+      "$.project is required",
+      "$.projectDir is required",
+      "$.terminal is required",
+    ]));
+  });
+
+  test("session status publishes one closed failure envelope", () => {
+    const failureSchema = { $ref: "#/$defs/SessionStatusFailure" };
+
+    expect(validate(failureSchema, {
+      ok: false,
+      selector: "dead-agent",
+      session: "dead-agent",
+      sessionId: "broker-dead",
+      terminal: { exists: true, alive: false, status: "dead" },
+      error: { code: "SESSION_DEAD", message: "session is not alive" },
+    }, artifact)).toEqual([]);
+    expect(validate(failureSchema, {
+      ok: false,
+      error: { code: "BROKER_SAID_SOMETHING", message: "unbounded prose" },
+    }, artifact)).not.toEqual([]);
+  });
+
   test("representative http responses satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", { name: "devbox", version: "1.6.6" }],
@@ -265,6 +328,18 @@ describe("control api schema compatibility samples", () => {
       ["getSettings", {
         settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }] },
         effective: { agentCmd: "shell", cmds: ["shell"], ralphAgents: [] },
+      }],
+      ["getSessionStatus", {
+        ok: true,
+        selector: "broker-child",
+        session: "wolf-1-sub-agent",
+        sessionId: "broker-child",
+        state: "active",
+        project: "wolf-1",
+        projectPath: "/repo/wolf-1",
+        projectDir: "/repo/wolf-1",
+        harness: "pi",
+        terminal: { exists: true, alive: true, status: "ready" },
       }],
       ["listRalphLoops", {
         loops: [{

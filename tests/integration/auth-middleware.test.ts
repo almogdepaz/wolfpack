@@ -128,6 +128,7 @@ describe("JWT auth middleware", () => {
       { method: "GET", path: "/api/session-control/list" },
       { method: "GET", path: "/api/session-control/status?session=auth-session" },
       { method: "GET", path: "/api/settings" },
+      { method: "GET", path: "/api/providers" },
       { method: "GET", path: "/api/discover" },
       { method: "GET", path: "/api/ralph" },
       { method: "POST", path: "/api/resize" },

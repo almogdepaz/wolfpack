@@ -56,10 +56,11 @@ wolfpack session read <session-or-id> [--json]
 ```
 
 - `list --json` uses the lightweight `/api/session-control/list` route and returns active structured identities as one JSON envelope, without terminal previews.
-- `status` returns canonical name, stable ID, active state, project path, harness, and optional parent identity. It does not capture terminal output.
+- `status` returns canonical name, stable ID, active state, project path, `projectDir` alias, project name, harness, optional parent identity, and bounded `terminal` liveness (`ready | dead | unavailable`). Dead targets return `SESSION_DEAD`; unknown, ambiguous, and backend-unavailable targets use the same structured failure envelope. It does not capture terminal output.
 - `read` is the explicit full broker-snapshot operation.
 - names remain accepted for humans; automation should retain and use `sessionId` returned by create, spawn, list, or status.
 - selectors that ambiguously match a name and another session's ID fail closed.
+- Pi/agent task layers may use `session status <selector> --json` only as Wolfpack-owned target evidence: selector resolution, broker/session existence, stable identity, project path, harness, and terminal liveness. They must not infer Pi model readiness, task completion, or agent state from Wolfpack status.
 
 ## Send and wait
 

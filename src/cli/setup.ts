@@ -12,12 +12,13 @@ import {
   writeFileSync,
   unlinkSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { printQR } from "../qr.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
   CONFIG_PATH,
+  WOLFPACK_DIR,
   IS_MACOS,
   IS_LINUX,
   hasTTY,
@@ -30,6 +31,7 @@ import {
 } from "./config.js";
 import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
+import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
 
 const log = createLogger("setup");
 
@@ -245,6 +247,18 @@ export async function setup() {
 
   const config: Config = { devDir, port, tailscaleHostname };
   saveConfig(config);
+
+  const initialSettings = initializeProviderSettingsFile({
+    settingsPath: join(WOLFPACK_DIR, "bridge-settings.json"),
+    pathValue: process.env.PATH,
+  });
+  if (initialSettings) {
+    const detectedProviders = initialSettings.cmds.slice(1).map(entry => entry.cmd);
+    const readinessSummary = detectedProviders.length > 0
+      ? `Enabled detected providers: ${detectedProviders.join(", ")}`
+      : "No coding-agent providers detected; enabled shell only";
+    print(dim(`  ${readinessSummary}.`));
+  }
 
   print("");
   print(green("  Setup complete!"));

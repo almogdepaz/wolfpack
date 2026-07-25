@@ -48,6 +48,7 @@ import {
 } from "../broker/client.js";
 import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
 import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
+import type { SessionInspectionResult } from "../session-status-contract.js";
 import {
   AGENT_KIND,
   detectAgentKindFromCommandArgs,
@@ -74,6 +75,7 @@ import type {
   ParentSessionIdentity,
   PublicSessionIdentity,
 } from "./session-identity.js";
+import { resolveSessionSelector } from "./session-selector.js";
 
 const log = createLogger("broker-backend");
 
@@ -234,9 +236,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   // ── SessionBackend ──
 
-  async list(): Promise<string[]> {
+  private async brokerSessions(): Promise<BrokerSessionInfo[]> {
     const payload = unwrap(await this.client.request("list_sessions", {}));
-    const sessions = (payload.sessions as BrokerSessionInfo[] | undefined) ?? [];
+    return (payload.sessions as BrokerSessionInfo[] | undefined) ?? [];
+  }
+
+  async list(): Promise<string[]> {
+    const sessions = await this.brokerSessions();
     const identitySessions: Array<{
       wolfpackSessionId: string;
       wolfpackSessionName: string;
@@ -281,6 +287,44 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       byName[identity.wolfpackSessionName] = toPublicSessionIdentity(identity);
     }
     return byName;
+  }
+
+  async inspectSession(selector: string): Promise<SessionInspectionResult> {
+    const sessions = await this.brokerSessions();
+    const observedAt = new Date(0).toISOString();
+    const identities: Record<string, PublicSessionIdentity> = {};
+    for (const session of sessions) {
+      const parentSession = extractParentSessionFromEnv(session.env);
+      identities[session.name] = {
+        wolfpackSessionId: session.id,
+        wolfpackSessionName: session.name,
+        projectPath: session.cwd,
+        agentKind: inferAgentKind(
+          envValue(session.env, "WOLFPACK_AGENT_KIND") || commandAgent(session.command),
+        ),
+        createdAt: observedAt,
+        updatedAt: observedAt,
+        ...(parentSession && { parentSession }),
+      };
+    }
+    const resolved = resolveSessionSelector(selector, sessions.map(session => session.name), identities);
+    if (!resolved.ok) return resolved;
+    const session = sessions.find(candidate => candidate.id === resolved.identity.wolfpackSessionId);
+    if (!session) return { ok: false, code: "NOT_FOUND" };
+    return {
+      ok: true,
+      session: session.name,
+      sessionId: session.id,
+      projectPath: session.cwd,
+      harness: resolved.identity.agentKind,
+      alive: session.alive,
+      ...(resolved.identity.parentSession && {
+        parentSession: {
+          session: resolved.identity.parentSession.wolfpackSessionName,
+          sessionId: resolved.identity.parentSession.wolfpackSessionId,
+        },
+      }),
+    };
   }
 
   async createSession(
