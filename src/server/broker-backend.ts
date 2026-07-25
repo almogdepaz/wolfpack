@@ -28,6 +28,7 @@ import type {
   SessionBackend,
   SessionLaunchOptions,
   SessionLifecycleEvent,
+  SessionListFact,
   SessionPrefill,
   SessionPrefillOptions,
   SessionPromptBackendMethods,
@@ -242,6 +243,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   async list(): Promise<string[]> {
+    return (await this.listSessionFacts()).filter((fact) => fact.alive).map((fact) => fact.name);
+  }
+
+  async listSessionFacts(): Promise<SessionListFact[]> {
     const sessions = await this.brokerSessions();
     const identitySessions: Array<{
       wolfpackSessionId: string;
@@ -250,23 +255,28 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       agentKind?: AgentKind | string;
       externalAgent?: CaptureSessionIdentityInput["externalAgent"];
       parentSession?: ParentSessionIdentity;
-    }> = [];
+    }> = sessions.map((s) => ({
+      wolfpackSessionId: s.id,
+      wolfpackSessionName: s.name,
+      projectPath: s.cwd,
+      agentKind: inferAgentKind(envValue(s.env, "WOLFPACK_AGENT_KIND") || commandAgent(s.command)),
+      parentSession: extractParentSessionFromEnv(s.env),
+      externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
+    }));
+    const identitiesById = new Map(
+      getSessionIdentityStore().restore(identitySessions).map((identity) => [identity.wolfpackSessionId, toPublicSessionIdentity(identity)]),
+    );
     const liveIds = new Set<string>();
     const liveNames = new Set<string>();
+    const facts: SessionListFact[] = [];
     for (const s of sessions) {
+      const identity = identitiesById.get(s.id);
+      facts.push({ name: s.name, alive: s.alive, ...(identity && { identity }) });
       if (!s.alive) continue;
       this.nameToId.set(s.name, s.id);
       this.idToInfo.set(s.id, { id: s.id, name: s.name, cwd: s.cwd, alive: s.alive });
       liveIds.add(s.id);
       liveNames.add(s.name);
-      identitySessions.push({
-        wolfpackSessionId: s.id,
-        wolfpackSessionName: s.name,
-        projectPath: s.cwd,
-        agentKind: inferAgentKind(envValue(s.env, "WOLFPACK_AGENT_KIND") || commandAgent(s.command)),
-        parentSession: extractParentSessionFromEnv(s.env),
-        externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
-      });
     }
     for (const [name, id] of this.nameToId) {
       if (!liveIds.has(id) || !liveNames.has(name)) this.nameToId.delete(name);
@@ -277,8 +287,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     for (const name of this.triageCache.keys()) {
       if (!liveNames.has(name)) this.triageCache.delete(name);
     }
-    getSessionIdentityStore().restore(identitySessions);
-    return sessions.filter((s) => s.alive).map((s) => s.name);
+    return facts;
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {

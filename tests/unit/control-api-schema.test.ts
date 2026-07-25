@@ -270,6 +270,30 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).toEqual([]);
   });
 
+  test("agent runtime acknowledgement request is typed", () => {
+    expect(validate(httpRequest("ackAgentRuntimeState"), {
+      sessionId: "broker-child",
+      transitionSequence: 3,
+    }, artifact)).toEqual([]);
+    expect(validate(httpResponse("ackAgentRuntimeState"), {
+      ok: true,
+      runtimeState: {
+        state: "needs-input",
+        authority: "lifecycle",
+        freshness: "fresh",
+        source: "ralph-lifecycle",
+        label: "structured lifecycle",
+        stale: false,
+        observedAt: "2026-07-11T00:00:00Z",
+        changedAt: "2026-07-11T00:00:00Z",
+        transitionSequence: 3,
+        acknowledgedAt: "2026-07-11T00:01:00Z",
+        acknowledgedSequence: 3,
+        unseen: false,
+      },
+    }, artifact)).toEqual([]);
+  });
+
   test("session status requires machine-readable preflight fields", () => {
     const response = httpResponse("getSessionStatus");
 
@@ -323,6 +347,18 @@ describe("control api schema compatibility samples", () => {
             wolfpackSessionId: "broker-parent",
             wolfpackSessionName: "wolf-1",
           },
+        },
+        runtimeState: {
+          state: "idle",
+          authority: "fallback",
+          freshness: "fresh",
+          source: "screen-fallback",
+          label: "bounded activity idle",
+          stale: false,
+          observedAt: "2026-07-11T00:00:00Z",
+          changedAt: "2026-07-11T00:00:00Z",
+          transitionSequence: 1,
+          unseen: true,
         },
       }] }],
       ["getSettings", {

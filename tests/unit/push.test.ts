@@ -450,6 +450,21 @@ describe("push: checkSessionTransitions", () => {
     expect(futureGap).toBeGreaterThan(_testing.PUSH_DEBOUNCE_MS);
   });
 
+  test("tracks canonical runtime state ahead of legacy triage", async () => {
+    const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
+    const ep = `https://fcm.googleapis.com/runtime-state-test-${Date.now()}`;
+    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+
+    _testing.prevTriageState.set("agent", "output");
+    checkSessionTransitions([{ name: "agent", triage: "running", runtimeState: { state: "needs-input" } }]);
+
+    expect(_testing.prevTriageState.get("agent")).toBe("needs-input");
+    expect(_testing.lastSessionPushTime.has("agent")).toBe(true);
+
+    removeSubscription(ep);
+  });
+
   test("prunes state for removed sessions", async () => {
     const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
 

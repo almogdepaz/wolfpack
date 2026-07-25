@@ -57,6 +57,7 @@ import {
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
 import { AGENT_KIND } from "../src/agent-kind";
+import { sessionRuntimeUi } from "../src/agent-runtime-ui";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 
@@ -2773,20 +2774,8 @@ function showView(name: string, skipAnimation?: boolean): void {
 
 // ── Sessions ──
 
-const TRIAGE_MAP = {
-  "running":     { dot: "green",  card: "active-session", label: "running", title: "running" },
-  "idle":        { dot: "gray",   card: "idle-session", label: "idle", title: "idle" },
-};
-
-const VALID_TRIAGE = new Set(["running", "idle"]);
-
-function safeTriage(v: string): string {
-  return VALID_TRIAGE.has(v) ? v : "idle";
-}
-
-function triageUi(triage: string | null | undefined): { dot: string; card: string; label: string; title: string } {
-  const key = triage && triage in TRIAGE_MAP ? (triage as keyof typeof TRIAGE_MAP) : "idle";
-  return TRIAGE_MAP[key];
+function triageUi(session): ReturnType<typeof sessionRuntimeUi> {
+  return sessionRuntimeUi(session && typeof session === "object" ? session : { triage: session });
 }
 
 interface SessionParentReference {
@@ -2869,13 +2858,13 @@ function renderMachineGroupHtml(g, multiMachine) {
     if (g.sessions.length) {
       html += groupSessionsByParent(g.sessions).map((s, i) => {
         const lastLine = s.lastLine || "";
-        const ui = triageUi(s.triage);
+        const ui = triageUi(s);
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = subSessionCardAttributes(s, g.sessions);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -4922,7 +4911,7 @@ function _renderSidebarNow() {
 
 function sidebarCardHtml(s, machineUrl, sessions) {
   const lastLine = s.lastLine || "";
-  const ui = triageUi(s.triage);
+  const ui = triageUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
@@ -4938,7 +4927,7 @@ function sidebarCardHtml(s, machineUrl, sessions) {
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${safeTriage(s.triage || "idle")}">${ui.label}</span></div>
+      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}

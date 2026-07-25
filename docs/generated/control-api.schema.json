@@ -82,6 +82,53 @@
       },
       "errors": []
     },
+    "ackAgentRuntimeState": {
+      "route": "POST /api/agent-runtime-state/ack",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:ackAgentRuntimeState:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ackAgentRuntimeState request",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "transitionSequence": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessionId",
+          "transitionSequence"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:ackAgentRuntimeState:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ackAgentRuntimeState response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "runtimeState": {
+            "$ref": "#/$defs/AgentRuntimeState"
+          }
+        },
+        "required": [
+          "ok",
+          "runtimeState"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope"
+      ]
+    },
     "listProjects": {
       "route": "GET /api/projects",
       "stable": true,
@@ -1973,6 +2020,49 @@
         "idle"
       ]
     },
+    "AgentStatusState": {
+      "enum": [
+        "running",
+        "working",
+        "audit",
+        "cleanup",
+        "needs-input",
+        "done",
+        "failed",
+        "stopped",
+        "output",
+        "off",
+        "idle",
+        "unknown"
+      ]
+    },
+    "AgentStatusAuthority": {
+      "enum": [
+        "liveness",
+        "lifecycle",
+        "manifest",
+        "fallback",
+        "identity"
+      ]
+    },
+    "AgentStatusFreshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "missing",
+        "malformed",
+        "unknown"
+      ]
+    },
+    "AgentStatusSource": {
+      "enum": [
+        "broker-liveness",
+        "ralph-lifecycle",
+        "local-manifest",
+        "screen-fallback",
+        "session-identity"
+      ]
+    },
     "ParentSessionIdentity": {
       "type": "object",
       "properties": {
@@ -2131,6 +2221,72 @@
       ],
       "additionalProperties": false
     },
+    "AgentRuntimeState": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/AgentStatusState"
+        },
+        "authority": {
+          "$ref": "#/$defs/AgentStatusAuthority"
+        },
+        "freshness": {
+          "$ref": "#/$defs/AgentStatusFreshness"
+        },
+        "source": {
+          "$ref": "#/$defs/AgentStatusSource"
+        },
+        "label": {
+          "type": "string"
+        },
+        "stale": {
+          "type": "boolean"
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "changedAt": {
+          "type": "string"
+        },
+        "transitionSequence": {
+          "type": "integer"
+        },
+        "acknowledgedAt": {
+          "type": "string"
+        },
+        "acknowledgedSequence": {
+          "type": "integer"
+        },
+        "unseen": {
+          "type": "boolean"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runOrder": {
+          "type": "number"
+        },
+        "signalSequence": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "authority",
+        "freshness",
+        "source",
+        "label",
+        "stale",
+        "observedAt",
+        "changedAt",
+        "transitionSequence",
+        "unseen"
+      ],
+      "additionalProperties": false
+    },
     "ProviderReadiness": {
       "anyOf": [
         {
@@ -2224,6 +2380,9 @@
         },
         "identity": {
           "$ref": "#/$defs/PublicSessionIdentity"
+        },
+        "runtimeState": {
+          "$ref": "#/$defs/AgentRuntimeState"
         }
       },
       "required": [

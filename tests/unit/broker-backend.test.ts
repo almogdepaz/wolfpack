@@ -210,6 +210,25 @@ describe("BrokerBackend.list", () => {
     expect(backend.sessionDir("ghost")).toBeUndefined();
   });
 
+  test("authoritative session facts retain broker-dead rows while list stays live-only", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [
+        sessionInfo({ name: "alive-one", id: SESSION_UUID_1, alive: true }),
+        sessionInfo({ name: "dead-one", id: SESSION_UUID_2, alive: false }),
+      ],
+    }));
+
+    const facts = await backend.listSessionFacts();
+
+    expect(facts).toEqual([
+      expect.objectContaining({ name: "alive-one", alive: true, identity: expect.objectContaining({ wolfpackSessionId: SESSION_UUID_1 }) }),
+      expect.objectContaining({ name: "dead-one", alive: false, identity: expect.objectContaining({ wolfpackSessionId: SESSION_UUID_2 }) }),
+    ]);
+    expect(await backend.list()).toEqual(["alive-one"]);
+    expect(backend.isSessionAlive("alive-one")).toBe(true);
+    expect(backend.isSessionAlive("dead-one")).toBe(false);
+  });
+
   test("prunes stale entries when broker drops a session", async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "alpha", id: SESSION_UUID_1 })],

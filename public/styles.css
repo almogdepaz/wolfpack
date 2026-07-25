@@ -288,8 +288,10 @@ header h1 {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.triage-badge.running { color: var(--accent); background: var(--accent-ghost); }
-.triage-badge.idle { color: var(--text-dim); background: #55555515; }
+.triage-badge.running, .triage-badge.working, .triage-badge.audit, .triage-badge.cleanup, .triage-badge.output { color: var(--accent); background: var(--accent-ghost); }
+.triage-badge.needs-input { color: var(--warning-hot); background: #ff660018; }
+.triage-badge.failed { color: var(--danger); background: #cc333318; }
+.triage-badge.idle, .triage-badge.done, .triage-badge.stopped, .triage-badge.off, .triage-badge.unknown { color: var(--text-dim); background: #55555515; }
 .backend-badge {
   font-size: 8px;
   font-weight: 600;

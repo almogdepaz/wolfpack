@@ -7,6 +7,7 @@
 import type {
   SessionBackend,
   SessionLaunchOptions,
+  SessionListFact,
 } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { SESSION_PROMPT_OUTCOME } from "../session-prompt-contract.js";
@@ -85,6 +86,12 @@ export class MockBackend implements SessionBackend {
 
   async list(): Promise<string[]> {
     return Array.from(this._sessions);
+  }
+
+  async listSessionFacts(): Promise<SessionListFact[]> {
+    const names = await this.list();
+    const identities = await this.listIdentities();
+    return names.map((name) => ({ name, alive: this.isSessionAlive(name), ...(identities[name] && { identity: identities[name] }) }));
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
