@@ -10,6 +10,7 @@ import { createLogger, errMsg } from "../log.js";
 import { defaultBrokerSocketPath } from "../broker/client.js";
 import type { BrokerBackend } from "./broker-backend.js";
 import type { EventBody } from "../broker/codec.js";
+import type { SessionInspectionResult } from "../session-status-contract.js";
 import type {
   AgentKind,
   CaptureSessionIdentityInput,
@@ -55,6 +56,7 @@ export interface SessionLaunchOptions {
 export interface SessionBackend {
   list(): Promise<string[]>;
   listIdentities?(): Promise<Record<string, PublicSessionIdentity>>;
+  inspectSession?(selector: string): Promise<SessionInspectionResult>;
   createSession(
     name: string,
     cwd: string,
@@ -389,6 +391,10 @@ export class BackendRouter implements SessionBackend {
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
     if (!this.broker) return {};
     return this.broker.listIdentities();
+  }
+
+  async inspectSession(selector: string): Promise<SessionInspectionResult> {
+    return this.requireBroker().inspectSession(selector);
   }
 
   async createSession(

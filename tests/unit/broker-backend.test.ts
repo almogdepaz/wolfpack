@@ -211,6 +211,29 @@ describe("BrokerBackend.list", () => {
   });
 });
 
+describe("BrokerBackend.inspectSession", () => {
+  test("resolves a dead session from the broker-authoritative table before active-list filtering", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({
+        name: "dead-agent",
+        id: SESSION_UUID_1,
+        alive: false,
+        cwd: "/tmp/dead-project",
+        env: [["WOLFPACK_AGENT_KIND", "pi"]],
+      })],
+    }));
+
+    expect(await backend.inspectSession(SESSION_UUID_1)).toEqual({
+      ok: true,
+      session: "dead-agent",
+      sessionId: SESSION_UUID_1,
+      projectPath: "/tmp/dead-project",
+      harness: "pi",
+      alive: false,
+    });
+  });
+});
+
 describe("BrokerBackend.createSession", () => {
   test("issues create_session with shell command for 'shell' agent and caches id", async () => {
     client.setHandler("create_session", () => okResp({
