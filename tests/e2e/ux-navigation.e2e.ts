@@ -114,8 +114,19 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack-sub-agent");
 
-  const childSidebarCard = page.locator("#sidebar-session-list .sub-session-card").first();
+  const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
+  const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
+  await expect(childSidebarCards).toHaveCount(0);
+  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents");
+  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toContainText("2 child agents");
+  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  await expect(childSidebarCards).toHaveCount(2);
+  const childSidebarCard = childSidebarCards.first();
   await expect(childSidebarCard.locator(".delegation-parent-link")).toHaveCount(0);
+  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  await expect(childSidebarCards).toHaveCount(0);
+  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  await expect(childSidebarCards).toHaveCount(2);
   await page.locator("#sidebar-session-list .delegation-parent-card").first().click();
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
@@ -183,7 +194,13 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "idle-child",
   ]);
   const sidebarCard = (name: string) => page.locator("#sidebar-session-list .card", { has: page.locator(".card-name", { hasText: name }) }).first();
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
+  await expect(sidebarCard("attention-child")).toHaveCount(0);
+  await expect(sidebarCard("idle-child")).toHaveCount(0);
+  await expect(sidebarCard("delegation-parent").locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents");
+  await sidebarCard("delegation-parent").locator(".delegation-sidebar-toggle").click();
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session))).toEqual([]);

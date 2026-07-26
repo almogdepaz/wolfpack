@@ -66,6 +66,7 @@ import {
   delegationGridMembers,
   delegationRootSession,
   projectDelegationSessions,
+  sessionIdentityId,
 } from "./delegation-sessions";
 import type {
   DelegationSessionLike,
@@ -2818,6 +2819,53 @@ function delegationParentSummaryHtml(row: DelegationSessionRow<DelegationSession
   return `<div class="delegation-summary">${esc(delegationChildSummaryText(row.childSummary))}</div>`;
 }
 
+const expandedSidebarDelegationParents = new Set<string>();
+
+function sidebarDelegationParentKey(machineUrl: string, parentSessionId: string): string {
+  return `${machineUrl}\u001f${parentSessionId}`;
+}
+
+function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): string {
+  if (!row.childSummary) return "";
+  const sessionId = sessionIdentityId(row.session);
+  if (!sessionId) return "";
+  const key = sidebarDelegationParentKey(machineUrl, sessionId);
+  const expanded = expandedSidebarDelegationParents.has(key);
+  const count = row.childSummary.total;
+  const label = `${count} child ${count === 1 ? "agent" : "agents"}`;
+  return `<button class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(label)}" title="${expanded ? "Collapse" : "Expand"} child agents">${expanded ? "▾" : "▸"} ${esc(label)}</button>`;
+}
+
+function visibleSidebarDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
+  const hiddenSessionIds = new Set<string>();
+  const visibleRows: DelegationSessionRow<DelegationSessionLike>[] = [];
+  for (const row of rows) {
+    const sessionId = sessionIdentityId(row.session);
+    const parentId = row.parent?.wolfpackSessionId;
+    const hiddenByAncestor = parentId ? hiddenSessionIds.has(parentId) : false;
+    const hiddenByCollapsedParent = row.role === "child"
+      && parentId !== undefined
+      && !expandedSidebarDelegationParents.has(sidebarDelegationParentKey(machineUrl, parentId));
+    if (hiddenByAncestor || hiddenByCollapsedParent) {
+      if (sessionId) hiddenSessionIds.add(sessionId);
+      continue;
+    }
+    visibleRows.push(row);
+    if (row.childSummary && sessionId && !expandedSidebarDelegationParents.has(sidebarDelegationParentKey(machineUrl, sessionId))) {
+      hiddenSessionIds.add(sessionId);
+    }
+  }
+  return visibleRows;
+}
+
+function toggleSidebarDelegationChildren(key: string, event?: Event): void {
+  event?.stopPropagation();
+  event?.preventDefault();
+  if (expandedSidebarDelegationParents.has(key)) expandedSidebarDelegationParents.delete(key);
+  else expandedSidebarDelegationParents.add(key);
+  renderSidebar();
+}
+
 function delegationParentMissingHtml(row: DelegationSessionRow<DelegationSessionLike>): string {
   if (row.role === "orphan" && row.parent) {
     return `<div class="delegation-parent-missing">missing parent: ${esc(row.parent.wolfpackSessionName)}</div>`;
@@ -5056,7 +5104,7 @@ function _renderSidebarNow() {
     const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div><button class="machine-ralph-btn" onclick="showRalphStart()">&#129355;</button></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
-      html += projectDelegationSessions(g.sessions).map(row => sidebarCardHtml(row, "")).join("");
+      html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), "").map(row => sidebarCardHtml(row, "")).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
@@ -5073,7 +5121,7 @@ function _renderSidebarNow() {
       html += `<div class="machine-group" data-machine="${mUrl}">`;
       html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${escAttr(g.machine.url)}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += projectDelegationSessions(g.sessions).map(row => sidebarCardHtml(row, g.machine.url)).join("");
+        html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -5113,6 +5161,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-name">${esc(s.name)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${delegationParentSummaryHtml(row)}
+      ${sidebarDelegationToggleHtml(row, machineUrl)}
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
@@ -5426,5 +5475,6 @@ Object.assign(window, {
   toggleAgentEnabled, removeAgent, addAgent,
   // grid + view (used by onclick and e2e page.evaluate)
   toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
+  toggleSidebarDelegationChildren,
   loadSessions, showView, state,
 });
