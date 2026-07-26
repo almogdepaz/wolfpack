@@ -1,16 +1,22 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
 
 let srv: TestServer;
 
 type WolfpackTestWindow = Window & {
   openSession(name: string, machineUrl?: string): void;
+  addToGrid(name: string, machineUrl?: string): void;
+  loadSessions(): Promise<void>;
   showProjectPicker(machineUrl?: string): void;
   showRalphStart(machineUrl?: string): void;
   showView(name: string): void;
   state: {
     currentSession?: string | null;
-    gridSessions: Array<{ readonly session: string; readonly machine?: string }>;
+    activeDelegationRoot?: string | null;
+    focusedDelegationSession?: string | null;
+    gridSessions: Array<{ readonly session: string; readonly machine?: string; readonly controller?: unknown }>;
+    preservedGridSessions: Array<{ readonly session: string; readonly machine?: string }>;
+    delegationGridSessions: Array<{ readonly session: string; readonly controller?: unknown }>;
   };
 };
 
@@ -21,6 +27,25 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   srv?.close();
 });
+
+async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>> {
+  const sockets = new Map<string, WebSocketRoute>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    sockets.set(session, ws);
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  return sockets;
+}
 
 test("desktop groups structured sub-agents directly under their parent", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop parent-child session grouping");
@@ -104,6 +129,221 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await childSidebarCard.locator(".kill-btn").click();
   await expect.poll(() => killRequests).toEqual([{ session: "wolfpack-sub-agent" }]);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+});
+
+test("desktop opens and refreshes an ephemeral delegation grid without changing the manual grid", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
+
+  const identity = (id: string, name: string, parent?: { id: string; name: string }) => ({
+    wolfpackSessionId: id,
+    wolfpackSessionName: name,
+    ...(parent && {
+      parentSession: {
+        wolfpackSessionId: parent.id,
+        wolfpackSessionName: parent.name,
+      },
+    }),
+  });
+  const parent = { id: "delegation-parent-id", name: "delegation-parent" };
+  const sockets = await routeHydratedPty(page);
+  let sessions = [
+    { name: "manual-one", lastLine: "manual", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("manual-one-id", "manual-one") },
+    { name: "manual-two", lastLine: "manual", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("manual-two-id", "manual-two") },
+    { name: parent.name, lastLine: "coordinating", triage: "running", runtimeState: { state: "running", unseen: false }, identity: identity(parent.id, parent.name) },
+    { name: "attention-child", lastLine: "waiting", triage: "idle", runtimeState: { state: "needs-input", unseen: true }, identity: identity("attention-child-id", "attention-child", parent) },
+    { name: "idle-child", lastLine: "resting", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("idle-child-id", "idle-child", parent) },
+  ];
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
+  });
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("manual-one"));
+  await expect.poll(() => sockets.has("manual-one")).toBe(true);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).addToGrid("manual-two"));
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session),
+  )).toEqual(["manual-one", "manual-two"]);
+
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("delegation-parent"));
+
+  await expect(page.locator("#delegation-grid-shell")).toBeVisible();
+  await expect(page.locator("#delegation-grid-title")).toHaveText("delegation grid · delegation-parent");
+  await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children · 1 needs input · 1 idle");
+  await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
+    "delegation-parent",
+    "attention-child",
+    "idle-child",
+  ]);
+  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session))).toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
+    "manual-one",
+    "manual-two",
+  ]);
+
+  await page.evaluate(() => {
+    document.querySelector('#delegation-grid-container .grid-cell[data-session="attention-child"]')?.setAttribute("data-stability-marker", "same-cell");
+  });
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).loadSessions());
+  await expect(page.locator('#delegation-grid-container .grid-cell[data-stability-marker="same-cell"]')).toHaveCount(1);
+  await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/transitioning/);
+
+  await page.getByRole("button", { name: "Collapse idle child agents" }).click();
+  await expect(page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"]')).toHaveClass(/collapsed/);
+  await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => {
+    const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "idle-child");
+    return session?.controller == null;
+  })).toBe(true);
+
+  sessions = [
+    ...sessions,
+    { name: "new-child", lastLine: "working", triage: "running", runtimeState: { state: "working", unseen: true }, identity: identity("new-child-id", "new-child", parent) },
+  ];
+  await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
+    "delegation-parent",
+    "attention-child",
+    "new-child",
+    "idle-child",
+  ], { timeout: 7_000 });
+
+  sessions = sessions.filter(session => session.name !== "new-child");
+  await expect(page.locator("#delegation-grid-shell")).toBeVisible();
+  await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
+    "delegation-parent",
+    "attention-child",
+    "idle-child",
+  ], { timeout: 7_000 });
+
+  await page.getByRole("button", { name: "exit grid" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session),
+  )).toEqual(["manual-one", "manual-two"]);
+});
+
+test("desktop direct child focus suspends an active manual grid", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation focus ux");
+
+  const sockets = await routeHydratedPty(page);
+  const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "manual-one", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "manual-one-id", wolfpackSessionName: "manual-one" } },
+          { name: "manual-two", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "manual-two-id", wolfpackSessionName: "manual-two" } },
+          { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
+          { name: "child", triage: "running", runtimeState: { state: "working" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
+        ],
+      }),
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("manual-one"));
+  await expect.poll(() => sockets.has("manual-one")).toBe(true);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).addToGrid("manual-two"));
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session),
+  )).toEqual(["manual-one", "manual-two"]);
+
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("child"));
+
+  await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
+  await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
+  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session))).toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
+    "manual-one",
+    "manual-two",
+  ]);
+});
+
+test("desktop delegation grid focus suspends hidden grid terminals", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
+
+  const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
+          { name: "child", triage: "running", runtimeState: { state: "working" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
+        ],
+      }),
+    });
+  });
+  await page.goto(srv.baseUrl);
+
+  await page.locator("#session-list .delegation-parent-card").click();
+  await page.getByRole("button", { name: "Focus child" }).click();
+
+  await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
+  await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
+  await expect(page.locator("#delegation-grid-container .grid-cell")).toHaveCount(0);
+});
+
+test("desktop delegation grid uses the same isolated terminal gate as manual grid", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
+
+  const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
+          { name: "child", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
+        ],
+      }),
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => {
+    (window as unknown as Window & { createIsolatedGhostty?: unknown; __gridAlert?: string }).createIsolatedGhostty = undefined;
+    window.alert = (message?: string) => { (window as unknown as Window & { __gridAlert?: string }).__gridAlert = message ?? ""; };
+  });
+
+  await page.locator("#session-list .delegation-parent-card").click();
+
+  await expect(page.locator("#delegation-grid-shell")).not.toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as Window & { __gridAlert?: string }).__gridAlert,
+  )).toContain("Grid mode is disabled");
+});
+
+test("desktop opens a child terminal with a return to its parent delegation grid", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation focus ux");
+
+  const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
+          {
+            name: "child",
+            triage: "running",
+            runtimeState: { state: "working" },
+            identity: {
+              wolfpackSessionId: "child-id",
+              wolfpackSessionName: "child",
+              parentSession: parent,
+            },
+          },
+        ],
+      }),
+    });
+  });
+  await page.goto(srv.baseUrl);
+
+  await page.locator("#session-list .sub-session-card").click();
+
+  await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
+  await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
+  await expect(page.locator("#delegation-grid-container .grid-cell")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to delegation grid" }).click();
+  await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText(["parent", "child"]);
 });
 
 test("project picker filters fetched projects by typed prefix without refetching", async ({ page }) => {

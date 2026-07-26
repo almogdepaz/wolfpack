@@ -1488,6 +1488,115 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
   z-index: 5;
 }
 
+/* ── Ephemeral delegation workspace ── */
+.delegation-grid-shell,
+.delegation-focus-return {
+  display: none;
+}
+
+@media (min-width: 769px) {
+  body.delegation-workspace #desktop-grid-container,
+  body.delegation-grid-active #desktop-terminal-container,
+  body.delegation-workspace #input-bar,
+  body.delegation-workspace #cmd-palette,
+  body.delegation-workspace #kb-accessory {
+    display: none !important;
+  }
+  body.delegation-grid-active .delegation-grid-shell {
+    display: flex;
+  }
+  body.delegation-focus-active .delegation-focus-return {
+    display: flex;
+  }
+  .delegation-grid-shell {
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    background: var(--bg-base);
+  }
+  .delegation-grid-header,
+  .delegation-focus-return {
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--accent-muted);
+    background: var(--bg-header-gradient);
+    flex-shrink: 0;
+  }
+  .delegation-grid-heading {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  #delegation-grid-title {
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+    font-size: 11px;
+  }
+  #delegation-grid-summary,
+  #delegation-focus-label {
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .delegation-grid-actions,
+  .delegation-cell-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+  .delegation-grid-actions button,
+  .delegation-cell-actions button,
+  .delegation-focus-return button {
+    padding: 5px 8px;
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+  }
+  .delegation-grid-actions button:hover,
+  .delegation-cell-actions button:hover,
+  .delegation-focus-return button:hover {
+    color: var(--accent);
+    border-color: var(--accent-border);
+    background: var(--accent-subtle);
+  }
+  #delegation-grid-container.active {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+    grid-auto-rows: minmax(220px, 1fr);
+    gap: 3px;
+    padding: 3px;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+  #delegation-grid-container .delegation-grid-cell:first-child {
+    border-color: var(--accent-border);
+  }
+  #delegation-grid-container .grid-cell.collapsed {
+    align-self: start;
+    height: 30px;
+    min-height: 30px;
+  }
+  #delegation-grid-container .grid-cell.collapsed canvas,
+  #delegation-grid-container .grid-cell.collapsed .grid-cell-loading,
+  #delegation-grid-container .grid-cell.collapsed .viewer-conflict-overlay {
+    display: none !important;
+  }
+  #delegation-grid-container .grid-cell.collapsed .grid-cell-header {
+    border-bottom: 0;
+  }
+}
+
 /* ── Multi-terminal grid ── */
 #desktop-grid-container {
   display: none;

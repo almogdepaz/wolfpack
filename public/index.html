@@ -252,6 +252,28 @@
       >
         Reconnecting...
       </div>
+      <div id="delegation-focus-toolbar" class="delegation-focus-return">
+        <button id="delegation-focus-back" type="button">← Back to delegation grid</button>
+        <span id="delegation-focus-label"></span>
+      </div>
+      <section id="delegation-grid-shell" class="delegation-grid-shell" aria-label="Delegation grid">
+        <div class="delegation-grid-header">
+          <div class="delegation-grid-heading">
+            <div class="flex-row">
+              <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
+              <strong id="delegation-grid-title">delegation grid</strong>
+            </div>
+            <span id="delegation-grid-summary"></span>
+          </div>
+          <div class="delegation-grid-actions">
+            <button id="delegation-collapse-idle" type="button" aria-label="Collapse idle child agents">collapse idle</button>
+            <button id="delegation-expand-all" type="button">expand all</button>
+            <button id="delegation-focus-parent" type="button">focus parent</button>
+            <button id="delegation-exit-grid" type="button">exit grid</button>
+          </div>
+        </div>
+        <div id="delegation-grid-container"></div>
+      </section>
       <div id="desktop-terminal-container"></div>
       <div id="desktop-grid-container"></div>
       <div id="cmd-palette"></div>

@@ -109,7 +109,7 @@ export function applyTermToXterm() {
     state.terminalController.term.options.fontFamily = fontFamily;
     state.terminalController.resize();
   }
-  for (const gs of state.gridSessions) {
+  for (const gs of [...state.gridSessions, ...state.delegationGridSessions]) {
     if (!gs.controller?.term) continue;
     gs.controller.term.options.fontSize = Math.max(p.fontSize - 2, 10);
     gs.controller.term.options.lineHeight = p.lineHeight;
@@ -295,6 +295,12 @@ export const state = {
   preservedGridFocusIndex: 0,
   gridResizeHandler: null,
   gridRelayoutTransitionId: 0,
+  // Ephemeral delegation workspace. Kept separate from manual gridSessions.
+  activeDelegationRoot: null,
+  focusedDelegationSession: null,
+  delegationMachine: "",
+  delegationGridSessions: [],
+  delegationGridFocusIndex: 0,
   // sidebar state
   sidebarPinned: _initSidebarPinned,
   sidebarCollapsed: !_initSidebarPinned,

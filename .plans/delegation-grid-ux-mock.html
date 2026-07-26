@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wolfpack delegation grid ux mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b10;
+      --panel: #0e131b;
+      --panel-2: #111824;
+      --panel-3: #151e2c;
+      --border: #263247;
+      --border-hot: #3a8cff;
+      --text: #e7edf7;
+      --muted: #8f9db2;
+      --dim: #657287;
+      --accent: #65d8ff;
+      --accent-2: #9d7cff;
+      --green: #7ee787;
+      --yellow: #ffd166;
+      --red: #ff6b7a;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(101, 216, 255, 0.14), transparent 28rem),
+        radial-gradient(circle at bottom right, rgba(157, 124, 255, 0.13), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+    }
+
+    button {
+      color: inherit;
+      font: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: rgba(8, 11, 16, 0.78);
+      backdrop-filter: blur(14px);
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.02em;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 8px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.03);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 0 0 16px;
+    }
+
+    .session-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .session-card {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 15px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
+      text-align: left;
+      cursor: pointer;
+      transition: border-color 140ms, transform 140ms, background 140ms;
+    }
+
+    .session-card:hover,
+    .session-card.active {
+      border-color: var(--border-hot);
+      background: linear-gradient(180deg, rgba(58,140,255,0.16), rgba(101,216,255,0.05));
+      transform: translateY(-1px);
+    }
+
+    .session-card.child {
+      margin-left: 18px;
+      width: calc(100% - 18px);
+      border-left-color: rgba(101, 216, 255, 0.55);
+    }
+
+    .session-topline,
+    .cell-topline,
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .session-name {
+      font-weight: 700;
+      font-size: 14px;
+      word-break: break-word;
+    }
+
+    .session-meta {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid currentColor;
+      background: rgba(255, 255, 255, 0.04);
+      white-space: nowrap;
+    }
+    .needs_input { color: var(--yellow); }
+    .running { color: var(--accent); }
+    .idle { color: var(--green); }
+    .off { color: var(--dim); }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      padding: 18px;
+      gap: 14px;
+    }
+
+    .topbar {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(14, 19, 27, 0.78);
+      box-shadow: var(--shadow);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .title-block h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .title-block p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: rgba(255, 255, 255, 0.045);
+      padding: 8px 10px;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .btn:hover {
+      border-color: var(--border-hot);
+      background: rgba(58, 140, 255, 0.16);
+    }
+
+    .btn.primary {
+      border-color: rgba(101, 216, 255, 0.65);
+      background: rgba(101, 216, 255, 0.13);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 14px;
+      min-height: 0;
+    }
+
+    .terminal-cell {
+      min-height: 260px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .terminal-cell.parent {
+      border-color: rgba(101, 216, 255, 0.54);
+      background: linear-gradient(180deg, rgba(101, 216, 255, 0.07), rgba(14, 19, 27, 0.96));
+    }
+
+    .terminal-cell.collapsed {
+      min-height: 0;
+    }
+
+    .cell-header {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .cell-title {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .cell-title strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 36ch;
+    }
+
+    .cell-actions {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .icon-btn {
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: rgba(255,255,255,0.04);
+      padding: 6px 8px;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .icon-btn:hover {
+      color: var(--text);
+      border-color: var(--border-hot);
+    }
+
+    .terminal {
+      flex: 1;
+      padding: 12px;
+      background: #05070a;
+      font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #c9d7eb;
+      overflow: hidden;
+      white-space: pre-wrap;
+    }
+
+    .collapsed .terminal { display: none; }
+    .collapsed .cell-header { border-bottom: 0; }
+
+    .prompt { color: var(--accent); }
+    .warn { color: var(--yellow); }
+    .ok { color: var(--green); }
+    .muted { color: var(--dim); }
+
+    .focus-view {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid rgba(101, 216, 255, 0.5);
+      border-radius: 18px;
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .focus-view .terminal {
+      font-size: 14px;
+      overflow: auto;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 60vh;
+      border: 1px dashed var(--border);
+      border-radius: 20px;
+      color: var(--muted);
+      text-align: center;
+      padding: 30px;
+    }
+
+    .timeline {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .mini-tab {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: rgba(255,255,255,0.03);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .mini-tab.active {
+      color: var(--text);
+      border-color: var(--border-hot);
+      background: rgba(58,140,255,0.15);
+    }
+
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+      .main { padding: 12px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>wolfpack</h1>
+        <span class="pill">ux mock</span>
+      </div>
+      <p class="hint">click the parent session to open an ephemeral delegation grid. click a child to focus it directly. use focus/back/collapse controls to feel the flow.</p>
+      <div id="sessionList" class="session-list"></div>
+    </aside>
+    <main class="main">
+      <section id="view"></section>
+    </main>
+  </div>
+
+  <script>
+    const sessions = [
+      {
+        id: "parent-1",
+        name: "wolfpack",
+        role: "parent",
+        status: "needs_input",
+        summary: "4 children · 1 needs input · 1 running · 2 idle",
+        preview: "review requested: decide delegation grid behavior",
+        terminal: [
+          ["prompt", "pi@wolfpack"], " user asked for a delegation workspace mock",
+          ["ok", "✓"], " issue #200 graph landed; next is grid-first UX",
+          ["warn", "!"], " child 200-review needs input on focus behavior",
+          ["muted", "…"], " parent remains visible while children stream below"
+        ]
+      },
+      {
+        id: "child-impl",
+        parentId: "parent-1",
+        name: "225-grid-implementation",
+        role: "child",
+        status: "running",
+        preview: "building ephemeral grid state model",
+        terminal: [["prompt", "worker"], " implementing view mode: delegation-grid", ["ok", "✓"], " derived members from identity.parentSession", "next: keyboard escape returns to grid"]
+      },
+      {
+        id: "child-review",
+        parentId: "parent-1",
+        name: "225-delivery-review",
+        role: "child",
+        status: "needs_input",
+        preview: "question: should child clicks open grid?",
+        terminal: [["prompt", "reviewer"], " found design ambiguity", ["warn", "?"], " child click probably should focus child, not explode into grid", "waiting for parent decision"]
+      },
+      {
+        id: "child-tests",
+        parentId: "parent-1",
+        name: "225-e2e-tests",
+        role: "child",
+        status: "idle",
+        preview: "drafted playwright scenarios",
+        terminal: [["prompt", "tester"], " scenarios:", "- parent click opens grid", "- focus child fullscreen", "- escape returns to grid", ["ok", "✓"], " no mutation of saved grid"]
+      },
+      {
+        id: "child-docs",
+        parentId: "parent-1",
+        name: "225-docs-polish",
+        role: "child",
+        status: "idle",
+        preview: "idle after summary update",
+        terminal: [["prompt", "docs"], " updated handoff copy", ["ok", "✓"], " collapsed by default because idle"]
+      },
+      {
+        id: "solo",
+        name: "scratch-terminal",
+        role: "solo",
+        status: "idle",
+        preview: "plain session, no subagents",
+        terminal: [["prompt", "scratch"], " normal fullscreen terminal behavior for sessions with no children"]
+      }
+    ];
+
+    const state = {
+      mode: "empty",
+      selectedId: null,
+      rootId: null,
+      focusedId: null,
+      collapsed: new Set(["child-docs"]),
+      extraCount: 0
+    };
+
+    const statusLabel = {
+      needs_input: "needs input",
+      running: "running",
+      idle: "idle",
+      off: "off"
+    };
+
+    function childrenOf(id) {
+      return sessions.filter((session) => session.parentId === id);
+    }
+
+    function rootFor(session) {
+      if (!session.parentId) return session;
+      return sessions.find((candidate) => candidate.id === session.parentId) || session;
+    }
+
+    function gridMembers(rootId) {
+      const root = sessions.find((session) => session.id === rootId);
+      if (!root) return [];
+      const output = [root];
+      const visit = (id) => {
+        for (const child of childrenOf(id)) {
+          output.push(child);
+          visit(child.id);
+        }
+      };
+      visit(root.id);
+      return output;
+    }
+
+    function badge(status) {
+      const span = document.createElement("span");
+      span.className = `badge ${status}`;
+      span.textContent = statusLabel[status] || status;
+      return span;
+    }
+
+    function button(label, className, onClick) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = className || "btn";
+      el.textContent = label;
+      el.addEventListener("click", onClick);
+      return el;
+    }
+
+    function terminalLines(parts) {
+      const frag = document.createDocumentFragment();
+      for (const part of parts) {
+        if (Array.isArray(part)) {
+          const span = document.createElement("span");
+          span.className = part[0];
+          span.textContent = part[1];
+          frag.append(span);
+        } else {
+          frag.append(document.createTextNode(part));
+          frag.append(document.createTextNode("\n"));
+        }
+      }
+      return frag;
+    }
+
+    function openSession(session) {
+      state.selectedId = session.id;
+      const kids = childrenOf(session.id);
+      if (kids.length > 0) {
+        state.mode = "grid";
+        state.rootId = session.id;
+        state.focusedId = null;
+      } else if (session.parentId) {
+        state.mode = "focus";
+        state.rootId = session.parentId;
+        state.focusedId = session.id;
+      } else {
+        state.mode = "focus";
+        state.rootId = session.id;
+        state.focusedId = session.id;
+      }
+      render();
+    }
+
+    function focusSession(id) {
+      state.mode = "focus";
+      state.focusedId = id;
+      state.selectedId = id;
+      render();
+    }
+
+    function returnToGrid() {
+      state.mode = "grid";
+      state.focusedId = null;
+      state.selectedId = state.rootId;
+      render();
+    }
+
+    function renderSidebar() {
+      const list = document.getElementById("sessionList");
+      list.replaceChildren();
+      for (const session of sessions) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = `session-card ${session.parentId ? "child" : ""} ${state.selectedId === session.id ? "active" : ""}`;
+        card.addEventListener("click", () => openSession(session));
+
+        const top = document.createElement("div");
+        top.className = "session-topline";
+        const name = document.createElement("div");
+        name.className = "session-name";
+        name.textContent = session.name;
+        top.append(name, badge(session.status));
+
+        const meta = document.createElement("div");
+        meta.className = "session-meta";
+        meta.textContent = session.summary || session.preview;
+
+        card.append(top, meta);
+        list.append(card);
+      }
+    }
+
+    function renderTopbar(title, subtitle, actions = []) {
+      const topbar = document.createElement("div");
+      topbar.className = "topbar";
+      const titleBlock = document.createElement("div");
+      titleBlock.className = "title-block";
+      const h2 = document.createElement("h2");
+      h2.textContent = title;
+      const p = document.createElement("p");
+      p.textContent = subtitle;
+      titleBlock.append(h2, p);
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "actions";
+      actionWrap.append(...actions);
+      topbar.append(titleBlock, actionWrap);
+      return topbar;
+    }
+
+    function renderCell(session) {
+      const cell = document.createElement("article");
+      cell.className = `terminal-cell ${session.role === "parent" ? "parent" : ""} ${state.collapsed.has(session.id) ? "collapsed" : ""}`;
+
+      const header = document.createElement("header");
+      header.className = "cell-header";
+      const top = document.createElement("div");
+      top.className = "cell-topline";
+      const title = document.createElement("div");
+      title.className = "cell-title";
+      const strong = document.createElement("strong");
+      strong.textContent = session.name;
+      const preview = document.createElement("span");
+      preview.className = "muted";
+      preview.textContent = session.preview;
+      title.append(strong, preview);
+
+      const actions = document.createElement("div");
+      actions.className = "cell-actions";
+      actions.append(
+        badge(session.status),
+        button(state.collapsed.has(session.id) ? "expand" : "collapse", "icon-btn", () => {
+          if (state.collapsed.has(session.id)) state.collapsed.delete(session.id);
+          else state.collapsed.add(session.id);
+          render();
+        }),
+        button("focus", "icon-btn", () => focusSession(session.id))
+      );
+      top.append(title, actions);
+      header.append(top);
+
+      const terminal = document.createElement("div");
+      terminal.className = "terminal";
+      terminal.append(terminalLines(session.terminal));
+      cell.append(header, terminal);
+      return cell;
+    }
+
+    function renderGrid() {
+      const root = sessions.find((session) => session.id === state.rootId) || sessions[0];
+      const members = gridMembers(root.id);
+      const view = document.getElementById("view");
+      view.replaceChildren();
+
+      const topbar = renderTopbar(
+        `delegation grid · ${root.name}`,
+        root.summary || `${members.length - 1} children`,
+        [
+          button("collapse idle", "btn", () => {
+            for (const session of members) if (session.status === "idle") state.collapsed.add(session.id);
+            render();
+          }),
+          button("expand all", "btn", () => {
+            for (const session of members) state.collapsed.delete(session.id);
+            render();
+          }),
+          button("simulate new child", "btn", () => {
+            state.extraCount += 1;
+            const id = `extra-${state.extraCount}`;
+            sessions.push({
+              id,
+              parentId: root.id,
+              name: `225-extra-agent-${state.extraCount}`,
+              role: "child",
+              status: state.extraCount % 2 ? "running" : "idle",
+              preview: "new child appeared from /api/sessions",
+              terminal: [["prompt", "new"], " spawned after grid opened", ["ok", "✓"], " grid membership updates automatically"]
+            });
+            render();
+          }),
+          button("focus parent", "btn primary", () => focusSession(root.id))
+        ]
+      );
+
+      const grid = document.createElement("div");
+      grid.className = "grid";
+      grid.append(...members.map(renderCell));
+      view.append(topbar, grid);
+    }
+
+    function renderFocus() {
+      const session = sessions.find((candidate) => candidate.id === state.focusedId) || sessions[0];
+      const root = rootFor(session);
+      const members = gridMembers(root.id);
+      const view = document.getElementById("view");
+      view.replaceChildren();
+
+      const actions = [];
+      if (members.length > 1) actions.push(button("← back to delegation grid", "btn primary", returnToGrid));
+      if (session.parentId) actions.push(button(`show ${root.name} grid`, "btn", () => {
+        state.rootId = root.id;
+        returnToGrid();
+      }));
+      const topbar = renderTopbar(`focused · ${session.name}`, session.preview, actions);
+
+      const focus = document.createElement("section");
+      focus.className = "focus-view";
+      const header = document.createElement("header");
+      header.className = "cell-header";
+      const line = document.createElement("div");
+      line.className = "cell-topline";
+      const title = document.createElement("div");
+      title.className = "cell-title";
+      const strong = document.createElement("strong");
+      strong.textContent = session.name;
+      const sub = document.createElement("span");
+      sub.className = "muted";
+      sub.textContent = members.length > 1 ? `inside ${root.name} delegation workspace` : "plain terminal";
+      title.append(strong, sub);
+      line.append(title, badge(session.status));
+      header.append(line);
+
+      const tabStrip = document.createElement("div");
+      tabStrip.className = "timeline";
+      for (const member of members) {
+        tabStrip.append(button(member.name, `mini-tab ${member.id === session.id ? "active" : ""}`, () => focusSession(member.id)));
+      }
+      header.append(tabStrip);
+
+      const terminal = document.createElement("div");
+      terminal.className = "terminal";
+      terminal.append(terminalLines(session.terminal));
+      focus.append(header, terminal);
+      view.append(topbar, focus);
+    }
+
+    function renderEmpty() {
+      const view = document.getElementById("view");
+      view.replaceChildren();
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.innerHTML = "<div><h2>pick a session</h2><p>parent opens grid · child opens fullscreen · back returns to grid</p></div>";
+      view.append(empty);
+    }
+
+    function render() {
+      renderSidebar();
+      if (state.mode === "grid") renderGrid();
+      else if (state.mode === "focus") renderFocus();
+      else renderEmpty();
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.mode === "focus" && gridMembers(state.rootId).length > 1) {
+        returnToGrid();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
