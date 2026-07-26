@@ -133,7 +133,7 @@ describe("agent skills", () => {
       expect(content).toContain("fresh agent context");
       expect(content).toContain("wolfpack session create <project>");
       expect(content).toContain("wolfpack agent spawn <project>");
-      expect(content.toLowerCase()).toContain("platform binaries do not install skills");
+      expect(content.toLowerCase()).toContain("platform binaries do not contain skills");
     }
 
     expect(docs).toContain("[ ! -e \"$DEST\" ]");
@@ -141,6 +141,20 @@ describe("agent skills", () => {
     expect(docs).toContain("must be refreshed manually");
     expect(docs).not.toContain("rm -rf");
     expect(docs).not.toContain("ln -sf");
+  });
+
+  test("documents the opt-in Pi extension and skill ownership", () => {
+    const readme = readRepoFile("README.md");
+    const docs = readRepoFile("docs/agent-skills.md");
+
+    for (const content of [readme, docs]) {
+      expect(content).toContain("pi install npm:wolfpack-bridge");
+      expect(content).toContain("pi install npm:@sgtbeatdown/pi-tasks");
+      expect(content).toContain("`wolfpack-tailnet-control`");
+      expect(content).toContain("`wolfpack-pi-task-delegation`");
+      expect(content).toContain("`agent_task_*`");
+      expect(content.toLowerCase()).toContain("opt-in");
+    }
   });
 
   test("standalone install fences succeed once and fail closed on rerun or missing source", () => {
