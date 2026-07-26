@@ -75,6 +75,7 @@ interface OpenSubSessionInput {
   readonly parentSession: string;
   readonly project: string;
   readonly projectDir: string;
+  readonly sessionName?: string;
   readonly initialPrompt?: string;
   readonly notify?: (parent: ParentSessionIdentity, session: string) => void;
 }
@@ -113,12 +114,16 @@ async function readParentState(
 export function chooseSubAgentSessionName(
   parentSession: string,
   existingNames: readonly string[],
+  requestedSessionName?: string,
 ): string {
   const existing = new Set(existingNames);
   for (let number = 1; ; number++) {
-    const suffix = number === 1 ? "-sub-agent" : `-sub-agent-${number}`;
-    const parentPrefix = parentSession.slice(0, MAX_SESSION_NAME_LENGTH - suffix.length);
-    const candidate = `${parentPrefix}${suffix}`;
+    const suffix = requestedSessionName
+      ? (number === 1 ? "" : `-${number}`)
+      : (number === 1 ? "-sub-agent" : `-sub-agent-${number}`);
+    const base = requestedSessionName ?? parentSession;
+    const prefix = base.slice(0, MAX_SESSION_NAME_LENGTH - suffix.length);
+    const candidate = `${prefix}${suffix}`;
     if (!existing.has(candidate)) return candidate;
   }
 }
@@ -131,7 +136,11 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   };
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
-    const session = chooseSubAgentSessionName(input.parentSession, parentState.names);
+    const session = chooseSubAgentSessionName(
+      input.parentSession,
+      parentState.names,
+      input.sessionName,
+    );
     let identity: PublicSessionIdentity;
     try {
       identity = await input.backend.createSession(

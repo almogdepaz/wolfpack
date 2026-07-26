@@ -104,11 +104,11 @@ wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
 For a same-harness child of the current agent:
 
 ```bash
-wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
+wolfpack agent spawn <project> --name 200-implementation --plan .plans/000-task.md --notify-parent --json
 ```
 
-Use `--plan` for plan work and `--prompt-file` for long bespoke instructions;
-avoid pasting full plans or repository policy into the launch command. The
+Use `--name` to pick a short issue/role slug, `--plan` for plan work, and
+`--prompt-file` for long bespoke instructions; avoid pasting full plans or repository policy into the launch command. The
 control skill documents the tailnet/global auth boundary and references
 canonical session-control and identity docs instead of duplicating those
 contracts.

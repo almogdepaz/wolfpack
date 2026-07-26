@@ -20,7 +20,7 @@ import {
   SESSION_STATUS_ERROR_MESSAGE,
 } from "../session-status-contract.js";
 import type { SessionTerminalLiveness } from "../session-status-contract.js";
-import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.js";
+import { isValidSessionName, MAX_INITIAL_PROMPT_LENGTH } from "../validation.js";
 import {
   SESSION_PROMPT_MAX_TIMEOUT_MS,
   SESSION_PROMPT_OUTCOME,
@@ -56,16 +56,16 @@ The optional prompt is passed to the agent harness at process startup.`;
 }
 
 export function sessionOpenUsage(): string {
-  return `Usage: wolfpack session open <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  return `Usage: wolfpack session open <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 
-Deprecated alias for: wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]`;
+Deprecated alias for: wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]`;
 }
 
 export function agentUsage(): string {
   return `Usage: wolfpack agent <command> [options]
 
 Commands:
-  wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
 
 Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
@@ -102,6 +102,7 @@ export type ParsedSessionCommand =
     readonly ok: true;
     readonly action: "open";
     readonly project: string;
+    readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
@@ -121,6 +122,7 @@ export type ParsedAgentCommand =
     readonly ok: true;
     readonly action: "spawn";
     readonly project: string;
+    readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
@@ -212,6 +214,8 @@ const LAUNCH_KNOWN_OPTIONS = new Set([
   "--prompt",
   "--prompt-file",
   "--plan",
+  "--name",
+  "--session-name",
   "--notify-parent",
   "--harness",
   "--message",
@@ -254,6 +258,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   const promptValue = isLaunch ? consumeLaunchValue(args, "--prompt") : null;
   const promptFileValue = isLaunch ? consumeLaunchValue(args, "--prompt-file") : null;
   const planValue = isLaunch ? consumeLaunchValue(args, "--plan") : null;
+  const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
   const notifyParent = isLaunch ? consumeFlag(args, "--notify-parent") : false;
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
@@ -262,6 +267,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const prompt = promptValue ?? undefined;
     const promptFile = promptFileValue ?? undefined;
     const plan = planValue ?? undefined;
+    const sessionName = nameValue ?? undefined;
     const project = args.shift();
     const harness = harnessValue !== null && isOpenableHarness(harnessValue)
       ? harnessValue
@@ -272,12 +278,15 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
         && unicodeCodePointLength(prompt) <= MAX_INITIAL_PROMPT_LENGTH);
     const validPromptFile = promptFileValue === null || Boolean(promptFileValue.trim());
     const validPlan = planValue === null || Boolean(planValue.trim());
+    const validSessionName = action !== "open"
+      || nameValue === null
+      || (Boolean(nameValue.trim()) && isValidSessionName(nameValue));
     const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
     const validHarness = action !== "create"
       || harnessValue === null
       || harness !== undefined;
     const validNotify = action !== "create" || !notifyParent;
-    if (!project || args.length > 0 || !validPrompt || !validPromptSources || !validHarness || !validNotify) {
+    if (!project || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validHarness || !validNotify) {
       return {
         ok: false,
         message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -299,6 +308,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       ok: true,
       action,
       project,
+      ...(sessionName !== undefined && { sessionName }),
       prompt,
       ...(promptFile !== undefined && { promptFile }),
       ...(plan !== undefined && { plan }),
@@ -382,13 +392,14 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]";
+  const usage = "Usage: wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]";
   if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
     ok: true,
     action: "spawn",
     project: parsed.project,
+    ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
     prompt: parsed.prompt,
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
     ...(parsed.plan !== undefined && { plan: parsed.plan }),
@@ -679,6 +690,7 @@ async function materializeInitialPrompt(source: LaunchPromptSource): Promise<str
 async function runSessionOpen(
   parsed: {
     readonly project: string;
+    readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
@@ -699,6 +711,7 @@ async function runSessionOpen(
       body: JSON.stringify({
         project: parsed.project,
         parentSession: context.parentSession,
+        ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
     }) as SessionLaunchResponse;

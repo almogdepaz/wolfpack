@@ -22,13 +22,13 @@ wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--
 ## Spawn a child agent
 
 ```bash
-wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
 - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND` from the current parent agent.
 - resolves the parent through structured broker identity and launches the same supported harness.
-- derives `<parent>-sub-agent`, then numbered names.
+- accepts `--name <session>` for meaningful child names such as `200-security-review`; if omitted, derives `<parent>-sub-agent`, then numbered names.
 - passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
 - `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked.
@@ -42,10 +42,10 @@ wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify
 For plan work, prefer the compact generator:
 
 ```bash
-wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
+wolfpack agent spawn <project> --name 200-implementation --plan .plans/000-task.md --notify-parent --json
 ```
 
-Put durable instructions in the repository plan. Do not duplicate the plan, source inventory, testing policy, and architecture in every launch prompt. For bespoke long text, write it to a file and use `--prompt-file`.
+Put durable instructions in the repository plan. Pick a short issue/role slug for `--name` so the delegation graph stays readable. Do not duplicate the plan, source inventory, testing policy, and architecture in every launch prompt. For bespoke long text, write it to a file and use `--prompt-file`.
 
 ## List and inspect without terminal scraping
 
