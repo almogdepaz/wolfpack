@@ -335,14 +335,16 @@ function isSessionCreateBody(body: Record<string, unknown>): body is SessionCrea
 interface SessionOpenBody extends Record<string, unknown> {
   project: string;
   parentSession: string;
+  sessionName?: string;
   initialPrompt?: string;
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "parentSession", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "parentSession", "sessionName", "initialPrompt"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && typeof body.project === "string"
     && typeof body.parentSession === "string"
+    && hasOptionalType(body, "sessionName", "string")
     && hasOptionalType(body, "initialPrompt", "string");
 }
 
@@ -1065,6 +1067,7 @@ export const routes: Record<
       !isSessionOpenBody(body)
       || !isValidProjectName(body.project)
       || !isValidSessionName(body.parentSession)
+      || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
       || (
         body.initialPrompt !== undefined
         && (!body.initialPrompt.trim()
@@ -1113,6 +1116,7 @@ export const routes: Record<
         parentSession: body.parentSession,
         project: body.project,
         projectDir,
+        sessionName: body.sessionName,
         initialPrompt: body.initialPrompt,
         notify: (parent, session) => {
           notifySubSessionOpened(parent.wolfpackSessionName, session);

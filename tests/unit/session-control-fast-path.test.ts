@@ -40,7 +40,7 @@ describe("session control fast-path parsing", () => {
   test("reports agent-native usage for invalid child-agent spawn", () => {
     expect(parseAgentCommand(["spawn"])).toEqual({
       ok: false,
-      message: "Usage: wolfpack agent spawn <project> [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]",
+      message: "Usage: wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]",
     });
   });
 
@@ -55,6 +55,25 @@ describe("session control fast-path parsing", () => {
       ok: true,
       action: "spawn",
       project: "branchout",
+      prompt: "review the plan",
+      output: "json",
+    });
+  });
+
+  test("parses child-agent spawn with meaningful requested name", () => {
+    expect(parseAgentCommand([
+      "spawn",
+      "branchout",
+      "--name",
+      "issue-200-reviewer",
+      "--prompt",
+      "review the plan",
+      "--json",
+    ])).toEqual({
+      ok: true,
+      action: "spawn",
+      project: "branchout",
+      sessionName: "issue-200-reviewer",
       prompt: "review the plan",
       output: "json",
     });
@@ -173,11 +192,11 @@ describe("session control fast-path requests", () => {
         });
       };
       const { runAgentCommand } = await import("./src/cli/session-control.ts");
-      const code = await runAgentCommand(["spawn", "branchout", "--prompt", "execute the plan", "--json"]);
+      const code = await runAgentCommand(["spawn", "branchout", "--name", "issue-200-reviewer", "--prompt", "execute the plan", "--json"]);
       const expected = [{
         url: "http://127.0.0.1:18790/api/session-open",
         method: "POST",
-        body: { project: "branchout", parentSession: "wolfpack", initialPrompt: "execute the plan" },
+        body: { project: "branchout", parentSession: "wolfpack", sessionName: "issue-200-reviewer", initialPrompt: "execute the plan" },
       }];
       if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
       process.exit(code);

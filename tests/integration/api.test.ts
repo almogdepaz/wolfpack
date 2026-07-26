@@ -1215,6 +1215,55 @@ describe("POST /api/session-open", () => {
     }]);
   });
 
+  test("creates a child with a meaningful requested session name", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+
+    const res = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+      sessionName: "issue-200-reviewer",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "issue-200-reviewer",
+      sessionId: "mock:issue-200-reviewer",
+      project: "my-app",
+      harness: "pi",
+    });
+    expect(mockBackend.lastCreateArgs?.name).toBe("issue-200-reviewer");
+    expect(frames.map((frame) => JSON.parse(frame))).toEqual([{
+      type: "sub_session_opened",
+      parentSession: "wolf-1",
+      session: "issue-200-reviewer",
+    }]);
+  });
+
+  test("allocates a numbered requested child name after a typed stale-name collision", async () => {
+    mockBackend.setOnBeforeCreate((name) => {
+      if (name === "issue-200-reviewer") {
+        mockBackend.setSessions(["wolf-1", "wolf-2", "issue-200-reviewer"]);
+        mockBackend.setOnBeforeCreate(null);
+      }
+    });
+
+    const res = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+      sessionName: "issue-200-reviewer",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "issue-200-reviewer-2",
+      sessionId: "mock:issue-200-reviewer-2",
+      project: "my-app",
+      harness: "pi",
+    });
+  });
+
   test("allocates a numbered child after a typed stale-name collision", async () => {
     mockBackend.setOnBeforeCreate((name) => {
       if (name === "wolf-1-sub-agent") {
@@ -1297,7 +1346,7 @@ describe("POST /api/session-open", () => {
   });
 
   test("strictly rejects unknown fields and client-owned launch overrides", async () => {
-    for (const field of ["unknown", "newProject", "cmd", "sessionName"]) {
+    for (const field of ["unknown", "newProject", "cmd"]) {
       mockBackend.lastCreateArgs = null;
       const res = await post("/api/session-open", {
         project: "my-app",
@@ -1318,6 +1367,7 @@ describe("POST /api/session-open", () => {
       { project: "my-app" },
       { project: "my-app", parentSession: "" },
       { project: "my-app", parentSession: "bad parent" },
+      { project: "my-app", parentSession: "wolf-1", sessionName: "bad session" },
       { project: "my-app", parentSession: 42 },
     ]) {
       mockBackend.lastCreateArgs = null;

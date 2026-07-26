@@ -2805,23 +2805,11 @@ function delegationParentSummaryHtml(row: DelegationSessionRow<DelegationSession
   return `<div class="delegation-summary">${esc(delegationChildSummaryText(row.childSummary))}</div>`;
 }
 
-function delegationParentJumpHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): string {
-  if (row.role === "child" && row.parent) {
-    const machineAttribute = machineUrl ? ` data-machine-url="${esc(machineUrl)}"` : "";
-    return `<button class="delegation-parent-link" data-parent-session="${esc(row.parent.wolfpackSessionName)}"${machineAttribute} onclick="openDelegationParent(event)">parent: ${esc(row.parent.wolfpackSessionName)}</button>`;
-  }
+function delegationParentMissingHtml(row: DelegationSessionRow<DelegationSessionLike>): string {
   if (row.role === "orphan" && row.parent) {
     return `<div class="delegation-parent-missing">missing parent: ${esc(row.parent.wolfpackSessionName)}</div>`;
   }
   return "";
-}
-
-function openDelegationParent(event: MouseEvent): void {
-  event.stopPropagation();
-  const target = event.currentTarget as HTMLElement | null;
-  const parentSession = target?.dataset.parentSession;
-  if (!parentSession) return;
-  void openSession(parentSession, target.dataset.machineUrl || undefined);
 }
 
 // Shared session groups cache for switcher reuse
@@ -2849,7 +2837,7 @@ function renderMachineGroupHtml(g, multiMachine) {
           <div class="card-info">
             <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
             ${delegationParentSummaryHtml(row)}
-            ${delegationParentJumpHtml(row, g.machine.url || "")}
+            ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
@@ -4916,7 +4904,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-name">${esc(s.name)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${delegationParentSummaryHtml(row)}
-      ${delegationParentJumpHtml(row, machineUrl)}
+      ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
@@ -5217,7 +5205,7 @@ Object.assign(window, {
   // ralph onclick handlers
   openRalphDetail, dismissRalph, cancelRalph, continueRalph, discardRalph, showRalphStart,
   // session/project onclick handlers
-  openSession, openDelegationParent, killSession, selectProject, showProjectPicker,
+  openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
   createSessionWithAgent, deleteCustomCmd, removeMachineUI,
   // agent settings onclick handlers (inline in renderAgentsList)

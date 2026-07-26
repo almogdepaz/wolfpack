@@ -77,7 +77,8 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(1)).toContainText("parent: wolfpack");
+  await expect(cards.nth(1)).not.toContainText("parent: wolfpack");
+  await expect(cards.nth(1).locator(".delegation-parent-link")).toHaveCount(0);
   await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
   await expect(cards.nth(4)).toHaveClass(/orphan-session-card/);
@@ -89,7 +90,8 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack-sub-agent");
 
   const childSidebarCard = page.locator("#sidebar-session-list .sub-session-card").first();
-  await childSidebarCard.locator(".delegation-parent-link").click();
+  await expect(childSidebarCard.locator(".delegation-parent-link")).toHaveCount(0);
+  await page.locator("#sidebar-session-list .delegation-parent-card").first().click();
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
   await childSidebarCard.locator(".grid-btn").click();
@@ -102,48 +104,6 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await childSidebarCard.locator(".kill-btn").click();
   await expect.poll(() => killRequests).toEqual([{ session: "wolfpack-sub-agent" }]);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
-});
-
-test("desktop delegation parent link encodes active parent names in onclick-safe markup", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop delegation escaping");
-
-  const payload = '" autofocus onfocus=globalThis.__delegationXss=1 x="';
-  const identity = (id: string, name: string, parent?: { id: string; name: string }) => ({
-    wolfpackSessionId: id,
-    wolfpackSessionName: name,
-    projectPath: "/repo/wolfpack",
-    agentKind: "pi",
-    createdAt: "2026-07-15T00:00:00.000Z",
-    updatedAt: "2026-07-15T00:00:00.000Z",
-    ...(parent && {
-      parentSession: {
-        wolfpackSessionId: parent.id,
-        wolfpackSessionName: parent.name,
-      },
-    }),
-  });
-  await page.route("**/api/sessions", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        sessions: [
-          { name: "safe-parent", lastLine: "parent", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("parent-id", "safe-parent") },
-          { name: "child", lastLine: "child", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("child-id", "child", { id: "parent-id", name: payload }) },
-        ],
-      }),
-    });
-  });
-
-  await page.goto(srv.baseUrl);
-  const parentLink = page.locator("#session-list .delegation-parent-link").first();
-  await expect(parentLink).toBeVisible();
-  await expect(parentLink).not.toHaveAttribute("onfocus", /.+/);
-  await expect(parentLink).toHaveAttribute("data-parent-session", payload);
-
-  await parentLink.focus();
-  await expect.poll(() => page.evaluate(() =>
-    (globalThis as typeof globalThis & { __delegationXss?: unknown }).__delegationXss,
-  )).toBeUndefined();
 });
 
 test("project picker filters fetched projects by typed prefix without refetching", async ({ page }) => {

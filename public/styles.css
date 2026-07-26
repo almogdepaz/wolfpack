@@ -290,24 +290,13 @@ header h1 {
   border-style: dashed;
 }
 .delegation-summary,
-.delegation-parent-missing,
-.delegation-parent-link {
+.delegation-parent-missing {
   margin-top: 3px;
   font-size: 10px;
   line-height: 1.3;
   color: var(--text-dim);
 }
 .delegation-summary { color: var(--accent-muted); }
-.delegation-parent-link {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  color: var(--text-dim);
-}
-.delegation-parent-link:hover { color: var(--accent); }
 .delegation-parent-missing { color: var(--warning-hot); }
 .triage-badge {
   font-size: 9px;
