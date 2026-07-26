@@ -36,4 +36,4 @@ Launched sessions receive these context variables:
 - `WOLFPACK_PARENT_SESSION_ID` and `WOLFPACK_PARENT_SESSION_NAME` for child sessions
 - `WOLFPACK_EXTERNAL_AGENT_ID_FILE`
 
-Delete `$WOLFPACK_DEV_DIR/.wolfpack/session-identities.json` to remove stored identity metadata. This does not delete broker sessions, terminal snapshots, projects, or Ralph state.
+Delete `$WOLFPACK_DEV_DIR/.wolfpack/session-identities.json` to remove stored identity metadata. This does not delete broker sessions, terminal snapshots, or projects.

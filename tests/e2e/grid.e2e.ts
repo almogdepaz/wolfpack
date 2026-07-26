@@ -1,6 +1,6 @@
 /**
  * Desktop grid navigation tests — covers the view-guard and suspend/resume paths
- * added in fix/grid-ralph-view-chaos.
+ * added for grid/navigation regressions.
  *
  * These tests use page.evaluate() to set up grid state directly, since the
  * WS/PTY layer is not fully exercisable in test mode (no real tmux). The goal
@@ -748,16 +748,16 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
 test("addToGrid from non-terminal view switches to terminal view first", async ({ page }) => {
   await loadApp(page);
 
-  // Move to ralph-start view so currentView !== "terminal"
+  // Move to settings view so currentView !== "terminal"
   await page.evaluate(() => {
     // @ts-ignore
-    showView("ralph-start");
+    showView("settings");
   });
   const viewBefore = await page.evaluate(() => {
     // @ts-ignore
     return state.currentView;
   });
-  expect(viewBefore).toBe("ralph-start");
+  expect(viewBefore).toBe("settings");
 
   // Calling addToGrid while NOT on the terminal view should auto-switch
   await page.evaluate(() => {
@@ -835,7 +835,7 @@ test("navigating away from terminal with active grid suspends grid state", async
   // Navigate away → suspendGridMode() should fire
   await page.evaluate(() => {
     // @ts-ignore
-    showView("ralph-start");
+    showView("settings");
   });
 
   const preserved = await page.evaluate(() => {
@@ -853,62 +853,11 @@ test("navigating away from terminal with active grid suspends grid state", async
   expect(liveSessions).toBe(0);
 });
 
-test("backFromRalph restores a suspended grid", async ({ page }) => {
-  await loadApp(page);
-
-  // Pre-seed the preserved grid state (simulates having navigated away earlier)
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.preservedGridSessions = [
-      { session: "test-project", machine: "" },
-      { session: "another-project", machine: "" },
-    ];
-    // @ts-ignore
-    state.preservedGridFocusIndex = 1;
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // Navigate to ralph-detail via showView so the back button display is set
-    // (it's display:none by default; showView toggles inline-block based on
-    // effectiveName). From "sessions" this won't suspend a grid — suspend
-    // only fires when leaving "terminal" with an active grid.
-    // @ts-ignore
-    showView("ralph-detail");
-  });
-
-  // Click the ← Back button in the ralph-detail view
-  const backBtn = page.locator("#ralph-detail-view button.picker-cancel-btn");
-  await expect(backBtn).toBeVisible();
-  await backBtn.click();
-
-  // Should have restored the grid
-  const viewAfter = await page.evaluate(() => {
-    // @ts-ignore
-    return state.currentView;
-  });
-  expect(viewAfter).toBe("terminal");
-
-  const restoredSessions = await page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.map((s: { session: string }) => s.session);
-  });
-  expect(restoredSessions).toContain("test-project");
-  expect(restoredSessions).toContain("another-project");
-
-  // Preserved state should be cleared after restore
-  const preservedAfter = await page.evaluate(() => {
-    // @ts-ignore
-    return state.preservedGridSessions.length;
-  });
-  expect(preservedAfter).toBe(0);
-});
-
-test("re-adding the remaining preserved session from Ralph reinitializes terminal view", async ({ page }) => {
+test("re-adding the remaining preserved session from settings reinitializes terminal view", async ({ page }) => {
   await loadApp(page);
 
   await page.evaluate(() => {
-    // Start on Ralph with a suspended 2-session grid focused on another-project.
+    // Start on settings with a suspended 2-session grid focused on another-project.
     // @ts-ignore
     state.preservedGridSessions = [
       { session: "test-project", machine: "" },
@@ -921,7 +870,7 @@ test("re-adding the remaining preserved session from Ralph reinitializes termina
     // @ts-ignore
     state.currentMachine = "";
     // @ts-ignore
-    showView("ralph-detail");
+    showView("settings");
   });
 
   await page.evaluate(() => {
@@ -932,7 +881,7 @@ test("re-adding the remaining preserved session from Ralph reinitializes termina
   });
 
   await page.evaluate(() => {
-    // Second click re-adds the remaining current session from Ralph.
+    // Second click re-adds the remaining current session from settings.
     // This used to route through switchSession()'s same-session fast path
     // and return without initializing the desktop terminal, leaving a blank view.
     // @ts-ignore

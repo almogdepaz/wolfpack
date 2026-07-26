@@ -83,31 +83,10 @@ export interface AcceptAgentUiManifestUpdateResult {
 
 const BUNDLED_MANIFEST: AgentUiDetectionManifest = {
   schemaVersion: AGENT_UI_MANIFEST_SCHEMA_VERSION,
-  manifestId: "wolfpack.ralph.bundled",
+  manifestId: "wolfpack.bundled",
   version: "2026.07.11",
   generatedAt: "2026-07-11T00:00:00.000Z",
-  agents: [
-    {
-      id: "ralph",
-      versionConstraints: ["*"],
-      rules: [
-        {
-          id: "ralph.audit.wax-inspect",
-          status: "audit",
-          confidence: 0.82,
-          contains: ["Wax Inspect"],
-          notContains: ["Wax Inspect complete", "Wax Inspect FAILED"],
-        },
-        {
-          id: "ralph.cleanup.wax-off",
-          status: "cleanup",
-          confidence: 0.82,
-          contains: ["Wax Off"],
-          notContains: ["Wax Off complete", "Wax Off FAILED"],
-        },
-      ],
-    },
-  ],
+  agents: [],
 };
 
 const ALLOWED_CONTENT_TYPES = new Set([

@@ -128,7 +128,7 @@ Spawns a new PTY session under the broker.
 - params:
   ```json
   {
-    "name":    "ralph"            (optional, broker assigns one if omitted),
+    "name":    "agent"            (optional, broker assigns one if omitted),
     "cwd":     "/abs/path",
     "command": ["bash", "-l"],
     "env":     [["KEY", "VALUE"], ...]   (optional, default []),
@@ -296,7 +296,7 @@ last delivered `seq` safe.
 ```jsonc
 {
   "id":            "550e8400-e29b-41d4-a716-446655440000",  // UUID v4
-  "name":          "ralph",
+  "name":          "agent",
   "cwd":           "/Users/almog/Dev/wolfpack",
   "command":       ["bash", "-l"],
   "env":           [["FOO", "bar"]],                        // [] if unused
@@ -329,7 +329,7 @@ source.
   "cursor":         CursorState,
   "modes":          TerminalModes,
   "scroll_region":  { "top": 0, "bottom": 29 },
-  "title":          "ralph" | null,
+  "title":          "agent" | null,
   "captured_at_ms": 1700000000000
 }
 ```

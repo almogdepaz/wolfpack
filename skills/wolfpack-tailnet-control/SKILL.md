@@ -47,4 +47,3 @@ Read-only inspection is allowed when requested. Creation, sending input, killing
 - setup, auth, and Tailscale: `README.md`
 - troubleshooting: `docs/troubleshooting.md`
 - broker internals only when changing transport: `docs/broker-protocol.md`
-- Ralph automation: `skills/wolfpack-ralph/SKILL.md`

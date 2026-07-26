@@ -1,8 +1,3 @@
-import {
-  ACTIVE_RALPH_WORKTREE_MODES,
-  RALPH_WORKTREE_MODE,
-} from "../ralph-worktree-mode.ts";
-import { RALPH_RESPONSE_VERSION } from "../ralph-response.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
   OPENABLE_HARNESSES,
@@ -67,12 +62,6 @@ type ControlApiSource = {
       readonly auth: "jwt-when-configured";
       readonly query: JsonSchema;
       readonly messages: Record<string, WebSocketMessageContract>;
-    };
-  };
-  readonly ralph: {
-    readonly responseFile: {
-      readonly path: ".ralph-response.json";
-      readonly schema: JsonSchema;
     };
   };
   readonly defs: Record<string, JsonSchema>;
@@ -168,7 +157,6 @@ export const controlApiSource: ControlApiSource = {
     "schemas publish public client contracts; they do not replace route-side project/session/path validation",
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
-    "peer Ralph aggregation still sanitizes remote loop entries before exposing them to clients",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
   ],
   defs: {
@@ -189,11 +177,6 @@ export const controlApiSource: ControlApiSource = {
     },
     SessionPromptOutcome: { enum: Object.values(SESSION_PROMPT_OUTCOME) },
     ProjectName: { type: "string", pattern: "^[a-zA-Z0-9._-]+$" },
-    PlanFile: {
-      type: "string",
-      pattern: "^(?:[a-zA-Z0-9._-]+\\.md|\\.plans/[a-zA-Z0-9._-]+\\.md)$",
-    },
-    BranchName: { type: "string", pattern: "^[A-Za-z0-9._/-]+$" },
     Command: { type: "string", minLength: 1 },
     OpenableHarness: { enum: [...OPENABLE_HARNESSES] },
     TriageStatus: { enum: ["running", "idle"] },
@@ -218,11 +201,10 @@ export const controlApiSource: ControlApiSource = {
         provider: string(),
         redactedId: string(),
         capturedAt: string(),
-        source: { enum: ["env", "broker_env", "ralph_launch"] },
+        source: { enum: ["env", "broker_env"] },
       }, ["provider", "redactedId", "capturedAt", "source"]),
     }, ["wolfpackSessionId", "wolfpackSessionName", "projectPath", "agentKind", "createdAt", "updatedAt"]),
     PrefillMode: { enum: [...TERMINAL_PREFILL_MODES] },
-    WorktreeMode: { enum: [false, ...Object.values(RALPH_WORKTREE_MODE)] },
     CmdEntry: object({
       cmd: ref("Command"),
       enabled: boolean(),
@@ -234,8 +216,7 @@ export const controlApiSource: ControlApiSource = {
     EffectiveSettings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("Command")),
-      ralphAgents: arrayOf(string()),
-    }, ["agentCmd", "cmds", "ralphAgents"]),
+    }, ["agentCmd", "cmds"]),
     AgentRuntimeState: object({
       state: ref("AgentStatusState"),
       authority: ref("AgentStatusAuthority"),
@@ -330,57 +311,6 @@ export const controlApiSource: ControlApiSource = {
       name: string(),
       url: string(),
     }, ["name", "url"], { additionalProperties: true }),
-    RalphLoop: object({
-      project: string(),
-      active: boolean(),
-      completed: boolean(),
-      audit: boolean(),
-      cleanup: boolean(),
-      cleanupEnabled: boolean(),
-      auditFixEnabled: boolean(),
-      iteration: integer(),
-      totalIterations: integer(),
-      agent: string(),
-      planFile: string(),
-      progressFile: string(),
-      started: string(),
-      finished: string(),
-      lastOutput: string(),
-      pid: integer(),
-      tasksDone: integer(),
-      tasksTotal: integer(),
-      worktreeMode: string(),
-      worktreeBranch: string(),
-      sandbox: string(),
-      machineName: string(),
-      machineUrl: string(),
-    }, [
-      "project",
-      "active",
-      "completed",
-      "audit",
-      "cleanup",
-      "cleanupEnabled",
-      "auditFixEnabled",
-      "iteration",
-      "totalIterations",
-      "agent",
-      "planFile",
-      "progressFile",
-      "started",
-      "finished",
-      "lastOutput",
-      "pid",
-      "tasksDone",
-      "tasksTotal",
-      "worktreeMode",
-      "worktreeBranch",
-    ], { additionalProperties: true }),
-    TaskCount: object({
-      done: integer(),
-      total: integer(),
-      issues: arrayOf(string()),
-    }, ["done", "total", "issues"]),
     PushSubscription: object({
       endpoint: string(),
       keys: object({
@@ -388,14 +318,6 @@ export const controlApiSource: ControlApiSource = {
         auth: string(),
       }, ["p256dh", "auth"]),
     }, ["endpoint", "keys"]),
-    RalphIterationResponse: object({
-      version: { const: RALPH_RESPONSE_VERSION },
-      status: { enum: ["done", "needs_subtasks"] },
-      prereqs: arrayOf(string()),
-      tests: arrayOf(string()),
-      done: arrayOf(string()),
-      subtasks: arrayOf(string()),
-    }, ["version", "status", "prereqs", "tests", "done", "subtasks"]),
   },
   http: {
     "GET /api/info": {
@@ -724,112 +646,6 @@ export const controlApiSource: ControlApiSource = {
       response: object({ status: string() }, ["status"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "500 ErrorEnvelope"],
     },
-    "GET /api/ralph": {
-      operationId: "listRalphLoops",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({ aggregate: boolean() }),
-      response: object({ loops: arrayOf(ref("RalphLoop")) }, ["loops"]),
-      errors: [],
-    },
-    "GET /api/ralph/branches": {
-      operationId: "listRalphBranches",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({ project: ref("ProjectName") }, ["project"]),
-      response: object({
-        branches: arrayOf(ref("BranchName")),
-        current: string(),
-      }, ["branches", "current"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "500 ErrorEnvelope"],
-    },
-    "GET /api/ralph/plans": {
-      operationId: "listRalphPlans",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({ project: ref("ProjectName") }, ["project"]),
-      response: object({ plans: arrayOf(ref("PlanFile")) }, ["plans"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
-    },
-    "GET /api/ralph/log": {
-      operationId: "getRalphLog",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({ project: ref("ProjectName") }, ["project"]),
-      response: object({
-        log: string(),
-        totalLines: integer(),
-      }, ["log", "totalLines"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "500 ErrorEnvelope"],
-    },
-    "POST /api/ralph/start": {
-      operationId: "startRalph",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({
-        project: ref("ProjectName"),
-        iterations: integer(),
-        planFile: ref("PlanFile"),
-        agent: string(),
-        newBranch: ref("BranchName"),
-        sourceBranch: ref("BranchName"),
-        format: boolean(),
-        cleanup: boolean(),
-        auditFix: boolean(),
-        worktree: ref("WorktreeMode"),
-        worktreeBranch: ref("BranchName"),
-        worktreeBase: ref("BranchName"),
-        sandbox: boolean(),
-      }, ["project"]),
-      response: object({
-        ok: boolean(),
-        pid: integer(),
-        branch: string(),
-        worktree: { enum: [...ACTIVE_RALPH_WORKTREE_MODES] },
-      }, ["ok", "pid"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "500 ErrorEnvelope"],
-    },
-    "GET /api/ralph/task-count": {
-      operationId: "getRalphTaskCount",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({
-        project: ref("ProjectName"),
-        plan: ref("PlanFile"),
-      }, ["project", "plan"]),
-      response: ref("TaskCount"),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
-    },
-    "POST /api/ralph/cancel": {
-      operationId: "cancelRalph",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({ project: ref("ProjectName") }, ["project"]),
-      response: object({
-        ok: boolean(),
-        killed: integer(),
-      }, ["ok", "killed"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "500 ErrorEnvelope"],
-    },
-    "POST /api/ralph/dismiss": {
-      operationId: "dismissRalph",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({
-        project: ref("ProjectName"),
-        deletePlan: boolean(),
-      }, ["project"]),
-      response: object({
-        ok: boolean(),
-        deleted: arrayOf(string()),
-        failed: arrayOf(string()),
-        worktreeCleanup: object({
-          removed: arrayOf(string()),
-          kept: string(),
-        }, ["removed", "kept"]),
-      }, ["ok", "deleted", "failed"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope"],
-    },
     "GET /api/push/vapid-key": {
       operationId: "getVapidPublicKey",
       stable: true,
@@ -952,12 +768,6 @@ export const controlApiSource: ControlApiSource = {
       },
     },
   },
-  ralph: {
-    responseFile: {
-      path: ".ralph-response.json",
-      schema: ref("RalphIterationResponse"),
-    },
-  },
 };
 
 function schemaWithId(schema: JsonSchema, id: string, title: string): JsonSchema {
@@ -1032,12 +842,6 @@ export function buildControlApiSchema(): JsonSchema {
           "client-to-server": "raw PTY input bytes, capped by runtime MAX_PTY_BINARY_BYTES",
           "server-to-client": "raw PTY output/prefill bytes",
         },
-      },
-    },
-    ralph: {
-      responseFile: {
-        path: controlApiSource.ralph.responseFile.path,
-        schema: schemaWithId(controlApiSource.ralph.responseFile.schema, "wolfpack:control-api:ralph:response-file", "Ralph structured response file"),
       },
     },
     $defs: controlApiSource.defs,

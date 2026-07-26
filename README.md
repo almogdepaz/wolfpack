@@ -84,7 +84,6 @@ It is an AI agent terminal orchestrator for developers who need persistent brows
 - **PWA UX** — install on your home screen, reconnect on drops, receive notifications when sessions need attention.
 - **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
 - **Provider readiness** — First-run setup enables detected supported CLIs; Settings → Agents shows path/version and login guidance and lets you add providers installed later.
-- **Ralph loop** — optional autonomous plan runner. See [docs/ralph-macchio.md](docs/ralph-macchio.md).
 
 ## Agent recipes
 
@@ -199,10 +198,8 @@ Per-server agent settings live in `~/.wolfpack/bridge-settings.json`.
 
 ## Agent skills
 
-Wolfpack exposes repository-local agent skills in `skills/`:
+Wolfpack exposes one repository-local agent skill in `skills/`:
 
-- `wolfpack-plan` — plan-file task header conventions that Ralph can parse.
-- `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
 - `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
 
 ### Pi subagent integration

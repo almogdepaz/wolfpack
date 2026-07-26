@@ -10,7 +10,6 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  AGENT_STATUS_LIFECYCLE_PATH,
   AGENT_STATUS_MANIFEST_PATH,
   AGENT_STATUS_TTL_MS,
   chooseAgentStatusSource,
@@ -28,13 +27,6 @@ function writeManifest(content: string): string {
   return manifestPath;
 }
 
-function writeLifecycle(content: string): string {
-  const lifecyclePath = join(projectDir, AGENT_STATUS_LIFECYCLE_PATH);
-  mkdirSync(join(projectDir, ".ralph"), { recursive: true });
-  writeFileSync(lifecyclePath, content);
-  return lifecyclePath;
-}
-
 describe("agent status authority model", () => {
   beforeEach(() => {
     projectDir = mkdtempSync(join(tmpdir(), "agent-status-"));
@@ -48,11 +40,10 @@ describe("agent status authority model", () => {
     const selected = chooseAgentStatusSource([
       { state: "idle", authority: "fallback", freshness: "fresh", source: "screen-fallback", label: "log fallback" },
       { state: "running", authority: "manifest", freshness: "fresh", source: "local-manifest", label: "manifest" },
-      { state: "done", authority: "lifecycle", freshness: "fresh", source: "ralph-lifecycle", label: "hook" },
     ]);
 
-    expect(selected.state).toBe("done");
-    expect(selected.authority).toBe("lifecycle");
+    expect(selected.state).toBe("running");
+    expect(selected.authority).toBe("manifest");
   });
 
   test("distinguishes missing manifest and falls back to log-derived status", () => {
@@ -68,19 +59,6 @@ describe("agent status authority model", () => {
       state: "running",
       authority: "fallback",
       freshness: "fresh",
-    });
-  });
-
-  test("selects lifecycle hook over manifest and fallback", () => {
-    writeManifest(JSON.stringify({ state: "running" }));
-    writeLifecycle(JSON.stringify({ state: "done" }));
-
-    const selected = collectAgentStatus(projectDir, { state: "idle" });
-    expect(selected).toMatchObject({
-      state: "done",
-      authority: "lifecycle",
-      freshness: "fresh",
-      source: "ralph-lifecycle",
     });
   });
 

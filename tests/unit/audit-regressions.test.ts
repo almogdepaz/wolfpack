@@ -101,34 +101,12 @@ describe("isWolfpackProcess — killPortHolder identity check", () => {
   });
 });
 
-// ── 3. Ralph subtask expansion budget ──
-
 import {
-  expandBudget,
   clampCols,
   clampRows,
-  resolveCleanupDiffBase,
 } from "../../src/validation.js";
 
-describe("expandBudget — ralph subtask expansion", () => {
-  test("budget increases by subtask count, not just 1", () => {
-    expect(expandBudget(5, 4, 100)).toBe(9);
-  });
-
-  test("budget respects ceiling", () => {
-    expect(expandBudget(98, 5, 100)).toBe(100);
-  });
-
-  test("single subtask increments by 1", () => {
-    expect(expandBudget(5, 1, 100)).toBe(6);
-  });
-
-  test("at ceiling, budget stays unchanged", () => {
-    expect(expandBudget(100, 3, 100)).toBe(100);
-  });
-});
-
-// ── 4b. clampCols / clampRows — NaN safety ──
+// ── 3. clampCols / clampRows — NaN safety ──
 
 describe("clampCols / clampRows — NaN safety", () => {
   test("NaN returns sensible default", () => {
@@ -153,57 +131,5 @@ describe("clampCols / clampRows — NaN safety", () => {
   test("null coerces to 0, gets clamped to minimum", () => {
     expect(clampCols(null as any)).toBe(20);
     expect(clampRows(null as any)).toBe(5);
-  });
-});
-
-// ── 4. Ralph cleanup scope uses START_COMMIT ──
-
-describe("ralph cleanup prompt — START_COMMIT boundary", () => {
-  test("uses START_COMMIT when available", () => {
-    expect(resolveCleanupDiffBase("abc123")).toBe("abc123");
-  });
-
-  test("falls back to HEAD~10 when START_COMMIT is empty", () => {
-    expect(resolveCleanupDiffBase("")).toBe("HEAD~10");
-  });
-});
-
-// ── 5. /api/ralph/start validation ──
-
-import { isValidPlanFile, BRANCH_REGEX } from "../../src/validation.js";
-
-describe("ralph start — validation functions", () => {
-  test("valid plan filenames", () => {
-    expect(isValidPlanFile("PLAN.md")).toBe(true);
-    expect(isValidPlanFile("my-plan.md")).toBe(true);
-    expect(isValidPlanFile("plan v2.md")).toBe(true);
-  });
-
-  test("path traversal attempts rejected", () => {
-    expect(isValidPlanFile("../evil.md")).toBe(false);
-    expect(isValidPlanFile("path/to/plan.md")).toBe(false);
-    expect(isValidPlanFile("")).toBe(false);
-    expect(isValidPlanFile("..")).toBe(false);
-    expect(isValidPlanFile(".")).toBe(false);
-  });
-
-  test("branch names validated", () => {
-    expect(BRANCH_REGEX.test("feature/foo")).toBe(true);
-    expect(BRANCH_REGEX.test("main")).toBe(true);
-    expect(BRANCH_REGEX.test("fix-123")).toBe(true);
-    expect(BRANCH_REGEX.test("branch with spaces")).toBe(false);
-    expect(BRANCH_REGEX.test("")).toBe(false);
-  });
-
-  test("iterations are clamped to [1, 500]", () => {
-    function clampIters(iterations: number | undefined): number {
-      return Math.max(1, Math.min(500, iterations ?? 5));
-    }
-
-    expect(clampIters(undefined)).toBe(5);
-    expect(clampIters(0)).toBe(1);
-    expect(clampIters(-10)).toBe(1);
-    expect(clampIters(1000)).toBe(500);
-    expect(clampIters(50)).toBe(50);
   });
 });

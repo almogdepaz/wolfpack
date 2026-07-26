@@ -3,7 +3,7 @@
  * Sends SIGTERM, polls for exit, escalates to SIGKILL.
  */
 
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 const POLL_INTERVAL_MS = 200;
 
@@ -24,44 +24,6 @@ export function isProcessAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch { /* expected: kill(0) throws ESRCH when process is dead */
-    return false;
-  }
-}
-
-const testRalphProcessPids = new Set<number>();
-
-export function __registerTestRalphProcess(pid: number): () => void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__registerTestRalphProcess() is only available in test mode");
-  testRalphProcessPids.add(pid);
-  return () => { testRalphProcessPids.delete(pid); };
-}
-
-/**
- * PID-reuse-safe liveness check for a ralph worker. `kill(pid, 0)` alone
- * returns true for ANY process at that PID, so a recycled PID (the OS
- * reusing the slot for an unrelated process after the ralph worker
- * exited) would make parseRalphLog report `active: true` for a dead loop.
- *
- * Uses `ps -o command=` to confirm the process at `pid` is actually a
- * ralph-macchio worker. Returns false on:
- *   - ESRCH (process is gone)
- *   - ps fails / times out
- *   - cmdline does not contain "ralph-macchio" or "worker"
- *
- * Sync (intentionally) so it can be used from `parseRalphLog` which is
- * called from sync read paths. Keep callers low-frequency — each
- * invocation forks `ps`.
- */
-export function isRalphProcessAlive(pid: number): boolean {
-  if (pid <= 1 || !isProcessAlive(pid)) return false;
-  if (process.env.WOLFPACK_TEST && testRalphProcessPids.has(pid)) return true;
-  try {
-    const cmdline = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
-      encoding: "utf-8",
-      timeout: 3000,
-    });
-    return cmdline.includes("ralph-macchio") || cmdline.includes("worker");
-  } catch { /* ps failed or process exited between kill(0) and ps */
     return false;
   }
 }

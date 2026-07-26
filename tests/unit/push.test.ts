@@ -4,6 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+process.env.WOLFPACK_TEST = "1";
+
 // We need to mock the WOLFPACK_DIR before importing push module.
 // Instead, test the crypto helpers and subscription logic via the exports.
 
@@ -482,92 +484,6 @@ describe("push: checkSessionTransitions", () => {
     expect(_testing.prevTriageState.has("old-session")).toBe(false);
     expect(_testing.lastSessionPushTime.has("old-session")).toBe(false);
     expect(_testing.prevTriageState.get("new-session")).toBe("running");
-
-    removeSubscription(ep);
-  });
-});
-
-describe("push: checkRalphLoopTransitions", () => {
-  beforeEach(async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    _testing.prevRalphState.clear();
-    _testing.lastRalphPushTime.clear();
-  });
-
-  test("tracks ralph loop status correctly", async () => {
-    const { checkRalphLoopTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
-
-    const ep = `https://fcm.googleapis.com/ralph-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-
-    // First call: set initial state to running
-    checkRalphLoopTransitions([{ project: "proj1", active: true, completed: false }]);
-    expect(_testing.prevRalphState.get("ralph-proj1")).toBe("running");
-
-    // Second call: transition to done
-    checkRalphLoopTransitions([{ project: "proj1", active: false, completed: true }]);
-    expect(_testing.prevRalphState.get("ralph-proj1")).toBe("done");
-
-    // Verify debounce was set
-    expect(_testing.lastRalphPushTime.has("proj1")).toBe(true);
-
-    removeSubscription(ep);
-  });
-
-  test("classifies loop states correctly", async () => {
-    const { checkRalphLoopTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
-
-    const ep = `https://fcm.googleapis.com/ralph-classify-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-
-    // active → running
-    checkRalphLoopTransitions([{ project: "p1", active: true, completed: false }]);
-    expect(_testing.prevRalphState.get("ralph-p1")).toBe("running");
-
-    // audit phase → running
-    _testing.prevRalphState.clear();
-    checkRalphLoopTransitions([{ project: "p1", active: false, completed: false, audit: true }]);
-    expect(_testing.prevRalphState.get("ralph-p1")).toBe("running");
-
-    // cleanup phase → running
-    _testing.prevRalphState.clear();
-    checkRalphLoopTransitions([{ project: "p1", active: false, completed: false, cleanup: true }]);
-    expect(_testing.prevRalphState.get("ralph-p1")).toBe("running");
-
-    // completed → done
-    _testing.prevRalphState.clear();
-    checkRalphLoopTransitions([{ project: "p1", active: false, completed: true }]);
-    expect(_testing.prevRalphState.get("ralph-p1")).toBe("done");
-
-    // finished but not completed/active → limit
-    _testing.prevRalphState.clear();
-    checkRalphLoopTransitions([{ project: "p1", active: false, completed: false, finished: "2026-01-01" }]);
-    expect(_testing.prevRalphState.get("ralph-p1")).toBe("limit");
-
-    // nothing → idle
-    _testing.prevRalphState.clear();
-    checkRalphLoopTransitions([{ project: "p1", active: false, completed: false }]);
-    expect(_testing.prevRalphState.get("ralph-p1")).toBe("idle");
-
-    removeSubscription(ep);
-  });
-
-  test("prunes state for removed projects", async () => {
-    const { checkRalphLoopTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
-
-    const ep = `https://fcm.googleapis.com/ralph-prune-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-
-    // Seed state for a project that will disappear
-    _testing.prevRalphState.set("ralph-old-project", "idle");
-    _testing.lastRalphPushTime.set("old-project", Date.now());
-
-    // Call with only "new-project" — old-project should be pruned
-    checkRalphLoopTransitions([{ project: "new-project", active: true, completed: false }]);
-
-    expect(_testing.prevRalphState.has("ralph-old-project")).toBe(false);
-    expect(_testing.lastRalphPushTime.has("old-project")).toBe(false);
-    expect(_testing.prevRalphState.get("ralph-new-project")).toBe("running");
 
     removeSubscription(ep);
   });

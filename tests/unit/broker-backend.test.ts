@@ -148,7 +148,7 @@ function sessionInfo(overrides: Partial<{
 }> = {}) {
   return {
     id: overrides.id ?? SESSION_UUID_1,
-    name: overrides.name ?? "ralph",
+    name: overrides.name ?? "agent",
     cwd: overrides.cwd ?? "/tmp/work",
     alive: overrides.alive ?? true,
     cols: 120,
