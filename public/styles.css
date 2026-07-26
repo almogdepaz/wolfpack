@@ -1552,10 +1552,11 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
   .delegation-cell-actions button,
   .delegation-focus-return button {
     padding: 5px 8px;
-    border: 1px solid var(--border-hover);
+    border: 1px solid var(--accent-border);
     border-radius: var(--radius-sm);
-    background: var(--bg-elevated);
-    color: var(--text-muted);
+    background: linear-gradient(180deg, var(--accent-subtle), var(--bg-elevated));
+    color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.12), 0 0 12px rgba(88, 166, 255, 0.10);
     font: inherit;
     font-size: 9px;
     text-transform: uppercase;
@@ -1565,9 +1566,10 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
   .delegation-grid-actions button:hover,
   .delegation-cell-actions button:hover,
   .delegation-focus-return button:hover {
-    color: var(--accent);
-    border-color: var(--accent-border);
-    background: var(--accent-subtle);
+    color: var(--bg-base);
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.24), 0 0 18px rgba(88, 166, 255, 0.22);
   }
   #delegation-grid-container.active {
     display: grid;
@@ -1583,9 +1585,7 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
     border-color: var(--accent-border);
   }
   #delegation-grid-container .grid-cell.collapsed {
-    align-self: start;
-    height: 30px;
-    min-height: 30px;
+    display: none !important;
   }
   #delegation-grid-container .grid-cell.collapsed canvas,
   #delegation-grid-container .grid-cell.collapsed .grid-cell-loading,

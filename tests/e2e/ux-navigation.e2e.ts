@@ -167,7 +167,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("delegation-parent"));
 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
-  await expect(page.locator("#delegation-grid-title")).toHaveText("delegation grid · delegation-parent");
+  await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
   await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children · 1 needs input · 1 idle");
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
     "delegation-parent",
@@ -188,12 +188,18 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/transitioning/);
 
   await page.getByRole("button", { name: "Collapse idle child agents" }).click();
-  await expect(page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"]')).toHaveClass(/collapsed/);
+  const collapsedIdleCell = page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"]');
+  await expect(collapsedIdleCell).toHaveClass(/collapsed/);
+  await expect(collapsedIdleCell).toBeHidden();
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => {
     const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "idle-child");
     return session?.controller == null;
   })).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const button = document.querySelector<HTMLElement>("#delegation-collapse-idle");
+    return button ? getComputedStyle(button).boxShadow : "";
+  })).not.toBe("none");
 
   sessions = [
     ...sessions,
@@ -342,7 +348,7 @@ test("desktop opens a child terminal with a return to its parent delegation grid
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
   await expect(page.locator("#delegation-grid-container .grid-cell")).toHaveCount(0);
-  await page.getByRole("button", { name: "Back to delegation grid" }).click();
+  await page.getByRole("button", { name: "Back to session grid" }).click();
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText(["parent", "child"]);
 });
 

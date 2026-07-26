@@ -2906,7 +2906,7 @@ function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, 
 function updateDelegationGridHeader(context: DelegationWorkspaceContext): void {
   const title = document.getElementById("delegation-grid-title");
   const summary = document.getElementById("delegation-grid-summary");
-  if (title) title.textContent = `delegation grid · ${context.root.name}`;
+  if (title) title.textContent = `${context.root.name} grid`;
   if (summary) {
     const childSummary = context.members[0]?.childSummary;
     summary.textContent = childSummary
