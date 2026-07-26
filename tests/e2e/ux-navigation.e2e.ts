@@ -127,7 +127,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(childSidebarCards).toHaveCount(0);
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
   await expect(childSidebarCards).toHaveCount(2);
-  await page.locator("#sidebar-session-list .delegation-parent-card").first().click();
+  await parentSidebarCard.locator(".card-name").click();
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
   await expect(childSidebarCard.locator(".grid-btn")).toHaveClass(/in-grid/);

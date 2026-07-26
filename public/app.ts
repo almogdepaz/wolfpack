@@ -2833,7 +2833,7 @@ function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSession
   const expanded = expandedSidebarDelegationParents.has(key);
   const count = row.childSummary.total;
   const label = `${count} child ${count === 1 ? "agent" : "agents"}`;
-  return `<button class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(label)}" title="${expanded ? "Collapse" : "Expand"} child agents">${expanded ? "▾" : "▸"} ${esc(label)}</button>`;
+  return `<button class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(label)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true">${expanded ? "⌄" : "›"}</span><span>${esc(label)}</span></button>`;
 }
 
 function visibleSidebarDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
@@ -5160,7 +5160,6 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
-      ${delegationParentSummaryHtml(row)}
       ${sidebarDelegationToggleHtml(row, machineUrl)}
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
