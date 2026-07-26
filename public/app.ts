@@ -26,7 +26,10 @@ import {
   backFromRalph, backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
+  canOpenMultiTerminalGrid, disposeDelegationGrid,
+  renderDelegationGridCells, setDelegationGridMembers, suspendDelegationGridTerminals,
 } from "./app-grid";
+import type { DelegationGridMember } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
 import { filterProjectNames } from "./project-picker";
@@ -60,12 +63,16 @@ import { AGENT_KIND } from "../src/agent-kind";
 import { sessionRuntimeUi } from "../src/agent-runtime-ui";
 import {
   delegationChildSummaryText,
+  delegationGridMembers,
+  delegationRootSession,
   projectDelegationSessions,
+  sessionIdentityId,
 } from "./delegation-sessions";
 import type {
   DelegationSessionLike,
   DelegationSessionRow,
 } from "./delegation-sessions";
+import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 
@@ -2592,8 +2599,15 @@ function showView(name: string, skipAnimation?: boolean): void {
   // Tear down terminal connections when navigating away from terminal view
   // Prevents background WS from auto-reconnecting and stealing control from other instances
   if (prevView === "terminal" && effectiveName !== "terminal") {
-    if (isGridActive()) { suspendGridMode(); }
-    else { destroyTerminal(); }
+    if (state.activeDelegationRoot) {
+      destroyTerminal();
+      teardownDelegationWorkspace();
+      if (isGridActive()) suspendGridMode();
+    } else if (isGridActive()) {
+      suspendGridMode();
+    } else {
+      destroyTerminal();
+    }
   }
 
   setState({ currentView: effectiveName });
@@ -2805,6 +2819,53 @@ function delegationParentSummaryHtml(row: DelegationSessionRow<DelegationSession
   return `<div class="delegation-summary">${esc(delegationChildSummaryText(row.childSummary))}</div>`;
 }
 
+const expandedSidebarDelegationParents = new Set<string>();
+
+function sidebarDelegationParentKey(machineUrl: string, parentSessionId: string): string {
+  return `${machineUrl}\u001f${parentSessionId}`;
+}
+
+function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): string {
+  if (!row.childSummary) return "";
+  const sessionId = sessionIdentityId(row.session);
+  if (!sessionId) return "";
+  const key = sidebarDelegationParentKey(machineUrl, sessionId);
+  const expanded = expandedSidebarDelegationParents.has(key);
+  const count = row.childSummary.total;
+  const label = `${count} child ${count === 1 ? "agent" : "agents"}`;
+  return `<button class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(label)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true">${expanded ? "⌄" : "›"}</span><span>${esc(label)}</span></button>`;
+}
+
+function visibleSidebarDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
+  const hiddenSessionIds = new Set<string>();
+  const visibleRows: DelegationSessionRow<DelegationSessionLike>[] = [];
+  for (const row of rows) {
+    const sessionId = sessionIdentityId(row.session);
+    const parentId = row.parent?.wolfpackSessionId;
+    const hiddenByAncestor = parentId ? hiddenSessionIds.has(parentId) : false;
+    const hiddenByCollapsedParent = row.role === "child"
+      && parentId !== undefined
+      && !expandedSidebarDelegationParents.has(sidebarDelegationParentKey(machineUrl, parentId));
+    if (hiddenByAncestor || hiddenByCollapsedParent) {
+      if (sessionId) hiddenSessionIds.add(sessionId);
+      continue;
+    }
+    visibleRows.push(row);
+    if (row.childSummary && sessionId && !expandedSidebarDelegationParents.has(sidebarDelegationParentKey(machineUrl, sessionId))) {
+      hiddenSessionIds.add(sessionId);
+    }
+  }
+  return visibleRows;
+}
+
+function toggleSidebarDelegationChildren(key: string, event?: Event): void {
+  event?.stopPropagation();
+  event?.preventDefault();
+  if (expandedSidebarDelegationParents.has(key)) expandedSidebarDelegationParents.delete(key);
+  else expandedSidebarDelegationParents.add(key);
+  renderSidebar();
+}
+
 function delegationParentMissingHtml(row: DelegationSessionRow<DelegationSessionLike>): string {
   if (row.role === "orphan" && row.parent) {
     return `<div class="delegation-parent-missing">missing parent: ${esc(row.parent.wolfpackSessionName)}</div>`;
@@ -2858,6 +2919,176 @@ function renderMachineGroupHtml(g, multiMachine) {
   return html;
 }
 
+interface DelegationWorkspaceContext {
+  readonly root: DelegationSessionLike;
+  readonly members: DelegationSessionRow<DelegationSessionLike>[];
+}
+
+function delegationWorkspaceContext(sessionName: string, machineUrl: string): DelegationWorkspaceContext | null {
+  const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === (machineUrl || ""));
+  if (!group) return null;
+  const target = group.sessions.find(session => session.name === sessionName);
+  if (!target) return null;
+  const root = delegationRootSession(group.sessions, target);
+  if (!root) return null;
+  const members = delegationGridMembers(group.sessions, root);
+  return members.length > 1 ? { root, members } : null;
+}
+
+function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, machine: string): DelegationGridMember {
+  const ui = triageUi(row.session);
+  const runtimeState = row.session.runtimeState?.state;
+  const idle = runtimeState === AGENT_STATUS_STATE.IDLE
+    || (!runtimeState && row.session.triage !== AGENT_STATUS_STATE.RUNNING);
+  return {
+    session: row.session.name,
+    machine,
+    role: row.role === "root" ? "root" : "child",
+    statusClass: ui.badge,
+    statusLabel: ui.label,
+    idle,
+  };
+}
+
+function updateDelegationGridHeader(context: DelegationWorkspaceContext): void {
+  const title = document.getElementById("delegation-grid-title");
+  const summary = document.getElementById("delegation-grid-summary");
+  if (title) title.textContent = `${context.root.name} grid`;
+  if (summary) {
+    const childSummary = context.members[0]?.childSummary;
+    summary.textContent = childSummary
+      ? delegationChildSummaryText(childSummary)
+      : `${Math.max(0, context.members.length - 1)} child agents`;
+  }
+}
+
+function setDelegationWorkspaceDisplay(mode: "grid" | "focus" | "off"): void {
+  document.body.classList.toggle("delegation-workspace", mode !== "off");
+  document.body.classList.toggle("delegation-grid-active", mode === "grid");
+  document.body.classList.toggle("delegation-focus-active", mode === "focus");
+}
+
+function teardownDelegationWorkspace(): void {
+  disposeDelegationGrid();
+  setDelegationWorkspaceDisplay("off");
+  setState({
+    activeDelegationRoot: null,
+    focusedDelegationSession: null,
+    delegationMachine: "",
+  });
+}
+
+function leaveDelegationWorkspaceForManualGrid(): void {
+  if (state.terminalController) destroyTerminal();
+  teardownDelegationWorkspace();
+}
+
+function syncDelegationWorkspace(): void {
+  if (!state.activeDelegationRoot) return;
+  const context = delegationWorkspaceContext(state.activeDelegationRoot, state.delegationMachine || "");
+  if (!context) {
+    if (state.focusedDelegationSession) destroyTerminal();
+    teardownDelegationWorkspace();
+    setState({ currentSession: null, currentMachine: "" });
+    if (state.currentView === "terminal") backToSessions();
+    return;
+  }
+
+  const members = context.members.map(row => delegationGridMember(row, state.delegationMachine || ""));
+  const focusedStillExists = !state.focusedDelegationSession
+    || members.some(member => member.session === state.focusedDelegationSession);
+  setDelegationGridMembers(members);
+  updateDelegationGridHeader(context);
+
+  if (!focusedStillExists) {
+    destroyTerminal();
+    setState({
+      focusedDelegationSession: null,
+      currentSession: context.root.name,
+      currentMachine: state.delegationMachine || "",
+    });
+    setDelegationWorkspaceDisplay("grid");
+  }
+  if (!state.focusedDelegationSession) renderDelegationGridCells();
+}
+
+function prepareDelegationWorkspace(rootSession: string, machineUrl: string): DelegationWorkspaceContext | null {
+  const context = delegationWorkspaceContext(rootSession, machineUrl);
+  if (!context) return null;
+  if (state.activeDelegationRoot !== context.root.name || state.delegationMachine !== machineUrl) {
+    disposeDelegationGrid();
+  }
+  setState({
+    activeDelegationRoot: context.root.name,
+    delegationMachine: machineUrl,
+  });
+  setDelegationGridMembers(context.members.map(row => delegationGridMember(row, machineUrl)));
+  updateDelegationGridHeader(context);
+  return context;
+}
+
+function openDelegationGrid(rootSession: string, machineUrl = ""): void {
+  if (!canOpenMultiTerminalGrid()) return;
+  if (isGridActive()) suspendGridMode();
+  const context = prepareDelegationWorkspace(rootSession, machineUrl);
+  if (!context) return;
+  if (state.terminalController) destroyTerminal();
+  setState({
+    focusedDelegationSession: null,
+    currentSession: context.root.name,
+    currentMachine: machineUrl,
+  });
+  setDelegationWorkspaceDisplay("grid");
+  showView("terminal", true);
+  renderDelegationGridCells();
+  renderSidebar();
+}
+
+function focusDelegationSession(sessionName: string, machineUrl = ""): void {
+  if (isGridActive()) suspendGridMode();
+  const context = prepareDelegationWorkspace(sessionName, machineUrl);
+  if (!context || !context.members.some(row => row.session.name === sessionName)) return;
+  if (state.terminalController) destroyTerminal();
+  suspendDelegationGridTerminals();
+  setState({
+    focusedDelegationSession: sessionName,
+    currentSession: sessionName,
+    currentMachine: machineUrl,
+  });
+  const label = document.getElementById("delegation-focus-label");
+  if (label) label.textContent = `${sessionName} terminal`;
+  setDelegationWorkspaceDisplay("focus");
+  showView("terminal", true);
+  const cached = loadSnapshot(machineUrl, sessionName);
+  void initTerminal(cached, TERMINAL_PREFILL_MODE.FULL);
+  renderSidebar();
+}
+
+function returnToDelegationGrid(): void {
+  if (!state.activeDelegationRoot) return;
+  openDelegationGrid(state.activeDelegationRoot, state.delegationMachine || "");
+}
+
+function exitDelegationWorkspace(): void {
+  if (!state.activeDelegationRoot) return;
+  if (state.terminalController) destroyTerminal();
+  teardownDelegationWorkspace();
+  if (hasPreservedGrid()) {
+    showView("terminal", true);
+    restorePreservedGrid();
+    return;
+  }
+  if (state.gridSessions.length >= 2) {
+    setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
+    updateGridLayout();
+    showView("terminal", true);
+    renderSidebar();
+    return;
+  }
+  setState({ currentSession: null, currentMachine: "" });
+  backToSessions();
+}
+
 function fetchMachine(machineUrl, machineMeta) {
   // Timeout remote machines so one unreachable host can't block the entire UI.
   // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
@@ -2895,6 +3126,7 @@ async function loadSessions() {
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
     const html = renderMachineGroupHtml(g, false);
     if (html !== state.lastSessionsHtml) { el.innerHTML = html; state.lastSessionsHtml = html; }
+    syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
     return;
@@ -2977,12 +3209,23 @@ async function loadSessions() {
     for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
   }
   state.allSessions = out;
+  syncDelegationWorkspace();
   checkStateTransitions(groups);
 }
 
 async function openSession(name, machineUrl) {
-  const trace = __wfTraceStart(name, machineUrl || "", { mode: "single" });
+  const targetMachine = machineUrl || "";
+  if (isDesktop()) {
+    const delegation = delegationWorkspaceContext(name, targetMachine);
+    if (delegation) {
+      if (delegation.root.name === name) openDelegationGrid(name, targetMachine);
+      else focusDelegationSession(name, targetMachine);
+      return;
+    }
+  }
+  const trace = __wfTraceStart(name, targetMachine, { mode: "single" });
   __wfTraceEvent(trace, "openSession.start");
+  if (state.activeDelegationRoot) teardownDelegationWorkspace();
   if (state.currentView !== "terminal" && hasPreservedGrid()) clearPreservedGrid();
   // Exit expanded sessions mode when opening a session
   if (state.sessionsExpanded) {
@@ -4211,6 +4454,11 @@ function checkStateTransitions(groups) {
 var _hiddenAt = 0;
 const DESKTOP_STALE_THRESHOLD_MS = 60_000;
 
+function activeGridTerminalSessions(): typeof state.gridSessions | null {
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) return state.delegationGridSessions;
+  return isGridActive() ? state.gridSessions : null;
+}
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     const hiddenDuration = _hiddenAt ? Date.now() - _hiddenAt : 0;
@@ -4227,8 +4475,9 @@ document.addEventListener("visibilitychange", () => {
       if (!isDesktop()) {
         // Mobile: always force-reconnect — iOS/Android background tabs kill
         // TCP silently while readyState still reports OPEN.
-        if (isGridActive()) {
-          for (const gs of state.gridSessions) {
+        const gridSessions = activeGridTerminalSessions();
+        if (gridSessions) {
+          for (const gs of gridSessions) {
             if (!gs.controller || gs._displaced) continue;
             gs.controller.resetRetry();
             gs.controller.reconnect();
@@ -4244,8 +4493,9 @@ document.addEventListener("visibilitychange", () => {
         // and reconnect to get fresh data, matching mobile behavior.
         // Force-reconnect unconditionally — zombie sockets report readyState=OPEN
         // so isConnected would be true even though the socket is dead.
-        if (isGridActive()) {
-          for (const gs of state.gridSessions) {
+        const gridSessions = activeGridTerminalSessions();
+        if (gridSessions) {
+          for (const gs of gridSessions) {
             if (!gs.controller || gs._displaced) continue;
             gs.controller.resetRetry();
             gs.controller.reconnect();
@@ -4258,8 +4508,9 @@ document.addEventListener("visibilitychange", () => {
         // Short background (<60s): no reconnect needed, but canvas backing store
         // may have been invalidated by browser compositor (App Nap, power saving).
         // A forced repaint recovers without re-streaming any data.
-        if (isGridActive()) {
-          for (const gs of state.gridSessions) {
+        const gridSessions = activeGridTerminalSessions();
+        if (gridSessions) {
+          for (const gs of gridSessions) {
             if (gs.controller) gs.controller.forceRepaint?.();
           }
         } else if (state.terminalController?.term) {
@@ -4297,8 +4548,9 @@ document.addEventListener("visibilitychange", () => {
 //   - periodic heartbeat (30s): catches App Nap that doesn't fire any event
 function _wfRepaintAllTerminals() {
   if (state.currentView !== "terminal") return;
-  if (isGridActive()) {
-    for (const gs of state.gridSessions) {
+  const gridSessions = activeGridTerminalSessions();
+  if (gridSessions) {
+    for (const gs of gridSessions) {
       if (gs.controller && !gs._displaced) gs.controller.forceRepaint?.();
     }
   } else if (state.terminalController?.term) {
@@ -4508,6 +4760,11 @@ function backToSessions() {
 // Escape to back out of project/agent picker and ralph views
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (state.focusedDelegationSession) {
+    e.preventDefault();
+    e.stopPropagation();
+    returnToDelegationGrid();
+  }
   if (state.currentView === "agent") { e.preventDefault(); showView("projects"); }
   else if (state.currentView === "projects") { e.preventDefault(); returnFromProjectPicker(); }
   else if (state.currentView === "ralph-start" || state.currentView === "ralph-detail") { e.preventDefault(); backFromRalph(); }
@@ -4847,7 +5104,7 @@ function _renderSidebarNow() {
     const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div><button class="machine-ralph-btn" onclick="showRalphStart()">&#129355;</button></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
-      html += projectDelegationSessions(g.sessions).map(row => sidebarCardHtml(row, "")).join("");
+      html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), "").map(row => sidebarCardHtml(row, "")).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
@@ -4864,7 +5121,7 @@ function _renderSidebarNow() {
       html += `<div class="machine-group" data-machine="${mUrl}">`;
       html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${escAttr(g.machine.url)}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += projectDelegationSessions(g.sessions).map(row => sidebarCardHtml(row, g.machine.url)).join("");
+        html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -4903,7 +5160,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
-      ${delegationParentSummaryHtml(row)}
+      ${sidebarDelegationToggleHtml(row, machineUrl)}
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
@@ -5062,6 +5319,9 @@ function bindHtmlEventListeners(): void {
   on("session-chip", "click", () => toggleDrawer());
   on("gear-btn", "click", () => showSettings());
 
+  // Delegation workspace
+  on("delegation-focus-back", "click", () => returnToDelegationGrid());
+
   // Drawer / overlays
   on("drawer-backdrop", "click", () => closeDrawer());
   on("git-status-overlay", "click", () => dismissGitStatus());
@@ -5165,6 +5425,8 @@ initGridDeps({
   scheduleSnapshotSave: () => scheduleSnapshotSave(null),
   flushGridSnapshots,
   loadSnapshot,
+  focusDelegationSession,
+  leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });
 initRalphDeps({
   api, errorMessage, showView, getMachines, backToSessions,
@@ -5212,5 +5474,6 @@ Object.assign(window, {
   toggleAgentEnabled, removeAgent, addAgent,
   // grid + view (used by onclick and e2e page.evaluate)
   toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
-  showView, state,
+  toggleSidebarDelegationChildren,
+  loadSessions, showView, state,
 });

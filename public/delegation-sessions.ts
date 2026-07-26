@@ -128,6 +128,32 @@ export function delegationChildSummaryText(summary: DelegationChildSummary): str
   return parts.join(" · ");
 }
 
+export function delegationRootSession<TSession extends DelegationSessionLike>(
+  sessions: readonly TSession[],
+  target: TSession,
+): TSession | null {
+  const targetId = sessionIdentityId(target);
+  const sessionsById = new Map(
+    sessions
+      .map(session => [sessionIdentityId(session), session] as const)
+      .filter((entry): entry is readonly [string, TSession] => entry[0] !== null),
+  );
+  let current = targetId ? sessionsById.get(targetId) : sessions.find(session => session === target);
+  const visited = new Set<string>();
+
+  while (current) {
+    const currentId = sessionIdentityId(current);
+    if (currentId) {
+      if (visited.has(currentId)) return null;
+      visited.add(currentId);
+    }
+    const parent = sessionParentReference(current);
+    if (!parent) return current;
+    current = sessionsById.get(parent.wolfpackSessionId);
+  }
+  return null;
+}
+
 export function projectDelegationSessions<TSession extends DelegationSessionLike>(
   sessions: readonly TSession[],
 ): DelegationSessionRow<TSession>[] {
@@ -177,4 +203,24 @@ export function projectDelegationSessions<TSession extends DelegationSessionLike
   for (const session of orphaned) appendTree(session, "orphan");
   for (const session of sessions) appendTree(session);
   return ordered;
+}
+
+export function delegationGridMembers<TSession extends DelegationSessionLike>(
+  sessions: readonly TSession[],
+  root: TSession,
+): DelegationSessionRow<TSession>[] {
+  const rootId = sessionIdentityId(root);
+  const rows = projectDelegationSessions(sessions);
+  const rootRow = rows.find(row => row.session === root || (rootId !== null && sessionIdentityId(row.session) === rootId));
+  if (!rootRow || rootRow.role !== "root") return [];
+
+  const memberIds = new Set<string>();
+  if (rootId) memberIds.add(rootId);
+  return rows.filter(row => {
+    if (row === rootRow) return true;
+    if (!row.parent || !memberIds.has(row.parent.wolfpackSessionId)) return false;
+    const id = sessionIdentityId(row.session);
+    if (id) memberIds.add(id);
+    return true;
+  });
 }

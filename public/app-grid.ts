@@ -39,7 +39,22 @@ interface GridSession {
   _displaced?: boolean;
   _autoTakeControl?: boolean;
   _slowLoad?: ReturnType<typeof createTerminalSlowPathIndicator> | null;
+  _delegation?: boolean;
+  _delegationRole?: "root" | "child";
+  _statusClass?: string;
+  _statusLabel?: string;
+  _idle?: boolean;
+  _collapsed?: boolean;
   [field: string]: unknown;
+}
+
+export interface DelegationGridMember {
+  readonly session: string;
+  readonly machine: string;
+  readonly role: "root" | "child";
+  readonly statusClass: string;
+  readonly statusLabel: string;
+  readonly idle: boolean;
 }
 
 interface GridDeps {
@@ -56,6 +71,8 @@ interface GridDeps {
   scheduleSnapshotSave: () => void;
   flushGridSnapshots?: () => void;
   loadSnapshot?: (machine: string, session: string) => string | null;
+  focusDelegationSession?: (session: string, machine: string) => void;
+  leaveDelegationWorkspace?: () => void;
 }
 
 let deps: GridDeps;
@@ -87,17 +104,60 @@ function cancelGridRelayoutTransition() {
 }
 
 // ── Multi-terminal grid state ──
-let _gridRenderGeneration = 0;
 let _gridRelayoutFitRaf: number | null = null;
 let _gridRelayoutRevealRaf: number | null = null;
 const _gridRelayoutHiddenSessions = new Set<GridSession>();
 const MAX_GRID_CELLS = 6;
 
-export function isGridActive() { return state.gridSessions.length >= 2; }
+export function isGridActive() {
+  return !state.activeDelegationRoot && state.gridSessions.length >= 2;
+}
+
+export function canOpenMultiTerminalGrid(): boolean {
+  if (!(deps.canUseWasmTerminal ? deps.canUseWasmTerminal() : isDesktop())) {
+    console.warn("[grid] WebAssembly unavailable — cannot open grid terminal");
+    return false;
+  }
+  // Without per-Terminal WASM isolation, all grid cells share one
+  // WebAssembly.Memory. Concurrent fit()/write() across cells produce
+  // out-of-bounds memory accesses that crash every terminal in the tab.
+  // Refuse to enter grid mode in that state and surface a visible warning.
+  if (typeof window.createIsolatedGhostty !== "function") {
+    console.error("[grid] createIsolatedGhostty unavailable — grid mode disabled to prevent WASM OOB crash. Reload to pick up a newer ghostty-web bundle.");
+    if (typeof window !== "undefined" && typeof window.alert === "function") {
+      window.alert(
+        "Grid mode is disabled in this tab.\n\n" +
+        "The terminal WASM bundle does not support per-cell isolation, which is required " +
+        "to safely show multiple terminals at once. (Older versions of ghostty-web are " +
+        "affected.)\n\nReload the page to pick up a fresh bundle.",
+      );
+    }
+    return false;
+  }
+  return true;
+}
+
+function sessionsForGridSession(gs: GridSession): GridSession[] {
+  return gs._delegation ? state.delegationGridSessions : state.gridSessions;
+}
+
+function focusIndexForGridSession(gs: GridSession): number {
+  return gs._delegation ? state.delegationGridFocusIndex : state.gridFocusIndex;
+}
+
+function gridContainerForSession(gs: GridSession): HTMLElement | null {
+  return document.getElementById(gs._delegation ? "delegation-grid-container" : "desktop-grid-container");
+}
+
+function setGridSessionFocus(gs: GridSession, index: number): void {
+  if (gs._delegation) setDelegationGridFocus(index);
+  else setGridFocus(index);
+}
 
 function gridLayoutClass(count) {
+  if (count <= 1) return "grid-1";
   if (count >= 2 && count <= 6) return "grid-" + count;
-  return "grid-2";
+  return "grid-6";
 }
 
 export function updateGridLayout() {
@@ -117,31 +177,54 @@ export function updateGridLayout() {
   document.getElementById("kb-accessory").classList.remove("visible");
 }
 
-function createGridCell(gs, idx) {
+function createGridCell(gs: GridSession, idx: number): HTMLElement {
   const existingTrace = __wfTraceGet(gs.session, gs.machine || "");
   const trace = existingTrace?._meta.mode === "grid" && existingTrace.events.some((event) => event.kind === "addToGrid.start")
     ? existingTrace
-    : __wfTraceStart(gs.session, gs.machine || "", { mode: "grid", gridIndex: idx });
+    : __wfTraceStart(gs.session, gs.machine || "", { mode: gs._delegation ? "delegation-grid" : "grid", gridIndex: idx });
   __wfTraceEvent(trace, "dom.cell.created", { gridIndex: idx });
   const cell = document.createElement("div");
-  cell.className = "grid-cell" + (idx === state.gridFocusIndex ? " grid-focused" : "") + (gs._loading ? " grid-loading" : "");
-  cell.dataset.gridIndex = idx;
-  cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
+  cell.className = "grid-cell" + (gs._delegation ? " delegation-grid-cell" : "")
+    + (idx === focusIndexForGridSession(gs) ? " grid-focused" : "")
+    + (gs._loading ? " grid-loading" : "")
+    + (gs._collapsed ? " collapsed" : "");
+  cell.dataset.gridIndex = String(idx);
+  cell.dataset.session = gs.session;
+
+  if (gs._delegation) {
+    const collapseButton = gs._delegationRole === "child"
+      ? `<button type="button" class="delegation-cell-collapse" aria-label="${gs._collapsed ? "Expand" : "Collapse"} ${esc(gs.session)}">${gs._collapsed ? "expand" : "collapse"}</button>`
+      : "";
+    cell.innerHTML = `<div class="grid-cell-header"><div class="grid-cell-label">${esc(gs.session)}</div><div class="delegation-cell-actions"><span class="triage-badge ${esc(gs._statusClass || "idle")}">${esc(gs._statusLabel || "idle")}</span>${collapseButton}<button type="button" class="delegation-cell-focus" aria-label="Focus ${esc(gs.session)}">focus</button></div></div><div class="grid-cell-loading">Loading terminal</div>`;
+    cell.querySelector(".delegation-cell-collapse")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      gs._collapsed = !gs._collapsed;
+      renderDelegationGridCells();
+      deps.renderSidebar();
+    });
+    cell.querySelector(".delegation-cell-focus")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deps.focusDelegationSession?.(gs.session, gs.machine || "");
+    });
+  } else {
+    cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
+    cell.querySelector(".grid-cell-close")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const index = parseInt(cell.dataset.gridIndex || "-1", 10);
+      removeFromGrid(index);
+    });
+  }
+
   setTerminalLoadVisualState(cell, "prefill-loading");
   gs._slowLoad = createTerminalSlowPathIndicator(cell);
   gs._slowLoad.start("waiting for grid cell snapshot");
-  cell.addEventListener("click", (e) => {
-    const tgt = e.target as HTMLElement | null;
-    if (tgt && tgt.classList.contains("grid-cell-close")) return;
-    const sel = window.getSelection ? window.getSelection() : null;
-    if (sel && !sel.isCollapsed) return;
-    const i = parseInt(cell.dataset.gridIndex, 10);
-    setGridFocus(i);
-  });
-  cell.querySelector(".grid-cell-close").addEventListener("click", (e) => {
-    e.stopPropagation();
-    const i = parseInt(cell.dataset.gridIndex, 10);
-    removeFromGrid(i);
+  cell.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, .grid-cell-close")) return;
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (selection && !selection.isCollapsed) return;
+    const index = parseInt(cell.dataset.gridIndex || "-1", 10);
+    setGridSessionFocus(gs, index);
   });
   gs._cellElement = cell;
   return cell;
@@ -164,13 +247,13 @@ async function mountGridController(gs, cell, idx) {
     machine: gs.machine || "",
     fontSize: Math.max(tp.fontSize - 2, 10),
     scrollback: GRID_TERMINAL_SCROLLBACK,
-    cursorBlink: idx === state.gridFocusIndex,
-    disableStdin: idx !== state.gridFocusIndex,
+    cursorBlink: idx === focusIndexForGridSession(gs),
+    disableStdin: idx !== focusIndexForGridSession(gs),
     resetPty: gs._resetPty,
     prefillMode: TERMINAL_PREFILL_MODE.VIEWPORT,
-    shouldFocus: () => state.gridSessions[state.gridFocusIndex] === gs,
-    shouldReconnect: () => state.gridSessions.includes(gs),
-    canAcceptInput: () => !!(gs.controller && gs.controller.isConnected && state.gridSessions[state.gridFocusIndex] === gs),
+    shouldFocus: () => sessionsForGridSession(gs)[focusIndexForGridSession(gs)] === gs,
+    shouldReconnect: () => sessionsForGridSession(gs).includes(gs),
+    canAcceptInput: () => !!(gs.controller && gs.controller.isConnected && sessionsForGridSession(gs)[focusIndexForGridSession(gs)] === gs),
     canSendResize: () => !!(gs.controller && gs.controller.isConnected),
     onOpen: () => {
       // Successful WS open means we have the session — clear any stale
@@ -235,11 +318,11 @@ async function mountGridController(gs, cell, idx) {
       removeGridCellConflictOverlay(gs);
       setTerminalLoadVisualState(cell, "hydrating");
       gs._slowLoad?.start("restoring grid cell control");
-      if (state.gridSessions[state.gridFocusIndex] === gs) gs.controller.focus();
+      if (sessionsForGridSession(gs)[focusIndexForGridSession(gs)] === gs) gs.controller.focus();
     },
     onDisconnected: (code, reason) => {
       removeGridCellConflictOverlay(gs);
-      if (!state.gridSessions.includes(gs)) return;
+      if (!sessionsForGridSession(gs).includes(gs)) return;
       var action = WP.classifyDisconnect(code, reason || "");
       if (action === "displaced") {
         var ns = WP.handleDisplaced({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
@@ -278,30 +361,55 @@ async function mountGridController(gs, cell, idx) {
   gs._needsConnect = true;
 }
 
-export function renderGridCells() {
-  const container = document.getElementById("desktop-grid-container");
+function renderGridSessionCells(
+  sessions: GridSession[],
+  container: HTMLElement,
+  focusIndex: number,
+  updateLayout: () => void,
+  forceRelayout: boolean,
+): void {
   // Each controller observes its own cell. Grid topology changes below use
   // one rAF relayout request; do not add a competing window-resize fan-out.
   const existingCells = container.querySelectorAll(".grid-cell");
-  // Track which sessions need new cells vs reuse
-  const existingCellSessions = [];
-  const renderGen = ++_gridRenderGeneration;
-  state.gridSessions.forEach((gs, idx) => {
+  const existingCellSessions: GridSession[] = [];
+  let topologyChanged = false;
+  sessions.forEach((gs, idx) => {
     if (gs._cellElement && gs._cellElement.parentNode === container && gs.controller) {
-      // Existing cell — just update index and focus state
-      gs._cellElement.dataset.gridIndex = idx;
-      gs._cellElement.classList.toggle("grid-focused", idx === state.gridFocusIndex);
+      gs._cellElement.dataset.gridIndex = String(idx);
+      gs._cellElement.classList.toggle("grid-focused", idx === focusIndex);
+      const wasCollapsed = gs._cellElement.classList.contains("collapsed");
+      gs._cellElement.classList.toggle("collapsed", !!gs._collapsed);
+      if (wasCollapsed !== !!gs._collapsed) topologyChanged = true;
+      if (gs._collapsed && gs.controller) {
+        clearGridCellTakeControlTimer(gs);
+        gs._slowLoad?.stop();
+        gs.controller.dispose();
+        gs.controller = null;
+        gs._loading = false;
+      }
+      const statusBadge = gs._cellElement.querySelector<HTMLElement>(".triage-badge");
+      if (statusBadge) {
+        statusBadge.className = `triage-badge ${gs._statusClass || "idle"}`;
+        statusBadge.textContent = gs._statusLabel || "idle";
+      }
+      const collapseButton = gs._cellElement.querySelector<HTMLButtonElement>(".delegation-cell-collapse");
+      if (collapseButton) {
+        collapseButton.textContent = gs._collapsed ? "expand" : "collapse";
+        collapseButton.setAttribute("aria-label", `${gs._collapsed ? "Expand" : "Collapse"} ${gs.session}`);
+      }
       existingCellSessions.push(gs);
     } else {
-      // New cell needed — show loading synchronously before async WASM mount
-      // can reveal stale cached/full-width terminal content in the new grid size.
-      gs._loading = true;
+      topologyChanged = true;
+      gs._loading = !gs._collapsed;
       const cell = createGridCell(gs, idx);
       container.appendChild(cell);
+      if (gs._collapsed) {
+        gs._slowLoad?.stop();
+        return;
+      }
       void mountGridController(gs, cell, idx).then(() => {
-        if (_gridRenderGeneration !== renderGen) return; // stale render
-        if (!state.gridSessions.includes(gs)) return; // removed during async mount
-        if (gs._cellElement !== cell || cell.parentNode !== container) return; // re-rendered/replaced
+        if (!sessionsForGridSession(gs).includes(gs)) return;
+        if (gs._cellElement !== cell || cell.parentNode !== container) return;
         if (gs._needsConnect && gs.controller) {
           delete gs._needsConnect;
           gs.controller.connect();
@@ -315,29 +423,155 @@ export function renderGridCells() {
       });
     }
   });
-  // Remove orphaned cells (sessions removed from grid)
-  const activeCellElements = new Set(state.gridSessions.map(gs => gs._cellElement));
+  const activeCellElements = new Set(sessions.map(gs => gs._cellElement));
   existingCells.forEach(cell => {
-    if (!activeCellElements.has(cell)) cell.remove();
-  });
-  // Reorder DOM to match state.gridSessions order
-  state.gridSessions.forEach(gs => {
-    if (gs._cellElement && gs._cellElement.parentNode === container) {
-      container.appendChild(gs._cellElement);
+    if (!activeCellElements.has(cell as HTMLElement)) {
+      topologyChanged = true;
+      cell.remove();
     }
   });
-  updateGridLayout();
-  // Refitting existing cells is the only layout barrier needed when grid-N
-  // changes. New cells run their first fit inside mount() and connect
-  // independently as soon as that fit is ready.
-  scheduleGridRelayoutFit(existingCellSessions, true);
+  const orderedCells = sessions
+    .map(gs => gs._cellElement)
+    .filter((cell): cell is HTMLElement => !!cell && cell.parentNode === container);
+  const needsReorder = orderedCells.some((cell, index) => container.children[index] !== cell);
+  if (needsReorder) {
+    topologyChanged = true;
+    for (const cell of orderedCells) container.appendChild(cell);
+  }
+  updateLayout();
+  if (forceRelayout || topologyChanged) {
+    scheduleGridRelayoutFit(
+      existingCellSessions.filter(session => !session._collapsed),
+      topologyChanged,
+      container.id,
+      sessions.filter(session => !session._collapsed),
+    );
+  }
 }
 
-export function getGridCellElement(gs) {
+export function renderGridCells(): void {
+  const container = document.getElementById("desktop-grid-container");
+  if (!container) return;
+  renderGridSessionCells(state.gridSessions, container, state.gridFocusIndex, updateGridLayout, true);
+}
+
+function renderDelegationCollapsedStrip(): void {
+  const strip = document.getElementById("delegation-collapsed-strip");
+  if (!strip) return;
+  const collapsedSessions = state.delegationGridSessions.filter(session => session._collapsed);
+  strip.classList.toggle("visible", collapsedSessions.length > 0);
+  strip.innerHTML = collapsedSessions.map(session => `
+    <button type="button" class="delegation-collapsed-tab" data-session="${escAttr(session.session)}" aria-label="Expand ${escAttr(session.session)}">
+      <span class="delegation-collapsed-name">${esc(session.session)}</span>
+      <span class="triage-badge ${esc(session._statusClass || "idle")}">${esc(session._statusLabel || "idle")}</span>
+    </button>
+  `).join("");
+  strip.querySelectorAll<HTMLButtonElement>(".delegation-collapsed-tab").forEach(button => {
+    button.addEventListener("click", () => {
+      const name = button.dataset.session || "";
+      const session = state.delegationGridSessions.find(entry => entry.session === name);
+      if (!session) return;
+      session._collapsed = false;
+      renderDelegationGridCells();
+      deps.renderSidebar();
+    });
+  });
+}
+
+export function renderDelegationGridCells(): void {
+  const container = document.getElementById("delegation-grid-container");
+  if (!container) return;
+  renderGridSessionCells(state.delegationGridSessions, container, state.delegationGridFocusIndex, () => {
+    const visibleCount = state.delegationGridSessions.filter(session => !session._collapsed).length;
+    container.className = visibleCount > 0 ? `active ${gridLayoutClass(visibleCount)}` : "";
+    renderDelegationCollapsedStrip();
+  }, false);
+}
+
+function gridSessionKey(session: string, machine: string): string {
+  return `${machine}|${session}`;
+}
+
+export function setDelegationGridMembers(members: readonly DelegationGridMember[]): void {
+  const previous = new Map(
+    state.delegationGridSessions.map(gs => [gridSessionKey(gs.session, gs.machine || ""), gs]),
+  );
+  const collapseIdleByDefault = members.length > 4;
+  const next = members.map(member => {
+    const key = gridSessionKey(member.session, member.machine || "");
+    const existing = previous.get(key);
+    previous.delete(key);
+    const gridSession = existing || {
+      session: member.session,
+      machine: member.machine || "",
+      controller: null,
+      _delegation: true,
+      _collapsed: collapseIdleByDefault && member.role === "child" && member.idle,
+    };
+    gridSession._delegation = true;
+    gridSession._delegationRole = member.role;
+    gridSession._statusClass = member.statusClass;
+    gridSession._statusLabel = member.statusLabel;
+    gridSession._idle = member.idle;
+    return gridSession;
+  });
+
+  for (const removed of previous.values()) {
+    clearGridCellTakeControlTimer(removed);
+    removed._slowLoad?.stop();
+    removed.controller?.dispose();
+    removed._cellElement?.remove();
+    removed._cellElement = null;
+  }
+  state.delegationGridSessions = next;
+  state.delegationGridFocusIndex = Math.max(0, Math.min(state.delegationGridFocusIndex, next.length - 1));
+}
+
+export function collapseIdleDelegationSessions(): void {
+  for (const session of state.delegationGridSessions) {
+    if (session._delegationRole === "child" && session._idle) session._collapsed = true;
+  }
+  renderDelegationGridCells();
+}
+
+export function expandDelegationSessions(): void {
+  for (const session of state.delegationGridSessions) session._collapsed = false;
+  renderDelegationGridCells();
+}
+
+export function suspendDelegationGridTerminals(): void {
+  for (const session of state.delegationGridSessions) {
+    clearGridCellTakeControlTimer(session);
+    session._slowLoad?.stop();
+    session.controller?.dispose();
+    session.controller = null;
+    session._cellElement?.remove();
+    session._cellElement = null;
+    session._loading = false;
+  }
+  const container = document.getElementById("delegation-grid-container");
+  if (container) container.innerHTML = "";
+}
+
+export function disposeDelegationGrid(): void {
+  suspendDelegationGridTerminals();
+  state.delegationGridSessions = [];
+  state.delegationGridFocusIndex = 0;
+  const container = document.getElementById("delegation-grid-container");
+  if (container) container.className = "";
+  const strip = document.getElementById("delegation-collapsed-strip");
+  if (strip) {
+    strip.classList.remove("visible");
+    strip.innerHTML = "";
+  }
+}
+
+export function getGridCellElement(gs: GridSession): HTMLElement | null {
   if (gs._cellElement) return gs._cellElement;
-  const idx = state.gridSessions.indexOf(gs);
+  const sessions = sessionsForGridSession(gs);
+  const idx = sessions.indexOf(gs);
   if (idx < 0) return null;
-  return document.querySelector('#desktop-grid-container .grid-cell[data-grid-index="' + idx + '"]');
+  return gridContainerForSession(gs)?.querySelector<HTMLElement>('.grid-cell[data-grid-index="' + idx + '"]') ?? null;
 }
 
 /** Reclaim control of a single grid cell. */
@@ -421,30 +655,38 @@ export function returnToTerminalView() {
   return true;
 }
 
-export function setGridFocus(idx) {
-  if (idx < 0 || idx >= state.gridSessions.length) return;
-  const prev = state.gridFocusIndex;
-  state.gridFocusIndex = idx;
-  // Update terminal stdin/cursor for old + new focus
-  state.gridSessions.forEach((gs, i) => {
-    if (!gs.controller || !gs.controller.term) return;
-    const focused = i === idx;
+function applyGridFocus(
+  sessions: GridSession[],
+  idx: number,
+  containerSelector: string,
+  setFocusIndex: (index: number) => void,
+): void {
+  if (idx < 0 || idx >= sessions.length) return;
+  setFocusIndex(idx);
+  sessions.forEach((gs, index) => {
+    if (!gs.controller?.term) return;
+    const focused = index === idx;
     gs.controller.term.options.disableStdin = !focused;
     gs.controller.term.options.cursorBlink = focused;
   });
-  // Update cell border highlights
-  const cells = document.querySelectorAll("#desktop-grid-container .grid-cell");
-  cells.forEach((cell, i) => {
-    cell.classList.toggle("grid-focused", i === idx);
+  document.querySelectorAll(`${containerSelector} .grid-cell`).forEach((cell, index) => {
+    cell.classList.toggle("grid-focused", index === idx);
   });
-  // Sync sidebar highlights
-  const focusedGs = state.gridSessions[idx];
-  if (focusedGs) {
-    setState({ currentSession: focusedGs.session, currentMachine: focusedGs.machine || "" });
-    deps.renderSidebar();
-    // Focus the terminal
-    if (focusedGs.controller) focusedGs.controller.focus();
-  }
+  const focusedSession = sessions[idx];
+  if (!focusedSession) return;
+  setState({ currentSession: focusedSession.session, currentMachine: focusedSession.machine || "" });
+  deps.renderSidebar();
+  focusedSession.controller?.focus();
+}
+
+export function setGridFocus(idx: number): void {
+  applyGridFocus(state.gridSessions, idx, "#desktop-grid-container", index => { state.gridFocusIndex = index; });
+}
+
+export function setDelegationGridFocus(idx: number): void {
+  applyGridFocus(state.delegationGridSessions, idx, "#delegation-grid-container", index => {
+    state.delegationGridFocusIndex = index;
+  });
 }
 
 export function suspendGridMode() {
@@ -528,28 +770,10 @@ export function backFromSettings() {
 }
 
 export function addToGrid(session: string, machine?: string): void {
+  if (state.activeDelegationRoot) deps.leaveDelegationWorkspace?.();
   const trace = __wfTraceStart(session, machine || "", { mode: "grid" });
   __wfTraceEvent(trace, "addToGrid.start");
-  if (!(deps.canUseWasmTerminal ? deps.canUseWasmTerminal() : isDesktop())) {
-    console.warn("[grid] WebAssembly unavailable — cannot open grid terminal");
-    return;
-  }
-  // Without per-Terminal WASM isolation, all grid cells share one
-  // WebAssembly.Memory. Concurrent fit()/write() across cells produce
-  // out-of-bounds memory accesses that crash every terminal in the tab.
-  // Refuse to enter grid mode in that state and surface a visible warning.
-  if (typeof window.createIsolatedGhostty !== "function") {
-    console.error("[grid] createIsolatedGhostty unavailable — grid mode disabled to prevent WASM OOB crash. Reload to pick up a newer ghostty-web bundle.");
-    if (typeof window !== "undefined" && typeof window.alert === "function") {
-      window.alert(
-        "Grid mode is disabled in this tab.\n\n" +
-        "The terminal WASM bundle does not support per-cell isolation, which is required " +
-        "to safely show multiple terminals at once. (Older versions of ghostty-web are " +
-        "affected.)\n\nReload the page to pick up a fresh bundle.",
-      );
-    }
-    return;
-  }
+  if (!canOpenMultiTerminalGrid()) return;
   const targetMachine = machine || "";
   if (state.currentView !== "terminal" && hasPreservedGrid()) {
     const result = WP.addToGridState(
@@ -707,7 +931,12 @@ export function exitGridMode(skipRestore?) {
   }
 }
 
-function scheduleGridRelayoutFit(sessions = state.gridSessions, hideUntilRepaint = false) {
+function scheduleGridRelayoutFit(
+  sessions: GridSession[] = state.gridSessions,
+  hideUntilRepaint = false,
+  containerId = "desktop-grid-container",
+  activeSessions: GridSession[] = state.gridSessions,
+): void {
   if (_gridRelayoutFitRaf != null) cancelAnimationFrame(_gridRelayoutFitRaf);
   if (_gridRelayoutRevealRaf != null) {
     cancelAnimationFrame(_gridRelayoutRevealRaf);
@@ -722,17 +951,17 @@ function scheduleGridRelayoutFit(sessions = state.gridSessions, hideUntilRepaint
   }
   _gridRelayoutFitRaf = requestAnimationFrame(() => {
     _gridRelayoutFitRaf = null;
-    if (!isGridActive()) return;
-    const container = document.getElementById("desktop-grid-container");
+    if (activeSessions.length < 1) return;
+    const container = document.getElementById(containerId);
     if (container) void container.offsetWidth;
     for (const gs of cells) {
-      if (!state.gridSessions.includes(gs) || !gs.controller) continue;
+      if (!activeSessions.includes(gs) || !gs.controller) continue;
       try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }
     }
     if (_gridRelayoutHiddenSessions.size === 0) return;
     _gridRelayoutRevealRaf = requestAnimationFrame(() => {
       for (const gs of _gridRelayoutHiddenSessions) {
-        if (state.gridSessions.includes(gs) && gs.controller) {
+        if (activeSessions.includes(gs) && gs.controller) {
           try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
         }
       }
@@ -749,42 +978,67 @@ function scheduleGridRelayoutFit(sessions = state.gridSessions, hideUntilRepaint
 
 /** Hide terminal canvases + show loading overlay (before sidebar CSS transition). */
 export function hideGridCellsForTransition() {
-  if (isGridActive()) {
-    for (const gs of state.gridSessions) {
-      const el = gs._cellElement;
-      if (el) el.classList.add('transitioning');
-    }
+  const activeSessions = state.activeDelegationRoot && !state.focusedDelegationSession
+    ? state.delegationGridSessions
+    : (isGridActive() ? state.gridSessions : null);
+  if (activeSessions) {
+    for (const gs of activeSessions) gs._cellElement?.classList.add("transitioning");
   } else {
-    const el = document.getElementById("desktop-terminal-container");
-    if (el) el.classList.add('transitioning');
+    document.getElementById("desktop-terminal-container")?.classList.add("transitioning");
   }
 }
 
 /** Remove loading overlay + reveal canvases (no PTY resize). */
 export function revealGridCellsWithoutResize() {
-  if (isGridActive()) {
-    for (const gs of state.gridSessions) {
-      const el = gs._cellElement;
-      if (el) el.classList.remove('transitioning');
-    }
+  const activeSessions = state.activeDelegationRoot && !state.focusedDelegationSession
+    ? state.delegationGridSessions
+    : (isGridActive() ? state.gridSessions : null);
+  if (activeSessions) {
+    for (const gs of activeSessions) gs._cellElement?.classList.remove("transitioning");
   } else {
-    const el = document.getElementById("desktop-terminal-container");
-    if (el) el.classList.remove('transitioning');
+    document.getElementById("desktop-terminal-container")?.classList.remove("transitioning");
   }
 }
 
 export function scheduleGridStabilizedFit() {
-  if (!isGridActive()) return;
-  scheduleGridRelayoutFit();
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    scheduleGridRelayoutFit(
+      state.delegationGridSessions,
+      false,
+      "delegation-grid-container",
+      state.delegationGridSessions,
+    );
+    return;
+  }
+  if (isGridActive()) scheduleGridRelayoutFit();
+}
+
+function isSessionVisibleInDelegationGrid(session, machine): boolean {
+  if (!state.activeDelegationRoot || state.focusedDelegationSession) return false;
+  return state.delegationGridSessions.some(gs =>
+    !gs._collapsed && gs.session === session && (gs.machine || "") === (machine || ""),
+  );
 }
 
 export function isSessionInGrid(session, machine) {
-  const sessions = isGridActive() ? state.gridSessions : state.preservedGridSessions;
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    return isSessionVisibleInDelegationGrid(session, machine);
+  }
+  const sessions = state.gridSessions.length >= 2 ? state.gridSessions : state.preservedGridSessions;
   return sessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""));
 }
 
 export function toggleGrid(session, machine, event) {
   if (event) { event.stopPropagation(); event.preventDefault(); }
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    const match = state.delegationGridSessions.find(gs => gs.session === session && (gs.machine || "") === (machine || ""));
+    if (match) {
+      match._collapsed = !match._collapsed;
+      renderDelegationGridCells();
+      deps.renderSidebar();
+      return;
+    }
+  }
   if (!isGridActive() && hasPreservedGrid() && state.currentView !== "terminal") {
     const idx = state.preservedGridSessions.findIndex(gs => gs.session === session && (gs.machine || "") === (machine || ""));
     if (idx !== -1) {

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 import {
   delegationChildSummaryText,
+  delegationGridMembers,
+  delegationRootSession,
   projectDelegationSessions,
 } from "../../public/delegation-sessions.ts";
 
@@ -115,5 +117,43 @@ describe("delegation session projection", () => {
       idle: 1,
     });
     expect(delegationChildSummaryText(rows[0]!.childSummary!)).toBe("5 children · 2 failed/stopped · 2 working/output · 1 idle");
+  });
+
+  test("returns a root and recursive descendants in projection order", () => {
+    const parent = session("parent", "parent-id", { state: AGENT_STATUS_STATE.RUNNING });
+    const idleChild = session("idle-child", "child-idle", {
+      parentId: "parent-id",
+      parentName: "parent",
+      state: AGENT_STATUS_STATE.IDLE,
+    });
+    const attentionChild = session("attention-child", "child-attention", {
+      parentId: "parent-id",
+      parentName: "parent",
+      state: AGENT_STATUS_STATE.NEEDS_INPUT,
+    });
+    const grandchild = session("grandchild", "grandchild-id", {
+      parentId: "child-attention",
+      parentName: "attention-child",
+      state: AGENT_STATUS_STATE.WORKING,
+    });
+    const sessions = [idleChild, grandchild, parent, attentionChild];
+
+    expect(delegationGridMembers(sessions, parent).map(row => row.session.name)).toEqual([
+      "parent",
+      "attention-child",
+      "grandchild",
+      "idle-child",
+    ]);
+    expect(delegationRootSession(sessions, grandchild)).toBe(parent);
+  });
+
+  test("derives current membership on each projection and leaves orphans unattached", () => {
+    const parent = session("parent", "parent-id");
+    const child = session("child", "child-id", { parentId: "parent-id", parentName: "parent" });
+    const orphan = session("orphan", "orphan-id", { parentId: "gone-id", parentName: "gone" });
+
+    expect(delegationGridMembers([parent, child], parent).map(row => row.session.name)).toEqual(["parent", "child"]);
+    expect(delegationGridMembers([parent], parent).map(row => row.session.name)).toEqual(["parent"]);
+    expect(delegationRootSession([parent, orphan], orphan)).toBeNull();
   });
 });
