@@ -133,6 +133,10 @@ test("desktop groups structured sub-agents directly under their parent", async (
 
 test("desktop opens and refreshes an ephemeral delegation grid without changing the manual grid", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
+  await page.setViewportSize({ width: 1500, height: 720 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
+  });
 
   const identity = (id: string, name: string, parent?: { id: string; name: string }) => ({
     wolfpackSessionId: id,
@@ -179,6 +183,28 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "manual-one",
     "manual-two",
   ]);
+
+  const gridColumnCountBeforeSidebarHover = await page.evaluate(() => {
+    const columns = getComputedStyle(document.getElementById("delegation-grid-container")!).gridTemplateColumns;
+    return columns.split(" ").filter(Boolean).length;
+  });
+  expect(gridColumnCountBeforeSidebarHover).toBeGreaterThanOrEqual(3);
+  await page.evaluate(() => {
+    const stateWindow = window as unknown as WolfpackTestWindow & {
+      state: WolfpackTestWindow["state"] & { sidebarCollapsed: boolean; sidebarPinned: boolean; sessionsExpanded: boolean };
+    };
+    stateWindow.state.sidebarCollapsed = true;
+    stateWindow.state.sidebarPinned = false;
+    stateWindow.state.sessionsExpanded = false;
+    document.body.classList.remove("sidebar-pinned", "sessions-expanded");
+    document.getElementById("desktop-sidebar")?.classList.add("collapsed");
+    document.getElementById("sidebar-hover-edge")?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+  });
+  await page.waitForTimeout(250);
+  await expect.poll(() => page.evaluate(() => {
+    const columns = getComputedStyle(document.getElementById("delegation-grid-container")!).gridTemplateColumns;
+    return columns.split(" ").filter(Boolean).length;
+  })).toBe(gridColumnCountBeforeSidebarHover);
 
   await page.evaluate(() => {
     document.querySelector('#delegation-grid-container .grid-cell[data-session="attention-child"]')?.setAttribute("data-stability-marker", "same-cell");

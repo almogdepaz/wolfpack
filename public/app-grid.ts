@@ -155,8 +155,9 @@ function setGridSessionFocus(gs: GridSession, index: number): void {
 }
 
 function gridLayoutClass(count) {
+  if (count <= 1) return "grid-1";
   if (count >= 2 && count <= 6) return "grid-" + count;
-  return "grid-2";
+  return "grid-6";
 }
 
 export function updateGridLayout() {
@@ -457,7 +458,8 @@ export function renderDelegationGridCells(): void {
   const container = document.getElementById("delegation-grid-container");
   if (!container) return;
   renderGridSessionCells(state.delegationGridSessions, container, state.delegationGridFocusIndex, () => {
-    container.classList.toggle("active", state.delegationGridSessions.length > 0);
+    const visibleCount = state.delegationGridSessions.filter(session => !session._collapsed).length;
+    container.className = visibleCount > 0 ? `active ${gridLayoutClass(visibleCount)}` : "";
   }, false);
 }
 

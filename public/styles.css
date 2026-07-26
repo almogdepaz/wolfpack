@@ -1573,14 +1573,18 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
   }
   #delegation-grid-container.active {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
-    grid-auto-rows: minmax(220px, 1fr);
     gap: 3px;
     padding: 3px;
     flex: 1;
     min-height: 0;
     overflow: auto;
   }
+  #delegation-grid-container.grid-1 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  #delegation-grid-container.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); }
+  #delegation-grid-container.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); }
+  #delegation-grid-container.grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  #delegation-grid-container.grid-5,
+  #delegation-grid-container.grid-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: minmax(220px, 1fr); }
   #delegation-grid-container .delegation-grid-cell:first-child {
     border-color: var(--accent-border);
   }
