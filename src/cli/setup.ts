@@ -32,6 +32,13 @@ import {
 import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
 import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
+import {
+  PI_INTEGRATION_PACKAGES,
+  acceptsPiIntegrationInstall,
+  installPiIntegration,
+  piIntegrationDisclosureLines,
+  planPiIntegrationSetup,
+} from "./pi-integration.js";
 
 const log = createLogger("setup");
 
@@ -258,6 +265,36 @@ export async function setup() {
       ? `Enabled detected providers: ${detectedProviders.join(", ")}`
       : "No coding-agent providers detected; enabled shell only";
     print(dim(`  ${readinessSummary}.`));
+  }
+
+  const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
+  if (piIntegrationMode === "prompt") {
+    print("");
+    print(bold("  Optional Pi subagent integration:"));
+    for (const line of piIntegrationDisclosureLines()) {
+      print(dim(line));
+    }
+    const installPi = ask("  Install the Pi extension and Wolfpack skills? [y/N] ");
+    if (acceptsPiIntegrationInstall(installPi)) {
+      const installResult = installPiIntegration({ pathValue: process.env.PATH });
+      if (installResult.status === "installed") {
+        print(green("  Installed Pi task delegation and Wolfpack skills."));
+        print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
+      } else {
+        print(red(`  Pi integration install stopped at ${installResult.failedSource}.`));
+        print(dim(`  Retry: ${installResult.retryCommand}`));
+        print(dim("  Then run 'wolfpack setup' again to finish the integration."));
+      }
+    } else {
+      print(dim("  Skipped optional Pi integration."));
+    }
+  } else if (piIntegrationMode === "guidance") {
+    print("");
+    print(dim("  Pi detected; non-interactive mode skipped the optional subagent integration."));
+    print(dim("  Install it explicitly:"));
+    for (const source of PI_INTEGRATION_PACKAGES) {
+      print(dim(`    pi install ${source}`));
+    }
   }
 
   print("");

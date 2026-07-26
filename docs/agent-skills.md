@@ -12,6 +12,37 @@ Bundled skills:
 - `wolfpack-tailnet-control` - top-level session creation, same-harness child
   spawning, and safe local/Tailscale session inspection/control workflows.
 
+## Pi opt-in setup
+
+`wolfpack setup` checks for `pi` on `PATH`. Pi users receive one default-no,
+opt-in offer for the complete subagent integration; users without Pi receive no
+offer. Accepting runs Pi's package manager with these commands in order:
+
+```bash
+pi install npm:wolfpack-bridge
+pi install npm:@sgtbeatdown/pi-tasks
+```
+
+The packages and resources have distinct ownership:
+
+| Owner | Resource | Responsibility |
+| --- | --- | --- |
+| Wolfpack | `wolfpack-tailnet-control` | Creates and controls visible Wolfpack sessions through the canonical CLI. |
+| Pi Tasks extension | `agent_task_*` | Delivers assignments and stores structured task status/results; it does not spawn sessions. |
+| Pi Tasks skill | `wolfpack-pi-task-delegation` | Teaches Pi how to combine the session-control skill with task dispatch, completion, and parent-owned cleanup. |
+
+`npm:wolfpack-bridge` exposes the bundled Wolfpack skills to Pi.
+`npm:@sgtbeatdown/pi-tasks` contains both the extension and its matching
+delegation skill, so those two stay version-aligned. Every participating Pi
+session needs Pi Tasks loaded. Its default filesystem task store also requires
+parent and child sessions to use the same project directory; cross-repository or
+multi-host task state needs a shared store.
+
+Declining changes nothing. Non-interactive setup installs nothing and prints the
+two commands only when Pi is detected. Package extensions and skills can execute
+commands with the user's permissions, so review them before opting in. Start a
+fresh agent context afterward, or run `/reload` in an existing Pi session.
+
 ## Clone or update the auditable source
 
 Use a dedicated clone. Updating is fast-forward-only so this workflow does not
@@ -116,8 +147,8 @@ contracts.
 ## Distribution boundary
 
 The npm package includes `skills/` so users inspecting that package can read the
-same repository files. Platform binary packages only contain executables, and
-platform binaries do not install skills. This is intentional: there is no
-binary-embedded skill payload, skill installer, network download, or automatic
-overwrite of a user's skill directories. The cloned repository remains the
-auditable source of truth.
+same repository files. Platform binary packages only contain executables;
+platform binaries do not contain skills. After explicit opt-in, the setup wizard
+delegates package installation to Pi instead of embedding skill payloads,
+editing Pi settings, or overwriting skill directories. The cloned repository
+remains the auditable source of truth for manual installation.

@@ -205,6 +205,37 @@ Wolfpack exposes repository-local agent skills in `skills/`:
 - `wolfpack-ralph` — Ralph loop response contract, notifications, and sandbox/socket caveats.
 - `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
 
+### Pi subagent integration
+
+When setup detects `pi` on `PATH`, it offers one default-no, opt-in installation.
+Accepting uses Pi's package manager to install the complete integration:
+
+```bash
+pi install npm:wolfpack-bridge
+pi install npm:@sgtbeatdown/pi-tasks
+```
+
+The pieces have separate jobs:
+
+| Owner | Resource | Responsibility |
+| --- | --- | --- |
+| Wolfpack | `wolfpack-tailnet-control` | Creates, selects, inspects, and closes visible Wolfpack sessions. |
+| Pi Tasks extension | `agent_task_*` | Sends assignments and records durable structured status/results; it does not create sessions. |
+| Pi Tasks skill | `wolfpack-pi-task-delegation` | Teaches Pi to combine Wolfpack session control with the task tools and completion protocol. |
+
+The first package exposes Wolfpack's bundled skills to Pi. The second package
+contains both the Pi Tasks extension and its matching delegation skill. Every
+participating Pi session needs Pi Tasks loaded; its default filesystem store
+also requires parent and child sessions to use the same project directory.
+Declining the setup prompt changes nothing. Non-interactive setup never installs
+Pi packages and prints the commands instead.
+
+Skills and extensions can execute commands with your user permissions. Review
+the packages before accepting. Start a fresh Pi session afterward, or run
+`/reload` in an existing session.
+
+### Manual skill installation
+
 Skills are executable agent instructions, so install only the ones you have audited. Clone or update `https://github.com/almogdepaz/wolfpack`, review the requested file (for example `skills/wolfpack-tailnet-control/SKILL.md`), then symlink that skill directory into one supported root:
 
 - Pi global: `~/.pi/agent/skills/`
@@ -220,7 +251,7 @@ wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
 wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
-Platform binaries do not install skills. This is intentional: the cloned repository remains the auditable source of truth.
+Platform binaries do not contain skills. The setup wizard only asks Pi's package manager to install them after explicit opt-in; the cloned repository remains the auditable source for manual installation.
 
 ## Contributing
 
