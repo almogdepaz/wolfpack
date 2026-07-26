@@ -1541,16 +1541,31 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
     color: var(--text-dim);
     font-size: 10px;
   }
-  .delegation-grid-actions,
   .delegation-cell-actions {
     display: flex;
     align-items: center;
     gap: 5px;
     flex-shrink: 0;
   }
-  .delegation-grid-actions button,
+  .delegation-collapsed-strip {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--accent-muted);
+    background: rgba(255,255,255,0.025);
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .delegation-collapsed-strip.visible {
+    display: flex;
+  }
+  .delegation-collapsed-tab,
   .delegation-cell-actions button,
   .delegation-focus-return button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 5px 8px;
     border: 1px solid var(--accent-border);
     border-radius: var(--radius-sm);
@@ -1563,13 +1578,19 @@ body.ralph-hidden .sidebar-ralph-card { display: none !important; }
     letter-spacing: 0.5px;
     cursor: pointer;
   }
-  .delegation-grid-actions button:hover,
+  .delegation-collapsed-tab:hover,
   .delegation-cell-actions button:hover,
   .delegation-focus-return button:hover {
     color: var(--bg-base);
     border-color: var(--accent);
     background: var(--accent);
     box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.24), 0 0 18px rgba(88, 166, 255, 0.22);
+  }
+  .delegation-collapsed-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   #delegation-grid-container.active {
     display: grid;

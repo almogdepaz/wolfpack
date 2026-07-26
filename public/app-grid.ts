@@ -454,12 +454,35 @@ export function renderGridCells(): void {
   renderGridSessionCells(state.gridSessions, container, state.gridFocusIndex, updateGridLayout, true);
 }
 
+function renderDelegationCollapsedStrip(): void {
+  const strip = document.getElementById("delegation-collapsed-strip");
+  if (!strip) return;
+  const collapsedSessions = state.delegationGridSessions.filter(session => session._collapsed);
+  strip.classList.toggle("visible", collapsedSessions.length > 0);
+  strip.innerHTML = collapsedSessions.map(session => `
+    <button type="button" class="delegation-collapsed-tab" data-session="${escAttr(session.session)}" aria-label="Expand ${escAttr(session.session)}">
+      <span class="delegation-collapsed-name">${esc(session.session)}</span>
+      <span class="triage-badge ${esc(session._statusClass || "idle")}">${esc(session._statusLabel || "idle")}</span>
+    </button>
+  `).join("");
+  strip.querySelectorAll<HTMLButtonElement>(".delegation-collapsed-tab").forEach(button => {
+    button.addEventListener("click", () => {
+      const name = button.dataset.session || "";
+      const session = state.delegationGridSessions.find(entry => entry.session === name);
+      if (!session) return;
+      session._collapsed = false;
+      renderDelegationGridCells();
+    });
+  });
+}
+
 export function renderDelegationGridCells(): void {
   const container = document.getElementById("delegation-grid-container");
   if (!container) return;
   renderGridSessionCells(state.delegationGridSessions, container, state.delegationGridFocusIndex, () => {
     const visibleCount = state.delegationGridSessions.filter(session => !session._collapsed).length;
     container.className = visibleCount > 0 ? `active ${gridLayoutClass(visibleCount)}` : "";
+    renderDelegationCollapsedStrip();
   }, false);
 }
 
@@ -534,6 +557,11 @@ export function disposeDelegationGrid(): void {
   state.delegationGridFocusIndex = 0;
   const container = document.getElementById("delegation-grid-container");
   if (container) container.className = "";
+  const strip = document.getElementById("delegation-collapsed-strip");
+  if (strip) {
+    strip.classList.remove("visible");
+    strip.innerHTML = "";
+  }
 }
 
 export function getGridCellElement(gs: GridSession): HTMLElement | null {

@@ -26,9 +26,8 @@ import {
   backFromRalph, backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
-  canOpenMultiTerminalGrid, collapseIdleDelegationSessions, disposeDelegationGrid,
-  expandDelegationSessions, renderDelegationGridCells,
-  setDelegationGridMembers, suspendDelegationGridTerminals,
+  canOpenMultiTerminalGrid, disposeDelegationGrid,
+  renderDelegationGridCells, setDelegationGridMembers, suspendDelegationGridTerminals,
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
 
@@ -5274,12 +5273,6 @@ function bindHtmlEventListeners(): void {
 
   // Delegation workspace
   on("delegation-focus-back", "click", () => returnToDelegationGrid());
-  on("delegation-collapse-idle", "click", () => collapseIdleDelegationSessions());
-  on("delegation-expand-all", "click", () => expandDelegationSessions());
-  on("delegation-focus-parent", "click", () => {
-    if (state.activeDelegationRoot) focusDelegationSession(state.activeDelegationRoot, state.delegationMachine || "");
-  });
-  on("delegation-exit-grid", "click", () => exitDelegationWorkspace());
 
   // Drawer / overlays
   on("drawer-backdrop", "click", () => closeDrawer());

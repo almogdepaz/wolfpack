@@ -173,6 +173,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
   await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
   await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children · 1 needs input · 1 idle");
+  await expect(page.locator("#delegation-collapse-idle, #delegation-expand-all, #delegation-focus-parent, #delegation-exit-grid")).toHaveCount(0);
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
     "delegation-parent",
     "attention-child",
@@ -213,19 +214,22 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(page.locator('#delegation-grid-container .grid-cell[data-stability-marker="same-cell"]')).toHaveCount(1);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/transitioning/);
 
-  await page.getByRole("button", { name: "Collapse idle child agents" }).click();
+  await page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"] .delegation-cell-collapse').click();
   const collapsedIdleCell = page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"]');
   await expect(collapsedIdleCell).toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeHidden();
+  const collapsedIdleTab = page.getByRole("button", { name: "Expand idle-child" });
+  await expect(collapsedIdleTab).toBeVisible();
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => {
     const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "idle-child");
     return session?.controller == null;
   })).toBe(true);
-  await expect.poll(() => page.evaluate(() => {
-    const button = document.querySelector<HTMLElement>("#delegation-collapse-idle");
-    return button ? getComputedStyle(button).boxShadow : "";
-  })).not.toBe("none");
+  await expect.poll(() => collapsedIdleTab.evaluate(button => getComputedStyle(button).boxShadow)).not.toBe("none");
+  await collapsedIdleTab.click();
+  await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
+  await expect(collapsedIdleCell).toBeVisible();
+  await expect(collapsedIdleTab).toHaveCount(0);
 
   sessions = [
     ...sessions,
@@ -246,10 +250,10 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "idle-child",
   ], { timeout: 7_000 });
 
-  await page.getByRole("button", { name: "exit grid" }).click();
-  await expect.poll(() => page.evaluate(() =>
-    (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session),
-  )).toEqual(["manual-one", "manual-two"]);
+  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
+    "manual-one",
+    "manual-two",
+  ]);
 });
 
 test("desktop direct child focus suspends an active manual grid", async ({ page }, testInfo) => {
