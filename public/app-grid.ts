@@ -200,6 +200,7 @@ function createGridCell(gs: GridSession, idx: number): HTMLElement {
       event.stopPropagation();
       gs._collapsed = !gs._collapsed;
       renderDelegationGridCells();
+      deps.renderSidebar();
     });
     cell.querySelector(".delegation-cell-focus")?.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -472,6 +473,7 @@ function renderDelegationCollapsedStrip(): void {
       if (!session) return;
       session._collapsed = false;
       renderDelegationGridCells();
+      deps.renderSidebar();
     });
   });
 }
@@ -1011,13 +1013,32 @@ export function scheduleGridStabilizedFit() {
   if (isGridActive()) scheduleGridRelayoutFit();
 }
 
+function isSessionVisibleInDelegationGrid(session, machine): boolean {
+  if (!state.activeDelegationRoot || state.focusedDelegationSession) return false;
+  return state.delegationGridSessions.some(gs =>
+    !gs._collapsed && gs.session === session && (gs.machine || "") === (machine || ""),
+  );
+}
+
 export function isSessionInGrid(session, machine) {
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    return isSessionVisibleInDelegationGrid(session, machine);
+  }
   const sessions = state.gridSessions.length >= 2 ? state.gridSessions : state.preservedGridSessions;
   return sessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""));
 }
 
 export function toggleGrid(session, machine, event) {
   if (event) { event.stopPropagation(); event.preventDefault(); }
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    const match = state.delegationGridSessions.find(gs => gs.session === session && (gs.machine || "") === (machine || ""));
+    if (match) {
+      match._collapsed = !match._collapsed;
+      renderDelegationGridCells();
+      deps.renderSidebar();
+      return;
+    }
+  }
   if (!isGridActive() && hasPreservedGrid() && state.currentView !== "terminal") {
     const idx = state.preservedGridSessions.findIndex(gs => gs.session === session && (gs.machine || "") === (machine || ""));
     if (idx !== -1) {

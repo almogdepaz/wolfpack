@@ -16,7 +16,7 @@ type WolfpackTestWindow = Window & {
     focusedDelegationSession?: string | null;
     gridSessions: Array<{ readonly session: string; readonly machine?: string; readonly controller?: unknown }>;
     preservedGridSessions: Array<{ readonly session: string; readonly machine?: string }>;
-    delegationGridSessions: Array<{ readonly session: string; readonly controller?: unknown }>;
+    delegationGridSessions: Array<{ readonly session: string; readonly controller?: unknown; readonly _collapsed?: boolean }>;
   };
 };
 
@@ -119,10 +119,13 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await page.locator("#sidebar-session-list .delegation-parent-card").first().click();
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
+  await expect(childSidebarCard.locator(".grid-btn")).toHaveClass(/in-grid/);
   await childSidebarCard.locator(".grid-btn").click();
-  await expect.poll(() => page.evaluate(() =>
-    (window as unknown as WolfpackTestWindow).state.gridSessions.some((entry) => entry.session === "wolfpack-sub-agent"),
-  )).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "wolfpack-sub-agent");
+    return !!session?._collapsed;
+  })).toBe(true);
+  await expect(childSidebarCard.locator(".grid-btn")).not.toHaveClass(/in-grid/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
   await page.evaluate(() => { window.confirm = () => true; });
@@ -179,6 +182,10 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "attention-child",
     "idle-child",
   ]);
+  const sidebarCard = (name: string) => page.locator("#sidebar-session-list .card", { has: page.locator(".card-name", { hasText: name }) }).first();
+  await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
+  await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
+  await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session))).toEqual([]);
   expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
     "manual-one",
@@ -220,6 +227,9 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(collapsedIdleCell).toBeHidden();
   const collapsedIdleTab = page.getByRole("button", { name: "Expand idle-child" });
   await expect(collapsedIdleTab).toBeVisible();
+  await expect(sidebarCard("idle-child").locator(".grid-btn")).not.toHaveClass(/in-grid/);
+  await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
+  await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => {
     const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "idle-child");
@@ -229,7 +239,15 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await collapsedIdleTab.click();
   await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeVisible();
+  await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(collapsedIdleTab).toHaveCount(0);
+
+  await sidebarCard("attention-child").locator(".grid-btn").click();
+  await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).toHaveClass(/collapsed/);
+  await expect(page.getByRole("button", { name: "Expand attention-child" })).toBeVisible();
+  await expect(sidebarCard("attention-child").locator(".grid-btn")).not.toHaveClass(/in-grid/);
+  await page.getByRole("button", { name: "Expand attention-child" }).click();
+  await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
 
   sessions = [
     ...sessions,
