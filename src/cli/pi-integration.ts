@@ -9,6 +9,16 @@ export const PI_INTEGRATION_PACKAGES = [
 
 export type PiIntegrationSetupMode = "hidden" | "prompt" | "guidance";
 
+export function piIntegrationDisclosureLines(): readonly string[] {
+  return [
+    "  - Wolfpack skill: creates and controls visible agent sessions.",
+    "  - Pi Tasks: adds agent_task_* tools and their delegation skill.",
+    "  Commands Pi will run:",
+    ...PI_INTEGRATION_PACKAGES.map((source) => `    pi install ${source}`),
+    "  Skills and extensions can execute commands with your user permissions. Review before accepting.",
+  ];
+}
+
 export interface PiIntegrationInstallOptions {
   readonly pathValue: string | undefined;
   readonly env?: Readonly<Record<string, string | undefined>>;

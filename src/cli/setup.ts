@@ -36,6 +36,7 @@ import {
   PI_INTEGRATION_PACKAGES,
   acceptsPiIntegrationInstall,
   installPiIntegration,
+  piIntegrationDisclosureLines,
   planPiIntegrationSetup,
 } from "./pi-integration.js";
 
@@ -270,8 +271,9 @@ export async function setup() {
   if (piIntegrationMode === "prompt") {
     print("");
     print(bold("  Optional Pi subagent integration:"));
-    print(dim("  - Wolfpack skill: creates and controls visible agent sessions."));
-    print(dim("  - Pi Tasks: adds agent_task_* tools and their delegation skill."));
+    for (const line of piIntegrationDisclosureLines()) {
+      print(dim(line));
+    }
     const installPi = ask("  Install the Pi extension and Wolfpack skills? [y/N] ");
     if (acceptsPiIntegrationInstall(installPi)) {
       const installResult = installPiIntegration({ pathValue: process.env.PATH });

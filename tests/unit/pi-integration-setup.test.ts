@@ -6,6 +6,7 @@ import {
   PI_INTEGRATION_PACKAGES,
   acceptsPiIntegrationInstall,
   installPiIntegration,
+  piIntegrationDisclosureLines,
   planPiIntegrationSetup,
 } from "../../src/cli/pi-integration.ts";
 
@@ -48,6 +49,15 @@ describe("Pi integration setup", () => {
 
     expect(planPiIntegrationSetup(pi.pathValue, true)).toBe("prompt");
     expect(planPiIntegrationSetup(pi.pathValue, false)).toBe("guidance");
+  });
+
+  test("discloses exact package commands and user-permission risk before prompting", () => {
+    const disclosure = piIntegrationDisclosureLines().join("\n");
+
+    expect(disclosure).toContain("pi install npm:wolfpack-bridge");
+    expect(disclosure).toContain("pi install npm:@sgtbeatdown/pi-tasks");
+    expect(disclosure).toContain("user permissions");
+    expect(disclosure).toContain("Review");
   });
 
   test("keeps the integration default-no", () => {
