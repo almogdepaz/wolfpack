@@ -90,8 +90,18 @@ For deployments from a source checkout, broker intent is mandatory:
 
 ```bash
 ./scripts/deploy-local.sh --broker=no   # server/CLI/browser changes; preserve sessions
-./scripts/deploy-local.sh --broker=yes  # broker changes; restart the broker intentionally
+./scripts/deploy-local.sh --broker=yes  # broker/native/Ghostty VT changes; restart the broker intentionally
 ```
+
+Source deployments that rebuild the broker need the verified Ghostty VT bundle first:
+
+```bash
+scripts/setup-zig-0.16.0.sh
+bun run scripts/build-ghostty-vt.ts --target "$(rustc -vV | awk '/host:/ {print $2}')"
+./scripts/deploy-local.sh --broker=yes
+```
+
+Release installs already include Ghostty VT inside the prebuilt `wolfpack-broker`; installing Wolfpack does not require Zig, Ghostty, or extra system libraries.
 
 Run `--broker=yes` once, from an interactive external terminal — not from a Wolfpack session owned by the broker being replaced and not through respawning wrappers such as `launchctl submit`. The script rejects broker replacement from structured Wolfpack session context before building or mutating the installation. It also rejects noninteractive `--broker=yes` runs unless `WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE=1` is set for a known one-shot supervisor.
 

@@ -1,0 +1,78 @@
+--- a/include/ghostty/vt/terminal.h	2026-07-22 18:26:45
++++ b/include/ghostty/vt/terminal.h	2026-07-27 09:04:15
+@@ -334,6 +334,19 @@
+   /** Length of the visible area in rows. */
+   uint64_t len;
+ } GhosttyTerminalScrollbar;
++
++/**
++ * Terminal vertical scrolling region, zero-indexed and inclusive.
++ *
++ * @ingroup terminal
++ */
++typedef struct {
++  /** Top row of the vertical scrolling region. */
++  uint16_t top;
++
++  /** Bottom row of the vertical scrolling region. */
++  uint16_t bottom;
++} GhosttyTerminalScrollRegion;
+
+ /**
+  * Callback function type for bell.
+@@ -1215,6 +1228,13 @@
+    * Output type: bool *
+    */
+   GHOSTTY_TERMINAL_DATA_VT_PROCESSING_ERROR = 33,
++
++  /**
++   * The current vertical scrolling region, zero-indexed and inclusive.
++   *
++   * Output type: GhosttyTerminalScrollRegion *
++   */
++  GHOSTTY_TERMINAL_DATA_SCROLL_REGION = 34,
+   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalData;
+
+--- a/src/terminal/c/terminal.zig	2026-07-22 18:26:45
++++ b/src/terminal/c/terminal.zig	2026-07-27 09:03:32
+@@ -739,6 +739,12 @@
+
+ /// C: GhosttyTerminalScrollbar
+ pub const TerminalScrollbar = PageList.Scrollbar.C;
++
++/// C: GhosttyTerminalScrollRegion
++pub const TerminalScrollRegion = extern struct {
++    top: size.CellCountInt,
++    bottom: size.CellCountInt,
++};
+
+ /// C: GhosttyTerminalData
+ pub const TerminalData = enum(c_int) {
+@@ -776,6 +782,7 @@
+     selection = 31,
+     viewport_active = 32,
+     vt_processing_error = 33,
++    scroll_region = 34,
+
+     /// Output type expected for querying the data of the given kind.
+     pub fn OutType(comptime self: TerminalData) type {
+@@ -810,6 +817,7 @@
+             .kitty_image_medium_temp_file => lib.String,
+             .kitty_graphics => KittyGraphics,
+             .selection => selection_c.CSelection,
++            .scroll_region => TerminalScrollRegion,
+         };
+     }
+ };
+@@ -929,6 +937,10 @@
+         ),
+         .viewport_active => out.* = t.screens.active.pages.viewport == .active,
+         .vt_processing_error => out.* = wrapper.stream.handler.semantic_failure,
++        .scroll_region => out.* = .{
++            .top = t.scrolling_region.top,
++            .bottom = t.scrolling_region.bottom,
++        },
+     }
+
+     return .success;

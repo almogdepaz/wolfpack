@@ -64,9 +64,9 @@ fn decode(src: &str) -> Vec<u8> {
 
 fn snapshot_for(cols: u16, rows: u16, fixture: &str) -> Snapshot {
     let bytes = decode(fixture);
-    let mut t = TerminalState::new(cols, rows);
-    t.feed(&bytes);
-    t.snapshot(Uuid::nil(), 0, 0)
+    let mut t = TerminalState::try_new(cols, rows).expect("terminal init");
+    t.try_feed(&bytes).expect("terminal feed");
+    t.try_snapshot(Uuid::nil(), 0, 0).expect("snapshot")
 }
 
 fn line_text(line: &StyledLine) -> String {
@@ -79,9 +79,8 @@ fn cell_chars(line: &StyledLine, range: std::ops::Range<usize>) -> String {
 
 fn ansi_color(idx: u8) -> u32 {
     const PALETTE: [u32; 16] = [
-        0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080,
-        0xc0c0c0, 0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff,
-        0x00ffff, 0xffffff,
+        0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xc0c0c0, 0x808080,
+        0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
     ];
     PALETTE[idx as usize]
 }
@@ -246,7 +245,10 @@ fn tui_partial_redraw_uses_alt_screen_and_overwrites_one_line() {
 
     // Alt-screen mode is active; the visible_screen MUST reflect the alt grid.
     assert!(snap.modes.alt_screen);
-    assert!(snap.scrollback.is_empty(), "alt-screen scrolls don't fill scrollback");
+    assert!(
+        snap.scrollback.is_empty(),
+        "alt-screen scrolls don't fill scrollback"
+    );
 
     // Initial draw at three rows, then a CUP+EL+print pass overwrites row 1.
     assert_eq!(cell_chars(&snap.visible_screen[0], 0..3), "top");

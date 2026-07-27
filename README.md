@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
 wolfpack
 ```
 
-The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service.
+The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
 Supported: macOS arm64/x64 and Linux x64/arm64.
 
 Want npm instead?
@@ -168,7 +168,7 @@ Treat Wolfpack access like shell access to that machine.
 
 - **PWA** — vanilla JS, no framework. ghostty-web renders the terminal.
 - **Server** — Bun HTTP + WebSocket. Pure broker client; owns no PTYs.
-- **Broker** — `wolfpack-broker`, Rust daemon. Owns every PTY, keeps per-session output rings. One Unix-domain socket per host (`$XDG_RUNTIME_DIR/wolfpack-broker.sock`, fallback `~/.wolfpack/broker.sock`). Wire protocol in [docs/broker-protocol.md](docs/broker-protocol.md).
+- **Broker** — `wolfpack-broker`, Rust daemon. Owns every PTY, keeps per-session output rings, and uses a statically linked Ghostty VT engine for authoritative terminal state/snapshots. One Unix-domain socket per host (`$XDG_RUNTIME_DIR/wolfpack-broker.sock`, fallback `~/.wolfpack/broker.sock`). Wire protocol in [docs/broker-protocol.md](docs/broker-protocol.md).
 
 ## Optional JWT auth
 

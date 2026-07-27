@@ -38,7 +38,8 @@ use crate::protocol::{
 };
 use crate::registry::{CreateError, CreateOptions, Registry};
 use crate::router::Router;
-use crate::session::{EventSender, KillError, KillOutcome, ResizeError};
+use crate::session::{EventSender, KillError, KillOutcome, ResizeError, SpawnError};
+use crate::terminal_state::TerminalStateError;
 
 pub const EVENT_BUS_CAPACITY: usize = 256;
 const MIN_TERMINAL_COLS: u16 = 20;
@@ -149,6 +150,13 @@ impl SessionRouter {
                     message: format!("session name {name:?} already in use"),
                 },
             ),
+            Err(CreateError::Spawn(SpawnError::Terminal(error))) => ControlResponse::err(
+                id,
+                ProtocolError {
+                    code: ErrorCode::InternalError,
+                    message: format!("terminal state failed: {error}"),
+                },
+            ),
             Err(CreateError::Spawn(spawn)) => ControlResponse::err(
                 id,
                 ProtocolError {
@@ -206,13 +214,14 @@ impl SessionRouter {
     }
 
     fn snapshot(&self, id: u64, p: SnapshotParams) -> ControlResponse {
+        if let Err(message) = validate_snapshot_target_cols(p.target_cols) {
+            return invalid_request(id, format!("snapshot params: {message}"));
+        }
         match self.registry.get(p.session_id) {
-            Some(s) => ControlResponse::ok(
-                id,
-                ResponsePayload::Snapshot {
-                    snapshot: s.snapshot_terminal(p.scrollback_lines, p.target_cols),
-                },
-            ),
+            Some(s) => match s.snapshot_terminal(p.scrollback_lines, p.target_cols) {
+                Ok(snapshot) => ControlResponse::ok(id, ResponsePayload::Snapshot { snapshot }),
+                Err(error) => terminal_snapshot_error(id, error),
+            },
             None => unknown_session(id, p.session_id),
         }
     }
@@ -232,15 +241,28 @@ impl SessionRouter {
                 // owns the PTY state. Nothing else to do here.
                 ControlResponse::ok(id, ResponsePayload::Resize { ok: true })
             }
-            Err(ResizeError::Pty(msg)) => ControlResponse::err(
+            Err(ResizeError::Pty(msg)) => resize_failed(id, format!("resize failed: {msg}")),
+            Err(error @ ResizeError::PtyWithTerminalRollback { .. }) => {
+                resize_failed(id, format!("resize failed: {error}"))
+            }
+            Err(ResizeError::Terminal(error)) => ControlResponse::err(
                 id,
                 ProtocolError {
-                    code: ErrorCode::ResizeFailed,
-                    message: format!("resize failed: {msg}"),
+                    code: ErrorCode::InternalError,
+                    message: format!("terminal resize failed: {error}"),
                 },
             ),
         }
     }
+}
+
+fn validate_snapshot_target_cols(target_cols: Option<u16>) -> Result<(), String> {
+    if let Some(cols) = target_cols {
+        if cols > MAX_TERMINAL_COLS {
+            return Err(format!("target_cols must be at most {MAX_TERMINAL_COLS}"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_dimensions(cols: u16, rows: u16) -> Result<(), String> {
@@ -255,6 +277,26 @@ fn validate_dimensions(cols: u16, rows: u16) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn resize_failed(id: u64, message: String) -> ControlResponse {
+    ControlResponse::err(
+        id,
+        ProtocolError {
+            code: ErrorCode::ResizeFailed,
+            message,
+        },
+    )
+}
+
+fn terminal_snapshot_error(id: u64, error: TerminalStateError) -> ControlResponse {
+    ControlResponse::err(
+        id,
+        ProtocolError {
+            code: ErrorCode::InternalError,
+            message: format!("terminal snapshot failed: {error}"),
+        },
+    )
 }
 
 fn invalid_request(id: u64, msg: impl Into<String>) -> ControlResponse {
@@ -308,6 +350,14 @@ mod tests {
         })
     }
 
+    fn oversized_combining_sequence() -> String {
+        let mut input = String::from("a");
+        for _ in 0..1100 {
+            input.push('\u{0301}');
+        }
+        input
+    }
+
     fn cleanup(reg: &Registry) {
         for s in reg.list() {
             let _ = s.kill(libc::SIGKILL);
@@ -349,10 +399,7 @@ mod tests {
             );
         }
 
-        for (id, name, cols, rows) in [
-            (2, "minimum-size", 20, 5),
-            (3, "maximum-size", 300, 100),
-        ] {
+        for (id, name, cols, rows) in [(2, "minimum-size", 20, 5), (3, "maximum-size", 300, 100)] {
             let mut params = create_params(Some(name), &["sleep", "30"]);
             params["cols"] = json!(cols);
             params["rows"] = json!(rows);
@@ -402,6 +449,22 @@ mod tests {
             assert_eq!((state.cols, state.rows), (cols, rows));
         }
         cleanup(&reg);
+    }
+
+    #[test]
+    fn terminal_snapshot_processing_failure_maps_to_internal_error() {
+        let response = terminal_snapshot_error(
+            44,
+            TerminalStateError::GhosttyVtProcessing {
+                operation: "snapshot",
+            },
+        );
+
+        assert_eq!(response.status, Status::Error);
+        let error = response.error.expect("error");
+        assert_eq!(error.code, ErrorCode::InternalError);
+        assert!(error.message.contains("terminal snapshot failed"));
+        assert!(error.message.contains("ghostty-vt"));
     }
 
     #[test]
@@ -465,7 +528,11 @@ mod tests {
                 .expect("event timeout")
                 .expect("event recv");
             match ev {
-                Event::SessionResized { session_id, cols, rows } => {
+                Event::SessionResized {
+                    session_id,
+                    cols,
+                    rows,
+                } => {
                     assert_eq!(session_id, session.id);
                     assert_eq!((cols, rows), (132, 50));
                     got_resized = true;
@@ -513,6 +580,113 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
 
+        cleanup(&reg);
+    }
+
+    #[test]
+    fn authoritative_oversized_grapheme_snapshot_router_returns_internal_error_without_panic() {
+        let (router, reg) = router();
+        let create = router.handle(req(
+            1,
+            methods::CREATE_SESSION,
+            json!({
+                "name": "ffi-router-limit",
+                "cwd": "/tmp",
+                "command": ["/usr/bin/printf", oversized_combining_sequence()],
+                "cols": 80,
+                "rows": 24,
+            }),
+        ));
+        assert_eq!(create.status, Status::Ok);
+        let session = match create.payload.expect("payload") {
+            ResponsePayload::CreateSession { session } => session,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let owned_session = reg.get(session.id).expect("broker-owned session");
+        assert!(
+            owned_session
+                .output_bus()
+                .wait_closed(Duration::from_secs(5)),
+            "session output must drain before snapshot"
+        );
+        assert!(
+            owned_session.wait_for_exit(Duration::from_secs(5)),
+            "printf process should exit without broker panic"
+        );
+
+        let snapshot = router.handle(req(
+            2,
+            methods::SNAPSHOT,
+            json!({ "session_id": session.id }),
+        ));
+        assert_eq!(snapshot.status, Status::Error);
+        let error = snapshot.error.expect("snapshot error");
+        assert_eq!(error.code, ErrorCode::InternalError);
+        assert!(
+            error.message.contains("terminal snapshot failed"),
+            "unexpected error message: {}",
+            error.message
+        );
+
+        let list = router.handle(req(3, methods::LIST_SESSIONS, json!({})));
+        assert_eq!(list.status, Status::Ok, "router remains usable after error");
+        cleanup(&reg);
+    }
+
+    #[test]
+    fn snapshot_target_cols_above_terminal_ceiling_is_invalid_before_session_lookup() {
+        let (router, reg) = router();
+        let create = router.handle(req(
+            1,
+            methods::CREATE_SESSION,
+            create_params(Some("target-cols-bound"), &["sleep", "30"]),
+        ));
+        let session = match create.payload.expect("payload") {
+            ResponsePayload::CreateSession { session } => session,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        for target_cols in [4, 300] {
+            let response = router.handle(req(
+                2,
+                methods::SNAPSHOT,
+                json!({ "session_id": session.id, "target_cols": target_cols }),
+            ));
+            assert_eq!(response.status, Status::Ok, "target_cols={target_cols}");
+        }
+
+        for target_cols in [301, 65535] {
+            let response = router.handle(req(
+                3,
+                methods::SNAPSHOT,
+                json!({ "session_id": session.id, "target_cols": target_cols }),
+            ));
+            assert_eq!(response.status, Status::Error, "target_cols={target_cols}");
+            assert_eq!(
+                response.error.expect("error").code,
+                ErrorCode::InvalidRequest,
+                "target_cols={target_cols}"
+            );
+        }
+
+        let invalid_unknown = router.handle(req(
+            4,
+            methods::SNAPSHOT,
+            json!({ "session_id": Uuid::nil(), "target_cols": 301 }),
+        ));
+        assert_eq!(invalid_unknown.status, Status::Error);
+        assert_eq!(
+            invalid_unknown.error.expect("error").code,
+            ErrorCode::InvalidRequest,
+            "invalid target_cols must be rejected before session lookup"
+        );
+
+        let still_usable = router.handle(req(
+            5,
+            methods::SNAPSHOT,
+            json!({ "session_id": session.id, "target_cols": 300 }),
+        ));
+        assert_eq!(still_usable.status, Status::Ok);
         cleanup(&reg);
     }
 
@@ -626,10 +800,7 @@ mod tests {
             create_params(Some("ralph"), &["sleep", "30"]),
         ));
         assert_eq!(resp.status, Status::Error);
-        assert_eq!(
-            resp.error.unwrap().code,
-            ErrorCode::DuplicateSessionName
-        );
+        assert_eq!(resp.error.unwrap().code, ErrorCode::DuplicateSessionName);
         cleanup(&reg);
     }
 

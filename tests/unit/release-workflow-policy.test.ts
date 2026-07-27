@@ -45,7 +45,7 @@ describe("release workflow security policy", () => {
     }
 
     const bunSetupSteps = stepsUsing("oven-sh/setup-bun");
-    expect(bunSetupSteps).toHaveLength(2);
+    expect(bunSetupSteps).toHaveLength(4);
     for (const step of bunSetupSteps) {
       expect(step.with?.["bun-version"]).toBe("1.3.9");
     }
@@ -53,6 +53,16 @@ describe("release workflow security policy", () => {
     expect(rustSetupSteps).toHaveLength(2);
     for (const step of rustSetupSteps) {
       expect(step.with?.toolchain).toBe("1.89.0");
+    }
+  });
+
+  test("release broker builds use unconditional authoritative Ghostty", () => {
+    const brokerBuilds = allSteps.filter(step => step.run?.includes("--manifest-path broker/Cargo.toml"));
+    expect(brokerBuilds).toHaveLength(4);
+    for (const step of brokerBuilds) {
+      expect(step.run).toContain("--bin wolfpack-broker");
+      expect(step.run).not.toContain("--features");
+      expect(step.run).not.toContain("shadow");
     }
   });
 
@@ -89,5 +99,14 @@ describe("release workflow security policy", () => {
     expect(stepsUsing("actions/attest-build-provenance")).toHaveLength(1);
     expect(jobSource("release")).toContain("dist/wolfpack-linux-x64");
     expect(jobSource("release")).toContain("dist/wolfpack-broker-darwin-arm64");
+  });
+
+  test("ships third-party notices with broker-containing release assets", () => {
+    const buildJob = jobSource("build");
+    const releaseJob = jobSource("release");
+
+    expect(buildJob).toContain("THIRD_PARTY_NOTICES");
+    expect(buildJob).toContain("checksums-sha256.txt");
+    expect(releaseJob).toContain("dist/THIRD_PARTY_NOTICES");
   });
 });

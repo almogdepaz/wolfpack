@@ -21,6 +21,12 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Setup pinned Zig
+        run: scripts/setup-zig-0.16.0.sh
+
+      - name: Build verified libghostty-vt archive (linux-x64)
+        run: bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu
+
       # `--locked` makes cargo refuse to build when Cargo.lock would need
       # updating, catching a stale lockfile (forgotten `cargo update`,
       # hand-edited Cargo.toml without lock refresh, etc.) instead of
@@ -53,3 +59,36 @@ jobs:
 
       - name: Run auth tests (isolated — sets JWT env vars that contaminate shared module cache)
         run: bun test tests/integration/auth-middleware.test.ts
+
+  ghostty-vt-behavior:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-12
+        with:
+          toolchain: 1.89.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.9
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Setup pinned Zig
+        run: scripts/setup-zig-0.16.0.sh
+
+      - name: Build verified libghostty-vt archive (linux-x64)
+        run: bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu
+
+      - name: Run broker tests (authoritative Ghostty)
+        run: cargo test --locked --manifest-path broker/Cargo.toml --all
+
+      - name: Build authoritative Ghostty broker binary
+        run: cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker
+
+      - name: Run real broker snapshot hydration/reflow integration
+        env:
+          WOLFPACK_BROKER_BIN: ${{ github.workspace }}/broker/target/release/wolfpack-broker
+        run: bun test tests/integration/broker-snapshot-reflow.test.ts
