@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { chromium, type Page } from "playwright";
 import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
@@ -187,8 +187,23 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   throw new Error(`timeout waiting for ${path}`);
 }
 
-function startBroker(binary: string): { socketPath: string; proc: ChildProcess; stderr: () => string } {
-  const socketPath = `/tmp/wp-perf-${randomUUID()}.sock`;
+export type PerfBrokerSocketLocation = {
+  readonly socketPath: string;
+  readonly tempDir: string;
+};
+
+export function createPerfBrokerSocketLocation(): PerfBrokerSocketLocation {
+  const tempDir = mkdtempSync(join(tmpdir(), "wolfpack-perf-"));
+  return { tempDir, socketPath: join(tempDir, "broker.sock") };
+}
+
+function startBroker(binary: string): {
+  socketPath: string;
+  tempDir: string;
+  proc: ChildProcess;
+  stderr: () => string;
+} {
+  const { socketPath, tempDir } = createPerfBrokerSocketLocation();
   let stderr = "";
   const proc = spawn(binary, [], {
     cwd: ROOT,
@@ -203,10 +218,10 @@ function startBroker(binary: string): { socketPath: string; proc: ChildProcess; 
     stderr += chunk.toString("utf8");
     if (stderr.length > 64 * 1024) stderr = stderr.slice(-64 * 1024);
   });
-  return { socketPath, proc, stderr: () => stderr };
+  return { socketPath, tempDir, proc, stderr: () => stderr };
 }
 
-function existingBroker(): { socketPath: string; proc: null; stderr: () => string } | null {
+function existingBroker(): { socketPath: string; tempDir: null; proc: null; stderr: () => string } | null {
   if (process.env.WOLFPACK_PERF_USE_EXISTING_BROKER !== "1") return null;
   const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
   if (!socketPath) {
@@ -215,7 +230,7 @@ function existingBroker(): { socketPath: string; proc: null; stderr: () => strin
   if (!existsSync(socketPath)) {
     throw new Error(`existing broker socket not found: ${socketPath}`);
   }
-  return { socketPath, proc: null, stderr: () => "" };
+  return { socketPath, tempDir: null, proc: null, stderr: () => "" };
 }
 
 async function startServer(socketPath: string, opts?: { prefillDelayMs?: number }): Promise<{
@@ -995,6 +1010,7 @@ async function main(): Promise<void> {
       await wait(200);
       if (broker.proc.exitCode === null) broker.proc.kill("SIGKILL");
     }
+    if (broker.tempDir) rmSync(broker.tempDir, { recursive: true, force: true });
     if (process.env.WOLFPACK_BROKER_DEBUG && broker.stderr()) {
       process.stderr.write(`[broker stderr]\n${broker.stderr()}\n`);
     }

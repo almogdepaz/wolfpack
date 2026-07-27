@@ -9,19 +9,20 @@
 //!   * printable cells with SGR-tracked attrs
 //!   * cursor and CR/LF/BS/HT
 //!   * common CSI cursor moves (CUU/CUD/CUF/CUB/CHA/VPA/CUP/HVP)
-//!   * ED (CSI J) and EL (CSI K)
+//!   * ED/EL/ECH and insert/delete character/line operations
+//!   * scroll up/down commands within the active scroll region
 //!   * alt screen (DECSET 47/1047/1049)
 //!   * scroll region (DECSTBM, CSI r) with IND/RI/NEL
 //!   * common DEC private modes (1, 6, 7, 25, 47, 1047, 1048, 1049, 2004,
 //!     9/1000/1002/1003/1006 mouse)
 //!
-//! Wider features (sixel, charsets, DECCOLM, tab stops, insert/delete line,
-//! double-width chars) are out of scope here.
+//! Wider features (sixel, charsets, DECCOLM, and custom tab stops) are out of
+//! scope here.
 
 use std::collections::VecDeque;
 
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use uuid::Uuid;
 use vte::{Params, Parser, Perform};
 
@@ -138,6 +139,28 @@ fn clear_wide_cell(line: &mut Row, col: usize, attrs: &CellAttrs) {
     }
     if lead + 1 < line.cells.len() && line.cells[lead + 1].continuation {
         line.cells[lead + 1] = Cell::with_attrs(attrs.clone());
+    }
+}
+
+/// Remove split width-two glyphs after a cell-range shift or deletion.
+fn repair_wide_cells(line: &mut Row, attrs: &CellAttrs) {
+    let mut col = 0;
+    while col < line.cells.len() {
+        if line.cells[col].continuation {
+            line.cells[col] = Cell::with_attrs(attrs.clone());
+            col += 1;
+            continue;
+        }
+        let is_wide = UnicodeWidthStr::width(line.cells[col].ch.as_str()) == 2;
+        if is_wide {
+            let has_continuation = col + 1 < line.cells.len() && line.cells[col + 1].continuation;
+            if has_continuation {
+                col += 2;
+                continue;
+            }
+            line.cells[col] = Cell::with_attrs(attrs.clone());
+        }
+        col += 1;
     }
 }
 
@@ -692,6 +715,112 @@ impl Inner {
         }
     }
 
+    fn insert_chars(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let row = self.cursor.row;
+        let col = self.cursor.col.min(self.cols - 1);
+        let count = n.min(self.cols - col);
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        };
+        let Some(line) = grid.lines.get_mut(row) else {
+            return;
+        };
+        for dest in (col + count..self.cols).rev() {
+            line.cells[dest] = line.cells[dest - count].clone();
+        }
+        for cell in line.cells.iter_mut().skip(col).take(count) {
+            *cell = Cell::with_attrs(attrs.clone());
+        }
+        repair_wide_cells(line, &attrs);
+    }
+
+    fn delete_chars(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let row = self.cursor.row;
+        let col = self.cursor.col.min(self.cols - 1);
+        let count = n.min(self.cols - col);
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        };
+        let Some(line) = grid.lines.get_mut(row) else {
+            return;
+        };
+        for dest in col..self.cols - count {
+            line.cells[dest] = line.cells[dest + count].clone();
+        }
+        for cell in line.cells.iter_mut().skip(self.cols - count) {
+            *cell = Cell::with_attrs(attrs.clone());
+        }
+        repair_wide_cells(line, &attrs);
+    }
+
+    fn erase_chars(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let row = self.cursor.row;
+        let col = self.cursor.col.min(self.cols - 1);
+        let end = (col + n).min(self.cols);
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        };
+        let Some(line) = grid.lines.get_mut(row) else {
+            return;
+        };
+        for target in col..end {
+            clear_wide_cell(line, target, &attrs);
+        }
+    }
+
+    fn insert_lines(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let row = self.cursor.row;
+        if row < self.scroll_top || row > self.scroll_bottom {
+            return;
+        }
+        let count = n.min(self.scroll_bottom - row + 1);
+        let cols = self.cols;
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        };
+        for _ in 0..count {
+            grid.lines.remove(self.scroll_bottom);
+            grid.lines.insert(row, blank_line_with(cols, &attrs));
+        }
+    }
+
+    fn delete_lines(&mut self, n: usize) {
+        self.pending_wrap = false;
+        let row = self.cursor.row;
+        if row < self.scroll_top || row > self.scroll_bottom {
+            return;
+        }
+        let count = n.min(self.scroll_bottom - row + 1);
+        let cols = self.cols;
+        let attrs = self.sgr.clone();
+        let grid = if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        };
+        for _ in 0..count {
+            grid.lines.remove(row);
+            grid.lines
+                .insert(self.scroll_bottom, blank_line_with(cols, &attrs));
+        }
+    }
+
     fn set_scroll_region(&mut self, top_1based: u16, bottom_1based: u16) {
         let top = (top_1based.max(1) as usize).saturating_sub(1);
         let bottom = (bottom_1based.max(1) as usize)
@@ -1238,8 +1367,21 @@ impl Perform for Inner {
                 let col = n_min1(1);
                 self.cursor_position(row, col);
             }
+            ([], '@') => self.insert_chars(n_min1(0)),
             ([], 'J') => self.erase_in_display(n_default(0, 0)),
             ([], 'K') => self.erase_in_line(n_default(0, 0)),
+            ([], 'L') => self.insert_lines(n_min1(0)),
+            ([], 'M') => self.delete_lines(n_min1(0)),
+            ([], 'P') => self.delete_chars(n_min1(0)),
+            ([], 'S') => {
+                self.pending_wrap = false;
+                self.scroll_up(n_min1(0));
+            }
+            ([], 'T') => {
+                self.pending_wrap = false;
+                self.scroll_down(n_min1(0));
+            }
+            ([], 'X') => self.erase_chars(n_min1(0)),
             ([], 'd') => self.cursor_row(n_min1(0)),
             ([], 'm') => self.apply_sgr(params),
             ([], 'r') => {
@@ -1545,6 +1687,113 @@ mod tests {
         t.feed(b"abcde\r\x1b[3G");
         t.feed(b"\x1b[2K"); // EL 2 — entire line
         assert!(line_string(&t, 0).chars().all(|c| c == ' '));
+    }
+
+    #[test]
+    fn insert_delete_and_erase_chars_update_the_current_row() {
+        let cases = [
+            (b"\x1b[1;2H\x1b[@".as_slice(), "A BCDE  "),
+            (b"\x1b[1;2H\x1b[0@".as_slice(), "A BCDE  "),
+            (b"\x1b[1;2H\x1b[2@".as_slice(), "A  BCDE "),
+            (b"\x1b[1;2H\x1b[2P".as_slice(), "ADE     "),
+            (b"\x1b[1;2H\x1b[2X".as_slice(), "A  DE   "),
+        ];
+        for (operation, expected) in cases {
+            let mut terminal = TerminalState::new(8, 1);
+            terminal.feed(b"ABCDE");
+            terminal.feed(operation);
+            assert_eq!(line_string(&terminal, 0), expected);
+            assert_eq!(cursor_rc(&terminal), (0, 1));
+        }
+    }
+
+    #[test]
+    fn character_edit_counts_clip_and_new_blanks_use_current_attrs() {
+        let mut terminal = TerminalState::new(5, 1);
+        terminal.feed(b"ABCDE\x1b[31m\x1b[1;4H\x1b[99@");
+        assert_eq!(line_string(&terminal, 0), "ABC  ");
+        let cells = &terminal.inner.primary.lines[0].cells;
+        assert_eq!(cells[3].attrs.fg, Some(ansi_color(1)));
+        assert_eq!(cells[4].attrs.fg, Some(ansi_color(1)));
+    }
+
+    #[test]
+    fn character_edits_preserve_wide_cell_invariants() {
+        let mut insert = TerminalState::new(8, 1);
+        insert.feed("A界BCD\x1b[1;2H\x1b[@".as_bytes());
+        assert_eq!(line_string(&insert, 0), "A 界BCD ");
+        let insert_cells = &insert.inner.primary.lines[0].cells;
+        assert_eq!(insert_cells[2].ch, "界");
+        assert!(insert_cells[3].continuation);
+
+        let mut delete = TerminalState::new(8, 1);
+        delete.feed("A 界BCD\x1b[1;2H\x1b[P".as_bytes());
+        assert_eq!(line_string(&delete, 0), "A界BCD  ");
+        let delete_cells = &delete.inner.primary.lines[0].cells;
+        assert_eq!(delete_cells[1].ch, "界");
+        assert!(delete_cells[2].continuation);
+
+        for terminal in [&insert, &delete] {
+            let cells = &terminal.inner.primary.lines[0].cells;
+            for (index, cell) in cells.iter().enumerate() {
+                if cell.continuation {
+                    assert!(
+                        index > 0
+                            && !cells[index - 1].continuation
+                            && UnicodeWidthStr::width(cells[index - 1].ch.as_str()) == 2
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn line_edits_and_scroll_commands_respect_the_scroll_region() {
+        fn populated_terminal() -> TerminalState {
+            let mut terminal = TerminalState::new(4, 4);
+            terminal.feed(b"1111\r\n2222\r\n3333\r\n4444");
+            terminal.feed(b"\x1b[2;4r");
+            terminal
+        }
+
+        let mut insert = populated_terminal();
+        insert.feed(b"\x1b[3;1H\x1b[L");
+        assert_eq!(line_string(&insert, 0), "1111");
+        assert_eq!(line_string(&insert, 1), "2222");
+        assert_eq!(line_string(&insert, 2), "    ");
+        assert_eq!(line_string(&insert, 3), "3333");
+
+        let mut delete = populated_terminal();
+        delete.feed(b"\x1b[2;1H\x1b[M");
+        assert_eq!(line_string(&delete, 0), "1111");
+        assert_eq!(line_string(&delete, 1), "3333");
+        assert_eq!(line_string(&delete, 2), "4444");
+        assert_eq!(line_string(&delete, 3), "    ");
+
+        let mut scroll_up = populated_terminal();
+        scroll_up.feed(b"\x1b[S");
+        assert_eq!(line_string(&scroll_up, 0), "1111");
+        assert_eq!(line_string(&scroll_up, 1), "3333");
+        assert_eq!(line_string(&scroll_up, 2), "4444");
+        assert_eq!(line_string(&scroll_up, 3), "    ");
+
+        let mut scroll_down = populated_terminal();
+        scroll_down.feed(b"\x1b[T");
+        assert_eq!(line_string(&scroll_down, 0), "1111");
+        assert_eq!(line_string(&scroll_down, 1), "    ");
+        assert_eq!(line_string(&scroll_down, 2), "2222");
+        assert_eq!(line_string(&scroll_down, 3), "3333");
+    }
+
+    #[test]
+    fn line_edits_outside_the_scroll_region_are_ignored() {
+        let mut terminal = TerminalState::new(4, 4);
+        terminal.feed(b"1111\r\n2222\r\n3333\r\n4444\x1b[2;4r\x1b[1;1H");
+        terminal.feed(b"\x1b[L\x1b[M");
+        assert_eq!(line_string(&terminal, 0), "1111");
+        assert_eq!(line_string(&terminal, 1), "2222");
+        assert_eq!(line_string(&terminal, 2), "3333");
+        assert_eq!(line_string(&terminal, 3), "4444");
     }
 
     #[test]

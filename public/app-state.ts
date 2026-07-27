@@ -290,7 +290,7 @@ export const state = {
   sidebarCollapsed: !_initSidebarPinned,
   sidebarAutoExpanded: false,
   sidebarTransitionIsHover: false,
-  sidebarResizeDone: false,
+  sidebarLayoutTransitioning: false,
   sessionsExpanded: true,
   // connection state
   sessionRefreshTimer: null,

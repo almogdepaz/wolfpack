@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 import {
   cleanupCreatedSessions,
+  createPerfBrokerSocketLocation,
   describePerfHarnessEnv,
   formatPerfRunsSummary,
   parsePerfRunCount,
@@ -111,6 +115,17 @@ describe("terminal-load perf run options", () => {
 });
 
 describe("terminal-load perf cleanup", () => {
+  test("creates the spawned broker socket inside a private temporary directory", () => {
+    const location = createPerfBrokerSocketLocation();
+    try {
+      expect(dirname(location.socketPath)).toBe(location.tempDir);
+      expect(location.tempDir).not.toBe(tmpdir());
+      expect(statSync(location.tempDir).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(location.tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("kills created perf sessions in reverse order", async () => {
     const calls: Array<{ readonly url: string; readonly body: string | undefined }> = [];
     const fetcher = async (url: string, init: RequestInit): Promise<Response> => {
