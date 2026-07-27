@@ -1,4 +1,4 @@
-# Wolfpack broker protocol (v1)
+# Wolfpack broker protocol (v2)
 
 The Rust broker daemon owns every PTY/session in Wolfpack. Wolfpack's Bun
 server is a client of the broker and never owns terminal child processes.
@@ -170,10 +170,11 @@ Returns a self-contained reconnect snapshot for one session. Detail in the
 [Snapshot payload](#snapshot-payload) section.
 
 - params:
-  ```json
+  ```jsonc
   {
     "session_id":       "<uuid>",
-    "scrollback_lines": 5000      (optional cap; broker policy default if omitted)
+    "scrollback_lines": 5000,     // optional cap; broker policy default if omitted
+    "target_cols":      120       // optional positive width; reflows scrollback
   }
   ```
 - ok payload: `{ "kind": "snapshot", "snapshot": Snapshot }`
@@ -201,8 +202,16 @@ this connection. This is the only way live output reaches the client.
   ```
 - ok payload:
   ```json
-  { "kind": "subscribe", "ok": true, "current_seq": 12345 }
+  {
+    "kind": "subscribe",
+    "ok": true,
+    "current_seq": 12345,
+    "replay_truncated": false
+  }
   ```
+- `replay_truncated` is true when `since_seq` predates the output ring's earliest
+  retained chunk. The client must obtain a fresh snapshot before consuming replay
+  or live output in that case.
 - After this response, `output_binary` frames for `session_id` may arrive at
   any time on the same connection.
 - A connection can be subscribed to multiple sessions simultaneously; frames
@@ -342,17 +351,21 @@ equivalent to a viewer that had been attached the whole time.
 ### StyledLine
 
 ```jsonc
-{ "cells": [StyledCell, ...] }
+{
+  "cells": [StyledCell, ...],
+  "wrapped": false // true when this visual line continues into the next line
+}
 ```
 
-A line MAY be shorter than `cols`. Shorter lines are right-padded with blank
-cells using the default attrs.
+`wrapped` defaults to `false` when omitted for backward compatibility. A line
+MAY be shorter than `cols`. Shorter lines are right-padded with blank cells
+using the default attrs.
 
 ### StyledCell
 
 ```jsonc
 {
-  "ch":    "a",       // single grapheme cluster (1+ codepoints)
+  "ch":    "a",       // grapheme cluster; "" for a wide-grapheme continuation cell
   "attrs": CellAttrs
 }
 ```

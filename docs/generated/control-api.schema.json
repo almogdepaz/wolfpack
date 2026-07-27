@@ -349,6 +349,9 @@
           "parentSession": {
             "$ref": "#/$defs/SessionName"
           },
+          "sessionName": {
+            "$ref": "#/$defs/SessionName"
+          },
           "initialPrompt": {
             "type": "string",
             "minLength": 1,

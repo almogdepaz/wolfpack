@@ -43,3 +43,5 @@ broker/target/
 docs/broker-protocol.md
 docs/ralph-broker-plan.md
 review-tasks/
+
+delivery-review-*.md

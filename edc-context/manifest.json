@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 2,
+  "edcVersion": "2",
+  "repoContextFile": "edc-context/index.md",
+  "reports": {
+    "issues": "edc-context/reports/issues.md",
+    "complexity": "edc-context/reports/complexity.md"
+  },
+  "build": {
+    "info": "edc-context/build/build.json"
+  },
+  "policy": {
+    "defaultMode": "advisory",
+    "unmatchedPathPolicy": "warn-allow"
+  },
+  "modules": [
+    {
+      "name": "wolfpack",
+      "doc": "edc-context/modules/wolfpack.md",
+      "summary": "Bun server, CLI, browser PWA, and TypeScript broker boundary.",
+      "priority": 20,
+      "match": {
+        "prefixes": [
+          "src/",
+          "public/",
+          "scripts/",
+          "bin/",
+          "tests/"
+        ]
+      }
+    },
+    {
+      "name": "broker",
+      "doc": "edc-context/modules/broker.md",
+      "summary": "Rust Unix-socket PTY daemon, streaming protocol, and Ghostty terminal authority.",
+      "priority": 10,
+      "match": {
+        "prefixes": [
+          "broker/"
+        ]
+      }
+    }
+  ],
+  "contextless": {
+    "entries": [
+      {
+        "id": "repository-metadata",
+        "globs": [
+          "README.md",
+          "CONTRIBUTING.md",
+          "LICENSE",
+          "THIRD_PARTY_NOTICES",
+          "package.json",
+          "bun.lock",
+          "bunfig.toml",
+          "tsconfig.json",
+          "playwright.config.ts",
+          "install.sh",
+          "ghostty-vt.lock.json",
+          "llms.txt",
+          ".gitignore",
+          "AGENTS.md"
+        ],
+        "reason": "Repository metadata and top-level orientation are covered by their own source files; no durable architecture module is warranted.",
+        "reviewPolicy": "no-context-review"
+      },
+      {
+        "id": "documentation-and-support",
+        "globs": [
+          "docs/",
+          ".github/",
+          ".plans/",
+          "patches/",
+          "skills/",
+          "plans/",
+          "edc-context/"
+        ],
+        "reason": "Documentation, CI policy, plans, patches, packaged skills, and legacy report material do not form an additional runtime authority boundary.",
+        "reviewPolicy": "no-context-review"
+      }
+    ]
+  },
+  "unmapped": {
+    "allowedGlobs": []
+  },
+  "generatedAt": "2026-07-27T18:44:58Z",
+  "sourceCommit": "99dd58ac039784b7c81920013ae0d3f14e2af14f",
+  "coverage": {
+    "contextMappedFileCount": 274,
+    "contextlessFileCount": 44,
+    "uncoveredFileCount": 0,
+    "ambiguousPathCount": 0,
+    "ignoredFileCount": 0,
+    "ignoreSource": "none",
+    "ignoreGlobs": [],
+    "mappedFileCount": 274,
+    "unmappedFileCount": 44
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "kind": "edc-context-build",
+  "edcVersion": "2",
+  "mode": "advisory",
+  "modules": ["wolfpack", "broker"],
+  "discovery": "git-index module plan; repository metadata/support paths are contextless",
+  "ignore": { "source": "none", "globs": [] }
+}
