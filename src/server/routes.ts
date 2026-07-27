@@ -9,55 +9,31 @@ import {
   mkdirSync,
   statSync,
   existsSync,
-  unlinkSync,
-  openSync,
-  readSync,
-  closeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 import { hostname, homedir } from "node:os";
-import { execFile, execFileSync, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { detectProviderReadiness } from "../provider-readiness.js";
 import {
-  configuredRalphAgents,
-  selectConfiguredRalphAgent,
-  type RalphAgent,
-} from "../ralph-agent.js";
-import {
-  isActiveRalphWorktreeMode,
-  RALPH_WORKTREE_MODE,
-} from "../ralph-worktree-mode.js";
-import { isProcessAlive, isRalphProcessAlive } from "../shared/process-cleanup.js";
-import {
   CMD_REGEX,
-  BRANCH_REGEX,
   MAX_INITIAL_PROMPT_LENGTH,
   isValidProjectName,
   isValidSessionName,
-  isValidPlanFile,
   SAFE_FILENAME,
   clampCols,
   clampRows,
 } from "../validation.js";
-import { cleanupAllExceptFinal } from "../worktree.js";
+
 import { assets } from "../public-assets.js";
 import { isJunkLine, type TriageStatus } from "../triage.js";
 import {
   collectAgentStatusSources,
   getAgentRuntimeStateStore,
 } from "./agent-status.js";
-import {
-  AGENT_STATUS_AUTHORITIES,
-  AGENT_STATUS_CAPABILITIES,
-  AGENT_STATUS_FRESHNESSES,
-  AGENT_STATUS_SOURCES,
-  AGENT_STATUS_STATE,
-  AGENT_STATUS_STATES,
-} from "../agent-status-contract.js";
-import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkRalphLoopTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
+import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
@@ -76,140 +52,13 @@ import {
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
   unicodeCodePointLength,
 } from "../session-prompt-contract.js";
-import {
-  listDevProjects,
-  parseRalphLog,
-  pruneStaleRalphLock,
-  scanRalphLoops,
-  countPlanTasks,
-} from "./ralph.js";
+
 
 // ── Constants ──
 const PEER_FETCH_TIMEOUT_MS = 3_000;
-const RALPH_LOG_MAX_TAIL_BYTES = 128 * 1024;
-const RALPH_LOG_MAX_LINES = 500;
 const SESSION_WAIT_DEFAULT_TIMEOUT_MS = 30_000;
 const SESSION_WAIT_MAX_TIMEOUT_MS = 600_000;
 const SESSION_WAIT_BUFFER_MAX_CHARS = 128 * 1024;
-
-// ── Peer ralph-response validation ──
-
-/** Allowed keys on a ralph loop entry from a remote peer. */
-type PeerFieldType = "string" | "number" | "boolean" | "object" | "array";
-
-const RALPH_LOOP_SCHEMA: Record<string, PeerFieldType> = {
-  project: "string",
-  active: "boolean",
-  completed: "boolean",
-  audit: "boolean",
-  cleanup: "boolean",
-  cleanupEnabled: "boolean",
-  auditFixEnabled: "boolean",
-  iteration: "number",
-  totalIterations: "number",
-  agent: "string",
-  planFile: "string",
-  progressFile: "string",
-  started: "string",
-  finished: "string",
-  lastOutput: "string",
-  pid: "number",
-  tasksDone: "number",
-  tasksTotal: "number",
-  worktreeMode: "string",
-  worktreeBranch: "string",
-  sandbox: "string",
-  statusSource: "object",
-  statusSources: "array",
-};
-
-function stringIn(values: readonly string[], value: unknown): value is string {
-  return typeof value === "string" && values.includes(value);
-}
-
-function sanitizePeerStatusSource(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const obj = value as Record<string, unknown>;
-  if (!stringIn(AGENT_STATUS_STATES, obj.state)) return null;
-  if (!stringIn(AGENT_STATUS_AUTHORITIES, obj.authority)) return null;
-  if (!stringIn(AGENT_STATUS_FRESHNESSES, obj.freshness)) return null;
-  if (!stringIn(AGENT_STATUS_SOURCES, obj.source)) return null;
-  if (typeof obj.label !== "string" || typeof obj.stale !== "boolean" || typeof obj.observedAt !== "string") return null;
-  const clean: Record<string, unknown> = {
-    state: obj.state,
-    authority: obj.authority,
-    freshness: obj.freshness,
-    source: obj.source,
-    label: obj.label,
-    stale: obj.stale,
-    observedAt: obj.observedAt,
-  };
-  if (typeof obj.path === "string") clean.path = obj.path;
-  if (typeof obj.message === "string") clean.message = obj.message;
-  if (Array.isArray(obj.capabilities)) {
-    const capabilities = obj.capabilities.filter((item): item is string => stringIn(AGENT_STATUS_CAPABILITIES, item));
-    if (capabilities.length) clean.capabilities = capabilities;
-  }
-  if (typeof obj.runId === "string") clean.runId = obj.runId;
-  if (typeof obj.runOrder === "number") clean.runOrder = obj.runOrder;
-  if (typeof obj.signalSequence === "number") clean.signalSequence = obj.signalSequence;
-  return clean;
-}
-
-/**
- * Validate and sanitize a peer's ralph response.
- * Returns validated loop entries or null if the response is malformed.
- * Strips unexpected keys from each entry.
- */
-export function validatePeerLoops(peerName: string, data: unknown): Record<string, unknown>[] | null {
-  if (typeof data !== "object" || data === null || !("loops" in data)) {
-    log.warn(`malformed peer response from ${peerName}: missing 'loops' key`);
-    return null;
-  }
-  const { loops } = data as { loops: unknown };
-  if (!Array.isArray(loops)) {
-    log.warn(`malformed peer response from ${peerName}: 'loops' is not an array`);
-    return null;
-  }
-  const validated: Record<string, unknown>[] = [];
-  for (const entry of loops) {
-    if (typeof entry !== "object" || entry === null) {
-      log.warn(`malformed peer loop entry from ${peerName}: not an object, skipping`);
-      continue;
-    }
-    const obj = entry as Record<string, unknown>;
-    // project is required — skip entries without it
-    if (typeof obj.project !== "string") {
-      log.warn(`malformed peer loop entry from ${peerName}: missing 'project', skipping`);
-      continue;
-    }
-    const clean: Record<string, unknown> = {};
-    for (const [key, expectedType] of Object.entries(RALPH_LOOP_SCHEMA)) {
-      if (!(key in obj)) continue;
-      if (key === "statusSource") {
-        const statusSource = sanitizePeerStatusSource(obj[key]);
-        if (statusSource) clean[key] = statusSource;
-        continue;
-      }
-      if (key === "statusSources") {
-        if (!Array.isArray(obj[key])) continue;
-        const statusSources = obj[key]
-          .map(sanitizePeerStatusSource)
-          .filter((item): item is Record<string, unknown> => item !== null);
-        clean[key] = statusSources;
-        continue;
-      }
-      if ((expectedType === "array" && Array.isArray(obj[key])) ||
-        (expectedType === "object" && typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) ||
-        (expectedType !== "array" && expectedType !== "object" && typeof obj[key] === expectedType)
-      ) {
-        clean[key] = obj[key];
-      }
-    }
-    validated.push(clean);
-  }
-  return validated;
-}
 
 /** Validate project name param. Returns project string or sends 400 and returns null. */
 function validateProject(res: ServerResponse, project: string | null | undefined): project is string {
@@ -228,6 +77,23 @@ function validateProjectDir(res: ServerResponse, projectDir: string): boolean {
   if (result.ok) return true;
   json(res, { error: result.error }, result.code === "not_found" ? 404 : 400);
   return false;
+}
+
+function listDevProjects(): string[] {
+  try {
+    return readdirSync(DEV_DIR)
+      .filter((entry) => {
+        if (entry.startsWith(".")) return false;
+        try {
+          return statSync(join(DEV_DIR, entry)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 import {
@@ -633,12 +499,7 @@ function isValidCmd(cmd: string): boolean {
   return cmd === AGENT_KIND.SHELL || CMD_REGEX.test(cmd);
 }
 
-export interface LoadedSettings {
-  settings: Settings;
-  ralphAgents: RalphAgent[];
-}
-
-export function loadSettingsWithRalphAgents(): LoadedSettings {
+export function loadSettings(): Settings {
   let raw: Record<string, unknown> | null = null;
   try {
     const parsed = JSON.parse(readFileSync(settingsPath(), "utf-8")) as unknown;
@@ -652,8 +513,7 @@ export function loadSettingsWithRalphAgents(): LoadedSettings {
     : "shell";
 
   // A persisted `cmds` array is authoritative, including an explicitly empty
-  // array. Synthesizing built-ins here would make unconfigured commands look
-  // user-configured to Ralph authorization.
+  // array. Synthesizing built-ins would undo the user's explicit configuration.
   if (raw && Array.isArray(raw.cmds)) {
     const cmds: CmdEntry[] = [];
     const seen = new Set<string>();
@@ -664,35 +524,21 @@ export function loadSettingsWithRalphAgents(): LoadedSettings {
       seen.add(obj.cmd);
       cmds.push({ cmd: obj.cmd, enabled: obj.enabled !== false });
     }
-    const settings = { agentCmd, cmds };
-    return {
-      settings,
-      ralphAgents: configuredRalphAgents(cmds.filter(cmd => cmd.enabled).map(cmd => cmd.cmd)),
-    };
+    return { agentCmd, cmds };
   }
 
-  // Legacy settings still receive the session-picker defaults, but only
-  // commands explicitly present in `customCmds` authorize Ralph.
+  // Legacy settings still receive the session-picker defaults.
   const cmds: CmdEntry[] = DEFAULT_CMDS.map(c => ({ ...c }));
-  const configuredCommands: string[] = [];
   const seen = new Set(cmds.map(c => c.cmd));
   if (raw && Array.isArray(raw.customCmds)) {
     for (const command of raw.customCmds as unknown[]) {
       if (typeof command !== "string" || !isValidCmd(command)) continue;
-      configuredCommands.push(command);
       if (seen.has(command)) continue;
       seen.add(command);
       cmds.push({ cmd: command, enabled: true });
     }
   }
-  return {
-    settings: { agentCmd, cmds },
-    ralphAgents: configuredRalphAgents(configuredCommands),
-  };
-}
-
-export function loadSettings(): Settings {
-  return loadSettingsWithRalphAgents().settings;
+  return { agentCmd, cmds };
 }
 
 function saveSettings(s: Settings): void {
@@ -717,18 +563,6 @@ export function effectiveCmds(s: Settings): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
   return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL];
 }
-
-export function effectiveRalphAgents(s: Settings): RalphAgent[] {
-  return configuredRalphAgents(effectiveCmds(s));
-}
-
-// Ralph worker is invoked as a subcommand: `wolfpack worker --plan ...`
-const RALPH_BIN_ARGS = (() => {
-  const exe = process.execPath;
-  const isBunRuntime = exe.endsWith("/bun") || exe.endsWith("/bun.exe");
-  if (isBunRuntime) return [exe, join(import.meta.dir, "..", "cli", "index.ts")];
-  return [exe];
-})();
 
 export const routes: Record<
   string,
@@ -1145,8 +979,7 @@ export const routes: Record<
   },
 
   "GET /api/settings": async (_req, res) => {
-    const loaded = loadSettingsWithRalphAgents();
-    const settings = loaded.settings;
+    const settings = loadSettings();
     // Surface the effective values so the frontend doesn't reimplement the
     // fallback rules. `effective.cmds` is what the picker should render;
     // `effective.agentCmd` is the pre-selected default.
@@ -1166,7 +999,6 @@ export const routes: Record<
       effective: {
         cmds: effectiveCmds(settings),
         agentCmd: effectiveAgentCmd(settings),
-        ralphAgents: loaded.ralphAgents,
       },
     });
   },
@@ -1224,7 +1056,6 @@ export const routes: Record<
       effective: {
         cmds: effectiveCmds(settings),
         agentCmd: effectiveAgentCmd(settings),
-        ralphAgents: effectiveRalphAgents(settings),
       },
     });
   },
@@ -1532,441 +1363,6 @@ export const routes: Record<
     } catch (e: unknown) {
       json(res, { error: errMsg(e) || "git status failed" }, 500);
     }
-  },
-
-  // ── Ralph loop API ──
-
-  "GET /api/ralph": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const aggregate = url.searchParams.get("aggregate") === "true";
-    const selfHost = hostname().replace(/\.local$/, "").replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
-    const localLoops = scanRalphLoops().map(l => ({ ...l, machineName: selfHost, machineUrl: "" }));
-
-    if (!aggregate || cachedPeers.length === 0) {
-      json(res, { loops: localLoops });
-      checkRalphLoopTransitions(localLoops);
-      return;
-    }
-
-    const remotePeers = cachedPeers.filter(p => p.name !== selfHost);
-    const peerResults = await Promise.all(
-      remotePeers.map(async (peer) => {
-        try {
-          const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), PEER_FETCH_TIMEOUT_MS);
-          const authHeader = Array.isArray(req.headers.authorization)
-            ? req.headers.authorization[0]
-            : req.headers.authorization;
-          const headers = authHeader ? { Authorization: authHeader } : undefined;
-          const r = await fetch(peer.url + "/api/ralph", {
-            signal: ctrl.signal,
-            headers,
-          });
-          clearTimeout(timer);
-          const data = await r.json();
-          const loops = validatePeerLoops(peer.name, data);
-          if (!loops) return [];
-          return loops.map(l => ({ ...l, machineName: peer.name, machineUrl: peer.url }));
-        } catch { /* expected: peer unreachable or non-wolfpack — skip silently */
-          return [];
-        }
-      })
-    );
-
-    const allLoops = [...localLoops, ...peerResults.flat()];
-    json(res, { loops: allLoops });
-    // Only fire transitions for LOCAL loops — each peer machine runs its own
-    // /api/ralph poll and fires transitions for its own loops, so feeding
-    // peer loops here would double-notify (once per peer per machine).
-    checkRalphLoopTransitions(localLoops);
-  },
-
-  "GET /api/ralph/branches": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const project = url.searchParams.get("project");
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-    try {
-      const out = execFileSync("git", ["branch", "--list", "--no-color"], {
-        cwd: projectDir,
-        encoding: "utf-8",
-        timeout: 5000,
-      });
-      let current = "";
-      const branches: string[] = [];
-      for (const line of out.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith("* ")) {
-          const name = trimmed.slice(2).trim();
-          current = name;
-          branches.push(name);
-        } else {
-          branches.push(trimmed);
-        }
-      }
-      json(res, { branches, current });
-    } catch (e: unknown) {
-      const msg = (e as { stderr?: string })?.stderr || errMsg(e) || "git not available";
-      json(res, { error: msg }, 500);
-    }
-  },
-
-  "GET /api/ralph/plans": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const project = url.searchParams.get("project");
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-    try {
-      const rootPlans = readdirSync(projectDir)
-        .filter((f) => f.endsWith(".md") && !f.startsWith(".") && !/^(readme|doc|changelog|contributing|license|code.of.conduct)\.md$/i.test(f))
-        .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { /* race: file removed between readdir and stat */ return false; } });
-      const dotPlansDir = join(projectDir, ".plans");
-      const dotPlans = existsSync(dotPlansDir)
-        ? readdirSync(dotPlansDir)
-          .map((f) => `.plans/${f}`)
-          .filter((f) => isValidPlanFile(f))
-          .filter((f) => { try { return statSync(join(projectDir, f)).isFile(); } catch { /* race: file removed between readdir and stat */ return false; } })
-        : [];
-      json(res, { plans: [...rootPlans, ...dotPlans].sort() });
-    } catch (e: unknown) {
-      log.warn("failed to list plan files", { error: errMsg(e) });
-      json(res, { plans: [] });
-    }
-  },
-
-  "GET /api/ralph/log": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const project = url.searchParams.get("project");
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-    const logPath = join(projectDir, ".ralph.log");
-    if (!existsSync(logPath)) {
-      return json(res, { error: "no ralph log found" }, 404);
-    }
-    try {
-      const fd = openSync(logPath, "r");
-      try {
-        const size = statSync(logPath).size;
-        const offset = Math.max(0, size - RALPH_LOG_MAX_TAIL_BYTES);
-        const buf = Buffer.alloc(Math.min(size, RALPH_LOG_MAX_TAIL_BYTES));
-        readSync(fd, buf, 0, buf.length, offset);
-        const content = buf.toString("utf-8");
-        const lines = content.split("\n");
-        if (offset > 0) lines.shift();
-        const totalLines = lines.length;
-        const log = lines.slice(-RALPH_LOG_MAX_LINES).join("\n");
-        json(res, { log, totalLines });
-      } finally {
-        closeSync(fd);
-      }
-    } catch (e: unknown) {
-      log.error("failed to read ralph log", { error: errMsg(e) });
-      json(res, { error: "failed to read log" }, 500);
-    }
-  },
-
-  "POST /api/ralph/start": async (req, res) => {
-    const body = await parseObjectBody(req, res);
-    if (!body) return;
-    if (!["project", "planFile", "agent", "newBranch", "sourceBranch", "worktreeBranch", "worktreeBase"].every(
-      key => hasOptionalType(body, key, "string"),
-    )) return json(res, { error: "invalid string field" }, 400);
-    if (
-      !hasOptionalType(body, "iterations", "number") ||
-      (typeof body.iterations === "number" && !Number.isInteger(body.iterations))
-    ) return json(res, { error: "iterations must be an integer" }, 400);
-    if (!["format", "cleanup", "auditFix", "sandbox"].every(key => hasOptionalType(body, key, "boolean"))) {
-      return json(res, { error: "invalid boolean field" }, 400);
-    }
-    const { project, iterations, planFile, agent, newBranch, sourceBranch, format, cleanup, auditFix, worktree, worktreeBranch, worktreeBase, sandbox } = body as {
-      project?: string;
-      iterations?: number;
-      planFile?: string;
-      agent?: string;
-      newBranch?: string;
-      sourceBranch?: string;
-      format?: boolean;
-      cleanup?: boolean;
-      auditFix?: boolean;
-      worktree?: unknown;
-      worktreeBranch?: string;
-      worktreeBase?: string;
-      sandbox?: boolean;
-    };
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-
-    const iters = Math.max(1, Math.min(500, iterations ?? 5));
-    const resolvedPlan = planFile || "PLAN.md";
-    if (!isValidPlanFile(resolvedPlan)) {
-      return json(res, { error: "invalid plan file name" }, 400);
-    }
-    if (cleanup != null && typeof cleanup !== "boolean") {
-      return json(res, { error: "invalid cleanup flag" }, 400);
-    }
-    if (auditFix != null && typeof auditFix !== "boolean") {
-      return json(res, { error: "invalid auditFix flag" }, 400);
-    }
-    const validWorktree = worktree === undefined || worktree === false || worktree === RALPH_WORKTREE_MODE.DISABLED || (typeof worktree === "string" && isActiveRalphWorktreeMode(worktree));
-    if (!validWorktree) {
-      return json(res, { error: `invalid worktree mode — must be false, "${RALPH_WORKTREE_MODE.PLAN}", or "${RALPH_WORKTREE_MODE.TASK}"` }, 400);
-    }
-    const worktreeMode = typeof worktree === "string" && isActiveRalphWorktreeMode(worktree) ? worktree : RALPH_WORKTREE_MODE.DISABLED;
-    if (worktreeBranch != null && typeof worktreeBranch !== "string") {
-      return json(res, { error: "invalid worktreeBranch" }, 400);
-    }
-    if (worktreeBranch && !BRANCH_REGEX.test(worktreeBranch)) {
-      return json(res, { error: "invalid worktree branch name" }, 400);
-    }
-    if (worktreeBase != null && typeof worktreeBase !== "string") {
-      return json(res, { error: "invalid worktreeBase" }, 400);
-    }
-    if (worktreeBase && !BRANCH_REGEX.test(worktreeBase)) {
-      return json(res, { error: "invalid worktree base branch name" }, 400);
-    }
-    const source = sourceBranch || "main";
-    if (newBranch && !BRANCH_REGEX.test(newBranch)) {
-      return json(res, { error: "invalid branch name" }, 400);
-    }
-    if (newBranch && !BRANCH_REGEX.test(source)) {
-      return json(res, { error: "invalid source branch name" }, 400);
-    }
-    if (!existsSync(join(projectDir, resolvedPlan))) {
-      return json(res, { error: `plan file '${resolvedPlan}' not found` }, 404);
-    }
-    const selectedAgent = selectConfiguredRalphAgent(agent, loadSettingsWithRalphAgents().ralphAgents);
-    if (!selectedAgent) {
-      return json(res, { error: "ralph agent is not configured and enabled" }, 400);
-    }
-    const cleanupEnabled = cleanup ?? true;
-    const auditFixEnabled = auditFix ?? false;
-
-    const existing = parseRalphLog(projectDir);
-    if (existing?.active) {
-      return json(res, { error: "ralph loop already running", pid: existing.pid }, 409);
-    }
-    if (existing && existing.pid > 1) {
-      pruneStaleRalphLock(projectDir, existing.pid);
-    }
-
-    const lockPath = join(projectDir, ".ralph.lock");
-    // Try atomic create first — avoids TOCTOU between stale-check and create
-    try {
-      writeFileSync(lockPath, "", { flag: "wx" });
-    } catch (e: unknown) {
-      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") {
-        return json(res, { error: "failed to acquire lock" }, 500);
-      }
-      // Lock exists — check if it's stale
-      let lockPid = 0;
-      try { lockPid = Number(readFileSync(lockPath, "utf-8").trim()); } catch { /* lock may have been removed between wx and read */ }
-      if (isRalphProcessAlive(lockPid)) {
-        return json(res, { error: "ralph loop already running (lock held)", pid: lockPid }, 409);
-      }
-      if (lockPid > 1 && isProcessAlive(lockPid)) {
-        // Process at PID exists but is not ralph (PID reuse / unrelated
-        // proc). Lock is stale; fall through to remove + retry.
-        log.warn("lock PID belongs to unrelated process, removing stale lock", { pid: lockPid });
-      }
-      // Stale lock — remove and retry atomic create
-      try { unlinkSync(lockPath); } catch (e2: unknown) {
-        if ((e2 as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("ralph start: failed to remove stale lock", { error: errMsg(e2) });
-      }
-      try {
-        writeFileSync(lockPath, "", { flag: "wx" });
-      } catch (e2: unknown) {
-        if ((e2 as NodeJS.ErrnoException)?.code === "EEXIST") {
-          return json(res, { error: "ralph loop already starting (lock contention)" }, 409);
-        }
-        return json(res, { error: "failed to acquire lock" }, 500);
-      }
-    }
-
-    const removeLock = () => {
-      try { unlinkSync(lockPath); } catch (e: unknown) {
-        if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("ralph start: failed to remove lock on validation failure", { error: errMsg(e) });
-      }
-    };
-
-    let spawned = false;
-    try {
-    if (newBranch) {
-      try {
-        execFileSync("git", ["fetch", "origin", `${source}:${source}`], {
-          cwd: projectDir, encoding: "utf-8", timeout: 30000,
-        });
-      } catch (e: unknown) {
-        const stderr = (e as { stderr?: string })?.stderr || errMsg(e) || "";
-        try {
-          execFileSync("git", ["rev-parse", "--verify", source], {
-            cwd: projectDir, encoding: "utf-8", timeout: 5000,
-          });
-        } catch { /* local ref also not found — report fetch failure to user */
-          return json(res, { error: `failed to fetch source branch '${source}': ${stderr}` }, 400);
-        }
-      }
-      try {
-        execFileSync("git", ["checkout", "-b", newBranch, source], {
-          cwd: projectDir, encoding: "utf-8", timeout: 10000,
-        });
-      } catch (e: unknown) {
-        const stderr = (e as { stderr?: string })?.stderr || errMsg(e) || "branch creation failed";
-        return json(res, { error: stderr }, 400);
-      }
-    }
-
-    // Worktree creation is handled by the worker process itself
-    // (plan mode creates one worktree at startup, task mode creates per-iteration).
-    // The route only passes the mode flag — the worker manages the lifecycle.
-
-    const workerArgs = [
-      ...RALPH_BIN_ARGS.slice(1),
-      "worker",
-      "--plan", resolvedPlan,
-      "--iterations", String(iters),
-      "--agent", selectedAgent,
-      "--progress", "progress.txt",
-      "--cleanup", String(cleanupEnabled),
-      "--audit-fix", String(auditFixEnabled),
-      ...(format ? ["--format"] : []),
-      "--worktree", worktreeMode,
-      ...(worktreeBranch ? ["--worktree-branch", worktreeBranch] : []),
-      ...(worktreeBase ? ["--worktree-base", worktreeBase] : []),
-      "--sandbox", String(sandbox !== false),
-    ];
-    const child = spawn(RALPH_BIN_ARGS[0], workerArgs, {
-      cwd: projectDir,
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        WOLFPACK_PROJECT_DIR: projectDir,
-        WOLFPACK_AGENT_KIND: selectedAgent,
-        WOLFPACK_RALPH_AGENT_KIND: selectedAgent,
-      },
-    });
-    child.unref();
-    spawned = true;
-
-    try { writeFileSync(lockPath, String(child.pid ?? 0)); } catch (e: unknown) {
-      log.error("ralph start: failed to write lock file", { error: errMsg(e) });
-    }
-
-    json(res, {
-      ok: true,
-      pid: child.pid ?? 0,
-      branch: newBranch || undefined,
-      worktree: worktreeMode !== RALPH_WORKTREE_MODE.DISABLED ? worktreeMode : undefined,
-    });
-    } finally {
-      if (!spawned) removeLock();
-    }
-  },
-
-  "GET /api/ralph/task-count": async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const project = url.searchParams.get("project");
-    const plan = url.searchParams.get("plan");
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-    if (!plan || !isValidPlanFile(plan)) {
-      return json(res, { error: "invalid plan file" }, 400);
-    }
-    const planPath = join(projectDir, plan);
-    if (!existsSync(planPath)) {
-      return json(res, { error: "plan not found" }, 404);
-    }
-    json(res, countPlanTasks(planPath));
-  },
-
-  "POST /api/ralph/cancel": async (req, res) => {
-    const body = await parseObjectBody(req, res);
-    if (!body) return;
-    const { project } = body;
-    if (typeof project !== "string") return json(res, { error: "invalid project" }, 400);
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-    const status = parseRalphLog(projectDir);
-    if (!status?.active || !status.pid || status.pid <= 1) {
-      return json(res, { error: "no active ralph loop found" }, 404);
-    }
-    // Reuse the same PID-reuse-safe filter parseRalphLog applies so the
-    // cancel and active-detection paths agree. ps -o command= confirms
-    // it's actually a ralph worker, not a reused PID slot.
-    if (!isRalphProcessAlive(status.pid)) {
-      return json(res, { error: "PID does not belong to a ralph process or process not found" }, 404);
-    }
-    try {
-      process.kill(status.pid, "SIGTERM");
-      // Clean up progress file so cancelled loop starts fresh on next continue
-      if (status.progressFile && SAFE_FILENAME.test(status.progressFile) && !status.progressFile.includes("..")) {
-        try { unlinkSync(join(projectDir, status.progressFile)); } catch { /* may not exist */ }
-      }
-      json(res, { ok: true, killed: status.pid });
-    } catch (e: unknown) {
-      log.error("failed to kill ralph process", { pid: status.pid, error: errMsg(e) });
-      json(res, { error: "failed to kill process" }, 500);
-    }
-  },
-
-  "POST /api/ralph/dismiss": async (req, res) => {
-    const body = await parseObjectBody(req, res);
-    if (!body) return;
-    const { project, deletePlan } = body;
-    if (typeof project !== "string") return json(res, { error: "invalid project" }, 400);
-    if (deletePlan !== undefined && typeof deletePlan !== "boolean") {
-      return json(res, { error: "deletePlan must be a boolean" }, 400);
-    }
-    const projectDir = resolveProjectDir(res, project);
-    if (!projectDir) return;
-    const status = parseRalphLog(projectDir);
-    if (status?.active) {
-      return json(res, { error: "cannot dismiss active loop — cancel it first" }, 409);
-    }
-    if (!status) {
-      return json(res, { error: "no ralph log found" }, 404);
-    }
-
-    const deleted: string[] = [];
-    const failed: string[] = [];
-
-    const tryDelete = (path: string, label: string) => {
-      try {
-        if (existsSync(path)) { unlinkSync(path); deleted.push(label); }
-      } catch (e: unknown) { log.warn(`dismiss: failed to delete ${label}`, { error: errMsg(e) }); failed.push(label); }
-    };
-
-    tryDelete(join(projectDir, ".ralph.log"), ".ralph.log");
-    tryDelete(join(projectDir, ".ralph.lock"), ".ralph.lock");
-
-    if (status.progressFile && SAFE_FILENAME.test(status.progressFile) && !status.progressFile.includes("..")) {
-      tryDelete(join(projectDir, status.progressFile), status.progressFile);
-    }
-
-    if (deletePlan && status.planFile) {
-      if (isValidPlanFile(status.planFile)) {
-        tryDelete(join(projectDir, status.planFile), status.planFile);
-      } else {
-        failed.push(status.planFile);
-      }
-    }
-
-    // Clean up worktrees if the worktree directory exists
-    let worktreeCleanup: { removed: string[]; kept: string } | undefined;
-    const worktreeDir = join(projectDir, ".wolfpack", "worktrees");
-    if (existsSync(worktreeDir)) {
-      try {
-        const result = cleanupAllExceptFinal(projectDir);
-        if (result.removed.length > 0 || result.kept) {
-          worktreeCleanup = result;
-        }
-      } catch (e: unknown) {
-        log.warn("dismiss: worktree cleanup failed", { error: errMsg(e) });
-      }
-    }
-
-    json(res, { ok: true, deleted, failed, ...(worktreeCleanup && { worktreeCleanup }) });
   },
 
   // ── Push notifications ──

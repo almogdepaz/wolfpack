@@ -20,10 +20,10 @@ const OBSERVED_AT = "2026-07-25T00:00:00.000Z";
 function source(overrides: Partial<AgentStatusSource> = {}): AgentStatusSource {
   return {
     state: AGENT_STATUS_STATE.NEEDS_INPUT,
-    authority: AGENT_STATUS_AUTHORITY.LIFECYCLE,
+    authority: AGENT_STATUS_AUTHORITY.MANIFEST,
     freshness: AGENT_STATUS_FRESHNESS.FRESH,
-    source: AGENT_STATUS_SOURCE.RALPH_LIFECYCLE,
-    label: "structured lifecycle",
+    source: AGENT_STATUS_SOURCE.LOCAL_MANIFEST,
+    label: "structured manifest",
     stale: false,
     observedAt: OBSERVED_AT,
     capabilities: ["semantic-state"],

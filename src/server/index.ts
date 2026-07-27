@@ -89,7 +89,7 @@ function isAllowedOrigin(origin: string): boolean {
 // ── Rate limiting ──
 
 /** Poll-heavy endpoints get a tighter limit (10 req/s per IP). */
-const POLL_HEAVY_PATHS = new Set(["/api/sessions", "/api/ralph/log", "/api/ralph"]);
+const POLL_HEAVY_PATHS = new Set(["/api/sessions"]);
 const pollRateLimiter = createPerIpRateLimiter(10);
 
 /** Global limit for all routes (120 req/s per IP). */

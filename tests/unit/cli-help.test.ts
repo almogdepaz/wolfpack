@@ -55,11 +55,12 @@ describe("cli help dispatch", () => {
         "kill",
         "attach",
         "uninstall",
-        "migrate-plan",
-        "worker",
       ]) {
         expect(child.stdout).toContain(command);
       }
+      expect(child.stdout).not.toContain("migrate-plan");
+      expect(child.stdout).not.toContain("worker");
+      expect(child.stdout).not.toContain("Ralph");
       expect(child.stdout).not.toContain("No valid config found");
       expect(child.stdout).not.toContain("Scan to open on your phone");
       expect(child.stderr).toBe("");

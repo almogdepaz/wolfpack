@@ -4,11 +4,8 @@ Wolfpack skills are executable agent instructions stored as ordinary repository
 files under `skills/`. Audit each requested `SKILL.md` before installing it.
 The repository, not a compiled executable, is the source of truth.
 
-Bundled skills:
+Bundled skill:
 
-- `wolfpack-plan` - plan-file task header conventions Ralph can parse.
-- `wolfpack-ralph` - Ralph response-file contract, notifications, and sandbox
-  caveats.
 - `wolfpack-tailnet-control` - top-level session creation, same-harness child
   spawning, and safe local/Tailscale session inspection/control workflows.
 

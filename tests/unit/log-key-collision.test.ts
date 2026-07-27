@@ -32,7 +32,7 @@ describe("logger extra key collision", () => {
   test("reserved fields survive when extra tries to overwrite them (info level)", () => {
     const spy = spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
-      const log = createLogger("ralph");
+      const log = createLogger("routes");
       log.info("test msg", {
         ts: "bad-ts",
         msg: "bad-msg",
@@ -42,7 +42,7 @@ describe("logger extra key collision", () => {
       const entry = JSON.parse((spy.mock.calls[0][0] as string).trim());
 
       expect(entry.level).toBe("info");
-      expect(entry.component).toBe("ralph");
+      expect(entry.component).toBe("routes");
       expect(entry.msg).toBe("test msg");
       expect(entry.ts).not.toBe("bad-ts");
     } finally {

@@ -3,7 +3,7 @@
  * CLI dispatch entry point.
  */
 import { printQR } from "../qr.js";
-import { print, bold, dim, red, yellow, green, WOLF } from "./formatting.js";
+import { print, bold, dim, red, yellow, WOLF } from "./formatting.js";
 import {
   loadConfig,
   isPortInUse,
@@ -27,9 +27,6 @@ import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
 import { attachCommand } from "./attach.js";
 import { runAgentCommand, runSessionCommand } from "./session-control.js";
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { migratePlanFormat, detectOldPlanFormat } from "../wolfpack-context.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 
 export {
@@ -79,8 +76,6 @@ Commands:
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
-  wolfpack migrate-plan <file>     Migrate an older plan format
-  wolfpack worker ...              Run the Ralph worker
 
 Help:
   wolfpack --help
@@ -165,36 +160,9 @@ async function start() {
   print("");
 }
 
-function migratePlan(file?: string) {
-  if (!file) {
-    print(red("  Usage: wolfpack migrate-plan <file>"));
-    print(dim("  Example: wolfpack migrate-plan PLAN.md"));
-    process.exit(1);
-  }
-
-  const filePath = resolve(file);
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf-8");
-  } catch {
-    print(red(`  File not found: ${filePath}`));
-    process.exit(1);
-  }
-
-  if (!detectOldPlanFormat(content)) {
-    print(dim("  Plan does not appear to use old format. Nothing to migrate."));
-    return;
-  }
-
-  const { content: migrated, count } = migratePlanFormat(content);
-  writeFileSync(filePath, migrated);
-  print(green(`  Migrated ${count} task header${count === 1 ? "" : "s"} to ## N. Title format.`));
-  print(dim(`  File: ${filePath}`));
-}
-
 async function main() {
   const argv = process.argv.slice(2);
-  const [cmd, subcmd] = argv;
+  const [cmd] = argv;
 
   if (argv.length === 1 && HELP_ALIASES.has(cmd)) {
     print(topLevelUsage());
@@ -234,11 +202,6 @@ async function main() {
       process.exit(1);
     }
     uninstall();
-  } else if (cmd === "migrate-plan") {
-    migratePlan(subcmd);
-  } else if (cmd === "worker") {
-    process.argv = [process.argv[0], process.argv[1], ...argv.slice(1)];
-    await import("../ralph-macchio.js");
   } else {
     print(red(`  Unknown command: ${cmd}`));
     print(dim("  Run 'wolfpack --help' for available commands."));

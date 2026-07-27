@@ -738,23 +738,6 @@ export function restorePreservedGrid() {
   return true;
 }
 
-export function backFromRalph() {
-  if (isDesktop() && hasPreservedGrid()) {
-    returnToTerminalView();
-    return;
-  }
-  if (state.viewBeforeRalph === "terminal") {
-    if (returnToTerminalView()) return;
-    deps.backToSessions();
-    return;
-  }
-  if (state.viewBeforeRalph === "sessions") {
-    deps.backToSessions();
-    return;
-  }
-  deps.showView(state.viewBeforeRalph || "sessions");
-}
-
 export function backFromSettings() {
   if (state.viewBeforeSettings === "terminal") {
     if (returnToTerminalView()) return;

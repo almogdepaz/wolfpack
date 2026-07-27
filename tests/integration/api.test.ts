@@ -631,110 +631,6 @@ describe("GET /api/sessions", () => {
   });
 });
 
-describe("GET /api/ralph status authority", () => {
-  test("returns source authority diagnostics for malformed manifest without blocking response", async () => {
-    const project = "status-authority-malformed";
-    const dir = join(TEST_DEV_DIR, project);
-    mkdirSync(join(dir, ".wolfpack"), { recursive: true });
-    createdDirs.push(dir);
-    writeFileSync(join(dir, "PLAN.md"), "- [ ] task\n");
-    writeFileSync(join(dir, ".wolfpack", "agent-status.json"), "{ nope");
-    writeFileSync(join(dir, ".ralph.log"), [
-      "🥋 ralph — 5 iterations",
-      "agent: codex",
-      "plan: PLAN.md",
-      "progress: progress.txt",
-      "pid: 999999",
-      "started: Sat Jul 11 2026 12:00:00",
-      "",
-    ].join("\n"));
-
-    const res = await get("/api/ralph");
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    const loop = data.loops.find((entry: any) => entry.project === project);
-    expect(loop).toBeTruthy();
-    expect(loop.statusSource).toMatchObject({
-      state: "idle",
-      authority: "fallback",
-      freshness: "fresh",
-    });
-    expect(loop.statusSources).toContainEqual(expect.objectContaining({
-      authority: "manifest",
-      freshness: "malformed",
-      source: "local-manifest",
-    }));
-  });
-
-  test("returns structured manifest status when fresh", async () => {
-    const project = "status-authority-manifest";
-    const dir = join(TEST_DEV_DIR, project);
-    mkdirSync(join(dir, ".wolfpack"), { recursive: true });
-    createdDirs.push(dir);
-    writeFileSync(join(dir, "PLAN.md"), "- [ ] task\n");
-    writeFileSync(join(dir, ".wolfpack", "agent-status.json"), JSON.stringify({ state: "running", observedAt: "2026-07-11T00:00:00Z" }));
-    writeFileSync(join(dir, ".ralph.log"), [
-      "🥋 ralph — 5 iterations",
-      "agent: codex",
-      "plan: PLAN.md",
-      "progress: progress.txt",
-      "pid: 999999",
-      "started: Sat Jul 11 2026 12:00:00",
-      "",
-    ].join("\n"));
-
-    const res = await get("/api/ralph");
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    const loop = data.loops.find((entry: any) => entry.project === project);
-    expect(loop.statusSource).toMatchObject({
-      state: "running",
-      authority: "manifest",
-      freshness: "fresh",
-    });
-  });
-});
-
-describe("POST /api/ralph/start validation ordering", () => {
-  test("missing plan does not mutate locks or Git branches", async () => {
-    const project = "ralph-missing-plan";
-    const projectDir = join(TEST_DEV_DIR, project);
-    const lockPath = join(projectDir, ".ralph.lock");
-    mkdirSync(projectDir, { recursive: true });
-    createdDirs.push(projectDir);
-    execFileSync("git", ["init", "-b", "main"], { cwd: projectDir, stdio: "pipe" });
-    execFileSync("git", ["config", "user.name", "Wolfpack Test"], { cwd: projectDir });
-    execFileSync("git", ["config", "user.email", "wolfpack@example.test"], { cwd: projectDir });
-    execFileSync("git", ["remote", "add", "origin", join(projectDir, "missing-origin")], { cwd: projectDir });
-    execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: projectDir, stdio: "pipe" });
-    writeFileSync(lockPath, "preexisting-stale-lock");
-
-    const res = await post("/api/ralph/start", {
-      project,
-      planFile: "MISSING.md",
-      newBranch: "fix/missing-plan",
-      sourceBranch: "main",
-    });
-
-    expect(res.status).toBe(404);
-    expect({
-      currentBranch: execFileSync("git", ["branch", "--show-current"], {
-        cwd: projectDir,
-        encoding: "utf-8",
-      }).trim(),
-      createdBranch: execFileSync("git", ["branch", "--list", "fix/missing-plan"], {
-        cwd: projectDir,
-        encoding: "utf-8",
-      }).trim(),
-      lockContent: existsSync(lockPath) ? readFileSync(lockPath, "utf-8") : null,
-    }).toEqual({
-      currentBranch: "main",
-      createdBranch: "",
-      lockContent: "preexisting-stale-lock",
-    });
-  }, 30_000);
-});
-
 describe("agent-native top-level session control", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
@@ -2083,74 +1979,6 @@ describe("POST /api/settings — agentCmd", () => {
   });
 });
 
-describe("POST /api/ralph/start agent authorization", () => {
-  beforeEach(() => {
-    writeFileSync(join(TEST_DEV_DIR, "my-app", "PLAN.md"), "- [ ] authorization test\n");
-  });
-
-  const restoreConfiguredAgents = () => writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
-    agentCmd: "shell",
-    cmds: [
-      { cmd: "shell", enabled: true },
-      { cmd: "claude", enabled: true },
-      { cmd: "pi", enabled: true },
-      { cmd: "codex", enabled: true },
-    ],
-  }));
-
-  test("rejects synthesized defaults when the settings file is missing", async () => {
-    rmSync(TEST_SETTINGS_PATH, { force: true });
-    try {
-      const res = await post("/api/ralph/start", {
-        project: "my-app",
-        planFile: "PLAN.md",
-        agent: "claude",
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
-    } finally {
-      restoreConfiguredAgents();
-    }
-  });
-
-  test("rejects synthesized defaults when persisted commands are empty", async () => {
-    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({ agentCmd: "shell", cmds: [] }));
-    try {
-      const res = await post("/api/ralph/start", {
-        project: "my-app",
-        planFile: "PLAN.md",
-        agent: "claude",
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
-    } finally {
-      restoreConfiguredAgents();
-    }
-  });
-
-  test("rejects a supported agent when it is disabled in settings", async () => {
-    writeFileSync(TEST_SETTINGS_PATH, JSON.stringify({
-      agentCmd: "codex",
-      cmds: [
-        { cmd: "claude", enabled: false },
-        { cmd: "codex", enabled: true },
-      ],
-    }));
-
-    try {
-      const res = await post("/api/ralph/start", {
-        project: "my-app",
-        planFile: "PLAN.md",
-        agent: "claude",
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: "ralph agent is not configured and enabled" });
-    } finally {
-      restoreConfiguredAgents();
-    }
-  });
-});
-
 describe("GET /api/backend", () => {
   test("returns broker availability and session counts", async () => {
     const res = await get("/api/backend");
@@ -2289,9 +2117,6 @@ describe("JSON body shape validation", () => {
       "/api/session-control/prompt",
       "/api/session-control/wait",
       "/api/resize",
-      "/api/ralph/start",
-      "/api/ralph/cancel",
-      "/api/ralph/dismiss",
       "/api/push/subscribe",
       "/api/push/unsubscribe",
       "/api/notify",

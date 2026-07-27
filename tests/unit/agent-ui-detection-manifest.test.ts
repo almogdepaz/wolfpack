@@ -1,8 +1,7 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -18,23 +17,9 @@ import {
   loadAgentUiDetectionManifests,
   validateAgentUiDetectionManifest,
 } from "../../src/agent-ui-detection-manifest.js";
-import { parseRalphLog } from "../../src/server/ralph.js";
-import { startFakeRalph, stopFakeRalph, type FakeRalph } from "../helpers/fake-ralph-pid.js";
-
-let fakeRalph: FakeRalph | null = null;
-let fakeRalphPid = process.pid;
 let tmpDir: string;
 const originalUserManifest = process.env.WOLFPACK_AGENT_UI_MANIFEST;
 const originalCachedManifest = process.env.WOLFPACK_AGENT_UI_MANIFEST_CACHE;
-
-beforeAll(() => {
-  fakeRalph = startFakeRalph();
-  fakeRalphPid = fakeRalph.pid;
-});
-
-afterAll(() => {
-  if (fakeRalph) stopFakeRalph(fakeRalph);
-});
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "agent-ui-manifest-"));
@@ -53,13 +38,13 @@ afterEach(() => {
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schemaVersion: 1,
-    manifestId: "test.ralph",
+    manifestId: "test.agent-ui",
     version: "2026.07.11",
     generatedAt: "2026-07-11T00:00:00.000Z",
     validUntil: "2027-07-11T00:00:00.000Z",
     agents: [
       {
-        id: "ralph",
+        id: "agent",
         versionConstraints: ["*"],
         rules: [
           {
@@ -82,52 +67,25 @@ function writeManifestFile(name: string, value: unknown): string {
   return path;
 }
 
-function writeProjectLog(content: string): string {
-  const projectDir = join(tmpDir, "project");
-  rmSync(projectDir, { recursive: true, force: true });
-  mkdirSync(projectDir, { recursive: true });
-  writeFileSync(join(projectDir, "PLAN.md"), "- [ ] task\n");
-  writeFileSync(join(projectDir, "progress.txt"), "");
-  writeFileSync(join(projectDir, ".ralph.log"), [
-    "🥋 ralph — 5 iterations",
-    "agent: claude",
-    "plan: PLAN.md",
-    "progress: progress.txt",
-    "phase_cleanup: on",
-    "phase_audit_fix: off",
-    `pid: ${fakeRalphPid}`,
-    "started: Mon Jan 01 2024 12:00:00",
-    "",
-    content,
-  ].join("\n"));
-  return projectDir;
-}
-
 function sha256(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
 describe("agent UI detection manifests", () => {
-  test("bundled manifest provides fallback detection below explicit hooks", () => {
-    const match = detectAgentUiStatusFromManifests(
-      [bundledAgentUiDetectionManifest()],
-      "ralph",
-      "worker says Wax Off is underway",
-    );
-
-    expect(match?.status).toBe("cleanup");
-    expect(match?.diagnostics.sourceKind).toBe("bundled");
-    expect(match?.diagnostics.matchedRule).toBe("ralph.cleanup.wax-off");
+  test("bundled manifest has no default detection rules", () => {
+    const bundled = bundledAgentUiDetectionManifest();
+    expect(bundled.manifest.manifestId).toBe("wolfpack.bundled");
+    expect(bundled.manifest.agents).toEqual([]);
   });
 
   test("user manifests override cached and bundled manifests", () => {
     const cachedPath = writeManifestFile("cached.json", manifest({
-      manifestId: "cached.ralph",
-      agents: [{ id: "ralph", rules: [{ id: "cached.audit", status: "audit", confidence: 0.5, contains: ["same token"] }] }],
+      manifestId: "cached.agent-ui",
+      agents: [{ id: "agent", rules: [{ id: "cached.audit", status: "audit", confidence: 0.5, contains: ["same token"] }] }],
     }));
     const userPath = writeManifestFile("user.json", manifest({
-      manifestId: "user.ralph",
-      agents: [{ id: "ralph", rules: [{ id: "user.cleanup", status: "cleanup", confidence: 0.5, contains: ["same token"] }] }],
+      manifestId: "user.agent-ui",
+      agents: [{ id: "agent", rules: [{ id: "user.cleanup", status: "cleanup", confidence: 0.5, contains: ["same token"] }] }],
     }));
 
     const loaded = loadAgentUiDetectionManifests({
@@ -135,11 +93,11 @@ describe("agent UI detection manifests", () => {
       userManifestPaths: [userPath],
       now: new Date("2026-07-11T00:00:00.000Z"),
     });
-    const match = detectAgentUiStatusFromManifests(loaded, "ralph", "same token");
+    const match = detectAgentUiStatusFromManifests(loaded, "agent", "same token");
 
     expect(match?.status).toBe("cleanup");
     expect(match?.diagnostics.sourceKind).toBe("user");
-    expect(match?.diagnostics.manifestId).toBe("user.ralph");
+    expect(match?.diagnostics.manifestId).toBe("user.agent-ui");
   });
 
   test("malformed and oversized local manifests fail closed to bundled defaults", () => {
@@ -177,7 +135,7 @@ describe("agent UI detection manifests", () => {
   });
 
   test("accepts cached updates only with trusted content type and matching sha256", () => {
-    const body = JSON.stringify(manifest({ manifestId: "remote.ralph" }));
+    const body = JSON.stringify(manifest({ manifestId: "remote.agent-ui" }));
     const cachePath = join(tmpDir, "cache", "agent-ui.json");
     const rejectedType = acceptAgentUiManifestUpdate({
       bytes: body,
@@ -205,24 +163,7 @@ describe("agent UI detection manifests", () => {
     expect(rejectedHash).toEqual({ accepted: false, reason: "sha256 mismatch" });
     expect(accepted.accepted).toBe(true);
     expect(existsSync(cachePath)).toBe(true);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8")).manifestId).toBe("remote.ralph");
+    expect(JSON.parse(readFileSync(cachePath, "utf-8")).manifestId).toBe("remote.agent-ui");
   });
 
-  test("parseRalphLog uses manifests only when explicit phase markers do not match", () => {
-    const userPath = writeManifestFile("user.json", manifest());
-    process.env.WOLFPACK_AGENT_UI_MANIFEST = userPath;
-    const fallbackProject = writeProjectLog("Custom Cleanup Started\nworking");
-    const fallback = parseRalphLog(fallbackProject);
-
-    expect(fallback?.cleanup).toBe(true);
-    expect(fallback?.detectionManifest?.sourceKind).toBe("user");
-    expect(fallback?.detectionManifest?.matchedRule).toBe("test.cleanup");
-
-    const explicitProject = writeProjectLog("=== 🥋 Wax Inspect — starting audit+fix — now ===\nCustom Cleanup Started");
-    const explicit = parseRalphLog(explicitProject);
-
-    expect(explicit?.audit).toBe(true);
-    expect(explicit?.cleanup).toBe(false);
-    expect(explicit?.detectionManifest).toBeUndefined();
-  });
 });

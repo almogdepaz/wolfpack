@@ -10,20 +10,11 @@ import {
 } from "./app-state";
 
 import {
-  initRalphDeps,
-  getRalphStatus, renderRalphCardHtml, sidebarRalphCardHtml,
-  openRalphDetail, refreshRalphDetail, parseIterations, toggleRawLog,
-  cancelRalph, loadRalphStartForm, onIsolationChange,
-  startRalph, continueRalph, discardRalph, showRalphStart, dismissRalph,
-  checkRalphTransitions,
-} from "./app-ralph";
-
-import {
   initGridDeps,
   isGridActive, updateGridLayout, renderGridCells, getGridCellElement,
   hasPreservedGrid, clearPreservedGrid, setCurrentSessionFromGridFocus,
   returnToTerminalView, setGridFocus, suspendGridMode, restorePreservedGrid,
-  backFromRalph, backFromSettings, addToGrid, removeFromGrid, exitGridMode,
+  backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
   canOpenMultiTerminalGrid, disposeDelegationGrid,
@@ -2500,10 +2491,6 @@ interface SessionsResponse {
   readonly sessions?: Array<Record<string, unknown>>;
 }
 
-interface RalphResponse {
-  readonly loops?: Array<Record<string, unknown>>;
-}
-
 interface ProjectsResponse {
   readonly projects?: string[];
 }
@@ -2588,8 +2575,6 @@ const VIEW_DEPTH = {
   agent: 2,
   settings: 1,
   terminal: 1,
-  "ralph-detail": 1,
-  "ralph-start": 1,
 };
 
 function showView(name: string, skipAnimation?: boolean): void {
@@ -2688,7 +2673,6 @@ function showView(name: string, skipAnimation?: boolean): void {
 
   // Stop timers immediately (don't defer these)
   if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }
-  if (state.ralphLogPollTimer) { clearInterval(state.ralphLogPollTimer); state.ralphLogPollTimer = null; }
 
   // Desktop: skip all header manipulation, handle view-specific logic only
   if (!isMobile) {
@@ -2706,18 +2690,9 @@ function showView(name: string, skipAnimation?: boolean): void {
     }
     const settingsBackBtn = document.getElementById("settings-back-btn");
     if (settingsBackBtn) settingsBackBtn.style.display = effectiveName === "settings" ? "block" : "none";
-    const ralphDetailBackBtn = document.getElementById("ralph-detail-back-btn");
-    if (ralphDetailBackBtn) ralphDetailBackBtn.style.display = effectiveName === "ralph-detail" ? "inline-block" : "none";
-    const ralphStartBackBtn = document.getElementById("ralph-start-back-btn");
-    if (ralphStartBackBtn) ralphStartBackBtn.style.display = effectiveName === "ralph-start" ? "inline-block" : "none";
     if (effectiveName === "settings") {
       renderQuickCmdSettings();
       loadAgentsSettings();
-    } else if (effectiveName === "ralph-detail") {
-      refreshRalphDetail();
-      state.ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
-    } else if (effectiveName === "ralph-start") {
-      loadRalphStartForm();
     }
     // Update sidebar active highlight
     renderSidebar();
@@ -2785,24 +2760,6 @@ function showView(name: string, skipAnimation?: boolean): void {
         hml.textContent = mName;
         hml.style.display = "block";
       }
-    } else if (name === "ralph-detail") {
-      back.style.display = "block";
-      back.onclick = () => { backFromRalph(); };
-      gear.style.display = "none";
-      const ralphMachineSuffix = state.currentRalphMachine
-        ? " @ " + (getMachines().find(m => m.url === state.currentRalphMachine)?.name || "remote")
-        : "";
-      title.textContent = (state.currentRalphProject || "ralph") + ralphMachineSuffix;
-
-      refreshRalphDetail();
-      state.ralphLogPollTimer = setInterval(refreshRalphDetail, 2000);
-    } else if (name === "ralph-start") {
-      back.style.display = "block";
-      back.onclick = () => { backFromRalph(); };
-      gear.style.display = "none";
-      title.textContent = "start ralph";
-
-      loadRalphStartForm();
     }
   };
 
@@ -2898,7 +2855,7 @@ function renderMachineGroupHtml(g, multiMachine) {
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
   const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" onclick="event.stopPropagation();alert('Running v${escAttr(g.machine.version || "?")} — newer version available on another machine')">⚠ UPDATE</span>` : "";
   let html = multiMachine ? `<div class="machine-group" data-machine="${mUrlAttr}">` : `<div class="machine-group">`;
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${mUrlAttr}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${mUrlAttr}')">+</button></div></div>`;
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns"><button class="machine-add-btn" onclick="showProjectPicker('${mUrlAttr}')">+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -2920,13 +2877,6 @@ function renderMachineGroupHtml(g, multiMachine) {
           <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
         </div>`;
       }).join("");
-    }
-    if (g.loops && g.loops.length) {
-      // TRUST BOUNDARY: g.loops from remote peers is untrusted — all fields are
-      // escaped via esc()/escAttr() in renderRalphCardHtml; status classes are
-      // hardcoded enum values from getRalphStatus(). Server-side validation in
-      // validatePeerLoops() strips unexpected keys and enforces types.
-      html += g.loops.map(loop => renderRalphCardHtml(loop, g.machine.url || "")).join("");
     }
   } else if (multiMachine) {
     html += `<div class="group-status">Offline</div>`;
@@ -3110,20 +3060,19 @@ function fetchMachine(machineUrl, machineMeta) {
   // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
   const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
   const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-  const ralphFetch = wpSettings.ralphEnabled ? api<RalphResponse>("/ralph", remoteOpts, machineUrl || undefined).catch(() => ({ loops: [] })) : Promise.resolve({ loops: [] });
-  return Promise.all([api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined), api<InfoResponse>("/info", remoteOpts, machineUrl || undefined), ralphFetch])
-    .then(([d, info, ralph]) => {
+  return Promise.all([api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined), api<InfoResponse>("/info", remoteOpts, machineUrl || undefined)])
+    .then(([d, info]) => {
       if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
       return {
         machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
-        sessions: d.sessions || [], loops: ralph.loops || [], online: true, pending: false,
+        sessions: d.sessions || [], online: true, pending: false,
       };
     })
     .catch(() => {
       if (machineUrl) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
       return {
         machine: { ...machineMeta, url: machineUrl, version: "" },
-        sessions: [], loops: [], online: false, pending: false,
+        sessions: [], online: false, pending: false,
       };
     });
 }
@@ -3168,7 +3117,7 @@ async function loadSessions() {
   const prevByUrl = new Map((state.lastSessionGroups || []).map(g => [g.machine.url, g]));
   const pendingPlaceholder = m => ({
     machine: { ...m.meta, url: m.url, version: "" },
-    sessions: [], loops: [], online: false, pending: true,
+    sessions: [], online: false, pending: true,
   });
   const groupsInOrder = () => allMachines.map((m, i) => groups[i] || prevByUrl.get(m.url) || pendingPlaceholder(m));
 
@@ -4463,7 +4412,6 @@ function checkStateTransitions(groups) {
       }
     }
 
-    checkRalphTransitions(g.loops, mUrl, g.machine.name || "local");
   }
 }
 
@@ -4774,7 +4722,7 @@ function backToSessions() {
   loadSessions();
 }
 
-// Escape to back out of project/agent picker and ralph views
+// Escape to back out of project/agent picker views
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (state.focusedDelegationSession) {
@@ -4784,7 +4732,6 @@ document.addEventListener("keydown", (e) => {
   }
   if (state.currentView === "agent") { e.preventDefault(); showView("projects"); }
   else if (state.currentView === "projects") { e.preventDefault(); returnFromProjectPicker(); }
-  else if (state.currentView === "ralph-start" || state.currentView === "ralph-detail") { e.preventDefault(); backFromRalph(); }
   else if (state.currentView === "settings") { e.preventDefault(); backFromSettings(); }
 });
 
@@ -4956,9 +4903,8 @@ if (!isDesktop()) {
   const W = () => window.innerWidth;
 
   const BACK_TARGET = {
-    terminal: "sessions", "ralph-detail": "sessions",
+    terminal: "sessions",
     projects: "sessions", agent: "projects", settings: "sessions",
-    "ralph-start": "sessions",
   };
 
   function applySwipe() {
@@ -5001,13 +4947,12 @@ if (!isDesktop()) {
         fgEl = document.getElementById(state.currentView + "-view");
         bgEl = document.getElementById(backTarget + "-view");
       } else if (dx < 0) {
-        const card = (e.target as Element | null)?.closest(".card, .ralph-card") ?? null;
+        const card = (e.target as Element | null)?.closest(".card") ?? null;
         if (!card) { scrolling = true; return; }
         swipeCard = card;
         isBack = false;
         fgEl = document.getElementById(state.currentView + "-view");
-        const isRalphCard = card.classList.contains("ralph-card");
-        forwardTargetView = state.currentView === "sessions" ? (isRalphCard ? "ralph-detail" : "terminal") : null;
+        forwardTargetView = state.currentView === "sessions" ? "terminal" : null;
         if (!forwardTargetView) { scrolling = true; return; }
         bgEl = document.getElementById(forwardTargetView + "-view");
       } else { scrolling = true; return; }
@@ -5118,18 +5063,15 @@ function _renderSidebarNow() {
 
   let html = "";
   if (!multiMachine) {
-    // Single machine — simple list with + New + Ralph
+    // Single machine — simple list with + New
     const g = groups[0];
-    const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div><button class="machine-ralph-btn" onclick="showRalphStart()">&#129355;</button></div>';
+    const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
       html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), "").map(row => sidebarCardHtml(row, "")).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
-    }
-    if (g && g.online && g.loops && g.loops.length) {
-      html += g.loops.map(loop => sidebarRalphCardHtml(loop, "")).join("");
     }
   } else {
     // Multi-machine
@@ -5138,16 +5080,13 @@ function _renderSidebarNow() {
       const mName = esc(g.machine.name);
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
       html += `<div class="machine-group" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-ralph-btn" onclick="showRalphStart('${escAttr(g.machine.url)}')">&#129355;</button><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
         html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
         html += '<div class="sidebar-conn-status">Offline</div>';
-      }
-      if (g.online && g.loops && g.loops.length) {
-        html += g.loops.map(loop => sidebarRalphCardHtml(loop, g.machine.url)).join("");
       }
       html += '</div>';
     }
@@ -5382,7 +5321,6 @@ function bindHtmlEventListeners(): void {
   on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
-  on("setting-ralphEnabled", "change", function(this: HTMLInputElement) { toggleSetting("ralphEnabled", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
   on("setting-snapshotTtl", "input", function(this: HTMLInputElement) {
     toggleSetting("snapshotTtl", +this.value);
@@ -5429,16 +5367,6 @@ function bindHtmlEventListeners(): void {
   if (copyBtn) copyBtn.addEventListener("click", () => copySessionToClipboard());
 
 
-  // Ralph detail
-  on("ralph-detail-back-btn", "click", () => backFromRalph());
-  on("ralph-log-toggle", "click", () => toggleRawLog());
-
-  // Ralph start form
-  on("ralph-start-back-btn", "click", () => backFromRalph());
-  const ralphSegmented = document.querySelector(".ralph-segmented");
-  if (ralphSegmented) ralphSegmented.addEventListener("change", () => onIsolationChange());
-  const launchBtn = document.querySelector(".ralph-launch-btn");
-  if (launchBtn) launchBtn.addEventListener("click", () => startRalph());
 }
 
 bindHtmlEventListeners();
@@ -5459,12 +5387,7 @@ initGridDeps({
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });
-initRalphDeps({
-  api, errorMessage, showView, getMachines, backToSessions,
-  loadSessions, renderSidebar, startSidebarRefresh,
-  getSidebarRefreshTimer: () => sidebarRefreshTimer,
-  setSidebarRefreshTimer: (v) => { sidebarRefreshTimer = v; },
-});
+
 initSettings();
 cleanStaleSnapshots();
 renderCmdPalette();
@@ -5495,8 +5418,6 @@ if ("serviceWorker" in navigator) {
 // Bun's bundler tree-shakes functions only referenced in HTML onclick strings.
 // Assigning to window ensures they survive bundling and are callable from inline handlers.
 Object.assign(window, {
-  // ralph onclick handlers
-  openRalphDetail, dismissRalph, cancelRalph, continueRalph, discardRalph, showRalphStart,
   // session/project onclick handlers
   openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,

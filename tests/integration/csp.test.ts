@@ -16,8 +16,6 @@ await mock.module("../../src/public-assets.js", () => ({
 await mock.module("../../src/server/shell.js", () => ({
   exec: mock(async () => ({ stdout: "", stderr: "" })),
   SHELL: "/bin/zsh",
-  RALPH_AGENTS: new Set(["claude", "codex", "gemini", "cursor"]),
-  detectAgent: () => null,
   __setExecOverride: () => {},
 }));
 

@@ -67,9 +67,9 @@ D("BrokerBackend ↔ real broker", () => {
   let backend: BrokerBackend | null = null;
   let stderrBuf = "";
 
-  const SESSION = "ralph-it-shell";
-  const PROMPT_SESSION = "ralph-it-prompt";
-  const ATOMIC_SESSION = "ralph-it-atomic-prompt";
+  const SESSION = "agent-it-shell";
+  const PROMPT_SESSION = "agent-it-prompt";
+  const ATOMIC_SESSION = "agent-it-atomic-prompt";
   const MARKER = `WOLFPACK_MARKER_${process.pid}_${Math.random().toString(36).slice(2, 10)}`;
 
   beforeAll(async () => {
