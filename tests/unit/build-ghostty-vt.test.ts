@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   GHOSTTY_PATCHES,
+  copyGhosttyHeaders,
   createBundleManifest,
   ghosttyArchiveHasHostMemsetOverride,
   ghosttyBuildArgs,
@@ -69,6 +70,24 @@ describe("libghostty-vt prebuild arguments", () => {
     expect(builderSource).toContain("rmSync(sourceDir, { recursive: true, force: true })");
   });
 
+  test("stages header contents directly under include root", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ghostty-vt-headers-"));
+    try {
+      const prefix = join(dir, "prefix");
+      const targetOut = join(dir, "target");
+      mkdirSync(join(prefix, "include", "ghostty"), { recursive: true });
+      mkdirSync(join(targetOut, "include"), { recursive: true });
+      writeFileSync(join(prefix, "include", "ghostty", "vt.h"), "/* vt */\n");
+
+      copyGhosttyHeaders(prefix, targetOut);
+
+      expect(existsSync(join(targetOut, "include", "ghostty", "vt.h"))).toBe(true);
+      expect(existsSync(join(targetOut, "include", "include", "ghostty", "vt.h"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("Ghostty lock is the single source of build pins and patch hashes", () => {
     const lock = readGhosttyLock();
     expect(lock.revision).toBe("7aa9591746ffa4d2eee458960c76554352832595");
@@ -77,7 +96,7 @@ describe("libghostty-vt prebuild arguments", () => {
     expect(lock.patches).toEqual([
       {
         path: "patches/ghostty-vt-scroll-region.patch",
-        sha256: "0ae589656f36d33359a335dd31c40ae6f280dbf02c7178f4e802c80cb8685f80",
+        sha256: "742062e34969dced67badc6ad984d8b5f0745fc9ead02bf3fab7d76e197f8381",
       },
       {
         path: "patches/ghostty-vt-no-static-host-memset.patch",

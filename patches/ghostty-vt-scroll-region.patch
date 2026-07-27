@@ -17,7 +17,7 @@
 +  /** Bottom row of the vertical scrolling region. */
 +  uint16_t bottom;
 +} GhosttyTerminalScrollRegion;
- 
+
  /**
   * Callback function type for bell.
 @@ -1215,6 +1228,13 @@
@@ -33,11 +33,11 @@
 +  GHOSTTY_TERMINAL_DATA_SCROLL_REGION = 34,
    GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalData;
- 
+
 --- a/src/terminal/c/terminal.zig	2026-07-22 18:26:45
 +++ b/src/terminal/c/terminal.zig	2026-07-27 09:03:32
 @@ -739,6 +739,12 @@
- 
+
  /// C: GhosttyTerminalScrollbar
  pub const TerminalScrollbar = PageList.Scrollbar.C;
 +
@@ -46,7 +46,7 @@
 +    top: size.CellCountInt,
 +    bottom: size.CellCountInt,
 +};
- 
+
  /// C: GhosttyTerminalData
  pub const TerminalData = enum(c_int) {
 @@ -776,6 +782,7 @@
@@ -54,7 +54,7 @@
      viewport_active = 32,
      vt_processing_error = 33,
 +    scroll_region = 34,
- 
+
      /// Output type expected for querying the data of the given kind.
      pub fn OutType(comptime self: TerminalData) type {
 @@ -810,6 +817,7 @@
@@ -74,5 +74,5 @@
 +            .bottom = t.scrolling_region.bottom,
 +        },
      }
- 
+
      return .success;

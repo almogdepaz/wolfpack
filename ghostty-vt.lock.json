@@ -13,7 +13,7 @@
   "patches": [
     {
       "path": "patches/ghostty-vt-scroll-region.patch",
-      "sha256": "0ae589656f36d33359a335dd31c40ae6f280dbf02c7178f4e802c80cb8685f80"
+      "sha256": "742062e34969dced67badc6ad984d8b5f0745fc9ead02bf3fab7d76e197f8381"
     },
     {
       "path": "patches/ghostty-vt-no-static-host-memset.patch",

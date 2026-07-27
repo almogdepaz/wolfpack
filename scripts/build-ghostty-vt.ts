@@ -223,6 +223,10 @@ export function verifyBundleManifest(target: string, bundleDir: string, lock = r
   if (digestDirectory(includeDir) !== manifest.headers.digest) throw new Error("Ghostty header tree digest mismatch");
 }
 
+export function copyGhosttyHeaders(prefix: string, targetOut: string): void {
+  run("cp", ["-R", join(prefix, "include") + "/.", join(targetOut, "include") + "/"]);
+}
+
 function buildTarget(cargoTriple: string, sourceDir: string, lock: GhosttyLock) {
   const prefix = join(CACHE, "build", cargoTriple, "prefix");
   rmSync(prefix, { recursive: true, force: true });
@@ -236,7 +240,7 @@ function buildTarget(cargoTriple: string, sourceDir: string, lock: GhosttyLock) 
   mkdirSync(join(targetOut, "include"), { recursive: true });
 
   copyFileSync(join(prefix, "lib", "libghostty-vt.a"), join(targetOut, "lib", "libghostty-vt.a"));
-  run("cp", ["-R", join(prefix, "include") + "/", join(targetOut, "include") + "/"]);
+  copyGhosttyHeaders(prefix, targetOut);
   assertNoHostMemsetOverride(join(targetOut, "lib", "libghostty-vt.a"));
   const manifest = createBundleManifest(cargoTriple, targetOut, lock);
   writeFileSync(join(targetOut, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
