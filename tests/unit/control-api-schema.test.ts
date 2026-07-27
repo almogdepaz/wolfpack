@@ -255,7 +255,7 @@ describe("control api schema compatibility samples", () => {
       project: "wolfpack",
       parentSession: "pi-main",
       sessionName: "override",
-    }, artifact)).not.toEqual([]);
+    }, artifact)).toEqual([]);
     expect((request.properties as JsonObject).initialPrompt).toMatchObject({
       type: "string",
       minLength: 1,

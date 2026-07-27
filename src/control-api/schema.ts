@@ -423,6 +423,7 @@ export const controlApiSource: ControlApiSource = {
       request: object({
         project: ref("ProjectName"),
         parentSession: ref("SessionName"),
+        sessionName: ref("SessionName"),
         initialPrompt: {
           type: "string",
           minLength: 1,

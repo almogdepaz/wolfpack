@@ -351,17 +351,21 @@ equivalent to a viewer that had been attached the whole time.
 ### StyledLine
 
 ```jsonc
-{ "cells": [StyledCell, ...] }
+{
+  "cells": [StyledCell, ...],
+  "wrapped": false // true when this visual line continues into the next line
+}
 ```
 
-A line MAY be shorter than `cols`. Shorter lines are right-padded with blank
-cells using the default attrs.
+`wrapped` defaults to `false` when omitted for backward compatibility. A line
+MAY be shorter than `cols`. Shorter lines are right-padded with blank cells
+using the default attrs.
 
 ### StyledCell
 
 ```jsonc
 {
-  "ch":    "a",       // single grapheme cluster (1+ codepoints)
+  "ch":    "a",       // grapheme cluster; "" for a wide-grapheme continuation cell
   "attrs": CellAttrs
 }
 ```
