@@ -30,18 +30,8 @@ export const OPENABLE_HARNESSES = [
 
 export type OpenableHarness = typeof OPENABLE_HARNESSES[number];
 
-export const RALPH_AGENTS = [
-  AGENT_KIND.CLAUDE,
-  AGENT_KIND.CODEX,
-  AGENT_KIND.GEMINI,
-  AGENT_KIND.CURSOR,
-] as const;
-
-export type RalphAgent = typeof RALPH_AGENTS[number];
-
 const KNOWN_AGENT_KIND_SET: ReadonlySet<string> = new Set(KNOWN_AGENT_KINDS);
 const OPENABLE_HARNESS_SET: ReadonlySet<string> = new Set(OPENABLE_HARNESSES);
-const RALPH_AGENT_SET: ReadonlySet<string> = new Set(RALPH_AGENTS);
 
 export function isKnownAgentKind(value: string): value is AgentKind {
   return KNOWN_AGENT_KIND_SET.has(value);
@@ -49,10 +39,6 @@ export function isKnownAgentKind(value: string): value is AgentKind {
 
 export function isOpenableHarness(value: string): value is OpenableHarness {
   return OPENABLE_HARNESS_SET.has(value);
-}
-
-export function isRalphAgent(value: string): value is RalphAgent {
-  return RALPH_AGENT_SET.has(value);
 }
 
 export function inferAgentKindFromCommand(command: string | undefined): AgentKind | string {
@@ -66,9 +52,8 @@ export function inferAgentKindFromCommand(command: string | undefined): AgentKin
 export function detectAgentKindFromCommandArgs(command: readonly string[] | undefined): AgentKind | undefined {
   if (!command) return undefined;
   const joined = command.join(" ");
-  for (const agent of RALPH_AGENTS) {
+  for (const agent of OPENABLE_HARNESSES) {
     if (joined.includes(agent)) return agent;
   }
-  if (joined.includes(` ${AGENT_KIND.PI}`)) return AGENT_KIND.PI;
   return undefined;
 }

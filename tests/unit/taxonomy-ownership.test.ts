@@ -8,7 +8,6 @@ import {
   AGENT_STATUS_FRESHNESS,
   AGENT_STATUS_SOURCE,
 } from "../../src/agent-status-contract";
-import { RALPH_WORKTREE_MODE } from "../../src/ralph-worktree-mode";
 import { TERMINAL_PREFILL_MODE } from "../../src/terminal-prefill";
 
 type TaxonomyRule = {
@@ -27,7 +26,6 @@ function taxonomyMembers(...groups: ReadonlyArray<Readonly<Record<string, string
 const TAXONOMIES: readonly TaxonomyRule[] = [
   { name: "agent-kind", owner: "src/agent-kind.ts", members: taxonomyMembers(AGENT_KIND), context: /agent|harness/i },
   { name: "terminal-prefill-mode", owner: "src/terminal-prefill.ts", members: taxonomyMembers(TERMINAL_PREFILL_MODE), context: /prefill/i },
-  { name: "ralph-worktree-mode", owner: "src/ralph-worktree-mode.ts", members: taxonomyMembers(RALPH_WORKTREE_MODE), context: /worktree|isoVal|isolation/i },
   { name: "agent-status-source", owner: "src/agent-status-contract.ts", members: taxonomyMembers(AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_SOURCE), context: /AgentStatus|statusSource|freshness|authority|candidate|readStructuredStatusFile/ },
 ];
 

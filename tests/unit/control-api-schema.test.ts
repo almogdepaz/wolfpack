@@ -114,13 +114,6 @@ function wsMessage(name: string): JsonObject {
   return message.schema;
 }
 
-function ralphResponseFile(): JsonObject {
-  const ralph = artifact.ralph;
-  const responseFile = isObject(ralph) ? ralph.responseFile : undefined;
-  if (!isObject(responseFile) || !isObject(responseFile.schema)) throw new Error("missing ralph response file schema");
-  return responseFile.schema;
-}
-
 describe("control api schema generation", () => {
   test("generated artifact is current", () => {
     expect(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")).toBe(generateControlApiSchemaText());
@@ -132,6 +125,13 @@ describe("control api schema generation", () => {
 
   test("artifact has no duplicate contracts or unsupported field types", () => {
     expect(validateControlApiSchemaArtifact(artifact)).toEqual([]);
+  });
+
+  test("does not publish removed loop-runner contracts", () => {
+    const http = artifact.http;
+    expect(isObject(http)).toBe(true);
+    expect(Object.keys(http as JsonObject).filter((key) => key.toLowerCase().includes("ralph"))).toEqual([]);
+    expect("ralph" in artifact).toBe(false);
   });
 });
 
@@ -279,10 +279,10 @@ describe("control api schema compatibility samples", () => {
       ok: true,
       runtimeState: {
         state: "needs-input",
-        authority: "lifecycle",
+        authority: "manifest",
         freshness: "fresh",
-        source: "ralph-lifecycle",
-        label: "structured lifecycle",
+        source: "local-manifest",
+        label: "structured manifest",
         stale: false,
         observedAt: "2026-07-11T00:00:00Z",
         changedAt: "2026-07-11T00:00:00Z",
@@ -363,7 +363,7 @@ describe("control api schema compatibility samples", () => {
       }] }],
       ["getSettings", {
         settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }] },
-        effective: { agentCmd: "shell", cmds: ["shell"], ralphAgents: [] },
+        effective: { agentCmd: "shell", cmds: ["shell"] },
       }],
       ["getSessionStatus", {
         ok: true,
@@ -376,33 +376,6 @@ describe("control api schema compatibility samples", () => {
         projectDir: "/repo/wolf-1",
         harness: "pi",
         terminal: { exists: true, alive: true, status: "ready" },
-      }],
-      ["listRalphLoops", {
-        loops: [{
-          project: "wolfpack",
-          active: true,
-          completed: false,
-          audit: false,
-          cleanup: false,
-          cleanupEnabled: true,
-          auditFixEnabled: false,
-          iteration: 1,
-          totalIterations: 5,
-          agent: "codex",
-          planFile: ".plans/c-generated-control-api-schema.md",
-          progressFile: "progress.txt",
-          started: "2026-07-11T00:00:00Z",
-          finished: "",
-          lastOutput: "running",
-          pid: 12345,
-          tasksDone: 0,
-          tasksTotal: 4,
-          worktreeMode: "task",
-          worktreeBranch: "feature/example",
-          sandbox: "true",
-          machineName: "devbox",
-          machineUrl: "",
-        }],
       }],
     ];
 
@@ -435,14 +408,4 @@ describe("control api schema compatibility samples", () => {
     }
   });
 
-  test("representative ralph response file satisfies generated schema", () => {
-    expect(validate(ralphResponseFile(), {
-      version: 1,
-      status: "needs_subtasks",
-      prereqs: ["branch exists"],
-      tests: ["bun test tests/unit/control-api-schema.test.ts"],
-      done: ["schema source defined"],
-      subtasks: ["wire generated schema into docs"],
-    }, artifact)).toEqual([]);
-  });
 });

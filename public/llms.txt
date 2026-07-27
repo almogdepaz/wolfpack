@@ -20,15 +20,14 @@ Wolfpack is a PWA and CLI for controlling long-running terminal sessions from a 
 - Self-hosted remote development over Tailscale
 - Persistent PTY sessions owned by a local broker
 - Multi-machine session list and desktop terminal grid
-- Optional Ralph autonomous plan runner
 
 ## Important docs
 
 - README.md: product overview, quickstart, security model, architecture, CLI usage
 - docs/troubleshooting.md: setup and runtime troubleshooting
 - docs/broker-protocol.md: broker wire protocol
-- docs/ralph-macchio.md: Ralph autonomous plan runner
-- docs/ralph-behavior.md: Ralph behavior notes
+- docs/session-control.md: scriptable session control API
+- docs/cli-attach.md: local terminal attach
 
 ## Install
 

@@ -448,19 +448,10 @@ type SessionNotificationState = TriageStatus | AgentStatusState;
 
 const prevTriageState = new Map<string, SessionNotificationState>();
 const lastSessionPushTime = new Map<string, number>();
-const lastRalphPushTime = new Map<string, number>();
 const PUSH_DEBOUNCE_MS = 30_000;
-const prevRalphState = new Map<string, string>();
 
 /** Rate-limit timestamps for POST /api/notify (10/min). */
 let notifyTimestamps: number[] = [];
-
-function ralphLoopStatus(loop: { active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }): string {
-  if (loop.audit || loop.cleanup || loop.active) return "running";
-  if (loop.completed) return "done";
-  if (!loop.active && !loop.completed && loop.finished) return "limit";
-  return "idle";
-}
 
 const SESSION_RUNNING_STATES = new Set<SessionNotificationState>([
   "running",
@@ -509,35 +500,6 @@ export function checkSessionTransitions(sessions: Array<{ name: string; triage: 
   }
 }
 
-/** Check ralph loop transitions and fire push notifications for running → done/idle/limit. */
-export function checkRalphLoopTransitions(loops: Array<{ project: string; active: boolean; completed: boolean; audit?: boolean; cleanup?: boolean; finished?: string }>): void {
-  if (getSubscriptionCount() === 0) return;
-  const now = Date.now();
-  const activeKeys = new Set(loops.map(l => `ralph-${l.project}`));
-  for (const loop of loops) {
-    const key = `ralph-${loop.project}`;
-    const prev = prevRalphState.get(key);
-    const cur = ralphLoopStatus(loop);
-    prevRalphState.set(key, cur);
-    if (prev === "running" && (cur === "done" || cur === "idle" || cur === "limit")) {
-      const last = lastRalphPushTime.get(loop.project) || 0;
-      if (now - last > PUSH_DEBOUNCE_MS) {
-        lastRalphPushTime.set(loop.project, now);
-        const labels: Record<string, string> = { done: "All tasks complete", idle: "Stopped", limit: "Hit iteration limit" };
-        sendPush({
-          title: `Wolfpack: ralph`,
-          body: `${loop.project}: ${labels[cur] || cur}`,
-          tag: `ralph-${loop.project}`,
-        }).catch(() => {});
-      }
-    }
-  }
-  // Prune state for removed projects
-  for (const key of prevRalphState.keys()) {
-    if (!activeKeys.has(key)) { prevRalphState.delete(key); lastRalphPushTime.delete(key.slice("ralph-".length)); }
-  }
-}
-
 /** Check notify rate limit (10/min). Returns error string or null if ok. */
 export function checkNotifyRateLimit(): string | null {
   const now = Date.now();
@@ -554,8 +516,6 @@ export function _testingResetDebounce(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("_testingResetDebounce() is only available in test mode");
   prevTriageState.clear();
   lastSessionPushTime.clear();
-  lastRalphPushTime.clear();
-  prevRalphState.clear();
   notifyTimestamps = [];
 }
 
@@ -568,8 +528,6 @@ export const _testing = {
   b64urlDecode,
   prevTriageState,
   lastSessionPushTime,
-  lastRalphPushTime,
-  prevRalphState,
   PUSH_DEBOUNCE_MS,
   PUSH_FETCH_TIMEOUT_MS,
   fetchWithDeadline,

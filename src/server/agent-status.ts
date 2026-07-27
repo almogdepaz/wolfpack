@@ -109,7 +109,6 @@ export interface AgentRuntimeStateFile {
 }
 
 export const AGENT_STATUS_MANIFEST_PATH = ".wolfpack/agent-status.json";
-export const AGENT_STATUS_LIFECYCLE_PATH = ".ralph/status.json";
 export const AGENT_STATUS_TTL_MS = 60_000;
 export const AGENT_RUNTIME_STATE_SCHEMA_VERSION = 1;
 
@@ -177,7 +176,6 @@ export function collectAgentStatusSources(
   fallback: Omit<CandidateStatus, "authority" | "source" | "label" | "freshness">,
 ): AgentStatusSource[] {
   const candidates: CandidateStatus[] = [
-    readLifecycleStatus(projectDir),
     readLocalStatusManifest(projectDir),
     {
       ...fallback,
@@ -185,7 +183,7 @@ export function collectAgentStatusSources(
       freshness: AGENT_STATUS_FRESHNESS.FRESH,
       source: AGENT_STATUS_SOURCE.SCREEN_FALLBACK,
       label: "log fallback",
-      message: fallback.message || "derived from Ralph log markers; not process liveness",
+      message: fallback.message || "derived from bounded terminal output; not process liveness",
     },
   ];
   return candidates.map(normalizeCandidate);
@@ -304,17 +302,6 @@ function readStructuredStatusFile(
       path: relativePath,
     };
   }
-}
-
-export function readLifecycleStatus(projectDir: string, nowMs = Date.now()): CandidateStatus {
-  return readStructuredStatusFile(
-    projectDir,
-    AGENT_STATUS_LIFECYCLE_PATH,
-    AGENT_STATUS_AUTHORITY.LIFECYCLE,
-    AGENT_STATUS_SOURCE.RALPH_LIFECYCLE,
-    "lifecycle",
-    nowMs,
-  );
 }
 
 export function readLocalStatusManifest(projectDir: string, nowMs = Date.now()): CandidateStatus {
@@ -594,19 +581,4 @@ export function getAgentRuntimeStateStore(): AgentRuntimeStateStore {
 
 export function __resetAgentRuntimeStateStoreForTests(): void {
   runtimeStateStore = null;
-}
-
-export function statusStateFromRalphFlags(flags: {
-  active: boolean;
-  completed: boolean;
-  audit?: boolean;
-  cleanup?: boolean;
-  finished?: string;
-}): AgentStatusState {
-  if (flags.audit) return AGENT_STATUS_STATE.AUDIT;
-  if (flags.cleanup) return AGENT_STATUS_STATE.CLEANUP;
-  if (flags.active) return AGENT_STATUS_STATE.RUNNING;
-  if (flags.completed) return AGENT_STATUS_STATE.DONE;
-  if (flags.finished) return AGENT_STATUS_STATE.STOPPED;
-  return AGENT_STATUS_STATE.IDLE;
 }

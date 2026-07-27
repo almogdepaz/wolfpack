@@ -185,15 +185,6 @@
           </label>
         </div>
         <div class="settings-section">
-          <div class="settings-label">Ralph Loop</div>
-          <label class="settings-toggle">
-            <input type="checkbox" id="setting-ralphEnabled"> Enable Ralph Loop
-          </label>
-          <div class="settings-description">
-            Ralph is an autonomous agent loop that works through a plan file task-by-task. It spawns AI agents (Claude, Codex, Gemini) as detached processes, each completing one task before handing off to the next. Progress is tracked via strikethrough headers or checkboxes in your plan file. Enable this to show Ralph controls throughout the UI.
-          </div>
-        </div>
-        <div class="settings-section">
           <div class="settings-label">Agents</div>
           <div class="settings-description">
             Commands shown when creating a session. Toggle to enable or remove any command; built-ins can be re-added from provider readiness. If you disable everything, the picker falls back to <code>shell</code>.
@@ -298,86 +289,6 @@
       <div id="msg-preview"></div>
     </div>
 
-    <!-- Ralph detail view -->
-    <div id="ralph-detail-view" class="view">
-      <button id="ralph-detail-back-btn" class="picker-cancel-btn">&#8592; Back</button>
-      <div id="ralph-detail-header" class="ralph-detail-header"></div>
-      <div id="ralph-log-container" class="ralph-log-container">
-        <div id="ralph-iterations"></div>
-        <pre id="ralph-log" class="ralph-log ralph-log-hidden"></pre>
-        <div class="ralph-log-toggle-wrap">
-          <span id="ralph-log-toggle" class="ralph-log-toggle">view raw log</span>
-        </div>
-      </div>
-      <div id="ralph-actions" class="ralph-actions"></div>
-    </div>
-
-    <!-- Ralph start form view -->
-    <div id="ralph-start-view" class="view">
-      <button id="ralph-start-back-btn" class="picker-cancel-btn">&#8592; Cancel</button>
-      <div class="ralph-start-form">
-        <div id="ralph-machine-picker" class="ralph-machine-picker-hidden"></div>
-
-        <label for="ralph-project-select">Project</label>
-        <select id="ralph-project-select"></select>
-
-        <label for="ralph-iterations-input">Iterations</label>
-        <input
-          id="ralph-iterations-input"
-          type="number"
-          min="1"
-          max="500"
-          value="5"
-          autocomplete="off"
-        />
-
-        <label for="ralph-agent-select">Agent</label>
-        <select id="ralph-agent-select" disabled>
-          <option value="">loading agents…</option>
-        </select>
-
-        <label for="ralph-plan-select">Plan file</label>
-        <select id="ralph-plan-select"></select>
-
-        <div class="ralph-toggles">
-          <div class="flex-row">
-            <input type="checkbox" id="ralph-cleanup-toggle" class="ralph-checkbox" checked />
-            <label for="ralph-cleanup-toggle" class="ralph-branch-label">Run cleanup phase</label>
-          </div>
-          <div class="flex-row">
-            <input type="checkbox" id="ralph-audit-fix-toggle" class="ralph-checkbox" />
-            <label for="ralph-audit-fix-toggle" class="ralph-branch-label">Run audit+fix phase</label>
-          </div>
-          <div class="flex-row ralph-isolation-row">
-            <span class="ralph-branch-label">Isolation</span>
-            <div class="ralph-segmented">
-              <input type="radio" name="ralph-isolation" id="ralph-iso-off" value="false" checked />
-              <label for="ralph-iso-off">Off</label>
-              <input type="radio" name="ralph-isolation" id="ralph-iso-plan" value="plan" />
-              <label for="ralph-iso-plan">Plan</label>
-              <input type="radio" name="ralph-isolation" id="ralph-iso-task" value="task" />
-              <label for="ralph-iso-task">Task</label>
-              <input type="radio" name="ralph-isolation" id="ralph-iso-branch" value="branch" />
-              <label for="ralph-iso-branch">Branch</label>
-            </div>
-          </div>
-        </div>
-        <div id="ralph-worktree-fields" class="ralph-branch-fields">
-          <label for="ralph-worktree-name">Worktree branch</label>
-          <input id="ralph-worktree-name" type="text" placeholder="ralph/plan-my-feature" autocomplete="off" autocorrect="off" autocapitalize="off" />
-          <label for="ralph-worktree-base">Base branch</label>
-          <select id="ralph-worktree-base"></select>
-        </div>
-        <div id="ralph-branch-fields" class="ralph-branch-fields">
-          <label for="ralph-branch-name">Branch name</label>
-          <input id="ralph-branch-name" type="text" placeholder="feature/my-branch" autocomplete="off" autocorrect="off" autocapitalize="off" />
-          <label for="ralph-source-branch">Branch from</label>
-          <select id="ralph-source-branch"></select>
-        </div>
-
-        <button class="ralph-launch-btn">Launch Ralph</button>
-      </div>
-    </div>
     </div><!-- /view-container -->
 
     <script src="/app.bundle.js"></script>

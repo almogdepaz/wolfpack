@@ -23,7 +23,7 @@ export interface ExternalAgentIdentity {
   provider: AgentKind | string;
   id: string;
   capturedAt: string;
-  source: "env" | "broker_env" | "ralph_launch";
+  source: "env" | "broker_env";
 }
 
 export interface ParentSessionIdentity {

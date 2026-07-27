@@ -28,6 +28,7 @@ const PLAIN_SHELL: &str = include_str!("terminal_fixtures/plain_shell.bin");
 const CR_REDRAW: &str = include_str!("terminal_fixtures/cr_redraw.bin");
 const ANSI_COLOR: &str = include_str!("terminal_fixtures/ansi_color.bin");
 const TUI_PARTIAL_REDRAW: &str = include_str!("terminal_fixtures/tui_partial_redraw.bin");
+const TUI_EDIT_OPS: &str = include_str!("terminal_fixtures/tui_edit_ops.bin");
 
 fn decode(src: &str) -> Vec<u8> {
     let trimmed = src.trim_end_matches(|c: char| c == '\n' || c == '\r' || c == ' ');
@@ -102,6 +103,10 @@ fn fixture_files_contain_expected_escape_encoded_source() {
     assert_eq!(
         rstrip(TUI_PARTIAL_REDRAW),
         r"\e[?1049h\e[2J\e[1;1Htop\e[2;1Hbody1\e[3;1Hbottom\e[2;1H\e[Knew2"
+    );
+    assert_eq!(
+        rstrip(TUI_EDIT_OPS),
+        r"\e[?1049h\e[2J\e[1;1HABCDE\e[1;2H\e[2P\e[2;1HABCDE\e[2;2H\e[2@\e[3;1HABCDE\e[3;2H\e[2X"
     );
 }
 
@@ -216,6 +221,23 @@ fn ansi_color_tracks_sgr_attrs_per_cell() {
     assert_eq!(snap.cursor.col, 9);
     // Row 1 is untouched.
     assert!(line_text(&snap.visible_screen[1]).chars().all(|c| c == ' '));
+}
+
+#[test]
+fn tui_edit_operations_produce_authoritative_reconnect_cells() {
+    let snapshot = snapshot_for(10, 3, TUI_EDIT_OPS);
+
+    assert!(snapshot.modes.alt_screen);
+    assert_eq!(cell_chars(&snapshot.visible_screen[0], 0..3), "ADE");
+    assert!(snapshot.visible_screen[0]
+        .cells
+        .iter()
+        .skip(3)
+        .all(|cell| cell.ch == " "));
+    assert_eq!(cell_chars(&snapshot.visible_screen[1], 0..7), "A  BCDE");
+    assert_eq!(cell_chars(&snapshot.visible_screen[2], 0..5), "A  DE");
+    assert_eq!(snapshot.cursor.row, 2);
+    assert_eq!(snapshot.cursor.col, 1);
 }
 
 #[test]

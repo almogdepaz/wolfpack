@@ -55,7 +55,7 @@ export function getTerminalFontFamily() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", soloPrefillMode:"fast", snapshotTtl:900, debugPanel:false, ralphEnabled:false};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", soloPrefillMode:"fast", snapshotTtl:900, debugPanel:false};
 export const wpSettings = Object.assign({}, wpDefaults, loadStoredJson("wp-effects", {}));
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
@@ -81,9 +81,6 @@ export function applySetting(key, val) {
     document.body.classList.add("term-size-" + val);
     document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.size === val));
     applyTermToXterm();
-  }
-  if (key === "ralphEnabled") {
-    document.body.classList.toggle("ralph-hidden", !val);
   }
   if (key === "termFont") {
     document.body.classList.toggle("term-font-alt", val === "alt");
@@ -269,19 +266,6 @@ export const state = {
   selfVersion: "",
   sessionRecents: loadRecents(),
   quickCmds: loadQuickCmds(),
-  // ralph state
-  currentRalphProject: null,
-  currentRalphMachine: "",
-  ralphStartMachine: "",
-  viewBeforeRalph: "sessions",
-  ralphLogPollTimer: null,
-  currentRalphPlanFile: "",
-  restartingRalph: false,
-  currentRalphWorktreeMode: "false",
-  currentRalphWorktreeBranch: "",
-  currentRalphAgent: "",
-  currentRalphCleanup: undefined as boolean | undefined,
-  currentRalphAuditFix: undefined as boolean | undefined,
   // desktop/grid terminal state
   terminalController: null,
   desktopResizeHandler: null,
@@ -306,7 +290,7 @@ export const state = {
   sidebarCollapsed: !_initSidebarPinned,
   sidebarAutoExpanded: false,
   sidebarTransitionIsHover: false,
-  sidebarResizeDone: false,
+  sidebarLayoutTransitioning: false,
   sessionsExpanded: true,
   // connection state
   sessionRefreshTimer: null,

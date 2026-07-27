@@ -98,7 +98,6 @@ describe("agent skills", () => {
     const references = [
       "README.md",
       "docs/broker-protocol.md",
-      "skills/wolfpack-ralph/SKILL.md",
       "docs/troubleshooting.md",
     ];
 
