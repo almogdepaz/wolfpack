@@ -1,0 +1,27 @@
+{
+  "accepted": true,
+  "correctness": {
+    "parity": [
+      "alternate-screen-editing",
+      "ansi-color",
+      "plain-shell",
+      "scroll-region",
+      "wide-combining-text"
+    ],
+    "ghosttyWins": [
+      "cursor-bar",
+      "custom-tab-stop",
+      "dec-special-graphics"
+    ],
+    "legacyWins": [],
+    "unresolved": []
+  },
+  "performanceRatios": {
+    "feedThroughput": 11.078236738833814,
+    "snapshotP95": 1.1323291469493808,
+    "attachReflowP95": 1.060988713434709,
+    "rss500": 0.1358907383309939,
+    "rss5000": 0.02399224364400691
+  },
+  "failures": []
+}

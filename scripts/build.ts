@@ -18,6 +18,7 @@ const DIST = join(ROOT, "dist");
 const NPM_DIR = join(DIST, "npm");
 const BROKER_DIR = join(DIST, "broker");
 const ENTRY = join(ROOT, "src", "cli", "index.ts");
+const THIRD_PARTY_NOTICES = join(ROOT, "THIRD_PARTY_NOTICES");
 
 const TARGETS = [
   "bun-linux-x64",
@@ -132,6 +133,12 @@ if (missingStaged.length === TARGETS.length) {
   process.exit(1);
 }
 
+for (const target of TARGETS) {
+  copyFileSync(THIRD_PARTY_NOTICES, join(BROKER_DIR, target, "THIRD_PARTY_NOTICES"));
+}
+
+copyFileSync(THIRD_PARTY_NOTICES, join(DIST, "THIRD_PARTY_NOTICES"));
+
 // Stage the host-arch broker at the well-known dist/wolfpack-broker so
 // scripts/deploy-local.sh keeps working.
 const hostTarget = hostBunTarget();
@@ -168,7 +175,7 @@ for (const target of TARGETS) {
     description: `wolfpack-bridge binary for ${meta.os}-${meta.cpu}`,
     os: [meta.os],
     cpu: [meta.cpu],
-    files: ["wolfpack", "wolfpack-broker"],
+    files: ["wolfpack", "wolfpack-broker", "THIRD_PARTY_NOTICES"],
     license: "MIT",
     repository: {
       type: "git",
@@ -186,6 +193,7 @@ for (const target of TARGETS) {
   const brokerSrc = brokerStaged[target];
   const brokerDest = join(pkgDir, "wolfpack-broker");
   copyFileSync(brokerSrc, brokerDest);
+  copyFileSync(THIRD_PARTY_NOTICES, join(pkgDir, "THIRD_PARTY_NOTICES"));
   chmodSync(brokerDest, 0o755);
 
   console.log(`  ${meta.name}/  (wolfpack + wolfpack-broker)`);

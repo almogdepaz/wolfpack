@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "revision": "7aa9591746ffa4d2eee458960c76554352832595",
+  "sourceUrl": "https://tip.files.ghostty.org/7aa9591746ffa4d2eee458960c76554352832595/libghostty-vt-source.tar.gz",
+  "sourceSha256": "468a0564bdd481e291f6150b94300f9ff37c1a7524f6ae76e99c4ec15535cf66",
+  "zigVersion": "0.16.0",
+  "buildInputs": {
+    "emitLibVt": true,
+    "emitXcframework": false,
+    "simd": false,
+    "optimize": "ReleaseFast"
+  },
+  "patches": [
+    {
+      "path": "patches/ghostty-vt-scroll-region.patch",
+      "sha256": "0ae589656f36d33359a335dd31c40ae6f280dbf02c7178f4e802c80cb8685f80"
+    },
+    {
+      "path": "patches/ghostty-vt-no-static-host-memset.patch",
+      "sha256": "795e3d9e0344e9a3770550f27c533394443f21eec808333fe266a6e4835de292"
+    }
+  ],
+  "targets": {
+    "aarch64-apple-darwin": {
+      "zigTarget": "aarch64-macos"
+    },
+    "x86_64-apple-darwin": {
+      "zigTarget": "x86_64-macos"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "zigTarget": "x86_64-linux-gnu"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "zigTarget": "aarch64-linux-gnu"
+    }
+  }
+}

@@ -23,6 +23,8 @@ CLAUDE.md
 src/public-assets.ts
 public/app.bundle.js
 dist/
+.cache/
+broker/native/ghostty-vt/
 bin/wolfpack
 .ralph_iter.tmp
 progress.txt
@@ -30,6 +32,7 @@ tests/e2e/test-results/
 playwright-report/
 PLAN*.md
 .wolfpack/
+.pi/
 .worktrees/
 public/.DS_Store
 .edc/

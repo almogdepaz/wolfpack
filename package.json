@@ -13,6 +13,7 @@
   "files": [
     "bin/run.cjs",
     "bin/install.cjs",
+    "THIRD_PARTY_NOTICES",
     "llms.txt",
     "docs/agent-skills.md",
     "docs/cli-attach.md",

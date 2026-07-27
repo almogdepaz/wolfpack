@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::output_bus::OutputBus;
 use crate::protocol::{Event, SessionInfo, Snapshot};
 use crate::ring_buffer::OutputChunk;
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalState, TerminalStateError};
 
 /// Shared async-event sink. Every lifecycle transition (`session_started`,
 /// `session_exited`, `session_resized`, `snapshot_invalidated`) is published
@@ -103,6 +103,8 @@ pub enum SpawnError {
     WriterTake(String),
     #[error("thread spawn failed: {0}")]
     ThreadSpawn(String),
+    #[error("terminal state failed: {0}")]
+    Terminal(#[from] TerminalStateError),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -123,6 +125,13 @@ pub enum KillError {
 pub enum ResizeError {
     #[error("pty resize failed: {0}")]
     Pty(String),
+    #[error("pty resize failed: {pty}; terminal rollback failed: {rollback}")]
+    PtyWithTerminalRollback {
+        pty: String,
+        rollback: TerminalStateError,
+    },
+    #[error("terminal state failed: {0}")]
+    Terminal(#[from] TerminalStateError),
 }
 
 #[derive(Debug)]
@@ -143,11 +152,17 @@ impl SpawnedChildGuard {
     }
 
     fn process_id(&self) -> Option<u32> {
-        self.child.as_ref().expect("child guard disarmed").process_id()
+        self.child
+            .as_ref()
+            .expect("child guard disarmed")
+            .process_id()
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        self.child.as_ref().expect("child guard disarmed").clone_killer()
+        self.child
+            .as_ref()
+            .expect("child guard disarmed")
+            .clone_killer()
     }
 
     fn into_child(mut self) -> Box<dyn Child + Send + Sync> {
@@ -273,7 +288,7 @@ impl Session {
             waiter: Condvar::new(),
         });
 
-        let terminal = Arc::new(Mutex::new(TerminalState::new(opts.cols, opts.rows)));
+        let terminal = Arc::new(Mutex::new(TerminalState::try_new(opts.cols, opts.rows)?));
         let seq = Arc::new(AtomicU64::new(0));
         let bus = OutputBus::with_defaults();
 
@@ -402,32 +417,16 @@ impl Session {
     /// Best-effort: send errors (no active subscribers) are silently ignored.
     pub fn resize(&self, cols: u16, rows: u16, events: &EventSender) -> Result<(), ResizeError> {
         let id = self.id();
-        let master = self.master.lock().expect("master poisoned");
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| ResizeError::Pty(e.to_string()))?;
-        {
-            let mut st = self.inner.state.lock().expect("session state poisoned");
-            st.cols = cols;
-            st.rows = rows;
-        }
-        {
-            let mut term = self.terminal.lock().expect("terminal poisoned");
-            term.resize(cols, rows);
-        }
-        drop(master);
-        let _ = events.send(Event::SessionResized {
-            session_id: id,
+        let mut master = self.master.lock().expect("master poisoned");
+        resize_terminal_pty_and_state(
+            &self.inner,
+            id,
+            master.as_mut(),
+            &self.terminal,
             cols,
             rows,
-        });
-        let _ = events.send(Event::SnapshotInvalidated { session_id: id });
-        Ok(())
+            events,
+        )
     }
 
     /// Write raw bytes to the PTY master's stdin (e.g. keyboard input from a client).
@@ -446,13 +445,13 @@ impl Session {
         &self,
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
-    ) -> Snapshot {
+    ) -> Result<Snapshot, TerminalStateError> {
         let id = self.id();
         let term = self.terminal.lock().expect("terminal poisoned");
         // Read seq under the same lock the drainer holds while bumping it,
         // so the returned (state, seq) pair is consistent.
         let seq = self.seq.load(Ordering::SeqCst);
-        term.snapshot_with_reflow(
+        term.try_snapshot_with_reflow(
             id,
             seq,
             now_ms(),
@@ -474,9 +473,94 @@ impl Session {
     }
 }
 
+trait PtyResize {
+    fn try_resize_pty(&mut self, cols: u16, rows: u16) -> Result<(), String>;
+}
+
+impl PtyResize for dyn MasterPty + Send {
+    fn try_resize_pty(&mut self, cols: u16, rows: u16) -> Result<(), String> {
+        self.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())
+    }
+}
+
+trait TerminalResize {
+    fn try_resize_terminal(&mut self, cols: u16, rows: u16) -> Result<(), TerminalStateError>;
+}
+
+impl TerminalResize for TerminalState {
+    fn try_resize_terminal(&mut self, cols: u16, rows: u16) -> Result<(), TerminalStateError> {
+        self.try_resize(cols, rows)
+    }
+}
+
+fn resize_terminal_pty_and_state<P, T>(
+    inner: &Inner,
+    session_id: Uuid,
+    pty: &mut P,
+    terminal: &Mutex<T>,
+    cols: u16,
+    rows: u16,
+    events: &EventSender,
+) -> Result<(), ResizeError>
+where
+    P: PtyResize + ?Sized,
+    T: TerminalResize,
+{
+    let mut state = inner.state.lock().expect("session state poisoned");
+    let old_cols = state.cols;
+    let old_rows = state.rows;
+
+    {
+        let mut terminal = terminal.lock().expect("terminal poisoned");
+        terminal.try_resize_terminal(cols, rows)?;
+        if let Err(pty) = pty.try_resize_pty(cols, rows) {
+            if let Err(rollback) = terminal.try_resize_terminal(old_cols, old_rows) {
+                return Err(ResizeError::PtyWithTerminalRollback { pty, rollback });
+            }
+            return Err(ResizeError::Pty(pty));
+        }
+    }
+
+    state.cols = cols;
+    state.rows = rows;
+    drop(state);
+    let _ = events.send(Event::SessionResized {
+        session_id,
+        cols,
+        rows,
+    });
+    let _ = events.send(Event::SnapshotInvalidated { session_id });
+    Ok(())
+}
+
+trait TerminalFeed {
+    fn try_feed_chunk(&mut self, data: &[u8]) -> Result<(), TerminalStateError>;
+}
+
+impl TerminalFeed for TerminalState {
+    fn try_feed_chunk(&mut self, data: &[u8]) -> Result<(), TerminalStateError> {
+        self.try_feed(data)
+    }
+}
+
 fn drain_reader<R: Read>(
-    mut r: R,
+    r: R,
     terminal: Arc<Mutex<TerminalState>>,
+    seq: Arc<AtomicU64>,
+    bus: Arc<OutputBus>,
+) -> io::Result<()> {
+    drain_reader_with_terminal(r, terminal, seq, bus)
+}
+
+fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
+    mut r: R,
+    terminal: Arc<Mutex<T>>,
     seq: Arc<AtomicU64>,
     bus: Arc<OutputBus>,
 ) -> io::Result<()> {
@@ -493,8 +577,10 @@ fn drain_reader<R: Read>(
                 // and OutputChunk.seq use the same monotonic numbering.
                 let new_seq = {
                     let mut term = terminal.lock().expect("terminal poisoned");
-                    term.feed(&data);
-                    seq.fetch_add(1, Ordering::SeqCst) + 1
+                    match term.try_feed_chunk(&data) {
+                        Ok(()) => seq.fetch_add(1, Ordering::SeqCst) + 1,
+                        Err(error) => break Err(io::Error::other(error)),
+                    }
                 };
                 bus.publish(OutputChunk { seq: new_seq, data });
             }
@@ -661,17 +747,81 @@ mod tests {
         Session::spawn(o, test_events())
     }
 
+    struct OneChunkReader {
+        chunk: Option<&'static [u8]>,
+    }
+
+    impl Read for OneChunkReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.chunk.take() else {
+                return Ok(0);
+            };
+            buf[..chunk.len()].copy_from_slice(chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    struct TerminalFeedFailure;
+
+    impl TerminalFeed for TerminalFeedFailure {
+        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<(), TerminalStateError> {
+            Err(TerminalStateError::GhosttyLimit { operation: "feed" })
+        }
+    }
+
     struct FailingReader;
 
     impl Read for FailingReader {
         fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-            Err(io::Error::new(io::ErrorKind::BrokenPipe, "forced PTY read failure"))
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "forced PTY read failure",
+            ))
         }
     }
 
     #[test]
+    fn drainer_feed_failure_closes_output_and_publishes_no_failed_chunk() {
+        let terminal = Arc::new(Mutex::new(TerminalFeedFailure));
+        let seq = Arc::new(AtomicU64::new(0));
+        let bus = OutputBus::new(4, 4);
+        let mut receiver = bus.subscribe(None).expect("bus open").receiver;
+        let waiter_bus = Arc::clone(&bus);
+        let waiter = thread::spawn(move || waiter_bus.wait_closed(Duration::from_millis(200)));
+
+        let error = drain_reader_with_terminal(
+            OneChunkReader {
+                chunk: Some(b"failed chunk"),
+            },
+            terminal,
+            Arc::clone(&seq),
+            Arc::clone(&bus),
+        )
+        .expect_err("terminal feed failure must be returned");
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(
+            error.to_string().contains("ghostty-vt"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            waiter.join().expect("waiter thread"),
+            "feed failure must wake bus close waiters"
+        );
+        assert!(bus.is_closed(), "feed failure must close live output");
+        assert_eq!(seq.load(Ordering::SeqCst), 0);
+        assert_eq!(bus.current_seq(), 0);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+    }
+
+    #[test]
     fn drainer_propagates_read_failure_after_closing_output() {
-        let terminal = Arc::new(Mutex::new(TerminalState::new(80, 24)));
+        let terminal = Arc::new(Mutex::new(
+            TerminalState::try_new(80, 24).expect("terminal init"),
+        ));
         let seq = Arc::new(AtomicU64::new(0));
         let bus = OutputBus::with_defaults();
 
@@ -723,7 +873,10 @@ mod tests {
                 signal: None,
             }) if session_id == id
         ));
-        assert!(receiver.try_recv().is_err(), "exit event must be emitted once");
+        assert!(
+            receiver.try_recv().is_err(),
+            "exit event must be emitted once"
+        );
     }
 
     #[test]
@@ -844,7 +997,7 @@ mod tests {
         assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
         assert!(sess.wait_for_exit(Duration::from_secs(5)));
 
-        let snap = sess.snapshot_terminal(None, None);
+        let snap = sess.snapshot_terminal(None, None).expect("snapshot");
         assert_eq!(snap.cols, 80);
         assert_eq!(snap.rows, 24);
         assert!(
@@ -867,7 +1020,7 @@ mod tests {
         assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
         let _ = sess.wait_for_exit(Duration::from_secs(5));
 
-        let after = sess.snapshot_terminal(None, None).seq;
+        let after = sess.snapshot_terminal(None, None).expect("snapshot").seq;
         assert!(
             after > 0,
             "seq must advance after drainer ingests output (got {after})"
@@ -882,16 +1035,17 @@ mod tests {
         {
             let mut term = sess.terminal.lock().expect("terminal poisoned");
             // 5 rows; feeding "1\r\n..6" pushes 4 lines into scrollback.
-            *term = TerminalState::new(10, 2);
-            term.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
+            *term = TerminalState::try_new(10, 2).expect("terminal init");
+            term.try_feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n6")
+                .expect("terminal feed");
         }
-        let full = sess.snapshot_terminal(None, None);
+        let full = sess.snapshot_terminal(None, None).expect("snapshot");
         assert!(
             full.scrollback.len() >= 4,
             "expected >=4 scrollback lines, got {}",
             full.scrollback.len()
         );
-        let trimmed = sess.snapshot_terminal(Some(2), None);
+        let trimmed = sess.snapshot_terminal(Some(2), None).expect("snapshot");
         assert_eq!(trimmed.scrollback.len(), 2);
         // Truncation keeps the trailing (most recent) lines.
         let last_full = line_text(full.scrollback.last().unwrap());
@@ -900,6 +1054,161 @@ mod tests {
 
         let _ = sess.kill(libc::SIGKILL);
         let _ = sess.wait_for_exit(Duration::from_secs(5));
+    }
+
+    #[derive(Default)]
+    struct RecordingPtyResize {
+        calls: Vec<(u16, u16)>,
+        fail: bool,
+    }
+
+    impl PtyResize for RecordingPtyResize {
+        fn try_resize_pty(&mut self, cols: u16, rows: u16) -> Result<(), String> {
+            self.calls.push((cols, rows));
+            if self.fail {
+                Err("forced PTY resize failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct RecordingTerminalResize {
+        cols: u16,
+        rows: u16,
+        fail_on_target: bool,
+        fail_on_rollback: bool,
+        calls: Vec<(u16, u16)>,
+    }
+
+    impl RecordingTerminalResize {
+        fn new(cols: u16, rows: u16) -> Self {
+            Self {
+                cols,
+                rows,
+                fail_on_target: false,
+                fail_on_rollback: false,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl TerminalResize for RecordingTerminalResize {
+        fn try_resize_terminal(&mut self, cols: u16, rows: u16) -> Result<(), TerminalStateError> {
+            self.calls.push((cols, rows));
+            if self.fail_on_target && (cols, rows) != (self.cols, self.rows) {
+                return Err(TerminalStateError::GhosttyLimit {
+                    operation: "resize",
+                });
+            }
+            if self.fail_on_rollback && (cols, rows) == (80, 24) {
+                return Err(TerminalStateError::GhosttyStatus {
+                    operation: "resize rollback",
+                    code: -1,
+                });
+            }
+            self.cols = cols;
+            self.rows = rows;
+            Ok(())
+        }
+    }
+
+    fn resize_test_state(id: Uuid) -> Inner {
+        Inner {
+            state: Mutex::new(SessionState {
+                id,
+                name: "resize-transaction".into(),
+                cwd: "/tmp".into(),
+                command: vec!["sleep".into(), "30".into()],
+                env: vec![],
+                pid: Some(123),
+                started_at_ms: now_ms(),
+                cols: 80,
+                rows: 24,
+                alive: true,
+                exit_code: None,
+                failure: None,
+            }),
+            waiter: Condvar::new(),
+        }
+    }
+
+    #[test]
+    fn resize_terminal_failure_leaves_pty_state_uncommitted_and_emits_no_success_events() {
+        let id = Uuid::new_v4();
+        let inner = resize_test_state(id);
+        let (events, mut receiver) = broadcast::channel(4);
+        let mut pty = RecordingPtyResize::default();
+        let mut terminal = RecordingTerminalResize::new(80, 24);
+        terminal.fail_on_target = true;
+        let terminal = Mutex::new(terminal);
+
+        let error =
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+                .expect_err("terminal resize failure must abort transaction");
+
+        assert!(matches!(error, ResizeError::Terminal(_)));
+        assert!(pty.calls.is_empty(), "PTY resize must not be attempted");
+        let terminal = terminal.lock().expect("terminal poisoned");
+        assert_eq!((terminal.cols, terminal.rows), (80, 24));
+        let state = inner.state.lock().expect("session state poisoned");
+        assert_eq!((state.cols, state.rows), (80, 24));
+        drop(state);
+        assert!(receiver.try_recv().is_err(), "no success events expected");
+    }
+
+    #[test]
+    fn resize_pty_failure_rolls_terminal_back_without_committing_state_or_events() {
+        let id = Uuid::new_v4();
+        let inner = resize_test_state(id);
+        let (events, mut receiver) = broadcast::channel(4);
+        let mut pty = RecordingPtyResize {
+            fail: true,
+            ..RecordingPtyResize::default()
+        };
+        let terminal = Mutex::new(RecordingTerminalResize::new(80, 24));
+
+        let error =
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+                .expect_err("PTY resize failure must abort transaction");
+
+        assert!(matches!(error, ResizeError::Pty(_)));
+        assert_eq!(pty.calls, vec![(132, 50)]);
+        let terminal = terminal.lock().expect("terminal poisoned");
+        assert_eq!(terminal.calls, vec![(132, 50), (80, 24)]);
+        assert_eq!((terminal.cols, terminal.rows), (80, 24));
+        let state = inner.state.lock().expect("session state poisoned");
+        assert_eq!((state.cols, state.rows), (80, 24));
+        drop(state);
+        assert!(receiver.try_recv().is_err(), "no success events expected");
+    }
+
+    #[test]
+    fn resize_pty_failure_reports_terminal_rollback_failure() {
+        let id = Uuid::new_v4();
+        let inner = resize_test_state(id);
+        let (events, mut receiver) = broadcast::channel(4);
+        let mut pty = RecordingPtyResize {
+            fail: true,
+            ..RecordingPtyResize::default()
+        };
+        let mut terminal = RecordingTerminalResize::new(80, 24);
+        terminal.fail_on_rollback = true;
+        let terminal = Mutex::new(terminal);
+
+        let error =
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+                .expect_err("rollback failure must be represented");
+
+        assert!(matches!(error, ResizeError::PtyWithTerminalRollback { .. }));
+        assert_eq!(pty.calls, vec![(132, 50)]);
+        let terminal = terminal.lock().expect("terminal poisoned");
+        assert_eq!(terminal.calls, vec![(132, 50), (80, 24)]);
+        assert_eq!((terminal.cols, terminal.rows), (132, 50));
+        let state = inner.state.lock().expect("session state poisoned");
+        assert_eq!((state.cols, state.rows), (80, 24));
+        drop(state);
+        assert!(receiver.try_recv().is_err(), "no success events expected");
     }
 
     #[test]
@@ -912,7 +1221,7 @@ mod tests {
 
         let after = sess.snapshot();
         assert_eq!((after.cols, after.rows), (132, 50));
-        let snap = sess.snapshot_terminal(None, None);
+        let snap = sess.snapshot_terminal(None, None).expect("snapshot");
         assert_eq!((snap.cols, snap.rows), (132, 50));
         assert_eq!(snap.visible_screen.len(), 50);
 
@@ -945,7 +1254,7 @@ mod tests {
 
         // After close, we can no longer subscribe; instead inspect that
         // current_seq matches snapshot.seq — they share the same numbering.
-        let snap_seq = sess.snapshot_terminal(None, None).seq;
+        let snap_seq = sess.snapshot_terminal(None, None).expect("snapshot").seq;
         assert_eq!(sess.output_bus().current_seq(), snap_seq);
         assert!(snap_seq >= 1, "at least one chunk must have been published");
     }
@@ -1000,7 +1309,10 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             assert!(std::time::Instant::now() < deadline, "INIT never appeared");
-            if screen_contains(&sess.snapshot_terminal(None, None), "INIT") {
+            if screen_contains(
+                &sess.snapshot_terminal(None, None).expect("snapshot"),
+                "INIT",
+            ) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1017,7 +1329,7 @@ mod tests {
         wait_for_bus_quiet(&sess, Duration::from_millis(100), Duration::from_secs(5));
 
         // Capture prefill seq — the seq a client would record before subscribing.
-        let prefill_seq = sess.snapshot_terminal(None, None).seq;
+        let prefill_seq = sess.snapshot_terminal(None, None).expect("snapshot").seq;
         assert!(prefill_seq > 0, "prefill_seq must be > 0 after INIT output");
 
         // Simulate post-resize redraw bytes arriving after the snapshot.
