@@ -3,17 +3,20 @@
 ## Dev Setup
 
 Requires [Bun](https://bun.sh/) (v1.2+) and a [Rust toolchain](https://rustup.rs/) for the broker.
+Source builds of `wolfpack-broker` also need Wolfpack's pinned Zig toolchain to prebuild the verified Ghostty VT static archive. Release installs already include this in the prebuilt broker binary; users installing releases do not need Zig or Ghostty installed.
 
 ```bash
 git clone https://github.com/almogdepaz/wolfpack.git
 cd wolfpack
 bun install
-bun run scripts/gen-assets.ts                            # generate embedded assets (required once)
-cargo build --release --manifest-path broker/Cargo.toml  # build the broker
-bun run src/cli/index.ts                                 # start the server locally
+scripts/setup-zig-0.16.0.sh
+bun run scripts/build-ghostty-vt.ts --target "$(rustc -vV | awk '/host:/ {print $2}')"  # host Ghostty VT bundle
+bun run scripts/gen-assets.ts                             # generate embedded assets (required once)
+cargo build --release --manifest-path broker/Cargo.toml   # build the broker
+bun run src/cli/index.ts                                  # start the server locally
 ```
 
-For an end-to-end local install (build + service install + restart), use `scripts/deploy-local.sh`.
+For an end-to-end local install (build + service install + restart), use `scripts/deploy-local.sh`. Use `--broker=yes` for broker/native/Ghostty VT changes; `--broker=no` intentionally preserves the running broker and will not validate those changes.
 
 ## Testing
 
@@ -48,6 +51,15 @@ bun run scripts/build.ts
 ```
 
 Produces `wolfpack` for linux-x64, linux-arm64, darwin-x64, darwin-arm64 plus per-platform npm package directories in `dist/`. Also stages `wolfpack-broker` per platform — in CI it expects pre-built broker binaries under `dist/broker/<target>/`; locally it falls back to a host-arch-only `cargo build --release`.
+
+Before local release-style builds that compile the broker, run:
+
+```bash
+scripts/setup-zig-0.16.0.sh
+bun run scripts/build-ghostty-vt.ts --target "$(rustc -vV | awk '/host:/ {print $2}')"
+```
+
+Without the verified Ghostty VT bundle, Cargo fails closed instead of downloading or selecting native code during `build.rs`.
 
 ## PR Conventions
 
