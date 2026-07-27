@@ -2831,11 +2831,25 @@ function visibleSidebarDelegationRows(rows: readonly DelegationSessionRow<Delega
   return visibleRows;
 }
 
+function renderSessionListFromState(): void {
+  const el = document.getElementById("session-list");
+  if (!el || !state.lastSessionGroups.length) return;
+  const multiMachine = getMachines().length > 0;
+  const html = multiMachine
+    ? state.lastSessionGroups.map(group => renderMachineGroupHtml(group, true)).join("")
+    : renderMachineGroupHtml(state.lastSessionGroups[0], false);
+  if (html !== state.lastSessionsHtml) {
+    el.innerHTML = html;
+    state.lastSessionsHtml = html;
+  }
+}
+
 function toggleSidebarDelegationChildren(key: string, event?: Event): void {
   event?.stopPropagation();
   event?.preventDefault();
   if (expandedSidebarDelegationParents.has(key)) expandedSidebarDelegationParents.delete(key);
   else expandedSidebarDelegationParents.add(key);
+  renderSessionListFromState();
   renderSidebar();
 }
 
@@ -2860,7 +2874,13 @@ function renderMachineGroupHtml(g, multiMachine) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
     if (g.sessions.length) {
-      html += projectDelegationSessions(g.sessions).map((row, i) => {
+      const machineKey = multiMachine ? g.machine.url || "" : "";
+      const delegationRows = projectDelegationSessions(g.sessions);
+      const useCollapsibleSessionCards = !isDesktop();
+      const rows = useCollapsibleSessionCards
+        ? visibleSidebarDelegationRows(delegationRows, machineKey)
+        : delegationRows;
+      html += rows.map((row, i) => {
         const s = row.session;
         const lastLine = s.lastLine || "";
         const ui = triageUi(s);
@@ -2871,6 +2891,7 @@ function renderMachineGroupHtml(g, multiMachine) {
           <div class="card-info">
             <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
             ${delegationParentSummaryHtml(row)}
+            ${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>

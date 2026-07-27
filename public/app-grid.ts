@@ -496,7 +496,6 @@ export function setDelegationGridMembers(members: readonly DelegationGridMember[
   const previous = new Map(
     state.delegationGridSessions.map(gs => [gridSessionKey(gs.session, gs.machine || ""), gs]),
   );
-  const collapseIdleByDefault = members.length > 4;
   const next = members.map(member => {
     const key = gridSessionKey(member.session, member.machine || "");
     const existing = previous.get(key);
@@ -506,7 +505,7 @@ export function setDelegationGridMembers(members: readonly DelegationGridMember[
       machine: member.machine || "",
       controller: null,
       _delegation: true,
-      _collapsed: collapseIdleByDefault && member.role === "child" && member.idle,
+      _collapsed: false,
     };
     gridSession._delegation = true;
     gridSession._delegationRole = member.role;

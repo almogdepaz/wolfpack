@@ -295,6 +295,35 @@ header h1 {
 }
 .delegation-summary { color: var(--accent-muted); }
 .delegation-parent-missing { color: var(--warning-hot); }
+.delegation-sidebar-toggle {
+  margin-top: 6px;
+  padding: 3px 8px 3px 6px;
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.035);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+}
+.delegation-sidebar-toggle-icon {
+  color: var(--accent-muted);
+  font-size: 14px;
+  line-height: 0.8;
+  transform: translateY(-1px);
+}
+.delegation-sidebar-toggle:hover,
+.delegation-sidebar-toggle.expanded {
+  color: var(--accent);
+  border-color: rgba(0,255,65,0.32);
+  background: rgba(0,255,65,0.08);
+}
 .triage-badge {
   font-size: 9px;
   font-weight: 700;
@@ -1950,31 +1979,12 @@ body.no-animations, body.no-animations * {
   .sidebar-sessions .delegation-sidebar-toggle {
     margin-top: 4px;
     padding: 2px 7px 2px 5px;
-    width: fit-content;
-    display: inline-flex;
-    align-items: center;
     gap: 4px;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 999px;
-    background: rgba(255,255,255,0.035);
-    color: var(--text-muted);
-    font: inherit;
     font-size: 9px;
-    font-weight: 700;
     letter-spacing: 0.55px;
-    cursor: pointer;
   }
   .sidebar-sessions .delegation-sidebar-toggle-icon {
-    color: var(--accent-muted);
     font-size: 13px;
-    line-height: 0.8;
-    transform: translateY(-1px);
-  }
-  .sidebar-sessions .delegation-sidebar-toggle:hover,
-  .sidebar-sessions .delegation-sidebar-toggle.expanded {
-    color: var(--accent);
-    border-color: rgba(0,255,65,0.32);
-    background: rgba(0,255,65,0.08);
   }
   .sidebar-sessions .card-preview {
     -webkit-line-clamp: 1;
