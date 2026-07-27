@@ -732,7 +732,6 @@ export function restorePreservedGrid() {
   }));
   state.gridFocusIndex = restored.focusIndex;
   clearPreservedGrid();
-  state.sidebarResizeDone = false;
   setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
   renderGridCells();
   deps.renderSidebar();
@@ -810,7 +809,6 @@ export function addToGrid(session: string, machine?: string): void {
     state.sidebarCollapsed = true;
     state.sidebarAutoExpanded = false;
   }
-  state.sidebarResizeDone = false;
   // Already in grid?
   if (state.gridSessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""))) return;
   // Track which session had a full-width PTY (needs reset on grid connect)
@@ -857,7 +855,6 @@ export function addToGrid(session: string, machine?: string): void {
 
 export function removeFromGrid(idx) {
   if (idx < 0 || idx >= state.gridSessions.length) return;
-  state.sidebarResizeDone = false;
   const gs = state.gridSessions[idx];
   // Save snapshot before disposing
   if (deps.saveGridCellSnapshot) deps.saveGridCellSnapshot(gs);
@@ -1004,13 +1001,13 @@ export function scheduleGridStabilizedFit() {
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
     scheduleGridRelayoutFit(
       state.delegationGridSessions,
-      false,
+      true,
       "delegation-grid-container",
       state.delegationGridSessions,
     );
     return;
   }
-  if (isGridActive()) scheduleGridRelayoutFit();
+  if (isGridActive()) scheduleGridRelayoutFit(state.gridSessions, true);
 }
 
 function isSessionVisibleInDelegationGrid(session, machine): boolean {

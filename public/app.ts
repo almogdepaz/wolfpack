@@ -1260,6 +1260,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     ws = sock;
 
     sock.onopen = () => {
+      if (ws !== sock) return;
       console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
       const wasReconnect = hasConnected;
       hasConnected = true;
@@ -1271,6 +1272,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     };
 
     sock.onmessage = (event) => {
+      if (ws !== sock) return;
       if (typeof event.data === "string") {
         handleTextFrame(event.data);
         return;
@@ -1330,6 +1332,19 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }
   }
 
+  function retireSocket(socket: WebSocket): void {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    if (ws === socket) ws = null;
+    try {
+      socket.close();
+    } catch (error) {
+      console.warn("[pty-ws]", opts.session, "socket close failed", error);
+    }
+  }
+
   function close() {
     if (_attachDimensionRetryTimer) {
       clearTimeout(_attachDimensionRetryTimer);
@@ -1343,7 +1358,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _sawViewportPrefill = false;
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
-    if (ws) { ws.close(); ws = null; }
+    if (ws) retireSocket(ws);
   }
 
   function resetRetry() {
@@ -1362,7 +1377,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
-    if (ws) { try { ws.close(); } catch {} ws = null; }
+    if (ws) retireSocket(ws);
     connect();
   }
 
@@ -1616,8 +1631,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   }
 
   function shouldSuppressContainerResize() {
-    return isDesktop() &&
-      !state.sidebarPinned &&
+    if (!isDesktop()) return false;
+    if (state.sidebarLayoutTransitioning) return true;
+    return !state.sidebarPinned &&
       !state.sessionsExpanded &&
       (state.sidebarTransitionIsHover || state.sidebarAutoExpanded);
   }
@@ -3213,6 +3229,17 @@ async function loadSessions() {
   checkStateTransitions(groups);
 }
 
+function setSidebarCollapsedImmediately(collapsed: boolean): void {
+  const sidebar = document.getElementById("desktop-sidebar");
+  if (!sidebar) return;
+  sidebar.style.transition = "none";
+  if (collapsed) sidebar.classList.add("collapsed");
+  else sidebar.classList.remove("collapsed");
+  void sidebar.offsetHeight;
+  sidebar.style.transition = "";
+  state.sidebarCollapsed = collapsed;
+}
+
 async function openSession(name, machineUrl) {
   const targetMachine = machineUrl || "";
   if (isDesktop()) {
@@ -3233,11 +3260,9 @@ async function openSession(name, machineUrl) {
     document.body.classList.remove("sessions-expanded");
     const expandBtn = document.getElementById("sidebar-expand-btn");
     if (expandBtn) expandBtn.classList.remove("active");
-    // Restore sidebar based on pin state
-    if (state.sidebarPinned) {
-      const sb = document.getElementById("desktop-sidebar");
-      if (sb) { sb.classList.remove("collapsed"); state.sidebarCollapsed = false; }
-    }
+    // Settle the terminal-width layout before mounting Ghostty. Animating the
+    // pinned sidebar here makes the initial attach use an obsolete column count.
+    if (state.sidebarPinned) setSidebarCollapsedImmediately(false);
   }
   // On desktop with grid active, clicking a card focuses or exits grid
   if (isDesktop() && isGridActive()) {
@@ -3259,14 +3284,7 @@ async function openSession(name, machineUrl) {
     // initTerminal() fits to the narrow width, triggering a PTY
     // resize that causes Claude Code's TUI to redraw with · fill dots.
     if (state.sidebarAutoExpanded) {
-      const sb = document.getElementById("desktop-sidebar");
-      if (sb) {
-        sb.style.transition = "none";
-        sb.classList.add("collapsed");
-        sb.offsetHeight; // force reflow
-        sb.style.transition = "";
-      }
-      state.sidebarCollapsed = true;
+      setSidebarCollapsedImmediately(true);
       state.sidebarAutoExpanded = false;
       if (sidebarAutoCollapseTimer) { clearTimeout(sidebarAutoCollapseTimer); sidebarAutoCollapseTimer = null; }
     }
@@ -4379,7 +4397,6 @@ function closeDrawer(instant?: boolean): void {
 })();
 
 async function switchSession(val) {
-  state.sidebarResizeDone = false;
   let name, machineUrl;
   // Values with | are remote: "url|sessionName"
   const pipeIdx = val.indexOf("|");
@@ -5072,6 +5089,8 @@ if (!isDesktop()) {
 
 let sidebarRefreshTimer = null;
 let sidebarAutoCollapseTimer = null;
+let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 300;
 
 let sidebarInitialRender = false;
 let _sidebarRafId = null;
@@ -5190,12 +5209,37 @@ function initSidebar() {
   document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
   updatePinButton();
 
+  function finishSidebarLayoutTransition(): void {
+    if (!state.sidebarLayoutTransitioning) return;
+    if (sidebarLayoutTransitionFallbackTimer) {
+      clearTimeout(sidebarLayoutTransitionFallbackTimer);
+      sidebarLayoutTransitionFallbackTimer = null;
+    }
+    state.sidebarLayoutTransitioning = false;
+    if (activeGridTerminalSessions() !== null) {
+      scheduleGridStabilizedFit();
+    } else {
+      state.terminalController?.resize();
+      revealGridCellsWithoutResize();
+    }
+  }
+
+  function beginSidebarLayoutTransition(): void {
+    if (sidebarLayoutTransitionFallbackTimer) clearTimeout(sidebarLayoutTransitionFallbackTimer);
+    state.sidebarTransitionIsHover = false;
+    state.sidebarLayoutTransitioning = true;
+    hideGridCellsForTransition();
+    sidebarLayoutTransitionFallbackTimer = setTimeout(
+      finishSidebarLayoutTransition,
+      SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS,
+    );
+  }
+
   // Pin/unpin button
   document.getElementById("sidebar-collapse-btn").onclick = () => {
     state.sidebarPinned = !state.sidebarPinned;
     localStorage.setItem("wolfpack-sidebar-pinned", state.sidebarPinned ? "1" : "0");
-    state.sidebarTransitionIsHover = false;
-    if (!state.sidebarResizeDone) hideGridCellsForTransition();
+    beginSidebarLayoutTransition();
     document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
     if (state.sidebarPinned) {
       // Pin: ensure visible
@@ -5213,10 +5257,9 @@ function initSidebar() {
   // Expand button — toggle full-page sessions view
   document.getElementById("sidebar-expand-btn").onclick = () => {
     state.sessionsExpanded = !state.sessionsExpanded;
+    beginSidebarLayoutTransition();
     document.body.classList.toggle("sessions-expanded", state.sessionsExpanded);
     document.getElementById("sidebar-expand-btn").classList.toggle("active", state.sessionsExpanded);
-    state.sidebarTransitionIsHover = false;
-    if (!state.sidebarResizeDone) hideGridCellsForTransition();
     if (state.sessionsExpanded) {
       // Collapse sidebar when expanded — main area has all sessions
       sidebar.classList.add("collapsed");
@@ -5264,27 +5307,15 @@ function initSidebar() {
     }
   });
 
-  // Refit terminal after sidebar transition completes.
-  // Hover transitions: just reveal canvases (no PTY resize — causes dot fill).
-  // Pin/unpin transitions: resize PTY to new dimensions + reveal.
-  sidebar.addEventListener("transitionend", (e) => {
-    if (e.propertyName !== "margin-left") return;
+  // Hover is overlay-only. Layout transitions stay hidden and suppress PTY
+  // resize until their final width is authoritative.
+  sidebar.addEventListener("transitionend", (event) => {
+    if (event.propertyName !== "margin-left") return;
     if (state.sidebarTransitionIsHover) {
-      // Hover expand/collapse — reveal without resizing PTY
-      revealGridCellsWithoutResize();
       state.sidebarTransitionIsHover = false;
-    } else if (!state.sidebarAutoExpanded) {
-      // Pin/unpin — resize PTY to fit new layout, then reveal the canvas.
-      // Without the reveal the .transitioning class stays on the container
-      // and the canvas stays hidden, leaving a black gap.
-      if (isGridActive()) {
-        scheduleGridStabilizedFit();
-      } else if (state.terminalController) {
-        state.terminalController.resize();
-      }
-      revealGridCellsWithoutResize();
+      return;
     }
-    state.sidebarResizeDone = true;
+    finishSidebarLayoutTransition();
   });
 
   // Nav buttons
