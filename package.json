@@ -26,7 +26,7 @@
     "test:e2e:headed": "bunx playwright test --headed",
     "gen:schema": "bun run scripts/gen-control-api-schema.ts",
     "perf:terminal-load": "bun scripts/terminal-load-perf.ts",
-    "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/",
+    "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/ && bunx tsc --noEmit -p public/tsconfig.strict.json",
     "postinstall": "node bin/install.cjs"
   },
   "optionalDependencies": {

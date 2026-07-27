@@ -526,18 +526,6 @@ export function setDelegationGridMembers(members: readonly DelegationGridMember[
   state.delegationGridFocusIndex = Math.max(0, Math.min(state.delegationGridFocusIndex, next.length - 1));
 }
 
-export function collapseIdleDelegationSessions(): void {
-  for (const session of state.delegationGridSessions) {
-    if (session._delegationRole === "child" && session._idle) session._collapsed = true;
-  }
-  renderDelegationGridCells();
-}
-
-export function expandDelegationSessions(): void {
-  for (const session of state.delegationGridSessions) session._collapsed = false;
-  renderDelegationGridCells();
-}
-
 export function suspendDelegationGridTerminals(): void {
   for (const session of state.delegationGridSessions) {
     clearGridCellTakeControlTimer(session);

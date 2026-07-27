@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "app-debug.ts",
+    "delegation-sessions.ts",
+    "ghostty-prewarm-pool.ts",
+    "project-picker.ts",
+    "take-control-coordinator.ts",
+    "terminal-loading-ui.ts",
+    "terminal-placeholder.ts",
+    "types-globals.d.ts"
+  ]
+}

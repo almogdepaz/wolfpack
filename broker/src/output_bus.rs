@@ -212,6 +212,20 @@ mod tests {
         assert_eq!(sub.current_seq, 3);
     }
 
+    #[test]
+    fn subscribe_after_ring_eviction_reports_truncated_replay() {
+        let bus = OutputBus::new(2, 8);
+        bus.publish(chunk(1, b"a"));
+        bus.publish(chunk(2, b"b"));
+        bus.publish(chunk(3, b"c"));
+
+        let sub = bus.subscribe(Some(0)).expect("bus open");
+        let replay_seqs: Vec<u64> = sub.replay.iter().map(|chunk| chunk.seq).collect();
+        assert!(sub.replay_truncated);
+        assert_eq!(replay_seqs, vec![2, 3]);
+        assert_eq!(sub.current_seq, 3);
+    }
+
     #[tokio::test]
     async fn live_publish_after_subscribe_arrives_on_receiver() {
         let bus = OutputBus::new(8, 8);

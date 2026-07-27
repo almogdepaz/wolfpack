@@ -8,9 +8,8 @@
 //! When `cap` chunks are already retained, the next push evicts the
 //! oldest entry. Callers that ask for a `since_seq` older than the
 //! buffer's earliest retained seq simply receive whatever the ring still
-//! holds — there is no separate "truncated replay" signal in v1; the
-//! caller can detect the gap by comparing `current_seq` against the
-//! first replayed seq.
+//! holds. `OutputBus::subscribe` detects that gap and reports it as
+//! `replay_truncated`, so its caller can request a fresh snapshot.
 //!
 //! Bytes are wrapped in `Arc<Vec<u8>>` so that pushing into the ring,
 //! broadcasting to live subscribers, and replaying to a new subscriber

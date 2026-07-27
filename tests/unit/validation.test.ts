@@ -1,20 +1,9 @@
 import { describe, expect, test } from "bun:test";
-
-// ── Validation functions from serve.ts (not exported, replicated here) ──
-// These mirror the exact regex patterns used in serve.ts for input validation.
-
-/** Mirrors serve.ts isValidProjectName() */
-function isValidProjectName(name: string): boolean {
-  return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
-}
-
-/** Mirrors serve.ts CMD_REGEX */
-const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
-
-/** Mirrors validation.ts isValidSessionName() — no dots or colons (tmux restriction) */
-function isValidSessionName(name: string): boolean {
-  return /^[a-zA-Z0-9_-]+$/.test(name) && name.length > 0 && name.length <= 100;
-}
+import {
+  CMD_REGEX,
+  isValidProjectName,
+  isValidSessionName,
+} from "../../src/validation.ts";
 
 // ── isValidSessionName tests ──
 

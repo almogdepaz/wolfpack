@@ -4,25 +4,7 @@
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 
-// ── HTML / attribute escaping ──
-
-export function esc(s) {
-  if (s == null) return "";
-  const d = document.createElement("div");
-  d.textContent = String(s);
-  return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
-}
-
-// JS-safe escaper for use inside onclick="func('...')" attribute contexts.
-// Backslash-escapes characters that could break out of a JS string literal
-// AFTER HTML attribute decoding. Note: escAttr is for JS-string-in-HTML-attribute
-// dual contexts (esc() is the right choice for plain HTML attributes).
-export function escAttr(s) {
-  if (s == null) return "";
-  return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
-    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26")
-    .replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
-}
+export { esc, escAttr } from "../src/html-escape";
 
 // ── Generic utilities ──
 
