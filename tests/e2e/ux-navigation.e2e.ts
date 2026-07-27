@@ -259,6 +259,8 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(collapsedIdleTab).toHaveCount(0);
 
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
   await sidebarCard("attention-child").locator(".grid-btn").click();
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).toHaveClass(/collapsed/);
   await expect(page.getByRole("button", { name: "Expand attention-child" })).toBeVisible();
