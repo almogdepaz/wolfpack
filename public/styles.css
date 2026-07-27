@@ -2080,12 +2080,6 @@ body.no-animations, body.no-animations * {
     align-items: center;
     margin-bottom: 4px;
   }
-    width: 32px;
-    height: 32px;
-    font-size: 14px;
-    flex-shrink: 0;
-  }
-
 
   /* Hide sessions-view on desktop (sidebar replaces it) */
   #sessions-view { display: none; }
