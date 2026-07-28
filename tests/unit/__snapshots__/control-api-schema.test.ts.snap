@@ -352,6 +352,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "parentSession": {
             "$ref": "#/$defs/SessionName"
           },
+          "sessionName": {
+            "$ref": "#/$defs/SessionName"
+          },
           "initialPrompt": {
             "type": "string",
             "minLength": 1,

@@ -1,9 +1,9 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    // Temporary frontend migration guard: public/app.ts and related legacy browser
-    // modules still have broad implicit-any/null debt. Keep the public typecheck
-    // on, but do not claim strict frontend coverage until those modules are typed.
+    // Legacy browser modules still have broad implicit-any/null debt. Keep this
+    // compatibility check non-strict while tsconfig.strict.json enforces strict
+    // coverage for migrated modules; add modules there as they are typed.
     "noImplicitAny": false,
     "strictNullChecks": false
   },

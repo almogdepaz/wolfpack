@@ -1,5 +1,5 @@
 import {
-  esc, escAttr, loadStoredJson, isDesktop, formatSnapshotTtl,
+  esc, escAttr, loadStoredJson, isDesktop,
   getTerminalFontFamily,
   wpDefaults, wpSettings, TERM_PRESETS, toggleSetting, applySetting,
   applyTermToXterm, initSettings, haptic, requestNotifications,
@@ -66,6 +66,9 @@ import type {
 import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
+import { shouldUseAttachAckFallback } from "../src/attach-ack";
+import { nextMenuSelection } from "../src/menu-navigation";
+import { snapshotKeysToEvict } from "../src/snapshot-cache";
 
 // ── WASM capability guard ──
 
@@ -706,162 +709,11 @@ const INITIAL_HYDRATION_SILENCE_MS = 32;
  *
  */
 
-interface InitialHydrationControllerOpts {
-  getElement: () => HTMLElement | null;
-  getTerm: () => GhosttyTerminal | null;
-  shouldFocus: () => boolean;
-  isInitialContentComplete?: () => boolean;
-  canFinish?: () => boolean;
-  onReveal?: () => void;
-  timeoutMs?: number;
-  settleMs?: number;
-  maxPendingMs?: number;
-  minPendingMs?: number;
-  silenceMs?: number;
-  session?: string | null;
-  machine?: string;
-}
+import {
+  createInitialHydrationController,
+} from "./terminal-hydration";
+import type { InitialHydrationController } from "./terminal-hydration";
 
-function createInitialHydrationController(opts: InitialHydrationControllerOpts): InitialHydrationController {
-  let _pending = false;
-  let _fallbackTimer = null;
-  let _settleTimer = null;
-  let _startedAt = 0;
-  // Last time data arrived at the terminal. Reveal is gated on N ms of
-  // silence after the most recent write — catches late-arriving SIGWINCH
-  // redraws after grid attach (server coalesces these into single big
-  // writes; without the silence gate, canvas reveals BEFORE the redraw
-  // arrives and the user sees the post-snapshot burst paint).
-  let _lastDataAt = 0;
-  const timeoutMs = opts.timeoutMs || DESKTOP_INITIAL_PREFILL_TIMEOUT_MS;
-  const settleMs = opts.settleMs || 80;
-  const maxPendingMs = opts.maxPendingMs || 4000;
-  const minPendingMs = opts.minPendingMs || 0;
-  // Min silence (no data writes) before reveal. 0 = disabled (legacy behavior).
-  const silenceMs = opts.silenceMs || 0;
-  // Diag: trace key for emitting hydration milestones into the per-attach
-  // event log. Pure-passthrough; falsy when caller didn't wire it up.
-  const _diagSession = opts.session || null;
-  const _diagMachine = opts.machine || "";
-  function _diagEvent(kind: string, fields?: Record<string, unknown>): void {
-    if (!_diagSession) return;
-    __wfTraceEvent(__wfTraceGet(_diagSession, _diagMachine), kind, fields);
-  }
-
-  function finish(force = false) {
-    if (!_pending) return;
-    // minPendingMs floor: keep canvas hidden through the post-prefill
-    // resize-redraw burst (~150-300ms after prefill_done). See call site.
-    const elapsed = Date.now() - _startedAt;
-    if (!force && minPendingMs > 0 && elapsed < minPendingMs) {
-      if (_settleTimer) clearTimeout(_settleTimer);
-      _settleTimer = setTimeout(finish, Math.max(settleMs, minPendingMs - elapsed));
-      _diagEvent("hydration.holdMinPending", { elapsed, minPendingMs });
-      return;
-    }
-    // silenceMs: stay hidden until last data write was at least silenceMs ago.
-    // Captures the post-attach SIGWINCH redraw burst (server coalesces it into
-    // ~1 ws frame, but it can arrive 100-300ms AFTER prefill_done). Without
-    // this, canvas reveals empty/partial and the burst paints visibly.
-    if (!force && silenceMs > 0 && _lastDataAt > 0) {
-      const sinceLastData = Date.now() - _lastDataAt;
-      if (sinceLastData < silenceMs && elapsed < maxPendingMs) {
-        if (_settleTimer) clearTimeout(_settleTimer);
-        _settleTimer = setTimeout(finish, silenceMs - sinceLastData);
-        _diagEvent("hydration.holdSilence", { sinceLastData, silenceMs });
-        return;
-      }
-    }
-    // Protocol completion is a hard reveal gate. maxPendingMs may override
-    // write quiescence below, but must never expose a partial full prefill.
-    if (!force && opts.isInitialContentComplete && !opts.isInitialContentComplete()) {
-      if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
-      _diagEvent("hydration.holdInitialContent", { elapsed });
-      return;
-    }
-    if (!force && opts.canFinish && !opts.canFinish()) {
-      if (elapsed >= maxPendingMs) {
-        // Safety valve: avoid infinite loader on very high-throughput sessions.
-        _diagEvent("hydration.maxPendingHit", { elapsed });
-      } else {
-        if (_settleTimer) clearTimeout(_settleTimer);
-        _settleTimer = setTimeout(finish, settleMs);
-        _diagEvent("hydration.holdCanFinish", { elapsed });
-        return;
-      }
-    }
-    _pending = false;
-    if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
-    if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
-    const term = opts.getTerm();
-    if (term) {
-      // Keep terminal hidden while positioning to avoid visible top->bottom jump.
-      try { term.scrollToBottom(); } catch {}
-    }
-    _diagEvent("hydration.finish", { elapsed });
-    requestAnimationFrame(() => {
-      if (!_pending) {
-        const el = opts.getElement();
-        if (el) {
-          el.classList.remove("hydrating");
-          el.classList.add("hydrated");
-        }
-        if (term && opts.shouldFocus()) term.focus();
-        // ghostty-web's dirty-cell tracking may think it already painted while
-        // the canvas was hidden (opacity:0 during hydration). Force a full
-        // canvas repaint so the revealed terminal isn't stale/blank.
-        if (opts.onReveal) opts.onReveal();
-        _diagEvent("hydration.reveal");
-      }
-    });
-  }
-
-  function start() {
-    _pending = true;
-    _startedAt = Date.now();
-    if (_fallbackTimer) clearTimeout(_fallbackTimer);
-    if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
-    _fallbackTimer = setTimeout(finish, timeoutMs);
-    _diagEvent("hydration.start", { minPendingMs, silenceMs, timeoutMs });
-  }
-
-  function scheduleFinish() {
-    if (!_pending) return;
-    if (_settleTimer) clearTimeout(_settleTimer);
-    _settleTimer = setTimeout(finish, settleMs);
-  }
-
-  // Notify the controller that data arrived (resets silence clock). Caller
-  // wires this to onBinaryData so even non-hydrating writes (which don't
-  // bump _hydrationWritesInFlight) keep the canvas hidden until quiet.
-  function notifyData() {
-    _lastDataAt = Date.now();
-    if (_pending && _settleTimer) {
-      clearTimeout(_settleTimer);
-      _settleTimer = setTimeout(finish, settleMs);
-    }
-  }
-
-  function forceFinish() {
-    finish(true);
-  }
-
-  function cancel() {
-    _pending = false;
-    if (_fallbackTimer) { clearTimeout(_fallbackTimer); _fallbackTimer = null; }
-    if (_settleTimer) { clearTimeout(_settleTimer); _settleTimer = null; }
-  }
-
-  return {
-    get pending() { return _pending; },
-    start,
-    scheduleFinish,
-    notifyData,
-    finish,
-    forceFinish,
-    cancel,
-  };
-}
 /**
  * Shared PTY WebSocket client for ghostty-web terminals.
  * Owns: URL construction, socket lifecycle, binary/text frame dispatch,
@@ -1048,8 +900,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     // Compatibility fallback: older servers don't implement attach_ack.
     _attachAckTimer = setTimeout(() => {
       _attachAckTimer = null;
-      if (_attachAckReceived) return;
-      if (!_awaitingAttachAck) return;
+      if (!shouldUseAttachAckFallback({
+        ackReceived: _attachAckReceived,
+        awaitingAck: _awaitingAttachAck,
+      })) return;
       _awaitingAttachAck = false;
       _lastSentResize = "";
       sendFitResize();
@@ -1440,16 +1294,6 @@ interface PtyTerminalControllerOpts {
   readonly onHydrationStart?: () => void;
   readonly onHydrated?: () => void;
 }
-interface InitialHydrationController {
-  readonly pending: boolean;
-  start(): void;
-  scheduleFinish(): void;
-  notifyData(): void;
-  finish(): void;
-  forceFinish(): void;
-  cancel(): void;
-}
-
 interface PtyTerminalController {
   mount(container: HTMLElement, mountOpts?: { readonly cached?: string | null }): Promise<void>;
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
@@ -1961,8 +1805,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       // after prefill_done when the stream is already quiet.
       silenceMs: hydrationTiming.silenceMs,
       // Diag-only: lets the controller emit milestones into the per-attach trace.
-      session: opts.session,
-      machine: opts.machine || "",
+      onDiagnostic: (kind, fields) => {
+        __wfTraceEvent(__wfTraceGet(opts.session, opts.machine || ""), kind, fields);
+      },
     });
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
@@ -2295,38 +2140,62 @@ let snapshotPending = null;
 function snapshotKey(machine, session) {
   return SNAPSHOT_KEY_PREFIX + (machine || "") + "|" + session;
 }
-function saveSnapshot(machine, session, text) {
-  if (!session || !text) return;
-  const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
-  try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch { /* quota/private-mode */ }
+function snapshotMachineFromKey(key) {
+  const separator = key.lastIndexOf("|");
+  return separator > SNAPSHOT_KEY_PREFIX.length ? key.slice(SNAPSHOT_KEY_PREFIX.length, separator) : "";
 }
-function loadSnapshot(machine, session) {
-  if (!session) return null;
-  try {
-    const raw = localStorage.getItem(snapshotKey(machine, session));
-    if (!raw) return null;
-    const snap = JSON.parse(raw);
-    const age = (Date.now() - snap.ts) / 1000;
-    if (age > (wpSettings.snapshotTtl || 900)) {
-      localStorage.removeItem(snapshotKey(machine, session));
-      return null;
-    }
-    return snap.d;
-  } catch { return null; }
-}
-function cleanStaleSnapshots() {
-  const ttl = (wpSettings.snapshotTtl || 900) * 1000;
-  const now = Date.now();
-  const toRemove = [];
+function snapshotEntries() {
+  const entries = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key || !key.startsWith(SNAPSHOT_KEY_PREFIX)) continue;
     try {
-      const snap = JSON.parse(localStorage.getItem(key));
-      if (now - snap.ts > ttl) toRemove.push(key);
-    } catch { toRemove.push(key); }
+      const snapshot = JSON.parse(localStorage.getItem(key));
+      if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+      entries.push({
+        key,
+        machine: snapshotMachineFromKey(key),
+        lastUsedAt: typeof snapshot.lastUsedAt === "number"
+          ? snapshot.lastUsedAt
+          : typeof snapshot.ts === "number" ? snapshot.ts : 0,
+      });
+    } catch {
+      localStorage.removeItem(key);
+    }
   }
-  toRemove.forEach(k => localStorage.removeItem(k));
+  return entries;
+}
+function enforceSnapshotCache() {
+  snapshotKeysToEvict(snapshotEntries()).forEach(key => localStorage.removeItem(key));
+}
+function saveSnapshot(machine, session, text) {
+  if (!session || !text) return;
+  const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
+  try {
+    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, lastUsedAt: Date.now() }));
+    enforceSnapshotCache();
+  } catch { /* quota/private-mode */ }
+}
+function loadSnapshot(machine, session) {
+  if (!session) return null;
+  const key = snapshotKey(machine, session);
+  let snapshot;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    snapshot = JSON.parse(raw);
+    if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+  } catch {
+    localStorage.removeItem(key);
+    return null;
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, lastUsedAt: Date.now() }));
+  } catch { /* preserve a readable snapshot when localStorage is full */ }
+  return snapshot.d;
+}
+function cleanSnapshots() {
+  enforceSnapshotCache();
 }
 function scheduleSnapshotSave(text) {
   snapshotPending = text;
@@ -2344,17 +2213,9 @@ function flushSnapshot() {
   }
   snapshotPending = null;
   if (text) saveSnapshot(state.currentMachine, state.currentSession, text);
-  flushGridSnapshots();
 }
 function serializeXtermTail(term, maxLines) {
   return WP.serializeBufferTail(term.buffer.active, maxLines);
-}
-function flushGridSnapshots() {
-  for (const gs of state.gridSessions) {
-    if (!gs.controller?.term) continue;
-    const text = serializeXtermTail(gs.controller.term, 200);
-    if (text) saveSnapshot(gs.machine || "", gs.session, text);
-  }
 }
 
 // ── Machine registry ──
@@ -3281,8 +3142,47 @@ async function openSession(name, machineUrl) {
 // ── Project picker ──
 
 let projectNames: readonly string[] | null = null;
+let keyboardMenuSelection: { readonly view: "projects" | "agent"; readonly index: number } | null = null;
+
+function resetPickerKeyboardSelection(): void {
+  document.querySelectorAll("#project-list .keyboard-selected, #agent-list .keyboard-selected")
+    .forEach((card) => card.classList.remove("keyboard-selected"));
+  keyboardMenuSelection = null;
+}
+
+function pickerMenuCards(view: "projects" | "agent"): HTMLElement[] {
+  const listId = view === "projects" ? "project-list" : "agent-list";
+  return Array.from(document.querySelectorAll<HTMLElement>(`#${listId} .card`));
+}
+
+function handlePickerKeyboardNavigation(event: KeyboardEvent): void {
+  if (!isDesktop() || event.altKey || event.ctrlKey || event.metaKey) return;
+  const view = state.currentView === "projects" || state.currentView === "agent"
+    ? state.currentView
+    : null;
+  if (!view) return;
+  const cards = pickerMenuCards(view);
+  const selectedIndex = keyboardMenuSelection?.view === view
+    ? keyboardMenuSelection.index
+    : null;
+  if (event.key === "Enter") {
+    if (selectedIndex === null) return;
+    event.preventDefault();
+    cards[selectedIndex]?.click();
+    return;
+  }
+  const direction = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : null;
+  if (direction === null) return;
+  event.preventDefault();
+  const nextIndex = nextMenuSelection({ itemCount: cards.length, selectedIndex, direction });
+  if (nextIndex === null) return;
+  cards.forEach((card, index) => card.classList.toggle("keyboard-selected", index === nextIndex));
+  keyboardMenuSelection = { view, index: nextIndex };
+  cards[nextIndex]?.scrollIntoView({ block: "nearest" });
+}
 
 function renderProjectNames(projects: readonly string[]): void {
+  resetPickerKeyboardSelection();
   const list = document.getElementById("project-list");
   if (!projects.length) {
     list.innerHTML = '<div class="empty">No matching projects</div>';
@@ -3319,6 +3219,7 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
+  resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
   projectNameInput.value = "";
   projectNameInput.focus({ preventScroll: true });
@@ -3364,6 +3265,7 @@ function selectNewProject() {
 
 async function showAgentPicker() {
   showView("agent");
+  resetPickerKeyboardSelection();
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
@@ -5322,6 +5224,7 @@ function bindHtmlEventListeners(): void {
   on("expanded-collapse-btn", "click", () => $("sidebar-expand-btn")?.click());
 
   // Project picker
+  document.addEventListener("keydown", handlePickerKeyboardNavigation);
   const pickerCancel = document.querySelector("#projects-view .picker-cancel-btn");
   if (pickerCancel) pickerCancel.addEventListener("click", () => { returnFromProjectPicker(); });
   const createProjectBtn = document.querySelector("#projects-view .new-project-row button");
@@ -5343,11 +5246,6 @@ function bindHtmlEventListeners(): void {
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
-  on("setting-snapshotTtl", "input", function(this: HTMLInputElement) {
-    toggleSetting("snapshotTtl", +this.value);
-    const val = $("snapshot-ttl-val");
-    if (val) val.textContent = formatSnapshotTtl(+this.value);
-  });
 
   // Term font size buttons
   document.querySelectorAll(".term-size-btn").forEach((btn) => {
@@ -5397,20 +5295,12 @@ initGridDeps({
   backToSessions, renderSidebar,
   createPtyTerminalController, createConflictOverlay,
   canUseWasmTerminal,
-  saveGridCellSnapshot: (gs) => {
-    if (!gs.controller?.term) return;
-    const text = serializeXtermTail(gs.controller.term, 200);
-    if (text) saveSnapshot(gs.machine || "", gs.session, text);
-  },
-  scheduleSnapshotSave: () => scheduleSnapshotSave(null),
-  flushGridSnapshots,
-  loadSnapshot,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });
 
 initSettings();
-cleanStaleSnapshots();
+cleanSnapshots();
 renderCmdPalette();
 initSidebar(); // Init sidebar early so pin/expand/hover handlers are ready
 // Apply expanded sessions as default on desktop — sidebar collapsed in this mode

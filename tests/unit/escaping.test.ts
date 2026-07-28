@@ -1,37 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { xmlEsc, systemdEsc } from "../../src/validation.ts";
-
-// ── esc and escAttr from index.html (browser functions) ──
-// These are inline in index.html and use document.createElement for esc().
-// We re-implement the pure logic here to test the escaping contracts.
-
-/** Mirrors index.html esc(): HTML-entity encode then quote-escape */
-function esc(s: unknown): string {
-  if (s == null) return "";
-  const str = String(s);
-  // replicate what textContent→innerHTML does: & < > are encoded
-  const htmlEncoded = str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  // then the function additionally escapes quotes
-  return htmlEncoded.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
-}
-
-/** Mirrors index.html escAttr(): JS-safe escaper for onclick="func('...')" */
-function escAttr(s: unknown): string {
-  if (s == null) return "";
-  return String(s)
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"')
-    .replace(/</g, "\\x3c")
-    .replace(/>/g, "\\x3e")
-    .replace(/&/g, "\\x26")
-    .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t");
-}
+import { esc, escAttr } from "../../src/html-escape.ts";
 
 // ── xmlEsc tests ──
 
