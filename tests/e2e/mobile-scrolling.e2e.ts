@@ -11,9 +11,6 @@ interface MobileTerminalState {
 }
 
 async function openMobileTerminalWithHistory(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
-  });
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     ws.onMessage((message) => {
       if (typeof message !== "string") return;

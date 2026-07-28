@@ -162,11 +162,10 @@ test("sub-session notification ignores other parents, views, and existing grids"
   })).toEqual(["test-project", "another-project"]);
 });
 
-test("grid requests viewport even when solo prefill setting is full", async ({ page }) => {
+test("grid requests viewport prefill", async ({ page }) => {
   await loadApp(page);
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -672,7 +671,6 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
     localStorage.setItem("wolfpackLayoutStableDebugMode", "viewport-immediate-and-after-paint");
     localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "STALE-GRID-CACHED-PROSE", ts: Date.now() }));
     localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: "STALE-GRID-CACHED-PROSE", ts: Date.now() }));
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });

@@ -1,7 +1,7 @@
 import {
   esc, escAttr, loadStoredJson, isDesktop,
   getTerminalFontFamily,
-  wpDefaults, wpSettings, TERM_PRESETS, toggleSetting, applySetting,
+  wpSettings, TERM_PRESETS, toggleSetting,
   applyTermToXterm, initSettings, haptic, requestNotifications,
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
   state, setState,
@@ -3650,9 +3650,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   document.getElementById("terminal-view")?.classList.remove("terminal-swipe-peek");
-  const soloPrefillMode = prefillModeOverride ?? (isMobile
-    ? (wpSettings.soloPrefillMode === TERMINAL_PREFILL_MODE.FULL ? TERMINAL_PREFILL_MODE.FULL : TERMINAL_PREFILL_MODE.VIEWPORT)
-    : TERMINAL_PREFILL_MODE.FULL);
+  const terminalPrefillMode = prefillModeOverride ?? TERMINAL_PREFILL_MODE.FULL;
   const showCachedPlaceholder = false;
   container.style.display = "block";
   container.innerHTML = "";
@@ -3690,7 +3688,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: soloPrefillMode,
+    prefillMode: terminalPrefillMode,
     hydrationMinPendingMs: 80,
     hydrationSettleMs: INITIAL_HYDRATION_SETTLE_MS,
     hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
@@ -5262,14 +5260,6 @@ function bindHtmlEventListeners(): void {
       if (font) toggleSetting("termFont", font);
     });
   });
-  document.querySelectorAll(".solo-prefill-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const mode = (btn as HTMLElement).dataset.mode;
-      if (mode === "fast" && isDesktop()) return;
-      if (mode === "fast" || mode === TERMINAL_PREFILL_MODE.FULL) toggleSetting("soloPrefillMode", mode);
-    });
-  });
-
   // Quick commands
   on("add-quick-cmd-btn", "click", () => addQuickCmd());
 

@@ -573,7 +573,6 @@ test("desktop full switchSession keeps cached snapshot hidden until hydration", 
   await page.waitForSelector(".card", { timeout: 5000 });
 
   await page.evaluate(() => {
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
     localStorage.setItem(
       "wp-snap||another-project",
       JSON.stringify({ d: "cached-another-session", ts: Date.now() }),
@@ -616,35 +615,7 @@ async function expectSoloAttachPrefillMode(page: import("@playwright/test").Page
   }, mode), { timeout: 5000 }).toBe(true);
 }
 
-test("desktop solo saved fast still hides cached placeholder until full hydration", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
-
-  await page.goto(srv.baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "fast" }));
-    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "STALE-CACHED-LINE\n".repeat(20), ts: Date.now() }));
-  });
-  await page.reload();
-  await page.waitForSelector(".card", { timeout: 5000 });
-
-  const immediateState = await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-    const container = document.getElementById("desktop-terminal-container");
-    return {
-      className: container?.className || "",
-      placeholder: container?.querySelector(".cached-terminal-placeholder")?.textContent || "",
-      loadState: container?.getAttribute("data-terminal-load-state") || "",
-    };
-  });
-
-  expect(immediateState.className).not.toContain("cached-visible");
-  expect(immediateState.placeholder).toBe("");
-  expect(immediateState.loadState).toBe("prefill-loading");
-});
-
-test("desktop solo saved fast uses full prefill and clears cached prose", async ({ page }, testInfo) => {
+test("desktop solo full prefill clears cached prose", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
   await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
@@ -652,7 +623,6 @@ test("desktop solo saved fast uses full prefill and clears cached prose", async 
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "fast" }));
     localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "CACHED-HISTORY-MUST-NOT-MIX\n".repeat(60), ts: Date.now() }));
   });
   await page.reload();
@@ -677,14 +647,13 @@ test("desktop solo saved fast uses full prefill and clears cached prose", async 
   expect(tail).not.toContain("CACHED-HISTORY-MUST-NOT-MIX");
 });
 
-test("mobile first-session restore overrides fast mode with full prefill without showing cached placeholder", async ({ page }, testInfo) => {
+test("mobile first-session restore uses full prefill without showing cached placeholder", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only restore path");
 
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "fast" }));
     localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "MOBILE-CACHED-PROSE\n".repeat(60), ts: Date.now() }));
   });
   await page.reload();
@@ -724,9 +693,54 @@ test("desktop solo terminal defaults to full prefill", async ({ page }, testInfo
   await expectSoloAttachPrefillMode(page, "full");
 });
 
-test("solo prefill setting persists from settings UI", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
+test("mobile created solo session requests full prefill despite legacy fast setting", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only create path");
 
+  const attachMessages: Array<{ readonly type?: string; readonly prefillMode?: string }> = [];
+  await page.route("**/api/create", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ session: "created-solo" }),
+    });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      let parsed: { readonly type?: string; readonly prefillMode?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      attachMessages.push(parsed);
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("created solo\r\n"));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "fast" }));
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+
+  await page.evaluate(() => {
+    const appState = (window as unknown as { state: { selectedProject: string; isNewProject: boolean } }).state;
+    appState.selectedProject = "test-project";
+    appState.isNewProject = false;
+    const input = document.getElementById("session-name-input") as HTMLInputElement | null;
+    if (input) input.value = "created-solo";
+    // @ts-ignore exposed by the browser bundle
+    void createSessionWithAgent("shell");
+  });
+
+  await expect.poll(() => attachMessages.at(-1)?.prefillMode, { timeout: 5000 }).toBe("full");
+});
+
+test("settings UI does not expose solo prefill mode", async ({ page }) => {
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 
@@ -734,13 +748,9 @@ test("solo prefill setting persists from settings UI", async ({ page }, testInfo
     // @ts-ignore exposed by the browser bundle
     showView("settings");
   });
-  await page.locator('.solo-prefill-btn[data-mode="full"]').click();
 
-  await expect(page.locator('.solo-prefill-btn[data-mode="full"]')).toHaveClass(/active/);
-  await expect.poll(async () => page.evaluate(() => {
-    const settings = JSON.parse(localStorage.getItem("wp-effects") || "{}");
-    return settings.soloPrefillMode;
-  })).toBe("full");
+  await expect(page.locator("text=Solo prefill")).toHaveCount(0);
+  await expect(page.locator(".solo-prefill-btn")).toHaveCount(0);
 });
 
 function mockPrefillWebSocket(mode: "full" | "viewport"): (ws: WebSocketRoute) => void {
@@ -782,7 +792,6 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
     localStorage.setItem("wolfpack-sidebar-pinned", "0");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -867,7 +876,6 @@ test("debug layout-stable immediate mode sends an early stable signal before att
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
     localStorage.setItem("wolfpackLayoutStableDebugMode", "immediate-and-after-paint");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -911,7 +919,6 @@ test("debug viewport-only layout-stable mode does not send immediate for desktop
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
     localStorage.setItem("wolfpackLayoutStableDebugMode", "viewport-immediate-and-after-paint");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -936,7 +943,6 @@ test("desktop sidebar hover does not put live terminal into loading state", asyn
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -986,7 +992,6 @@ test("desktop switch hides old canvas before auto-collapsing sidebar", async ({ 
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -1041,7 +1046,6 @@ test("desktop switch hides old canvas before disposing previous terminal", async
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -1094,7 +1098,6 @@ test("desktop keyboard session switch paints loading before terminal teardown", 
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -1164,7 +1167,6 @@ test("desktop full prefill records hydration timing after prefill_done", async (
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -1204,7 +1206,6 @@ test("desktop full prefill writes chunks while hidden before prefill_done", asyn
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -1247,7 +1248,7 @@ test("desktop full prefill writes chunks while hidden before prefill_done", asyn
   expect(order.revealIndex).toBeGreaterThan(order.prefillDoneIndex);
 });
 
-test("desktop saved fast still uses full prefill", async ({ page }, testInfo) => {
+test("desktop legacy saved fast prefill key is ignored", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
   await page.goto(srv.baseUrl);
@@ -1255,33 +1256,6 @@ test("desktop saved fast still uses full prefill", async ({ page }, testInfo) =>
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
     localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "fast" }));
-  });
-  await page.reload();
-  await page.waitForSelector(".card", { timeout: 5000 });
-
-  const desktopSettingState = await page.evaluate(() => ({
-    fastActive: document.querySelector('.solo-prefill-btn[data-mode="fast"]')?.classList.contains("active") ?? false,
-    fullActive: document.querySelector('.solo-prefill-btn[data-mode="full"]')?.classList.contains("active") ?? false,
-    fastDisabled: (document.querySelector('.solo-prefill-btn[data-mode="fast"]') as HTMLButtonElement | null)?.disabled ?? false,
-  }));
-  expect(desktopSettingState).toEqual({ fastActive: false, fullActive: true, fastDisabled: true });
-
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
-
-  await expectSoloAttachPrefillMode(page, "full");
-});
-
-test("desktop solo terminal full setting requests full prefill", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
-
-  await page.goto(srv.baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-effects", JSON.stringify({ soloPrefillMode: "full" }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });

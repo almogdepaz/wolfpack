@@ -393,7 +393,7 @@ body.no-animations, body.no-animations * {
   }
 }
 /* terminal preset button active state */
-.term-size-btn.active, .term-font-btn.active, .solo-prefill-btn.active {
+.term-size-btn.active, .term-font-btn.active {
   border-color: rgba(0,255,65,0.5) !important;
   color: var(--accent) !important;
   background: rgba(0,255,65,0.05) !important;
