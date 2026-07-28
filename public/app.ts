@@ -2868,6 +2868,7 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
   const context = prepareDelegationWorkspace(rootSession, machineUrl);
   if (!context) return;
   if (state.terminalController) destroyTerminal();
+  collapseAutoExpandedSidebarImmediately();
   setState({
     focusedDelegationSession: null,
     currentSession: context.root.name,
@@ -2885,6 +2886,7 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
   if (!context || !context.members.some(row => row.session.name === sessionName)) return;
   if (state.terminalController) destroyTerminal();
   suspendDelegationGridTerminals();
+  collapseAutoExpandedSidebarImmediately();
   setState({
     focusedDelegationSession: sessionName,
     currentSession: sessionName,
@@ -3058,6 +3060,16 @@ function setSidebarCollapsedImmediately(collapsed: boolean): void {
   state.sidebarCollapsed = collapsed;
 }
 
+function collapseAutoExpandedSidebarImmediately(): void {
+  if (!state.sidebarAutoExpanded) return;
+  setSidebarCollapsedImmediately(true);
+  state.sidebarAutoExpanded = false;
+  if (sidebarAutoCollapseTimer) {
+    clearTimeout(sidebarAutoCollapseTimer);
+    sidebarAutoCollapseTimer = null;
+  }
+}
+
 async function openSession(name, machineUrl) {
   const targetMachine = machineUrl || "";
   if (isDesktop()) {
@@ -3101,11 +3113,7 @@ async function openSession(name, machineUrl) {
     // switching so the new terminal fits to full width. Without this,
     // initTerminal() fits to the narrow width, triggering a PTY
     // resize that causes Claude Code's TUI to redraw with · fill dots.
-    if (state.sidebarAutoExpanded) {
-      setSidebarCollapsedImmediately(true);
-      state.sidebarAutoExpanded = false;
-      if (sidebarAutoCollapseTimer) { clearTimeout(sidebarAutoCollapseTimer); sidebarAutoCollapseTimer = null; }
-    }
+    collapseAutoExpandedSidebarImmediately();
     await switchSession(machineUrl ? machineUrl + "|" + name : name);
     renderSidebar();
     return;
