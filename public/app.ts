@@ -68,6 +68,7 @@ import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import { shouldUseAttachAckFallback } from "../src/attach-ack";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
+import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
 
@@ -539,12 +540,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     lineHeight: tp.lineHeight,
     fontFamily: termFontFamily,
     ...(isolatedGhostty ? { ghostty: isolatedGhostty } : {}),
-    theme: {
-      background: "#0a0a0a",
-      foreground: "#e0e0e0",
-      cursor: "#e0e0e0",
-      selectionBackground: "rgba(255,255,255,0.2)",
-    },
+    theme: WOLFPACK_TERMINAL_THEME,
     scrollback,
   });
   __wfTraceEvent(trace, "terminal.instance.created", { isolatedGhostty: !!isolatedGhostty, prewarmed: usedPrewarmedGhostty });
