@@ -73,6 +73,7 @@ export const SESSION_PROMPT_OUTCOME = {
   TIMED_OUT: "timed_out",
   TARGET_EXITED: "target_exited",
   TARGET_UNAVAILABLE: "target_unavailable",
+  TARGET_REPLACED: "target_replaced",
   REPLAY_GAP: "replay_gap",
   BACKEND_UNAVAILABLE: "backend_unavailable",
 } as const;
@@ -85,6 +86,7 @@ export interface SessionPromptWaitOptions {
   readonly outputContains: string;
   readonly noEnter: boolean;
   readonly timeoutMs: number;
+  readonly sessionName?: string;
 }
 
 export interface SessionPromptWaitResult {

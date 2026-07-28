@@ -204,8 +204,13 @@ export class MockBackend implements SessionBackend {
       candidate => candidate.wolfpackSessionId === sessionId,
     );
     if (!identity || !this._sessions.has(identity.wolfpackSessionName)) {
+      const replacement = options.sessionName !== undefined
+        && identities[options.sessionName]?.wolfpackSessionId !== undefined
+        && identities[options.sessionName]?.wolfpackSessionId !== sessionId;
       return {
-        outcome: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        outcome: replacement
+          ? SESSION_PROMPT_OUTCOME.TARGET_REPLACED
+          : SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
         outputBoundarySeq: null,
       };
     }

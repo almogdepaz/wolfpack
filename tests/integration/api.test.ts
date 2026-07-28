@@ -1621,6 +1621,7 @@ describe("session control API", () => {
           outputContains: "READY",
           noEnter: false,
           timeoutMs: 250,
+          sessionName: "wolf-1",
         },
       }]);
       expect(mockBackend.lastSendArgs).toBeNull();

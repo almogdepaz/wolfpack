@@ -476,9 +476,17 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     options: SessionPromptWaitOptions,
   ): Promise<SessionPromptWaitResult> {
     const info = this.idToInfo.get(sessionId);
+    const targetUnavailableOutcome = (): SessionPromptWaitResult["outcome"] => {
+      const expectedName = options.sessionName ?? info?.name;
+      const currentIdForName = expectedName ? this.nameToId.get(expectedName) : undefined;
+      if (currentIdForName !== undefined && currentIdForName !== sessionId) {
+        return SESSION_PROMPT_OUTCOME.TARGET_REPLACED;
+      }
+      return SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE;
+    };
     if (!info?.alive) {
       return {
-        outcome: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        outcome: targetUnavailableOutcome(),
         outputBoundarySeq: null,
       };
     }
@@ -560,7 +568,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
             return;
           }
           if (error.code === "unknown_session") {
-            finish(SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE);
+            finish(targetUnavailableOutcome());
             return;
           }
         }

@@ -499,6 +499,7 @@ test("desktop new-session pickers use arrow navigation only after it starts", as
 test("desktop selects a filtered project instead of creating its typed prefix", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop keyboard navigation");
   const selectedProjects: string[] = [];
+  const createRequests: unknown[] = [];
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha", "wolfpack"] }) });
   });
@@ -510,6 +511,10 @@ test("desktop selects a filtered project instead of creating its typed prefix", 
     if (project) selectedProjects.push(project);
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "wolfpack-session" }) });
   });
+  await page.route("**/api/create", async (route) => {
+    createRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: "wolfpack-session" }) });
+  });
 
   await page.goto(srv.baseUrl);
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
@@ -519,8 +524,68 @@ test("desktop selects a filtered project instead of creating its typed prefix", 
   await page.keyboard.press("ArrowDown");
   await expect(projectCards.nth(0)).toHaveClass(/keyboard-selected/);
   await page.keyboard.press("Enter");
-
   await expect.poll(() => selectedProjects).toEqual(["wolfpack"]);
+
+  await page.locator("#agent-list .card", { hasText: "shell" }).click();
+  await expect.poll(() => createRequests).toEqual([{ project: "wolfpack", cmd: "shell", sessionName: "wolfpack-session" }]);
+});
+
+test("click selects a filtered project through final create", async ({ page }) => {
+  const createRequests: unknown[] = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha", "wolfpack"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ effective: { cmds: ["shell"], agentCmd: "shell" } }) });
+  });
+  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "wolfpack-session" }) });
+  });
+  await page.route("**/api/create", async (route) => {
+    createRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: "wolfpack-session" }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.locator("#new-project-name").fill("wo");
+  const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveText(["wolfpack"]);
+  await projectCards.first().click();
+
+  await page.locator("#agent-list .card", { hasText: "shell" }).click();
+  await expect.poll(() => createRequests).toEqual([{ project: "wolfpack", cmd: "shell", sessionName: "wolfpack-session" }]);
+});
+
+test("desktop enter selects the first filtered project without arrow navigation", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keyboard navigation");
+  const selectedProjects: string[] = [];
+  const createRequests: unknown[] = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha", "wolfpack", "wolfpack-tools"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ effective: { cmds: ["shell"], agentCmd: "shell" } }) });
+  });
+  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
+    const project = new URL(route.request().url()).searchParams.get("project");
+    if (project) selectedProjects.push(project);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "wolfpack-session" }) });
+  });
+  await page.route("**/api/create", async (route) => {
+    createRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: "wolfpack-session" }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.locator("#new-project-name").fill("wo");
+  await expect(page.locator("#project-list .card")).toHaveText(["wolfpack", "wolfpack-tools"]);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => selectedProjects).toEqual(["wolfpack"]);
+
+  await page.locator("#agent-list .card", { hasText: "shell" }).click();
+  await expect.poll(() => createRequests).toEqual([{ project: "wolfpack", cmd: "shell", sessionName: "wolfpack-session" }]);
 });
 
 test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal",  async ({ page }, testInfo) => {
