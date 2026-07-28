@@ -67,6 +67,7 @@ import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import { shouldUseAttachAckFallback } from "../src/attach-ack";
+import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
 
@@ -807,8 +808,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let _sawViewportPrefill = false;
   let _currentAttachPrefillMode = _initialPrefillMode;
   let _prefillDoneTimeout = null;
-  let _attachDimensionRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  let _attachDimensionRetryAttempt = 0;
+  const _attachDimensionRetry = createAttachDimensionRetryState();
   const _layoutStableDebugMode = resolveLayoutStableDebugMode(safeLocalStorage(), wfTraceEnabled);
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
@@ -836,24 +836,20 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     const dims = opts.getTermDimensions();
     const dimensionAction = WP.nextAttachDimensionAction(
       dims,
-      _attachDimensionRetryAttempt,
+      _attachDimensionRetry.attempt,
       ATTACH_DIMENSION_MAX_ATTEMPTS,
     );
     if (dimensionAction.kind === "retry") {
-      _attachDimensionRetryAttempt = dimensionAction.nextAttempt;
-      if (!_attachDimensionRetryTimer) {
-        _attachDimensionRetryTimer = setTimeout(() => {
-          _attachDimensionRetryTimer = null;
-          sendAttachHandshake();
-        }, ATTACH_DIMENSION_RETRY_DELAY_MS);
-      }
+      _attachDimensionRetry.setAttempt(dimensionAction.nextAttempt);
+      _attachDimensionRetry.schedule(sendAttachHandshake, ATTACH_DIMENSION_RETRY_DELAY_MS);
       return;
     }
     if (dimensionAction.kind === "fail") {
+      clearAttachRetryState();
       ws.close(WP.CLOSE_CODE_SERVER_ERROR, "attach dimensions unavailable");
       return;
     }
-    _attachDimensionRetryAttempt = 0;
+    clearAttachRetryState();
     const attachDims = dims;
     if (!attachDims) return;
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
@@ -908,6 +904,20 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       _lastSentResize = "";
       sendFitResize();
     }, 300);
+  }
+
+  function clearAttachRetryState(): void {
+    _attachDimensionRetry.clear();
+  }
+
+  function resetAttachLifecycle(): void {
+    clearAttachRetryState();
+    _awaitingAttachAck = false;
+    _awaitingPrefillDone = false;
+    _prefillChunks = [];
+    _sawViewportPrefill = false;
+    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
+    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
   }
 
   function sendLayoutStable(reason: "after-paint" | "immediate" = "after-paint"): void {
@@ -1131,12 +1141,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
       __wfTraceRafStop(_trace);
       ws = null;
-      _awaitingAttachAck = false;
-      _awaitingPrefillDone = false;
-      _prefillChunks = [];
-      _sawViewportPrefill = false;
-      if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-      if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+      resetAttachLifecycle();
       if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
     };
 
@@ -1191,18 +1196,9 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function close() {
-    if (_attachDimensionRetryTimer) {
-      clearTimeout(_attachDimensionRetryTimer);
-      _attachDimensionRetryTimer = null;
-    }
     _rc.cancel();
     _rc.block();
-    _awaitingAttachAck = false;
-    _awaitingPrefillDone = false;
-    _prefillChunks = [];
-    _sawViewportPrefill = false;
-    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+    resetAttachLifecycle();
     if (ws) retireSocket(ws);
   }
 
@@ -1215,12 +1211,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // against this and bails. reconnect() bypasses that guard. See PR #89 review / df4180c.
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
     _rc.cancel();
-    _awaitingAttachAck = false;
-    _awaitingPrefillDone = false;
-    _prefillChunks = [];
-    _sawViewportPrefill = false;
-    if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
-    if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
+    resetAttachLifecycle();
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
     if (ws) retireSocket(ws);
     connect();

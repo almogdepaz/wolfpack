@@ -687,8 +687,9 @@ interface PromptWaitBackend {
       readonly outputContains: string;
       readonly noEnter: boolean;
       readonly timeoutMs: number;
+      readonly sessionName?: string;
     },
-  ): Promise<{ readonly outcome: string; readonly outputBoundarySeq: string }>;
+  ): Promise<{ readonly outcome: string; readonly outputBoundarySeq: string | null }>;
 }
 
 describe("BrokerBackend.promptAndWaitForOutput", () => {
@@ -832,6 +833,26 @@ describe("BrokerBackend.promptAndWaitForOutput", () => {
     expect(client.inputs[0]?.sessionId).toBe(SESSION_UUID_1);
   });
 
+  test("reports target_replaced when the pinned id disappears and its name now maps to another id", async () => {
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+    const operation = (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run", outputContains: "never", noEnter: false, timeoutMs: 20 },
+    );
+    await Promise.resolve();
+
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_2 })],
+    }));
+    await backend.list();
+    client.nextSubscribeError = new BrokerSubscribeError("unknown_session", "old session is gone");
+    releaseSubscribe();
+
+    expect(await operation).toEqual({ outcome: "target_replaced", outputBoundarySeq: null });
+    expect(client.inputs).toHaveLength(0);
+  });
+
   for (const [code, outcome] of [
     ["unknown_session", "target_unavailable"],
     ["session_not_alive", "target_exited"],
@@ -854,10 +875,10 @@ describe("BrokerBackend.promptAndWaitForOutput", () => {
     });
   }
 
-  test("returns bounded typed outcomes for timeout, exit, replay gap, unavailable, and input failure", async () => {
+  test("returns bounded typed outcomes for timeout, exit, replay gap, unavailable, replaced, and input failure", async () => {
     const invoke = () => (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
       SESSION_UUID_1,
-      { prompt: "run", outputContains: "never", noEnter: false, timeoutMs: 5 },
+      { prompt: "run", outputContains: "never", noEnter: false, timeoutMs: 5, sessionName: "live" },
     );
 
     expect((await invoke()).outcome).toBe("timed_out");
@@ -874,6 +895,16 @@ describe("BrokerBackend.promptAndWaitForOutput", () => {
     client.nextSubscribeError = new BrokerSubscribeError("unknown_session", "unknown session");
     expect((await invoke()).outcome).toBe("target_unavailable");
 
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_2 })],
+    }));
+    await backend.list();
+    expect((await invoke()).outcome).toBe("target_replaced");
+
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })],
+    }));
+    await backend.list();
     client.inputError = new BrokerNotConnectedError("broker disconnected");
     expect((await invoke()).outcome).toBe("backend_unavailable");
   });
