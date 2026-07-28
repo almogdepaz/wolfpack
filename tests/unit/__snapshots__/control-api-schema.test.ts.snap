@@ -1565,6 +1565,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "timed_out",
         "target_exited",
         "target_unavailable",
+        "target_replaced",
         "replay_gap",
         "backend_unavailable"
       ]

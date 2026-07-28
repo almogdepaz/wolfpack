@@ -195,6 +195,7 @@ describe("control api schema compatibility samples", () => {
       "timed_out",
       "target_exited",
       "target_unavailable",
+      "target_replaced",
       "replay_gap",
       "backend_unavailable",
     ]) {

@@ -1242,6 +1242,7 @@ export const routes: Record<
         outputContains: body.outputContains,
         noEnter: body.noEnter === true,
         timeoutMs,
+        sessionName: session,
       });
       json(res, {
         ok: result.outcome === SESSION_PROMPT_OUTCOME.MATCHED,
