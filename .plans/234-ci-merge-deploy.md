@@ -1,6 +1,6 @@
 # pr 234 ci, merge, and deploy
 
-status: in progress
+status: deployed
 branch: `fix/terminal-rendering`
 
 ## goal
@@ -14,13 +14,14 @@ Repair #234's failing CI, merge its source branch into this terminal-rendering b
 - [x] push the CI repair and verify GitHub checks.
 - [x] commit terminal-rendering remediation and merge #234 into this branch.
 - [x] run combined verification.
-- [ ] install and deploy after deploy-lock and active-deploy preflight.
+- [x] install and deploy after deploy-lock and active-deploy preflight.
 
 ## verification
 
 - #234 GitHub Actions run `30338802602`: `test` and `ghostty-vt-behavior` pass.
 - combined branch typecheck, 19 desktop E2E tests, and targeted unit suites pass.
 - combined `bun test`: 1,412 pass, with one pre-existing local taxonomy ownership scanner TOCTOU error while an ignored `.cache/ghostty-vt` directory is removed.
+- external Terminal deployment with `scripts/deploy-local.sh --broker=yes` completed: broker `12848 → 53897`, server `79249 → 53904`, and the post-deploy health check plus session API succeeded.
 
 ## safety
 
