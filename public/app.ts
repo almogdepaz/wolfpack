@@ -4716,6 +4716,14 @@ newProjectNameInput.addEventListener("input", () => {
 newProjectNameInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   if (keyboardMenuSelection?.view === "projects") return;
+  event.preventDefault();
+  if (projectNames !== null) {
+    const matches = filterProjectNames(projectNames, newProjectNameInput.value);
+    if (matches.length === 1) {
+      selectProject(matches[0]);
+      return;
+    }
+  }
   selectNewProject();
 });
 
