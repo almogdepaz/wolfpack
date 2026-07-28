@@ -361,6 +361,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],
+      ["COLORTERM", "truecolor"],
       ["LANG", "en_US.UTF-8"],
       ...identityEnvVars({
         wolfpackSessionName: name,

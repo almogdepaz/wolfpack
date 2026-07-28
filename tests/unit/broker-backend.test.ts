@@ -288,7 +288,8 @@ describe("BrokerBackend.createSession", () => {
     expect(params.cols).toBeGreaterThan(0);
     expect(params.rows).toBeGreaterThan(0);
     const envKeys = params.env.map(([k]) => k);
-    expect(envKeys).toContain("TERM");
+    expect(params.env).toContainEqual(["TERM", "xterm-256color"]);
+    expect(params.env).toContainEqual(["COLORTERM", "truecolor"]);
     expect(params.env).toContainEqual(["WOLFPACK_PROJECT_DIR", "/tmp/proj"]);
     expect(params.env).toContainEqual(["WOLFPACK_SESSION_NAME", "newone"]);
     expect(envKeys).toContain("WOLFPACK_AGENT_KIND");

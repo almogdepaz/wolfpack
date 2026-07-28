@@ -4714,7 +4714,9 @@ newProjectNameInput.addEventListener("input", () => {
   renderProjectNames(filterProjectNames(projectNames, newProjectNameInput.value));
 });
 newProjectNameInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") selectNewProject();
+  if (event.key !== "Enter") return;
+  if (keyboardMenuSelection?.view === "projects") return;
+  selectNewProject();
 });
 
 // ── Settings ──

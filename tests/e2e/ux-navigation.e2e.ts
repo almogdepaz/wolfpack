@@ -496,7 +496,34 @@ test("desktop new-session pickers use arrow navigation only after it starts", as
   await expect.poll(() => createRequests).toEqual([{ project: "alpha", cmd: "pi", sessionName: "alpha-session" }]);
 });
 
-test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal", async ({ page }, testInfo) => {
+test("desktop selects a filtered project instead of creating its typed prefix", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keyboard navigation");
+  const selectedProjects: string[] = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha", "wolfpack"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ effective: { cmds: ["shell"], agentCmd: "shell" } }) });
+  });
+  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
+    const project = new URL(route.request().url()).searchParams.get("project");
+    if (project) selectedProjects.push(project);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "wolfpack-session" }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.locator("#new-project-name").fill("wo");
+  const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveText(["wolfpack"]);
+  await page.keyboard.press("ArrowDown");
+  await expect(projectCards.nth(0)).toHaveClass(/keyboard-selected/);
+  await page.keyboard.press("Enter");
+
+  await expect.poll(() => selectedProjects).toEqual(["wolfpack"]);
+});
+
+test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal",  async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop expanded-session regression");
 
   await page.goto(srv.baseUrl);
