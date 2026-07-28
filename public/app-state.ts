@@ -2,7 +2,6 @@
 // Extracted from app.ts — imported back via bundler (inlined at build time)
 
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
-import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 
 export { esc, escAttr } from "../src/html-escape";
 
@@ -31,8 +30,18 @@ export function getTerminalFontFamily() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", soloPrefillMode:"fast", debugPanel:false};
-export const wpSettings = Object.assign({}, wpDefaults, loadStoredJson("wp-effects", {}));
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false};
+
+function loadWpSettings() {
+  const stored = loadStoredJson("wp-effects", {});
+  const settings = { ...wpDefaults };
+  for (const key of Object.keys(wpDefaults)) {
+    if (Object.prototype.hasOwnProperty.call(stored, key)) settings[key] = stored[key];
+  }
+  return settings;
+}
+
+export const wpSettings = loadWpSettings();
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
 
@@ -62,14 +71,6 @@ export function applySetting(key, val) {
     document.body.classList.toggle("term-font-alt", val === "alt");
     document.querySelectorAll(".term-font-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.font === val));
     applyTermToXterm();
-  }
-  if (key === "soloPrefillMode") {
-    const mode = isDesktop() ? TERMINAL_PREFILL_MODE.FULL : (val === TERMINAL_PREFILL_MODE.FULL ? TERMINAL_PREFILL_MODE.FULL : "fast");
-    document.querySelectorAll(".solo-prefill-btn").forEach(b => {
-      const button = b as HTMLButtonElement;
-      button.classList.toggle("active", button.dataset.mode === mode);
-      if (button.dataset.mode === "fast") button.disabled = isDesktop();
-    });
   }
 }
 
