@@ -453,6 +453,49 @@ test("project picker filters fetched projects by typed prefix without refetching
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
 });
 
+test("desktop new-session pickers use arrow navigation only after it starts", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keyboard navigation");
+  const createRequests: unknown[] = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha", "beta"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ effective: { cmds: ["shell", "pi"], agentCmd: "shell" } }),
+    });
+  });
+  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "alpha-session" }) });
+  });
+  await page.route("**/api/create", async (route) => {
+    createRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: "alpha-session" }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveText(["alpha", "beta"]);
+  await expect(page.locator("#project-list .card.keyboard-selected")).toHaveCount(0);
+
+  await page.keyboard.press("ArrowDown");
+  await expect(projectCards.nth(0)).toHaveClass(/keyboard-selected/);
+  await page.keyboard.press("ArrowDown");
+  await expect(projectCards.nth(1)).toHaveClass(/keyboard-selected/);
+  await page.keyboard.press("ArrowUp");
+  await expect(projectCards.nth(0)).toHaveClass(/keyboard-selected/);
+  await page.keyboard.press("Enter");
+
+  const agentCards = page.locator("#agent-list .card");
+  await expect(agentCards).toHaveText(["shell", "pi"]);
+  await expect(page.locator("#agent-list .card.keyboard-selected")).toHaveCount(0);
+  await page.keyboard.press("ArrowUp");
+  await expect(agentCards.nth(1)).toHaveClass(/keyboard-selected/);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => createRequests).toEqual([{ project: "alpha", cmd: "pi", sessionName: "alpha-session" }]);
+});
+
 test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop expanded-session regression");
 
@@ -562,6 +605,7 @@ test("settings shows provider readiness and adds an installed provider", async (
 
   await page.goto(srv.baseUrl);
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showView("settings"));
+  await expect(page.locator("#setting-snapshotTtl")).toHaveCount(0);
 
   const shellRow = page.locator("#agents-list .agent-row").filter({ hasText: "shell" });
   await expect(shellRow.locator(".agent-row-checkbox")).toBeEnabled();

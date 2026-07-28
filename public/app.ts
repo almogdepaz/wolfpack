@@ -1,5 +1,5 @@
 import {
-  esc, escAttr, loadStoredJson, isDesktop, formatSnapshotTtl,
+  esc, escAttr, loadStoredJson, isDesktop,
   getTerminalFontFamily,
   wpDefaults, wpSettings, TERM_PRESETS, toggleSetting, applySetting,
   applyTermToXterm, initSettings, haptic, requestNotifications,
@@ -67,6 +67,8 @@ import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import { shouldUseAttachAckFallback } from "../src/attach-ack";
+import { nextMenuSelection } from "../src/menu-navigation";
+import { snapshotKeysToEvict } from "../src/snapshot-cache";
 
 // ── WASM capability guard ──
 
@@ -2138,38 +2140,62 @@ let snapshotPending = null;
 function snapshotKey(machine, session) {
   return SNAPSHOT_KEY_PREFIX + (machine || "") + "|" + session;
 }
-function saveSnapshot(machine, session, text) {
-  if (!session || !text) return;
-  const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
-  try { localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, ts: Date.now() })); } catch { /* quota/private-mode */ }
+function snapshotMachineFromKey(key) {
+  const separator = key.lastIndexOf("|");
+  return separator > SNAPSHOT_KEY_PREFIX.length ? key.slice(SNAPSHOT_KEY_PREFIX.length, separator) : "";
 }
-function loadSnapshot(machine, session) {
-  if (!session) return null;
-  try {
-    const raw = localStorage.getItem(snapshotKey(machine, session));
-    if (!raw) return null;
-    const snap = JSON.parse(raw);
-    const age = (Date.now() - snap.ts) / 1000;
-    if (age > (wpSettings.snapshotTtl || 900)) {
-      localStorage.removeItem(snapshotKey(machine, session));
-      return null;
-    }
-    return snap.d;
-  } catch { return null; }
-}
-function cleanStaleSnapshots() {
-  const ttl = (wpSettings.snapshotTtl || 900) * 1000;
-  const now = Date.now();
-  const toRemove = [];
+function snapshotEntries() {
+  const entries = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key || !key.startsWith(SNAPSHOT_KEY_PREFIX)) continue;
     try {
-      const snap = JSON.parse(localStorage.getItem(key));
-      if (now - snap.ts > ttl) toRemove.push(key);
-    } catch { toRemove.push(key); }
+      const snapshot = JSON.parse(localStorage.getItem(key));
+      if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+      entries.push({
+        key,
+        machine: snapshotMachineFromKey(key),
+        lastUsedAt: typeof snapshot.lastUsedAt === "number"
+          ? snapshot.lastUsedAt
+          : typeof snapshot.ts === "number" ? snapshot.ts : 0,
+      });
+    } catch {
+      localStorage.removeItem(key);
+    }
   }
-  toRemove.forEach(k => localStorage.removeItem(k));
+  return entries;
+}
+function enforceSnapshotCache() {
+  snapshotKeysToEvict(snapshotEntries()).forEach(key => localStorage.removeItem(key));
+}
+function saveSnapshot(machine, session, text) {
+  if (!session || !text) return;
+  const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
+  try {
+    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, lastUsedAt: Date.now() }));
+    enforceSnapshotCache();
+  } catch { /* quota/private-mode */ }
+}
+function loadSnapshot(machine, session) {
+  if (!session) return null;
+  const key = snapshotKey(machine, session);
+  let snapshot;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    snapshot = JSON.parse(raw);
+    if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+  } catch {
+    localStorage.removeItem(key);
+    return null;
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, lastUsedAt: Date.now() }));
+  } catch { /* preserve a readable snapshot when localStorage is full */ }
+  return snapshot.d;
+}
+function cleanSnapshots() {
+  enforceSnapshotCache();
 }
 function scheduleSnapshotSave(text) {
   snapshotPending = text;
@@ -2187,17 +2213,9 @@ function flushSnapshot() {
   }
   snapshotPending = null;
   if (text) saveSnapshot(state.currentMachine, state.currentSession, text);
-  flushGridSnapshots();
 }
 function serializeXtermTail(term, maxLines) {
   return WP.serializeBufferTail(term.buffer.active, maxLines);
-}
-function flushGridSnapshots() {
-  for (const gs of state.gridSessions) {
-    if (!gs.controller?.term) continue;
-    const text = serializeXtermTail(gs.controller.term, 200);
-    if (text) saveSnapshot(gs.machine || "", gs.session, text);
-  }
 }
 
 // ── Machine registry ──
@@ -3124,8 +3142,47 @@ async function openSession(name, machineUrl) {
 // ── Project picker ──
 
 let projectNames: readonly string[] | null = null;
+let keyboardMenuSelection: { readonly view: "projects" | "agent"; readonly index: number } | null = null;
+
+function resetPickerKeyboardSelection(): void {
+  document.querySelectorAll("#project-list .keyboard-selected, #agent-list .keyboard-selected")
+    .forEach((card) => card.classList.remove("keyboard-selected"));
+  keyboardMenuSelection = null;
+}
+
+function pickerMenuCards(view: "projects" | "agent"): HTMLElement[] {
+  const listId = view === "projects" ? "project-list" : "agent-list";
+  return Array.from(document.querySelectorAll<HTMLElement>(`#${listId} .card`));
+}
+
+function handlePickerKeyboardNavigation(event: KeyboardEvent): void {
+  if (!isDesktop() || event.altKey || event.ctrlKey || event.metaKey) return;
+  const view = state.currentView === "projects" || state.currentView === "agent"
+    ? state.currentView
+    : null;
+  if (!view) return;
+  const cards = pickerMenuCards(view);
+  const selectedIndex = keyboardMenuSelection?.view === view
+    ? keyboardMenuSelection.index
+    : null;
+  if (event.key === "Enter") {
+    if (selectedIndex === null) return;
+    event.preventDefault();
+    cards[selectedIndex]?.click();
+    return;
+  }
+  const direction = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : null;
+  if (direction === null) return;
+  event.preventDefault();
+  const nextIndex = nextMenuSelection({ itemCount: cards.length, selectedIndex, direction });
+  if (nextIndex === null) return;
+  cards.forEach((card, index) => card.classList.toggle("keyboard-selected", index === nextIndex));
+  keyboardMenuSelection = { view, index: nextIndex };
+  cards[nextIndex]?.scrollIntoView({ block: "nearest" });
+}
 
 function renderProjectNames(projects: readonly string[]): void {
+  resetPickerKeyboardSelection();
   const list = document.getElementById("project-list");
   if (!projects.length) {
     list.innerHTML = '<div class="empty">No matching projects</div>';
@@ -3162,6 +3219,7 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
+  resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
   projectNameInput.value = "";
   projectNameInput.focus({ preventScroll: true });
@@ -3207,6 +3265,7 @@ function selectNewProject() {
 
 async function showAgentPicker() {
   showView("agent");
+  resetPickerKeyboardSelection();
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
@@ -5165,6 +5224,7 @@ function bindHtmlEventListeners(): void {
   on("expanded-collapse-btn", "click", () => $("sidebar-expand-btn")?.click());
 
   // Project picker
+  document.addEventListener("keydown", handlePickerKeyboardNavigation);
   const pickerCancel = document.querySelector("#projects-view .picker-cancel-btn");
   if (pickerCancel) pickerCancel.addEventListener("click", () => { returnFromProjectPicker(); });
   const createProjectBtn = document.querySelector("#projects-view .new-project-row button");
@@ -5186,11 +5246,6 @@ function bindHtmlEventListeners(): void {
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
-  on("setting-snapshotTtl", "input", function(this: HTMLInputElement) {
-    toggleSetting("snapshotTtl", +this.value);
-    const val = $("snapshot-ttl-val");
-    if (val) val.textContent = formatSnapshotTtl(+this.value);
-  });
 
   // Term font size buttons
   document.querySelectorAll(".term-size-btn").forEach((btn) => {
@@ -5240,20 +5295,12 @@ initGridDeps({
   backToSessions, renderSidebar,
   createPtyTerminalController, createConflictOverlay,
   canUseWasmTerminal,
-  saveGridCellSnapshot: (gs) => {
-    if (!gs.controller?.term) return;
-    const text = serializeXtermTail(gs.controller.term, 200);
-    if (text) saveSnapshot(gs.machine || "", gs.session, text);
-  },
-  scheduleSnapshotSave: () => scheduleSnapshotSave(null),
-  flushGridSnapshots,
-  loadSnapshot,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });
 
 initSettings();
-cleanStaleSnapshots();
+cleanSnapshots();
 renderCmdPalette();
 initSidebar(); // Init sidebar early so pin/expand/hover handlers are ready
 // Apply expanded sessions as default on desktop — sidebar collapsed in this mode

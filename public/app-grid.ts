@@ -67,10 +67,6 @@ interface GridDeps {
   createPtyTerminalController: (opts: { session: string; machine?: string; [k: string]: unknown }) => GridTerminalController;
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   canUseWasmTerminal?: () => boolean;
-  saveGridCellSnapshot?: (gs: GridSession) => void;
-  scheduleSnapshotSave: () => void;
-  flushGridSnapshots?: () => void;
-  loadSnapshot?: (machine: string, session: string) => string | null;
   focusDelegationSession?: (session: string, machine: string) => void;
   leaveDelegationWorkspace?: () => void;
 }
@@ -232,15 +228,6 @@ function createGridCell(gs: GridSession, idx: number): HTMLElement {
 
 async function mountGridController(gs, cell, idx) {
   if (gs.controller) return; // already mounted
-  const cached = deps.loadSnapshot ? deps.loadSnapshot(gs.machine || "", gs.session) : null;
-  if (cached) {
-    // Grid viewport prefill must not replay cached plaintext into Ghostty.
-    // Cached snapshots are width-bound prose, not terminal state, so keep
-    // the loading screen up until broker viewport prefill hydrates the cell.
-    setTerminalLoadVisualState(cell, "prefill-loading");
-    gs._slowLoad?.start("waiting for grid cell prefill");
-  }
-  let _gridCachedPending = !!cached;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   gs.controller = deps.createPtyTerminalController({
     session: gs.session,
@@ -277,25 +264,6 @@ async function mountGridController(gs, cell, idx) {
       // on top of an otherwise usable terminal.
       setTerminalLoadVisualState(cell, "hydrating");
       gs._slowLoad?.start("hydrating grid cell");
-    },
-    onOutput: () => {
-      if (_gridCachedPending) {
-        _gridCachedPending = false;
-        // Drop cached-visible on first live data, but DO NOT add `hydrated`
-        // here — that's the hydration controller's job (gated on minPendingMs;
-        // see comment in createPtyTerminalController/createInitialHydrationController).
-        //
-        // History: this used to also `add("hydrated")` to bypass hydration
-        // and reveal the canvas as soon as live data arrived. That bypass
-        // exposed the canvas during the post-attach resize-redraw burst (or
-        // the new-shell startup burst on `&reset=1` paths), producing the
-        // "scrollback flash" on cells that had a cached snapshot. Without
-        // `hydrated` here the canvas falls back to hidden until hydration
-        // finish() runs (after minPendingMs floor + writes settle). Mirrors
-        // the same fix in public/app.ts onOutput for single-pane.
-        cell.classList.remove("cached-visible");
-      }
-      deps.scheduleSnapshotSave();
     },
     onViewerConflict: () => {
 
@@ -357,7 +325,7 @@ async function mountGridController(gs, cell, idx) {
     },
   });
   delete gs._resetPty;
-  await gs.controller.mount(cell, { cached });
+  await gs.controller.mount(cell);
   gs._needsConnect = true;
 }
 
@@ -677,7 +645,6 @@ export function setDelegationGridFocus(idx: number): void {
 }
 
 export function suspendGridMode() {
-  if (deps.flushGridSnapshots) deps.flushGridSnapshots();
   const preserved = WP.suspendGridState(state.gridSessions, state.gridFocusIndex);
   state.preservedGridSessions = preserved.sessions;
   state.preservedGridFocusIndex = preserved.focusIndex;
@@ -826,8 +793,6 @@ export function addToGrid(session: string, machine?: string): void {
 export function removeFromGrid(idx) {
   if (idx < 0 || idx >= state.gridSessions.length) return;
   const gs = state.gridSessions[idx];
-  // Save snapshot before disposing
-  if (deps.saveGridCellSnapshot) deps.saveGridCellSnapshot(gs);
   // Cleanup controller before removing DOM (dispose needs container for removeEventListener)
   clearGridCellTakeControlTimer(gs);
   if (gs.controller) gs.controller.dispose();
