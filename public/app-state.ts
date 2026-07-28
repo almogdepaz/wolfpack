@@ -4,25 +4,7 @@
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 
-// ── HTML / attribute escaping ──
-
-export function esc(s) {
-  if (s == null) return "";
-  const d = document.createElement("div");
-  d.textContent = String(s);
-  return d.innerHTML.replace(/'/g, "&#39;").replace(/"/g, "&quot;");
-}
-
-// JS-safe escaper for use inside onclick="func('...')" attribute contexts.
-// Backslash-escapes characters that could break out of a JS string literal
-// AFTER HTML attribute decoding. Note: escAttr is for JS-string-in-HTML-attribute
-// dual contexts (esc() is the right choice for plain HTML attributes).
-export function escAttr(s) {
-  if (s == null) return "";
-  return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
-    .replace(/</g, "\\x3c").replace(/>/g, "\\x3e").replace(/&/g, "\\x26")
-    .replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
-}
+export { esc, escAttr } from "../src/html-escape";
 
 // ── Generic utilities ──
 
@@ -41,12 +23,6 @@ export function isDesktop() {
   return window.innerWidth > 768;
 }
 
-export function formatSnapshotTtl(seconds: number | string): string {
-  const s = +seconds;
-  if (s < 60) return s + 's';
-  return Math.floor(s / 60) + 'm';
-}
-
 export function getTerminalFontFamily() {
   return wpSettings.termFont === "alt"
     ? '"JetBrains Mono", "Fira Code", "Source Code Pro", "Cascadia Code", monospace'
@@ -55,7 +31,7 @@ export function getTerminalFontFamily() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", soloPrefillMode:"fast", snapshotTtl:900, debugPanel:false};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", soloPrefillMode:"fast", debugPanel:false};
 export const wpSettings = Object.assign({}, wpDefaults, loadStoredJson("wp-effects", {}));
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
@@ -123,8 +99,6 @@ export function initSettings() {
     if (el.type === "checkbox") el.checked = v as boolean;
     else el.value = v as string;
   });
-  const ttlLabel = document.getElementById("snapshot-ttl-val");
-  if (ttlLabel) ttlLabel.textContent = formatSnapshotTtl(wpSettings.snapshotTtl);
 }
 
 export function haptic(pattern) {
