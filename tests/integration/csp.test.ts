@@ -6,6 +6,7 @@ const TEST_HTML = '<!doctype html><html><head><script src="/a.js"></script><scri
 
 // Mock assets to provide a test HTML page
 await mock.module("../../src/public-assets.js", () => ({
+  ASSET_VERSION: "test",
   assets: new Map([
     ["index.html", { content: TEST_HTML, mime: "text/html" }],
     ["a.js", { content: "console.log('a')", mime: "application/javascript" }],

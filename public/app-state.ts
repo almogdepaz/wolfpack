@@ -43,7 +43,7 @@ function loadWpSettings() {
 
 export const wpSettings = loadWpSettings();
 
-export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55} };
+export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55}, xlarge: {fontSize:18, lineHeight:1.45} };
 
 export function toggleSetting(key, val) {
   wpSettings[key] = val;
@@ -62,7 +62,7 @@ export function applySetting(key, val) {
     if (el) el.placeholder = val ? "$ (Enter to send)" : "$ (⚡ to send)";
   }
   if (key === "termFontSize") {
-    document.body.classList.remove("term-size-small", "term-size-medium", "term-size-large");
+    document.body.classList.remove("term-size-small", "term-size-medium", "term-size-large", "term-size-xlarge");
     document.body.classList.add("term-size-" + val);
     document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.size === val));
     applyTermToXterm();
@@ -236,6 +236,7 @@ export const state = {
   lastSessionGroups: [],
   firstLoad: true,
   lastSessionsHtml: "",
+  attentionOnly: false,
   loadSessionsEpoch: 0,
   selfName: "",
   selfVersion: "",

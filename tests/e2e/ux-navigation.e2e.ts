@@ -100,7 +100,7 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.sidebarAutoExpanded)).toBe(true);
 
-  await page.locator("#sidebar-session-list .card", { has: page.locator(".card-name", { hasText: parent.name }) }).first().locator(".card-name").click();
+  await page.getByRole("button", { name: `Open ${parent.name}` }).click();
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
 
   expect(await page.evaluate(() => {
@@ -199,7 +199,8 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(childSidebarCards).toHaveCount(0);
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
   await expect(childSidebarCards).toHaveCount(2);
-  await parentSidebarCard.locator(".card-name").click();
+  await parentSidebarCard.getByRole("button", { name: "Open wolfpack" }).focus();
+  await page.keyboard.press("Enter");
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
   await expect(childSidebarCard.locator(".grid-btn")).toHaveClass(/in-grid/);

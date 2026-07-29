@@ -175,7 +175,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     } else {
       const safePath = url.pathname.replace(/^\/+/, "");
       if (safePath && !safePath.includes("\0") && !safePath.includes("/")) {
-        serveFile(res, safePath);
+        serveFile(res, safePath, req);
       } else {
         res.writeHead(404);
         res.end("Not Found");

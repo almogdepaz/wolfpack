@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <meta name="theme-color" content="#0a0a0a" />
     <meta
@@ -35,9 +35,10 @@
     <meta name="twitter:title" content="Wolfpack — browser terminal manager for AI coding agents" />
     <meta name="twitter:description" content="Self-hosted PWA command center for persistent Claude Code, Codex, Gemini, and shell terminal sessions." />
     <title>Wolfpack — AI agent terminal dashboard</title>
-    <link rel="stylesheet" href="/styles.css" />
-    <script src="/wolfpack-lib.js"></script>
-    <script src="/ghostty-web.bundle.js"></script>
+    <link rel="stylesheet" href="/styles.css?v=__WOLFPACK_ASSET_VERSION__" />
+    <script defer src="/wolfpack-lib.js?v=__WOLFPACK_ASSET_VERSION__"></script>
+    <script defer src="/ghostty-web.bundle.js?v=__WOLFPACK_ASSET_VERSION__"></script>
+    <script defer src="/app.bundle.js?v=__WOLFPACK_ASSET_VERSION__"></script>
   </head>
   <body>
     <header>
@@ -88,11 +89,16 @@
           <button id="expanded-collapse-btn" type="button" title="Collapse sessions" aria-label="Collapse sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 9-5-5M4 9V4h5M15 9l5-5M15 4h5v5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5"/></svg></button>
         </div>
       </div>
+      <div id="sessions-attention-toolbar" class="sessions-attention-toolbar" aria-label="Session attention summary">
+        <button id="attention-filter-btn" type="button" aria-label="Show attention sessions" aria-pressed="false">attention <span id="attention-count">0</span></button>
+        <span id="attention-summary" role="status" aria-live="polite">No sessions need attention</span>
+        <button id="attention-clear-all-btn" type="button">Clear unseen</button>
+      </div>
       <div id="session-list" class="list"></div>
     </div>
 
     <!-- Project picker view -->
-    <div id="projects-view" class="view">
+    <div id="projects-view" class="view" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Cancel</button>
       <div class="new-project-row">
         <input
@@ -109,7 +115,7 @@
     </div>
 
     <!-- Agent picker view -->
-    <div id="agent-view" class="view">
+    <div id="agent-view" class="view" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Back</button>
       <div class="session-name-block">
         <div class="session-name-label">session name</div>
@@ -122,14 +128,14 @@
     </div>
 
     <!-- Settings view -->
-    <div id="settings-view" class="view">
-      <button id="settings-back-btn" class="settings-back-btn">← Back</button>
+    <div id="settings-view" class="view" aria-hidden="true" inert>
+      <button id="settings-back-btn" class="settings-back-btn" type="button">← Back</button>
       <div class="list">
         <div class="settings-section">
           <div class="settings-label">Machines</div>
           <div id="machines-list"></div>
           <button class="discover-btn">Discover Tailnet</button>
-          <div id="discover-status" class="discover-status"></div>
+          <div id="discover-status" class="discover-status" role="status" aria-live="polite"></div>
         </div>
         <div class="settings-section">
           <div class="settings-label">Effects</div>
@@ -151,6 +157,7 @@
               <button class="term-size-btn preset-btn" data-size="small">Small<br><span class="preset-hint">12px</span></button>
               <button class="term-size-btn preset-btn" data-size="medium">Medium<br><span class="preset-hint">13px</span></button>
               <button class="term-size-btn preset-btn" data-size="large">Large<br><span class="preset-hint">14px</span></button>
+              <button class="term-size-btn preset-btn" data-size="xlarge">Extra large<br><span class="preset-hint">18px</span></button>
             </div>
           </div>
           <div class="settings-subsection">
@@ -186,7 +193,7 @@
             <input type="text" id="agent-add-input" class="agent-add-input" placeholder="e.g. claude, gemini --context…" autocomplete="off">
             <button id="agent-add-btn" class="add-cmd-btn">+ Add</button>
           </div>
-          <div id="agent-add-error" class="agent-add-error"></div>
+          <div id="agent-add-error" class="agent-add-error" role="alert"></div>
         </div>
         <div class="settings-section">
           <div class="settings-label">Quick Commands</div>
@@ -222,10 +229,22 @@
     </div>
 
     <!-- Terminal view -->
-    <div id="terminal-view" class="view">
+    <div id="terminal-view" class="view" aria-hidden="true" inert>
+      <button id="terminal-transcript-btn" class="terminal-transcript-btn" type="button" aria-label="Read session transcript">transcript</button>
+      <dialog id="terminal-transcript-dialog" class="terminal-transcript-dialog" aria-labelledby="terminal-transcript-title">
+        <div class="terminal-transcript-header">
+          <h2 id="terminal-transcript-title">Session transcript</h2>
+          <button id="terminal-transcript-close" type="button" aria-label="Close transcript">close</button>
+        </div>
+        <div id="terminal-transcript-status" role="status" aria-live="polite"></div>
+        <pre id="terminal-transcript-output" role="log" aria-live="off" tabindex="0"></pre>
+      </dialog>
       <div
         id="conn-status"
         class="conn-status"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
       >
         Reconnecting...
       </div>
@@ -277,6 +296,5 @@
 
     </div><!-- /view-container -->
 
-    <script src="/app.bundle.js"></script>
   </body>
 </html>

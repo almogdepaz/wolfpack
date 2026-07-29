@@ -568,7 +568,7 @@ export const routes: Record<
   string,
   (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 > = {
-  "GET /": (_req, res) => serveFile(res, "index.html"),
+  "GET /": (req, res) => serveFile(res, "index.html", req),
   "GET /manifest.json": (req, res) => {
     const asset = assets.get("manifest.json");
     if (!asset) { res.writeHead(404); res.end("Not Found"); return; }
