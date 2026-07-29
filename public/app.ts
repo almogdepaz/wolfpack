@@ -71,6 +71,10 @@ import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
 import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
+import {
+  terminalDataFromBeforeInput,
+  terminalDataFromKeydownForBeforeInputDedupe,
+} from "../src/terminal-input";
 
 // ── WASM capability guard ──
 
@@ -503,6 +507,63 @@ function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
  * @param {boolean} [opts.forwardResizeEvents=true] - whether terminal onResize events directly forward backend resize messages
  * @returns {{ term: Terminal, fitAddon: FitAddon }}
  */
+const TERMINAL_BEFOREINPUT_DEDUPE_MS = 100;
+
+function installTerminalTextareaInputBridge(
+  term: GhosttyTerminal,
+  sendInput: (data: Uint8Array) => void,
+  canAcceptInput: () => boolean,
+  trace: TraceState | null,
+): void {
+  const input = term.textarea;
+  if (!input) return;
+
+  let lastKeydownData: string | null = null;
+  let lastKeydownAt = 0;
+  let lastCompositionData: string | null = null;
+  let lastCompositionAt = 0;
+  const encoder = new TextEncoder();
+
+  function now(): number {
+    return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  }
+
+  function recentDuplicate(data: string, previousData: string | null, previousAt: number): boolean {
+    return previousData === data && now() - previousAt < TERMINAL_BEFOREINPUT_DEDUPE_MS;
+  }
+
+  input.addEventListener("keydown", (event) => {
+    const data = terminalDataFromKeydownForBeforeInputDedupe(event);
+    if (!data) return;
+    lastKeydownData = data;
+    lastKeydownAt = now();
+  });
+
+  input.addEventListener("compositionend", (event) => {
+    if (!event.data) return;
+    lastCompositionData = event.data;
+    lastCompositionAt = now();
+  });
+
+  input.addEventListener("beforeinput", (event) => {
+    if (event.defaultPrevented || term.options.disableStdin || !canAcceptInput()) return;
+    const data = terminalDataFromBeforeInput(event);
+    if (!data) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (recentDuplicate(data, lastKeydownData, lastKeydownAt)) {
+      lastKeydownData = null;
+      return;
+    }
+    if (event.data && recentDuplicate(event.data, lastCompositionData, lastCompositionAt)) {
+      lastCompositionData = null;
+      return;
+    }
+    __wfTraceEvent(trace, "terminal.textarea.beforeinput", { inputType: event.inputType });
+    sendInput(encoder.encode(data));
+  });
+}
+
 async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, forwardResizeEvents = true, onWheelScroll = null, alwaysForwardWheel = false, trace = null }) {
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
@@ -1607,6 +1668,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
 
     _term.open(container);
     __wfTraceEvent(trace, "dom.terminal.opened");
+    installTerminalTextareaInputBridge(_term, (data) => _ptyClient && _ptyClient.send(data), _canAcceptInput, trace);
     if (typeof ResizeObserver !== "undefined") {
       _resizeObserver = new ResizeObserver((entries) => {
         if (!entries.length) return;
