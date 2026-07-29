@@ -108,6 +108,7 @@ wolfpack agent spawn     Spawn a same-harness child agent
 wolfpack session ...     Status/read/send/wait/prompt helpers for agent automation
 wolfpack attach [name]   Attach the local terminal to an existing session
 wolfpack kill <name|id>  Kill a session
+wolfpack --version       Print the installed version
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
 wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
 wolfpack uninstall --yes Remove everything

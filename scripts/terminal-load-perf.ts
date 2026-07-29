@@ -8,7 +8,11 @@ import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
   HYDRATION_DEBUG_SILENCE_KEY,
 } from "../src/terminal-hydration-debug";
-import { GHOSTTY_PREWARM_DEBUG_DELAY_KEY } from "../src/ghostty-prewarm-debug";
+import {
+  GHOSTTY_PREWARM_DEBUG_DELAY_KEY,
+  GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
+} from "../src/ghostty-prewarm-debug";
+import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
 import { LAYOUT_STABLE_DEBUG_MODE_KEY } from "../src/terminal-layout-stable-debug";
 
 export type TraceEvent = { t: number; kind: string; [field: string]: unknown };
@@ -24,6 +28,7 @@ export type ServerTiming = {
   [field: string]: unknown;
 };
 type ScenarioMode = "single" | "grid";
+export type PerfDeviceMode = "desktop" | "mobile";
 
 export type ScenarioSummary = {
   scenario: string;
@@ -60,6 +65,9 @@ export type PageLoadSummary = {
   firstPrewarmReadyMs: number | null;
   secondPrewarmReadyMs: number | null;
   ghosttyReadyDoneMs: number | null;
+  jsHeapUsedBytes?: number | null;
+  embedderHeapUsedBytes?: number | null;
+  backingStorageBytes?: number | null;
   prewarmEvents: GhosttyPrewarmPerfEvent[];
 };
 export type CellSummary = {
@@ -118,6 +126,8 @@ type PerfRunsSummary = {
     readonly secondPrewarmReadyMs: MetricStats;
     readonly longTaskCount: MetricStats;
     readonly longTaskTotalMs: MetricStats;
+    readonly jsHeapUsedBytes: MetricStats;
+    readonly backingStorageBytes: MetricStats;
   };
   readonly single: {
     readonly setupToRevealMs: MetricStats;
@@ -157,6 +167,8 @@ const DEV_DIR = join(ROOT, ".wolfpack", "terminal-load-perf-dev");
 const DEFAULT_GRID_CELL_COUNTS = [2, 4, 6] as const;
 const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
+  "WOLFPACK_PERF_DEVICE: desktop or mobile browser profile (default: desktop)",
+  "WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE: debug-only pool size override 0-2",
   "WOLFPACK_PERF_GRID_CELLS: comma-separated grid sizes 2-6 (default: 2,4,6)",
   "WOLFPACK_PERF_USE_EXISTING_BROKER: set to 1 to use WOLFPACK_BROKER_SOCKET instead of spawning a broker",
   "WOLFPACK_PERF_ONLY_PAGE_LOAD: set to 1 to skip single/grid terminal scenarios",
@@ -336,7 +348,17 @@ export async function cleanupCreatedSessions(
 
 async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const deviceMode = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
+  const page = await browser.newPage(deviceMode === "mobile" ? {
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  } : {
+    viewport: { width: 1280, height: 720 },
+    isMobile: false,
+    hasTouch: false,
+  });
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -368,15 +390,18 @@ async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageL
     if (opts.silenceMs !== undefined) localStorage.setItem(opts.silenceKey, opts.silenceMs);
     if (opts.layoutStableMode !== undefined) localStorage.setItem(opts.layoutStableModeKey, opts.layoutStableMode);
     if (opts.ghosttyPrewarmDelayMs !== undefined) localStorage.setItem(opts.ghosttyPrewarmDelayKey, opts.ghosttyPrewarmDelayMs);
+    if (opts.ghosttyPrewarmPoolSize !== undefined) localStorage.setItem(opts.ghosttyPrewarmPoolSizeKey, opts.ghosttyPrewarmPoolSize);
   }, {
     minPendingKey: HYDRATION_DEBUG_MIN_PENDING_KEY,
     silenceKey: HYDRATION_DEBUG_SILENCE_KEY,
     layoutStableModeKey: LAYOUT_STABLE_DEBUG_MODE_KEY,
     ghosttyPrewarmDelayKey: GHOSTTY_PREWARM_DEBUG_DELAY_KEY,
+    ghosttyPrewarmPoolSizeKey: GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
     minPendingMs: process.env.WOLFPACK_PERF_HYDRATION_MIN_PENDING_MS,
     silenceMs: process.env.WOLFPACK_PERF_HYDRATION_SILENCE_MS,
     layoutStableMode: process.env.WOLFPACK_PERF_LAYOUT_STABLE_MODE,
     ghosttyPrewarmDelayMs: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_DELAY_MS,
+    ghosttyPrewarmPoolSize: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE,
   });
   const startedAt = performance.now();
   await page.goto(baseUrl);
@@ -402,6 +427,16 @@ async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: num
       prewarmEvents: target.__wfGhosttyPrewarm?.events || [],
     };
   });
+  let heapUsage: {
+    readonly usedSize?: number;
+    readonly embedderHeapUsedSize?: number;
+    readonly backingStorageSize?: number;
+  } = {};
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    heapUsage = await cdp.send("Runtime.getHeapUsage");
+    await cdp.detach();
+  } catch {}
   const readyEvents = metrics.prewarmEvents.filter((event) => event.kind === "prewarm.ready");
   const scheduled = metrics.prewarmEvents.find((event) => event.kind === "schedule");
   const ghosttyReadyDone = metrics.prewarmEvents.find((event) => event.kind === "ghostty_ready.done");
@@ -420,6 +455,9 @@ async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: num
     firstPrewarmReadyMs: readyEvents[0]?.t ?? null,
     secondPrewarmReadyMs: readyEvents[1]?.t ?? null,
     ghosttyReadyDoneMs: ghosttyReadyDone?.t ?? null,
+    jsHeapUsedBytes: heapUsage.usedSize ?? null,
+    embedderHeapUsedBytes: heapUsage.embedderHeapUsedSize ?? null,
+    backingStorageBytes: heapUsage.backingStorageSize ?? null,
     prewarmEvents: metrics.prewarmEvents,
   };
 }
@@ -718,6 +756,12 @@ export function parsePerfRunCount(raw: string | undefined): number {
   return count;
 }
 
+export function parsePerfDeviceMode(raw: string | undefined): PerfDeviceMode {
+  if (!raw || raw === "desktop") return "desktop";
+  if (raw === "mobile") return "mobile";
+  throw new Error("WOLFPACK_PERF_DEVICE must be desktop or mobile");
+}
+
 function percentile(values: readonly number[], percentileValue: number): number | null {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   if (!sorted.length) return null;
@@ -745,12 +789,20 @@ function formatMetricPair(stats: MetricStats): string {
   return `${stats.p50}/${stats.p95}ms (n=${stats.count})`;
 }
 
+function formatByteMetricPair(stats: MetricStats): string {
+  if (stats.p50 === null || stats.p95 === null) return "n/a (n=0)";
+  const toMiB = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(2);
+  return `${toMiB(stats.p50)}/${toMiB(stats.p95)}MiB (n=${stats.count})`;
+}
+
 export function formatPerfRunsSummary(summary: PerfRunsSummary): string {
   return [
     "aggregate summary",
     `runs: ${summary.runs}`,
     `page card visible p50/p95: ${formatMetricPair(summary.page.cardVisibleMs)}`,
     `page second prewarm ready p50/p95: ${formatMetricPair(summary.page.secondPrewarmReadyMs)}`,
+    `page JS heap p50/p95: ${formatByteMetricPair(summary.page.jsHeapUsedBytes)}`,
+    `page backing storage p50/p95: ${formatByteMetricPair(summary.page.backingStorageBytes)}`,
     `page console errors: ${summary.pageConsoleErrorsTotal}`,
     `single reveal p50/p95: ${formatMetricPair(summary.single.setupToRevealMs)}`,
     `single ghostty create p50/p95: ${formatMetricPair(summary.single.ghosttyCreationMs)}`,
@@ -768,6 +820,8 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
   const pageSecondPrewarmReadyMs: number[] = [];
   const pageLongTaskCount: number[] = [];
   const pageLongTaskTotalMs: number[] = [];
+  const pageJsHeapUsedBytes: number[] = [];
+  const pageBackingStorageBytes: number[] = [];
   let pageConsoleErrorsTotal = 0;
 
   const singleSetupToRevealMs: number[] = [];
@@ -788,6 +842,8 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       addMetric(pageSecondPrewarmReadyMs, pageLoad.secondPrewarmReadyMs);
       addMetric(pageLongTaskCount, pageLoad.longTaskCount);
       addMetric(pageLongTaskTotalMs, pageLoad.longTaskTotalMs);
+      addMetric(pageJsHeapUsedBytes, pageLoad.jsHeapUsedBytes ?? null);
+      addMetric(pageBackingStorageBytes, pageLoad.backingStorageBytes ?? null);
       pageConsoleErrorsTotal += pageLoad.consoleErrorCount;
     }
     for (const summary of run.summaries) {
@@ -822,6 +878,8 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       secondPrewarmReadyMs: metricStats(pageSecondPrewarmReadyMs),
       longTaskCount: metricStats(pageLongTaskCount),
       longTaskTotalMs: metricStats(pageLongTaskTotalMs),
+      jsHeapUsedBytes: metricStats(pageJsHeapUsedBytes),
+      backingStorageBytes: metricStats(pageBackingStorageBytes),
     },
     single: {
       setupToRevealMs: metricStats(singleSetupToRevealMs),
@@ -866,6 +924,12 @@ function printPageLoadSummary(summary: PageLoadSummary): void {
     firstPrewarmReadyMs: summary.firstPrewarmReadyMs,
     secondPrewarmReadyMs: summary.secondPrewarmReadyMs,
     ghosttyReadyDoneMs: summary.ghosttyReadyDoneMs,
+    jsHeapUsedMiB: summary.jsHeapUsedBytes === null || summary.jsHeapUsedBytes === undefined
+      ? null
+      : +(summary.jsHeapUsedBytes / (1024 * 1024)).toFixed(2),
+    backingStorageMiB: summary.backingStorageBytes === null || summary.backingStorageBytes === undefined
+      ? null
+      : +(summary.backingStorageBytes / (1024 * 1024)).toFixed(2),
   }]);
 }
 
@@ -950,8 +1014,10 @@ async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>
     const pageLoads: PageLoadSummary[] = [await runMeasuredPageLoad(server.baseUrl)];
     const summaries: ScenarioSummary[] = [];
     summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
-    for (const cells of gridCellCounts()) {
-      summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
+    if (parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE) === "desktop") {
+      for (const cells of gridCellCounts()) {
+        summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
+      }
     }
     if (process.env.WOLFPACK_PERF_SLOW_PREFILL_MS) {
       summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[5])));
@@ -997,9 +1063,12 @@ async function main(): Promise<void> {
     }
 
     const summary = summarizePerfRuns(runs);
+    const device = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
+    const prewarmPoolSize = process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE
+      ?? String(DEFAULT_GHOSTTY_PREWARM_POOL_SIZE);
     const report = runCount === 1
-      ? { generatedAt: new Date().toISOString(), ...runs[0], summary }
-      : { generatedAt: new Date().toISOString(), runs, summary };
+      ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, ...runs[0], summary }
+      : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, runs, summary };
     console.log(`\n${formatPerfRunsSummary(summary)}`);
     console.log("\njson:");
     console.log(JSON.stringify(report, null, 2));

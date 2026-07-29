@@ -27,7 +27,8 @@ import {
 } from "../validation.js";
 
 import { assets } from "../public-assets.js";
-import { isJunkLine, type TriageStatus } from "../triage.js";
+import type { TriageStatus } from "../triage.js";
+import { brokerOutputAdvanced, brokerOutputSequence } from "../broker-output-sequence.js";
 import {
   collectAgentStatusSources,
   getAgentRuntimeStateStore,
@@ -451,8 +452,8 @@ function settingsPath(): string {
   return process.env.WOLFPACK_SETTINGS_PATH || join(homedir(), ".wolfpack", "bridge-settings.json");
 }
 
-/** Previous pane content per session — used for content-diff triage. */
-const prevPaneContent = new Map<string, string>();
+/** Previous broker output watermark per durable session identity. */
+const prevOutputSequences = new Map<string, string>();
 
 interface KnownSessionSummary {
   readonly name: string;
@@ -464,7 +465,7 @@ const knownSessionSummaries = new Map<string, KnownSessionSummary>();
 
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
-  prevPaneContent.clear();
+  prevOutputSequences.clear();
   knownSessionSummaries.clear();
 }
 
@@ -642,64 +643,57 @@ export const routes: Record<
 
     const activeNames = new Set<string>();
     const activeSessionKeys = new Set<string>();
-    const results = await Promise.all(
-      sessionFacts.map(async (fact) => {
-        const name = fact.name;
-        activeNames.add(name);
-        const brokerState = fact.alive ? "alive" : "dead";
-        const pane = brokerState === "dead" ? "" : await backend.capturePaneForTriage(name);
-        const content = pane.trimEnd();
+    const results = sessionFacts.map((fact) => {
+      const name = fact.name;
+      activeNames.add(name);
+      const brokerState = fact.alive ? "alive" : "dead";
+      const identity = fact.identity;
+      const sessionKey = identity?.wolfpackSessionId ?? name;
+      activeSessionKeys.add(sessionKey);
 
-        // Walk lines from bottom, skip junk, take first real line for preview
-        const lines = content.split("\n");
-        let lastLine = "";
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (!isJunkLine(lines[i])) {
-            lastLine = lines[i].trim();
-            break;
-          }
-        }
+      const outputSequence = brokerOutputSequence(fact.outputSequence);
+      const previousOutputSequence = prevOutputSequences.get(sessionKey);
+      const rawOutputChanged = brokerState === "alive"
+        && brokerOutputAdvanced(previousOutputSequence, outputSequence);
+      const outputSequenceIsCurrent = previousOutputSequence === undefined
+        || previousOutputSequence === outputSequence
+        || brokerOutputAdvanced(previousOutputSequence, outputSequence);
+      if (brokerState === "alive" && outputSequence !== undefined && outputSequenceIsCurrent) {
+        prevOutputSequences.set(sessionKey, outputSequence);
+      }
+      const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
+      const lastLine = "";
+      const observedAt = new Date().toISOString();
+      const runtimeState = getAgentRuntimeStateStore().reduce({
+        sessionKey,
+        broker: { state: brokerState, observedAt },
+        sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
+          state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+          stale: false,
+          observedAt,
+        }) : [],
+        fallback: { rawOutputChanged, observedAt, preview: lastLine },
+        currentRun: {
+          runId: identity?.wolfpackSessionId,
+          runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+        },
+      });
 
-        // Content-diff triage. Missing baseline is just initialization, not evidence of new bytes.
-        const prev = prevPaneContent.get(name);
-        const rawOutputChanged = brokerState === "alive" && prev !== undefined && prev !== content;
-        let triage: TriageStatus;
-        if (rawOutputChanged) {
-          triage = "running";
-          prevPaneContent.set(name, content);
-        } else {
-          triage = "idle";
-          if (prev === undefined) prevPaneContent.set(name, content);
-        }
-
-        const identity = fact.identity;
-        const sessionKey = identity?.wolfpackSessionId ?? name;
-        activeSessionKeys.add(sessionKey);
-        const observedAt = new Date().toISOString();
-        const runtimeState = getAgentRuntimeStateStore().reduce({
-          sessionKey,
-          broker: { state: brokerState, observedAt },
-          sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
-            state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
-            stale: false,
-            observedAt,
-          }) : [],
-          fallback: { rawOutputChanged, observedAt, preview: lastLine },
-          currentRun: {
-            runId: identity?.wolfpackSessionId,
-            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
-          },
-        });
-
-        const summary = { name, lastLine, triage, runtimeState, ...(identity && { identity }) };
-        knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
-        return summary;
-      }),
-    );
+      const summary = {
+        name,
+        lastLine,
+        triage,
+        runtimeState,
+        ...(outputSequence !== undefined && { outputSequence }),
+        ...(identity && { identity }),
+      };
+      knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
+      return summary;
+    });
     results.sort((a, b) => a.name.localeCompare(b.name));
-    // prune prevPaneContent and known sessions for sessions that no longer exist in authoritative broker truth
-    for (const key of prevPaneContent.keys()) {
-      if (!activeNames.has(key)) prevPaneContent.delete(key);
+    // Prune observations for sessions omitted from authoritative broker truth.
+    for (const key of prevOutputSequences.keys()) {
+      if (!activeSessionKeys.has(key)) prevOutputSequences.delete(key);
     }
     for (const key of knownSessionSummaries.keys()) {
       if (!activeNames.has(key)) knownSessionSummaries.delete(key);
@@ -1078,7 +1072,8 @@ export const routes: Record<
     if (!resolved) return;
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(resolved.name);
-    prevPaneContent.delete(resolved.name);
+    prevOutputSequences.delete(resolved.identity.wolfpackSessionId);
+    prevOutputSequences.delete(resolved.name);
     await getBackend().killSession(resolved.name);
     json(res, {
       ok: true,

@@ -32,7 +32,7 @@ import type {
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
 import { call as callApi } from "./api.js";
-import { print, red, yellow } from "./formatting.js";
+import { print, printError, printJson, red, yellow } from "./formatting.js";
 
 export const SESSION_EXIT = {
   OK: 0,
@@ -409,7 +409,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
 }
 
 function jsonOut(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  printJson(value);
 }
 
 function shellQuote(value: string): string {
@@ -465,7 +465,7 @@ function mapApiError(e: unknown, output: OutputMode): number {
   const structured = output === "json" ? parseStructuredFailure(err.body, failure) : undefined;
   if (structured !== undefined) jsonOut(structured);
   else if (output === "json") jsonOut({ ok: false, error: { code: failure.code, message: failure.message } });
-  else print((failure.exitCode === SESSION_EXIT.NOT_FOUND || failure.exitCode === SESSION_EXIT.TIMEOUT)
+  else printError((failure.exitCode === SESSION_EXIT.NOT_FOUND || failure.exitCode === SESSION_EXIT.TIMEOUT)
     ? yellow(failure.message)
     : red(failure.message));
   return failure.exitCode;
@@ -519,7 +519,7 @@ function writeOpenError(
   exitCode: number,
 ): number {
   if (output === "json") jsonOut({ ok: false, error: { code, message } });
-  else print(red(message));
+  else printError(red(message));
   return exitCode;
 }
 
@@ -784,7 +784,7 @@ export async function runAgentCommand(argv: readonly string[]): Promise<number> 
   }
   const parsed = parseAgentCommand(argv);
   if (!parsed.ok) {
-    print(red(parsed.message));
+    printError(red(parsed.message));
     return SESSION_EXIT.USAGE;
   }
   if (parsed.action === "notify-parent") return runNotifyParent(parsed);
@@ -807,7 +807,7 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
 
   const parsed = parseSessionCommand(argv);
   if (!parsed.ok) {
-    print(red(parsed.message));
+    printError(red(parsed.message));
     return SESSION_EXIT.USAGE;
   }
 
@@ -821,7 +821,7 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
     };
     if (!context.session && !context.projectDir) {
       if (parsed.output === "json") jsonOut(context);
-      else print(yellow("no wolfpack context in this process"));
+      else printError(yellow("no wolfpack context in this process"));
       return SESSION_EXIT.NOT_FOUND;
     }
     if (parsed.output === "json") jsonOut(context);

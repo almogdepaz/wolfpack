@@ -7,6 +7,7 @@ import {
   createPerfBrokerSocketLocation,
   describePerfHarnessEnv,
   formatPerfRunsSummary,
+  parsePerfDeviceMode,
   parsePerfRunCount,
   serverTimingsFor,
   summarizeCell,
@@ -80,6 +81,13 @@ describe("terminal-load perf run options", () => {
     expect(() => parsePerfRunCount("0")).toThrow("WOLFPACK_PERF_RUNS");
   });
 
+  test("selects desktop or emulated-mobile measurement mode", () => {
+    expect(parsePerfDeviceMode(undefined)).toBe("desktop");
+    expect(parsePerfDeviceMode("mobile")).toBe("mobile");
+    expect(parsePerfDeviceMode("desktop")).toBe("desktop");
+    expect(() => parsePerfDeviceMode("tablet")).toThrow("WOLFPACK_PERF_DEVICE");
+  });
+
   test("summarizes repeated runs with prewarm hit counts and percentiles", () => {
     expect(summarizePerfRuns([
       perfRunReport([200, 210], [true, true]),
@@ -108,6 +116,8 @@ describe("terminal-load perf run options", () => {
   test("documents perf harness environment knobs in one helper", () => {
     expect(describePerfHarnessEnv()).toEqual(expect.arrayContaining([
       "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
+      "WOLFPACK_PERF_DEVICE: desktop or mobile browser profile (default: desktop)",
+      "WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE: debug-only pool size override 0-2",
       "WOLFPACK_PERF_GRID_CELLS: comma-separated grid sizes 2-6 (default: 2,4,6)",
       "WOLFPACK_PERF_USE_EXISTING_BROKER: set to 1 to use WOLFPACK_BROKER_SOCKET instead of spawning a broker",
     ]));

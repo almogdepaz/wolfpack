@@ -34,6 +34,7 @@ export interface MockBackendOptions {
 
 export class MockBackend implements SessionBackend {
   private _sessions: Set<string>;
+  private _outputSequences: Map<string, string>;
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
   private readonly _parentSessions = new Map<string, ParentSessionIdentity>();
@@ -63,6 +64,7 @@ export class MockBackend implements SessionBackend {
 
   constructor(opts: MockBackendOptions = {}) {
     this._sessions = new Set(opts.sessions ?? []);
+    this._outputSequences = new Map([...this._sessions].map(name => [name, "0"]));
     this._capturePane = opts.capturePane ?? (async () => "");
     this._onBeforeCreate = opts.onBeforeCreate ?? null;
   }
@@ -70,6 +72,7 @@ export class MockBackend implements SessionBackend {
   /** Override the session list at runtime (useful for per-test setup). */
   setSessions(sessions: string[]): void {
     this._sessions = new Set(sessions);
+    this._outputSequences = new Map(sessions.map(name => [name, "0"]));
     for (const name of this._parentSessions.keys()) {
       if (!this._sessions.has(name)) this._parentSessions.delete(name);
     }
@@ -78,6 +81,11 @@ export class MockBackend implements SessionBackend {
   /** Override capturePane at runtime. */
   setCapturePane(fn: (session: string) => Promise<string>): void {
     this._capturePane = fn;
+  }
+
+  setOutputSequence(name: string, outputSequence: string | undefined): void {
+    if (outputSequence === undefined) this._outputSequences.delete(name);
+    else this._outputSequences.set(name, outputSequence);
   }
 
   setOnAfterPrefill(fn: ((name: string, seq: bigint) => void) | null): void {
@@ -91,7 +99,14 @@ export class MockBackend implements SessionBackend {
   async listSessionFacts(): Promise<SessionListFact[]> {
     const names = await this.list();
     const identities = await this.listIdentities();
-    return names.map((name) => ({ name, alive: this.isSessionAlive(name), ...(identities[name] && { identity: identities[name] }) }));
+    return names.map((name) => ({
+      name,
+      alive: this.isSessionAlive(name),
+      ...(this._outputSequences.get(name) !== undefined && {
+        outputSequence: this._outputSequences.get(name),
+      }),
+      ...(identities[name] && { identity: identities[name] }),
+    }));
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
@@ -156,6 +171,7 @@ export class MockBackend implements SessionBackend {
       throw new DuplicateSessionError(name);
     }
     this._sessions.add(name);
+    this._outputSequences.set(name, "0");
     if (options?.parentSession) this._parentSessions.set(name, options.parentSession);
     const now = new Date(0).toISOString();
     return {
@@ -171,6 +187,7 @@ export class MockBackend implements SessionBackend {
 
   async killSession(name: string): Promise<void> {
     this._sessions.delete(name);
+    this._outputSequences.delete(name);
     this._parentSessions.delete(name);
   }
 
@@ -181,10 +198,6 @@ export class MockBackend implements SessionBackend {
   async capturePane(name: string): Promise<string> {
     if (!this._sessions.has(name)) return "";
     return stripAnsi(await this._capturePane(name));
-  }
-
-  async capturePaneForTriage(name: string): Promise<string> {
-    return this.capturePane(name);
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
@@ -303,6 +316,7 @@ export class MockBackend implements SessionBackend {
   emitSessionData(name: string, text: string): void {
     const data = new TextEncoder().encode(text);
     const seq = this._nextOutputSeq++;
+    this._outputSequences.set(name, seq.toString());
     const history = this._outputHistory.get(name) ?? [];
     history.push({ seq, data });
     this._outputHistory.set(name, history);

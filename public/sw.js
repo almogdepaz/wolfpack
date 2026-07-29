@@ -27,10 +27,28 @@ function sanitizeNotificationUrl(url, origin) {
   }
 }
 
+async function routeNotificationClick(windowClients, url, origin, openWindow) {
+  const targetUrl = new URL(sanitizeNotificationUrl(url, origin), origin).href;
+  for (const client of windowClients) {
+    let clientOrigin;
+    try { clientOrigin = new URL(client.url).origin; }
+    catch { continue; }
+    if (clientOrigin !== origin) continue;
+
+    const navigated = typeof client.navigate === "function"
+      ? await client.navigate(targetUrl)
+      : null;
+    const focusTarget = navigated && typeof navigated.focus === "function" ? navigated : client;
+    if (typeof focusTarget.focus === "function") return focusTarget.focus();
+    return navigated;
+  }
+  return openWindow(targetUrl);
+}
+
 // Exposed for unit tests (Node `vm` context). No-op in browsers where
 // `module` is undefined.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { sanitizeNotificationUrl };
+  module.exports = { sanitizeNotificationUrl, routeNotificationClick };
 }
 
 self.addEventListener("push", (event) => {
@@ -54,15 +72,12 @@ self.addEventListener("notificationclick", (event) => {
     self.location.origin,
   );
   event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
-      // Focus existing wolfpack window if open
-      for (const client of windowClients) {
-        if (client.url.includes(self.location.origin) && "focus" in client) {
-          return client.focus();
-        }
-      }
-      // Otherwise open a new one
-      return clients.openWindow(url);
-    }),
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) =>
+      routeNotificationClick(
+        windowClients,
+        url,
+        self.location.origin,
+        (targetUrl) => clients.openWindow(targetUrl),
+      )),
   );
 });

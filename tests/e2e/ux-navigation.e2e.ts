@@ -234,8 +234,8 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(childSidebarCard.locator(".grid-btn")).not.toHaveClass(/in-grid/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
-  await page.evaluate(() => { window.confirm = () => true; });
   await childSidebarCard.locator(".kill-btn").click();
+  await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
   await expect.poll(() => killRequests).toEqual([{ session: "wolfpack-sub-agent" }]);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 });
@@ -467,16 +467,13 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   });
   await page.goto(srv.baseUrl);
   await page.evaluate(() => {
-    (window as unknown as Window & { createIsolatedGhostty?: unknown; __gridAlert?: string }).createIsolatedGhostty = undefined;
-    window.alert = (message?: string) => { (window as unknown as Window & { __gridAlert?: string }).__gridAlert = message ?? ""; };
+    (window as unknown as Window & { createIsolatedGhostty?: unknown }).createIsolatedGhostty = undefined;
   });
 
   await page.locator("#session-list .delegation-parent-card").click();
 
   await expect(page.locator("#delegation-grid-shell")).not.toBeVisible();
-  await expect.poll(() => page.evaluate(() =>
-    (window as unknown as Window & { __gridAlert?: string }).__gridAlert,
-  )).toContain("Grid mode is disabled");
+  await expect(page.getByRole("dialog", { name: "Grid mode unavailable" })).toContainText("Grid mode is disabled");
 });
 
 test("desktop opens a child terminal with a return to its parent delegation grid", async ({ page }, testInfo) => {
@@ -528,7 +525,7 @@ test("project picker filters fetched projects by typed prefix without refetching
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
   const projectNameInput = page.locator("#new-project-name");
   await expect(projectNameInput).toBeFocused();
-  await expect(projectNameInput).toHaveAttribute("placeholder", "Project name");
+  await expect(projectNameInput).toHaveAttribute("placeholder", "Search existing projects");
   const projectNames = page.locator("#project-list .card-name");
   await expect(projectNames).toHaveText(["loom", "LoopTools", "catalog", "LOOKOUT"]);
 
@@ -547,6 +544,34 @@ test("project picker filters fetched projects by typed prefix without refetching
   await projectNameInput.fill("LOOPT");
   await page.locator("#project-list .card").click();
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+});
+
+test("enter in project search never creates a directory", async ({ page }) => {
+  const selectedProjects: string[] = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha"] }) });
+  });
+  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
+    const project = new URL(route.request().url()).searchParams.get("project");
+    if (project) selectedProjects.push(project);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "brand-new" }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ effective: { cmds: ["shell"] } }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  const search = page.locator("#new-project-name");
+  await search.fill("brand-new");
+  await search.press("Enter");
+
+  await expect(page.locator("#projects-view")).toHaveClass(/visible/);
+  expect(selectedProjects).toEqual([]);
+  await page.getByLabel("New project name").fill("brand-new");
+  await page.getByRole("button", { name: "Create new project" }).click();
+  await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+  expect(selectedProjects).toEqual(["brand-new"]);
 });
 
 test("desktop new-session pickers use arrow navigation only after it starts", async ({ page }, testInfo) => {
@@ -684,6 +709,49 @@ test("desktop enter selects the first filtered project without arrow navigation"
   await expect.poll(() => createRequests).toEqual([{ project: "wolfpack", cmd: "shell", sessionName: "wolfpack-session" }]);
 });
 
+test("create failure returns to the agent form with entered values and an inline error", async ({ page }) => {
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["wolfpack"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ effective: { cmds: ["shell"], agentCmd: "shell" } }),
+    });
+  });
+  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "wolfpack-session" }) });
+  });
+  await page.route("**/api/create", async (route) => {
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "broker unavailable" }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.getByRole("button", { name: "Open project wolfpack" }).click();
+  const sessionName = page.locator("#session-name-input");
+  await sessionName.fill("my-session");
+  await page.getByRole("button", { name: "Start shell" }).click();
+
+  await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+  await expect(sessionName).toHaveValue("my-session");
+  await expect(page.locator("#agent-create-error")).toContainText("broker unavailable");
+  await expect(sessionName).toBeFocused();
+});
+
+test("stop confirmation is accessible and restores focus when cancelled", async ({ page }) => {
+  await page.goto(srv.baseUrl);
+  const stop = page.getByRole("button", { name: "Stop test-project" });
+  await stop.focus();
+  await stop.click();
+
+  const dialog = page.getByRole("dialog", { name: "Stop session" });
+  await expect(dialog).toContainText('Stop session "test-project"?');
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(stop).toBeFocused();
+});
+
 test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal",  async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop expanded-session regression");
 
@@ -720,6 +788,36 @@ test("desktop escape from new-session picker reopens the previous terminal", asy
 
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
+});
+
+test("offline machines stay ordered, compact, retryable, and cannot create sessions", async ({ page }) => {
+  let remoteRequests = 0;
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpack-machines", JSON.stringify([
+      { name: "Offline one", url: "https://offline-one.example.ts.net" },
+      { name: "Offline two", url: "https://offline-two.example.ts.net" },
+    ]));
+  });
+  await page.route(/^https:\/\/offline-(one|two)\.example\.ts\.net\/api\//, async (route) => {
+    remoteRequests++;
+    await route.abort("connectionfailed");
+  });
+
+  await page.goto(srv.baseUrl);
+  const remoteGroups = page.locator('#session-list .machine-group[data-machine^="https://offline-"]');
+  await expect(remoteGroups).toHaveCount(2);
+  await expect(remoteGroups.nth(0)).toHaveAttribute("data-machine", "https://offline-one.example.ts.net");
+  await expect(remoteGroups.nth(1)).toHaveAttribute("data-machine", "https://offline-two.example.ts.net");
+
+  const first = remoteGroups.nth(0);
+  await expect(first).toHaveClass(/offline/);
+  await expect(first).toHaveAttribute("data-failure", "network");
+  await expect(first.getByRole("button", { name: /Start a session/ })).toBeDisabled();
+  await expect(first.getByRole("status")).toContainText("Unreachable");
+  await expect(first.getByRole("status")).toContainText("Live terminal actions require this machine to reconnect");
+  const requestsBeforeRetry = remoteRequests;
+  await first.getByRole("button", { name: "Retry Offline one" }).click();
+  await expect.poll(() => remoteRequests).toBeGreaterThan(requestsBeforeRetry);
 });
 
 test("desktop settings back from a terminal reopens that terminal", async ({ page }, testInfo) => {

@@ -379,11 +379,30 @@ describe("session control cli parsing", () => {
     });
     expect(child.exitCode).toBe(SESSION_EXIT.AUTH);
     expect(child.stderr.toString()).toContain("WOLFPACK_JWT_SECRET is set but only 9 chars; >=32 required");
+    expect(child.stderr.toString()).not.toContain("\x1b[");
     expect(child.stdout.toString().trim().split("\n")).toHaveLength(1);
     expect(JSON.parse(child.stdout.toString())).toEqual({
       ok: false,
       error: { code: "AUTH_REQUIRED", message: "auth required" },
     });
+  });
+
+  test("human usage failures write uncolored diagnostics to stderr", () => {
+    const script = `
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["definitely-not-an-action"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(child.exitCode).toBe(SESSION_EXIT.USAGE);
+    expect(child.stdout.toString()).toBe("");
+    expect(child.stderr.toString()).toContain("Unknown session command: definitely-not-an-action");
+    expect(child.stderr.toString()).not.toContain("\x1b[");
   });
 
   test("resolves open context only from a supported Wolfpack parent", () => {

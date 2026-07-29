@@ -30,7 +30,17 @@ const sandbox: Record<string, unknown> = {
   console,
 };
 runInContext(swSource, createContext(sandbox), { filename: "sw.js" });
-const { sanitizeNotificationUrl } = (sandbox.module as { exports: { sanitizeNotificationUrl: (u: string, o: string) => string } }).exports;
+const { sanitizeNotificationUrl, routeNotificationClick } = (sandbox.module as {
+  exports: {
+    sanitizeNotificationUrl: (u: string, o: string) => string;
+    routeNotificationClick: (
+      clients: readonly { url: string; navigate?: (url: string) => Promise<unknown>; focus?: () => Promise<unknown> }[],
+      url: string,
+      origin: string,
+      openWindow: (url: string) => Promise<unknown>,
+    ) => Promise<unknown>;
+  };
+}).exports;
 
 const ORIGIN = "https://wolfpack.example.com";
 
@@ -101,5 +111,36 @@ describe("sanitizeNotificationUrl — open-redirect protection", () => {
     // URL constructor will throw on truly malformed input; sanitizer
     // must catch and return "/".
     expect(sanitizeNotificationUrl("http://[invalid:::ipv6]/", ORIGIN)).toBe("/");
+  });
+});
+
+describe("notification click routing", () => {
+  test("navigates an existing same-origin client to the session route before focusing it", async () => {
+    const calls: string[] = [];
+    const client = {
+      url: `${ORIGIN}/#settings-general`,
+      navigate: async (url: string) => { calls.push(`navigate:${url}`); },
+      focus: async () => { calls.push("focus"); },
+    };
+
+    await routeNotificationClick([client], "/?sessionId=stable-id&machine=local", ORIGIN, async () => {
+      calls.push("open");
+    });
+
+    expect(calls).toEqual([
+      `navigate:${ORIGIN}/?sessionId=stable-id&machine=local`,
+      "focus",
+    ]);
+  });
+
+  test("opens the routed URL when no same-origin client exists", async () => {
+    const opened: string[] = [];
+    await routeNotificationClick(
+      [{ url: "https://other.example/", focus: async () => {} }],
+      "/?sessionId=stable-id&machine=local",
+      ORIGIN,
+      async (url) => { opened.push(url); },
+    );
+    expect(opened).toEqual([`${ORIGIN}/?sessionId=stable-id&machine=local`]);
   });
 });

@@ -130,8 +130,9 @@ describe("desktop terminal: binary input chunking (splitTerminalInputBytes)", ()
 // ── Mobile native textarea input bridge ──
 
 describe("mobile terminal: native textarea beforeinput bridge", () => {
-  test("maps soft-keyboard text to terminal stdin", () => {
+  test("maps soft-keyboard text and paste to terminal stdin", () => {
     expect(terminalDataFromBeforeInput({ inputType: "insertText", data: "a", isComposing: false })).toBe("a");
+    expect(terminalDataFromBeforeInput({ inputType: "insertFromPaste", data: "pasted", isComposing: false })).toBe("pasted");
   });
 
   test("maps mobile line breaks and deletion to terminal control bytes", () => {

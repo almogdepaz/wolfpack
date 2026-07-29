@@ -185,6 +185,17 @@ test("mobile keyboard uses ghostty native input with explicit open and close", a
   sentFrames.length = 0;
 
   await nativeInput.evaluate((textarea) => {
+    textarea.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: "pasted text",
+      inputType: "insertFromPaste",
+    }));
+  });
+  await expect.poll(() => sentFrames).toEqual(["pasted text"]);
+  sentFrames.length = 0;
+
+  await nativeInput.evaluate((textarea) => {
     textarea.dispatchEvent(new KeyboardEvent("keydown", {
       bubbles: true,
       cancelable: true,

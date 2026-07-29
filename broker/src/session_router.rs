@@ -119,7 +119,7 @@ impl SessionRouter {
             .registry
             .list()
             .iter()
-            .map(|s| s.snapshot().to_info())
+            .map(|s| s.info())
             .collect();
         ControlResponse::ok(id, ResponsePayload::ListSessions { sessions })
     }
@@ -140,7 +140,7 @@ impl SessionRouter {
             Ok(sess) => ControlResponse::ok(
                 id,
                 ResponsePayload::CreateSession {
-                    session: sess.snapshot().to_info(),
+                    session: sess.info(),
                 },
             ),
             Err(CreateError::DuplicateName(name)) => ControlResponse::err(
@@ -206,7 +206,7 @@ impl SessionRouter {
             Some(s) => ControlResponse::ok(
                 id,
                 ResponsePayload::SessionInfo {
-                    session: s.snapshot().to_info(),
+                    session: s.info(),
                 },
             ),
             None => unknown_session(id, p.session_id),

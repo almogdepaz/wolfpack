@@ -335,8 +335,9 @@ describe("control api schema compatibility samples", () => {
       ["getInfo", { name: "devbox", version: "1.6.6" }],
       ["listSessions", { sessions: [{
         name: "wolf-1-sub-agent",
-        lastLine: "ready",
+        lastLine: "",
         triage: "idle",
+        outputSequence: "42",
         identity: {
           wolfpackSessionId: "broker-child",
           wolfpackSessionName: "wolf-1-sub-agent",

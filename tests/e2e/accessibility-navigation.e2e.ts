@@ -56,11 +56,50 @@ test("mobile magnification and larger terminal type remain available", async ({ 
   await expect(page.getByRole("button", { name: "Extra large 18px" })).toBeVisible();
 });
 
+test("mobile settings navigation opens progressive sections and supports deep links", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile settings information architecture");
+
+  await page.goto(`${server.baseUrl}#settings-agents`);
+  await page.reload();
+  await expect(page.locator("#settings-view")).toHaveClass(/visible/);
+  await expect(page.getByRole("navigation", { name: "Settings sections" })).toBeVisible();
+  await expect(page.locator("#settings-advanced")).toHaveAttribute("open", "");
+  await expect(page.locator("#settings-agents")).toBeVisible();
+
+  await page.getByRole("link", { name: "Terminal" }).click();
+  await expect(page).toHaveURL(/#settings-terminal$/);
+  await expect(page.locator("#settings-terminal")).toBeInViewport();
+});
+
 test("connection and asynchronous settings feedback expose status semantics", async ({ page }) => {
   await expect(page.locator("#conn-status")).toHaveAttribute("role", "status");
   await expect(page.locator("#conn-status")).toHaveAttribute("aria-live", "polite");
   await expect(page.locator("#discover-status")).toHaveAttribute("role", "status");
   await expect(page.locator("#agent-add-error")).toHaveAttribute("role", "alert");
+});
+
+test("quick command form is modal and restores focus when cancelled", async ({ page }) => {
+  await page.evaluate(() => {
+    (window as unknown as { showView(name: string): void }).showView("settings");
+  });
+  await page.getByRole("link", { name: "Agents" }).click();
+  const trigger = page.getByRole("button", { name: "Add Command" });
+  await trigger.focus();
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog", { name: "Add quick command" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Label")).toBeFocused();
+  await dialog.getByLabel("Label").fill("  ");
+  await dialog.getByLabel("Command").fill("bun run deploy");
+  await dialog.getByRole("button", { name: "Add command" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Label")).toHaveValue("  ");
+  await dialog.getByLabel("Label").fill("Deploy");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
 });
 
 test("terminal transcript exposes authoritative plain text without a second parser", async ({ page }) => {

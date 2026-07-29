@@ -60,6 +60,8 @@ export interface SessionLaunchOptions {
 export interface SessionListFact {
   readonly name: string;
   readonly alive: boolean;
+  /** Decimal broker PTY output watermark; absent when connected to an older broker. */
+  readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
 }
 
@@ -80,7 +82,6 @@ export interface SessionBackend {
   killSession(name: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
   capturePane(name: string): Promise<string>;
-  capturePaneForTriage(name: string): Promise<string>;
   resize(name: string, cols: number, rows: number): Promise<void>;
   send(name: string, text: string, noEnter?: boolean): Promise<void>;
   sendKey(name: string, key: string): Promise<void>;
@@ -458,10 +459,6 @@ export class BackendRouter implements SessionBackend {
 
   async capturePane(name: string): Promise<string> {
     return this.requireBroker().capturePane(name);
-  }
-
-  async capturePaneForTriage(name: string): Promise<string> {
-    return this.requireBroker().capturePaneForTriage(name);
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {

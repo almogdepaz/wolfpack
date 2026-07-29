@@ -66,6 +66,7 @@ interface GridDeps {
   renderSidebar: () => void;
   createPtyTerminalController: (opts: { session: string; machine?: string; [k: string]: unknown }) => GridTerminalController;
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
+  showNotice: (title: string, message: string) => void;
   canUseWasmTerminal?: () => boolean;
   focusDelegationSession?: (session: string, machine: string) => void;
   leaveDelegationWorkspace?: () => void;
@@ -120,14 +121,10 @@ export function canOpenMultiTerminalGrid(): boolean {
   // Refuse to enter grid mode in that state and surface a visible warning.
   if (typeof window.createIsolatedGhostty !== "function") {
     console.error("[grid] createIsolatedGhostty unavailable — grid mode disabled to prevent WASM OOB crash. Reload to pick up a newer ghostty-web bundle.");
-    if (typeof window !== "undefined" && typeof window.alert === "function") {
-      window.alert(
-        "Grid mode is disabled in this tab.\n\n" +
-        "The terminal WASM bundle does not support per-cell isolation, which is required " +
-        "to safely show multiple terminals at once. (Older versions of ghostty-web are " +
-        "affected.)\n\nReload the page to pick up a fresh bundle.",
-      );
-    }
+    deps.showNotice(
+      "Grid mode unavailable",
+      "Grid mode is disabled in this tab. The terminal WASM bundle does not support per-cell isolation, which is required to safely show multiple terminals at once. Reload the page to pick up a fresh bundle.",
+    );
     return false;
   }
   return true;

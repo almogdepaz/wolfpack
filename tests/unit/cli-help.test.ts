@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pkg from "../../package.json";
 
 const root = process.cwd();
 const cliEntry = join(root, "src/cli/index.ts");
@@ -141,14 +142,33 @@ describe("cli help dispatch", () => {
     }
   });
 
-  test("unknown top-level commands fail without starting the dashboard", () => {
+  test("non-interactive attach writes an uncolored diagnostic to stderr", () => {
+    const child = runCli(["attach"]);
+
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("requires an interactive tty");
+    expect(child.stderr).not.toContain("\x1b[");
+  });
+
+  test("version is side-effect-free and machine-readable", () => {
+    const child = runCli(["--version"]);
+
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout).toBe(`${pkg.version}\n`);
+    expect(child.stderr).toBe("");
+  });
+
+  test("unknown top-level commands fail on stderr without starting the dashboard", () => {
     const child = runCli(["definitely-not-a-command"]);
 
     expect(child.exitCode).not.toBe(0);
-    expect(child.stdout).toContain("Unknown command: definitely-not-a-command");
-    expect(child.stdout).toContain("wolfpack --help");
-    expect(child.stdout).not.toContain("No valid config found");
-    expect(child.stdout).not.toContain("Scan to open on your phone");
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("Unknown command: definitely-not-a-command");
+    expect(child.stderr).toContain("wolfpack --help");
+    expect(child.stderr).not.toContain("\x1b[");
+    expect(child.stderr).not.toContain("No valid config found");
+    expect(child.stderr).not.toContain("Scan to open on your phone");
   });
 
   test("only zero arguments select dashboard startup", async () => {

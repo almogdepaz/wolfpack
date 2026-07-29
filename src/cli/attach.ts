@@ -14,7 +14,7 @@ import {
   CLOSE_CODE_SESSION_UNAVAILABLE,
 } from "../ws-constants.js";
 import { baseUrl, call, issueJwt } from "./api.js";
-import { dim, red, yellow } from "./formatting.js";
+import { dim, printError, red, yellow } from "./formatting.js";
 import { splitTerminalInputBytes } from "../terminal-input.js";
 
 export type AttachPrefillMode = CliAttachPrefillMode;
@@ -265,16 +265,16 @@ async function listSessionsForAttach(): Promise<string[] | null> {
   try {
     resp = await call("/api/sessions");
   } catch (e: unknown) {
-    process.stderr.write(`${red(`  Could not reach the wolfpack server at ${baseUrl()}.`)}\n`);
-    process.stderr.write(`${dim(`  Error: ${e instanceof Error ? e.message : String(e)}`)}\n`);
+    printError(red(`  Could not reach the wolfpack server at ${baseUrl()}.`));
+    printError(dim(`  Error: ${e instanceof Error ? e.message : String(e)}`));
     return null;
   }
   if (resp.status === 401) {
-    process.stderr.write(`${red("  Auth required. Set WOLFPACK_JWT_SECRET to the server's secret and re-run.")}\n`);
+    printError(red("  Auth required. Set WOLFPACK_JWT_SECRET to the server's secret and re-run."));
     return null;
   }
   if (!resp.ok) {
-    process.stderr.write(`${red(`  /api/sessions returned ${resp.status}: ${await resp.text()}`)}\n`);
+    printError(red(`  /api/sessions returned ${resp.status}: ${await resp.text()}`));
     return null;
   }
   const data = (await resp.json()) as { sessions?: Array<{ name?: unknown }> };
@@ -284,19 +284,19 @@ async function listSessionsForAttach(): Promise<string[] | null> {
 export async function attachCommand(argv: readonly string[]): Promise<number> {
   const parsed = parseAttachCommand(argv);
   if (!parsed) {
-    process.stderr.write(`${red("  Usage: wolfpack attach [session] [--take-control] [--prefill full|none]")}\n`);
+    printError(red("  Usage: wolfpack attach [session] [--take-control] [--prefill full|none]"));
     return ATTACH_EXIT.GENERAL_ERROR;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write(`${red("  wolfpack attach requires an interactive tty on stdin and stdout.")}\n`);
-    process.stderr.write(`${dim("  Piped stdin/stdout is not supported because attach uses raw terminal IO.")}\n`);
+    printError(red("  wolfpack attach requires an interactive tty on stdin and stdout."));
+    printError(dim("  Piped stdin/stdout is not supported because attach uses raw terminal IO."));
     return ATTACH_EXIT.GENERAL_ERROR;
   }
   const sessions = await listSessionsForAttach();
   if (!sessions) return ATTACH_EXIT.GENERAL_ERROR;
   const target = resolveAttachTarget(parsed.session, sessions);
   if (!target.ok) {
-    process.stderr.write(`${red(`  ${target.message}`)}\n`);
+    printError(red(`  ${target.message}`));
     return ATTACH_EXIT.GENERAL_ERROR;
   }
   return directAttach({

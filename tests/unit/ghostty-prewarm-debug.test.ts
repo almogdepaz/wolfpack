@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   GHOSTTY_PREWARM_DEBUG_DELAY_KEY,
+  GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
+  resolveGhosttyPrewarmDebugPoolSize,
   resolveGhosttyPrewarmDebugTiming,
 } from "../../src/ghostty-prewarm-debug";
 
@@ -52,5 +54,32 @@ describe("resolveGhosttyPrewarmDebugTiming", () => {
       storage: null,
       defaults,
     })).toEqual(defaults);
+  });
+});
+
+describe("resolveGhosttyPrewarmDebugPoolSize", () => {
+  test("accepts measured pool sizes zero through two only in debug mode", () => {
+    for (const poolSize of [0, 1, 2]) {
+      expect(resolveGhosttyPrewarmDebugPoolSize({
+        debugEnabled: true,
+        storage: storage({ [GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY]: String(poolSize) }),
+        defaultPoolSize: 2,
+      })).toBe(poolSize);
+    }
+  });
+
+  test("keeps the production default for disabled or invalid overrides", () => {
+    for (const value of ["-1", "3", "1.5", "NaN", ""]) {
+      expect(resolveGhosttyPrewarmDebugPoolSize({
+        debugEnabled: true,
+        storage: storage({ [GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY]: value }),
+        defaultPoolSize: 2,
+      })).toBe(2);
+    }
+    expect(resolveGhosttyPrewarmDebugPoolSize({
+      debugEnabled: false,
+      storage: storage({ [GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY]: "0" }),
+      defaultPoolSize: 2,
+    })).toBe(2);
   });
 });

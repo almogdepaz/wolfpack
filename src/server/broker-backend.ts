@@ -57,6 +57,7 @@ import {
 import { SHELL } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
+import { brokerOutputSequence } from "../broker-output-sequence.js";
 import {
   plainLine,
   renderSnapshotToAnsi,
@@ -80,7 +81,6 @@ import { resolveSessionSelector } from "./session-selector.js";
 
 const log = createLogger("broker-backend");
 
-const TRIAGE_CACHE_TTL_MS = 500;
 /** Cap on scrollback lines requested per `snapshot` RPC. Heavy TUI sessions
  *  (Claude, etc.) empirically blew past 16MB on 2000 lines - JSON-encoded
  *  cells with full attrs run much larger than the rough 30B/cell estimate.
@@ -141,6 +141,8 @@ interface BrokerSessionInfo {
   name: string;
   cwd: string;
   alive: boolean;
+  /** Decimal u64 emitted by protocol-v2 brokers that support activity facts. */
+  output_seq?: string;
   command?: string[];
   env?: Array<[string, string]>;
 }
@@ -225,7 +227,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly client: BrokerClientApi;
   private readonly nameToId = new Map<string, string>();
   private readonly idToInfo = new Map<string, BrokerSessionInfo>();
-  private readonly triageCache = new Map<string, { content: string; ts: number }>();
   /** Refcount of active onSessionData subscribers, keyed by session UUID. */
   private readonly subscriberRefs = new Map<string, SubscriberRef>();
   /** Lifecycle subscribers keyed by session UUID. */
@@ -271,7 +272,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const facts: SessionListFact[] = [];
     for (const s of sessions) {
       const identity = identitiesById.get(s.id);
-      facts.push({ name: s.name, alive: s.alive, ...(identity && { identity }) });
+      const outputSequence = brokerOutputSequence(s.output_seq);
+      facts.push({
+        name: s.name,
+        alive: s.alive,
+        ...(outputSequence !== undefined && { outputSequence }),
+        ...(identity && { identity }),
+      });
       if (!s.alive) continue;
       this.nameToId.set(s.name, s.id);
       this.idToInfo.set(s.id, { id: s.id, name: s.name, cwd: s.cwd, alive: s.alive });
@@ -283,9 +290,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
     for (const id of this.idToInfo.keys()) {
       if (!liveIds.has(id)) this.idToInfo.delete(id);
-    }
-    for (const name of this.triageCache.keys()) {
-      if (!liveNames.has(name)) this.triageCache.delete(name);
     }
     return facts;
   }
@@ -432,7 +436,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
     this.nameToId.delete(name);
     this.idToInfo.delete(id);
-    this.triageCache.delete(name);
     getSessionIdentityStore().deleteByName(name);
   }
 
@@ -448,14 +451,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const snap = await this.fetchSnapshot(id, name, "capturePane");
     if (!snap) return "";
     return renderSnapshot(snap);
-  }
-
-  async capturePaneForTriage(name: string): Promise<string> {
-    const cached = this.triageCache.get(name);
-    if (cached && Date.now() - cached.ts < TRIAGE_CACHE_TTL_MS) return cached.content;
-    const content = await this.capturePane(name);
-    this.triageCache.set(name, { content, ts: Date.now() });
-    return content;
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
@@ -750,10 +745,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         const id = typeof event.session_id === "string" ? event.session_id : undefined;
         if (!id) return;
         const info = this.idToInfo.get(id);
-        if (info) {
-          info.alive = false;
-          this.triageCache.delete(info.name);
-        }
+        if (info) info.alive = false;
         const exitCode = typeof event.exit_code === "number" ? event.exit_code : undefined;
         const signal = typeof event.signal === "number" ? event.signal : undefined;
         const subs = this.lifecycleSubs.get(id);
@@ -776,13 +768,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         // dims has a single hook.
         return;
       }
-      case "snapshot_invalidated": {
-        const id = typeof event.session_id === "string" ? event.session_id : undefined;
-        if (!id) return;
-        const info = this.idToInfo.get(id);
-        if (info) this.triageCache.delete(info.name);
+      case "snapshot_invalidated":
         return;
-      }
     }
   }
 

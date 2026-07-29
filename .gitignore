@@ -15,10 +15,14 @@ CLAUDE.md
 *.png
 !docs/*.png
 !public/icon-192.png
+!public/icon-512.png
+!public/icon-maskable-192.png
+!public/icon-maskable-512.png
 *.jpeg
 *.jpg
 *.svg
 !public/wolfpack-icon.svg
+!public/wolfpack-icon-maskable.svg
 !docs/wolfpack-icon.svg
 src/public-assets.ts
 public/app.bundle.js
