@@ -3,8 +3,9 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { assets } from "../public-assets.js";
+import { createHash, randomBytes } from "node:crypto";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
+import { ASSET_VERSION, assets } from "../public-assets.js";
 import { exec } from "./shell.js";
 import { getBackend } from "./backend.js";
 import { createLogger } from "../log.js";
@@ -207,7 +208,46 @@ function buildCsp(nonce: string): string {
   ].join("; ");
 }
 
-export function serveFile(res: ServerResponse, filename: string): void {
+interface CachedAsset {
+  readonly content: Buffer;
+  readonly etag: string;
+  readonly compressible: boolean;
+  brotli?: Buffer;
+  gzip?: Buffer;
+}
+
+const compressedAssets = new Map<string, CachedAsset>();
+const MIN_COMPRESS_BYTES = 1_024;
+
+function acceptsEncoding(header: string | undefined, encoding: "br" | "gzip"): boolean {
+  if (!header) return false;
+  return header.split(",").some((entry) => {
+    const [name, ...parameters] = entry.trim().toLowerCase().split(";");
+    if (name !== encoding && name !== "*") return false;
+    return !parameters.some((parameter) => parameter.trim() === "q=0");
+  });
+}
+
+function getCachedAsset(filename: string): CachedAsset {
+  const cached = compressedAssets.get(filename);
+  if (cached) return cached;
+  const asset = assets.get(filename);
+  if (!asset) throw new Error(`unknown public asset: ${filename}`);
+  const content = Buffer.isBuffer(asset.content)
+    ? asset.content
+    : Buffer.from(asset.content);
+  const etag = `W/"${createHash("sha256").update(content).digest("hex").slice(0, 32)}"`;
+  const compressible = content.byteLength >= MIN_COMPRESS_BYTES && /^(?:text\/|application\/(?:javascript|json))/.test(asset.mime);
+  const entry: CachedAsset = { content, etag, compressible };
+  compressedAssets.set(filename, entry);
+  return entry;
+}
+
+export function serveFile(
+  res: ServerResponse,
+  filename: string,
+  req?: IncomingMessage,
+): void {
   const asset = assets.get(filename);
   if (!asset) {
     res.writeHead(404);
@@ -216,7 +256,6 @@ export function serveFile(res: ServerResponse, filename: string): void {
   }
   const headers: Record<string, string> = {
     "Content-Type": asset.mime,
-    "Cache-Control": "no-cache",
   };
   // The PWA registers /sw.js as the service worker. Browsers require
   // `Service-Worker-Allowed` to widen the SW's controllable scope to /
@@ -228,6 +267,7 @@ export function serveFile(res: ServerResponse, filename: string): void {
     headers["Service-Worker-Allowed"] = "/";
   }
   if (asset.mime === "text/html") {
+    headers["Cache-Control"] = "no-cache";
     const nonce = generateCspNonce();
     headers["Content-Security-Policy"] = buildCsp(nonce);
     // Inject nonce into all <script> tags
@@ -237,8 +277,41 @@ export function serveFile(res: ServerResponse, filename: string): void {
     res.end(html);
     return;
   }
+
+  const cached = getCachedAsset(filename);
+  const version = req?.url ? new URL(req.url, "http://localhost").searchParams.get("v") : null;
+  headers["Cache-Control"] = version === ASSET_VERSION
+    ? "public, max-age=31536000, immutable"
+    : "public, max-age=0, must-revalidate";
+  headers.ETag = cached.etag;
+
+  const accepted = typeof req?.headers["accept-encoding"] === "string"
+    ? req.headers["accept-encoding"]
+    : undefined;
+  let content = cached.content;
+  if (cached.compressible && acceptsEncoding(accepted, "br")) {
+    cached.brotli ??= brotliCompressSync(cached.content, {
+      params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 },
+    });
+    content = cached.brotli;
+    headers["Content-Encoding"] = "br";
+  } else if (cached.compressible && acceptsEncoding(accepted, "gzip")) {
+    cached.gzip ??= gzipSync(cached.content, { level: 6 });
+    content = cached.gzip;
+    headers["Content-Encoding"] = "gzip";
+  }
+  if (cached.compressible) {
+    const existingVary = res.getHeader("Vary");
+    headers.Vary = existingVary ? `${String(existingVary)}, Accept-Encoding` : "Accept-Encoding";
+  }
+
+  if (req?.headers["if-none-match"] === cached.etag) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
   res.writeHead(200, headers);
-  res.end(asset.content);
+  res.end(content);
 }
 
 // ── Peer discovery ──

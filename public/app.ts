@@ -51,7 +51,7 @@ import {
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
 import { AGENT_KIND } from "../src/agent-kind";
-import { sessionRuntimeUi } from "../src/agent-runtime-ui";
+import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
 import {
   delegationChildSummaryText,
   delegationGridMembers,
@@ -363,6 +363,17 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
+async function fetchSessionText(session: string, machine: string): Promise<string> {
+  const path = "/api/copy-text?session=" + encodeURIComponent(session);
+  const base = machine.replace(/\/$/, "");
+  const headers: Record<string, string> = {};
+  const jwt = localStorage.getItem("wpJwt");
+  if (jwt) headers["Authorization"] = "Bearer " + jwt;
+  const response = await fetch(base + path, { headers });
+  if (!response.ok) throw new Error("HTTP " + response.status);
+  return response.text();
+}
+
 async function copySessionToClipboard(): Promise<void> {
   if (!state.currentSession) return;
   haptic([20]);
@@ -370,20 +381,35 @@ async function copySessionToClipboard(): Promise<void> {
   overlay.innerHTML = '<pre>copying...</pre>';
   overlay.classList.add("visible");
   try {
-    // /api/copy-text returns text/plain — fetch raw, then write to clipboard.
-    const path = "/api/copy-text?session=" + encodeURIComponent(state.currentSession);
-    const base = (state.currentMachine || "").replace(/\/$/, "");
-    const headers: Record<string, string> = {};
-    const jwt = localStorage.getItem("wpJwt");
-    if (jwt) headers["Authorization"] = "Bearer " + jwt;
-    const r = await fetch(base + path, { headers });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const text = await r.text();
+    const text = await fetchSessionText(state.currentSession, state.currentMachine || "");
     await navigator.clipboard.writeText(text);
     overlay.innerHTML = `<div><pre>copied ${text.length} chars</pre><div class="overlay-hint">tap to dismiss</div></div>`;
   } catch (e) {
     overlay.innerHTML = `<div><pre class="error-pre">copy failed: ${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
   }
+}
+
+async function showTerminalTranscript(): Promise<void> {
+  if (!state.currentSession) return;
+  const dialog = document.getElementById("terminal-transcript-dialog") as HTMLDialogElement;
+  const status = document.getElementById("terminal-transcript-status");
+  const output = document.getElementById("terminal-transcript-output");
+  status.textContent = "Loading transcript…";
+  output.textContent = "";
+  dialog.showModal();
+  try {
+    const text = await fetchSessionText(state.currentSession, state.currentMachine || "");
+    output.textContent = text || "(no terminal output)";
+    status.textContent = `${text.length} characters`;
+    output.focus({ preventScroll: true });
+  } catch (error) {
+    status.textContent = "Transcript unavailable: " + errorMessage(error);
+  }
+}
+
+function closeTerminalTranscript(): void {
+  const dialog = document.getElementById("terminal-transcript-dialog") as HTMLDialogElement;
+  if (dialog.open) dialog.close();
 }
 
 // ── Session Recents ──
@@ -2334,11 +2360,33 @@ function removeMachine(url: string): Array<{ url: string; name: string }> {
   return machines;
 }
 
+const MACHINE_INFO_CACHE_TTL_MS = 5 * 60_000;
+const machineInfoCache = new Map<string, { readonly info: InfoResponse; readonly fetchedAt: number }>();
+const machineInfoRequests = new Map<string, Promise<InfoResponse>>();
+
+function fetchMachineInfo(machineUrl: string, options?: RequestInit): Promise<InfoResponse> {
+  const cached = machineInfoCache.get(machineUrl);
+  if (cached && Date.now() - cached.fetchedAt < MACHINE_INFO_CACHE_TTL_MS) {
+    return Promise.resolve(cached.info);
+  }
+  const pending = machineInfoRequests.get(machineUrl);
+  if (pending) return pending;
+  const request = api<InfoResponse>("/info", options, machineUrl || undefined)
+    .then((info) => {
+      machineInfoCache.set(machineUrl, { info, fetchedAt: Date.now() });
+      return info;
+    })
+    .finally(() => {
+      machineInfoRequests.delete(machineUrl);
+    });
+  machineInfoRequests.set(machineUrl, request);
+  return request;
+}
+
 // Self info, fetched once
 (async () => {
   try {
-    const resp = await fetch("/api/info");
-    const info = await resp.json();
+    const info = await fetchMachineInfo("");
     state.selfName = info.name || "this machine";
     state.selfVersion = info.version || "";
     // Show version in header
@@ -2369,7 +2417,7 @@ function removeMachine(url: string): Array<{ url: string; name: string }> {
           changed = true;
         }
       }
-      if (changed) { saveMachines(machines); loadSessions(); }
+      if (changed) { saveMachines(machines); loadSessions(true); }
     }
   } catch {}
 })();
@@ -2487,6 +2535,15 @@ const VIEW_DEPTH = {
   terminal: 1,
 };
 
+function exposeActiveView(activeView: HTMLElement): void {
+  document.querySelectorAll<HTMLElement>(".view").forEach((view) => {
+    const active = view === activeView;
+    view.toggleAttribute("inert", !active);
+    if (active) view.removeAttribute("aria-hidden");
+    else view.setAttribute("aria-hidden", "true");
+  });
+}
+
 function showView(name: string, skipAnimation?: boolean): void {
   const prevView = state.currentView;
   const prevEl = document.getElementById(prevView + "-view");
@@ -2496,6 +2553,8 @@ function showView(name: string, skipAnimation?: boolean): void {
   const effectiveName = (!isMobile && name === "sessions" && state.currentSession && !state.sessionsExpanded) ? "terminal" : name;
 
   const nextEl = document.getElementById(effectiveName + "-view");
+  if (!nextEl) return;
+  exposeActiveView(nextEl);
   const wasSwipe = state.swipeNavigated;
   if (state.swipeNavigated) { skipAnimation = true; state.swipeNavigated = false; }
   const animate = isMobile && !skipAnimation && prevView !== effectiveName && prevEl && nextEl;
@@ -2510,6 +2569,7 @@ function showView(name: string, skipAnimation?: boolean): void {
   // Tear down terminal connections when navigating away from terminal view
   // Prevents background WS from auto-reconnecting and stealing control from other instances
   if (prevView === "terminal" && effectiveName !== "terminal") {
+    closeTerminalTranscript();
     if (state.activeDelegationRoot) {
       destroyTerminal();
       teardownDelegationWorkspace();
@@ -2606,6 +2666,7 @@ function showView(name: string, skipAnimation?: boolean): void {
     }
     // Update sidebar active highlight
     renderSidebar();
+    syncSessionRefreshTimer();
     return;
   }
 
@@ -2627,8 +2688,7 @@ function showView(name: string, skipAnimation?: boolean): void {
       back.onclick = null;
       gear.style.display = "";
       title.textContent = "wolfpack";
-      loadSessions(); // immediate refresh on entering sessions view
-      state.sessionRefreshTimer = setInterval(loadSessions, 5000);
+      void loadSessions(); // immediate refresh on entering sessions view
     } else if (name === "projects") {
       back.style.display = "block";
       back.onclick = () => { returnFromProjectPicker(); };
@@ -2643,7 +2703,7 @@ function showView(name: string, skipAnimation?: boolean): void {
 
     } else if (name === "settings") {
       back.style.display = "block";
-      back.onclick = () => { showView("sessions"); loadSessions(); };
+      back.onclick = () => { returnFromSettingsWithFocus(); };
       gear.style.display = "none";
       title.textContent = "settings";
 
@@ -2674,6 +2734,7 @@ function showView(name: string, skipAnimation?: boolean): void {
   };
 
   applyHeader();
+  syncSessionRefreshTimer();
 }
 
 
@@ -2796,7 +2857,8 @@ function renderMachineGroupHtml(g, multiMachine) {
         const ui = triageUi(s);
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = delegationCardAttributes(row);
-        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">
+        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
+          <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})"></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
             <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
@@ -2834,9 +2896,7 @@ function delegationWorkspaceContext(sessionName: string, machineUrl: string): De
 
 function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, machine: string): DelegationGridMember {
   const ui = triageUi(row.session);
-  const runtimeState = row.session.runtimeState?.state;
-  const idle = runtimeState === AGENT_STATUS_STATE.IDLE
-    || (!runtimeState && row.session.triage !== AGENT_STATUS_STATE.RUNNING);
+  const idle = sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE;
   return {
     session: row.session.name,
     machine,
@@ -2993,24 +3053,34 @@ function fetchMachine(machineUrl, machineMeta) {
   // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
   const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
   const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-  return Promise.all([api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined), api<InfoResponse>("/info", remoteOpts, machineUrl || undefined)])
-    .then(([d, info]) => {
-      if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
-      return {
-        machine: { ...machineMeta, url: machineUrl, version: info.version || "", name: info.name || machineMeta.name },
-        sessions: d.sessions || [], online: true, pending: false,
-      };
-    })
-    .catch(() => {
+  return Promise.allSettled([
+    api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined),
+    fetchMachineInfo(machineUrl, remoteOpts),
+  ]).then(([sessionsResult, infoResult]) => {
+    if (sessionsResult.status === "rejected") {
       if (machineUrl) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
       return {
         machine: { ...machineMeta, url: machineUrl, version: "" },
         sessions: [], online: false, pending: false,
       };
-    });
+    }
+    if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
+    const info = infoResult.status === "fulfilled" ? infoResult.value : null;
+    return {
+      machine: {
+        ...machineMeta,
+        url: machineUrl,
+        version: info?.version || "",
+        name: info?.name || machineMeta.name,
+      },
+      sessions: sessionsResult.value.sessions || [],
+      online: true,
+      pending: false,
+    };
+  });
 }
 
-async function loadSessions() {
+async function loadSessionsOnce() {
   const myEpoch = ++state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
   const machines = getMachines();
@@ -3109,6 +3179,39 @@ async function loadSessions() {
   state.allSessions = out;
   syncDelegationWorkspace();
   checkStateTransitions(groups);
+}
+
+let sessionRefreshPromise: Promise<void> | null = null;
+let forceSessionRefreshAfterCurrent = false;
+
+function loadSessions(forceAfterCurrent = false): Promise<void> {
+  if (sessionRefreshPromise) {
+    if (forceAfterCurrent) forceSessionRefreshAfterCurrent = true;
+    return sessionRefreshPromise;
+  }
+  sessionRefreshPromise = (async () => {
+    do {
+      forceSessionRefreshAfterCurrent = false;
+      await loadSessionsOnce();
+      renderSidebar();
+    } while (forceSessionRefreshAfterCurrent);
+  })().finally(() => {
+    sessionRefreshPromise = null;
+  });
+  return sessionRefreshPromise;
+}
+
+const SESSION_REFRESH_INTERVAL_MS = 5_000;
+
+function syncSessionRefreshTimer(refreshNow = false): void {
+  if (state.sessionRefreshTimer) {
+    clearInterval(state.sessionRefreshTimer);
+    state.sessionRefreshTimer = null;
+  }
+  if (document.visibilityState !== "visible") return;
+  if (!isDesktop() && state.currentView !== "sessions") return;
+  if (refreshNow) void loadSessions();
+  state.sessionRefreshTimer = setInterval(() => { void loadSessions(); }, SESSION_REFRESH_INTERVAL_MS);
 }
 
 function setSidebarCollapsedImmediately(collapsed: boolean): void {
@@ -3248,10 +3351,10 @@ function renderProjectNames(projects: readonly string[]): void {
   list.innerHTML = projects
     .map(
       (project) => `
-<div class="card" onclick="selectProject('${escAttr(project)}')">
+<button type="button" class="card" aria-label="Open project ${escAttr(project)}" onclick="selectProject('${escAttr(project)}')">
   <div class="dot brand" title="project"></div>
   <div class="card-name">${esc(project)}</div>
-</div>
+</button>
     `,
     )
     .join("");
@@ -3342,10 +3445,10 @@ async function showAgentPicker() {
     const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
     const defaultCmd = data.effective?.agentCmd;
     const html = cmds.map(cmd => `
-      <div class="card" onclick="createSessionWithAgent('${escAttr(cmd)}')">
+      <button type="button" class="card" aria-label="Start ${escAttr(cmd)}" onclick="createSessionWithAgent('${escAttr(cmd)}')">
         <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
         <div class="card-name">${esc(cmd)}</div>
-      </div>
+      </button>
     `).join("");
     el.innerHTML = html;
   } catch {
@@ -3594,7 +3697,7 @@ async function createSessionWithAgent(cmd) {
     if (data.session) {
       setState({ currentSession: data.session, currentMachine: machine });
       // Refresh session list in background so it doesn't block terminal init
-      loadSessions().then(() => { loadSessionSwitcher(); renderSidebar(); });
+      loadSessions(true).then(() => { loadSessionSwitcher(); renderSidebar(); });
       if (isGridActive()) {
         // Grid is active — add new session to grid instead of single-terminal
         addToGrid(data.session, machine);
@@ -3605,12 +3708,12 @@ async function createSessionWithAgent(cmd) {
     } else {
       alert("Failed to create session: Server returned no session (is wolfpack up to date?)");
       showView("sessions");
-      loadSessions();
+      loadSessions(true);
     }
   } catch (e) {
     alert("Failed to create session: " + errorMessage(e));
     showView("sessions");
-    loadSessions();
+    loadSessions(true);
   }
 }
 
@@ -4088,7 +4191,7 @@ async function killSession(name, e, machineUrl) {
     setState({ currentSession: null, currentMachine: "" });
     showView("sessions");
   }
-  loadSessions().then(renderSidebar);
+  loadSessions(true).then(renderSidebar);
 }
 
 // ── Session drawer ──
@@ -4406,14 +4509,8 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     const hiddenDuration = _hiddenAt ? Date.now() - _hiddenAt : 0;
     _hiddenAt = 0;
-    if (isDesktop() && !sidebarRefreshTimer) {
-      startSidebarRefresh();
-    }
-    // Restart session refresh if on sessions view
-    if (state.currentView === "sessions" && !state.sessionRefreshTimer) {
-      loadSessions();
-      state.sessionRefreshTimer = setInterval(loadSessions, 5000);
-    }
+    // Resume one shared cadence and refresh immediately after foregrounding.
+    syncSessionRefreshTimer(true);
     if (state.currentSession && state.currentView === "terminal") {
       if (!isDesktop()) {
         // Mobile: always force-reconnect — iOS/Android background tabs kill
@@ -4467,10 +4564,6 @@ document.addEventListener("visibilitychange", () => {
     if (state.sessionRefreshTimer) {
       clearInterval(state.sessionRefreshTimer);
       state.sessionRefreshTimer = null;
-    }
-    if (sidebarRefreshTimer) {
-      clearInterval(sidebarRefreshTimer);
-      sidebarRefreshTimer = null;
     }
   }
 });
@@ -4710,7 +4803,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (state.currentView === "agent") { e.preventDefault(); showView("projects"); }
   else if (state.currentView === "projects") { e.preventDefault(); returnFromProjectPicker(); }
-  else if (state.currentView === "settings") { e.preventDefault(); backFromSettings(); }
+  else if (state.currentView === "settings") { e.preventDefault(); returnFromSettingsWithFocus(); }
 });
 
 // ── Desktop keyboard shortcuts (capture phase, before terminal) ──
@@ -4806,9 +4899,30 @@ newProjectNameInput.addEventListener("keydown", (event) => {
 
 // ── Settings ──
 
+let settingsFocusReturn: HTMLElement | null = null;
+
+function returnFromSettingsWithFocus(): void {
+  const focusReturn = settingsFocusReturn;
+  settingsFocusReturn = null;
+  backFromSettings();
+  requestAnimationFrame(() => {
+    if (focusReturn?.isConnected && !focusReturn.closest("[inert]")) {
+      focusReturn.focus({ preventScroll: true });
+    }
+  });
+}
+
 async function showSettings() {
+  const activeElement = document.activeElement;
+  settingsFocusReturn = activeElement instanceof HTMLElement && activeElement !== document.body
+    ? activeElement
+    : null;
   setState({ viewBeforeSettings: state.currentView });
   showView("settings");
+  const focusTarget = isDesktop()
+    ? document.getElementById("settings-back-btn")
+    : document.getElementById("back-btn");
+  requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
   renderMachinesList();
   toggleDebugPanel();
 }
@@ -5029,7 +5143,6 @@ if (!isDesktop()) {
 
 // ── Desktop Sidebar ──
 
-let sidebarRefreshTimer = null;
 let sidebarAutoCollapseTimer = null;
 let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 300;
@@ -5111,7 +5224,8 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
-  return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute} onclick="${onclick}">
+  return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}>
+    <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}" onclick="${onclick}"></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name">${esc(s.name)}</div>
@@ -5272,20 +5386,11 @@ function initSidebar() {
   // Nav buttons
   document.getElementById("sidebar-settings-btn").onclick = () => showSettings();
 
-  // Start session refresh for sidebar
-  startSidebarRefresh();
+  // Start the shared session refresh cadence used by all session surfaces.
+  syncSessionRefreshTimer();
 
   // Initial render
   renderSidebar();
-}
-
-function startSidebarRefresh() {
-  if (sidebarRefreshTimer) clearInterval(sidebarRefreshTimer);
-  if (isDesktop()) {
-    sidebarRefreshTimer = setInterval(() => {
-      loadSessions().then(renderSidebar);
-    }, 5000);
-  }
 }
 
 // ── Bind all HTML event listeners (replaces inline onclick/onchange/etc) ──
@@ -5324,7 +5429,7 @@ function bindHtmlEventListeners(): void {
   if (agentBackBtn) agentBackBtn.addEventListener("click", () => showView("projects"));
 
   // Settings
-  on("settings-back-btn", "click", () => backFromSettings());
+  on("settings-back-btn", "click", () => returnFromSettingsWithFocus());
   const discoverBtn = document.querySelector(".discover-btn");
   if (discoverBtn) discoverBtn.addEventListener("click", () => discoverMachines());
 
@@ -5359,6 +5464,8 @@ function bindHtmlEventListeners(): void {
   if (debugResetBtn) debugResetBtn.addEventListener("click", () => { wpMetrics.reset(); renderDebugPanel(); });
 
   // Terminal view
+  on("terminal-transcript-btn", "click", () => { void showTerminalTranscript(); });
+  on("terminal-transcript-close", "click", () => closeTerminalTranscript());
 
   // Keyboard accessory
   const gitBtn = document.querySelector(".kb-key.kb-git");

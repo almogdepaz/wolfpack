@@ -265,14 +265,38 @@ header h1 {
   -webkit-tap-highlight-color: transparent;
   transition: transform 0.1s ease, background 0.1s ease;
   position: relative;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.card-open {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.card > :not(.card-open) {
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+.card > button:not(.card-open),
+.card .delegation-sidebar-toggle {
+  z-index: 3;
+  pointer-events: auto;
+}
+.card:focus-visible,
+.card-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
 }
 .card:active:not(:has(.kill-btn:active)) {
   background: linear-gradient(145deg, #171717 0%, var(--bg-surface) 100%);
   border-color: var(--border-hover);
-}
-.card.attention {
-  border-left: 3px solid var(--warning);
-  box-shadow: inset 4px 0 16px -8px rgba(255,204,0,0.12);
 }
 .card.active-session {
   border-left: 3px solid var(--accent);
@@ -2363,6 +2387,16 @@ body.no-animations, body.no-animations * {
 .about-icon { width: 48px; height: 48px; opacity: 0.15; margin-bottom: 8px; }
 .settings-version { font-size: 10px; color: var(--text-dim); padding: 2px 0; }
 .conn-status { display: none; background: var(--danger); color: #fff; text-align: center; padding: 6px; font-size: 11px; font-family: inherit; text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0; }
+.terminal-transcript-btn { position: absolute; top: 8px; right: 8px; z-index: 20; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: rgba(17,17,17,0.9); color: var(--text-muted); font: inherit; font-size: 10px; text-transform: uppercase; cursor: pointer; }
+.terminal-transcript-btn:hover, .terminal-transcript-btn:focus-visible { color: var(--accent); border-color: var(--accent-border); }
+.terminal-transcript-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
+.terminal-transcript-dialog::backdrop { background: rgba(0,0,0,0.75); }
+.terminal-transcript-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.terminal-transcript-header h2 { margin: 0; color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+.terminal-transcript-header button { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--text-muted); font: inherit; cursor: pointer; }
+#terminal-transcript-status { min-height: 28px; padding: 8px 14px 0; color: var(--text-dim); font-size: 10px; }
+#terminal-transcript-output { max-height: calc(80vh - 86px); margin: 0; padding: 10px 14px 16px; overflow: auto; color: var(--text-primary); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
+#terminal-transcript-output:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-border); }
 .accent-val { color: var(--accent); font-size: 11px; }
 .range-input { width: 100%; accent-color: var(--accent); margin-top: 4px; }
 .settings-description { padding: 4px 0; font-size: 11px; color: var(--text-dim); line-height: 1.5; }

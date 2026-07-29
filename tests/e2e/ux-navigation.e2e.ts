@@ -49,6 +49,28 @@ async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>
   return sockets;
 }
 
+function observedRuntimeState(active: boolean) {
+  return {
+    state: active ? "output" : "idle",
+    authority: "fallback",
+    freshness: "fresh",
+    source: "screen-fallback",
+    stale: false,
+    unseen: false,
+  };
+}
+
+function structuredRuntimeState(state: "working" | "needs-input", unseen = false) {
+  return {
+    state,
+    authority: "manifest",
+    freshness: "fresh",
+    source: "local-manifest",
+    stale: false,
+    unseen,
+  };
+}
+
 function identity(id: string, name: string, parent?: { readonly id: string; readonly name: string }): {
   readonly wolfpackSessionId: string;
   readonly wolfpackSessionName: string;
@@ -100,7 +122,7 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.sidebarAutoExpanded)).toBe(true);
 
-  await page.locator("#sidebar-session-list .card", { has: page.locator(".card-name", { hasText: parent.name }) }).first().locator(".card-name").click();
+  await page.getByRole("button", { name: `Open ${parent.name}` }).click();
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
 
   expect(await page.evaluate(() => {
@@ -147,11 +169,11 @@ test("desktop groups structured sub-agents directly under their parent", async (
       contentType: "application/json",
       body: JSON.stringify({
         sessions: [
-          { name: "wolfpack", lastLine: "parent", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity(parent.id, parent.name) },
-          { name: "unrelated", lastLine: "root", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("broker-root", "unrelated") },
-          { name: "wolfpack-sub-agent-2", lastLine: "child two", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("broker-child-2", "wolfpack-sub-agent-2", parent) },
-          { name: "wolfpack-sub-agent", lastLine: "child one", triage: "idle", runtimeState: { state: "needs-input", unseen: true }, identity: identity("broker-child-1", "wolfpack-sub-agent", parent) },
-          { name: "orphan-child", lastLine: "orphan", triage: "idle", runtimeState: { state: "working", unseen: true }, identity: identity("broker-orphan", "orphan-child", { id: "missing-parent", name: "gone <parent> & \"quoted\"" }) },
+          { name: "wolfpack", lastLine: "parent", triage: "idle", runtimeState: observedRuntimeState(false), identity: identity(parent.id, parent.name) },
+          { name: "unrelated", lastLine: "root", triage: "idle", runtimeState: observedRuntimeState(false), identity: identity("broker-root", "unrelated") },
+          { name: "wolfpack-sub-agent-2", lastLine: "child two", triage: "idle", runtimeState: observedRuntimeState(false), identity: identity("broker-child-2", "wolfpack-sub-agent-2", parent) },
+          { name: "wolfpack-sub-agent", lastLine: "child one", triage: "idle", runtimeState: structuredRuntimeState("needs-input", true), identity: identity("broker-child-1", "wolfpack-sub-agent", parent) },
+          { name: "orphan-child", lastLine: "orphan", triage: "idle", runtimeState: structuredRuntimeState("working", true), identity: identity("broker-orphan", "orphan-child", { id: "missing-parent", name: "gone <parent> & \"quoted\"" }) },
         ],
       }),
     });
@@ -170,7 +192,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
     "unrelated",
     "orphan-child",
   ]);
-  await expect(cards.nth(0)).toContainText("2 children · 1 needs input · 1 idle");
+  await expect(cards.nth(0)).toContainText("2 children");
   await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
@@ -199,7 +221,8 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(childSidebarCards).toHaveCount(0);
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
   await expect(childSidebarCards).toHaveCount(2);
-  await parentSidebarCard.locator(".card-name").click();
+  await parentSidebarCard.getByRole("button", { name: "Open wolfpack" }).focus();
+  await page.keyboard.press("Enter");
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
 
   await expect(childSidebarCard.locator(".grid-btn")).toHaveClass(/in-grid/);
@@ -237,11 +260,11 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   const parent = { id: "delegation-parent-id", name: "delegation-parent" };
   const sockets = await routeHydratedPty(page);
   let sessions = [
-    { name: "manual-one", lastLine: "manual", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("manual-one-id", "manual-one") },
-    { name: "manual-two", lastLine: "manual", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("manual-two-id", "manual-two") },
-    { name: parent.name, lastLine: "coordinating", triage: "running", runtimeState: { state: "running", unseen: false }, identity: identity(parent.id, parent.name) },
-    { name: "attention-child", lastLine: "waiting", triage: "idle", runtimeState: { state: "needs-input", unseen: true }, identity: identity("attention-child-id", "attention-child", parent) },
-    { name: "idle-child", lastLine: "resting", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("idle-child-id", "idle-child", parent) },
+    { name: "manual-one", lastLine: "manual", triage: "idle", runtimeState: observedRuntimeState(false), identity: identity("manual-one-id", "manual-one") },
+    { name: "manual-two", lastLine: "manual", triage: "idle", runtimeState: observedRuntimeState(false), identity: identity("manual-two-id", "manual-two") },
+    { name: parent.name, lastLine: "coordinating", triage: "running", runtimeState: observedRuntimeState(true), identity: identity(parent.id, parent.name) },
+    { name: "attention-child", lastLine: "waiting", triage: "idle", runtimeState: structuredRuntimeState("needs-input", true), identity: identity("attention-child-id", "attention-child", parent) },
+    { name: "idle-child", lastLine: "resting", triage: "idle", runtimeState: observedRuntimeState(false), identity: identity("idle-child-id", "idle-child", parent) },
   ];
   await page.route("**/api/sessions", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
@@ -258,7 +281,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
   await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
-  await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children · 1 needs input · 1 idle");
+  await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children");
   await expect(page.locator("#delegation-collapse-idle, #delegation-expand-all, #delegation-focus-parent, #delegation-exit-grid")).toHaveCount(0);
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
     "delegation-parent",
@@ -342,13 +365,13 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
 
   sessions = [
     ...sessions,
-    { name: "new-child", lastLine: "working", triage: "running", runtimeState: { state: "working", unseen: true }, identity: identity("new-child-id", "new-child", parent) },
+    { name: "new-child", lastLine: "working", triage: "running", runtimeState: structuredRuntimeState("working", true), identity: identity("new-child-id", "new-child", parent) },
   ];
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
     "delegation-parent",
     "attention-child",
-    "new-child",
     "idle-child",
+    "new-child",
   ], { timeout: 7_000 });
 
   sessions = sessions.filter(session => session.name !== "new-child");

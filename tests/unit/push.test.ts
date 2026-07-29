@@ -452,6 +452,14 @@ describe("push: checkSessionTransitions", () => {
     expect(futureGap).toBeGreaterThan(_testing.PUSH_DEBOUNCE_MS);
   });
 
+  test("labels observed quiet and broker unavailability without claiming a stop", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+
+    expect(_testing.sessionNotificationLabel("idle")).toBe("Quiet");
+    expect(_testing.sessionNotificationLabel("unknown")).toBe("Unavailable");
+    expect(_testing.sessionNotificationLabel("off")).toBe("Stopped");
+  });
+
   test("tracks canonical runtime state ahead of legacy triage", async () => {
     const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
 

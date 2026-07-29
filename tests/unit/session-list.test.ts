@@ -36,6 +36,24 @@ describe("session list json", () => {
     expect(session).not.toHaveProperty("lastLine");
   });
 
+  test("human output describes observed activity without claiming process state", () => {
+    const child = run(`
+      globalThis.fetch = async () => Response.json({ sessions: [
+        { name: "active", triage: "running" },
+        { name: "still", triage: "idle" },
+      ] });
+      const { lsSessions } = await import("./src/cli/sessions.ts");
+      process.exit(await lsSessions());
+    `);
+
+    expect(child.exitCode).toBe(0);
+    const stdout = child.stdout.toString();
+    expect(stdout).toContain("output");
+    expect(stdout).toContain("quiet");
+    expect(stdout).not.toContain("running");
+    expect(stdout).not.toContain("idle");
+  });
+
   test("help performs no request", () => {
     const child = run(`
       globalThis.fetch = async () => { throw new Error("fetch must not run"); };

@@ -14,6 +14,7 @@ import {
   AGENT_STATUS_FRESHNESS,
   AGENT_STATUS_SOURCE,
   AGENT_STATUS_STATE,
+  AGENT_SEMANTIC_STATUS_STATE_SET,
   isAgentStatusState,
 } from "../agent-status-contract.js";
 import type {
@@ -119,19 +120,6 @@ const AUTHORITY_RANK: Record<AgentStatusAuthority, number> = {
   [AGENT_STATUS_AUTHORITY.FALLBACK]: 2,
   [AGENT_STATUS_AUTHORITY.IDENTITY]: 1,
 };
-
-const SEMANTIC_STATES: ReadonlySet<AgentStatusState> = new Set([
-  AGENT_STATUS_STATE.RUNNING,
-  AGENT_STATUS_STATE.WORKING,
-  AGENT_STATUS_STATE.AUDIT,
-  AGENT_STATUS_STATE.CLEANUP,
-  AGENT_STATUS_STATE.NEEDS_INPUT,
-  AGENT_STATUS_STATE.DONE,
-  AGENT_STATUS_STATE.FAILED,
-  AGENT_STATUS_STATE.STOPPED,
-  AGENT_STATUS_STATE.IDLE,
-  AGENT_STATUS_STATE.UNKNOWN,
-]);
 
 function isSafeRelativePath(path: string): boolean {
   if (!path || path.includes("\0")) return false;
@@ -337,7 +325,7 @@ function chooseSemanticRuntimeSource(input: AgentRuntimeStateInput): AgentStatus
   const candidates = input.sources
     .filter((source) => source.freshness === AGENT_STATUS_FRESHNESS.FRESH)
     .filter(sourceHasSemanticCapability)
-    .filter((source) => SEMANTIC_STATES.has(source.state))
+    .filter((source) => AGENT_SEMANTIC_STATUS_STATE_SET.has(source.state))
     .filter((source) => sourceMatchesRun(source, input.currentRun))
     .sort((a, b) => {
       const rankDiff = AUTHORITY_RANK[b.authority] - AUTHORITY_RANK[a.authority];
