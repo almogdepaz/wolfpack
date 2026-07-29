@@ -44,5 +44,12 @@
 - `public/app.bundle.js`
 - `src/public-assets.ts`
 
+## follow-up — sidebar affordance
+- removed the persistent collapsed-sidebar tab after live terminal feedback
+- retained the existing persisted open/collapsed preference; first-time desktop users default to open
+- restored the narrow invisible left-edge hover target and added `cmd/ctrl+b` as a non-overlay toggle
+- verification: sidebar regression passed, full UI-polish suite 5 passed/7 platform skips, desktop navigation 16 passed
+- verification: `bun run typecheck` passed; `bun test` 1410 passed/22 broker-binary-dependent skips/0 failed
+
 ## next action
-- user review; suggest a focused commit after acceptance
+- user review; deploy only after approval

@@ -4719,6 +4719,14 @@ document.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (!mod) return;
 
+  // Cmd+B — toggle the persistent desktop sidebar without covering the terminal.
+  if (e.key.toLowerCase() === "b" && !state.sessionsExpanded) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.getElementById("sidebar-collapse-btn")?.click();
+    return;
+  }
+
   // Cmd+ArrowUp / Cmd+ArrowDown — previous/next session (grid focus or sidebar)
   if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     e.preventDefault();
@@ -5220,7 +5228,7 @@ function initSidebar() {
     }
   };
 
-  // The collapsed handle supports hover, click, and keyboard activation.
+  // Entering the narrow invisible edge temporarily opens an unpinned sidebar.
   const openAutoSidebar = (): void => {
     if (state.sidebarCollapsed && !state.sidebarPinned && !state.sessionsExpanded) {
       state.sidebarTransitionIsHover = true;
@@ -5229,7 +5237,6 @@ function initSidebar() {
     }
   };
   hoverEdge.addEventListener("mouseenter", openAutoSidebar);
-  hoverEdge.addEventListener("click", openAutoSidebar);
 
   // Auto-collapse when mouse leaves sidebar (only if auto-expanded, not pinned)
   sidebar.addEventListener("mouseleave", () => {

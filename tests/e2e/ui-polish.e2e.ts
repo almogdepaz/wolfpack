@@ -29,17 +29,29 @@ test("desktop session shell uses named controls and bounded content", async ({ p
   expect((await sessionGroup.boundingBox())?.width).toBeLessThanOrEqual(960);
 });
 
-test("desktop collapsed sidebar has a visible keyboard-accessible handle", async ({ page }, testInfo) => {
+test("desktop sidebar defaults open and remembers collapse without a persistent tab", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop sidebar contract");
 
-  await page.getByRole("button", { name: "Collapse sessions" }).click();
+  await page.locator("#session-list .card").first().click();
+  const sidebar = page.locator("#desktop-sidebar");
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+
   await page.getByRole("button", { name: "Unpin sidebar" }).click();
-  const handle = page.getByRole("button", { name: "Open sessions sidebar" });
-  await expect(handle).toBeVisible();
-  await handle.focus();
-  await expect(handle).toBeFocused();
-  await handle.press("Enter");
-  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
+  await expect(sidebar).toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("0");
+
+  const hoverEdge = page.locator("#sidebar-hover-edge");
+  expect(await hoverEdge.evaluate((element) => element.childElementCount)).toBe(0);
+  expect((await hoverEdge.boundingBox())?.width).toBeLessThanOrEqual(8);
+
+  await page.reload();
+  await expect(page.locator("#session-list .card").first()).toBeVisible();
+  await page.locator("#session-list .card").first().click();
+  await expect(sidebar).toHaveClass(/collapsed/);
+
+  await page.keyboard.press("Control+b");
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("1");
 });
 
 test("desktop grid actions expose intent", async ({ page }, testInfo) => {

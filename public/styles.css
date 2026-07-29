@@ -2257,36 +2257,15 @@ body.no-animations, body.no-animations * {
   /* Main area fills remaining space */
   #view-container { flex: 1; min-width: 0; }
 
-  /* Hover edge — invisible trigger to re-open collapsed sidebar */
+  /* Narrow, invisible hover target to re-open a collapsed sidebar. */
   #sidebar-hover-edge {
     position: fixed;
-    left: 0;
-    top: 50%;
-    width: 22px;
-    height: 68px;
-    transform: translateY(-50%);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
-    transition: opacity 0.12s ease, visibility 0s linear 0.12s;
-    border: 1px solid var(--accent-border);
-    border-left: 0;
-    border-radius: 0 var(--radius-md) var(--radius-md) 0;
-    background: rgba(15,15,15,0.94);
-    color: var(--accent);
-    font: 700 18px/1 var(--font-mono);
-    cursor: pointer;
-    box-shadow: 4px 0 18px rgba(0,0,0,0.42), 0 0 10px rgba(0,255,65,0.06);
+    inset: 0 auto 0 0;
+    width: 8px;
     z-index: 60;
   }
   #desktop-sidebar.collapsed ~ #sidebar-hover-edge {
-    opacity: 1;
-    visibility: visible;
-    pointer-events: auto;
-    transition-delay: 0.2s, 0.2s;
+    display: block;
   }
   body.sessions-expanded #sidebar-hover-edge {
     display: none !important;
