@@ -16,6 +16,9 @@ type WolfpackTestWindow = Window & {
     gridSessions: Array<{ readonly session: string; readonly machine?: string; readonly controller?: unknown }>;
     preservedGridSessions: Array<{ readonly session: string; readonly machine?: string }>;
     delegationGridSessions: Array<{ readonly session: string; readonly controller?: unknown; readonly _collapsed?: boolean }>;
+    sidebarAutoExpanded?: boolean;
+    sidebarCollapsed?: boolean;
+    sidebarPinned?: boolean;
   };
 };
 
@@ -45,6 +48,76 @@ async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>
   });
   return sockets;
 }
+
+function identity(id: string, name: string, parent?: { readonly id: string; readonly name: string }): {
+  readonly wolfpackSessionId: string;
+  readonly wolfpackSessionName: string;
+  readonly parentSession?: {
+    readonly wolfpackSessionId: string;
+    readonly wolfpackSessionName: string;
+  };
+} {
+  return {
+    wolfpackSessionId: id,
+    wolfpackSessionName: name,
+    ...(parent && {
+      parentSession: {
+        wolfpackSessionId: parent.id,
+        wolfpackSessionName: parent.name,
+      },
+    }),
+  };
+}
+
+test("desktop opening delegation grid from auto-expanded sidebar collapses unpinned sidebar", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
+  });
+
+  const parent = { id: "parent-id", name: "parent" };
+  const sockets = await routeHydratedPty(page);
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          { name: "solo", lastLine: "solo", triage: "idle", runtimeState: { state: "idle", unseen: false }, identity: identity("solo-id", "solo") },
+          { name: parent.name, lastLine: "coordinating", triage: "running", runtimeState: { state: "running", unseen: false }, identity: identity(parent.id, parent.name) },
+          { name: "child", lastLine: "waiting", triage: "idle", runtimeState: { state: "needs-input", unseen: true }, identity: identity("child-id", "child", parent) },
+        ],
+      }),
+    });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("solo"));
+  await expect.poll(() => sockets.has("solo")).toBe(true);
+
+  const sidebar = page.locator("#desktop-sidebar");
+  await expect(sidebar).toHaveClass(/collapsed/);
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.sidebarAutoExpanded)).toBe(true);
+
+  await page.locator("#sidebar-session-list .card", { has: page.locator(".card-name", { hasText: parent.name }) }).first().locator(".card-name").click();
+  await expect(page.locator("#delegation-grid-shell")).toBeVisible();
+
+  expect(await page.evaluate(() => {
+    const stateWindow = window as unknown as WolfpackTestWindow;
+    return {
+      sidebarClassCollapsed: document.getElementById("desktop-sidebar")?.classList.contains("collapsed") ?? false,
+      sidebarAutoExpanded: stateWindow.state.sidebarAutoExpanded,
+      sidebarCollapsed: stateWindow.state.sidebarCollapsed,
+      sidebarPinned: stateWindow.state.sidebarPinned,
+    };
+  })).toEqual({
+    sidebarClassCollapsed: true,
+    sidebarAutoExpanded: false,
+    sidebarCollapsed: true,
+    sidebarPinned: false,
+  });
+});
 
 test("desktop groups structured sub-agents directly under their parent", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop parent-child session grouping");
