@@ -10,6 +10,8 @@ import {
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldSubmitMessageInputOnEnter,
   shouldReleaseScrollLockOnKeydown,
+  terminalDataFromBeforeInput,
+  terminalDataFromKeydownForBeforeInputDedupe,
 } from "../../src/terminal-input";
 
 // ── Copy handler tests (shouldInterceptCopy) ──
@@ -122,6 +124,45 @@ describe("desktop terminal: binary input chunking (splitTerminalInputBytes)", ()
 
   test("rejects invalid max frame size", () => {
     expect(() => splitTerminalInputBytes(new Uint8Array([1]), 0)).toThrow("maxBytes must be positive");
+  });
+});
+
+// ── Mobile native textarea input bridge ──
+
+describe("mobile terminal: native textarea beforeinput bridge", () => {
+  test("maps soft-keyboard text to terminal stdin", () => {
+    expect(terminalDataFromBeforeInput({ inputType: "insertText", data: "a", isComposing: false })).toBe("a");
+  });
+
+  test("maps mobile line breaks and deletion to terminal control bytes", () => {
+    expect(terminalDataFromBeforeInput({ inputType: "insertLineBreak", data: null, isComposing: false })).toBe("\r");
+    expect(terminalDataFromBeforeInput({ inputType: "deleteContentBackward", data: null, isComposing: false })).toBe("\x7f");
+    expect(terminalDataFromBeforeInput({ inputType: "deleteContentForward", data: null, isComposing: false })).toBe("\x1b[3~");
+  });
+
+  test("ignores active IME composition beforeinput events", () => {
+    expect(terminalDataFromBeforeInput({ inputType: "insertText", data: "你", isComposing: true })).toBeNull();
+  });
+
+  test("records keydown bytes that duplicate later beforeinput events", () => {
+    expect(terminalDataFromKeydownForBeforeInputDedupe({
+      key: "b",
+      code: "KeyB",
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      isComposing: false,
+      keyCode: 66,
+    })).toBe("b");
+    expect(terminalDataFromKeydownForBeforeInputDedupe({
+      key: "Enter",
+      code: "Enter",
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      isComposing: false,
+      keyCode: 13,
+    })).toBe("\r");
   });
 });
 

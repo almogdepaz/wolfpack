@@ -49,6 +49,61 @@ export function splitTerminalInputBytes(
   return chunks;
 }
 
+export interface TerminalBeforeInputEvent {
+  readonly inputType: string;
+  readonly data: string | null;
+  readonly isComposing: boolean;
+}
+
+export function terminalDataFromBeforeInput(event: TerminalBeforeInputEvent): string | null {
+  if (event.isComposing) return null;
+  switch (event.inputType) {
+    case "insertText":
+    case "insertReplacementText":
+      return event.data && event.data.length > 0 ? event.data.replace(/\n/g, "\r") : null;
+    case "insertLineBreak":
+    case "insertParagraph":
+      return "\r";
+    case "deleteContentBackward":
+      return "\x7f";
+    case "deleteContentForward":
+      return "\x1b[3~";
+    default:
+      return null;
+  }
+}
+
+export interface TerminalKeydownDedupeEvent {
+  readonly key: string;
+  readonly code: string;
+  readonly ctrlKey: boolean;
+  readonly altKey: boolean;
+  readonly metaKey: boolean;
+  readonly isComposing: boolean;
+  readonly keyCode: number;
+}
+
+export function terminalDataFromKeydownForBeforeInputDedupe(event: TerminalKeydownDedupeEvent): string | null {
+  if (event.isComposing || event.keyCode === 229) return null;
+  if (!(event.ctrlKey && !event.altKey) && !(event.altKey && !event.ctrlKey) && !event.metaKey && event.key.length === 1) {
+    return event.key;
+  }
+  if (event.ctrlKey || event.altKey || event.metaKey) return null;
+  switch (event.code) {
+    case "Enter":
+    case "NumpadEnter":
+      return "\r";
+    case "Tab":
+      return "\t";
+    case "Backspace":
+      return "\x7f";
+    case "Delete":
+      return "\x1b[3~";
+    default:
+      return null;
+  }
+}
+
 export interface MessageInputEnterEvent {
   readonly key: string;
   readonly shiftKey: boolean;
