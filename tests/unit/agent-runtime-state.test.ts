@@ -7,6 +7,7 @@ import {
   AGENT_STATUS_FRESHNESS,
   AGENT_STATUS_SOURCE,
   AGENT_STATUS_STATE,
+  AGENT_STATUS_STATES,
 } from "../../src/agent-status-contract.ts";
 import {
   AgentRuntimeStateStore,
@@ -365,9 +366,70 @@ describe("agent runtime state persistence and acknowledgement", () => {
 });
 
 describe("agent runtime state ui", () => {
-  test("uses canonical runtime projection ahead of legacy triage", () => {
-    expect(sessionRuntimeUi({ runtimeState: { state: AGENT_STATUS_STATE.NEEDS_INPUT }, triage: "running" }).label).toBe("needs input");
-    expect(sessionRuntimeUi({ runtimeState: { state: AGENT_STATUS_STATE.OUTPUT }, triage: "idle" }).label).toBe("output");
-    expect(sessionRuntimeUi({ triage: "running" }).label).toBe("running");
+  test("requires valid provenance before showing a semantic state", () => {
+    for (const state of AGENT_STATUS_STATES) {
+      expect(sessionRuntimeUi({ runtimeState: { state }, triage: "idle" }).label).toBe("quiet");
+    }
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.NEEDS_INPUT,
+        authority: AGENT_STATUS_AUTHORITY.MANIFEST,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.LOCAL_MANIFEST,
+        stale: false,
+      },
+      triage: "idle",
+    }).label).toBe("needs input");
+  });
+
+  test("describes observed fallback activity without claiming process state", () => {
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.OUTPUT,
+        authority: AGENT_STATUS_AUTHORITY.FALLBACK,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.SCREEN_FALLBACK,
+        stale: false,
+      },
+      triage: "idle",
+    }).label).toBe("output");
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.IDLE,
+        authority: AGENT_STATUS_AUTHORITY.FALLBACK,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.SCREEN_FALLBACK,
+        stale: false,
+      },
+      triage: "running",
+    }).label).toBe("quiet");
+    expect(sessionRuntimeUi({ triage: "running" }).label).toBe("output");
+    expect(sessionRuntimeUi({ triage: "idle" }).label).toBe("quiet");
+  });
+
+  test("rejects a state that is inconsistent with its claimed source", () => {
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.DONE,
+        authority: AGENT_STATUS_AUTHORITY.FALLBACK,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.SCREEN_FALLBACK,
+        stale: false,
+      },
+      triage: "idle",
+    }).label).toBe("quiet");
+  });
+
+  test("uses broker-backed availability labels", () => {
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.UNKNOWN,
+        authority: AGENT_STATUS_AUTHORITY.BROKER,
+        freshness: AGENT_STATUS_FRESHNESS.UNKNOWN,
+        source: AGENT_STATUS_SOURCE.BROKER_LIVENESS,
+        stale: false,
+      },
+      triage: "idle",
+    }).label).toBe("unavailable");
   });
 });

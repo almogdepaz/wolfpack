@@ -236,7 +236,6 @@ export const state = {
   lastSessionGroups: [],
   firstLoad: true,
   lastSessionsHtml: "",
-  attentionOnly: false,
   loadSessionsEpoch: 0,
   selfName: "",
   selfVersion: "",

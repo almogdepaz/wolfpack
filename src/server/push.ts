@@ -472,9 +472,10 @@ function sessionNotificationLabel(state: SessionNotificationState): string {
   if (state === AGENT_STATUS_STATE.NEEDS_INPUT) return "Needs input";
   if (state === AGENT_STATUS_STATE.DONE) return "Done";
   if (state === AGENT_STATUS_STATE.FAILED) return "Failed";
-  if (state === AGENT_STATUS_STATE.OFF || state === AGENT_STATUS_STATE.STOPPED || state === AGENT_STATUS_STATE.IDLE) return "Stopped";
-  if (state === AGENT_STATUS_STATE.UNKNOWN) return "Unknown";
-  return "Stopped";
+  if (state === AGENT_STATUS_STATE.OFF || state === AGENT_STATUS_STATE.STOPPED) return "Stopped";
+  if (state === AGENT_STATUS_STATE.IDLE) return "Quiet";
+  if (state === AGENT_STATUS_STATE.UNKNOWN) return "Unavailable";
+  return "Quiet";
 }
 
 /** Check session runtime transitions and fire push notifications when an active session stops needing live watch. */
@@ -531,6 +532,7 @@ export const _testing = {
   PUSH_DEBOUNCE_MS,
   PUSH_FETCH_TIMEOUT_MS,
   fetchWithDeadline,
+  sessionNotificationLabel,
   resetDebounce: _testingResetDebounce,
   get notifyTimestamps() { return notifyTimestamps; },
   set notifyTimestamps(v: number[]) {

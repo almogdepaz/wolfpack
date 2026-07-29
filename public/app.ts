@@ -51,7 +51,7 @@ import {
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
 import { AGENT_KIND } from "../src/agent-kind";
-import { sessionRuntimeUi } from "../src/agent-runtime-ui";
+import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
 import {
   delegationChildSummaryText,
   delegationGridMembers,
@@ -2744,117 +2744,6 @@ function triageUi(session): ReturnType<typeof sessionRuntimeUi> {
   return sessionRuntimeUi(session && typeof session === "object" ? session : { triage: session });
 }
 
-const ATTENTION_STATES = new Set([
-  AGENT_STATUS_STATE.NEEDS_INPUT,
-  AGENT_STATUS_STATE.FAILED,
-]);
-const UNSEEN_COMPLETION_STATES = new Set([
-  AGENT_STATUS_STATE.DONE,
-  AGENT_STATUS_STATE.STOPPED,
-]);
-
-function sessionNeedsAttention(session): boolean {
-  const runtimeState = session?.runtimeState?.state;
-  if (ATTENTION_STATES.has(runtimeState)) return true;
-  return session?.runtimeState?.unseen === true && UNSEEN_COMPLETION_STATES.has(runtimeState);
-}
-
-function sessionHasUnseenAttention(session): boolean {
-  return sessionNeedsAttention(session) && session?.runtimeState?.unseen === true;
-}
-
-function attentionDelegationRows<T extends DelegationSessionLike>(
-  rows: readonly DelegationSessionRow<T>[],
-): DelegationSessionRow<T>[] {
-  const included = new Set<string>();
-  for (const row of rows) {
-    if (!sessionNeedsAttention(row.session)) continue;
-    included.add(sessionIdentityId(row.session) || row.session.name);
-  }
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const row of rows) {
-      const key = sessionIdentityId(row.session) || row.session.name;
-      if (!included.has(key) || !row.parent) continue;
-      const parentKey = row.parent.wolfpackSessionId || row.parent.wolfpackSessionName;
-      if (!included.has(parentKey)) {
-        included.add(parentKey);
-        changed = true;
-      }
-    }
-  }
-  return rows.filter((row) => included.has(sessionIdentityId(row.session) || row.session.name));
-}
-
-function attentionMarkerHtml(session, machineUrl = ""): string {
-  if (!sessionHasUnseenAttention(session)) return "";
-  const machineArgument = machineUrl ? `, '${escAttr(machineUrl)}'` : "";
-  return `<span class="unseen-marker">unseen</span><button type="button" class="attention-clear-btn" aria-label="Clear attention for ${escAttr(session.name)}" onclick="clearSessionAttention('${escAttr(session.name)}', event${machineArgument})">clear</button>`;
-}
-
-function attentionCount(): number {
-  return state.allSessions.filter(sessionNeedsAttention).length;
-}
-
-function updateAttentionToolbar(): void {
-  const count = attentionCount();
-  const countElement = document.getElementById("attention-count");
-  const summary = document.getElementById("attention-summary");
-  const filter = document.getElementById("attention-filter-btn");
-  const clearAll = document.getElementById("attention-clear-all-btn") as HTMLButtonElement | null;
-  if (countElement) countElement.textContent = String(count);
-  if (summary) summary.textContent = count === 0 ? "No sessions need attention" : `${count} ${count === 1 ? "session needs" : "sessions need"} attention`;
-  if (filter) {
-    filter.setAttribute("aria-pressed", state.attentionOnly ? "true" : "false");
-    filter.setAttribute("aria-label", state.attentionOnly ? "Show all sessions" : "Show attention sessions");
-  }
-  if (clearAll) clearAll.hidden = !state.allSessions.some(sessionHasUnseenAttention);
-}
-
-function toggleAttentionFilter(): void {
-  state.attentionOnly = !state.attentionOnly;
-  state.lastSessionsHtml = "";
-  updateAttentionToolbar();
-  renderSessionListFromState();
-}
-
-function sessionForAttention(name: string, machineUrl: string) {
-  return state.allSessions.find((session) => session.name === name && (session.machineUrl || "") === machineUrl);
-}
-
-async function acknowledgeSessionAttention(name: string, machineUrl: string): Promise<void> {
-  const session = sessionForAttention(name, machineUrl);
-  const runtimeState = session?.runtimeState;
-  const sessionId = sessionIdentityId(session) || session?.name;
-  if (!sessionId || runtimeState?.unseen !== true || !Number.isInteger(runtimeState.transitionSequence)) return;
-  const response = await api<{ runtimeState?: typeof runtimeState }>("/agent-runtime-state/ack", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, transitionSequence: runtimeState.transitionSequence }),
-  }, machineUrl || undefined);
-  session.runtimeState = response.runtimeState || { ...runtimeState, unseen: false };
-  for (const group of state.lastSessionGroups) {
-    const matching = group.sessions.find((candidate) => candidate.name === name && (group.machine.url || "") === machineUrl);
-    if (matching) matching.runtimeState = session.runtimeState;
-  }
-  state.lastSessionsHtml = "";
-  updateAttentionToolbar();
-  renderSessionListFromState();
-  renderSidebar();
-}
-
-function clearSessionAttention(name: string, event?: Event, machineUrl = ""): void {
-  event?.stopPropagation();
-  event?.preventDefault();
-  void acknowledgeSessionAttention(name, machineUrl);
-}
-
-async function clearAllSessionAttention(): Promise<void> {
-  const unseen = state.allSessions.filter(sessionHasUnseenAttention);
-  await Promise.all(unseen.map((session) => acknowledgeSessionAttention(session.name, session.machineUrl || "")));
-}
-
 function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLike>): { readonly className: string; readonly dataAttribute: string } {
   const classes: string[] = [];
   if (row.childSummary) classes.push("delegation-parent-card");
@@ -2957,11 +2846,9 @@ function renderMachineGroupHtml(g, multiMachine) {
   } else if (g.online) {
     if (g.sessions.length) {
       const machineKey = multiMachine ? g.machine.url || "" : "";
-      const delegationRows = state.attentionOnly
-        ? attentionDelegationRows(projectDelegationSessions(g.sessions))
-        : projectDelegationSessions(g.sessions);
+      const delegationRows = projectDelegationSessions(g.sessions);
       const useCollapsibleSessionCards = !isDesktop();
-      const rows = useCollapsibleSessionCards && !state.attentionOnly
+      const rows = useCollapsibleSessionCards
         ? visibleSidebarDelegationRows(delegationRows, machineKey)
         : delegationRows;
       html += rows.map((row, i) => {
@@ -2970,11 +2857,11 @@ function renderMachineGroupHtml(g, multiMachine) {
         const ui = triageUi(s);
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = delegationCardAttributes(row);
-        return `<div class="card card-stagger ${anim} ${ui.card}${sessionNeedsAttention(s) ? " attention-session" : ""}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
+        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
           <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})"></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span>${attentionMarkerHtml(s, machineKey)}</div>
+            <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
             ${delegationParentSummaryHtml(row)}
             ${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}
             ${delegationParentMissingHtml(row)}
@@ -3009,9 +2896,7 @@ function delegationWorkspaceContext(sessionName: string, machineUrl: string): De
 
 function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, machine: string): DelegationGridMember {
   const ui = triageUi(row.session);
-  const runtimeState = row.session.runtimeState?.state;
-  const idle = runtimeState === AGENT_STATUS_STATE.IDLE
-    || (!runtimeState && row.session.triage !== AGENT_STATUS_STATE.RUNNING);
+  const idle = sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE;
   return {
     session: row.session.name,
     machine,
@@ -3207,7 +3092,6 @@ async function loadSessionsOnce() {
     if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
-    updateAttentionToolbar();
     const html = renderMachineGroupHtml(g, false);
     if (html !== state.lastSessionsHtml) { el.innerHTML = html; state.lastSessionsHtml = html; }
     syncDelegationWorkspace();
@@ -3293,7 +3177,6 @@ async function loadSessionsOnce() {
     for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
   }
   state.allSessions = out;
-  updateAttentionToolbar();
   syncDelegationWorkspace();
   checkStateTransitions(groups);
 }
@@ -3354,7 +3237,6 @@ function collapseAutoExpandedSidebarImmediately(): void {
 
 async function openSession(name, machineUrl) {
   const targetMachine = machineUrl || "";
-  void acknowledgeSessionAttention(name, targetMachine);
   if (isDesktop()) {
     const delegation = delegationWorkspaceContext(name, targetMachine);
     if (delegation) {
@@ -5342,11 +5224,11 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
-  return `<div class="card ${ui.card}${sessionNeedsAttention(s) ? " attention-session" : ""}${activeClass}${grouping.className}"${grouping.dataAttribute}>
+  return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}>
     <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}" onclick="${onclick}"></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
-      <div class="card-name">${esc(s.name)}${attentionMarkerHtml(s, machineUrl)}</div>
+      <div class="card-name">${esc(s.name)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${sidebarDelegationToggleHtml(row, machineUrl)}
       ${delegationParentMissingHtml(row)}
@@ -5523,8 +5405,6 @@ function bindHtmlEventListeners(): void {
   // Header
   on("session-chip", "click", () => toggleDrawer());
   on("gear-btn", "click", () => showSettings());
-  on("attention-filter-btn", "click", () => toggleAttentionFilter());
-  on("attention-clear-all-btn", "click", () => { void clearAllSessionAttention(); });
 
   // Delegation workspace
   on("delegation-focus-back", "click", () => returnToDelegationGrid());
@@ -5638,7 +5518,7 @@ if ("serviceWorker" in navigator) {
 // Assigning to window ensures they survive bundling and are callable from inline handlers.
 Object.assign(window, {
   // session/project onclick handlers
-  openSession, killSession, selectProject, showProjectPicker, clearSessionAttention,
+  openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
   createSessionWithAgent, deleteCustomCmd, removeMachineUI,
   // agent settings onclick handlers (inline in renderAgentsList)

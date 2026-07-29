@@ -250,11 +250,6 @@ header h1 {
   overflow-y: auto;
   padding: 6px;
 }
-.sessions-attention-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: 10px; }
-.sessions-attention-toolbar button { min-height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 9px; background: var(--bg-elevated); color: var(--text-muted); font: inherit; cursor: pointer; }
-.sessions-attention-toolbar button[aria-pressed="true"] { border-color: var(--warning); color: var(--warning-hot); background: rgba(255,102,0,0.08); }
-#attention-summary { flex: 1; }
-#attention-clear-all-btn[hidden] { display: none; }
 .card {
   background: var(--bg-surface-gradient);
   border: 1px solid var(--border);
@@ -302,11 +297,6 @@ header h1 {
 .card:active:not(:has(.kill-btn:active)) {
   background: linear-gradient(145deg, #171717 0%, var(--bg-surface) 100%);
   border-color: var(--border-hover);
-}
-.card.attention,
-.card.attention-session {
-  border-left: 3px solid var(--warning);
-  box-shadow: inset 4px 0 16px -8px rgba(255,204,0,0.12);
 }
 .card.active-session {
   border-left: 3px solid var(--accent);
@@ -392,9 +382,6 @@ header h1 {
 .triage-badge.needs-input { color: var(--warning-hot); background: #ff660018; }
 .triage-badge.failed { color: var(--danger); background: #cc333318; }
 .triage-badge.idle, .triage-badge.done, .triage-badge.stopped, .triage-badge.off, .triage-badge.unknown { color: var(--text-dim); background: #55555515; }
-.unseen-marker { padding: 1px 5px; border-radius: 999px; color: var(--warning-hot); background: rgba(255,102,0,0.12); font-size: 8px; letter-spacing: 0.6px; text-transform: uppercase; }
-.card .attention-clear-btn { pointer-events: auto; border: 0; padding: 2px 4px; background: transparent; color: var(--text-dim); font: inherit; font-size: 9px; text-decoration: underline; cursor: pointer; }
-.card .attention-clear-btn:hover, .card .attention-clear-btn:focus-visible { color: var(--warning-hot); }
 .backend-badge {
   font-size: 8px;
   font-weight: 600;

@@ -39,7 +39,7 @@ function session(
 }
 
 describe("delegation session projection", () => {
-  test("renders parent trees with attention children before stable child order and runtime summaries", () => {
+  test("renders parent trees with stable child order and count-only summaries", () => {
     const rows = projectDelegationSessions([
       session("parent", "parent-id", { state: AGENT_STATUS_STATE.RUNNING }),
       session("z-idle-child", "child-3", { parentId: "parent-id", parentName: "parent", state: AGENT_STATUS_STATE.IDLE }),
@@ -56,15 +56,8 @@ describe("delegation session projection", () => {
       "solo",
     ]);
     expect(rows.map(row => row.role)).toEqual(["root", "child", "child", "child", "root"]);
-    expect(rows[0]?.childSummary).toEqual({
-      total: 3,
-      needsInput: 1,
-      failedStopped: 0,
-      doneUnseen: 1,
-      workingOutput: 0,
-      idle: 1,
-    });
-    expect(delegationChildSummaryText(rows[0]!.childSummary!)).toBe("3 children · 1 needs input · 1 done unseen · 1 idle");
+    expect(rows[0]?.childSummary).toEqual({ total: 3 });
+    expect(delegationChildSummaryText(rows[0]!.childSummary!)).toBe("3 children");
   });
 
   test("keeps children with missing parents visible as explicit orphans", () => {
@@ -94,11 +87,11 @@ describe("delegation session projection", () => {
       { name: "orphan-a", role: "orphan" },
       { name: "orphan-a-child", role: "child" },
     ]);
-    expect(rows[0]?.childSummary).toMatchObject({ total: 1, needsInput: 1 });
-    expect(rows[2]?.childSummary).toMatchObject({ total: 1, workingOutput: 1 });
+    expect(rows[0]?.childSummary).toEqual({ total: 1 });
+    expect(rows[2]?.childSummary).toEqual({ total: 1 });
   });
 
-  test("summarizes child status from canonical runtime state buckets", () => {
+  test("does not expose runtime state in child summaries", () => {
     const rows = projectDelegationSessions([
       session("parent", "parent-id"),
       session("failed", "child-1", { parentId: "parent-id", parentName: "parent", state: AGENT_STATUS_STATE.FAILED }),
@@ -108,15 +101,22 @@ describe("delegation session projection", () => {
       session("done-seen", "child-5", { parentId: "parent-id", parentName: "parent", state: AGENT_STATUS_STATE.DONE, unseen: false }),
     ]);
 
-    expect(rows[0]?.childSummary).toEqual({
-      total: 5,
-      needsInput: 0,
-      failedStopped: 2,
-      doneUnseen: 0,
-      workingOutput: 2,
-      idle: 1,
-    });
-    expect(delegationChildSummaryText(rows[0]!.childSummary!)).toBe("5 children · 2 failed/stopped · 2 working/output · 1 idle");
+    expect(rows[0]?.childSummary).toEqual({ total: 5 });
+    expect(delegationChildSummaryText(rows[0]!.childSummary!)).toBe("5 children");
+  });
+
+  test("does not summarize an unproven semantic claim as actionable state", () => {
+    const parent = session("parent", "parent-id");
+    const child = {
+      ...session("child", "child-id", { parentId: "parent-id", parentName: "parent" }),
+      triage: "idle",
+      runtimeState: { state: AGENT_STATUS_STATE.NEEDS_INPUT, unseen: true },
+    };
+
+    const rows = projectDelegationSessions([parent, child]);
+
+    expect(rows[0]?.childSummary).toEqual({ total: 1 });
+    expect(delegationChildSummaryText(rows[0]!.childSummary!)).toBe("1 child");
   });
 
   test("returns a root and recursive descendants in projection order", () => {

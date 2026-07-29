@@ -56,7 +56,8 @@ export async function lsSessions(argv: readonly string[] = []): Promise<number> 
   print("");
   for (const s of sessions) {
     const triage = s.triage ?? "idle";
-    const colored = triage === "running" ? green(triage) : triage === "idle" ? yellow(triage) : dim(triage);
+    const activity = triage === "running" ? "output" : triage === "idle" ? "quiet" : triage;
+    const colored = triage === "running" ? green(activity) : triage === "idle" ? yellow(activity) : dim(activity);
     print(`    ${bold(s.name)}  ${colored}`);
     if (s.lastLine) print(`      ${dim(s.lastLine)}`);
   }
