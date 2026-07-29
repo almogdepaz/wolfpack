@@ -42,8 +42,8 @@
   <body>
     <header>
       <div class="header-left">
-        <button class="back-btn" id="back-btn">BACK</button>
-        <div id="session-chip"><span id="chip-label"></span><span class="chip-chevron">&#9660;</span><span class="chip-handle"></span></div>
+        <button class="back-btn" id="back-btn" type="button">← Back</button>
+        <button id="session-chip" type="button" aria-label="Switch session"><span id="chip-label"></span><span class="chip-chevron" aria-hidden="true">&#9660;</span><span class="chip-handle" aria-hidden="true"></span></button>
       </div>
       <div class="header-center" id="header-center">
         <div class="flex-row">
@@ -53,22 +53,22 @@
       </div>
       <div class="header-right">
         <div id="header-machine-label" class="machine-label"></div>
-        <button class="settings-gear" id="gear-btn">&#9881;</button>
+        <button class="settings-gear icon-btn" id="gear-btn" type="button" aria-label="Settings" title="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
       </div>
     </header>
-    <div id="desktop-sidebar" class="collapsed">
+    <div id="desktop-sidebar" class="collapsed" aria-hidden="true" inert>
       <div class="sidebar-header">
         <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
         <h1>WOLFPACK</h1>
         <div class="sidebar-controls">
-          <button id="sidebar-settings-btn" title="Settings">&#9881;</button>
-          <button id="sidebar-expand-btn" title="Expand sessions">&#x26F6;</button>
-          <button id="sidebar-collapse-btn" title="Pin sidebar"><span class="pin-icon">&#x1F4CC;</span></button>
+          <button id="sidebar-settings-btn" type="button" title="Settings" aria-label="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
+          <button id="sidebar-expand-btn" type="button" title="Expand sessions" aria-label="Expand sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></button>
+          <button id="sidebar-collapse-btn" type="button" title="Pin sidebar" aria-label="Pin sidebar"><span class="pin-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg></span></button>
         </div>
       </div>
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
     </div>
-    <div id="sidebar-hover-edge"></div>
+    <div id="sidebar-hover-edge" aria-hidden="true"></div>
     <div id="drawer-backdrop"></div>
     <div id="git-status-overlay"></div>
     <div id="session-drawer">
@@ -84,8 +84,8 @@
           <h1 class="expanded-title">WOLFPACK</h1>
         </div>
         <div class="expanded-controls">
-          <button id="expanded-settings-btn" title="Settings">&#9881;</button>
-          <button id="expanded-collapse-btn" title="Collapse view">&#x26F6;</button>
+          <button id="expanded-settings-btn" type="button" title="Settings" aria-label="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
+          <button id="expanded-collapse-btn" type="button" title="Collapse sessions" aria-label="Collapse sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 9-5-5M4 9V4h5M15 9l5-5M15 4h5v5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5"/></svg></button>
         </div>
       </div>
       <div id="session-list" class="list"></div>
@@ -250,15 +250,15 @@
       <div id="desktop-grid-container"></div>
       <div id="cmd-palette"></div>
       <div id="kb-accessory">
-        <button class="kb-key kb-enter" data-key="Enter">&#9166;</button>
-        <button class="kb-key" data-key="Escape">Esc</button>
-        <button class="kb-key" data-key="Up">&#9650;</button>
-        <button class="kb-key" data-key="Down">&#9660;</button>
-        <button class="kb-key" data-key="Left">&#9664;</button>
-        <button class="kb-key" data-key="Right">&#9654;</button>
-        <button class="kb-key kb-git">git</button>
-        <button class="kb-key kb-copy" aria-label="Copy session to clipboard">copy</button>
-        <button class="kb-key kb-open" id="kb-open-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
+        <button class="kb-key kb-enter" type="button" data-key="Enter" aria-label="Enter">&#9166;</button>
+        <button class="kb-key" type="button" data-key="Escape" aria-label="Escape">Esc</button>
+        <button class="kb-key" type="button" data-key="Up" aria-label="Arrow up">&#9650;</button>
+        <button class="kb-key" type="button" data-key="Down" aria-label="Arrow down">&#9660;</button>
+        <button class="kb-key" type="button" data-key="Left" aria-label="Arrow left">&#9664;</button>
+        <button class="kb-key" type="button" data-key="Right" aria-label="Arrow right">&#9654;</button>
+        <button class="kb-key kb-git" type="button" aria-label="Show git status">git</button>
+        <button class="kb-key kb-copy" type="button" aria-label="Copy session">copy</button>
+        <button class="kb-key kb-open" id="kb-open-btn" type="button" aria-label="Show keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
       </div>
       <div id="input-bar">
         <textarea
@@ -270,7 +270,7 @@
           autocapitalize="off"
           spellcheck="false"
         ></textarea>
-        <button id="send-btn">&#9889;<span class="hold-ring"></span></button>
+        <button id="send-btn" type="button" aria-label="Send message">&#9889;<span class="hold-ring" aria-hidden="true"></span></button>
       </div>
       <div id="msg-preview"></div>
     </div>

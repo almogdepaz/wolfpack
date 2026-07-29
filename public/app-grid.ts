@@ -203,7 +203,7 @@ function createGridCell(gs: GridSession, idx: number): HTMLElement {
       deps.focusDelegationSession?.(gs.session, gs.machine || "");
     });
   } else {
-    cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><div class="grid-cell-close" title="Remove from grid">&times;</div></div><div class="grid-cell-loading">Loading terminal</div>';
+    cell.innerHTML = '<div class="grid-cell-header"><div class="grid-cell-label">' + esc(gs.session) + '</div><button type="button" class="grid-cell-close" title="Remove from grid" aria-label="Remove ' + escAttr(gs.session) + ' from grid">&times;</button></div><div class="grid-cell-loading">Loading terminal</div>';
     cell.querySelector(".grid-cell-close")?.addEventListener("click", (event) => {
       event.stopPropagation();
       const index = parseInt(cell.dataset.gridIndex || "-1", 10);

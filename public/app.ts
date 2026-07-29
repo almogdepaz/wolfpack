@@ -2779,7 +2779,7 @@ function renderMachineGroupHtml(g, multiMachine) {
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
   const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" onclick="event.stopPropagation();alert('Running v${escAttr(g.machine.version || "?")} — newer version available on another machine')">⚠ UPDATE</span>` : "";
   let html = multiMachine ? `<div class="machine-group" data-machine="${mUrlAttr}">` : `<div class="machine-group">`;
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns"><button class="machine-add-btn" onclick="showProjectPicker('${mUrlAttr}')">+</button></div></div>`;
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns"><button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${mUrlAttr}')">+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -2805,7 +2805,7 @@ function renderMachineGroupHtml(g, multiMachine) {
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
-          <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
+          <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
         </div>`;
       }).join("");
     }
@@ -4719,6 +4719,14 @@ document.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (!mod) return;
 
+  // Cmd+B — toggle the persistent desktop sidebar without covering the terminal.
+  if (e.key.toLowerCase() === "b" && !state.sessionsExpanded) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.getElementById("sidebar-collapse-btn")?.click();
+    return;
+  }
+
   // Cmd+ArrowUp / Cmd+ArrowDown — previous/next session (grid focus or sidebar)
   if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     e.preventDefault();
@@ -5054,7 +5062,7 @@ function _renderSidebarNow() {
   if (!multiMachine) {
     // Single machine — simple list with + New
     const g = groups[0];
-    const sidebarBtns = '<div class="sidebar-top-btns"><div class="new-btn" onclick="showProjectPicker()">+ New Session</div></div>';
+    const sidebarBtns = '<div class="sidebar-top-btns"><button type="button" class="new-btn" aria-label="Start a session on this machine" onclick="showProjectPicker()"><span aria-hidden="true">+</span> New session</button></div>';
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
       html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), "").map(row => sidebarCardHtml(row, "")).join("");
@@ -5069,7 +5077,7 @@ function _renderSidebarNow() {
       const mName = esc(g.machine.name);
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
       html += `<div class="machine-group" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button class="machine-add-btn" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
       if (g.online && g.sessions.length) {
         html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
@@ -5100,7 +5108,8 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridBtnOnclick = machineUrl
     ? `toggleGrid('${escAttr(s.name)}', '${machineUrlAttr}', event)`
     : `toggleGrid('${escAttr(s.name)}', '', event)`;
-  const gridBtn = `<button class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${inGrid ? 'Remove from grid' : 'Add to grid'}">${inGrid ? '⊠' : '+'}</button>`;
+  const gridAction = inGrid ? "Remove from grid" : "Add to grid";
+  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute} onclick="${onclick}">
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
@@ -5112,14 +5121,17 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
-    <button class="kill-btn" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + machineUrlAttr + "'" : ''})">&times;</button>
+    <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + machineUrlAttr + "'" : ''})">&times;</button>
   </div>`;
 }
 
-function updatePinButton() {
-  const btn = document.getElementById("sidebar-collapse-btn");
-  btn.classList.toggle("pinned", state.sidebarPinned);
-  btn.title = state.sidebarPinned ? "Unpin sidebar" : "Pin sidebar";
+function updatePinButton(): void {
+  const button = document.getElementById("sidebar-collapse-btn");
+  if (!button) return;
+  const label = state.sidebarPinned ? "Unpin sidebar" : "Pin sidebar";
+  button.classList.toggle("pinned", state.sidebarPinned);
+  button.title = label;
+  button.setAttribute("aria-label", label);
 }
 
 function initSidebar() {
@@ -5132,6 +5144,16 @@ function initSidebar() {
     sidebar.classList.add("collapsed");
     state.sidebarCollapsed = true;
   }
+  const syncSidebarInteractivity = (): void => {
+    const collapsed = sidebar.classList.contains("collapsed");
+    sidebar.toggleAttribute("inert", collapsed);
+    sidebar.setAttribute("aria-hidden", String(collapsed));
+  };
+  new MutationObserver(syncSidebarInteractivity).observe(sidebar, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  syncSidebarInteractivity();
   // Body class drives layout: pinned → in flex flow (pushes main); unpinned →
   // overlay (doesn't affect terminal width).
   document.body.classList.toggle("sidebar-pinned", state.sidebarPinned);
@@ -5206,14 +5228,15 @@ function initSidebar() {
     }
   };
 
-  // Hover edge — expand on hover (only when unpinned and not in expanded mode)
-  hoverEdge.addEventListener("mouseenter", () => {
+  // Entering the narrow invisible edge temporarily opens an unpinned sidebar.
+  const openAutoSidebar = (): void => {
     if (state.sidebarCollapsed && !state.sidebarPinned && !state.sessionsExpanded) {
       state.sidebarTransitionIsHover = true;
       sidebar.classList.remove("collapsed");
       state.sidebarAutoExpanded = true;
     }
-  });
+  };
+  hoverEdge.addEventListener("mouseenter", openAutoSidebar);
 
   // Auto-collapse when mouse leaves sidebar (only if auto-expanded, not pinned)
   sidebar.addEventListener("mouseleave", () => {
