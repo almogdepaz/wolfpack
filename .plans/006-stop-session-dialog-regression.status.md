@@ -2,15 +2,15 @@
 
 - plan: `.plans/006-stop-session-dialog-regression.md`
 - plan sha256: `f3c2ac334171d9b57c8d20209e4b9f975bd084bcafd04fb2026fa72c456958db`
-- overall state: `in_progress`
-- current phase: `4. verify and deliver`
+- overall state: `accepted`
+- current phase: `complete`
 
 ## task states
 
 - 1: `accepted`
 - 2: `accepted`
 - 3: `accepted`
-- 4: `in_progress`
+- 4: `accepted`
 
 ## goal lock
 
@@ -37,11 +37,15 @@
 - green: post-build `bun run typecheck` and `git diff --check` — exit 0.
 - visual inspection: rendered stop dialog has wolfpack accent frame/title, dark rounded controls, and a distinct destructive action.
 - note: the first isolated-worktree build lacked the ignored Ghostty bundle; rerun against the verified primary-worktree bundle passed.
+- commit: `863705bd64331776aa3b20f2a97dfa3dfbd6f207`.
+- pr: `#246` targeting `main` — https://github.com/almogdepaz/wolfpack/pull/246.
+- deploy: `scripts/deploy-local.sh --broker=no` — server pid `16003 -> 49761`; broker pid preserved at `73645`; 5 sessions preserved.
+- post-deploy: served `app.bundle.js` sha256 matches local build at `c08d8033ba26f44be06245f763afc7bbf94a354d606d3bc4899998cfb7207d56`; `/api/info` reports version `1.6.7`.
 
 ## blockers
 
-- none.
+- none. github checks were in progress when delivery completed locally.
 
 ## next action
 
-run full verification, inspect the rendered dialog, commit/push, open the pr, and deploy without the broker.
+await pr review and github checks.
