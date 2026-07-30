@@ -108,11 +108,11 @@
     <div id="projects-view" class="view" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Cancel</button>
       <label class="project-search-field" for="new-project-name">
-        <span>Search existing projects</span>
+        <span>Projects</span>
         <input
           id="new-project-name"
           type="search"
-          placeholder="Search existing projects"
+          placeholder="Filter existing projects"
           autocomplete="off"
           autocorrect="off"
           autocapitalize="off"
@@ -121,17 +121,17 @@
       <div id="project-list" class="list"></div>
       <div class="new-project-row">
         <label for="new-project-create-name">
-          <span>New project name</span>
+          <span>Create a project</span>
           <input
             id="new-project-create-name"
             type="text"
-            placeholder="New project name"
+            placeholder="Project name"
             autocomplete="off"
             autocorrect="off"
             autocapitalize="off"
           />
         </label>
-        <button type="button">Create new project</button>
+        <button type="button" aria-label="Create new project">Create</button>
       </div>
     </div>
 

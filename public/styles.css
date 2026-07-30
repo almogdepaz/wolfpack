@@ -858,6 +858,7 @@ body.no-animations, body.no-animations * {
   text-transform: uppercase;
 }
 .project-search-field { display: grid; }
+.new-project-row { align-items: flex-end; }
 .new-project-row label { display: grid; flex: 1; gap: 6px; }
 .project-search-field input,
 .new-project-row input {
@@ -1913,11 +1914,15 @@ body.no-animations, body.no-animations * {
     font-size: 13px;
     min-height: 0;
   }
+  .new-project-row input,
+  .new-project-row button {
+    height: 36px;
+    min-height: 36px;
+  }
   .new-project-row button {
     border-radius: var(--radius-sm);
     padding: 6px 12px;
     font-size: 11px;
-    min-height: 0;
   }
   .settings-section {
     padding: 12px;

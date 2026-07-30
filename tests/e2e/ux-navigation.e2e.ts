@@ -525,7 +525,7 @@ test("project picker filters fetched projects by typed prefix without refetching
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
   const projectNameInput = page.locator("#new-project-name");
   await expect(projectNameInput).toBeFocused();
-  await expect(projectNameInput).toHaveAttribute("placeholder", "Search existing projects");
+  await expect(projectNameInput).toHaveAttribute("placeholder", "Filter existing projects");
   const projectNames = page.locator("#project-list .card-name");
   await expect(projectNames).toHaveText(["loom", "LoopTools", "catalog", "LOOKOUT"]);
 
@@ -544,6 +544,28 @@ test("project picker filters fetched projects by typed prefix without refetching
   await projectNameInput.fill("LOOPT");
   await page.locator("#project-list .card").click();
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+});
+
+test("project picker uses concise labels without repeating placeholders", async ({ page }) => {
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+
+  await expect(page.getByText("Projects", { exact: true })).toBeVisible();
+  await expect(page.locator("#new-project-name")).toHaveAttribute("placeholder", "Filter existing projects");
+  await expect(page.getByText("Create a project", { exact: true })).toBeVisible();
+  await expect(page.locator("#new-project-create-name")).toHaveAttribute("placeholder", "Project name");
+  await expect(page.getByRole("button", { name: "Create new project", exact: true })).toHaveText("Create");
+});
+
+test("project creation input and action stay the same height", async ({ page }) => {
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+
+  const inputBox = await page.locator("#new-project-create-name").boundingBox();
+  const buttonBox = await page.getByRole("button", { name: "Create new project", exact: true }).boundingBox();
+  expect(inputBox).not.toBeNull();
+  expect(buttonBox).not.toBeNull();
+  expect(Math.abs((inputBox?.height ?? 0) - (buttonBox?.height ?? 0))).toBeLessThanOrEqual(1);
 });
 
 test("desktop project picker keeps a large catalog scrollable", async ({ page }, testInfo) => {
@@ -600,7 +622,7 @@ test("enter in project search never creates a directory", async ({ page }) => {
 
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
   expect(selectedProjects).toEqual([]);
-  await page.getByLabel("New project name").fill("brand-new");
+  await page.getByLabel("Create a project").fill("brand-new");
   await page.getByRole("button", { name: "Create new project" }).click();
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
   expect(selectedProjects).toEqual(["brand-new"]);
