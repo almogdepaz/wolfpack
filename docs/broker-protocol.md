@@ -314,9 +314,12 @@ last delivered `seq` safe.
   "pid":           54321,                                    // null if not spawned
   "started_at_ms": 1700000000000,                            // unix epoch ms
   "alive":         true,
-  "exit_code":     null                                      // i32 once exited
+  "exit_code":     null,                                     // i32 once exited
+  "output_seq":    "12345"                                  // decimal u64 PTY output watermark
 }
 ```
+
+`output_seq` is the latest PTY chunk incorporated into broker terminal state and uses the same ordering domain as `Snapshot.seq` and `output_binary.seq`. It is encoded as a decimal string so JSON clients retain the full u64 value. Brokers predating this additive field omit it; clients must treat omission as unavailable rather than requesting a snapshot or inferring activity from terminal prose.
 
 ---
 

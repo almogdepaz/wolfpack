@@ -52,6 +52,8 @@ describe("session list json", () => {
     expect(stdout).toContain("quiet");
     expect(stdout).not.toContain("running");
     expect(stdout).not.toContain("idle");
+    expect(stdout).not.toContain("\x1b[");
+    expect(child.stderr.toString()).toBe("");
   });
 
   test("help performs no request", () => {
@@ -63,6 +65,104 @@ describe("session list json", () => {
     expect(child.exitCode).toBe(0);
     expect(child.stdout.toString()).toContain("Usage: wolfpack list [--json]");
   });
+
+  test("json kill failure emits one structured envelope", () => {
+    const child = run(`
+      globalThis.fetch = async () => new Response("missing", { status: 404 });
+      const { killSession } = await import("./src/cli/sessions.ts");
+      process.exit(await killSession(["missing-session", "--json"]));
+    `);
+
+    expect(child.exitCode).toBe(1);
+    expect(child.stderr.toString()).toBe("");
+    expect(child.stdout.toString().trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "SESSION_NOT_FOUND",
+        message: "session not found",
+      },
+    });
+  });
+
+  test("human kill failure writes an uncolored diagnostic to stderr", () => {
+    const child = run(`
+      globalThis.fetch = async () => new Response("missing", { status: 404 });
+      const { killSession } = await import("./src/cli/sessions.ts");
+      process.exit(await killSession(["missing-session"]));
+    `);
+
+    expect(child.exitCode).toBe(1);
+    expect(child.stdout.toString()).toBe("");
+    expect(child.stderr.toString()).toContain('Session "missing-session" not found.');
+    expect(child.stderr.toString()).not.toContain("\x1b[");
+  });
+
+  test("json list transport failure emits one structured envelope", () => {
+    const child = run(`
+      globalThis.fetch = async () => { throw new Error("connection refused"); };
+      const { lsSessions } = await import("./src/cli/sessions.ts");
+      process.exit(await lsSessions(["--json"]));
+    `);
+
+    expect(child.exitCode).toBe(1);
+    expect(child.stderr.toString()).toBe("");
+    expect(child.stdout.toString().trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: {
+        code: "SERVER_UNREACHABLE",
+        message: "could not reach the wolfpack server",
+      },
+    });
+  });
+
+  for (const scenario of [
+    {
+      name: "invalid arguments",
+      response: "null",
+      argv: '["unexpected", "--json"]',
+      code: "INVALID_ARGUMENTS",
+      message: "invalid list arguments",
+    },
+    {
+      name: "authentication failure",
+      response: 'new Response("unauthorized", { status: 401 })',
+      argv: '["--json"]',
+      code: "AUTH_REQUIRED",
+      message: "auth required",
+    },
+    {
+      name: "server failure",
+      response: 'new Response("failure", { status: 500 })',
+      argv: '["--json"]',
+      code: "SERVER_ERROR",
+      message: "wolfpack server request failed",
+    },
+    {
+      name: "invalid response",
+      response: 'new Response("not-json", { status: 200 })',
+      argv: '["--json"]',
+      code: "INVALID_RESPONSE",
+      message: "wolfpack server returned invalid JSON",
+    },
+  ] as const) {
+    test(`json list ${scenario.name} emits one stable error`, () => {
+      const child = run(`
+        globalThis.fetch = async () => ${scenario.response};
+        const { lsSessions } = await import("./src/cli/sessions.ts");
+        process.exit(await lsSessions(${scenario.argv}));
+      `);
+
+      expect(child.exitCode).not.toBe(0);
+      expect(child.stderr.toString()).toBe("");
+      expect(child.stdout.toString().trim().split("\n")).toHaveLength(1);
+      expect(JSON.parse(child.stdout.toString())).toEqual({
+        ok: false,
+        error: { code: scenario.code, message: scenario.message },
+      });
+    });
+  }
 
   test("kill accepts an opaque id and returns canonical json", () => {
     const child = run(`

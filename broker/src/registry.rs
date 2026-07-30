@@ -87,7 +87,7 @@ impl Registry {
         // never stall registry mutations. Best-effort: an Err means no one
         // is currently subscribed.
         let _ = self.events.send(Event::SessionStarted {
-            session: session.snapshot().to_info(),
+            session: session.info(),
         });
         Ok(session)
     }

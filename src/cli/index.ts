@@ -3,7 +3,8 @@
  * CLI dispatch entry point.
  */
 import { printQR } from "../qr.js";
-import { print, bold, dim, red, yellow, WOLF } from "./formatting.js";
+import { print, printError, bold, dim, red, yellow, WOLF } from "./formatting.js";
+import pkg from "../../package.json";
 import {
   loadConfig,
   isPortInUse,
@@ -76,6 +77,7 @@ Commands:
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
+  wolfpack --version               Print the installed version
 
 Help:
   wolfpack --help
@@ -166,6 +168,8 @@ async function main() {
 
   if (argv.length === 1 && HELP_ALIASES.has(cmd)) {
     print(topLevelUsage());
+  } else if (argv.length === 1 && (cmd === "--version" || cmd === "-V")) {
+    print(pkg.version);
   } else if (shouldStartDashboard(argv)) {
     await start();
   } else if (cmd === "setup") {
@@ -203,8 +207,8 @@ async function main() {
     }
     uninstall();
   } else {
-    print(red(`  Unknown command: ${cmd}`));
-    print(dim("  Run 'wolfpack --help' for available commands."));
+    printError(red(`  Unknown command: ${cmd}`));
+    printError(dim("  Run 'wolfpack --help' for available commands."));
     process.exit(1);
   }
 }
@@ -212,7 +216,7 @@ async function main() {
 // only run when executed directly, not when imported for tests
 if (import.meta.main) {
   main().catch((e) => {
-    print(red(`  Fatal error: ${e.message || e}`));
+    printError(red(`  Fatal error: ${e.message || e}`));
     process.exit(1);
   });
 }

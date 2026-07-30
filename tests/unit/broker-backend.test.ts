@@ -225,8 +225,22 @@ describe("BrokerBackend.list", () => {
       expect.objectContaining({ name: "dead-one", alive: false, identity: expect.objectContaining({ wolfpackSessionId: SESSION_UUID_2 }) }),
     ]);
     expect(await backend.list()).toEqual(["alive-one"]);
+    expect(facts[0]).not.toHaveProperty("outputSequence");
     expect(backend.isSessionAlive("alive-one")).toBe(true);
     expect(backend.isSessionAlive("dead-one")).toBe(false);
+  });
+
+  test("projects the broker output sequence without requesting a snapshot", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [{ ...sessionInfo({ name: "sequenced", id: SESSION_UUID_1 }), output_seq: "42" }],
+    }));
+
+    const facts = await backend.listSessionFacts();
+
+    expect(facts).toEqual([
+      expect.objectContaining({ name: "sequenced", alive: true, outputSequence: "42" }),
+    ]);
+    expect(client.requests.map(request => request.method)).toEqual(["list_sessions"]);
   });
 
   test("prunes stale entries when broker drops a session", async () => {
@@ -453,12 +467,6 @@ describe("BrokerBackend.killSession", () => {
       sessions: [sessionInfo({ name: "survivor", id: SESSION_UUID_1 })],
     }));
     await backend.list();
-    let snapshotCalls = 0;
-    client.setHandler("snapshot", () => {
-      snapshotCalls++;
-      return okResp(styledSnapshot(["still running"]));
-    });
-    await backend.capturePaneForTriage("survivor");
     client.setHandler("kill_session", () => errResp("internal_error", "kill rejected"));
 
     await expect(backend.killSession("survivor")).rejects.toThrow("kill rejected");
@@ -466,8 +474,6 @@ describe("BrokerBackend.killSession", () => {
     expect(backend.sessionDir("survivor")).toBe("/tmp/work");
     expect(backend.isSessionAlive("survivor")).toBe(true);
     expect((await backend.listIdentities()).survivor).toBeDefined();
-    await backend.capturePaneForTriage("survivor");
-    expect(snapshotCalls).toBe(1);
   });
 
   test("kill transport failures preserve cached session and identity truth", async () => {
@@ -525,20 +531,6 @@ describe("BrokerBackend.capturePane", () => {
     expect(await backend.capturePane("ghost")).toBe("");
   });
 
-  test("triage cache hits within TTL avoid a second snapshot RPC", async () => {
-    client.setHandler("list_sessions", () => okResp({
-      sessions: [sessionInfo({ name: "tui", id: SESSION_UUID_1 })],
-    }));
-    await backend.list();
-    let snapshotCalls = 0;
-    client.setHandler("snapshot", () => {
-      snapshotCalls++;
-      return okResp(styledSnapshot(["x"]));
-    });
-    await backend.capturePaneForTriage("tui");
-    await backend.capturePaneForTriage("tui");
-    expect(snapshotCalls).toBe(1);
-  });
 });
 
 describe("BrokerBackend.resize", () => {
@@ -1143,21 +1135,6 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
     expect(seen).toEqual([{ kind: "exited", exitCode: undefined, signal: 15 }]);
   });
 
-  test("session_exited drops the triage cache for the affected session", async () => {
-    client.setHandler("snapshot", () => okResp(styledSnapshot(["before"])));
-    await backend.capturePaneForTriage("live"); // populate cache
-    let snapshotCalls = 0;
-    client.setHandler("snapshot", () => {
-      snapshotCalls++;
-      return okResp(styledSnapshot(["after"]));
-    });
-
-    backend.ingestEvent(exitedEvent(SESSION_UUID_1));
-
-    await backend.capturePaneForTriage("live");
-    expect(snapshotCalls).toBe(1); // cache miss → fresh RPC
-  });
-
   test("session_exited for unknown id is a no-op (no throw, no callback fires)", () => {
     const seen: SessionLifecycleEvent[] = [];
     backend.onSessionLifecycle("live", (e) => seen.push(e));
@@ -1166,20 +1143,9 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
     expect(backend.isSessionAlive("live")).toBe(true);
   });
 
-  test("snapshot_invalidated drops the triage cache without touching liveness", async () => {
-    client.setHandler("snapshot", () => okResp(styledSnapshot(["v1"])));
-    await backend.capturePaneForTriage("live");
-    let snapshotCalls = 0;
-    client.setHandler("snapshot", () => {
-      snapshotCalls++;
-      return okResp(styledSnapshot(["v2"]));
-    });
-
+  test("snapshot_invalidated does not mutate cached liveness", () => {
     backend.ingestEvent({ event: "snapshot_invalidated", session_id: SESSION_UUID_1 });
-
     expect(backend.isSessionAlive("live")).toBe(true);
-    await backend.capturePaneForTriage("live");
-    expect(snapshotCalls).toBe(1);
   });
 
   test("session_resized is a no-op (does not mutate liveness or fire lifecycle)", () => {

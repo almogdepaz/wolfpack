@@ -60,6 +60,7 @@ export function terminalDataFromBeforeInput(event: TerminalBeforeInputEvent): st
   switch (event.inputType) {
     case "insertText":
     case "insertReplacementText":
+    case "insertFromPaste":
       return event.data && event.data.length > 0 ? event.data.replace(/\n/g, "\r") : null;
     case "insertLineBreak":
     case "insertParagraph":

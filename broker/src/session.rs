@@ -72,7 +72,7 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn to_info(&self) -> SessionInfo {
+    pub fn to_info(&self, output_seq: u64) -> SessionInfo {
         SessionInfo {
             id: self.id,
             name: self.name.clone(),
@@ -85,6 +85,7 @@ impl SessionState {
             started_at_ms: self.started_at_ms,
             alive: self.alive,
             exit_code: self.exit_code,
+            output_seq: Some(output_seq.to_string()),
         }
     }
 }
@@ -349,6 +350,10 @@ impl Session {
             .lock()
             .expect("session state poisoned")
             .clone()
+    }
+
+    pub fn info(&self) -> SessionInfo {
+        self.snapshot().to_info(self.seq.load(Ordering::Acquire))
     }
 
     pub fn id(&self) -> Uuid {
@@ -889,7 +894,7 @@ mod tests {
             "session must be alive immediately after spawn"
         );
         assert_eq!(sess.exit_code(), None);
-        let info = sess.snapshot().to_info();
+        let info = sess.info();
         assert_eq!(info.cols, 80);
         assert_eq!(info.rows, 24);
         assert!(info.alive);
@@ -1025,6 +1030,18 @@ mod tests {
             after > 0,
             "seq must advance after drainer ingests output (got {after})"
         );
+    }
+
+    #[test]
+    fn session_info_exposes_output_sequence_without_materializing_snapshot() {
+        let sess = spawn_session(opts(vec!["printf", "abc"])).expect("spawn");
+        assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
+        let _ = sess.wait_for_exit(Duration::from_secs(5));
+
+        let info = sess.info();
+        let output_seq = info.output_seq.expect("new broker session info must include output_seq");
+        assert_ne!(output_seq, "0", "session info must expose ingested PTY output");
+        assert_eq!(output_seq, sess.output_bus().current_seq().to_string());
     }
 
     #[test]

@@ -25,7 +25,7 @@
     />
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/wolfpack-icon.svg" />
-    <link rel="apple-touch-icon" href="/wolfpack-icon.svg" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
     <meta property="og:title" content="Wolfpack — browser terminal manager for AI coding agents" />
     <meta property="og:description" content="Self-hosted PWA command center for Claude Code, Codex, Gemini, shell commands, and persistent agent terminal sessions over Tailscale." />
     <meta property="og:image" content="/wolfpack-icon.svg" />
@@ -76,6 +76,18 @@
       <div id="drawer-list"></div>
     </div>
 
+    <dialog id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message">
+      <form id="app-dialog-form">
+        <h2 id="app-dialog-title"></h2>
+        <p id="app-dialog-message"></p>
+        <div id="app-dialog-fields"></div>
+        <div class="app-dialog-actions">
+          <button id="app-dialog-cancel" type="button">Cancel</button>
+          <button id="app-dialog-confirm" type="submit">Continue</button>
+        </div>
+      </form>
+    </dialog>
+
     <div id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible">
@@ -95,18 +107,32 @@
     <!-- Project picker view -->
     <div id="projects-view" class="view" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Cancel</button>
-      <div class="new-project-row">
+      <label class="project-search-field" for="new-project-name">
+        <span>Projects</span>
         <input
           id="new-project-name"
-          type="text"
-          placeholder="Project name"
+          type="search"
+          placeholder="Filter existing projects"
           autocomplete="off"
           autocorrect="off"
           autocapitalize="off"
         />
-        <button>Create</button>
-      </div>
+      </label>
       <div id="project-list" class="list"></div>
+      <div class="new-project-row">
+        <label for="new-project-create-name">
+          <span>Create a project</span>
+          <input
+            id="new-project-create-name"
+            type="text"
+            placeholder="Project name"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+          />
+        </label>
+        <button type="button" aria-label="Create new project">Create</button>
+      </div>
     </div>
 
     <!-- Agent picker view -->
@@ -118,6 +144,7 @@
           spellcheck="false" autocomplete="off" autocapitalize="off"
           placeholder="session name...">
         <div class="session-name-error" id="session-name-error"></div>
+        <div class="session-name-error" id="agent-create-error" role="alert"></div>
       </div>
       <div id="agent-list" class="list"></div>
     </div>
@@ -125,14 +152,21 @@
     <!-- Settings view -->
     <div id="settings-view" class="view" aria-hidden="true" inert>
       <button id="settings-back-btn" class="settings-back-btn" type="button">← Back</button>
+      <nav id="settings-section-nav" class="settings-section-nav" aria-label="Settings sections">
+        <a href="#settings-effects">Effects</a>
+        <a href="#settings-terminal">Terminal</a>
+        <a href="#settings-input">Input</a>
+        <a href="#settings-machines">Machines</a>
+        <a href="#settings-agents">Agents</a>
+      </nav>
       <div class="list">
-        <div class="settings-section">
+        <div class="settings-section" id="settings-machines">
           <div class="settings-label">Machines</div>
           <div id="machines-list"></div>
           <button class="discover-btn">Discover Tailnet</button>
           <div id="discover-status" class="discover-status" role="status" aria-live="polite"></div>
         </div>
-        <div class="settings-section">
+        <div class="settings-section" id="settings-effects">
           <div class="settings-label">Effects</div>
           <label class="settings-toggle">
             <input type="checkbox" id="setting-animations" checked> Animations
@@ -144,7 +178,7 @@
             <input type="checkbox" id="setting-notifications"> Notifications
           </label>
         </div>
-        <div class="settings-section">
+        <div class="settings-section" id="settings-terminal">
           <div class="settings-label">Terminal</div>
           <div class="settings-subsection">
             <div class="settings-sub-heading">Font size</div>
@@ -163,7 +197,7 @@
             </div>
           </div>
         </div>
-        <div class="settings-section">
+        <div class="settings-section" id="settings-input">
           <div class="settings-label">Input</div>
           <label class="settings-toggle">
             <input type="checkbox" id="setting-enterSends"> Enter sends (off = newline)
@@ -172,7 +206,9 @@
             <input type="checkbox" id="setting-holdToSend"> Hold-to-send (large msgs)
           </label>
         </div>
-        <div class="settings-section">
+        <details class="settings-disclosure" id="settings-advanced">
+          <summary>Agents &amp; tools</summary>
+        <div class="settings-section" id="settings-agents">
           <div class="settings-label">Agents</div>
           <div class="settings-description">
             Commands shown when creating a session. Toggle to enable or remove any command; built-ins can be re-added from provider readiness. If you disable everything, the picker falls back to <code>shell</code>.
@@ -215,6 +251,7 @@
             <button class="debug-reset-btn">Reset</button>
           </div>
         </div>
+        </details>
         <div class="settings-section settings-about">
           <img src="/wolfpack-icon.svg" alt="wolfpack" class="about-icon">
           <div class="settings-label">About</div>

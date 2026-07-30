@@ -23,7 +23,8 @@ import {
 import type { DelegationGridMember } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
-import { filterProjectNames } from "./project-picker";
+import { showAppDialog } from "./app-dialog";
+import { rankProjectNames } from "./project-picker";
 import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
@@ -44,7 +45,11 @@ import {
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { resolveHydrationDebugTiming } from "../src/terminal-hydration-debug";
-import { resolveGhosttyPrewarmDebugTiming } from "../src/ghostty-prewarm-debug";
+import {
+  resolveGhosttyPrewarmDebugPoolSize,
+  resolveGhosttyPrewarmDebugTiming,
+} from "../src/ghostty-prewarm-debug";
+import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
 import {
   resolveLayoutStableDebugMode,
   shouldSendImmediateLayoutStable,
@@ -70,6 +75,7 @@ import { shouldUseAttachAckFallback } from "../src/attach-ack";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
 import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
+import { parseSessionNotificationRoute } from "../src/session-notification-route";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
 import {
   terminalDataFromBeforeInput,
@@ -78,7 +84,11 @@ import {
 
 // ── WASM capability guard ──
 
-const GHOSTTY_PREWARM_POOL_SIZE = 2;
+const GHOSTTY_PREWARM_POOL_SIZE = resolveGhosttyPrewarmDebugPoolSize({
+  debugEnabled: wfTraceEnabled,
+  storage: safeLocalStorage(),
+  defaultPoolSize: DEFAULT_GHOSTTY_PREWARM_POOL_SIZE,
+});
 const GHOSTTY_PREWARM_DELAY_MS = 0;
 const ATTACH_DIMENSION_RETRY_DELAY_MS = 50;
 const ATTACH_DIMENSION_MAX_ATTEMPTS = 20;
@@ -95,6 +105,7 @@ interface GhosttyPrewarmDebugEvent {
   readonly slot?: number;
   readonly delayMs?: number;
   readonly readyCount?: number;
+  readonly poolSize?: number;
 }
 
 interface GhosttyPrewarmDebugState {
@@ -151,7 +162,10 @@ function scheduleGhosttyPrewarm(): void {
     storage: safeLocalStorage(),
     defaults: { delayMs: GHOSTTY_PREWARM_DELAY_MS },
   });
-  recordGhosttyPrewarmEvent("schedule", { delayMs: timing.delayMs });
+  recordGhosttyPrewarmEvent("schedule", {
+    delayMs: timing.delayMs,
+    poolSize: GHOSTTY_PREWARM_POOL_SIZE,
+  });
   window.setTimeout(() => {
     recordGhosttyPrewarmEvent("ghostty_ready.wait");
     void window.ghosttyReady
@@ -303,25 +317,35 @@ function renderQuickCmdSettings() {
   `).join("");
 }
 
-function addQuickCmd() {
-  const label = prompt("Label (shown on chip):");
-  if (!label || !label.trim()) return;
-  const cmd = prompt("Command (sent to terminal):");
-  if (!cmd || !cmd.trim()) return;
-  state.quickCmds.push({ label: label.trim(), cmd: cmd.trim() });
+async function addQuickCmd(): Promise<void> {
+  const values = await showAppDialog({
+    title: "Add quick command",
+    fields: [
+      { name: "label", label: "Label", placeholder: "Deploy" },
+      { name: "command", label: "Command", placeholder: "bun run deploy" },
+    ],
+    confirmLabel: "Add command",
+  });
+  if (!values?.label || !values.command) return;
+  state.quickCmds.push({ label: values.label, cmd: values.command });
   saveQuickCmds();
   renderQuickCmdSettings();
   renderCmdPalette();
 }
 
-function editQuickCmd(index: number): void {
-  const c = state.quickCmds[index];
-  if (!c) return;
-  const label = prompt("Label:", c.label);
-  if (!label || !label.trim()) return;
-  const cmd = prompt("Command:", c.cmd);
-  if (!cmd || !cmd.trim()) return;
-  state.quickCmds[index] = { label: label.trim(), cmd: cmd.trim() };
+async function editQuickCmd(index: number): Promise<void> {
+  const quickCommand = state.quickCmds[index];
+  if (!quickCommand) return;
+  const values = await showAppDialog({
+    title: "Edit quick command",
+    fields: [
+      { name: "label", label: "Label", value: quickCommand.label },
+      { name: "command", label: "Command", value: quickCommand.cmd },
+    ],
+    confirmLabel: "Save changes",
+  });
+  if (!values?.label || !values.command) return;
+  state.quickCmds[index] = { label: values.label, cmd: values.command };
   saveQuickCmds();
   renderQuickCmdSettings();
   renderCmdPalette();
@@ -2661,6 +2685,8 @@ function showView(name: string, skipAnimation?: boolean): void {
     const settingsBackBtn = document.getElementById("settings-back-btn");
     if (settingsBackBtn) settingsBackBtn.style.display = effectiveName === "settings" ? "block" : "none";
     if (effectiveName === "settings") {
+      const advancedSettings = document.getElementById("settings-advanced") as HTMLDetailsElement | null;
+      if (advancedSettings) advancedSettings.open = true;
       renderQuickCmdSettings();
       loadAgentsSettings();
     }
@@ -2833,14 +2859,16 @@ function delegationParentMissingHtml(row: DelegationSessionRow<DelegationSession
 
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
-  const mUrl = multiMachine ? esc(g.machine.url) : "";
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
   const mName = esc(g.machine.name);
   const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
-  const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" onclick="event.stopPropagation();alert('Running v${escAttr(g.machine.version || "?")} — newer version available on another machine')">⚠ UPDATE</span>` : "";
-  let html = multiMachine ? `<div class="machine-group" data-machine="${mUrlAttr}">` : `<div class="machine-group">`;
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns"><button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${mUrlAttr}')">+</button></div></div>`;
+  const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
+  const offlineClass = multiMachine && !g.online && !g.pending ? " offline" : "";
+  const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
+  let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
+  const createDisabled = multiMachine && !g.online ? " disabled" : "";
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns"><button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${mUrlAttr}')"${createDisabled}>+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -2872,7 +2900,8 @@ function renderMachineGroupHtml(g, multiMachine) {
       }).join("");
     }
   } else if (multiMachine) {
-    html += `<div class="group-status">Offline</div>`;
+    const failure = machineFailureLabel(g.failure || "unknown");
+    html += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect. <button type="button" class="machine-retry-btn" aria-label="Retry ${escAttr(g.machine.name)}" onclick="retryMachine('${mUrlAttr}', event)">Retry</button></div>`;
   }
   html += `</div>`;
   return html;
@@ -3048,6 +3077,27 @@ function exitDelegationWorkspace(): void {
   backToSessions();
 }
 
+type MachineFailureCategory = "auth" | "timeout" | "server" | "network" | "unknown";
+
+function classifyMachineFailure(error: unknown): MachineFailureCategory {
+  if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return "timeout";
+  if (error && typeof error === "object" && "status" in error) {
+    const status = (error as { readonly status?: unknown }).status;
+    if (status === 401 || status === 403) return "auth";
+    if (typeof status === "number" && status >= 500) return "server";
+  }
+  if (error instanceof TypeError) return "network";
+  return "unknown";
+}
+
+function machineFailureLabel(category: MachineFailureCategory): string {
+  if (category === "auth") return "Authentication required";
+  if (category === "timeout") return "Timed out";
+  if (category === "server") return "Server unavailable";
+  if (category === "network") return "Unreachable";
+  return "Connection failed";
+}
+
 function fetchMachine(machineUrl, machineMeta) {
   // Timeout remote machines so one unreachable host can't block the entire UI.
   // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
@@ -3062,6 +3112,7 @@ function fetchMachine(machineUrl, machineMeta) {
       return {
         machine: { ...machineMeta, url: machineUrl, version: "" },
         sessions: [], online: false, pending: false,
+        failure: classifyMachineFailure(sessionsResult.reason),
       };
     }
     if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
@@ -3097,6 +3148,7 @@ async function loadSessionsOnce() {
     syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
+    await openSessionFromNotificationRoute();
     return;
   }
 
@@ -3179,6 +3231,7 @@ async function loadSessionsOnce() {
   state.allSessions = out;
   syncDelegationWorkspace();
   checkStateTransitions(groups);
+  await openSessionFromNotificationRoute();
 }
 
 let sessionRefreshPromise: Promise<void> | null = null;
@@ -3199,6 +3252,27 @@ function loadSessions(forceAfterCurrent = false): Promise<void> {
     sessionRefreshPromise = null;
   });
   return sessionRefreshPromise;
+}
+
+async function openSessionFromNotificationRoute(): Promise<void> {
+  const route = parseSessionNotificationRoute(location.search);
+  if (!route) return;
+  const group = state.lastSessionGroups.find(candidate =>
+    (candidate.machine.url || "") === route.machineUrl && candidate.online);
+  const session = group?.sessions.find(candidate => sessionIdentityId(candidate) === route.sessionId);
+  if (!session) return;
+
+  await openSession(session.name, route.machineUrl || undefined);
+  const cleanUrl = new URL(location.href);
+  cleanUrl.searchParams.delete("sessionId");
+  cleanUrl.searchParams.delete("session");
+  cleanUrl.searchParams.delete("machine");
+  history.replaceState(history.state, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+}
+
+function retryMachine(_machineUrl: string, event?: Event): void {
+  event?.stopPropagation();
+  void loadSessions(true);
 }
 
 const SESSION_REFRESH_INTERVAL_MS = 5_000;
@@ -3341,6 +3415,33 @@ function handlePickerKeyboardNavigation(event: KeyboardEvent): void {
   cards[nextIndex]?.scrollIntoView({ block: "nearest" });
 }
 
+const PROJECT_RECENTS_STORAGE_KEY = "wolfpack-project-recents";
+const MAX_VISIBLE_PROJECTS = 50;
+
+function projectRecentStore(): Record<string, unknown> {
+  const stored = loadStoredJson(PROJECT_RECENTS_STORAGE_KEY, {}) as unknown;
+  return stored && typeof stored === "object" && !Array.isArray(stored)
+    ? stored as Record<string, unknown>
+    : {};
+}
+
+function loadProjectRecents(): readonly string[] {
+  const stored = projectRecentStore();
+  const recents = stored[state.projectMachine || "local"];
+  return Array.isArray(recents) ? recents.filter((project): project is string => typeof project === "string") : [];
+}
+
+function recordProjectRecent(project: string): void {
+  const stored = projectRecentStore();
+  const machine = state.projectMachine || "local";
+  const current = Array.isArray(stored[machine])
+    ? (stored[machine] as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  stored[machine] = [project, ...current.filter((value) => value !== project)].slice(0, MAX_VISIBLE_PROJECTS);
+  try { localStorage.setItem(PROJECT_RECENTS_STORAGE_KEY, JSON.stringify(stored)); }
+  catch { /* recent ranking remains optional when storage is unavailable */ }
+}
+
 function renderProjectNames(projects: readonly string[]): void {
   resetPickerKeyboardSelection();
   const list = document.getElementById("project-list");
@@ -3381,7 +3482,9 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   showView("projects");
   resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
+  const createProjectInput = document.getElementById("new-project-create-name") as HTMLInputElement;
   projectNameInput.value = "";
+  createProjectInput.value = "";
   projectNameInput.focus({ preventScroll: true });
   const list = document.getElementById("project-list");
   projectNames = null;
@@ -3394,7 +3497,7 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
       list.innerHTML = '<div class="empty">No projects in ~/Dev</div>';
       return;
     }
-    renderProjectNames(projectNames);
+    renderProjectNames(rankProjectNames(projectNames, "", loadProjectRecents(), MAX_VISIBLE_PROJECTS));
   } catch {
     list.innerHTML = '<div class="empty">Failed to load projects</div>';
   }
@@ -3409,15 +3512,17 @@ function showTerminalLoading(label: string): void {
 }
 
 function selectProject(project: string): void {
+  recordProjectRecent(project);
   state.selectedProject = project;
   state.isNewProject = false;
   showAgentPicker();
 }
 
 function selectNewProject() {
-  const input = document.getElementById("new-project-name") as HTMLInputElement;
+  const input = document.getElementById("new-project-create-name") as HTMLInputElement;
   const name = input.value.trim();
   if (!name) return;
+  recordProjectRecent(name);
   state.selectedProject = name;
   state.isNewProject = true;
   showAgentPicker();
@@ -3430,7 +3535,10 @@ async function showAgentPicker() {
   el.innerHTML = '<div class="empty">Loading...</div>';
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const nameError = document.getElementById("session-name-error");
+  const createError = document.getElementById("agent-create-error");
   nameInput.value = "";
+  createError.textContent = "";
+  createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
   nameError.classList.remove("visible");
   try {
@@ -3438,7 +3546,7 @@ async function showAgentPicker() {
       api<SettingsResponse>("/settings", undefined, state.projectMachine),
       api<NextSessionNameResponse>("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
     ]);
-    nameInput.value = nameData.name || state.selectedProject;
+    if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
     // /api/settings now returns { settings, effective } — effective.cmds is
     // the list to render (already filtered to enabled, with ["shell"] fallback
     // when nothing's on). Manage which cmds appear via the Settings page.
@@ -3471,7 +3579,6 @@ async function showAgentPicker() {
       error.classList.remove("visible");
     }
   });
-  input.addEventListener("focus", () => input.select());
 })();
 
 // ── Agents settings panel ──
@@ -3675,7 +3782,7 @@ async function deleteCustomCmd(cmd, e) {
     }, state.projectMachine);
     showAgentPicker();
   } catch (e) {
-    alert("Failed to delete command: " + errorMessage(e));
+    showAgentAddError("Failed to delete command: " + errorMessage(e));
   }
 }
 
@@ -3684,7 +3791,9 @@ async function createSessionWithAgent(cmd) {
   const sessionName = (nameInput.value || "").trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
-  showTerminalLoading(sessionName || state.selectedProject);
+  const createError = document.getElementById("agent-create-error");
+  createError.textContent = "";
+  createError.classList.remove("visible");
   try {
     const body = state.isNewProject
       ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined }
@@ -3695,6 +3804,7 @@ async function createSessionWithAgent(cmd) {
       body: JSON.stringify(body),
     }, machine);
     if (data.session) {
+      showTerminalLoading(sessionName || state.selectedProject);
       setState({ currentSession: data.session, currentMachine: machine });
       // Refresh session list in background so it doesn't block terminal init
       loadSessions(true).then(() => { loadSessionSwitcher(); renderSidebar(); });
@@ -3706,14 +3816,12 @@ async function createSessionWithAgent(cmd) {
         initTerminal();
       }
     } else {
-      alert("Failed to create session: Server returned no session (is wolfpack up to date?)");
-      showView("sessions");
-      loadSessions(true);
+      throw new Error("Server returned no session (is wolfpack up to date?)");
     }
   } catch (e) {
-    alert("Failed to create session: " + errorMessage(e));
-    showView("sessions");
-    loadSessions(true);
+    createError.textContent = "Failed to create session: " + errorMessage(e);
+    createError.classList.add("visible");
+    nameInput.focus({ preventScroll: true });
   }
 }
 
@@ -4086,7 +4194,7 @@ function setConnState(connState: string): void {
   if (connState === "offline") {
     statusEl.style.display = "block";
     statusEl.style.background = "#cc3333";
-    statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">connection lost \u2014 <button type="button" id="conn-retry-btn" class="conn-retry-btn">Reconnect</button>';
+    statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">connection lost \u2014 cached output is read-only; reconnect for live terminal actions. <button type="button" id="conn-retry-btn" class="conn-retry-btn">Reconnect</button>';
     const retryBtn = document.getElementById("conn-retry-btn");
     if (retryBtn) retryBtn.onclick = retryConnection;
     return;
@@ -4174,7 +4282,13 @@ function sendAccessoryKey(key: string): void {
 
 async function killSession(name, e, machineUrl) {
   e.stopPropagation();
-  if (!confirm(`Kill session "${name}"?`)) return;
+  const confirmed = await showAppDialog({
+    title: "Stop session",
+    message: `Stop session "${name}"?`,
+    confirmLabel: "Stop session",
+    destructive: true,
+  });
+  if (!confirmed) return;
   try {
     await api("/kill", {
       method: "POST",
@@ -4182,7 +4296,12 @@ async function killSession(name, e, machineUrl) {
       body: JSON.stringify({ session: name }),
     }, machineUrl || "");
   } catch (e) {
-    alert("Failed to kill session: " + errorMessage(e));
+    await showAppDialog({
+      title: "Could not stop session",
+      message: errorMessage(e),
+      confirmLabel: "Close",
+      cancelLabel: null,
+    });
     return;
   }
   const wasCurrentSession = name === state.currentSession && (machineUrl || "") === state.currentMachine;
@@ -4880,24 +4999,53 @@ document.addEventListener("keydown", (e) => {
 const newProjectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
 newProjectNameInput.addEventListener("input", () => {
   if (projectNames === null) return;
-  renderProjectNames(filterProjectNames(projectNames, newProjectNameInput.value));
+  renderProjectNames(rankProjectNames(
+    projectNames,
+    newProjectNameInput.value,
+    loadProjectRecents(),
+    MAX_VISIBLE_PROJECTS,
+  ));
 });
 newProjectNameInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   if (state.currentView !== "projects") return;
   if (keyboardMenuSelection?.view === "projects") return;
   event.preventDefault();
-  if (projectNames !== null) {
-    const match = filterProjectNames(projectNames, newProjectNameInput.value)[0];
-    if (match) {
-      selectProject(match);
-      return;
-    }
-  }
+  if (projectNames === null) return;
+  const match = rankProjectNames(projectNames, newProjectNameInput.value, loadProjectRecents(), MAX_VISIBLE_PROJECTS)[0];
+  if (match) selectProject(match);
+});
+
+document.getElementById("new-project-create-name")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || state.currentView !== "projects") return;
+  event.preventDefault();
   selectNewProject();
 });
 
 // ── Settings ──
+
+const SETTINGS_SECTION_IDS = new Set([
+  "settings-effects",
+  "settings-terminal",
+  "settings-input",
+  "settings-machines",
+  "settings-agents",
+]);
+
+function settingsSectionFromHash(): string | null {
+  const sectionId = location.hash.slice(1);
+  return SETTINGS_SECTION_IDS.has(sectionId) ? sectionId : null;
+}
+
+function revealSettingsSection(sectionId: string, updateLocation = true): void {
+  if (!SETTINGS_SECTION_IDS.has(sectionId)) return;
+  const section = document.getElementById(sectionId);
+  if (!section) return;
+  const disclosure = section.closest<HTMLDetailsElement>("details");
+  if (disclosure) disclosure.open = true;
+  if (updateLocation) history.replaceState(history.state, "", `#${sectionId}`);
+  requestAnimationFrame(() => section.scrollIntoView({ block: "start", behavior: "smooth" }));
+}
 
 let settingsFocusReturn: HTMLElement | null = null;
 
@@ -5189,14 +5337,16 @@ function _renderSidebarNow() {
       const mUrl = escAttr(g.machine.url);
       const mName = esc(g.machine.name);
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
-      html += `<div class="machine-group" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${escAttr(g.machine.url)}')">+</button></div></div>`;
+      const offlineClass = !g.online && !g.pending ? " offline" : "";
+      const createDisabled = !g.online ? " disabled" : "";
+      html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns"><button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${escAttr(g.machine.url)}')"${createDisabled}>+</button></div></div>`;
       if (g.online && g.sessions.length) {
         html += visibleSidebarDelegationRows(projectDelegationSessions(g.sessions), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
-        html += '<div class="sidebar-conn-status">Offline</div>';
+        html += `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))} <button type="button" class="machine-retry-btn" aria-label="Retry ${escAttr(g.machine.name)}" onclick="retryMachine('${mUrl}', event)">Retry</button></div>`;
       }
       html += '</div>';
     }
@@ -5459,6 +5609,15 @@ function bindHtmlEventListeners(): void {
   // Quick commands
   on("add-quick-cmd-btn", "click", () => addQuickCmd());
 
+  document.getElementById("settings-section-nav")?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const link = target.closest<HTMLAnchorElement>("a[href^='#settings-']");
+    if (!link) return;
+    event.preventDefault();
+    revealSettingsSection(link.hash.slice(1));
+  });
+
   // Debug reset
   const debugResetBtn = document.querySelector(".debug-reset-btn");
   if (debugResetBtn) debugResetBtn.addEventListener("click", () => { wpMetrics.reset(); renderDebugPanel(); });
@@ -5482,6 +5641,7 @@ initGridDeps({
   showView, openSession, destroyTerminal, initTerminal,
   backToSessions, renderSidebar,
   createPtyTerminalController, createConflictOverlay,
+  showNotice: (title, message) => { void showAppDialog({ title, message, confirmLabel: "Close", cancelLabel: null }); },
   canUseWasmTerminal,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
@@ -5499,8 +5659,13 @@ if (isDesktop() && state.sessionsExpanded) {
   const sb = document.getElementById("desktop-sidebar");
   if (sb) { sb.classList.add("collapsed"); state.sidebarCollapsed = true; }
 }
-showView("sessions", true);
-loadSessions().then(renderSidebar);
+const initialSettingsSection = settingsSectionFromHash();
+if (initialSettingsSection) {
+  void showSettings().then(() => revealSettingsSection(initialSettingsSection, false));
+} else {
+  showView("sessions", true);
+}
+void loadSessions();
 scheduleGhosttyPrewarm();
 
 // Unregister stale service workers but keep our push SW
@@ -5520,7 +5685,7 @@ Object.assign(window, {
   // session/project onclick handlers
   openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
-  createSessionWithAgent, deleteCustomCmd, removeMachineUI,
+  createSessionWithAgent, deleteCustomCmd, removeMachineUI, retryMachine,
   // agent settings onclick handlers (inline in renderAgentsList)
   toggleAgentEnabled, removeAgent, addAgent,
   // grid + view (used by onclick and e2e page.evaluate)

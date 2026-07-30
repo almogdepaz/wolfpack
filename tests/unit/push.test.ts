@@ -460,6 +460,41 @@ describe("push: checkSessionTransitions", () => {
     expect(_testing.sessionNotificationLabel("off")).toBe("Stopped");
   });
 
+  test("builds a stable-identity route for a session transition", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+
+    expect(_testing.sessionTransitionPayload({
+      name: "agent one",
+      triage: "idle",
+      identity: { wolfpackSessionId: "broker/session id" },
+      runtimeState: { state: "done" },
+    })).toEqual({
+      title: "Wolfpack: agent one",
+      body: "Done",
+      tag: "session-broker/session id",
+      url: "/?sessionId=broker%2Fsession+id&session=agent+one&machine=local",
+    });
+  });
+
+  test("keys transition and debounce state by stable identity", async () => {
+    const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const ep = `https://fcm.googleapis.com/stable-route-test-${Date.now()}`;
+    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+
+    _testing.prevTriageState.set("stable-id", "output");
+    checkSessionTransitions([{
+      name: "renamed-agent",
+      triage: "idle",
+      identity: { wolfpackSessionId: "stable-id" },
+      runtimeState: { state: "needs-input" },
+    }]);
+
+    expect(_testing.prevTriageState.get("stable-id")).toBe("needs-input");
+    expect(_testing.prevTriageState.has("renamed-agent")).toBe(false);
+    expect(_testing.lastSessionPushTime.has("stable-id")).toBe(true);
+    removeSubscription(ep);
+  });
+
   test("tracks canonical runtime state ahead of legacy triage", async () => {
     const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
 

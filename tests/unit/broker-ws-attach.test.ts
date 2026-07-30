@@ -103,7 +103,6 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   async killSession(name: string): Promise<void> { this.alive.delete(name); }
   async hasSession(name: string): Promise<boolean> { return this.alive.has(name); }
   async capturePane(): Promise<string> { return ""; }
-  async capturePaneForTriage(): Promise<string> { return ""; }
   async resize(name: string, cols: number, rows: number): Promise<void> {
     if (this.resizeDelayMs > 0) await wait(this.resizeDelayMs);
     if (this.resizeError) throw this.resizeError;

@@ -10,6 +10,7 @@ import { createLogger, errMsg } from "../log.js";
 import type { TriageStatus } from "../triage.js";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusState } from "../agent-status-contract.js";
+import { buildSessionNotificationUrl } from "../session-notification-route.js";
 import { readValidatedJsonFile } from "./persistence.js";
 
 const log = createLogger("push");
@@ -446,6 +447,13 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
 
 type SessionNotificationState = TriageStatus | AgentStatusState;
 
+interface SessionTransitionFact {
+  readonly name: string;
+  readonly triage: TriageStatus;
+  readonly identity?: { readonly wolfpackSessionId?: string };
+  readonly runtimeState?: { readonly state?: AgentStatusState };
+}
+
 const prevTriageState = new Map<string, SessionNotificationState>();
 const lastSessionPushTime = new Map<string, number>();
 const PUSH_DEBOUNCE_MS = 30_000;
@@ -461,10 +469,7 @@ const SESSION_RUNNING_STATES = new Set<SessionNotificationState>([
   AGENT_STATUS_STATE.OUTPUT,
 ]);
 
-function sessionNotificationState(session: {
-  readonly triage: TriageStatus;
-  readonly runtimeState?: { readonly state?: AgentStatusState };
-}): SessionNotificationState {
+function sessionNotificationState(session: SessionTransitionFact): SessionNotificationState {
   return session.runtimeState?.state ?? session.triage;
 }
 
@@ -478,26 +483,54 @@ function sessionNotificationLabel(state: SessionNotificationState): string {
   return "Quiet";
 }
 
+function sessionNotificationStableId(session: SessionTransitionFact): string | null {
+  const id = session.identity?.wolfpackSessionId;
+  return typeof id === "string" && id.length > 0 && id.length <= 256 ? id : null;
+}
+
+function sessionNotificationKey(session: SessionTransitionFact): string {
+  return sessionNotificationStableId(session) ?? session.name;
+}
+
+function sessionTransitionPayload(session: SessionTransitionFact): PushPayload {
+  const current = sessionNotificationState(session);
+  const sessionId = sessionNotificationStableId(session);
+  const canRoute = sessionId !== null && session.name.length > 0 && session.name.length <= 100;
+  return {
+    title: `Wolfpack: ${session.name}`,
+    body: sessionNotificationLabel(current),
+    tag: `session-${sessionId ?? session.name}`,
+    ...(canRoute && {
+      url: buildSessionNotificationUrl({
+        sessionId,
+        sessionName: session.name,
+        machineUrl: "",
+      }),
+    }),
+  };
+}
+
 /** Check session runtime transitions and fire push notifications when an active session stops needing live watch. */
-export function checkSessionTransitions(sessions: Array<{ name: string; triage: TriageStatus; runtimeState?: { state?: AgentStatusState } }>): void {
+export function checkSessionTransitions(sessions: readonly SessionTransitionFact[]): void {
   if (getSubscriptionCount() === 0) return;
   const now = Date.now();
-  const activeNames = new Set(sessions.map(s => s.name));
-  for (const s of sessions) {
-    const prev = prevTriageState.get(s.name);
-    const current = sessionNotificationState(s);
-    prevTriageState.set(s.name, current);
+  const activeKeys = new Set(sessions.map(sessionNotificationKey));
+  for (const session of sessions) {
+    const key = sessionNotificationKey(session);
+    const prev = prevTriageState.get(key);
+    const current = sessionNotificationState(session);
+    prevTriageState.set(key, current);
     if (prev && SESSION_RUNNING_STATES.has(prev) && !SESSION_RUNNING_STATES.has(current)) {
-      const last = lastSessionPushTime.get(s.name) || 0;
+      const last = lastSessionPushTime.get(key) || 0;
       if (now - last > PUSH_DEBOUNCE_MS) {
-        lastSessionPushTime.set(s.name, now);
-        sendPush({ title: `Wolfpack: ${s.name}`, body: sessionNotificationLabel(current), tag: `session-${s.name}` }).catch(() => {});
+        lastSessionPushTime.set(key, now);
+        sendPush(sessionTransitionPayload(session)).catch(() => {});
       }
     }
   }
   // Prune state for removed sessions
   for (const key of prevTriageState.keys()) {
-    if (!activeNames.has(key)) { prevTriageState.delete(key); lastSessionPushTime.delete(key); }
+    if (!activeKeys.has(key)) { prevTriageState.delete(key); lastSessionPushTime.delete(key); }
   }
 }
 
@@ -533,6 +566,7 @@ export const _testing = {
   PUSH_FETCH_TIMEOUT_MS,
   fetchWithDeadline,
   sessionNotificationLabel,
+  sessionTransitionPayload,
   resetDebounce: _testingResetDebounce,
   get notifyTimestamps() { return notifyTimestamps; },
   set notifyTimestamps(v: number[]) {

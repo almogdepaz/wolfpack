@@ -1575,6 +1575,12 @@
       "type": "string",
       "minLength": 1
     },
+    "BrokerOutputSequence": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 20,
+      "description": "Decimal broker PTY output watermark"
+    },
     "OpenableHarness": {
       "enum": [
         "pi",
@@ -1930,6 +1936,9 @@
         },
         "triage": {
           "$ref": "#/$defs/TriageStatus"
+        },
+        "outputSequence": {
+          "$ref": "#/$defs/BrokerOutputSequence"
         },
         "identity": {
           "$ref": "#/$defs/PublicSessionIdentity"

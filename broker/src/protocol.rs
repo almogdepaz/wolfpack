@@ -22,6 +22,9 @@ pub struct SessionInfo {
     pub started_at_ms: u64,
     pub alive: bool,
     pub exit_code: Option<i32>,
+    /// Decimal u64 PTY output watermark. Optional only for older-broker compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_seq: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +353,7 @@ mod tests {
             started_at_ms: 1_700_000_000_000,
             alive: true,
             exit_code: None,
+            output_seq: Some("42".into()),
         }
     }
 
@@ -466,8 +470,28 @@ mod tests {
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["payload"]["kind"], "list_sessions");
+        assert_eq!(v["payload"]["sessions"][0]["output_seq"], "42");
         let back: ControlResponse = serde_json::from_value(v).unwrap();
         assert_eq!(resp, back);
+    }
+
+    #[test]
+    fn session_info_from_older_broker_defaults_missing_output_sequence() {
+        let value = json!({
+            "id": Uuid::nil(),
+            "name": "legacy",
+            "cwd": "/tmp",
+            "command": ["bash"],
+            "env": [],
+            "cols": 80,
+            "rows": 24,
+            "pid": null,
+            "started_at_ms": 0,
+            "alive": true,
+            "exit_code": null
+        });
+        let session: SessionInfo = serde_json::from_value(value).unwrap();
+        assert_eq!(session.output_seq, None);
     }
 
     #[test]
