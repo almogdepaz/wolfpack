@@ -4282,6 +4282,9 @@ function sendAccessoryKey(key: string): void {
 
 async function killSession(name, e, machineUrl) {
   e.stopPropagation();
+  const delegationReturnTarget = name === state.focusedDelegationSession && state.activeDelegationRoot
+    ? { session: state.activeDelegationRoot, machine: state.delegationMachine || "" }
+    : null;
   const confirmed = await showAppDialog({
     title: "Stop session",
     message: `Stop session "${name}"?`,
@@ -4304,13 +4307,21 @@ async function killSession(name, e, machineUrl) {
     });
     return;
   }
+  if (delegationReturnTarget) {
+    destroyTerminal();
+    teardownDelegationWorkspace();
+    setState({ currentSession: null, currentMachine: "" });
+    await loadSessions(true);
+    await openSession(delegationReturnTarget.session, delegationReturnTarget.machine || undefined);
+    return;
+  }
   const wasCurrentSession = name === state.currentSession && (machineUrl || "") === state.currentMachine;
   if (wasCurrentSession && state.currentView === "terminal") {
     destroyTerminal();
     setState({ currentSession: null, currentMachine: "" });
     showView("sessions");
   }
-  loadSessions(true).then(renderSidebar);
+  void loadSessions(true);
 }
 
 // ── Session drawer ──

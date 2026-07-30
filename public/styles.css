@@ -2431,17 +2431,20 @@ body.no-animations, body.no-animations * {
 .terminal-transcript-btn:hover, .terminal-transcript-btn:focus-visible { color: var(--accent); border-color: var(--accent-border); }
 .terminal-transcript-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
 .terminal-transcript-dialog::backdrop { background: rgba(0,0,0,0.75); }
-.app-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
-.app-dialog::backdrop { background: rgba(0,0,0,0.75); }
+.app-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--accent-border); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface-gradient); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7), 0 0 32px rgba(0,255,65,0.06); }
+.app-dialog::backdrop { background: rgba(0,0,0,0.78); }
 .app-dialog form { display: grid; gap: 16px; padding: 20px; }
-.app-dialog h2 { margin: 0; font-size: 18px; }
+.app-dialog h2 { margin: 0; color: var(--accent); font-size: 16px; text-transform: uppercase; letter-spacing: 1.5px; text-shadow: 0 0 10px var(--accent-glow); }
 .app-dialog p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
 #app-dialog-fields { display: grid; gap: 12px; }
 .app-dialog-field { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
 .app-dialog-field input { width: 100%; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 12px; background: var(--bg-base); color: var(--text-primary); font: inherit; text-transform: none; letter-spacing: normal; }
 .app-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.app-dialog-actions button { min-width: 88px; min-height: 44px; }
-.app-dialog-actions .destructive { border-color: var(--danger-bright); color: var(--danger-bright); }
+.app-dialog-actions button { min-width: 88px; min-height: 44px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 8px 14px; background: var(--bg-elevated); color: var(--text-secondary); font: 700 11px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 1px; cursor: pointer; box-shadow: var(--shadow-btn); transition: color 0.15s, border-color 0.15s, background 0.15s; }
+.app-dialog-actions button:hover { border-color: var(--accent-border); color: var(--accent); background: var(--bg-hover); }
+#app-dialog-confirm:not(.destructive) { border-color: var(--accent-border); color: var(--accent); }
+.app-dialog-actions .destructive { border-color: rgba(255,68,68,0.55); background: rgba(204,51,51,0.12); color: var(--danger-hot); }
+.app-dialog-actions .destructive:hover { border-color: var(--danger-hot); background: rgba(204,51,51,0.22); color: #fff; }
 .terminal-transcript-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .terminal-transcript-header h2 { margin: 0; color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
 .terminal-transcript-header button { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--text-muted); font: inherit; cursor: pointer; }
