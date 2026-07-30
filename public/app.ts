@@ -3416,7 +3416,7 @@ function handlePickerKeyboardNavigation(event: KeyboardEvent): void {
 }
 
 const PROJECT_RECENTS_STORAGE_KEY = "wolfpack-project-recents";
-const MAX_VISIBLE_PROJECTS = 12;
+const MAX_VISIBLE_PROJECTS = 50;
 
 function projectRecentStore(): Record<string, unknown> {
   const stored = loadStoredJson(PROJECT_RECENTS_STORAGE_KEY, {}) as unknown;

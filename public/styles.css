@@ -476,6 +476,11 @@ body.no-animations, body.no-animations * {
     border-left-width: 2px;
     margin-bottom: 3px;
   }
+  #project-list .card {
+    padding: 10px 12px;
+    min-height: 44px;
+    margin-bottom: 6px;
+  }
   .card-name { font-size: 12px; letter-spacing: 2px; }
   .card-preview { -webkit-line-clamp: 1; }
   .dot { width: 7px; height: 7px; }

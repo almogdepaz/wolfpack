@@ -546,6 +546,38 @@ test("project picker filters fetched projects by typed prefix without refetching
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
 });
 
+test("desktop project picker keeps a large catalog scrollable", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop project picker layout");
+  const projects = Array.from({ length: 41 }, (_, index) => `project-${String(index).padStart(2, "0")}`);
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+
+  const projectList = page.locator("#project-list");
+  await expect(projectList.locator(".card")).toHaveCount(projects.length);
+  const dimensions = await projectList.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+});
+
+test("desktop project picker cards retain a practical target size", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop project picker layout");
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["wolfpack"] }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+
+  const cardBox = await page.locator("#project-list .card").boundingBox();
+  expect(cardBox?.height).toBeGreaterThanOrEqual(44);
+});
+
 test("enter in project search never creates a directory", async ({ page }) => {
   const selectedProjects: string[] = [];
   await page.route("**/api/projects", async (route) => {
