@@ -511,6 +511,53 @@ test("desktop opens a child terminal with a return to its parent delegation grid
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText(["parent", "child"]);
 });
 
+test("desktop stopping a focused child returns to its parent instead of session cards", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation focus ux");
+
+  const parent = { id: "parent-id", name: "parent" };
+  const parentSession = {
+    name: parent.name,
+    triage: "idle",
+    runtimeState: { state: "idle" },
+    identity: identity(parent.id, parent.name),
+  };
+  let sessions = [
+    parentSession,
+    {
+      name: "child",
+      triage: "running",
+      runtimeState: { state: "working" },
+      identity: identity("child-id", "child", parent),
+    },
+  ];
+  const killRequests: unknown[] = [];
+  const sockets = await routeHydratedPty(page);
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
+  });
+  await page.route("**/api/kill", async (route) => {
+    killRequests.push(route.request().postDataJSON());
+    sessions = [parentSession];
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.goto(srv.baseUrl);
+
+  await page.locator("#session-list .sub-session-card").click();
+  await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card");
+  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  const childSidebarCard = page.locator("#sidebar-session-list .sub-session-card");
+  await childSidebarCard.locator(".kill-btn").click();
+  await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
+
+  await expect.poll(() => killRequests).toEqual([{ session: "child" }]);
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("parent");
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+  await expect(page.locator("#sessions-view")).not.toHaveClass(/visible/);
+  await expect.poll(() => sockets.has("parent")).toBe(true);
+});
+
 test("project picker filters fetched projects by typed prefix without refetching", async ({ page }) => {
   let projectRequests = 0;
   await page.route("**/api/projects", async (route) => {
@@ -793,7 +840,12 @@ test("create failure returns to the agent form with entered values and an inline
   await expect(sessionName).toBeFocused();
 });
 
-test("stop confirmation is accessible and restores focus when cancelled", async ({ page }) => {
+test("stop confirmation is styled, cancellable, and restores focus", async ({ page }) => {
+  const killRequests: unknown[] = [];
+  await page.route("**/api/kill", async (route) => {
+    killRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
   await page.goto(srv.baseUrl);
   const stop = page.getByRole("button", { name: "Stop test-project" });
   await stop.focus();
@@ -801,9 +853,38 @@ test("stop confirmation is accessible and restores focus when cancelled", async 
 
   const dialog = page.getByRole("dialog", { name: "Stop session" });
   await expect(dialog).toContainText('Stop session "test-project"?');
+  expect(await dialog.evaluate((element) => {
+    const title = element.querySelector("h2");
+    const cancel = element.querySelector<HTMLButtonElement>("#app-dialog-cancel");
+    const confirm = element.querySelector<HTMLButtonElement>("#app-dialog-confirm");
+    if (!title || !cancel || !confirm) throw new Error("missing dialog controls");
+    const titleStyle = getComputedStyle(title);
+    const cancelStyle = getComputedStyle(cancel);
+    const confirmStyle = getComputedStyle(confirm);
+    return {
+      titleColor: titleStyle.color,
+      titleTransform: titleStyle.textTransform,
+      cancelBackground: cancelStyle.backgroundColor,
+      cancelBorderRadius: cancelStyle.borderRadius,
+      cancelTransform: cancelStyle.textTransform,
+      confirmBackground: confirmStyle.backgroundColor,
+      confirmBorderRadius: confirmStyle.borderRadius,
+      confirmTransform: confirmStyle.textTransform,
+    };
+  })).toEqual({
+    titleColor: "rgb(0, 255, 65)",
+    titleTransform: "uppercase",
+    cancelBackground: "rgb(26, 26, 26)",
+    cancelBorderRadius: "6px",
+    cancelTransform: "uppercase",
+    confirmBackground: "rgba(204, 51, 51, 0.12)",
+    confirmBorderRadius: "6px",
+    confirmTransform: "uppercase",
+  });
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
   await expect(stop).toBeFocused();
+  expect(killRequests).toEqual([]);
 });
 
 test("desktop escape from new-session picker returns to expanded sessions, not an empty terminal",  async ({ page }, testInfo) => {
