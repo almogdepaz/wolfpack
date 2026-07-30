@@ -53,9 +53,18 @@ export type GhosttyBundleManifest = {
   symbols: { noHostMemsetOverride: true };
 };
 
-function run(cmd: string, args: string[], cwd = ROOT): string {
+function run(cmd: string, args: readonly string[], cwd = ROOT, env = process.env): string {
   console.log(`$ ${cmd} ${args.join(" ")}`);
-  return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+  return execFileSync(cmd, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+}
+
+export function runGhosttySourceBuild(
+  cmd: string,
+  args: readonly string[],
+  cwd: string,
+  repositoryRoot = ROOT,
+): string {
+  return run(cmd, args, cwd, { ...process.env, GIT_CEILING_DIRECTORIES: repositoryRoot });
 }
 
 function sha256Bytes(bytes: Buffer | string): string {
@@ -232,7 +241,7 @@ function buildTarget(cargoTriple: string, sourceDir: string, lock: GhosttyLock) 
   rmSync(prefix, { recursive: true, force: true });
   mkdirSync(prefix, { recursive: true });
 
-  run("zig", ghosttyBuildArgs(cargoTriple, prefix, lock), sourceDir);
+  runGhosttySourceBuild("zig", ghosttyBuildArgs(cargoTriple, prefix, lock), sourceDir);
 
   const targetOut = join(OUT_ROOT, cargoTriple);
   rmSync(targetOut, { recursive: true, force: true });

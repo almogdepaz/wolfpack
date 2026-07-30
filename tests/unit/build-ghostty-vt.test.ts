@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import {
   ghosttyBuildArgs,
   ghosttyPatchArgs,
   readGhosttyLock,
+  runGhosttySourceBuild,
   verifyBundleManifest,
 } from "../../scripts/build-ghostty-vt.ts";
 
@@ -47,6 +49,35 @@ describe("libghostty-vt prebuild arguments", () => {
 
   test("Linux archive builds use the matching Zig target", () => {
     expect(ghosttyBuildArgs("x86_64-unknown-linux-gnu", "/tmp/prefix")).toContain("-Dtarget=x86_64-linux-gnu");
+  });
+
+  test("source builds cannot discover an enclosing Wolfpack release tag", () => {
+    const repositoryRoot = mkdtempSync(join(tmpdir(), "ghostty-vt-tagged-repo-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: repositoryRoot });
+      execFileSync("git", ["config", "user.email", "wolfpack-test@example.invalid"], { cwd: repositoryRoot });
+      execFileSync("git", ["config", "user.name", "Wolfpack Test"], { cwd: repositoryRoot });
+      writeFileSync(join(repositoryRoot, "tracked"), "release\n");
+      execFileSync("git", ["add", "tracked"], { cwd: repositoryRoot });
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "release"], { cwd: repositoryRoot });
+      execFileSync("git", ["tag", "v1.6.10"], { cwd: repositoryRoot });
+
+      const sourceDir = join(repositoryRoot, ".cache", "ghostty-vt", "source");
+      mkdirSync(sourceDir, { recursive: true });
+      expect(execFileSync("git", ["describe", "--tags", "--exact-match"], {
+        cwd: sourceDir,
+        encoding: "utf8",
+      }).trim()).toBe("v1.6.10");
+
+      expect(() => runGhosttySourceBuild(
+        "git",
+        ["describe", "--tags", "--exact-match"],
+        sourceDir,
+        repositoryRoot,
+      )).toThrow();
+    } finally {
+      rmSync(repositoryRoot, { recursive: true, force: true });
+    }
   });
 
   test("source preparation applies tracked Ghostty patches with zero fuzz", () => {
