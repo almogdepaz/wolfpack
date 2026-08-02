@@ -289,6 +289,43 @@ header h1 {
   z-index: 3;
   pointer-events: auto;
 }
+.session-order-handle {
+  width: 40px;
+  min-width: 40px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.session-order-handle:hover,
+.session-order-handle:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  outline: none;
+}
+.session-order-handle:active { cursor: grabbing; }
+.card.session-order-dragging { opacity: 0.55; }
+.card.session-order-drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.card.session-order-drop-after { box-shadow: 0 2px 0 var(--accent); }
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .card:focus-visible,
 .card-open:focus-visible {
   outline: 2px solid var(--accent);
@@ -1141,6 +1178,23 @@ body.no-animations, body.no-animations * {
 }
 .machine-add-btn:active { transform: scale(0.95); background: var(--accent); color: var(--bg-base); box-shadow: 0 0 12px var(--accent-glow); }
 .machine-add-btn:disabled { border-color: var(--border-subtle); color: var(--text-faint); cursor: not-allowed; box-shadow: none; }
+.session-order-reset {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 17px;
+  cursor: pointer;
+}
+.session-order-reset:hover,
+.session-order-reset:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  outline: none;
+}
 .machine-header-btns { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .machine-group.offline { margin-bottom: 2px; border-bottom: 1px solid var(--border); }
 .machine-group.offline .machine-header { padding-block: 5px; border-bottom: 0; }
@@ -2102,6 +2156,16 @@ body.no-animations, body.no-animations * {
   .sidebar-sessions .card-name {
     font-size: 11px;
     letter-spacing: 1.5px;
+  }
+  .sidebar-sessions .session-order-handle {
+    width: 28px;
+    min-width: 28px;
+    min-height: 30px;
+    font-size: 14px;
+  }
+  .sidebar-sessions .session-order-reset {
+    width: 32px;
+    height: 32px;
   }
   .sidebar-sessions .card-status {
     margin-top: 1px;
