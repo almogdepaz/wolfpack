@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
 import { WOLFPACK_PI_CONTROL_SKILL } from "./pi-skill.js";
@@ -15,7 +15,7 @@ export function piIntegrationDisclosureLines(): readonly string[] {
   return [
     "  - Wolfpack skill: installs wolfpack-tailnet-control into Pi.",
     "  - Pi Tasks: adds agent_task_* tools and their delegation skill.",
-    "  Pi will install the skill, then run:",
+    "  Wolfpack will install the skill, then Pi will run:",
     ...PI_INTEGRATION_PACKAGES.map((source) => `    pi install ${source}`),
     "  Skills and extensions can execute commands with your user permissions. Review before accepting.",
   ];
@@ -40,6 +40,7 @@ export interface ExistingPiSkill {
 export interface FailedPiSkillInstall {
   readonly status: "skill_write_failed";
   readonly skillPath: string;
+  readonly canRetry: boolean;
 }
 
 export interface FailedPiExtensionInstall {
@@ -81,11 +82,22 @@ function installWolfpackPiSkill(skillPath: string): ExistingPiSkill | FailedPiSk
     return { status: "skill_exists", skillPath };
   }
 
+  let createdSkillDirectory = false;
   try {
-    mkdirSync(skillPath, { recursive: true });
+    mkdirSync(dirname(skillPath), { recursive: true });
+    mkdirSync(skillPath);
+    createdSkillDirectory = true;
     writeFileSync(join(skillPath, "SKILL.md"), WOLFPACK_PI_CONTROL_SKILL);
   } catch {
-    return { status: "skill_write_failed", skillPath };
+    let canRetry = true;
+    if (createdSkillDirectory) {
+      try {
+        rmSync(skillPath, { recursive: true, force: true });
+      } catch {
+        canRetry = false;
+      }
+    }
+    return { status: "skill_write_failed", skillPath, canRetry };
   }
 }
 

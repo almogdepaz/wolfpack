@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -14,20 +15,29 @@ function writeExecutable(path: string, content: string): void {
 function prepareFixture(): {
   readonly home: string;
   readonly bin: string;
+  readonly systemBin: string;
   readonly log: string;
   readonly commandLog: string;
   readonly installDir: string;
+  readonly checksums: string;
 } {
   fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-install-")));
   const home = join(fixtureRoot, "home");
   const bin = join(fixtureRoot, "bin");
+  const systemBin = join(fixtureRoot, "system-bin");
   const log = join(fixtureRoot, "downloads.log");
   const commandLog = join(fixtureRoot, "commands.log");
   const installDir = join(home, ".wolfpack", "bin");
+  const checksums = join(fixtureRoot, "checksums-sha256.txt");
   mkdirSync(installDir, { recursive: true });
   mkdirSync(bin, { recursive: true });
+  mkdirSync(systemBin, { recursive: true });
   writeFileSync(log, "");
   writeFileSync(commandLog, "");
+  const serverAsset = "#!/bin/sh\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nprintf \"new server\\n\"\n";
+  const brokerAsset = "#!/bin/sh\nprintf \"new broker\\n\"\n";
+  const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
+  writeFileSync(checksums, `${sha256(serverAsset)}  wolfpack-linux-x64\n${sha256(brokerAsset)}  wolfpack-broker-linux-x64\n`);
 
   writeExecutable(join(installDir, "wolfpack"), "#!/bin/sh\nprintf 'old server\\n'\n");
   writeExecutable(join(installDir, "wolfpack-broker"), "#!/bin/sh\nprintf 'old broker\\n'\n");
@@ -50,6 +60,14 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\\n' "$url" >> "$INSTALL_TEST_LOG"
 case "$url" in
+  *checksums-sha256.txt)
+    if [ "$INSTALL_TEST_CORRUPT_CHECKSUM" = "1" ]; then
+      printf '%064d  wolfpack-linux-x64\\n' 0 > "$output"
+      cat "$INSTALL_TEST_CHECKSUMS" | grep wolfpack-broker-linux-x64 >> "$output"
+    else
+      cat "$INSTALL_TEST_CHECKSUMS" > "$output"
+    fi
+    ;;
   *wolfpack-broker-linux-x64)
     if [ "$INSTALL_TEST_FAIL_BROKER" = "1" ]; then exit 22; fi
     if [ "$INSTALL_TEST_EMPTY_BROKER" != "1" ]; then printf '#!/bin/sh\\nprintf "new broker\\\\n"\\n' > "$output"; fi
@@ -61,7 +79,7 @@ case "$url" in
 esac
 `);
 
-  return { home, bin, log, commandLog, installDir };
+  return { home, bin, systemBin, log, commandLog, installDir, checksums };
 }
 
 function runInstaller(
@@ -77,6 +95,9 @@ function runInstaller(
       PATH: `${fixture.installDir}:${fixture.bin}:/usr/bin:/bin`,
       INSTALL_TEST_LOG: fixture.log,
       INSTALL_TEST_COMMAND_LOG: fixture.commandLog,
+      INSTALL_TEST_CHECKSUMS: fixture.checksums,
+      INSTALL_TEST_CORRUPT_CHECKSUM: "0",
+      WOLFPACK_SYMLINK_DIR: fixture.systemBin,
       WOLFPACK_INSTALL_SKIP_SETUP: "1",
       ...extraEnv,
     },
@@ -172,6 +193,30 @@ describe("install.sh release binary staging", () => {
     expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("new broker\n");
     expect(statSync(join(fixture.installDir, "wolfpack")).mode & 0o111).not.toBe(0);
     expect(statSync(join(fixture.installDir, "wolfpack-broker")).mode & 0o111).not.toBe(0);
+  });
+
+  test("rejects a checksum mismatch before either binary is replaced", () => {
+    const fixture = prepareFixture();
+    const result = runInstaller(fixture, { INSTALL_TEST_CORRUPT_CHECKSUM: "1" });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("Checksum verification failed");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+  });
+
+  test("preserves a foreign wolfpack command and never invokes it for setup", () => {
+    const fixture = prepareFixture();
+    const foreignWolfpack = join(fixture.bin, "wolfpack");
+    writeExecutable(foreignWolfpack, "#!/bin/sh\nprintf 'foreign wolfpack\\n'\n");
+
+    const result = runInstaller(fixture, {
+      PATH: `${fixture.bin}:${fixture.installDir}:/usr/bin:/bin`,
+    });
+
+    expect(result.status).toBe(0);
+    expect(existsSync(foreignWolfpack)).toBe(true);
+    expect(readFileSync(join(process.cwd(), "install.sh"), "utf-8")).not.toContain("exec wolfpack setup");
   });
 
   test("a broker download failure preserves both existing binaries", () => {

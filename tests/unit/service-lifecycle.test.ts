@@ -6,6 +6,9 @@ import { describe, expect, test } from "bun:test";
 const innerTestPath = join(process.cwd(), "tests", "unit", ".tmp-service-lifecycle-inner.test.ts");
 
 const innerTest = String.raw`import { describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const execCommands: string[] = [];
 const askPrompts: string[] = [];
@@ -43,7 +46,33 @@ await mock.module("../../src/cli/config.js", () => ({
   waitForPortFree: mock(() => undefined),
 }));
 
-const { serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
+const { removeManagedEntrypoints, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
+
+describe("removeManagedEntrypoints", () => {
+  test("removes only symlinks resolving to the managed binary", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-uninstall-"));
+    const managedBinary = join(root, "managed", "wolfpack");
+    const managedEntrypoint = join(root, "bin", "wolfpack");
+    const foreignBinary = join(root, "foreign", "wolfpack");
+    const foreignEntrypoint = join(root, "bin", "foreign-wolfpack");
+    try {
+      mkdirSync(join(root, "managed"), { recursive: true });
+      mkdirSync(join(root, "foreign"), { recursive: true });
+      mkdirSync(join(root, "bin"), { recursive: true });
+      writeFileSync(managedBinary, "managed\\n");
+      writeFileSync(foreignBinary, "foreign\\n");
+      symlinkSync(managedBinary, managedEntrypoint);
+      symlinkSync(foreignBinary, foreignEntrypoint);
+
+      removeManagedEntrypoints([managedEntrypoint, foreignEntrypoint], managedBinary);
+
+      expect(existsSync(managedEntrypoint)).toBe(false);
+      expect(existsSync(foreignEntrypoint)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("serviceStop", () => {
   test("attempts broker shutdown when broker-inclusive server stop fails", () => {

@@ -16,7 +16,7 @@ cargo build --release --manifest-path broker/Cargo.toml   # build the broker
 bun run src/cli/index.ts                                  # start the server locally
 ```
 
-For an end-to-end local install (build + service install + restart), use `scripts/deploy-local.sh`. Use `--broker=yes` for broker/native/Ghostty VT changes; `--broker=no` intentionally preserves the running broker and will not validate those changes.
+For an end-to-end local install (build + service install + restart) on macOS, use `scripts/deploy-local.sh`. It is macOS-only; release installs and managed services support Linux, but this source-deployment script does not. Use `--broker=yes` for broker/native/Ghostty VT changes; `--broker=no` intentionally preserves the running broker and will not validate those changes.
 
 ## Testing
 

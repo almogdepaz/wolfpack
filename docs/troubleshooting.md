@@ -86,7 +86,7 @@ If the broker also needs a restart, be deliberate: broker restarts terminate bro
 wolfpack service restart --broker
 ```
 
-For deployments from a source checkout, broker intent is mandatory:
+For macOS deployments from a source checkout, broker intent is mandatory:
 
 ```bash
 ./scripts/deploy-local.sh --broker=no   # server/CLI/browser changes; preserve sessions
@@ -101,7 +101,7 @@ bun run scripts/build-ghostty-vt.ts --target "$(rustc -vV | awk '/host:/ {print 
 ./scripts/deploy-local.sh --broker=yes
 ```
 
-Release installs already include Ghostty VT inside the prebuilt `wolfpack-broker`; installing Wolfpack does not require Zig, Ghostty, or extra system libraries.
+Release installs and managed services support macOS and Linux. `scripts/deploy-local.sh` is macOS-only; Linux source deployments need a separate manual workflow. Release installs already include Ghostty VT inside the prebuilt `wolfpack-broker`; installing Wolfpack does not require Zig, Ghostty, or extra system libraries.
 
 Run `--broker=yes` once, from an interactive external terminal — not from a Wolfpack session owned by the broker being replaced and not through respawning wrappers such as `launchctl submit`. The script rejects broker replacement from structured Wolfpack session context before building or mutating the installation. It also rejects noninteractive `--broker=yes` runs unless `WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE=1` is set for a known one-shot supervisor.
 
@@ -147,7 +147,7 @@ If you installed Wolfpack to your phone home screen, fully close and reopen the 
 
 ## Full reset
 
-This removes Wolfpack config, service files, and binaries:
+This removes Wolfpack config, service files, and binaries. It also removes `/usr/local/bin/wolfpack` only when that symlink points to Wolfpack's managed binary; unrelated `wolfpack` commands are left untouched:
 
 ```bash
 wolfpack uninstall --yes

@@ -99,6 +99,7 @@ BROKER_TARGET="${BROKER_BINARY_NAME}-${PLATFORM_TARGET}"
 RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"
 DOWNLOAD_URL="${RELEASE_BASE_URL}/${TARGET}"
 BROKER_DOWNLOAD_URL="${RELEASE_BASE_URL}/${BROKER_TARGET}"
+CHECKSUMS_DOWNLOAD_URL="${RELEASE_BASE_URL}/checksums-sha256.txt"
 
 echo "  Detected target: $(bold "$PLATFORM_TARGET")"
 echo "  Downloading from GitHub releases..."
@@ -112,6 +113,7 @@ cleanup_staging() { rm -rf "$STAGING_DIR"; }
 trap cleanup_staging EXIT
 STAGED_WOLFPACK="${STAGING_DIR}/${BINARY_NAME}"
 STAGED_BROKER="${STAGING_DIR}/${BROKER_BINARY_NAME}"
+STAGED_CHECKSUMS="${STAGING_DIR}/checksums-sha256.txt"
 
 download_asset() {
   local url="$1"
@@ -126,6 +128,12 @@ download_asset() {
   fi
 }
 
+if ! download_asset "$CHECKSUMS_DOWNLOAD_URL" "$STAGED_CHECKSUMS"; then
+  echo ""
+  echo "  $(red "Checksum download failed.")"
+  echo "  URL: $CHECKSUMS_DOWNLOAD_URL"
+  exit 1
+fi
 if ! download_asset "$DOWNLOAD_URL" "$STAGED_WOLFPACK"; then
   echo ""
   echo "  $(red 'Download failed.')"
@@ -151,6 +159,32 @@ for artifact in "$STAGED_WOLFPACK" "$STAGED_BROKER"; do
     exit 1
   }
 done
+
+sha256_file() {
+  if command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  elif command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{ print $1 }'
+  else
+    echo "  $(red "Neither shasum nor sha256sum found. Cannot verify downloads.")" >&2
+    return 127
+  fi
+}
+
+verify_checksum() {
+  local artifact="$1"
+  local asset_name="$2"
+  local expected actual
+  expected="$(awk -v name="$asset_name" '$2 == name { print $1; exit }' "$STAGED_CHECKSUMS")"
+  actual="$(sha256_file "$artifact")" || return 1
+  if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || [ "$actual" != "$expected" ]; then
+    echo "  $(red "Checksum verification failed for ${asset_name}.")"
+    return 1
+  fi
+}
+
+verify_checksum "$STAGED_WOLFPACK" "$TARGET" || exit 1
+verify_checksum "$STAGED_BROKER" "$BROKER_TARGET" || exit 1
 
 # Remove macOS quarantine/provenance flags and ad-hoc sign both staged assets
 # before replacing a working installation.
@@ -195,31 +229,39 @@ echo ""
 
 # ── Add to PATH ──
 
-SYMLINK_DIR="/usr/local/bin"
+SYMLINK_DIR="${WOLFPACK_SYMLINK_DIR:-/usr/local/bin}"
 
-# Check if already on PATH — but verify it points to our binary
+# Preserve foreign commands. The managed binary is always refreshed at
+# INSTALL_DIR, and setup always executes that exact path below.
 EXISTING=$(command -v wolfpack 2>/dev/null || true)
+MANAGED_BINARY="${INSTALL_DIR}/${BINARY_NAME}"
+MANAGED_LINK="${SYMLINK_DIR}/${BINARY_NAME}"
 NEEDS_LINK=true
 
-if [ -n "$EXISTING" ]; then
-  RESOLVED=$(readlink -f "$EXISTING" 2>/dev/null || realpath "$EXISTING" 2>/dev/null || echo "$EXISTING")
-  if [ "$RESOLVED" = "${INSTALL_DIR}/${BINARY_NAME}" ]; then
-    echo "  $(green '✓') wolfpack is already on PATH"
-    NEEDS_LINK=false
+if [ "$EXISTING" = "$MANAGED_BINARY" ]; then
+  echo "  $(green '✓') wolfpack is already on PATH"
+  NEEDS_LINK=false
+elif [ -n "$EXISTING" ]; then
+  echo "  $(dim "Existing wolfpack at ${EXISTING} was left unchanged.")"
+fi
+
+if [ -e "$MANAGED_LINK" ] || [ -L "$MANAGED_LINK" ]; then
+  if [ -L "$MANAGED_LINK" ] && [ "$(readlink "$MANAGED_LINK")" = "$MANAGED_BINARY" ]; then
+    echo "  $(green '✓') wolfpack is already linked at ${MANAGED_LINK}"
   else
-    echo "  $(dim "Replacing stale wolfpack at ${EXISTING}")"
-    rm -f "$EXISTING" 2>/dev/null || sudo rm -f "$EXISTING" 2>/dev/null || true
+    echo "  $(dim "Existing ${MANAGED_LINK} was left unchanged.")"
   fi
+  NEEDS_LINK=false
 fi
 
 if $NEEDS_LINK; then
   if [ -d "$SYMLINK_DIR" ] && [ -w "$SYMLINK_DIR" ]; then
-    ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"
-    echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
+    ln -s "$MANAGED_BINARY" "$MANAGED_LINK"
+    echo "  $(green '✓') Symlinked to ${MANAGED_LINK}"
   elif [ -d "$SYMLINK_DIR" ]; then
     echo "  Creating symlink in ${SYMLINK_DIR} (requires sudo)..."
-    if sudo ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${SYMLINK_DIR}/${BINARY_NAME}"; then
-      echo "  $(green '✓') Symlinked to ${SYMLINK_DIR}/${BINARY_NAME}"
+    if sudo ln -s "$MANAGED_BINARY" "$MANAGED_LINK"; then
+      echo "  $(green '✓') Symlinked to ${MANAGED_LINK}"
     else
       echo "  $(dim "Could not symlink to ${SYMLINK_DIR}")"
       echo "  Add to your PATH manually:"
@@ -239,7 +281,7 @@ if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" = "1" ]; then
   exit 0
 fi
 
-if command -v wolfpack &>/dev/null; then
+if [ -x "$MANAGED_BINARY" ]; then
   echo "  $(green '✓') $(bold 'wolfpack') installed"
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
@@ -247,16 +289,7 @@ if command -v wolfpack &>/dev/null; then
   echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
   echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
   echo ""
-  exec wolfpack setup < /dev/tty
-elif [ -x "${INSTALL_DIR}/${BINARY_NAME}" ]; then
-  echo "  $(green '✓') $(bold 'wolfpack') installed"
-  echo ""
-  echo "  Run $(bold 'wolfpack') to start."
-  echo ""
-  echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
-  echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
-  echo ""
-  exec "${INSTALL_DIR}/${BINARY_NAME}" setup < /dev/tty
+  exec "$MANAGED_BINARY" setup < /dev/tty
 else
   echo "  $(red '✗') wolfpack binary not found after install"
   exit 1
