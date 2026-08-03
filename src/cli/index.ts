@@ -23,7 +23,6 @@ import {
   updateStableBinary,
   uninstall,
 } from "./service.js";
-import { setup } from "./setup.js";
 import { doctor } from "./doctor.js";
 import { lsSessions, killSession } from "./sessions.js";
 import { attachCommand } from "./attach.js";
@@ -81,8 +80,20 @@ Commands:
 
 Help:
   wolfpack --help
+  wolfpack setup --help
   wolfpack session --help
   wolfpack agent --help`;
+}
+
+export function setupUsage(): string {
+  return `Usage: wolfpack setup
+
+Run the interactive first-run setup wizard.`;
+}
+
+async function runSetup(): Promise<void> {
+  const { setup } = await import("./setup.js");
+  await setup();
 }
 
 export function shouldStartDashboard(argv: readonly string[]): boolean {
@@ -115,7 +126,7 @@ async function start() {
       throw new Error("missing or invalid config. Run 'wolfpack setup' to recreate ~/.wolfpack/config.json.");
     }
     print("  No valid config found. Running setup first...\n");
-    await setup();
+    await runSetup();
     process.exit(0);
   }
 
@@ -172,8 +183,10 @@ async function main() {
     print(pkg.version);
   } else if (shouldStartDashboard(argv)) {
     await start();
+  } else if (cmd === "setup" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print(setupUsage());
   } else if (cmd === "setup") {
-    await setup();
+    await runSetup();
   } else if (cmd === "service") {
     const serviceCommand = parseServiceCommand(argv.slice(1));
     if (!serviceCommand) {

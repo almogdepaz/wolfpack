@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
 wolfpack
 ```
 
-The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. Wolfpack's phone and remote-control workflow uses Tailscale; setup can install it, waits for sign-in, then verifies its private HTTPS route before it prints a phone QR code. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
+The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. Wolfpack uses Tailscale for private HTTPS phone and remote control: when it is installed, setup configures that path by default; otherwise setup explains why and offers installation, with local-only access as the fallback. Setup waits for sign-in and verifies the private HTTPS route before it prints a phone QR code. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
 Supported: macOS arm64/x64 and Linux x64/arm64. Release installs and managed services support both platforms. On Linux, automatic Tailscale installation requires `apt`; otherwise install Tailscale yourself. Managed services require `systemd --user`; setup runs `sudo loginctl enable-linger $USER` for persistence after reboot and prints that command if it fails. Otherwise, run `wolfpack` in the foreground.
 
 Want a package runner instead? Pin `@latest` so Bun/npm does not reuse an older cached release:
@@ -62,14 +62,12 @@ wolfpack uninstall --yes
 ## First five minutes
 
 1. Run the installer.
-2. Choose your projects directory and port. On a fresh install, setup enables `shell` plus supported providers detected on `PATH`; existing agent settings are never overwritten.
-3. Sign in to Tailscale when setup opens it (macOS) or prompts for `sudo tailscale up` (Linux). Setup keeps the same run open for retry.
-4. Setup configures and verifies `tailscale serve` before it prints the private Tailnet HTTPS QR code.
-5. Install the service when prompted if you want Wolfpack and its agents reachable after login/reboots.
-6. Scan the QR code, open Wolfpack on your phone, then **Add to Home Screen**.
-7. Create a session and pick an agent command.
+2. If Tailscale is installed, setup configures private phone/remote access by default. If it is missing, setup explains why and offers installation; declining continues with local-only access.
+3. Choose your projects directory and port. On a fresh install, setup enables `shell` plus supported providers detected on `PATH`; existing agent settings are never overwritten.
+4. For remote access, sign in to Tailscale when setup opens it (macOS) or prompts for `sudo tailscale up` (Linux). Setup keeps the same run open for retry, then verifies `tailscale serve` before it prints the private Tailnet HTTPS QR code.
+5. Follow the final checklist: start or install the service, open the local or verified Tailnet URL, run `wolfpack doctor`, then create a session with `codex` or `claude`.
 
-A local browser can still open Wolfpack on the host machine. It is not phone access: only a verified Tailnet HTTPS QR code opens Wolfpack from another device.
+Local browser access works only on the host machine. It is not phone access: only a verified Tailnet HTTPS QR code opens Wolfpack from another device.
 
 ## Why use it
 
