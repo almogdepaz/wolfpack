@@ -240,7 +240,7 @@ test("mobile keyboard uses ghostty native input with explicit open and close", a
   })).toBe(true);
 });
 
-test("mobile card swipe peek does not expose fallback terminal input UI", async ({ page }, testInfo) => {
+test("mobile card swipe opens the selected terminal without exposing fallback input during peek", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only swipe path");
 
   await page.goto(srv.baseUrl);
@@ -261,12 +261,19 @@ test("mobile card swipe peek does not expose fallback terminal input UI", async 
     const terminalView = document.getElementById("terminal-view");
     const inputBar = document.getElementById("input-bar");
     const accessory = document.getElementById("kb-accessory");
-    return {
+    const peek = {
       terminalVisible: terminalView?.classList.contains("visible") ?? false,
       terminalTransform: terminalView ? getComputedStyle(terminalView).transform : "",
       inputBarDisplay: inputBar ? getComputedStyle(inputBar).display : "missing",
       accessoryDisplay: accessory ? getComputedStyle(accessory).display : "missing",
       accessoryVisible: accessory?.classList.contains("visible") ?? false,
+    };
+    const expectedSession = card.querySelector(".card-name")?.firstChild?.textContent ?? "";
+    dispatchTouch("touchend", 40, 222);
+    return {
+      ...peek,
+      expectedSession,
+      selectedSession: (window as unknown as { state: { currentSession: string | null } }).state.currentSession,
     };
   });
 
@@ -275,6 +282,8 @@ test("mobile card swipe peek does not expose fallback terminal input UI", async 
   expect(state.inputBarDisplay).toBe("none");
   expect(state.accessoryDisplay).toBe("none");
   expect(state.accessoryVisible).toBe(false);
+  expect(state.expectedSession).not.toBe("");
+  expect(state.selectedSession).toBe(state.expectedSession);
 });
 
 test("mobile touch scrolling dismisses an open native keyboard after drag threshold", async ({ page }, testInfo) => {

@@ -492,9 +492,8 @@ export const controlApiSource: ControlApiSource = {
       response: object({
         brokerAvailable: boolean(),
         counts: object({
-          tmux: integer(),
           broker: integer(),
-        }, ["tmux", "broker"]),
+        }, ["broker"]),
       }, ["brokerAvailable", "counts"]),
       errors: [],
     },

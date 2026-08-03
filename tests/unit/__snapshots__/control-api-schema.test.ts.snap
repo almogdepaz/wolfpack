@@ -536,15 +536,11 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "counts": {
             "type": "object",
             "properties": {
-              "tmux": {
-                "type": "integer"
-              },
               "broker": {
                 "type": "integer"
               }
             },
             "required": [
-              "tmux",
               "broker"
             ],
             "additionalProperties": false

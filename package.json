@@ -8,7 +8,8 @@
     "url": "https://github.com/almogdepaz/wolfpack/issues"
   },
   "bin": {
-    "wolfpack": "./bin/run.cjs"
+    "wolfpack": "./bin/run.cjs",
+    "wolfpack-bridge": "./bin/run.cjs"
   },
   "files": [
     "bin/run.cjs",

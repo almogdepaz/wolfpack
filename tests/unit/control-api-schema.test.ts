@@ -133,6 +133,13 @@ describe("control api schema generation", () => {
     expect(Object.keys(http as JsonObject).filter((key) => key.toLowerCase().includes("ralph"))).toEqual([]);
     expect("ralph" in artifact).toBe(false);
   });
+
+  test("backend status matches the broker-only runtime response", () => {
+    const response = httpResponse("getBackendStatus");
+
+    expect(validate(response, { brokerAvailable: true, counts: { broker: 2 } }, artifact)).toEqual([]);
+    expect(validate(response, { brokerAvailable: true, counts: { broker: 2, tmux: 0 } }, artifact)).not.toEqual([]);
+  });
 });
 
 describe("control api schema docs", () => {

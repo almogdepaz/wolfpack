@@ -2819,11 +2819,12 @@ function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSession
   const key = sidebarDelegationParentKey(machineUrl, sessionId);
   const expanded = expandedSidebarDelegationParents.has(key);
   const count = row.childSummary.total;
-  const label = `${count} child ${count === 1 ? "agent" : "agents"}`;
-  return `<button class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(label)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true">${expanded ? "⌄" : "›"}</span><span>${esc(label)}</span></button>`;
+  const accessibleLabel = `${count} child ${count === 1 ? "agent" : "agents"}`;
+  const visibleLabel = `${count} ${count === 1 ? "agent" : "agents"}`;
+  return `<button type="button" class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(accessibleLabel)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
 }
 
-function visibleSidebarDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
+function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
   const hiddenSessionIds = new Set<string>();
   const visibleRows: DelegationSessionRow<DelegationSessionLike>[] = [];
   for (const row of rows) {
@@ -2865,6 +2866,7 @@ function toggleSidebarDelegationChildren(key: string, event?: Event): void {
   else expandedSidebarDelegationParents.add(key);
   renderSessionListFromState();
   renderSidebar();
+  if (state.drawerOpen) renderDrawerList();
 }
 
 function delegationParentMissingHtml(row: DelegationSessionRow<DelegationSessionLike>): string {
@@ -2898,14 +2900,14 @@ function sessionOrderRows(
 
 function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): {
   readonly attributes: string;
-  readonly handle: string;
+  readonly openAttributes: string;
 } {
   const identity = sessionOrderIdentity(row.session, machineUrl);
-  if (!identity) return { attributes: "", handle: "" };
+  if (!identity) return { attributes: "", openAttributes: "" };
   const parentId = row.role === "child" ? row.parent?.wolfpackSessionId ?? "" : "";
   return {
     attributes: ` data-session-order-id="${escAttr(identity.sessionId)}" data-session-order-machine="${escAttr(machineUrl)}" data-session-order-parent="${escAttr(parentId)}"`,
-    handle: `<button type="button" class="session-order-handle" draggable="true" aria-label="Reorder ${escAttr(row.session.name)}" aria-keyshortcuts="ArrowUp ArrowDown" title="Drag to reorder; use arrow keys for keyboard movement"><span aria-hidden="true">⠿</span></button>`,
+    openAttributes: ` aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-describedby="session-order-instructions"`,
   };
 }
 
@@ -2945,7 +2947,7 @@ function renderMachineGroupHtml(g, multiMachine) {
       const delegationRows = sessionOrderRows(g.sessions, machineKey);
       const useCollapsibleSessionCards = !isDesktop();
       const rows = useCollapsibleSessionCards
-        ? visibleSidebarDelegationRows(delegationRows, machineKey)
+        ? visibleDelegationRows(delegationRows, machineKey)
         : delegationRows;
       html += rows.map((row, i) => {
         const s = row.session;
@@ -2955,16 +2957,14 @@ function renderMachineGroupHtml(g, multiMachine) {
         const grouping = delegationCardAttributes(row);
         const ordering = sessionOrderCardHtml(row, machineKey);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
-          <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}" onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})"></button>
+          <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes} onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})"></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name">${esc(s.name)}<span class="triage-badge ${ui.badge}">${ui.label}</span></div>
-            ${delegationParentSummaryHtml(row)}
-            ${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}
+            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
+            ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
-          ${ordering.handle}
           <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
         </div>`;
       }).join("");
@@ -4401,16 +4401,19 @@ function renderDrawerList() {
   const list = document.getElementById("drawer-list");
   const multiMachine = getMachines().length > 0;
 
-  // Build flat session list
-  const all = [];
-  for (const g of groups) {
-    for (const s of g.sessions) {
-      all.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
-    }
-  }
+  const all = groups.flatMap(group => {
+    const machineUrl = group.machine.url || "";
+    const rows = visibleDelegationRows(sessionOrderRows(group.sessions, machineUrl), machineUrl);
+    return rows.map(row => ({
+      row,
+      session: row.session,
+      machineUrl,
+      machineName: group.machine.name,
+    }));
+  });
 
   let html = "";
-  html += all.map(s => drawerItemHtml(s, multiMachine)).join("");
+  html += all.map(item => drawerItemHtml(item, multiMachine)).join("");
   if (!all.length) {
     html += `<div class="sidebar-empty">No active sessions</div>`;
   }
@@ -4426,14 +4429,21 @@ function renderDrawerList() {
   if (chipLabel) chipLabel.textContent = state.currentSession || "";
 }
 
-function drawerItemHtml(s, multiMachine) {
-  const val = s.machineUrl ? s.machineUrl + "|" + s.name : s.name;
-  const isCurrent = s.name === state.currentSession && s.machineUrl === state.currentMachine;
-  const machineLbl = multiMachine ? `<span class="drawer-item-machine">${esc(s.machineName)}</span>` : "";
-  return `<div class="drawer-item${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
+function drawerItemHtml(item, multiMachine) {
+  const { row, session, machineUrl, machineName } = item;
+  const val = machineUrl ? machineUrl + "|" + session.name : session.name;
+  const isCurrent = session.name === state.currentSession && machineUrl === state.currentMachine;
+  const machineLbl = multiMachine ? `<span class="drawer-item-machine">${esc(machineName)}</span>` : "";
+  const hierarchyClass = row.role === "child"
+    ? " drawer-child-item"
+    : row.role === "orphan"
+      ? " drawer-orphan-item"
+      : row.childSummary ? " drawer-parent-item" : "";
+  return `<div class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
     <div class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></div>
-    <span class="drawer-item-name">${esc(s.name)}</span>
+    <span class="drawer-item-name">${esc(session.name)}</span>
     ${machineLbl}
+    ${sidebarDelegationToggleHtml(row, machineUrl)}
   </div>`;
 }
 
@@ -4559,6 +4569,12 @@ function closeDrawer(instant?: boolean): void {
       const ex = e.changedTouches[0].clientX, ey = e.changedTouches[0].clientY;
       const dist = Math.abs(ex - startX) + Math.abs(ey - startY);
       if (dt < 300 && dist < 15 && touchTarget) {
+        const disclosure = touchTarget.closest(".delegation-sidebar-toggle");
+        if (disclosure && drawer.contains(disclosure)) {
+          e.preventDefault();
+          disclosure.click();
+          return;
+        }
         const chip = document.getElementById("session-chip");
         if (chip && chip.contains(touchTarget)) { toggleDrawer(); return; }
         const item = touchTarget.closest(".drawer-item");
@@ -4623,7 +4639,7 @@ function closeDrawer(instant?: boolean): void {
   // Drawer: drag up to close
   drawer.addEventListener("touchstart", onStart, { passive: true });
   drawer.addEventListener("touchmove", onMove, { passive: true });
-  drawer.addEventListener("touchend", onEnd, { passive: true });
+  drawer.addEventListener("touchend", onEnd, { passive: false });
 })();
 
 async function switchSession(val) {
@@ -5361,7 +5377,7 @@ if (!isDesktop()) {
           showView(backView, true);
         }
       } else if (card) {
-        card.click();
+        (card.querySelector(".card-open") as HTMLElement | null)?.click();
       }
     }
 
@@ -5407,7 +5423,7 @@ function _renderSidebarNow() {
     const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" aria-label="Start a session on this machine" onclick="showProjectPicker()"><span aria-hidden="true">+</span> New session</button>${sessionOrderResetButtonHtml("")}</div>`;
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
-      html += visibleSidebarDelegationRows(sessionOrderRows(g.sessions, ""), "").map(row => sidebarCardHtml(row, "")).join("");
+      html += visibleDelegationRows(sessionOrderRows(g.sessions, ""), "").map(row => sidebarCardHtml(row, "")).join("");
     } else {
       html += sidebarBtns;
       html += '<div class="sidebar-no-sessions">No active sessions</div>';
@@ -5423,7 +5439,7 @@ function _renderSidebarNow() {
       html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
       html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${escAttr(g.machine.url)}')"${createDisabled}>+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += visibleSidebarDelegationRows(sessionOrderRows(g.sessions, g.machine.url), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
+        html += visibleDelegationRows(sessionOrderRows(g.sessions, g.machine.url), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -5457,16 +5473,14 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
-    <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}" onclick="${onclick}"></button>
+    <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes} onclick="${onclick}"></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
-      <div class="card-name">${esc(s.name)}</div>
-      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
-      ${sidebarDelegationToggleHtml(row, machineUrl)}
+      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
+      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
-    ${ordering.handle}
     ${gridBtn}
     <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + machineUrlAttr + "'" : ''})">&times;</button>
   </div>`;
