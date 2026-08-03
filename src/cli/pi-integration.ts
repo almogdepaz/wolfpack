@@ -2,18 +2,15 @@ import { execFileSync } from "node:child_process";
 import { AGENT_KIND } from "../agent-kind.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
 
-export const PI_INTEGRATION_PACKAGES = [
-  "npm:wolfpack-bridge",
-  "npm:@sgtbeatdown/pi-tasks",
-] as const;
+export const PI_INTEGRATION_PACKAGES = ["npm:@sgtbeatdown/pi-tasks"] as const;
 
 export type PiIntegrationSetupMode = "hidden" | "prompt" | "guidance";
 
 export function piIntegrationDisclosureLines(): readonly string[] {
   return [
-    "  - Wolfpack skill: creates and controls visible agent sessions.",
+    "  - Wolfpack skill: Install wolfpack-tailnet-control manually from the Wolfpack repository.",
     "  - Pi Tasks: adds agent_task_* tools and their delegation skill.",
-    "  Commands Pi will run:",
+    "  Command Pi will run:",
     ...PI_INTEGRATION_PACKAGES.map((source) => `    pi install ${source}`),
     "  Skills and extensions can execute commands with your user permissions. Review before accepting.",
   ];

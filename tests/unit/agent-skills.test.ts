@@ -115,6 +115,7 @@ describe("agent skills", () => {
     expect(pkg.files).toContain("skills");
     expect(pkg.files).toContain("docs/agent-skills.md");
     expect(readme).toContain("docs/agent-skills.md");
+    expect(readme).toContain("all agent harnesses");
     expect(docs).toContain("The npm package includes `skills/`");
     expect(docs).toContain("prefer symlinking each desired Wolfpack skill");
   });
@@ -147,11 +148,12 @@ describe("agent skills", () => {
     const docs = readRepoFile("docs/agent-skills.md");
 
     for (const content of [readme, docs]) {
-      expect(content).toContain("pi install npm:wolfpack-bridge");
+      expect(content).not.toContain("pi install npm:wolfpack-bridge");
       expect(content).toContain("pi install npm:@sgtbeatdown/pi-tasks");
       expect(content).toContain("`wolfpack-tailnet-control`");
       expect(content).toContain("`wolfpack-pi-task-delegation`");
       expect(content).toContain("`agent_task_*`");
+      expect(content).toContain("manually");
       expect(content.toLowerCase()).toContain("opt-in");
     }
   });

@@ -51,11 +51,12 @@ describe("Pi integration setup", () => {
     expect(planPiIntegrationSetup(pi.pathValue, false)).toBe("guidance");
   });
 
-  test("discloses exact package commands and user-permission risk before prompting", () => {
+  test("installs only Pi Tasks and directs Wolfpack skill installation to the repository", () => {
     const disclosure = piIntegrationDisclosureLines().join("\n");
 
-    expect(disclosure).toContain("pi install npm:wolfpack-bridge");
     expect(disclosure).toContain("pi install npm:@sgtbeatdown/pi-tasks");
+    expect(disclosure).not.toContain("npm:wolfpack-bridge");
+    expect(disclosure).toContain("Install wolfpack-tailnet-control manually");
     expect(disclosure).toContain("user permissions");
     expect(disclosure).toContain("Review");
   });
@@ -68,7 +69,7 @@ describe("Pi integration setup", () => {
     expect(acceptsPiIntegrationInstall("yes")).toBe(false);
   });
 
-  test("installs Wolfpack skills before the Pi task extension", () => {
+  test("installs only the Pi Tasks extension", () => {
     const pi = fakePi();
     const result = installPiIntegration({
       pathValue: pi.pathValue,
@@ -79,31 +80,10 @@ describe("Pi integration setup", () => {
       status: "installed",
       installedSources: PI_INTEGRATION_PACKAGES,
     });
-    expect(readFileSync(pi.callLog, "utf8")).toBe(
-      "install npm:wolfpack-bridge\ninstall npm:@sgtbeatdown/pi-tasks\n",
-    );
+    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
   });
 
-  test("stops before installing the extension when Wolfpack skill installation fails", () => {
-    const pi = fakePi();
-    const result = installPiIntegration({
-      pathValue: pi.pathValue,
-      env: {
-        CALL_LOG: pi.callLog,
-        FAIL_SOURCE: "npm:wolfpack-bridge",
-      },
-    });
-
-    expect(result).toEqual({
-      status: "failed",
-      installedSources: [],
-      failedSource: "npm:wolfpack-bridge",
-      retryCommand: "pi install npm:wolfpack-bridge",
-    });
-    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:wolfpack-bridge\n");
-  });
-
-  test("reports a retry command when the task extension installation fails", () => {
+  test("reports a retry command when Pi Tasks installation fails", () => {
     const pi = fakePi();
     const result = installPiIntegration({
       pathValue: pi.pathValue,
@@ -115,12 +95,10 @@ describe("Pi integration setup", () => {
 
     expect(result).toEqual({
       status: "failed",
-      installedSources: ["npm:wolfpack-bridge"],
+      installedSources: [],
       failedSource: "npm:@sgtbeatdown/pi-tasks",
       retryCommand: "pi install npm:@sgtbeatdown/pi-tasks",
     });
-    expect(readFileSync(pi.callLog, "utf8")).toBe(
-      "install npm:wolfpack-bridge\ninstall npm:@sgtbeatdown/pi-tasks\n",
-    );
+    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
   });
 });

@@ -12,13 +12,16 @@ Bundled skill:
 ## Pi opt-in setup
 
 `wolfpack setup` checks for `pi` on `PATH`. Pi users receive one default-no,
-opt-in offer for the complete subagent integration; users without Pi receive no
-offer. Accepting runs Pi's package manager with these commands in order:
+opt-in offer for Pi Tasks; users without Pi receive no offer. Accepting runs
+Pi's package manager with this command:
 
 ```bash
-pi install npm:wolfpack-bridge
 pi install npm:@sgtbeatdown/pi-tasks
 ```
+
+Install `wolfpack-tailnet-control` manually from the reviewed repository source
+below. Wolfpack does not install the full `wolfpack-bridge` app inside Pi just
+to obtain that skill.
 
 The packages and resources have distinct ownership:
 
@@ -28,7 +31,6 @@ The packages and resources have distinct ownership:
 | Pi Tasks extension | `agent_task_*` | Delivers assignments and stores structured task status/results; it does not spawn sessions. |
 | Pi Tasks skill | `wolfpack-pi-task-delegation` | Teaches Pi how to combine the session-control skill with task dispatch, completion, and parent-owned cleanup. |
 
-`npm:wolfpack-bridge` exposes the bundled Wolfpack skills to Pi.
 `npm:@sgtbeatdown/pi-tasks` contains both the extension and its matching
 delegation skill, so those two stay version-aligned. Every participating Pi
 session needs Pi Tasks loaded. Its default filesystem task store also requires
@@ -36,9 +38,9 @@ parent and child sessions to use the same project directory; cross-repository or
 multi-host task state needs a shared store.
 
 Declining changes nothing. Non-interactive setup installs nothing and prints the
-two commands only when Pi is detected. Package extensions and skills can execute
-commands with the user's permissions, so review them before opting in. Start a
-fresh agent context afterward, or run `/reload` in an existing Pi session.
+Pi Tasks command only when Pi is detected. Package extensions and skills can
+execute commands with the user's permissions, so review them before opting in.
+Start a fresh agent context afterward, or run `/reload` in an existing Pi session.
 
 ## Clone or update the auditable source
 
@@ -143,9 +145,9 @@ contracts.
 
 ## Distribution boundary
 
-The npm package includes `skills/` so users inspecting that package can read the
-same repository files. Platform binary packages only contain executables;
-platform binaries do not contain skills. After explicit opt-in, the setup wizard
-delegates package installation to Pi instead of embedding skill payloads,
-editing Pi settings, or overwriting skill directories. The cloned repository
-remains the auditable source of truth for manual installation.
+The npm package includes `skills/` for inspection, but it is the Wolfpack
+application package and Wolfpack does not install it inside Pi. Platform binary
+packages only contain executables; platform binaries do not contain skills. After
+explicit opt-in, the setup wizard installs Pi Tasks without embedding skill
+payloads, editing Pi settings, or overwriting skill directories. The cloned
+repository remains the auditable source of truth for manual installation.
