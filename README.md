@@ -84,7 +84,7 @@ It is an AI agent terminal orchestrator for developers who need persistent brows
 - **PWA UX** — install on your home screen, reconnect on drops, receive notifications when sessions need attention.
 - **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
 - **Provider readiness** — First-run setup enables detected supported CLIs; Settings → Agents shows path/version and login guidance and lets you add providers installed later.
-- **Pi integration** — manually install the Wolfpack control skill, then optionally add Pi Tasks for durable subagent task delegation; see [Pi integration and agent skills](#pi-integration-and-agent-skills).
+- **Agent skills** — `wolfpack-tailnet-control` works with all agent harnesses that support Agent Skills; optionally add Pi Tasks for durable Pi subagent delegation. See [Agent skills](#agent-skills).
 
 ## Agent recipes
 
@@ -198,13 +198,15 @@ Optional: `WOLFPACK_JWT_AUDIENCE`, `WOLFPACK_JWT_ISSUER`, `WOLFPACK_JWT_CLOCK_TO
 
 Per-server agent settings live in `~/.wolfpack/bridge-settings.json`.
 
-## Pi integration and agent skills
+## Agent skills
 
-Wolfpack exposes one repository-local agent skill in `skills/`:
+### Wolfpack control skill
 
-- `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
+`wolfpack-tailnet-control` is for all agent harnesses that support Agent Skills,
+not just Pi. It discovers, inspects, and controls visible Wolfpack terminal
+sessions across Tailscale hosts.
 
-### Install the Pi integration
+### Optional Pi task delegation
 
 Install Wolfpack's control skill manually from this repository; setup does not add
 the full Wolfpack app to Pi just to deliver that skill. Then, when setup detects
@@ -234,7 +236,7 @@ Skills and extensions can execute commands with your user permissions. Review
 the packages before accepting. Start a fresh Pi session afterward, or run
 `/reload` in an existing session.
 
-### Manual skill installation
+### Install the Wolfpack control skill
 
 Skills are executable agent instructions, so install only the ones you have audited. Clone or update `https://github.com/almogdepaz/wolfpack`, review the requested file (for example `skills/wolfpack-tailnet-control/SKILL.md`), then symlink that skill directory into one supported root:
 

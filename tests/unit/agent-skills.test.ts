@@ -115,6 +115,7 @@ describe("agent skills", () => {
     expect(pkg.files).toContain("skills");
     expect(pkg.files).toContain("docs/agent-skills.md");
     expect(readme).toContain("docs/agent-skills.md");
+    expect(readme).toContain("all agent harnesses");
     expect(docs).toContain("The npm package includes `skills/`");
     expect(docs).toContain("prefer symlinking each desired Wolfpack skill");
   });
