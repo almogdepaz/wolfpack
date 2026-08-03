@@ -84,6 +84,7 @@ It is an AI agent terminal orchestrator for developers who need persistent brows
 - **PWA UX** — install on your home screen, reconnect on drops, receive notifications when sessions need attention.
 - **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
 - **Provider readiness** — First-run setup enables detected supported CLIs; Settings → Agents shows path/version and login guidance and lets you add providers installed later.
+- **Pi integration** — optionally install Pi packages for Wolfpack session control and durable subagent task delegation; see [Pi integration and agent skills](#pi-integration-and-agent-skills).
 
 ## Agent recipes
 
@@ -197,16 +198,20 @@ Optional: `WOLFPACK_JWT_AUDIENCE`, `WOLFPACK_JWT_ISSUER`, `WOLFPACK_JWT_CLOCK_TO
 
 Per-server agent settings live in `~/.wolfpack/bridge-settings.json`.
 
-## Agent skills
+## Pi integration and agent skills
 
 Wolfpack exposes one repository-local agent skill in `skills/`:
 
 - `wolfpack-tailnet-control` — discover, inspect, and control Wolfpack terminal sessions across Tailscale hosts.
 
-### Pi subagent integration
+### Install the Pi integration
 
-When setup detects `pi` on `PATH`, it offers one default-no, opt-in installation.
-Accepting uses Pi's package manager to install the complete integration:
+When setup detects `pi` on `PATH`, it offers this default-no, opt-in installation. You can also install the packages directly from their npm pages:
+
+- [`wolfpack-bridge`](https://www.npmjs.com/package/wolfpack-bridge) — Wolfpack's Pi-installable skills, including `wolfpack-tailnet-control`.
+- [`@sgtbeatdown/pi-tasks`](https://www.npmjs.com/package/@sgtbeatdown/pi-tasks) — the Pi Tasks extension and `wolfpack-pi-task-delegation` skill.
+
+Install both with Pi's package manager:
 
 ```bash
 pi install npm:wolfpack-bridge
