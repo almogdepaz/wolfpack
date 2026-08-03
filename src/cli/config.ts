@@ -26,6 +26,8 @@ export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
+  tailscaleNodeId?: string;
+  installationId?: string;
 }
 
 export let hasTTY = true;
@@ -59,7 +61,15 @@ export function parseConfig(raw: unknown): Config | null {
     typeof candidate.tailscaleHostname === "string"
       ? candidate.tailscaleHostname.trim() || undefined
       : undefined;
-  return { devDir, port, tailscaleHostname };
+  const tailscaleNodeId =
+    typeof candidate.tailscaleNodeId === "string"
+      ? candidate.tailscaleNodeId.trim() || undefined
+      : undefined;
+  const installationId =
+    typeof candidate.installationId === "string"
+      ? candidate.installationId.trim() || undefined
+      : undefined;
+  return { devDir, port, tailscaleHostname, tailscaleNodeId, installationId };
 }
 
 export function loadConfigFromText(text: string): Config | null {

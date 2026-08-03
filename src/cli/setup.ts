@@ -5,6 +5,7 @@ import { execSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { printQR } from "../qr.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
@@ -169,6 +170,7 @@ export async function setup() {
   // after `serve status --json` proves it proxies to this Wolfpack port.
   const previousConfig = loadConfig();
   let verifiedRemoteHostname: string | undefined;
+  let verifiedTailnetNodeId: string | undefined;
   if (hasTailscale && tsBin) {
     const runTailscale = (args: readonly string[]): string => {
       const [file, fileArgs] = IS_LINUX
@@ -199,6 +201,7 @@ export async function setup() {
       const configured = configureTailscaleRemoteAccess({ binary: tsBin, port, run: (_file, args) => runTailscale(args) });
       if (configured.status === "verified") {
         verifiedRemoteHostname = configured.hostname;
+        verifiedTailnetNodeId = configured.nodeId;
         print(green(`  Tailscale serving at https://${verifiedRemoteHostname}/`));
       } else {
         print(red("  Tailscale serve was not verified; no phone QR will be shown."));
@@ -213,7 +216,8 @@ export async function setup() {
     devDir,
     port,
     ...(verifiedRemoteHostname && { tailscaleHostname: verifiedRemoteHostname }),
-    ...(!verifiedRemoteHostname && previousConfig?.tailscaleHostname && { tailscaleHostname: previousConfig.tailscaleHostname }),
+    ...(verifiedTailnetNodeId && { tailscaleNodeId: verifiedTailnetNodeId }),
+    installationId: previousConfig?.installationId ?? randomUUID(),
   };
   saveConfig(config);
 

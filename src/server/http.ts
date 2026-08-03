@@ -9,6 +9,10 @@ import { ASSET_VERSION, assets } from "../public-assets.js";
 import { exec } from "./shell.js";
 import { getBackend } from "./backend.js";
 import { createLogger } from "../log.js";
+import {
+  classifyTailnetPeerHandshake,
+  type TailnetPeerDiscovery,
+} from "../tailnet-peer-discovery.js";
 
 const log = createLogger("http");
 
@@ -336,14 +340,18 @@ export function buildTailscaleStatusArgv(tsBin: string): { cmd: string; args: st
   return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status --json`] };
 }
 
-export async function discoverPeers(): Promise<{ peers: any[]; error?: string }> {
+export async function discoverPeers(): Promise<{
+  peers: Extract<TailnetPeerDiscovery, { status: "ready" }>[];
+  diagnostics: Exclude<TailnetPeerDiscovery, { status: "ready" }>[];
+  error?: string;
+}> {
   const tsBin = [
     "/usr/local/bin/tailscale",
     "/usr/bin/tailscale",
     "/opt/homebrew/bin/tailscale",
     "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
   ].find((p) => { try { execFileSync("test", ["-x", p]); return true; } catch { /* probe: binary not found at this path */ return false; } });
-  if (!tsBin) return { peers: [], error: "tailscale not found" };
+  if (!tsBin) return { peers: [], diagnostics: [], error: "tailscale not found" };
 
   try {
     const { cmd, args } = buildTailscaleStatusArgv(tsBin);
@@ -353,34 +361,36 @@ export async function discoverPeers(): Promise<{ peers: any[]; error?: string }>
     );
     const status = JSON.parse(stdout);
     const self = status.Self?.DNSName?.replace(/\.$/, "");
-    const peers: { hostname: string; url: string }[] = [];
+    const peers: { hostname: string; nodeId: string; url: string }[] = [];
     for (const [, peer] of Object.entries(status.Peer || {}) as [string, any][]) {
       if (!peer.Online) continue;
-      const dns = peer.DNSName?.replace(/\.$/, "");
-      if (!dns || dns === self) continue;
-      peers.push({ hostname: dns, url: `https://${dns}` });
+      const hostname = peer.DNSName?.replace(/\.$/, "");
+      const nodeId = typeof peer.ID === "string" ? peer.ID.trim() : "";
+      if (!hostname || hostname === self || !nodeId) continue;
+      peers.push({ hostname, nodeId, url: `https://${hostname}` });
     }
 
     const results = await Promise.all(
-      peers.map(async (p) => {
+      peers.map(async (peer) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), PEER_PROBE_TIMEOUT_MS);
         try {
-          const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), PEER_PROBE_TIMEOUT_MS);
-          const r = await fetch(p.url + "/api/info", { signal: ctrl.signal });
-          clearTimeout(timer);
-          const info = await r.json();
-          const sanitized = sanitizePeerName(info.name);
-          return { ...p, name: sanitized || p.hostname, version: sanitizePeerName(info.version), wolfpack: true as const };
-        } catch { /* expected: peer unreachable or not running wolfpack */
-          return { ...p, name: p.hostname, version: undefined, wolfpack: false as const };
+          const response = await fetch(`${peer.url}/api/machine`, { signal: controller.signal });
+          const body: unknown = await response.json().catch(() => null);
+          return classifyTailnetPeerHandshake(peer, { status: response.status, body });
+        } catch {
+          return classifyTailnetPeerHandshake(peer, { status: "unreachable" });
+        } finally {
+          clearTimeout(timeout);
         }
       }),
     );
-    const wolfpackPeers = results.filter((r): r is Extract<typeof r, { wolfpack: true }> => r.wolfpack);
-    cachedPeers = wolfpackPeers.map(p => ({ url: p.url, name: p.name }));
-    return { peers: wolfpackPeers };
+    const ready = results.filter((peer): peer is Extract<TailnetPeerDiscovery, { status: "ready" }> => peer.status === "ready");
+    const diagnostics = results.filter((peer): peer is Exclude<TailnetPeerDiscovery, { status: "ready" }> => peer.status !== "ready");
+    cachedPeers = ready.map(peer => ({ url: peer.url, name: peer.name }));
+    return { peers: ready, diagnostics };
   } catch (e: any) {
     log.error("discover error", { error: e?.message || String(e) });
-    return { peers: [], error: "failed to query tailscale" };
+    return { peers: [], diagnostics: [], error: "failed to query tailscale" };
   }
 }

@@ -26,6 +26,10 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import {
+  mergeDiscoveredTailnetMachines,
+  parseStoredMachines,
+} from "./tailnet-machine-registry";
+import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
 } from "./ghostty-prewarm-pool";
@@ -2335,17 +2339,19 @@ function getMachines() {
     // Drop any entry whose URL fails validation. Names are echoed into the
     // UI; clamp length and strip control chars so an XSS payload in name
     // can't widen the blast radius via DOM injection.
-    return raw.filter((m) => m && isValidMachineUrl(m.url)).map((m) => ({
-      url: m.url,
-      name: typeof m.name === "string" ? m.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128) : "",
+    return parseStoredMachines(raw).filter((machine) => isValidMachineUrl(machine.url)).map((machine) => ({
+      url: machine.url,
+      name: machine.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128),
+      peerId: machine.peerId,
     }));
   } catch { return []; }
 }
 
-function saveMachines(list: Array<{ url: string; name: string }>): void {
+function saveMachines(list: Array<{ url: string; name: string; peerId?: string }>): void {
   // Mirror getMachines() validation on the write side so future code paths
   // that bypass the discover-source can't poison localStorage either.
-  const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
+  const safe = parseStoredMachines(Array.isArray(list) ? list : [])
+    .filter((machine) => isValidMachineUrl(machine.url));
   localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
 }
 
@@ -2393,26 +2399,12 @@ function fetchMachineInfo(machineUrl: string, options?: RequestInit): Promise<In
     const d = await api<DiscoverResponse>("/discover");
     const peers = d.peers || [];
     if (peers.length) {
-      const peerUrls = new Set(peers.map(p => p.url));
-      // Start from peers as source of truth, preserve any non-tailnet manual entries
-      let machines = getMachines();
-      let changed = false;
-      // Prune stale tailnet machines no longer in peer list
-      const before = machines.length;
-      machines = machines.filter(m => peerUrls.has(m.url));
-      if (machines.length !== before) changed = true;
-      // Add/update from peer list
-      for (const p of peers) {
-        const existing = machines.find(m => m.url === p.url);
-        if (!existing) {
-          machines.push({ url: p.url, name: p.name || p.hostname });
-          changed = true;
-        } else if (existing.name !== (p.name || p.hostname)) {
-          existing.name = p.name || p.hostname;
-          changed = true;
-        }
+      const machines = getMachines();
+      const merged = mergeDiscoveredTailnetMachines(machines, peers);
+      if (JSON.stringify(merged) !== JSON.stringify(machines)) {
+        saveMachines(merged);
+        loadSessions(true);
       }
-      if (changed) { saveMachines(machines); loadSessions(true); }
     }
   } catch {}
 })();
@@ -2427,12 +2419,17 @@ function errorMessage(err: unknown): string {
 
 interface DiscoverPeer {
   readonly url: string;
-  readonly name?: string;
-  readonly hostname?: string;
+  readonly name: string;
+  readonly peerId: string;
+}
+
+interface DiscoverDiagnostic {
+  readonly status: "offline" | "non-wolfpack" | "incompatible";
 }
 
 interface DiscoverResponse {
   readonly peers?: readonly DiscoverPeer[];
+  readonly diagnostics?: readonly DiscoverDiagnostic[];
 }
 
 interface InfoResponse {
@@ -5166,31 +5163,27 @@ async function discoverMachines() {
       statusEl.style.color = "#555";
       return;
     }
-    const peerUrls = new Set(peers.map(p => p.url));
-    let machines = getMachines();
-    // Prune stale machines no longer in peer list
-    const before = machines.length;
-    machines = machines.filter(m => peerUrls.has(m.url));
-    const pruned = before - machines.length;
-    // Add new / update existing
-    let added = 0;
-    for (const p of peers) {
-      const existing = machines.find(m => m.url === p.url);
-      if (!existing) {
-        machines.push({ url: p.url, name: p.name || p.hostname });
-        added++;
-      } else if (existing.name !== (p.name || p.hostname)) {
-        existing.name = p.name || p.hostname;
-      }
-    }
-    if (added > 0 || pruned > 0) {
-      saveMachines(machines);
+    const machines = getMachines();
+    const merged = mergeDiscoveredTailnetMachines(machines, peers);
+    const changed = JSON.stringify(merged) !== JSON.stringify(machines);
+    const added = Math.max(0, merged.length - machines.length);
+    const pruned = Math.max(0, machines.length - merged.length);
+    if (changed) {
+      saveMachines(merged);
       renderMachinesList();
     }
     const parts = [`Found ${peers.length}`];
     if (added > 0) parts.push(`added ${added}`);
     if (pruned > 0) parts.push(`pruned ${pruned} stale`);
     if (!added && !pruned) parts.push("all up to date");
+    const diagnostics = data.diagnostics || [];
+    if (diagnostics.length > 0) {
+      const counts = new Map<string, number>();
+      for (const diagnostic of diagnostics) {
+        counts.set(diagnostic.status, (counts.get(diagnostic.status) || 0) + 1);
+      }
+      parts.push(Array.from(counts, ([status, count]) => `${count} ${status}`).join(", "));
+    }
     statusEl.textContent = parts.join(", ");
     statusEl.style.color = "#00ff41";
   } catch (e) {

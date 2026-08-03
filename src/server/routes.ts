@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { hostname, homedir } from "node:os";
+import { loadConfig } from "../cli/config.js";
 import { execFile } from "node:child_process";
 import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
@@ -36,6 +37,7 @@ import {
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
+import { buildTailnetMachineHandshake } from "../tailnet-machine-contract.js";
 
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
@@ -596,6 +598,25 @@ export const routes: Record<
       .replace(/\.local$/, "")
       .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
     json(res, { name, version: VERSION });
+  },
+
+  "GET /api/machine": (_req, res) => {
+    const config = loadConfig();
+    const machine = buildTailnetMachineHandshake({
+      tailscaleHostname: config?.tailscaleHostname,
+      tailscaleNodeId: config?.tailscaleNodeId,
+      installationId: config?.installationId,
+      displayName: hostname()
+        .replace(/\.local$/, "")
+        .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, ""),
+      version: VERSION,
+    });
+    if (!machine) {
+      json(res, { error: "Tailnet machine not ready" }, 404);
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    json(res, machine);
   },
 
   "GET /api/sessions": async (_req, res) => {
@@ -1311,8 +1332,8 @@ export const routes: Record<
 
   "GET /api/discover": async (_req, res) => {
     const result = await discoverPeers();
-    if (result.error) return json(res, { peers: [], error: result.error });
-    json(res, { peers: result.peers });
+    if (result.error) return json(res, { peers: [], diagnostics: [], error: result.error });
+    json(res, { peers: result.peers, diagnostics: result.diagnostics });
   },
 
   "GET /api/poll": async (req, res) => {

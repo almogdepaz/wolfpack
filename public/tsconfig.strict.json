@@ -8,6 +8,7 @@
     "session-order.ts",
     "session-order-ui.ts",
     "take-control-coordinator.ts",
+    "tailnet-machine-registry.ts",
     "terminal-hydration.ts",
     "terminal-layout.ts",
     "terminal-loading-ui.ts",
