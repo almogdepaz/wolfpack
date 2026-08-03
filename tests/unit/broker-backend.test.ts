@@ -517,6 +517,21 @@ describe("BrokerBackend.capturePane", () => {
     expect(text).toBe("older\nhello\nworld");
   });
 
+  test("can limit a snapshot to the visible screen", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "tui", id: SESSION_UUID_1 })],
+    }));
+    await backend.list();
+    client.setHandler("snapshot", () => okResp(styledSnapshot(["visible"], ["older"])));
+
+    await backend.capturePane("tui", { scrollbackLines: 0 });
+
+    expect(client.requests.at(-1)).toEqual({
+      method: "snapshot",
+      params: { session_id: SESSION_UUID_1, scrollback_lines: 0 },
+    });
+  });
+
   test("returns empty string when broker fails", async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "tui", id: SESSION_UUID_1 })],

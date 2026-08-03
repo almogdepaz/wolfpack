@@ -272,13 +272,39 @@ describe("GET /api/sessions", () => {
     expect(data.sessions).toHaveLength(0);
   });
 
-  test("classifies running when broker output sequence advances", async () => {
+  test("classifies idle when raw PTY output advances but rendered content is unchanged", async () => {
+    mockBackend.setCapturePane(async () => "static rendered tui\n");
     mockBackend.setOutputSequence("wolf-1", "1");
     await get("/api/sessions");
+
     mockBackend.setOutputSequence("wolf-1", "2");
-    const res = await get("/api/sessions");
-    const data = await res.json();
+    const data = await (await get("/api/sessions")).json();
+
+    expect(data.sessions[0].triage).toBe("idle");
+    expect(data.sessions[0].runtimeState).toMatchObject({ state: "idle" });
+  });
+
+  test("classifies running when rendered content changes above a stable three-line footer", async () => {
+    mockBackend.setCapturePane(async () => "step one\nseparator\nstatus\nagents\n");
+    mockBackend.setOutputSequence("wolf-1", "1");
+    await get("/api/sessions");
+
+    mockBackend.setCapturePane(async () => "step two\nseparator\nstatus\nagents\n");
+    const data = await (await get("/api/sessions")).json();
+
     expect(data.sessions[0].triage).toBe("running");
+    expect(data.sessions[0].runtimeState).toMatchObject({ state: "output" });
+  });
+
+  test("classifies idle when the rendered snapshot is unavailable", async () => {
+    mockBackend.setCapturePane(async () => "last rendered output\n");
+    await get("/api/sessions");
+
+    mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
+    const data = await (await get("/api/sessions")).json();
+
+    expect(data.sessions[0].triage).toBe("idle");
+    expect(data.sessions[0].runtimeState).toMatchObject({ state: "idle" });
   });
 
   test("classifies idle when output sequence is stable despite prompt prose", async () => {
@@ -309,9 +335,9 @@ describe("GET /api/sessions", () => {
 
   test("sorts sessions by triage priority", async () => {
     mockBackend.setSessions(["idle-sess", "running-sess", "input-sess"]);
+    mockBackend.setCapturePane(async (session: string) => session === "running-sess" ? "step one\n" : "quiet\n");
     await get("/api/sessions");
-    // Second call — only running-sess advances its broker output watermark.
-    mockBackend.setOutputSequence("running-sess", "1");
+    mockBackend.setCapturePane(async (session: string) => session === "running-sess" ? "step two\n" : "quiet\n");
     const res = await get("/api/sessions");
     const data = await res.json();
     // Sessions sorted alphabetically (5cf260d), triage is per-session metadata
@@ -335,7 +361,7 @@ describe("GET /api/sessions", () => {
       unseen: true,
     });
 
-    mockBackend.setOutputSequence("wolf-1", "1");
+    mockBackend.setCapturePane(async () => "compiling step 2...\n");
     const second = await (await get("/api/sessions")).json();
     expect(second.sessions[0].triage).toBe("running");
     expect(second.sessions[0].runtimeState).toMatchObject({
@@ -345,13 +371,13 @@ describe("GET /api/sessions", () => {
     });
   });
 
-  test("uses output sequence changes for activity without snapshotting dashboard sessions", async () => {
-    const sessionName = "sequence-activity";
-    const sessionId = "sequence-activity-id";
+  test("uses rendered pane changes for activity while preserving the output sequence", async () => {
+    const sessionName = "rendered-activity";
+    const sessionId = "rendered-activity-id";
     const factBackend = new FactBackend([
       { name: sessionName, alive: true, outputSequence: "41", identity: testIdentity(sessionName, sessionId) },
     ]);
-    factBackend.setPane(sessionName, "must not be captured\n");
+    factBackend.setPane(sessionName, "stable rendered tui\n");
     __setTestBackend(factBackend);
     try {
       const initial = await (await get("/api/sessions")).json();
@@ -366,42 +392,33 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "42", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const advanced = await (await get("/api/sessions")).json();
-      expect(advanced.sessions[0]).toMatchObject({
-        name: sessionName,
-        lastLine: "",
-        triage: "running",
+      const redraw = await (await get("/api/sessions")).json();
+      expect(redraw.sessions[0]).toMatchObject({
+        triage: "idle",
         outputSequence: "42",
-        runtimeState: { state: "output" },
+        runtimeState: { state: "idle" },
       });
 
-      factBackend.setFacts([
-        { name: sessionName, alive: true, outputSequence: "40", identity: testIdentity(sessionName, sessionId) },
-      ]);
-      const regressed = await (await get("/api/sessions")).json();
-      expect(regressed.sessions[0]).toMatchObject({ triage: "idle", runtimeState: { state: "idle" } });
-
-      factBackend.setFacts([
-        { name: sessionName, alive: true, outputSequence: "41", identity: testIdentity(sessionName, sessionId) },
-      ]);
-      const belowWatermark = await (await get("/api/sessions")).json();
-      expect(belowWatermark.sessions[0]).toMatchObject({ triage: "idle", runtimeState: { state: "idle" } });
-
-      factBackend.setFacts([
-        { name: sessionName, alive: true, identity: testIdentity(sessionName, sessionId) },
-      ]);
-      const legacy = await (await get("/api/sessions")).json();
-      expect(legacy.sessions[0]).toMatchObject({ triage: "idle", runtimeState: { state: "idle" } });
-      expect(legacy.sessions[0]).not.toHaveProperty("outputSequence");
-      expect(factBackend.capturePaneCalls).toBe(0);
+      factBackend.setPane(sessionName, "updated rendered tui\n");
+      const renderedOutput = await (await get("/api/sessions")).json();
+      expect(renderedOutput.sessions[0]).toMatchObject({
+        triage: "running",
+        outputSequence: "42",
+        runtimeState: {
+          state: "output",
+          label: "rendered output activity",
+          message: "derived only from broker-rendered terminal changes",
+        },
+      });
+      expect(factBackend.capturePaneCalls).toBe(3);
     } finally {
       __setTestBackend(mockBackend);
     }
   });
 
-  test("first output sequence initializes baseline without reporting recent output", async () => {
+  test("first rendered fingerprint initializes baseline without reporting recent output", async () => {
     mockBackend.setSessions(["fresh-baseline"]);
-    mockBackend.setOutputSequence("fresh-baseline", "99");
+    mockBackend.setCapturePane(async () => "quiet existing screen\n");
 
     const data = await (await get("/api/sessions")).json();
 
@@ -415,9 +432,9 @@ describe("GET /api/sessions", () => {
     });
   });
 
-  test("restored acknowledged state stays seen on first sequence sample after restart", async () => {
+  test("restored acknowledged state stays seen on first rendered sample after restart", async () => {
     mockBackend.setSessions(["restored-baseline"]);
-    mockBackend.setOutputSequence("restored-baseline", "99");
+    mockBackend.setCapturePane(async () => "quiet existing screen\n");
     const sessionKey = "mock:restored-baseline";
     const store = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!);
     const idle = store.reduce({
@@ -666,7 +683,7 @@ describe("GET /api/sessions", () => {
     expect(acked.runtimeState.unseen).toBe(false);
     expect(acked.runtimeState.acknowledgedSequence).toBe(runtimeState.transitionSequence);
 
-    mockBackend.setOutputSequence("wolf-1", "1");
+    mockBackend.setCapturePane(async () => "new output\n");
     const next = await (await get("/api/sessions")).json();
     expect(next.sessions[0].runtimeState.transitionSequence).toBeGreaterThan(runtimeState.transitionSequence);
     expect(next.sessions[0].runtimeState.unseen).toBe(true);

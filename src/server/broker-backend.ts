@@ -24,6 +24,7 @@
  */
 import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend.js";
 import type {
+  CapturePaneOptions,
   PtyBackendMethods,
   SessionBackend,
   SessionLaunchOptions,
@@ -445,10 +446,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     return this.idToInfo.get(id)?.alive ?? false;
   }
 
-  async capturePane(name: string): Promise<string> {
+  async capturePane(name: string, options?: CapturePaneOptions): Promise<string> {
     const id = await this.resolveId(name);
     if (!id) return "";
-    const snap = await this.fetchSnapshot(id, name, "capturePane");
+    const snap = await this.fetchSnapshot(id, name, "capturePane", undefined, options?.scrollbackLines);
     if (!snap) return "";
     return renderSnapshot(snap);
   }

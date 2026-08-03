@@ -28,7 +28,7 @@ import {
 
 import { assets } from "../public-assets.js";
 import type { TriageStatus } from "../triage.js";
-import { brokerOutputAdvanced, brokerOutputSequence } from "../broker-output-sequence.js";
+import { brokerOutputSequence } from "../broker-output-sequence.js";
 import {
   collectAgentStatusSources,
   getAgentRuntimeStateStore,
@@ -452,8 +452,17 @@ function settingsPath(): string {
   return process.env.WOLFPACK_SETTINGS_PATH || join(homedir(), ".wolfpack", "bridge-settings.json");
 }
 
-/** Previous broker output watermark per durable session identity. */
-const prevOutputSequences = new Map<string, string>();
+/** Previous rendered terminal fingerprint per durable session identity. */
+const prevRenderedActivityFingerprints = new Map<string, string>();
+
+function renderedActivityFingerprint(pane: string): string | undefined {
+  const normalized = pane
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trimEnd();
+  return normalized.length > 0 ? normalized : undefined;
+}
 
 interface KnownSessionSummary {
   readonly name: string;
@@ -465,7 +474,7 @@ const knownSessionSummaries = new Map<string, KnownSessionSummary>();
 
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
-  prevOutputSequences.clear();
+  prevRenderedActivityFingerprints.clear();
   knownSessionSummaries.clear();
 }
 
@@ -643,57 +652,64 @@ export const routes: Record<
 
     const activeNames = new Set<string>();
     const activeSessionKeys = new Set<string>();
-    const results = sessionFacts.map((fact) => {
-      const name = fact.name;
-      activeNames.add(name);
-      const brokerState = fact.alive ? "alive" : "dead";
-      const identity = fact.identity;
-      const sessionKey = identity?.wolfpackSessionId ?? name;
-      activeSessionKeys.add(sessionKey);
+    const results = await Promise.all(
+      sessionFacts.map(async (fact) => {
+        const name = fact.name;
+        activeNames.add(name);
+        const brokerState = fact.alive ? "alive" : "dead";
+        const identity = fact.identity;
+        const sessionKey = identity?.wolfpackSessionId ?? name;
+        activeSessionKeys.add(sessionKey);
 
-      const outputSequence = brokerOutputSequence(fact.outputSequence);
-      const previousOutputSequence = prevOutputSequences.get(sessionKey);
-      const rawOutputChanged = brokerState === "alive"
-        && brokerOutputAdvanced(previousOutputSequence, outputSequence);
-      const outputSequenceIsCurrent = previousOutputSequence === undefined
-        || previousOutputSequence === outputSequence
-        || brokerOutputAdvanced(previousOutputSequence, outputSequence);
-      if (brokerState === "alive" && outputSequence !== undefined && outputSequenceIsCurrent) {
-        prevOutputSequences.set(sessionKey, outputSequence);
-      }
-      const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-      const lastLine = "";
-      const observedAt = new Date().toISOString();
-      const runtimeState = getAgentRuntimeStateStore().reduce({
-        sessionKey,
-        broker: { state: brokerState, observedAt },
-        sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
-          state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
-          stale: false,
-          observedAt,
-        }) : [],
-        fallback: { rawOutputChanged, observedAt, preview: lastLine },
-        currentRun: {
-          runId: identity?.wolfpackSessionId,
-          runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
-        },
-      });
+        let activityFingerprint: string | undefined;
+        if (brokerState === "alive") {
+          try {
+            activityFingerprint = renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
+          } catch {
+            activityFingerprint = undefined;
+          }
+        }
+        const previousFingerprint = prevRenderedActivityFingerprints.get(sessionKey);
+        const rawOutputChanged = activityFingerprint !== undefined
+          && previousFingerprint !== undefined
+          && activityFingerprint !== previousFingerprint;
+        if (activityFingerprint !== undefined) prevRenderedActivityFingerprints.set(sessionKey, activityFingerprint);
 
-      const summary = {
-        name,
-        lastLine,
-        triage,
-        runtimeState,
-        ...(outputSequence !== undefined && { outputSequence }),
-        ...(identity && { identity }),
-      };
-      knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
-      return summary;
-    });
+        const outputSequence = brokerOutputSequence(fact.outputSequence);
+        const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
+        const lastLine = "";
+        const observedAt = new Date().toISOString();
+        const runtimeState = getAgentRuntimeStateStore().reduce({
+          sessionKey,
+          broker: { state: brokerState, observedAt },
+          sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
+            state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+            stale: false,
+            observedAt,
+          }) : [],
+          fallback: { rawOutputChanged, observedAt, preview: lastLine },
+          currentRun: {
+            runId: identity?.wolfpackSessionId,
+            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+          },
+        });
+
+        const summary = {
+          name,
+          lastLine,
+          triage,
+          runtimeState,
+          ...(outputSequence !== undefined && { outputSequence }),
+          ...(identity && { identity }),
+        };
+        knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
+        return summary;
+      }),
+    );
     results.sort((a, b) => a.name.localeCompare(b.name));
     // Prune observations for sessions omitted from authoritative broker truth.
-    for (const key of prevOutputSequences.keys()) {
-      if (!activeSessionKeys.has(key)) prevOutputSequences.delete(key);
+    for (const key of prevRenderedActivityFingerprints.keys()) {
+      if (!activeSessionKeys.has(key)) prevRenderedActivityFingerprints.delete(key);
     }
     for (const key of knownSessionSummaries.keys()) {
       if (!activeNames.has(key)) knownSessionSummaries.delete(key);
@@ -1072,8 +1088,8 @@ export const routes: Record<
     if (!resolved) return;
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(resolved.name);
-    prevOutputSequences.delete(resolved.identity.wolfpackSessionId);
-    prevOutputSequences.delete(resolved.name);
+    prevRenderedActivityFingerprints.delete(resolved.identity.wolfpackSessionId);
+    prevRenderedActivityFingerprints.delete(resolved.name);
     await getBackend().killSession(resolved.name);
     json(res, {
       ok: true,

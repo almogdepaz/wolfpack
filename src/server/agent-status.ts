@@ -342,10 +342,10 @@ function fallbackRuntimeSource(input: AgentRuntimeStateInput): AgentStatusSource
     authority: AGENT_STATUS_AUTHORITY.FALLBACK,
     freshness: AGENT_STATUS_FRESHNESS.FRESH,
     source: AGENT_STATUS_SOURCE.SCREEN_FALLBACK,
-    label: input.fallback.rawOutputChanged ? "raw output activity" : "bounded activity idle",
+    label: input.fallback.rawOutputChanged ? "rendered output activity" : "bounded activity idle",
     stale: false,
     observedAt: input.fallback.observedAt,
-    message: "derived only from broker-owned pty byte activity",
+    message: "derived only from broker-rendered terminal changes",
   });
 }
 

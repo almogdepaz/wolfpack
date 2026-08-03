@@ -65,6 +65,11 @@ export interface SessionListFact {
   readonly identity?: PublicSessionIdentity;
 }
 
+export interface CapturePaneOptions {
+  /** Maximum broker scrollback rows to include; zero captures only the visible screen. */
+  readonly scrollbackLines?: number;
+}
+
 export interface SessionBackend {
   /** Live-only session names for terminal attach/control consumers. */
   list(): Promise<string[]>;
@@ -81,7 +86,7 @@ export interface SessionBackend {
   ): Promise<PublicSessionIdentity>;
   killSession(name: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
-  capturePane(name: string): Promise<string>;
+  capturePane(name: string, options?: CapturePaneOptions): Promise<string>;
   resize(name: string, cols: number, rows: number): Promise<void>;
   send(name: string, text: string, noEnter?: boolean): Promise<void>;
   sendKey(name: string, key: string): Promise<void>;
@@ -457,8 +462,8 @@ export class BackendRouter implements SessionBackend {
     return this.requireBroker().hasSession(name);
   }
 
-  async capturePane(name: string): Promise<string> {
-    return this.requireBroker().capturePane(name);
+  async capturePane(name: string, options?: CapturePaneOptions): Promise<string> {
+    return this.requireBroker().capturePane(name, options);
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
