@@ -208,9 +208,9 @@ sessions across Tailscale hosts.
 
 ### Optional Pi task delegation
 
-Install Wolfpack's control skill manually from this repository; setup does not add
-the full Wolfpack app to Pi just to deliver that skill. Then, when setup detects
-`pi` on `PATH`, it offers this default-no, opt-in installation:
+When `wolfpack setup` detects `pi` on `PATH`, it offers one default-no,
+opt-in installation. Accepting copies the bundled control skill into Pi, then
+installs the Pi Tasks extension; it does not ask Pi to install the Wolfpack app.
 
 - [`@sgtbeatdown/pi-tasks`](https://www.npmjs.com/package/@sgtbeatdown/pi-tasks) — the Pi Tasks extension and `wolfpack-pi-task-delegation` skill.
 
@@ -229,8 +229,8 @@ The pieces have separate jobs:
 Pi Tasks contains both the extension and its matching delegation skill. Every
 participating Pi session needs Pi Tasks loaded; its default filesystem store
 also requires parent and child sessions to use the same project directory.
-Declining the setup prompt changes nothing. Non-interactive setup never installs
-Pi packages and prints the Pi Tasks command instead.
+Declining the setup prompt changes nothing. Non-interactive setup installs
+nothing and directs users to rerun `wolfpack setup` interactively.
 
 Skills and extensions can execute commands with your user permissions. Review
 the packages before accepting. Start a fresh Pi session afterward, or run
@@ -238,7 +238,12 @@ the packages before accepting. Start a fresh Pi session afterward, or run
 
 ### Install the Wolfpack control skill
 
-Skills are executable agent instructions, so install only the ones you have audited. Clone or update `https://github.com/almogdepaz/wolfpack`, review the requested file (for example `skills/wolfpack-tailnet-control/SKILL.md`), then symlink that skill directory into one supported root:
+For Pi, use the opt-in `wolfpack setup` flow above. Use this audited manual
+workflow for other harnesses or a customized Pi install. Skills are executable
+agent instructions, so install only the ones you have audited. Clone or update
+`https://github.com/almogdepaz/wolfpack`, review the requested file (for example
+`skills/wolfpack-tailnet-control/SKILL.md`), then symlink that skill directory
+into one supported root:
 
 - Pi global: `~/.pi/agent/skills/`
 - shared Agent Skills root supported by Pi: `~/.agents/skills/`
@@ -253,7 +258,11 @@ wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
 wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
-Platform binaries do not contain skills. The setup wizard only asks Pi's package manager to install Pi Tasks after explicit opt-in; the cloned repository remains the auditable source for manual skill installation.
+The released Wolfpack CLI bundles the control skill for Pi setup. Platform
+binaries do not expose skills as files; the setup wizard copies the bundled
+control skill and asks Pi's package manager to install Pi Tasks only after
+explicit opt-in. The cloned repository remains the auditable source for manual
+skill installation.
 
 ## Contributing
 

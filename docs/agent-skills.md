@@ -12,16 +12,16 @@ Bundled skill:
 ## Pi opt-in setup
 
 `wolfpack setup` checks for `pi` on `PATH`. Pi users receive one default-no,
-opt-in offer for Pi Tasks; users without Pi receive no offer. Accepting runs
-Pi's package manager with this command:
+opt-in offer for the Wolfpack control skill plus Pi Tasks; users without Pi
+receive no offer. Accepting copies the bundled control skill into Pi before it
+runs Pi's package manager with this command:
 
 ```bash
 pi install npm:@sgtbeatdown/pi-tasks
 ```
 
-Install `wolfpack-tailnet-control` manually from the reviewed repository source
-below. Wolfpack does not install the full `wolfpack-bridge` app inside Pi just
-to obtain that skill.
+Wolfpack does not install the full `wolfpack-bridge` app inside Pi just to obtain
+the control skill.
 
 The packages and resources have distinct ownership:
 
@@ -37,10 +37,11 @@ session needs Pi Tasks loaded. Its default filesystem task store also requires
 parent and child sessions to use the same project directory; cross-repository or
 multi-host task state needs a shared store.
 
-Declining changes nothing. Non-interactive setup installs nothing and prints the
-Pi Tasks command only when Pi is detected. Package extensions and skills can
-execute commands with the user's permissions, so review them before opting in.
-Start a fresh agent context afterward, or run `/reload` in an existing Pi session.
+Declining changes nothing. Non-interactive setup installs nothing and directs
+Pi users to rerun `wolfpack setup` interactively. Package extensions and skills
+can execute commands with the user's permissions, so review them before opting
+in. Start a fresh agent context afterward, or run `/reload` in an existing Pi
+session.
 
 ## Clone or update the auditable source
 
@@ -146,8 +147,8 @@ contracts.
 ## Distribution boundary
 
 The npm package includes `skills/` for inspection, but it is the Wolfpack
-application package and Wolfpack does not install it inside Pi. Platform binary
-packages only contain executables; platform binaries do not contain skills. After
-explicit opt-in, the setup wizard installs Pi Tasks without embedding skill
-payloads, editing Pi settings, or overwriting skill directories. The cloned
-repository remains the auditable source of truth for manual installation.
+application package and Wolfpack does not install it inside Pi. The released CLI
+bundles the control skill and copies it into Pi only after explicit opt-in.
+Platform binaries do not expose skills as files. Setup does not edit Pi settings
+or overwrite skill directories. The cloned repository remains the auditable
+source of truth for manual installation.
