@@ -35,7 +35,7 @@ wolfpack
 ```
 
 The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. Wolfpack's phone and remote-control workflow uses Tailscale; setup can install it, waits for sign-in, then verifies its private HTTPS route before it prints a phone QR code. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
-Supported: macOS arm64/x64 and Linux x64/arm64.
+Supported: macOS arm64/x64 and Linux x64/arm64. Release installs and managed services support both platforms. On Linux, automatic Tailscale installation requires `apt`; otherwise install Tailscale yourself. Managed services require `systemd --user`; setup runs `sudo loginctl enable-linger $USER` for persistence after reboot and prints that command if it fails. Otherwise, run `wolfpack` in the foreground.
 
 Want a package runner instead? Pin `@latest` so Bun/npm does not reuse an older cached release:
 
@@ -53,7 +53,7 @@ If setup gets weird, run:
 wolfpack doctor
 ```
 
-Uninstall is explicit:
+Uninstall is explicit. It removes Wolfpack-managed files and its installer-created `/usr/local/bin/wolfpack` symlink, but never an unrelated command with the same name:
 
 ```bash
 wolfpack uninstall --yes
@@ -117,7 +117,7 @@ wolfpack kill <name|id>  Kill a session
 wolfpack --version       Print the installed version
 wolfpack doctor          Diagnose broker, binaries, JWT, Tailscale
 wolfpack service ...     install / start / stop / restart / status / uninstall (add --broker to include broker)
-wolfpack uninstall --yes Remove everything
+wolfpack uninstall --yes Remove Wolfpack-managed files
 ```
 
 Create a top-level project session with its initial instruction delivered at launch:

@@ -59,6 +59,8 @@ describe("Pi integration setup", () => {
 
     expect(disclosure).toContain("wolfpack-tailnet-control");
     expect(disclosure).toContain("pi install npm:@sgtbeatdown/pi-tasks");
+    expect(disclosure).toContain("Wolfpack will install the skill");
+    expect(disclosure).not.toContain("Pi will install the skill");
     expect(disclosure).not.toContain("npm:wolfpack-bridge");
     expect(disclosure).toContain("user permissions");
     expect(disclosure).toContain("Review");
@@ -107,6 +109,42 @@ describe("Pi integration setup", () => {
 
     expect(result).toEqual({ status: "skill_exists", skillPath });
     expect(existsSync(pi.callLog)).toBe(false);
+  });
+
+  test("cleans a newly created skill directory when writing the skill fails", () => {
+    const script = String.raw`
+      import { mock } from "bun:test";
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const os = await import("node:os");
+      await mock.module("node:fs", () => ({
+        ...fs,
+        writeFileSync(file, ...args) {
+          if (String(file).endsWith("/wolfpack-tailnet-control/SKILL.md")) {
+            throw new Error("simulated write failure");
+          }
+          return fs.writeFileSync(file, ...args);
+        },
+      }));
+      const { installPiIntegration } = await import("./src/cli/pi-integration.ts");
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "wolfpack-pi-cleanup-"));
+      const agent = path.join(root, "agent");
+      const skill = path.join(agent, "skills", "wolfpack-tailnet-control");
+      try {
+        const result = installPiIntegration({ pathValue: "", piAgentDirectory: agent });
+        if (result.status !== "skill_write_failed") throw new Error("expected skill write failure");
+        if (fs.existsSync(skill)) throw new Error("partial skill directory was not removed");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    `;
+    const result = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
   });
 
   test("reports a retry command when Pi Tasks installation fails after skill installation", () => {

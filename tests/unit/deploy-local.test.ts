@@ -41,6 +41,12 @@ exit 1
   writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ port: 18790 }));
   writeFileSync(log, "");
 
+  writeExecutable(join(bin, "uname"), `#!/bin/sh
+case "$1" in
+  -s) printf '%s\\n' "\${DEPLOY_TEST_OS:-Darwin}" ;;
+  -m) printf 'arm64\\n' ;;
+esac
+`);
   writeExecutable(join(bin, "bun"), "#!/bin/sh\necho \"bun $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
   writeExecutable(join(bin, "codesign"), "#!/bin/sh\necho \"codesign $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
   writeExecutable(join(bin, "mv"), `#!/bin/sh
@@ -133,6 +139,7 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_SERVER_KICKSTART_FAIL: "0",
     DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "0",
     DEPLOY_TEST_CORRUPT_INSTALL: "0",
+    DEPLOY_TEST_OS: "Darwin",
     DEPLOY_VERIFY_TIMEOUT_SECS: "1",
     WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE: "1",
     WOLFPACK_SESSION_NAME: "",
@@ -182,6 +189,13 @@ describe("scripts/deploy-local.sh", () => {
       [join(fixture.repo, "scripts", "deploy-local.sh"), "--broker=auto"],
       deployOptions(fixture),
     )).toThrow();
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+  });
+
+  test("rejects non-macos hosts before mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "no", { DEPLOY_TEST_OS: "Linux" })).toThrow();
     expect(readFileSync(fixture.log, "utf-8")).toBe("");
   });
 

@@ -6,8 +6,10 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -69,6 +71,7 @@ const BROKER_SYSTEMD_PATH = join(
 const BROKER_SOCKET_PATH = join(WOLFPACK_DIR, "broker.sock");
 const BROKER_LOG_PATH = join(WOLFPACK_DIR, "broker.log");
 export const SERVICE_AUTH_PATH = join(WOLFPACK_DIR, "service-auth.json");
+const INSTALLER_ENTRYPOINTS = ["/usr/local/bin/wolfpack"] as const;
 
 function programArgs(): string[] {
   const exe = process.execPath;
@@ -833,8 +836,30 @@ export function serviceStatus() {
   printBrokerStatus();
 }
 
+export function removeManagedEntrypoints(entrypoints: readonly string[], managedBinary: string): void {
+  let resolvedManagedBinary: string;
+  try {
+    resolvedManagedBinary = realpathSync(managedBinary);
+  } catch {
+    return;
+  }
+
+  for (const entrypoint of entrypoints) {
+    try {
+      if (!lstatSync(entrypoint).isSymbolicLink()) continue;
+      if (realpathSync(entrypoint) !== resolvedManagedBinary) continue;
+      unlinkSync(entrypoint);
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        log.warn("uninstall: failed to remove managed entrypoint", { entrypoint, error: errMsg(e) });
+      }
+    }
+  }
+}
+
 export function uninstall() {
   serviceUninstall();
+  removeManagedEntrypoints(INSTALLER_ENTRYPOINTS, join(WOLFPACK_DIR, "bin", "wolfpack"));
   try { rmSync(WOLFPACK_DIR, { recursive: true, force: true }); } catch (e: unknown) {
     log.warn("uninstall: failed to remove wolfpack dir", { path: WOLFPACK_DIR, error: errMsg(e) });
   }
@@ -842,7 +867,7 @@ export function uninstall() {
   print(green("  Wolfpack uninstalled."));
   print(dim(`  Removed ${WOLFPACK_DIR}`));
   print("");
-  print(dim("  The wolfpack binary remains at: " + process.execPath));
-  print(dim("  Delete it manually if you want a full removal."));
+  print(dim("  Removed the installer-managed wolfpack binary and entrypoint."));
+  print(dim("  Unrelated wolfpack commands were left unchanged."));
   print("");
 }

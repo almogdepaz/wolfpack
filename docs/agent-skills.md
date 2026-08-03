@@ -37,8 +37,10 @@ session needs Pi Tasks loaded. Its default filesystem task store also requires
 parent and child sessions to use the same project directory; cross-repository or
 multi-host task state needs a shared store.
 
-Declining changes nothing. Non-interactive setup installs nothing and directs
-Pi users to rerun `wolfpack setup` interactively. Package extensions and skills
+Declining changes nothing. If writing the control skill fails, setup removes the
+newly created skill directory before advising a retry; if cleanup also fails, it
+identifies the partial path for review and manual removal. Non-interactive setup
+installs nothing and directs Pi users to rerun `wolfpack setup` interactively. Package extensions and skills
 can execute commands with the user's permissions, so review them before opting
 in. Start a fresh agent context afterward, or run `/reload` in an existing Pi
 session.

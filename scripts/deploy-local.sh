@@ -18,6 +18,11 @@ case "$1" in
     ;;
 esac
 
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "ERROR: scripts/deploy-local.sh supports macOS only; Linux release installs use wolfpack service commands" >&2
+  exit 1
+fi
+
 if [ "$DEPLOY_BROKER" = "1" ] && [ -n "${WOLFPACK_SESSION_NAME:-}" ]; then
   echo "ERROR: --broker=yes cannot run from a broker-owned Wolfpack session; run it from an external terminal" >&2
   exit 1

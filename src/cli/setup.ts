@@ -246,7 +246,11 @@ export async function setup() {
         print(dim(`  Review the existing skill before removing or replacing ${installResult.skillPath}.`));
       } else if (installResult.status === "skill_write_failed") {
         print(red("  Pi integration stopped: could not install Wolfpack's control skill."));
-        print(dim(`  Check write access to ${installResult.skillPath} and rerun 'wolfpack setup'.`));
+        if (installResult.canRetry) {
+          print(dim(`  Check write access to ${installResult.skillPath} and rerun 'wolfpack setup'.`));
+        } else {
+          print(dim(`  Wolfpack could not clean the partial skill at ${installResult.skillPath}; review and remove it before rerunning setup.`));
+        }
       } else {
         print(red(`  Pi integration install stopped at ${installResult.failedSource}.`));
         print(dim(`  Retry: ${installResult.retryCommand}`));
