@@ -2,16 +2,7 @@
  * Interactive setup wizard.
  */
 import { execSync, execFileSync } from "node:child_process";
-import {
-  closeSync,
-  constants as fsConstants,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  writeFileSync,
-  unlinkSync,
-} from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { printQR } from "../qr.js";
@@ -23,8 +14,8 @@ import {
   IS_LINUX,
   hasTTY,
   ask,
+  loadConfig,
   saveConfig,
-  sleepSync,
   remoteUrl,
   tailscaleBin,
   type Config,
@@ -39,6 +30,7 @@ import {
   piIntegrationDisclosureLines,
   planPiIntegrationSetup,
 } from "./pi-integration.js";
+import { configureTailscaleRemoteAccess, parseTailscaleHostname } from "./tailscale-remote-setup.js";
 
 const log = createLogger("setup");
 
@@ -119,22 +111,27 @@ export async function setup() {
 
   print(bold("  Checking prerequisites...\n"));
 
-  const tsBin = tailscaleBin();
-  const hasTailscale = !!tsBin;
+  let tsBin = tailscaleBin();
+  let hasTailscale = !!tsBin;
   if (hasTailscale) {
     print(`  ${green("✓")} Tailscale`);
   } else {
-    print(`  ${red("✗")} Tailscale ${dim("(optional — needed for remote access)")}`);
+    print(`  ${red("✗")} Tailscale ${dim("(required for Wolfpack phone and remote access)")}`);
   }
 
   print("");
 
 
-  // ── Install optional missing deps (tailscale only) ──
+  // ── Install missing Tailscale dependency ──
   if (!hasTailscale) {
-    const installTs = hasTTY ? ask("  Install Tailscale for remote access? (y/n) ") : "n";
+    const installTs = hasTTY ? ask("  Install Tailscale for phone and remote access? (y/n) ") : "n";
     if (installTs.toLowerCase() === "y") {
       installPackages(["tailscale"]);
+      tsBin = tailscaleBin();
+      hasTailscale = !!tsBin;
+    }
+    if (!hasTailscale) {
+      print(yellow("  Phone and remote access stay unavailable until Tailscale is installed and signed in."));
     }
     print("");
   }
@@ -168,27 +165,22 @@ export async function setup() {
   const portStr = ask("  Server port [18790]: ");
   const port = Math.max(1024, Math.min(65535, Number(portStr) || 18790));
 
-  // Tailscale hostname
-  let tailscaleHostname: string | undefined;
-  const sudoPrefix = IS_LINUX ? "sudo " : "";
-
-  function tryGetTsHostname(): string | undefined {
-    try {
-      const status = execSync(`${sudoPrefix}${tsBin} status --self --json`, {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      const parsed = JSON.parse(status);
-      return parsed.Self?.DNSName?.replace(/\.$/, "") || undefined;
-    } catch { /* expected: tailscale not running or not signed in */
-      return undefined;
-    }
-  }
-
-  if (hasTailscale) {
-    tailscaleHostname = tryGetTsHostname();
-
-    if (!tailscaleHostname) {
+  // Tailscale remote endpoint. A remote URL is persisted and advertised only
+  // after `serve status --json` proves it proxies to this Wolfpack port.
+  const previousConfig = loadConfig();
+  let verifiedRemoteHostname: string | undefined;
+  if (hasTailscale && tsBin) {
+    const runTailscale = (args: readonly string[]): string => {
+      const [file, fileArgs] = IS_LINUX
+        ? ["sudo", [tsBin, ...args]]
+        : [tsBin, [...args]];
+      return execFileSync(file, fileArgs, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    };
+    const tryGetTsHostname = (): string | undefined => {
+      try { return parseTailscaleHostname(runTailscale(["status", "--self", "--json"])); } catch { return undefined; }
+    };
+    let signedInHostname = tryGetTsHostname();
+    if (!signedInHostname) {
       if (IS_MACOS) {
         print(dim("  Launching Tailscale.app for sign-in..."));
         try { execSync("open /Applications/Tailscale.app", { stdio: "ignore" }); } catch (e: unknown) {
@@ -197,62 +189,32 @@ export async function setup() {
       } else if (IS_LINUX) {
         print(dim("  Run 'sudo tailscale up' in another terminal to sign in."));
       }
-
-      print(yellow("  Waiting for Tailscale sign-in... (press Enter to skip)"));
-
-      let ttyFd: number | null = null;
-      try {
-        ttyFd = openSync("/dev/tty", fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-      } catch { /* expected: no tty available in non-interactive mode */ }
-
-      const MAX_POLLS = 60;
-      for (let i = 0; i < MAX_POLLS; i++) {
-        sleepSync(2000);
-        tailscaleHostname = tryGetTsHostname();
-        if (tailscaleHostname) break;
-
-        if (ttyFd !== null) {
-          try {
-            const skipBuf = Buffer.alloc(64);
-            const bytesRead = readSync(ttyFd, skipBuf, 0, skipBuf.length, null);
-            if (bytesRead > 0) {
-              print(dim("  Skipped Tailscale sign-in."));
-              break;
-            }
-          } catch { /* expected: EAGAIN on nonblocking read */ }
-        }
-
-        if (i > 0 && i % 5 === 0) {
-          const remaining = Math.round((MAX_POLLS - i) * 2);
-          process.stdout.write(dim(`  Still waiting... (${remaining}s remaining, Enter to skip)\n`));
-        }
-      }
-
-      if (ttyFd !== null) {
-        try { closeSync(ttyFd); } catch (e: unknown) {
-          log.warn("setup: failed to close tty fd", { error: e instanceof Error ? e.message : String(e) });
-        }
-      }
-
-      if (!tailscaleHostname) {
-        print(yellow("  Tailscale not signed in. Run 'wolfpack setup' again after signing in."));
+      while (!signedInHostname && interactive) {
+        const retry = ask("  Sign in, then press Enter to retry (or type skip): ");
+        if (retry.toLowerCase() === "skip") break;
+        signedInHostname = tryGetTsHostname();
       }
     }
-
-    if (tailscaleHostname) {
-      print(dim(`  Detected Tailscale hostname: ${tailscaleHostname}`));
-      try {
-        execSync(`${sudoPrefix}${tsBin} serve --bg ${port}`, { stdio: "inherit" });
-        print(green(`  Tailscale serving at https://${tailscaleHostname}/`));
-      } catch (e: unknown) {
-        log.warn("tailscale serve failed", { error: e instanceof Error ? e.message : String(e) });
-        print(red("  Failed to configure tailscale serve. You can do it manually later."));
-        print(dim(`  Try: ${sudoPrefix}tailscale serve --bg ${port}`));
+    if (signedInHostname) {
+      const configured = configureTailscaleRemoteAccess({ binary: tsBin, port, run: (_file, args) => runTailscale(args) });
+      if (configured.status === "verified") {
+        verifiedRemoteHostname = configured.hostname;
+        print(green(`  Tailscale serving at https://${verifiedRemoteHostname}/`));
+      } else {
+        print(red("  Tailscale serve was not verified; no phone QR will be shown."));
+        print(dim(`  Retry: ${IS_LINUX ? "sudo " : ""}${tsBin} serve --bg ${port}`));
       }
+    } else if (hasTailscale) {
+      print(yellow("  Tailscale is not signed in; phone and remote access remain unavailable."));
     }
   }
 
-  const config: Config = { devDir, port, tailscaleHostname };
+  const config: Config = {
+    devDir,
+    port,
+    ...(verifiedRemoteHostname && { tailscaleHostname: verifiedRemoteHostname }),
+    ...(!verifiedRemoteHostname && previousConfig?.tailscaleHostname && { tailscaleHostname: previousConfig.tailscaleHostname }),
+  };
   saveConfig(config);
 
   const initialSettings = initializeProviderSettingsFile({
@@ -321,14 +283,19 @@ export async function setup() {
     print(`  Or ${bold("wolfpack service install")} to auto-start on login.`);
   }
 
-  const url = remoteUrl(config) ?? `http://localhost:${config.port}/`;
-  print(`  Access from phone: ${bold(url)}`);
-  print("");
-  print(dim("  Scan to open on your phone:"));
-  print("");
-  printQR(url);
-  print("");
-  print(yellow("  Security: Always use the Tailscale hostname URL — not your machine's IP (it won't work)."));
+  const url = remoteUrl(config);
+  if (url && verifiedRemoteHostname) {
+    print(`  Access from phone: ${bold(url)}`);
+    print("");
+    print(dim("  Scan to open on your phone:"));
+    print("");
+    printQR(url);
+    print("");
+    print(yellow("  Security: Always use the Tailscale hostname URL — not your machine's IP (it won't work)."));
+  } else {
+    print(`  Local desktop access: ${bold(`http://localhost:${config.port}/`)}`);
+    print(dim("  Phone access requires a signed-in Tailscale setup; run 'wolfpack setup' to retry."));
+  }
   print("");
   print(bold("  JWT Authentication:"));
   print(dim("  1. Generate a secret:  openssl rand -base64 48"));
