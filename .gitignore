@@ -37,6 +37,7 @@ playwright-report/
 PLAN*.md
 .wolfpack/
 .pi/
+.plans/
 .worktrees/
 public/.DS_Store
 .edc/
