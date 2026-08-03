@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
 wolfpack
 ```
 
-The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
+The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. Wolfpack's phone and remote-control workflow uses Tailscale; setup can install it, waits for sign-in, then verifies its private HTTPS route before it prints a phone QR code. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
 Supported: macOS arm64/x64 and Linux x64/arm64.
 
 Want npm instead?
@@ -59,12 +59,13 @@ wolfpack uninstall --yes
 
 1. Run the installer.
 2. Choose your projects directory and port. On a fresh install, setup enables `shell` plus supported providers detected on `PATH`; existing agent settings are never overwritten.
-3. Let setup detect your Tailscale hostname and configure `tailscale serve` for HTTPS remote access.
-4. Install the service when prompted if you want Wolfpack to survive login/reboots.
-5. Scan the QR code, open Wolfpack on your phone, then **Add to Home Screen**.
-6. Create a session and pick an agent command.
+3. Sign in to Tailscale when setup opens it (macOS) or prompts for `sudo tailscale up` (Linux). Setup keeps the same run open for retry.
+4. Setup configures and verifies `tailscale serve` before it prints the private Tailnet HTTPS QR code.
+5. Install the service when prompted if you want Wolfpack and its agents reachable after login/reboots.
+6. Scan the QR code, open Wolfpack on your phone, then **Add to Home Screen**.
+7. Create a session and pick an agent command.
 
-Local-only browser use works without Tailscale. Phone/remote use is where Tailscale earns its keep.
+A local browser can still open Wolfpack on the host machine. It is not phone access: only a verified Tailnet HTTPS QR code opens Wolfpack from another device.
 
 ## Why use it
 
