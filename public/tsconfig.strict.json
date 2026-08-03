@@ -9,7 +9,9 @@
     "session-order-ui.ts",
     "take-control-coordinator.ts",
     "terminal-hydration.ts",
+    "terminal-layout.ts",
     "terminal-loading-ui.ts",
+    "terminal-resize-lifecycle.ts",
     "terminal-placeholder.ts",
     "types-globals.d.ts"
   ]
