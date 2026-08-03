@@ -9,7 +9,7 @@ Wolfpack is a self-hosted browser terminal dashboard for AI coding agents: Claud
 It runs on your own macOS/Linux machine — laptop, workstation, or cloud VM — and gives you a PWA command center for long-running agent terminal sessions across your Tailscale tailnet.
 
 Sessions live in a Rust PTY broker, not the web server, so server restarts and redeploys do not kill your agents.
-There is no Wolfpack-hosted relay or account; remote access is normally handled by [Tailscale](https://tailscale.com/).
+There is no Wolfpack-hosted relay or account; remote access is normally handled by [Tailscale](https://tailscale.com/). Visit the [Wolfpack homepage](https://get-wolfpack.netlify.app/) for the product overview.
 
 <p align="center">
   <img src="docs/assets/wolfpack-desktop-grid.png" width="700" alt="Desktop — multi-terminal grid" />
@@ -25,7 +25,7 @@ There is no Wolfpack-hosted relay or account; remote access is normally handled 
   <a href="docs/assets/wolfpack-usage-demo.mp4">Watch/download the MP4 demo</a>
 </p>
 
-**Try the workflow:** install Wolfpack on two machines, connect them to the same Tailscale tailnet, then open the phone QR from either host to control persistent agent sessions remotely. Start with the [Quickstart](#quickstart) and [First five minutes](#first-five-minutes).
+**Try the workflow:** install Wolfpack on two machines, connect them to the same Tailscale tailnet, then open the phone QR from either host to control persistent agent sessions remotely. Start with the [Quickstart](#quickstart) and [First five minutes](#first-five-minutes). If you are trialing this workflow, use the [multi-machine feedback template](docs/multi-machine-trial-feedback.md).
 
 ## Quickstart
 
