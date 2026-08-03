@@ -24,7 +24,6 @@ import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
 import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
 import {
-  PI_INTEGRATION_PACKAGES,
   acceptsPiIntegrationInstall,
   installPiIntegration,
   piIntegrationDisclosureLines,
@@ -232,33 +231,34 @@ export async function setup() {
   const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
   if (piIntegrationMode === "prompt") {
     print("");
-    print(bold("  Optional Pi Tasks integration:"));
+    print(bold("  Optional Pi integration:"));
     for (const line of piIntegrationDisclosureLines()) {
       print(dim(line));
     }
-    const installPi = ask("  Install Pi Tasks delegation tools? [y/N] ");
+    const installPi = ask("  Install Wolfpack's control skill and Pi Tasks? [y/N] ");
     if (acceptsPiIntegrationInstall(installPi)) {
       const installResult = installPiIntegration({ pathValue: process.env.PATH });
       if (installResult.status === "installed") {
-        print(green("  Installed Pi Tasks delegation tools."));
-        print(dim("  Install wolfpack-tailnet-control manually from the Wolfpack repository."));
+        print(green("  Installed the Wolfpack control skill and Pi Tasks."));
         print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
+      } else if (installResult.status === "skill_exists") {
+        print(red("  Pi integration stopped: Wolfpack's control skill already exists."));
+        print(dim(`  Review the existing skill before removing or replacing ${installResult.skillPath}.`));
+      } else if (installResult.status === "skill_write_failed") {
+        print(red("  Pi integration stopped: could not install Wolfpack's control skill."));
+        print(dim(`  Check write access to ${installResult.skillPath} and rerun 'wolfpack setup'.`));
       } else {
         print(red(`  Pi integration install stopped at ${installResult.failedSource}.`));
         print(dim(`  Retry: ${installResult.retryCommand}`));
-        print(dim("  Then run 'wolfpack setup' again to finish the integration."));
+        print(dim("  Wolfpack's control skill was installed; Pi Tasks remains unavailable until the retry succeeds."));
       }
     } else {
       print(dim("  Skipped optional Pi integration."));
     }
   } else if (piIntegrationMode === "guidance") {
     print("");
-    print(dim("  Pi detected; non-interactive mode skipped the optional Pi Tasks integration."));
-    print(dim("  Install Pi Tasks explicitly:"));
-    for (const source of PI_INTEGRATION_PACKAGES) {
-      print(dim(`    pi install ${source}`));
-    }
-    print(dim("  Install wolfpack-tailnet-control manually from the Wolfpack repository."));
+    print(dim("  Pi detected; non-interactive mode skipped the optional Pi integration."));
+    print(dim("  Run 'wolfpack setup' interactively to install the control skill and Pi Tasks."));
   }
 
   print("");

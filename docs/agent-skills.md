@@ -12,16 +12,16 @@ Bundled skill:
 ## Pi opt-in setup
 
 `wolfpack setup` checks for `pi` on `PATH`. Pi users receive one default-no,
-opt-in offer for Pi Tasks; users without Pi receive no offer. Accepting runs
-Pi's package manager with this command:
+opt-in offer for the Wolfpack control skill plus Pi Tasks; users without Pi
+receive no offer. Accepting copies the bundled control skill into Pi before it
+runs Pi's package manager with this command:
 
 ```bash
 pi install npm:@sgtbeatdown/pi-tasks
 ```
 
-Install `wolfpack-tailnet-control` manually from the reviewed repository source
-below. Wolfpack does not install the full `wolfpack-bridge` app inside Pi just
-to obtain that skill.
+Wolfpack does not install the full `wolfpack-bridge` app inside Pi just to obtain
+the control skill.
 
 The packages and resources have distinct ownership:
 
@@ -37,10 +37,11 @@ session needs Pi Tasks loaded. Its default filesystem task store also requires
 parent and child sessions to use the same project directory; cross-repository or
 multi-host task state needs a shared store.
 
-Declining changes nothing. Non-interactive setup installs nothing and prints the
-Pi Tasks command only when Pi is detected. Package extensions and skills can
-execute commands with the user's permissions, so review them before opting in.
-Start a fresh agent context afterward, or run `/reload` in an existing Pi session.
+Declining changes nothing. Non-interactive setup installs nothing and directs
+Pi users to rerun `wolfpack setup` interactively. Package extensions and skills
+can execute commands with the user's permissions, so review them before opting
+in. Start a fresh agent context afterward, or run `/reload` in an existing Pi
+session.
 
 ## Clone or update the auditable source
 
@@ -65,17 +66,23 @@ less "$REPO/skills/wolfpack-tailnet-control/SKILL.md"
 Skills can direct an agent to run commands. Do not skip this audit merely
 because the source came from the Wolfpack repository.
 
-## Install one reviewed skill
+## Manual installation required for non-Pi harnesses
 
-Supported global roots relevant to Wolfpack are:
+`wolfpack setup` installs the control skill only for Pi after explicit opt-in.
+If you use Claude, Codex, Gemini, Cursor, or another Agent Skills-capable
+harness, manually add `wolfpack-tailnet-control` to that harness's global skill
+root before expecting the agent to control Wolfpack sessions.
+
+Known global roots relevant to Wolfpack are:
 
 - Pi global: `~/.pi/agent/skills/`
 - shared Agent Skills root supported by Pi: `~/.agents/skills/`
-- Claude global where used: `~/.claude/skills/`
+- Claude global: `~/.claude/skills/`
+- another Agent Skills-capable harness: use the global skill root documented by that harness
 
 For shared skill directories, prefer symlinking each desired Wolfpack skill so
-a later reviewed `git pull --ff-only` updates the installed source. Choose one
-root; this example uses Pi global:
+a later reviewed `git pull --ff-only` updates the installed source. Choose the
+root for the harness that needs session control; this example uses Pi global:
 
 ```bash
 REPO="$HOME/src/wolfpack"
@@ -97,7 +104,8 @@ ln -s "$SOURCE" "$DEST"
 
 To target the shared Pi-compatible root or Claude global root, set `DEST_ROOT`
 to `$HOME/.agents/skills` or `$HOME/.claude/skills` before running the same
-existence checks. Never force the link or overwrite an existing destination.
+existence checks. For another harness, set it to that harness's documented root.
+Never force the link or overwrite an existing destination.
 
 Copying is an alternative for agents or environments that cannot follow
 symlinks. It uses the same fail-closed destination check:
@@ -146,8 +154,8 @@ contracts.
 ## Distribution boundary
 
 The npm package includes `skills/` for inspection, but it is the Wolfpack
-application package and Wolfpack does not install it inside Pi. Platform binary
-packages only contain executables; platform binaries do not contain skills. After
-explicit opt-in, the setup wizard installs Pi Tasks without embedding skill
-payloads, editing Pi settings, or overwriting skill directories. The cloned
-repository remains the auditable source of truth for manual installation.
+application package and Wolfpack does not install it inside Pi. The released CLI
+bundles the control skill and copies it into Pi only after explicit opt-in.
+Platform binaries do not expose skills as files. Setup does not edit Pi settings
+or overwrite skill directories. The cloned repository remains the auditable
+source of truth for manual installation.

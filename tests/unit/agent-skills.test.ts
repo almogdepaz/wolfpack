@@ -133,7 +133,7 @@ describe("agent skills", () => {
       expect(content).toContain("fresh agent context");
       expect(content).toContain("wolfpack session create <project>");
       expect(content).toContain("wolfpack agent spawn <project>");
-      expect(content.toLowerCase()).toContain("platform binaries do not contain skills");
+      expect(content.toLowerCase()).toMatch(/platform\s+binaries do not expose skills as files/);
     }
 
     expect(docs).toContain("[ ! -e \"$DEST\" ]");
@@ -153,9 +153,12 @@ describe("agent skills", () => {
       expect(content).toContain("`wolfpack-tailnet-control`");
       expect(content).toContain("`wolfpack-pi-task-delegation`");
       expect(content).toContain("`agent_task_*`");
-      expect(content).toContain("manually");
+      expect(content).toContain("`wolfpack setup`");
       expect(content.toLowerCase()).toContain("opt-in");
     }
+
+    expect(readme).toContain("copies the bundled control skill");
+    expect(docs).toContain("copies the bundled control skill");
   });
 
   test("standalone install fences succeed once and fail closed on rerun or missing source", () => {

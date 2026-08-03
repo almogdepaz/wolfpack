@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,6 +27,9 @@ printf '%s\\n' "$*" >> "$CALL_LOG"
 if [ "\${FAIL_SOURCE:-}" = "$2" ]; then
   exit 42
 fi
+if [ -n "\${REQUIRE_SKILL_PATH:-}" ] && [ ! -f "$REQUIRE_SKILL_PATH/SKILL.md" ]; then
+  exit 43
+fi
 `);
   chmodSync(executable, 0o755);
   return { pathValue: directory, callLog };
@@ -51,12 +54,12 @@ describe("Pi integration setup", () => {
     expect(planPiIntegrationSetup(pi.pathValue, false)).toBe("guidance");
   });
 
-  test("installs only Pi Tasks and directs Wolfpack skill installation to the repository", () => {
+  test("discloses the bundled Wolfpack skill and Pi Tasks extension", () => {
     const disclosure = piIntegrationDisclosureLines().join("\n");
 
+    expect(disclosure).toContain("wolfpack-tailnet-control");
     expect(disclosure).toContain("pi install npm:@sgtbeatdown/pi-tasks");
     expect(disclosure).not.toContain("npm:wolfpack-bridge");
-    expect(disclosure).toContain("Install wolfpack-tailnet-control manually");
     expect(disclosure).toContain("user permissions");
     expect(disclosure).toContain("Review");
   });
@@ -69,24 +72,50 @@ describe("Pi integration setup", () => {
     expect(acceptsPiIntegrationInstall("yes")).toBe(false);
   });
 
-  test("installs only the Pi Tasks extension", () => {
+  test("installs the bundled control skill before the Pi Tasks extension", () => {
     const pi = fakePi();
+    const piAgentDirectory = join(tempDir(), "agent");
+    const skillPath = join(piAgentDirectory, "skills", "wolfpack-tailnet-control");
     const result = installPiIntegration({
       pathValue: pi.pathValue,
-      env: { CALL_LOG: pi.callLog },
+      piAgentDirectory,
+      env: {
+        CALL_LOG: pi.callLog,
+        REQUIRE_SKILL_PATH: skillPath,
+      },
     });
 
     expect(result).toEqual({
       status: "installed",
       installedSources: PI_INTEGRATION_PACKAGES,
     });
+    expect(readFileSync(join(skillPath, "SKILL.md"), "utf8")).toContain("# Wolfpack Session Control");
     expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
   });
 
-  test("reports a retry command when Pi Tasks installation fails", () => {
+  test("refuses to replace an existing Wolfpack skill before installing Pi Tasks", () => {
     const pi = fakePi();
+    const piAgentDirectory = join(tempDir(), "agent");
+    const skillPath = join(piAgentDirectory, "skills", "wolfpack-tailnet-control");
+    mkdirSync(skillPath, { recursive: true });
+
     const result = installPiIntegration({
       pathValue: pi.pathValue,
+      piAgentDirectory,
+      env: { CALL_LOG: pi.callLog },
+    });
+
+    expect(result).toEqual({ status: "skill_exists", skillPath });
+    expect(existsSync(pi.callLog)).toBe(false);
+  });
+
+  test("reports a retry command when Pi Tasks installation fails after skill installation", () => {
+    const pi = fakePi();
+    const piAgentDirectory = join(tempDir(), "agent");
+    const skillPath = join(piAgentDirectory, "skills", "wolfpack-tailnet-control");
+    const result = installPiIntegration({
+      pathValue: pi.pathValue,
+      piAgentDirectory,
       env: {
         CALL_LOG: pi.callLog,
         FAIL_SOURCE: "npm:@sgtbeatdown/pi-tasks",
@@ -94,11 +123,12 @@ describe("Pi integration setup", () => {
     });
 
     expect(result).toEqual({
-      status: "failed",
+      status: "extension_failed",
       installedSources: [],
       failedSource: "npm:@sgtbeatdown/pi-tasks",
       retryCommand: "pi install npm:@sgtbeatdown/pi-tasks",
     });
+    expect(existsSync(join(skillPath, "SKILL.md"))).toBe(true);
     expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
   });
 });
