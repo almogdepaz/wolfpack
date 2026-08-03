@@ -79,7 +79,7 @@ export function createTerminalResizeLifecycle(
   };
 
   const scheduleResizeRehydrate = (): void => {
-    if (options.prefillMode !== TERMINAL_PREFILL_MODE.FULL) return;
+    if (options.prefillMode === TERMINAL_PREFILL_MODE.NONE) return;
     const client = options.getPtyClient();
     if (!client?.isOpen || options.shouldSuppressContainerResize()) return;
 
