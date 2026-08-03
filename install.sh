@@ -80,12 +80,12 @@ echo "  $(bold 'WOLFPACK') — AI Agent Bridge"
 echo "  $(dim 'Deploy your pack. Command from anywhere.')"
 echo ""
 
-# ── Optional remote access ──
+# ── Phone and remote access ──
 
 if command -v tailscale &>/dev/null || { $IS_MACOS && [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; }; then
   echo "  $(green '✓') Tailscale"
 else
-  echo "  $(dim '○') Tailscale not found $(dim '(optional — needed for remote access)')"
+  echo "  $(dim '○') Tailscale not found $(dim '(setup will offer to install it for secure phone and remote access; decline for local-only)')"
 fi
 
 echo ""
@@ -285,9 +285,6 @@ if [ -x "$MANAGED_BINARY" ]; then
   echo "  $(green '✓') $(bold 'wolfpack') installed"
   echo ""
   echo "  Run $(bold 'wolfpack') to start."
-  echo ""
-  echo "  $(bold 'Security:') Always use the Tailscale hostname URL — not your machine's IP (it won't work)."
-  echo "  $(dim 'Set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication.')"
   echo ""
   exec "$MANAGED_BINARY" setup < /dev/tty
 else

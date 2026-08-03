@@ -950,7 +950,7 @@ function isSessionVisibleInDelegationGrid(session, machine): boolean {
 }
 
 export function isSessionInGrid(session, machine) {
-  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+  if (state.activeDelegationRoot) {
     return isSessionVisibleInDelegationGrid(session, machine);
   }
   const sessions = state.gridSessions.length >= 2 ? state.gridSessions : state.preservedGridSessions;

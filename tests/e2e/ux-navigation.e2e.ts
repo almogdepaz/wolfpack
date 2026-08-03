@@ -388,7 +388,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   ]);
 });
 
-test("desktop direct child focus suspends an active manual grid", async ({ page }, testInfo) => {
+test("desktop delegation focus makes suspended manual-grid sessions available to add", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop delegation focus ux");
 
   const sockets = await routeHydratedPty(page);
@@ -423,6 +423,49 @@ test("desktop direct child focus suspends an active manual grid", async ({ page 
     "manual-one",
     "manual-two",
   ]);
+
+  const manualOneCard = page.locator("#sidebar-session-list .card", {
+    has: page.locator(".card-name", { hasText: "manual-one" }),
+  }).first();
+  const manualOneGridButton = manualOneCard.locator(".grid-btn");
+  await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
+  await page.getByRole("button", { name: "Back to session grid" }).click();
+  await expect(page.locator("#delegation-grid-shell")).toBeVisible();
+  await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
+  await page.getByRole("button", { name: "Focus child" }).click();
+  await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
+  await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
+  await manualOneGridButton.click();
+
+  await expect.poll(() => page.evaluate(() => {
+    const app = window as unknown as WolfpackTestWindow;
+    return {
+      activeDelegationRoot: app.state.activeDelegationRoot,
+      gridSessions: app.state.gridSessions.map(entry => entry.session),
+      preservedGridSessions: app.state.preservedGridSessions.map(entry => entry.session),
+    };
+  })).toEqual({
+    activeDelegationRoot: null,
+    gridSessions: ["child", "manual-one"],
+    preservedGridSessions: [],
+  });
+
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("child"));
+  await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("manual-one"));
+  await expect.poll(() => page.evaluate(() => {
+    const app = window as unknown as WolfpackTestWindow;
+    return {
+      activeDelegationRoot: app.state.activeDelegationRoot,
+      currentSession: app.state.currentSession,
+      preservedGridSessions: app.state.preservedGridSessions.map(entry => entry.session),
+    };
+  })).toEqual({
+    activeDelegationRoot: null,
+    currentSession: "manual-one",
+    preservedGridSessions: [],
+  });
+  await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
 });
 
 test("desktop delegation grid focus suspends hidden grid terminals", async ({ page }, testInfo) => {

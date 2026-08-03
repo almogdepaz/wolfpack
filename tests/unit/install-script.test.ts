@@ -142,6 +142,14 @@ describe("install entrypoint parity", () => {
     expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("new broker\n");
   });
 
+  test("installer explains the missing-Tailscale local-only fallback without surfacing JWT setup", () => {
+    const installer = readFileSync(join(process.cwd(), "install.sh"), "utf-8");
+
+    expect(installer).toContain("setup will offer to install it for secure phone and remote access");
+    expect(installer).not.toContain("optional — needed for remote access");
+    expect(installer).not.toContain("WOLFPACK_JWT_SECRET");
+  });
+
   test("package runner prepares both binaries when Bun blocks postinstall", () => {
     fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-runner-")));
     const packageRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge");

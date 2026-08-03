@@ -68,6 +68,17 @@ describe("cli help dispatch", () => {
     });
   }
 
+  for (const alias of [["setup", "--help"], ["setup", "-h"], ["setup", "help"]] as const) {
+    test(`${alias.join(" ")} is side-effect-free`, () => {
+      const child = runCli(alias);
+
+      expect(child.exitCode).toBe(0);
+      expect(child.stdout).toContain("Usage: wolfpack setup");
+      expect(child.stdout).not.toContain("Checking prerequisites");
+      expect(child.stderr).toBe("");
+    });
+  }
+
   for (const alias of [["session", "--help"], ["session", "-h"], ["session", "help"]] as const) {
     test(`${alias.join(" ")} prints canonical session help`, () => {
       const child = runCli(alias);

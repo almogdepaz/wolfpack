@@ -8,13 +8,10 @@ import { homedir, tmpdir } from "node:os";
 import { printQR } from "../qr.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
-  CONFIG_PATH,
   WOLFPACK_DIR,
   IS_MACOS,
   IS_LINUX,
-  hasTTY,
   ask,
-  loadConfig,
   saveConfig,
   remoteUrl,
   tailscaleBin,
@@ -23,6 +20,7 @@ import {
 import { serviceInstall } from "./service.js";
 import { createLogger } from "../log.js";
 import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
+import { detectInstalledProviderCommands } from "../provider-readiness.js";
 import {
   acceptsPiIntegrationInstall,
   installPiIntegration,
@@ -42,6 +40,31 @@ function check(name: string, cmd: string): boolean {
     print(`  ${red("✗")} ${name}`);
     return false;
   }
+}
+
+function printSetupCompletion(options: {
+  readonly port: number;
+  readonly remoteUrl: string | null;
+  readonly serviceInstalled: boolean;
+}): void {
+  const localUrl = `http://localhost:${options.port}/`;
+
+  print("");
+  print(green("  Setup complete — next steps:"));
+  print(`  Local: ${bold(localUrl)}`);
+  if (options.remoteUrl) {
+    print(`  Remote: ${bold(options.remoteUrl)}`);
+    print("");
+    print(dim("  Scan the verified remote URL to open Wolfpack on your phone:"));
+    print("");
+    printQR(options.remoteUrl);
+  }
+  print(options.serviceInstalled
+    ? dim("  Service: running (check with 'wolfpack service status').")
+    : dim("  Start: 'wolfpack' now, or 'wolfpack service install' at login."));
+  print(dim("  Check: 'wolfpack doctor'"));
+  print(dim("  Create a session and run codex or claude."));
+  print("");
 }
 
 function installPackages(pkgs: string[]) {
@@ -94,10 +117,8 @@ export async function setup() {
   print(dim("  Deploy your pack. Command from anywhere."));
   print("");
 
-  // Detect non-interactive shells (CI, piped stdin, redirected stdout)
-  // and announce up-front. Without this, every prompt silently no-ops via
-  // the hasTTY=false flip in `ask()`, leaving operators wondering why
-  // setup "just finished" with nothing changed.
+  // Detect non-interactive shells (CI, piped stdin, redirected stdout) so
+  // setup can apply deterministic local-only defaults without prompting.
   // process.stdin.isTTY is undefined when not a TTY — treat any non-true
   // value as non-interactive.
   const interactive = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
@@ -118,14 +139,24 @@ export async function setup() {
     print(`  ${red("✗")} Tailscale ${dim("(required for Wolfpack phone and remote access)")}`);
   }
 
+  const detectedProviders = detectInstalledProviderCommands(process.env.PATH);
+  print(dim(detectedProviders.length > 0
+    ? `  Detected coding-agent CLIs: ${detectedProviders.join(", ")}`
+    : "  No coding-agent CLIs detected; shell will be enabled."));
   print("");
-
 
   // ── Install missing Tailscale dependency ──
   if (!hasTailscale) {
-    const installTs = hasTTY ? ask("  Install Tailscale for phone and remote access? (y/n) ") : "n";
-    if (installTs.toLowerCase() === "y") {
-      installPackages(["tailscale"]);
+    const installTs = interactive
+      ? ask("  Tailscale provides private HTTPS phone and remote access. Install it now? [Y/n] ")
+      : "n";
+    if (installTs.toLowerCase() !== "n") {
+      try {
+        installPackages(["tailscale"]);
+      } catch (e: unknown) {
+        log.warn("setup: Tailscale installation failed", { error: e instanceof Error ? e.message : String(e) });
+        print(red("  Tailscale installation failed; continuing with local-only access."));
+      }
       tsBin = tailscaleBin();
       hasTailscale = !!tsBin;
     }
@@ -137,11 +168,11 @@ export async function setup() {
 
   // Dev directory
   const defaultDev = resolve(homedir(), "Dev");
-  const rawDevDir = ask(`  Projects directory [${defaultDev}]: `) || defaultDev;
-  const devDir = resolve(rawDevDir);
+  const rawDevDir = interactive ? ask(`  Projects directory [${defaultDev}]: `) : "";
+  const devDir = resolve(rawDevDir || defaultDev);
 
   const SYSTEM_PREFIXES = ["/etc", "/var", "/usr", "/bin", "/sbin", "/sys", "/proc"];
-  if (SYSTEM_PREFIXES.some(p => devDir === p || devDir.startsWith(p + "/"))) {
+  if (devDir !== defaultDev && SYSTEM_PREFIXES.some(p => devDir === p || devDir.startsWith(p + "/"))) {
     print(red(`  Refusing to use system directory: ${devDir}`));
     process.exit(1);
   }
@@ -150,7 +181,7 @@ export async function setup() {
   }
 
   if (!existsSync(devDir)) {
-    const create = ask(`  ${devDir} doesn't exist. Create it? (y/n) `);
+    const create = interactive ? ask(`  ${devDir} doesn't exist. Create it? (y/n) `) : "y";
     if (create.toLowerCase() === "y") {
       mkdirSync(devDir, { recursive: true });
       print(green(`  Created ${devDir}`));
@@ -161,12 +192,11 @@ export async function setup() {
   }
 
   // Port
-  const portStr = ask("  Server port [18790]: ");
+  const portStr = interactive ? ask("  Server port [18790]: ") : "";
   const port = Math.max(1024, Math.min(65535, Number(portStr) || 18790));
 
   // Tailscale remote endpoint. A remote URL is persisted and advertised only
   // after `serve status --json` proves it proxies to this Wolfpack port.
-  const previousConfig = loadConfig();
   let verifiedRemoteHostname: string | undefined;
   if (hasTailscale && tsBin) {
     const runTailscale = (args: readonly string[]): string => {
@@ -212,21 +242,13 @@ export async function setup() {
     devDir,
     port,
     ...(verifiedRemoteHostname && { tailscaleHostname: verifiedRemoteHostname }),
-    ...(!verifiedRemoteHostname && previousConfig?.tailscaleHostname && { tailscaleHostname: previousConfig.tailscaleHostname }),
   };
   saveConfig(config);
 
-  const initialSettings = initializeProviderSettingsFile({
+  initializeProviderSettingsFile({
     settingsPath: join(WOLFPACK_DIR, "bridge-settings.json"),
     pathValue: process.env.PATH,
   });
-  if (initialSettings) {
-    const detectedProviders = initialSettings.cmds.slice(1).map(entry => entry.cmd);
-    const readinessSummary = detectedProviders.length > 0
-      ? `Enabled detected providers: ${detectedProviders.join(", ")}`
-      : "No coding-agent providers detected; enabled shell only";
-    print(dim(`  ${readinessSummary}.`));
-  }
 
   const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
   if (piIntegrationMode === "prompt") {
@@ -265,16 +287,11 @@ export async function setup() {
     print(dim("  Run 'wolfpack setup' interactively to install the control skill and Pi Tasks."));
   }
 
-  print("");
-  print(green("  Setup complete!"));
-  print(`  Config saved to ${dim(CONFIG_PATH)}`);
-  print("");
-
-  const installService = hasTTY
+  const installService = interactive
     ? ask("  Start wolfpack automatically on login? [Y/n] ")
     : "n";
   let serviceInstalled = false;
-  if (!hasTTY) {
+  if (!interactive) {
     print(dim("  Non-interactive mode — skipping service install."));
     print(dim("  Run 'wolfpack service install' to start automatically on login."));
   } else if (installService.toLowerCase() !== "n") {
@@ -284,35 +301,11 @@ export async function setup() {
     } catch (e) {
       print(red(`  Service install failed: ${e}`));
     }
-  } else {
-    print(`  Run ${bold("wolfpack")} to start the server.`);
-    print(`  Or ${bold("wolfpack service install")} to auto-start on login.`);
   }
 
-  const url = remoteUrl(config);
-  if (url && verifiedRemoteHostname) {
-    print(`  Access from phone: ${bold(url)}`);
-    print("");
-    print(dim("  Scan to open on your phone:"));
-    print("");
-    printQR(url);
-    print("");
-    print(yellow("  Security: Always use the Tailscale hostname URL — not your machine's IP (it won't work)."));
-  } else {
-    print(`  Local desktop access: ${bold(`http://localhost:${config.port}/`)}`);
-    print(dim("  Phone access requires a signed-in Tailscale setup; run 'wolfpack setup' to retry."));
-  }
-  print("");
-  print(bold("  JWT Authentication:"));
-  print(dim("  1. Generate a secret:  openssl rand -base64 48"));
-  print(dim("  2. Export before setup or service install:  export WOLFPACK_JWT_SECRET=\"your-secret\""));
-  print(dim("  3. Service install stores configured JWT settings in a private credential file."));
-  print("");
-
-  if (serviceInstalled) {
-    print(green("  Wolfpack is running as a background service."));
-    print(dim("  Use 'wolfpack service stop' to stop, 'wolfpack service status' to check."));
-    print("");
-    process.exit(0);
-  }
+  printSetupCompletion({
+    port: config.port,
+    remoteUrl: verifiedRemoteHostname ? remoteUrl(config) : null,
+    serviceInstalled,
+  });
 }

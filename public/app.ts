@@ -2991,6 +2991,7 @@ function teardownDelegationWorkspace(): void {
 function leaveDelegationWorkspaceForManualGrid(): void {
   if (state.terminalController) destroyTerminal();
   teardownDelegationWorkspace();
+  clearPreservedGrid();
 }
 
 function syncDelegationWorkspace(): void {
@@ -3345,7 +3346,10 @@ async function openSession(name, machineUrl) {
   }
   const trace = __wfTraceStart(name, targetMachine, { mode: "single" });
   __wfTraceEvent(trace, "openSession.start");
-  if (state.activeDelegationRoot) teardownDelegationWorkspace();
+  if (state.activeDelegationRoot) {
+    teardownDelegationWorkspace();
+    clearPreservedGrid();
+  }
   if (state.currentView !== "terminal" && hasPreservedGrid()) clearPreservedGrid();
   // Exit expanded sessions mode when opening a session
   if (state.sessionsExpanded) {

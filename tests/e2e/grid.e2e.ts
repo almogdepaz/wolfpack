@@ -851,6 +851,17 @@ test("navigating away from terminal with active grid suspends grid state", async
   expect(liveSessions).toBe(0);
 });
 
+test("transcript button clears grid-cell close controls", async ({ page }) => {
+  await loadApp(page);
+  await page.evaluate(() => {
+    // @ts-ignore exposed by the browser bundle
+    showView("terminal");
+  });
+  await page.locator("#desktop-grid-container").evaluate((container) => container.classList.add("active"));
+
+  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCSS("top", "40px");
+});
+
 test("re-adding the remaining preserved session from settings reinitializes terminal view", async ({ page }) => {
   await loadApp(page);
 
