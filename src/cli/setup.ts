@@ -232,15 +232,16 @@ export async function setup() {
   const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
   if (piIntegrationMode === "prompt") {
     print("");
-    print(bold("  Optional Pi subagent integration:"));
+    print(bold("  Optional Pi Tasks integration:"));
     for (const line of piIntegrationDisclosureLines()) {
       print(dim(line));
     }
-    const installPi = ask("  Install the Pi extension and Wolfpack skills? [y/N] ");
+    const installPi = ask("  Install Pi Tasks delegation tools? [y/N] ");
     if (acceptsPiIntegrationInstall(installPi)) {
       const installResult = installPiIntegration({ pathValue: process.env.PATH });
       if (installResult.status === "installed") {
-        print(green("  Installed Pi task delegation and Wolfpack skills."));
+        print(green("  Installed Pi Tasks delegation tools."));
+        print(dim("  Install wolfpack-tailnet-control manually from the Wolfpack repository."));
         print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
       } else {
         print(red(`  Pi integration install stopped at ${installResult.failedSource}.`));
@@ -252,11 +253,12 @@ export async function setup() {
     }
   } else if (piIntegrationMode === "guidance") {
     print("");
-    print(dim("  Pi detected; non-interactive mode skipped the optional subagent integration."));
-    print(dim("  Install it explicitly:"));
+    print(dim("  Pi detected; non-interactive mode skipped the optional Pi Tasks integration."));
+    print(dim("  Install Pi Tasks explicitly:"));
     for (const source of PI_INTEGRATION_PACKAGES) {
       print(dim(`    pi install ${source}`));
     }
+    print(dim("  Install wolfpack-tailnet-control manually from the Wolfpack repository."));
   }
 
   print("");

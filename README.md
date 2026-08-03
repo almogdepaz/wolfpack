@@ -84,7 +84,7 @@ It is an AI agent terminal orchestrator for developers who need persistent brows
 - **PWA UX** — install on your home screen, reconnect on drops, receive notifications when sessions need attention.
 - **Agent-agnostic** — use built-in commands or add your own shell command in Settings → Agents.
 - **Provider readiness** — First-run setup enables detected supported CLIs; Settings → Agents shows path/version and login guidance and lets you add providers installed later.
-- **Pi integration** — optionally install Pi packages for Wolfpack session control and durable subagent task delegation; see [Pi integration and agent skills](#pi-integration-and-agent-skills).
+- **Pi integration** — manually install the Wolfpack control skill, then optionally add Pi Tasks for durable subagent task delegation; see [Pi integration and agent skills](#pi-integration-and-agent-skills).
 
 ## Agent recipes
 
@@ -206,15 +206,13 @@ Wolfpack exposes one repository-local agent skill in `skills/`:
 
 ### Install the Pi integration
 
-When setup detects `pi` on `PATH`, it offers this default-no, opt-in installation. You can also install the packages directly from their npm pages:
+Install Wolfpack's control skill manually from this repository; setup does not add
+the full Wolfpack app to Pi just to deliver that skill. Then, when setup detects
+`pi` on `PATH`, it offers this default-no, opt-in installation:
 
-- [`wolfpack-bridge`](https://www.npmjs.com/package/wolfpack-bridge) — Wolfpack's Pi-installable skills, including `wolfpack-tailnet-control`.
 - [`@sgtbeatdown/pi-tasks`](https://www.npmjs.com/package/@sgtbeatdown/pi-tasks) — the Pi Tasks extension and `wolfpack-pi-task-delegation` skill.
 
-Install both with Pi's package manager:
-
 ```bash
-pi install npm:wolfpack-bridge
 pi install npm:@sgtbeatdown/pi-tasks
 ```
 
@@ -226,12 +224,11 @@ The pieces have separate jobs:
 | Pi Tasks extension | `agent_task_*` | Sends assignments and records durable structured status/results; it does not create sessions. |
 | Pi Tasks skill | `wolfpack-pi-task-delegation` | Teaches Pi to combine Wolfpack session control with the task tools and completion protocol. |
 
-The first package exposes Wolfpack's bundled skills to Pi. The second package
-contains both the Pi Tasks extension and its matching delegation skill. Every
+Pi Tasks contains both the extension and its matching delegation skill. Every
 participating Pi session needs Pi Tasks loaded; its default filesystem store
 also requires parent and child sessions to use the same project directory.
 Declining the setup prompt changes nothing. Non-interactive setup never installs
-Pi packages and prints the commands instead.
+Pi packages and prints the Pi Tasks command instead.
 
 Skills and extensions can execute commands with your user permissions. Review
 the packages before accepting. Start a fresh Pi session afterward, or run
@@ -254,7 +251,7 @@ wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
 wolfpack agent spawn <project> --plan .plans/000-task.md --notify-parent --json
 ```
 
-Platform binaries do not contain skills. The setup wizard only asks Pi's package manager to install them after explicit opt-in; the cloned repository remains the auditable source for manual installation.
+Platform binaries do not contain skills. The setup wizard only asks Pi's package manager to install Pi Tasks after explicit opt-in; the cloned repository remains the auditable source for manual skill installation.
 
 ## Contributing
 

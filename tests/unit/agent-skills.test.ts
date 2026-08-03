@@ -147,11 +147,12 @@ describe("agent skills", () => {
     const docs = readRepoFile("docs/agent-skills.md");
 
     for (const content of [readme, docs]) {
-      expect(content).toContain("pi install npm:wolfpack-bridge");
+      expect(content).not.toContain("pi install npm:wolfpack-bridge");
       expect(content).toContain("pi install npm:@sgtbeatdown/pi-tasks");
       expect(content).toContain("`wolfpack-tailnet-control`");
       expect(content).toContain("`wolfpack-pi-task-delegation`");
       expect(content).toContain("`agent_task_*`");
+      expect(content).toContain("manually");
       expect(content.toLowerCase()).toContain("opt-in");
     }
   });
