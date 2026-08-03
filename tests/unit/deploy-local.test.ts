@@ -41,7 +41,7 @@ exit 1
   writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ port: 18790 }));
   writeFileSync(log, "");
 
-  writeExecutable(join(bin, "bun"), "#!/bin/sh\necho \"bun $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
+  writeExecutable(join(bin, "bun"), "#!/bin/sh\necho \"bun $* build-server-only=${WOLFPACK_BUILD_SERVER_ONLY:-}\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
   writeExecutable(join(bin, "codesign"), "#!/bin/sh\necho \"codesign $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
   writeExecutable(join(bin, "mv"), `#!/bin/sh
 echo "mv $*" >> "$DEPLOY_TEST_LOG"
@@ -219,6 +219,7 @@ describe("scripts/deploy-local.sh", () => {
     const commands = readFileSync(fixture.log, "utf-8");
 
     expect(readFileSync(join(fixture.home, ".wolfpack", "bin", "wolfpack-broker"), "utf-8")).toBe("installed-broker\n");
+    expect(commands).toContain("build-server-only=1");
     expect(commands).not.toContain("com.wolfpack.broker");
     expect(output).toContain("\"brokerDeployed\":false");
   });

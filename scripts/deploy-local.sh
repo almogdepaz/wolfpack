@@ -241,7 +241,11 @@ verify_preserved_sessions() {
   fi
 }
 
-bun run scripts/build.ts
+if [ "$DEPLOY_BROKER" = "0" ]; then
+  WOLFPACK_BUILD_SERVER_ONLY=1 bun run scripts/build.ts
+else
+  bun run scripts/build.ts
+fi
 
 ARCH="$(uname -m)"
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then

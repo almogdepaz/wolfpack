@@ -55,6 +55,7 @@ function run(cmd: string) {
 // read version from main package.json
 const mainPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
 const version: string = mainPkg.version;
+const BUILD_SERVER_ONLY = process.env.WOLFPACK_BUILD_SERVER_ONLY === "1";
 
 // sync optionalDependencies versions in main package.json
 let pkgDirty = false;
@@ -93,10 +94,10 @@ mkdirSync(DIST, { recursive: true });
 //      `bun run scripts/build.ts` is for testing/dev-deploy on the host
 //      — not for publishing artifacts. Tests + `deploy-local.sh` only ever
 //      consume the host-arch broker, so this is safe.
+const brokerStaged: Record<string, string> = {};
+if (!BUILD_SERVER_ONLY) {
 console.log("\n=== staging wolfpack-broker for each platform target ===");
 mkdirSync(BROKER_DIR, { recursive: true });
-
-const brokerStaged: Record<string, string> = {};
 const missingStaged: string[] = [];
 for (const target of TARGETS) {
   const staged = join(BROKER_DIR, target, "wolfpack-broker");
@@ -148,6 +149,7 @@ if (hostTarget && brokerStaged[hostTarget]) {
   chmodSync(hostDest, 0o755);
   console.log(`  copied ${brokerStaged[hostTarget]} → ${hostDest} (host arch — used by deploy-local.sh)`);
 }
+}
 
 // step 4: compile wolfpack itself for each target
 console.log("\n=== compiling binaries ===");
@@ -158,6 +160,7 @@ for (const target of TARGETS) {
 }
 
 // step 4: generate per-platform npm package dirs
+if (!BUILD_SERVER_ONLY) {
 console.log("\n=== generating platform packages ===");
 mkdirSync(NPM_DIR, { recursive: true });
 
@@ -198,6 +201,7 @@ for (const target of TARGETS) {
 
   console.log(`  ${meta.name}/  (wolfpack + wolfpack-broker)`);
 }
+}
 
 // step 5: copy current platform binary to bin/ for local dev
 const currentBin = join(DIST, `wolfpack-${platform()}-${arch()}`);
@@ -207,4 +211,4 @@ console.log(`\ncopied ${currentBin} → bin/wolfpack`);
 
 console.log("\n=== build complete ===");
 console.log(`binaries in ${DIST}/`);
-console.log(`platform packages in ${NPM_DIR}/`);
+if (!BUILD_SERVER_ONLY) console.log(`platform packages in ${NPM_DIR}/`);
