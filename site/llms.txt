@@ -1,0 +1,21 @@
+# Wolfpack
+
+> Wolfpack is a self-hosted control room for persistent coding-agent terminal sessions across your machines.
+
+## What it does
+- Runs beside coding agents on macOS or Linux.
+- Provides browser/PWA access to persistent PTY sessions from a laptop, workstation, or phone.
+- Lets developers view and control sessions across machines on a Tailscale tailnet.
+- Supports Claude Code, Codex CLI, Gemini CLI, shell commands, and custom wrappers.
+
+## Privacy and architecture
+- Open source under the MIT license.
+- No Wolfpack account is required.
+- No Wolfpack-hosted relay or prompt-upload service is used; remote access normally travels over the operator's Tailscale network.
+- Sessions are owned by a local Rust PTY broker and survive web-server restarts.
+
+## Start here
+- Homepage: https://get-wolfpack.netlify.app/
+- Source and documentation: https://github.com/almogdepaz/wolfpack
+- Quickstart: https://github.com/almogdepaz/wolfpack#quickstart
+- Full agent-readable summary: https://get-wolfpack.netlify.app/llms-full.txt

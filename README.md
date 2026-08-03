@@ -8,6 +8,8 @@
 Wolfpack is a self-hosted browser terminal dashboard for AI coding agents: Claude Code, Codex, Gemini, shell commands, and custom agent wrappers.
 It runs on your own macOS/Linux machine — laptop, workstation, or cloud VM — and gives you a PWA command center for long-running agent terminal sessions across your Tailscale tailnet.
 
+**Homepage:** [get-wolfpack.netlify.app](https://get-wolfpack.netlify.app/) · **Agent-readable overview:** [llms.txt](https://get-wolfpack.netlify.app/llms.txt)
+
 Sessions live in a Rust PTY broker, not the web server, so server restarts and redeploys do not kill your agents.
 There is no Wolfpack-hosted relay or account; remote access is normally handled by [Tailscale](https://tailscale.com/). Visit the [Wolfpack homepage](https://get-wolfpack.netlify.app/) for the product overview.
 
