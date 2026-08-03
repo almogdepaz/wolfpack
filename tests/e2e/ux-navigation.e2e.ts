@@ -122,7 +122,7 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.sidebarAutoExpanded)).toBe(true);
 
-  await page.getByRole("button", { name: `Open ${parent.name}` }).click();
+  await page.locator(`#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="${parent.id}"] .card-open`).click();
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
 
   expect(await page.evaluate(() => {
@@ -212,7 +212,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
   await expect(childSidebarCards).toHaveCount(0);
   await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents");
-  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toContainText("2 child agents");
+  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveText(/2 agents$/);
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
   await expect(childSidebarCards).toHaveCount(2);
   const childSidebarCard = childSidebarCards.first();
@@ -545,9 +545,9 @@ test("desktop stopping a focused child returns to its parent instead of session 
   await page.locator("#session-list .sub-session-card").click();
   await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
   await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
-  const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card");
+  const parentSidebarCard = page.locator('#sidebar-session-list .delegation-parent-card[data-session-order-machine=""]');
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
-  const childSidebarCard = page.locator("#sidebar-session-list .sub-session-card");
+  const childSidebarCard = page.locator('#sidebar-session-list .sub-session-card[data-session-order-machine=""]');
   await childSidebarCard.locator(".kill-btn").click();
   await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
 

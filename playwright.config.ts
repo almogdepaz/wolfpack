@@ -50,6 +50,7 @@ export default defineConfig({
       name: "mobile-webkit",
       testMatch: [
         "accessibility-navigation.e2e.ts",
+        "delegation-sessions.e2e.ts",
         "mobile-accessory-enter.e2e.ts",
         "mobile-scrolling.e2e.ts",
         "notification-routing.e2e.ts",
@@ -58,7 +59,7 @@ export default defineConfig({
         "session-switch.e2e.ts",
         "terminal.e2e.ts",
       ],
-      grep: /clicking a session navigates|terminal receives output|mobile accessory Enter|mobile touch drag scrolls|notification session route|open session drawer|mobile keyboard uses ghostty native input|mobile keyboard viewport shift|mobile settings navigation|terminal transcript|visibility resume|WS disconnect shows reconnecting banner then recovers/,
+      grep: /clicking a session navigates|direct card drag|mobile card swipe opens|mobile drawer groups|mobile moved card opens|terminal receives output|mobile accessory Enter|mobile touch drag scrolls|notification session route|open session drawer|mobile keyboard uses ghostty native input|mobile keyboard viewport shift|mobile settings navigation|terminal transcript|visibility resume|WS disconnect shows reconnecting banner then recovers/,
       use: {
         ...devices["iPhone 14"],
         viewport: { width: 390, height: 844 },

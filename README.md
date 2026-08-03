@@ -35,13 +35,15 @@ wolfpack
 The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
 Supported: macOS arm64/x64 and Linux x64/arm64.
 
-Want npm instead?
+Want a package runner instead? Pin `@latest` so Bun/npm does not reuse an older cached release:
 
 ```bash
-bunx wolfpack-bridge
+bunx wolfpack-bridge@latest
 # or
-npx wolfpack-bridge
+npx --yes wolfpack-bridge@latest
 ```
+
+Both package-runner commands resolve the same matching prebuilt `wolfpack` and `wolfpack-broker` pair as the curl installer, then run the same setup wizard. Unlike curl, they do not add `wolfpack` to your shell `PATH`; use curl when you want a persistent CLI installation.
 
 If setup gets weird, run:
 
