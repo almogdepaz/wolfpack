@@ -114,7 +114,9 @@ function sameSize(a: { cols: number; rows: number } | null, b: { cols: number; r
 
 // ── Constants ──
 const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
-const VIEWPORT_PREFILL_SCROLLBACK_LINES = 0;
+// Grid cells receive enough recent context for inspection without fetching
+// each terminal's full scrollback during multi-cell hydration.
+const GRID_PREFILL_SCROLLBACK_LINES = 200;
 const PREFILL_CHUNK_SIZE = 32 * 1024;
 const PREFILL_CHUNK_DELAY_MS = 8;
 const PREFILL_OVERLAP_LIMIT = 32 * 1024;
@@ -142,9 +144,9 @@ const PRE_SNAPSHOT_RESIZE_SETTLE_MS = 100;
 // avoiding a fixed 200ms tax on every full switch.
 const PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 80;
 const PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 400;
-// Grid viewport attaches are already mounted in stable cells and fetch no
-// broker scrollback, so they use a shorter resize settle budget than full
-// desktop attaches while still coalescing same-turn resize frames.
+// Grid viewport attaches are already mounted in stable cells and fetch only
+// bounded recent scrollback, so they use a shorter resize settle budget than
+// full desktop attaches while still coalescing same-turn resize frames.
 const VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS = 40;
 const VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS = 60;
 const VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS = 160;
@@ -789,7 +791,7 @@ async function sendSnapshotPrefill(
     ctx.timing?.mark("prefill_send.end", { bytes: 0, prefillMode });
     return undefined;
   }
-  const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? VIEWPORT_PREFILL_SCROLLBACK_LINES : undefined;
+  const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? GRID_PREFILL_SCROLLBACK_LINES : undefined;
   ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
   const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines });
   ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
