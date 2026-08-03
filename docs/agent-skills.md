@@ -66,17 +66,23 @@ less "$REPO/skills/wolfpack-tailnet-control/SKILL.md"
 Skills can direct an agent to run commands. Do not skip this audit merely
 because the source came from the Wolfpack repository.
 
-## Install one reviewed skill
+## Manual installation required for non-Pi harnesses
 
-Supported global roots relevant to Wolfpack are:
+`wolfpack setup` installs the control skill only for Pi after explicit opt-in.
+If you use Claude, Codex, Gemini, Cursor, or another Agent Skills-capable
+harness, manually add `wolfpack-tailnet-control` to that harness's global skill
+root before expecting the agent to control Wolfpack sessions.
+
+Known global roots relevant to Wolfpack are:
 
 - Pi global: `~/.pi/agent/skills/`
 - shared Agent Skills root supported by Pi: `~/.agents/skills/`
-- Claude global where used: `~/.claude/skills/`
+- Claude global: `~/.claude/skills/`
+- another Agent Skills-capable harness: use the global skill root documented by that harness
 
 For shared skill directories, prefer symlinking each desired Wolfpack skill so
-a later reviewed `git pull --ff-only` updates the installed source. Choose one
-root; this example uses Pi global:
+a later reviewed `git pull --ff-only` updates the installed source. Choose the
+root for the harness that needs session control; this example uses Pi global:
 
 ```bash
 REPO="$HOME/src/wolfpack"
@@ -98,7 +104,8 @@ ln -s "$SOURCE" "$DEST"
 
 To target the shared Pi-compatible root or Claude global root, set `DEST_ROOT`
 to `$HOME/.agents/skills` or `$HOME/.claude/skills` before running the same
-existence checks. Never force the link or overwrite an existing destination.
+existence checks. For another harness, set it to that harness's documented root.
+Never force the link or overwrite an existing destination.
 
 Copying is an alternative for agents or environments that cannot follow
 symlinks. It uses the same fail-closed destination check:

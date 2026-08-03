@@ -238,7 +238,10 @@ the packages before accepting. Start a fresh Pi session afterward, or run
 
 ### Install the Wolfpack control skill
 
-For Pi, use the opt-in `wolfpack setup` flow above. Use this audited manual
+For Pi, use the opt-in `wolfpack setup` flow above. For every other agent
+harness, manual installation is required: `wolfpack setup` does not add the
+control skill outside Pi. An agent needs `wolfpack-tailnet-control` in its skill
+root to receive Wolfpack's session-control instructions. Use this audited manual
 workflow for other harnesses or a customized Pi install. Skills are executable
 agent instructions, so install only the ones you have audited. Clone or update
 `https://github.com/almogdepaz/wolfpack`, review the requested file (for example
@@ -247,7 +250,8 @@ into one supported root:
 
 - Pi global: `~/.pi/agent/skills/`
 - shared Agent Skills root supported by Pi: `~/.agents/skills/`
-- Claude global where used: `~/.claude/skills/`
+- Claude global: `~/.claude/skills/`
+- another Agent Skills-capable harness: that harness's documented global skill root
 
 Prefer symlinks so a reviewed `git pull --ff-only` updates the source. Refuse installation when the destination already exists; copying is also supported but must be refreshed manually. Start a fresh agent context afterward so skill descriptions are rescanned. Full fail-safe commands: [docs/agent-skills.md](docs/agent-skills.md).
 
