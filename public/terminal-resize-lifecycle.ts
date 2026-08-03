@@ -1,4 +1,5 @@
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import { shouldResizeRehydrate } from "../src/terminal-buffer";
 
 const RESIZE_REHYDRATE_DELAY_MS = 350;
@@ -36,7 +37,7 @@ export interface ResizeScrollRestore {
 }
 
 export interface TerminalResizeLifecycleOptions {
-  readonly prefillMode: string;
+  readonly prefillMode: TerminalPrefillMode;
   readonly getContainer: () => TerminalResizeLifecycleContainer | null;
   readonly getTerm: () => TerminalResizeLifecycleTerm | null;
   readonly getPtyClient: () => TerminalResizeLifecycleClient | null;

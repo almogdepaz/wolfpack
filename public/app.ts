@@ -88,11 +88,9 @@ import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import { shouldUseAttachAckFallback } from "../src/attach-ack";
 import {
   TERMINAL_REHYDRATION_ACTION,
-  terminalRehydrationAction,
-} from "../src/terminal-rehydration";
+  createTerminalConnectionLifecycle,
+} from "../src/terminal-connection-lifecycle";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
-import { createReplacementPrefillLifecycle } from "../src/replacement-prefill-lifecycle";
-import { createHydrationWriteTracker } from "../src/hydration-write-tracker";
 import {
   fitTerminalPreservingScroll,
   forceTerminalRepaint,
@@ -1451,9 +1449,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _hydration = null;
   let _ptyClient = null;
   let _hydrationStarted = false;
-  const hydrationWriteTracker = createHydrationWriteTracker();
+  const connectionLifecycle = createTerminalConnectionLifecycle();
   let _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
-  const replacementPrefillLifecycle = createReplacementPrefillLifecycle();
   let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _userScrolledUp = false;
@@ -1511,11 +1508,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_hydration) _hydration.notifyData();
     try {
       if (_hydration && _hydration.pending) {
-        const writeEpoch = hydrationWriteTracker.beginWrite();
+        const writeEpoch = connectionLifecycle.beginHydrationWrite();
         _term.write(data, () => {
           // Ignore stale callbacks from a prior connect/dispose epoch.
-          if (!hydrationWriteTracker.finishWrite(writeEpoch)) return;
-          __wfTraceEvent(_diagTrace, "term.writeDone", { size: data.length, inFlight: hydrationWriteTracker.pending });
+          if (!connectionLifecycle.finishHydrationWrite(writeEpoch)) return;
+          __wfTraceEvent(_diagTrace, "term.writeDone", { size: data.length, inFlight: connectionLifecycle.pendingHydrationWrites });
           if (_hydration) _hydration.scheduleFinish();
           if (opts.onOutput) opts.onOutput(data);
         });
@@ -1624,8 +1621,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
    * preventing later snapshot chunks from painting progressively. */
   function beginReplacementHydration(hideImmediately = false) {
     if (!_hydration || !_term) return;
-    hydrationWriteTracker.reset();
-    if (replacementPrefillLifecycle.begin(hideImmediately).activateHydration) activateReplacementHydration();
+    if (connectionLifecycle.beginReplacementPrefill(hideImmediately).activateHydration) activateReplacementHydration();
   }
 
   function activateReplacementHydration() {
@@ -1863,7 +1859,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       getTerm: () => _term,
       shouldFocus: opts.shouldFocus || (() => true),
       isInitialContentComplete: () => _initialPrefillComplete,
-      canFinish: () => hydrationWriteTracker.pending === 0,
+      canFinish: () => connectionLifecycle.pendingHydrationWrites === 0,
       onReveal: () => {
         const pendingResizeScrollRestore = resizeLifecycle.takePendingScrollRestore();
         if (pendingResizeScrollRestore && _term) {
@@ -1905,7 +1901,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   function connect(connectOpts?: { takeControl?: boolean }) {
     if (_ptyClient && _ptyClient.isOpen) return;
     if (_ptyClient) _ptyClient.close();
-    hydrationWriteTracker.advanceEpoch();
+    connectionLifecycle.beginConnection();
 
     // Start hydration on first connect
     if (!_hydrationStarted && _hydration) {
@@ -1941,23 +1937,19 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
-        // Always reset on first connect — ghostty-web's WASM retains the
-        // previous terminal's screen buffer across Terminal instances.
-        // Without this, new sessions with sparse prefill show stale content.
-        // The WASM buffer must be cleared regardless of prefill mode.
-        if (!wasReconnect && _term) {
-          _term.reset();
-        }
-        // On reconnect, clear stale content and restart hydration —
-        // server sends fresh prefill scrollback on the new connection.
-        const rehydrationAction = terminalRehydrationAction({
+        // The connection lifecycle decides whether the initial Ghostty buffer
+        // must be reset and whether this socket replaces displayed content.
+        const socketOpenAction = connectionLifecycle.onSocketOpen({
           wasReconnect,
           hydrationStarted: _hydrationStarted,
           hasAuthoritativePrefill: opts.prefillMode !== TERMINAL_PREFILL_MODE.NONE,
+          hasPendingResizeScrollRestore: resizeLifecycle.hasPendingScrollRestore,
         });
-        if (rehydrationAction !== TERMINAL_REHYDRATION_ACTION.NONE && _term) {
-          hydrationWriteTracker.reset();
-          if (rehydrationAction === TERMINAL_REHYDRATION_ACTION.REPLACEMENT) {
+        if (socketOpenAction.resetTerminal && _term) {
+          _term.reset();
+        }
+        if (socketOpenAction.rehydrationAction !== TERMINAL_REHYDRATION_ACTION.NONE && _term) {
+          if (socketOpenAction.rehydrationAction === TERMINAL_REHYDRATION_ACTION.REPLACEMENT) {
             // Retain the old frame until replacement bytes arrive, then hide
             // every subsequent prefill/replay write behind hydration.
             beginReplacementHydration();
@@ -1967,7 +1959,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
             if (el) { el.classList.add("hydrating"); el.classList.remove("hydrated"); }
           }
         }
-        if (!resizeLifecycle.hasPendingScrollRestore) {
+        if (socketOpenAction.resetScrollLock) {
           _userScrolledUp = false;
           _userRequestedScrollback = false;
         } // reset scroll-lock on ordinary reconnect
@@ -1978,7 +1970,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (!isCurrent()) return;
         // An empty authoritative prefill still replaces old state; clear it
         // behind hydration instead of leaving a stale reconnect frame visible.
-        const prefillAction = replacementPrefillLifecycle.onPrefillDone();
+        const prefillAction = connectionLifecycle.onPrefillDone();
         if (prefillAction.activateHydration) activateReplacementHydration();
         if (prefillAction.resetTerminal) _scheduleBufferedClear();
         _initialPrefillComplete = true;
@@ -1992,8 +1984,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         // up with correct content; the viewport portion is overwritten in-place
         // and scrollback history appears above.
         if (!_term) return;
-        replacementPrefillLifecycle.onReplacePrefill();
-        hydrationWriteTracker.reset();
+        connectionLifecycle.onReplacePrefill();
       },
       onBinaryData: (data) => {
         if (!_term) return;
@@ -2004,7 +1995,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
           _postResetBuffer.push(data);
           return;
         }
-        const binaryAction = replacementPrefillLifecycle.onBinaryData();
+        const binaryAction = connectionLifecycle.onBinaryData();
         if (binaryAction.activateHydration) activateReplacementHydration();
         if (binaryAction.resetTerminal) {
           _postResetBuffer = [data];
@@ -2027,7 +2018,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         // those writes paint live and the user sees the scrollback flash.
         // Restart hydration so the minPendingMs floor hides the burst window.
         if (_hydration && _term) {
-          beginReplacementHydration(true);
+          if (connectionLifecycle.onControlGranted().activateHydration) activateReplacementHydration();
         }
         if (opts.onControlGranted) opts.onControlGranted();
       },
@@ -2058,12 +2049,11 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
    * Removes keydown listeners from container before disposing terminal.
    */
   function dispose() {
-    hydrationWriteTracker.advanceEpoch();
+    connectionLifecycle.beginConnection();
     if (_ptyClient) { _ptyClient.close(); _ptyClient = null; }
     if (_hydration) { _hydration.cancel(); _hydration = null; }
     _hydrationStarted = false;
-    hydrationWriteTracker.reset();
-    replacementPrefillLifecycle.reset();
+    connectionLifecycle.reset();
     _postResetBuffer = null;
     resizeLifecycle.dispose();
     _mounting = false;

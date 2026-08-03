@@ -3,6 +3,7 @@ import {
   createTerminalResizeLifecycle,
   type TerminalResizeLifecycleScheduler,
 } from "../../public/terminal-resize-lifecycle.ts";
+import { TERMINAL_PREFILL_MODE } from "../../src/terminal-prefill.ts";
 
 class FakeScheduler implements TerminalResizeLifecycleScheduler {
   private nextId = 0;
@@ -50,7 +51,7 @@ describe("terminal resize lifecycle", () => {
     const container = { clientWidth: 0, clientHeight: 24 };
     const syncCalls: unknown[] = [];
     const lifecycle = createTerminalResizeLifecycle({
-      prefillMode: "full",
+      prefillMode: TERMINAL_PREFILL_MODE.FULL,
       getContainer: () => container,
       getTerm: () => ({ viewportY: 0, getScrollbackLength: () => 0 }),
       getPtyClient: () => null,
@@ -82,7 +83,7 @@ describe("terminal resize lifecycle", () => {
     const scheduler = new FakeScheduler();
     let reconnects = 0;
     const lifecycle = createTerminalResizeLifecycle({
-      prefillMode: "full",
+      prefillMode: TERMINAL_PREFILL_MODE.FULL,
       getContainer: () => ({ clientWidth: 80, clientHeight: 24 }),
       getTerm: () => ({ viewportY: 7, getScrollbackLength: () => 100 }),
       getPtyClient: () => ({ isOpen: true, reconnect: () => { reconnects++; } }),
