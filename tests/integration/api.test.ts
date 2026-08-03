@@ -284,12 +284,12 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[0].runtimeState).toMatchObject({ state: "idle" });
   });
 
-  test("classifies running when rendered content changes despite a stable raw sequence", async () => {
-    mockBackend.setCapturePane(async () => "step one\n");
+  test("classifies running when rendered content changes above a stable three-line footer", async () => {
+    mockBackend.setCapturePane(async () => "step one\nseparator\nstatus\nagents\n");
     mockBackend.setOutputSequence("wolf-1", "1");
     await get("/api/sessions");
 
-    mockBackend.setCapturePane(async () => "step two\n");
+    mockBackend.setCapturePane(async () => "step two\nseparator\nstatus\nagents\n");
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions[0].triage).toBe("running");

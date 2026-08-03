@@ -452,19 +452,16 @@ function settingsPath(): string {
   return process.env.WOLFPACK_SETTINGS_PATH || join(homedir(), ".wolfpack", "bridge-settings.json");
 }
 
-/** Number of trailing rendered lines used to detect generic visible output. */
-const ACTIVITY_FINGERPRINT_LINE_COUNT = 3;
-
 /** Previous rendered terminal fingerprint per durable session identity. */
 const prevRenderedActivityFingerprints = new Map<string, string>();
 
 function renderedActivityFingerprint(pane: string): string | undefined {
-  const nonEmptyLines = pane
+  const normalized = pane
     .split("\n")
     .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0);
-  const tail = nonEmptyLines.slice(-ACTIVITY_FINGERPRINT_LINE_COUNT);
-  return tail.length > 0 ? tail.join("\n") : undefined;
+    .join("\n")
+    .trimEnd();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 interface KnownSessionSummary {
