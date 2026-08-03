@@ -35,7 +35,7 @@ wolfpack
 ```
 
 The installer downloads the right pre-built binaries for your platform, runs setup, and can install Wolfpack as a login service. Wolfpack's phone and remote-control workflow uses Tailscale; setup can install it, waits for sign-in, then verifies its private HTTPS route before it prints a phone QR code. The bundled `wolfpack-broker` includes its Ghostty VT engine; release installs do not need Zig, Ghostty, or extra system libraries.
-Supported: macOS arm64/x64 and Linux x64/arm64. Release installs and managed services support both platforms. On Linux, automatic Tailscale installation requires `apt`; otherwise install Tailscale yourself. Login persistence requires `systemd --user`; without it, run `wolfpack` in the foreground.
+Supported: macOS arm64/x64 and Linux x64/arm64. Release installs and managed services support both platforms. On Linux, automatic Tailscale installation requires `apt`; otherwise install Tailscale yourself. Managed services require `systemd --user`; setup runs `sudo loginctl enable-linger $USER` for persistence after reboot and prints that command if it fails. Otherwise, run `wolfpack` in the foreground.
 
 Want a package runner instead? Pin `@latest` so Bun/npm does not reuse an older cached release:
 
