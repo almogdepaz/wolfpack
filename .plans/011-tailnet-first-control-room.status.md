@@ -20,7 +20,7 @@
 | 2. implement verified Tailnet setup and advertising | `completed` | stable Tailscale `ID`/install identity, verified Serve-only advertising, and `/api/machine`; live status disproved the prior `StableID` assumption and regression tests now cover `ID`; `bun test` 1476 pass/22 skipped; typecheck passed |
 | 3. implement direct peer discovery and dashboard aggregation | `completed` | bounded `/api/machine` probes, ready/offline/non-Wolfpack/incompatible projection, and stable peer identity registry; `bun test` 1476 pass/22 skipped; typecheck passed |
 | 4. route direct-host mobile supervision | `completed` | existing origin-relative subscription/service-worker route satisfies the contract; focused unit tests 40 pass and notification e2e 4 projects pass |
-| 5. prove and communicate supported loop | `blocked` | local macOS host: server-only deploy preserved 7 broker sessions; canonical `/api/machine` and discovery diagnostics verified. second macOS host is reachable but runs 1.6.7 without `/api/machine` and does not accept SSH. Android has not completed the browser/PWA matrix. do not claim remote support until both hosts run this build and device evidence exists |
+| 5. prove and communicate supported loop | `blocked` | two macOS hosts now run 1.6.11 and reciprocally report each other `ready` through canonical direct Tailnet handshakes. local server-only deploy preserved 7 broker sessions; the remote controller session survived its server-only deploy. Android remains offline in discovery; browser/PWA notification, reconnect, Ghostty resize/output, local-only fallback, and incompatible-peer physical evidence are still required. do not claim remote support yet |
 
 ## supersession
 
