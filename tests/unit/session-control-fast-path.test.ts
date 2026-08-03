@@ -286,12 +286,18 @@ describe("session control fast-path requests", () => {
         calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
         return Response.json({ ok: true, sent: 1 });
       };
+      process.env.WOLFPACK_PARENT_SESSION_ID = "stable-parent-id";
+      process.env.WOLFPACK_PARENT_SESSION_NAME = "parent-agent";
       const { runAgentCommand } = await import("./src/cli/session-control.ts");
       const code = await runAgentCommand(["notify-parent", "--message", "ready for review", "--json"]);
       const expected = [{
         url: "http://127.0.0.1:18790/api/notify",
         method: "POST",
-        body: { message: "ready for review" },
+        body: {
+          message: "ready for review",
+          sessionId: "stable-parent-id",
+          sessionName: "parent-agent",
+        },
       }];
       if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
       process.exit(code);

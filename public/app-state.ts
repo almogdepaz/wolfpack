@@ -1,6 +1,7 @@
 // ── Shared state, settings, and utilities ──
 // Extracted from app.ts — imported back via bundler (inlined at build time)
 
+import { applyNotificationPreference } from "../src/notification-preference";
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
 
 export { esc, escAttr } from "../src/html-escape";
@@ -45,7 +46,31 @@ export const wpSettings = loadWpSettings();
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55}, xlarge: {fontSize:18, lineHeight:1.45} };
 
+function commitNotificationPreference(enabled: boolean): void {
+  wpSettings.notifications = enabled;
+  localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
+  const control = document.getElementById("setting-notifications") as HTMLInputElement | null;
+  if (control) control.checked = enabled;
+}
+
+let notificationPreferenceChange = Promise.resolve();
+
+async function changeNotificationPreference(requested: boolean): Promise<void> {
+  const change = notificationPreferenceChange.then(() => applyNotificationPreference({
+    current: wpSettings.notifications,
+    requested,
+    changeSubscription: requested ? requestNotifications : unsubscribeNotifications,
+    commit: commitNotificationPreference,
+  }));
+  notificationPreferenceChange = change.then(() => undefined);
+  await change;
+}
+
 export function toggleSetting(key, val) {
+  if (key === "notifications") {
+    void changeNotificationPreference(Boolean(val));
+    return;
+  }
   wpSettings[key] = val;
   localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
   applySetting(key, val);
@@ -53,10 +78,7 @@ export function toggleSetting(key, val) {
 
 export function applySetting(key, val) {
   if (key === "animations") document.body.classList.toggle("no-animations", !val);
-  if (key === "notifications") {
-    if (val) requestNotifications();
-    else unsubscribeNotifications();
-  }
+  if (key === "notifications") void changeNotificationPreference(Boolean(val));
   if (key === "enterSends") {
     const el = document.getElementById("msg-input") as HTMLTextAreaElement | null;
     if (el) el.placeholder = val ? "$ (Enter to send)" : "$ (⚡ to send)";
@@ -118,20 +140,21 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return arr;
 }
 
-export async function requestNotifications() {
+export async function requestNotifications(): Promise<boolean> {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     console.warn("Push notifications not supported");
-    return;
-  }
-
-  // Request notification permission
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") {
     state.notificationsEnabled = false;
-    return;
+    return false;
   }
 
   try {
+    // Request notification permission
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      state.notificationsEnabled = false;
+      return false;
+    }
+
     // Get VAPID public key from server
     const vapidResp = await fetch("/api/push/vapid-key");
     const { publicKey } = await vapidResp.json();
@@ -157,12 +180,14 @@ export async function requestNotifications() {
     if (resp.ok) {
       state.notificationsEnabled = true;
       console.log("Push subscription registered");
+      return true;
     } else {
       throw new Error(`subscribe failed: ${resp.status}`);
     }
   } catch (e) {
     console.error("Push subscription failed:", e);
     state.notificationsEnabled = false;
+    return false;
   }
 }
 

@@ -60,11 +60,18 @@ const {
   __pollRateLimiter,
   __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
-const { _testing: pushTesting } = await import("../../src/server/push.ts");
+const {
+  addSubscription,
+  removeSubscription,
+  _testing: pushTesting,
+} = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
 const { AgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
 
-const { __resetSessionObservationForTests } = await import("../../src/server/routes.ts");
+const {
+  __resetSessionObservationForTests,
+  __runSessionNotificationObservationForTests,
+} = await import("../../src/server/routes.ts");
 
 const { server } = createServerInstance();
 
@@ -305,6 +312,54 @@ describe("GET /api/sessions", () => {
 
     expect(data.sessions[0].triage).toBe("idle");
     expect(data.sessions[0].runtimeState).toMatchObject({ state: "idle" });
+  });
+
+  test("observes and notifies on the server without a sessions request", async () => {
+    const endpoint = `https://fcm.googleapis.com/server-observer-${Date.now()}`;
+    const pushes: Array<{ readonly title: string; readonly body: string }> = [];
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async (payload) => {
+      pushes.push(payload);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      mockBackend.setCapturePane(async () => "baseline\n");
+      await __runSessionNotificationObservationForTests();
+      mockBackend.setCapturePane(async () => "changed\n");
+      await __runSessionNotificationObservationForTests();
+      await __runSessionNotificationObservationForTests();
+
+      expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
+        { title: "Wolfpack: wolf-1", body: "Quiet" },
+        { title: "Wolfpack: wolf-2", body: "Quiet" },
+      ]);
+    } finally {
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
+
+  test("does not notify quiet when the server observer loses its rendered snapshot", async () => {
+    const endpoint = `https://fcm.googleapis.com/server-observer-failure-${Date.now()}`;
+    const pushes: unknown[] = [];
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async (payload) => {
+      pushes.push(payload);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      mockBackend.setCapturePane(async () => "baseline\n");
+      await __runSessionNotificationObservationForTests();
+      mockBackend.setCapturePane(async () => "changed\n");
+      await __runSessionNotificationObservationForTests();
+      mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
+      await __runSessionNotificationObservationForTests();
+
+      expect(pushes).toEqual([]);
+    } finally {
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
   });
 
   test("classifies idle when output sequence is stable despite prompt prose", async () => {
@@ -2420,6 +2475,30 @@ describe("POST /api/notify", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
+  });
+
+  test("accepts a bounded stable session target", async () => {
+    const res = await post("/api/notify", {
+      message: "parent review needed",
+      sessionId: "stable-parent-id",
+      sessionName: "parent-agent",
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("rejects partial and oversized session targets", async () => {
+    const partial = await post("/api/notify", {
+      message: "parent review needed",
+      sessionId: "stable-parent-id",
+    });
+    expect(partial.status).toBe(400);
+
+    const oversized = await post("/api/notify", {
+      message: "parent review needed",
+      sessionId: "x".repeat(257),
+      sessionName: "parent-agent",
+    });
+    expect(oversized.status).toBe(400);
   });
 
   test("missing message → 400", async () => {

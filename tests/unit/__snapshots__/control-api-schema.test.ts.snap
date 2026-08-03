@@ -1206,6 +1206,12 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "properties": {
           "message": {
             "type": "string"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "sessionName": {
+            "$ref": "#/$defs/SessionName"
           }
         },
         "required": [
