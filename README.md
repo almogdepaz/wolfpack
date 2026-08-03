@@ -25,6 +25,8 @@ There is no Wolfpack-hosted relay or account; remote access is normally handled 
   <a href="docs/assets/wolfpack-usage-demo.mp4">Watch/download the MP4 demo</a>
 </p>
 
+**Try the workflow:** install Wolfpack on two machines, connect them to the same Tailscale tailnet, then open the phone QR from either host to control persistent agent sessions remotely. Start with the [Quickstart](#quickstart) and [First five minutes](#first-five-minutes).
+
 ## Quickstart
 
 ```bash
