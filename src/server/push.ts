@@ -165,7 +165,10 @@ export function validateSubscription(sub: PushSubscription): string | null {
   try {
     const p256dh = b64urlDecode(sub.keys.p256dh);
     if (p256dh.length !== 65) return "p256dh must decode to 65 bytes (uncompressed P-256 point)";
-  } catch { return "p256dh is not valid base64url"; }
+    const ecdh = createECDH("prime256v1");
+    ecdh.generateKeys();
+    ecdh.computeSecret(p256dh);
+  } catch { return "p256dh is not a valid P-256 public key"; }
   try {
     const auth = b64urlDecode(sub.keys.auth);
     if (auth.length !== 16) return "auth must decode to 16 bytes";
@@ -174,6 +177,8 @@ export function validateSubscription(sub: PushSubscription): string | null {
 }
 
 export function addSubscription(sub: PushSubscription): { ok: boolean; error?: string } {
+  const validationError = validateSubscription(sub);
+  if (validationError) return { ok: false, error: validationError };
   const subs = loadSubscriptions();
   // Dedupe by endpoint
   const idx = subs.findIndex((s) => s.endpoint === sub.endpoint);
@@ -379,17 +384,13 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
   const payloadBuf = Buffer.from(JSON.stringify(payload));
 
   // Filter out stored subscriptions with invalid endpoints (defense-in-depth for legacy data)
-  const validSubs = subs.filter(sub => {
-    try {
-      const url = new URL(sub.endpoint);
-      return url.protocol === "https:" && ALLOWED_PUSH_HOSTS.has(url.hostname);
-    } catch { return false; }
-  });
-  if (validSubs.length < subs.length) {
+  const validSubs = subs.filter(sub => validateSubscription(sub) === null);
+  const pruned = subs.length - validSubs.length;
+  if (pruned > 0) {
     saveSubscriptions(validSubs);
-    log.warn("pruned invalid subscriptions on send", { count: subs.length - validSubs.length });
+    log.warn("pruned invalid subscriptions on send", { count: pruned });
   }
-  if (validSubs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
+  if (validSubs.length === 0) return { sent: 0, failed: 0, pruned };
 
   const results = await Promise.allSettled(validSubs.map(async (sub) => {
     const audience = new URL(sub.endpoint).origin;
@@ -440,7 +441,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
     log.info("pruned expired push subscriptions", { count: toRemove.length });
   }
 
-  return { sent, failed, pruned: toRemove.length };
+  return { sent, failed, pruned: pruned + toRemove.length };
 }
 
 // ── Push state tracking (transition-based notifications) ──

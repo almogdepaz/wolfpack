@@ -1,13 +1,32 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { afterAll, describe, expect, test, beforeEach } from "bun:test";
 import { createECDH, createVerify, createPublicKey, randomBytes } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.WOLFPACK_TEST = "1";
+const originalHome = process.env.HOME;
+const pushTestHome = mkdtempSync(join(tmpdir(), "wolfpack-push-unit-"));
+process.env.HOME = pushTestHome;
+afterAll(() => {
+  process.env.HOME = originalHome;
+  rmSync(pushTestHome, { recursive: true, force: true });
+});
 
-// We need to mock the WOLFPACK_DIR before importing push module.
-// Instead, test the crypto helpers and subscription logic via the exports.
+// The production module derives its persistence location at import time, so
+// set an isolated HOME before dynamically importing it in the tests below.
+
+function validSubscription(endpoint: string) {
+  const ecdh = createECDH("prime256v1");
+  ecdh.generateKeys();
+  return {
+    endpoint,
+    keys: {
+      p256dh: (ecdh.getPublicKey() as Buffer).toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    },
+  };
+}
 
 describe("push: VAPID key generation", () => {
   test("getVapidKeys returns consistent keys across calls", async () => {
@@ -35,19 +54,28 @@ describe("push: subscription management", () => {
     const { addSubscription, removeSubscription, getSubscriptionCount } = await import("../../src/server/push.ts");
     const initial = getSubscriptionCount();
 
-    const sub = {
-      endpoint: `https://fcm.googleapis.com/fcm/send/test-${Date.now()}`,
-      keys: { p256dh: "test-key", auth: "test-auth" },
-    };
+    const sub = validSubscription(`https://fcm.googleapis.com/fcm/send/test-${Date.now()}`);
 
-    addSubscription(sub);
+    expect(addSubscription(sub).ok).toBe(true);
     expect(getSubscriptionCount()).toBe(initial + 1);
 
     // Adding same endpoint again should dedupe
-    addSubscription(sub);
+    expect(addSubscription(sub).ok).toBe(true);
     expect(getSubscriptionCount()).toBe(initial + 1);
 
     removeSubscription(sub.endpoint);
+    expect(getSubscriptionCount()).toBe(initial);
+  });
+
+  test("rejects malformed key material before persistence", async () => {
+    const { addSubscription, getSubscriptionCount } = await import("../../src/server/push.ts");
+    const initial = getSubscriptionCount();
+    const result = addSubscription({
+      endpoint: `https://fcm.googleapis.com/fcm/send/invalid-${Date.now()}`,
+      keys: { p256dh: "k", auth: "a" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("p256dh must decode to 65 bytes (uncompressed P-256 point)");
     expect(getSubscriptionCount()).toBe(initial);
   });
 });
@@ -57,13 +85,16 @@ describe("push: corrupt subscription persistence", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-push-corrupt-"));
     const script = `
       const { mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+      const { createECDH, randomBytes } = await import("node:crypto");
       const { join } = await import("node:path");
       const path = join(process.env.HOME, ".wolfpack", "push-subscriptions.json");
       mkdirSync(join(process.env.HOME, ".wolfpack"), { recursive: true });
       writeFileSync(path, "{not-json");
       const { addSubscription } = await import("./src/server/push.ts");
+      const ecdh = createECDH("prime256v1");
+      ecdh.generateKeys();
       try {
-        addSubscription({ endpoint: "https://fcm.googleapis.com/corrupt-test", keys: { p256dh: "key", auth: "auth" } });
+        addSubscription({ endpoint: "https://fcm.googleapis.com/corrupt-test", keys: { p256dh: ecdh.getPublicKey().toString("base64url"), auth: randomBytes(16).toString("base64url") } });
         console.log("unexpected-success");
       } catch (error) {
         console.log(String(error));
@@ -277,6 +308,15 @@ describe("push: validateSubscription", () => {
     expect(err).toBeNull();
   });
 
+  test("rejects a P-256-sized key that is not on the P-256 curve", async () => {
+    const { validateSubscription } = await import("../../src/server/push.ts");
+    const err = validateSubscription({
+      endpoint: "https://fcm.googleapis.com/fcm/send/invalid-point",
+      keys: { p256dh: Buffer.alloc(65).toString("base64url"), auth },
+    });
+    expect(err).toBe("p256dh is not a valid P-256 public key");
+  });
+
   test("rejects endpoint over 1024 chars", async () => {
     const { validateSubscription } = await import("../../src/server/push.ts");
     const err = validateSubscription({
@@ -321,12 +361,13 @@ describe("push: subscription cap", () => {
     const { addSubscription, removeSubscription, getSubscriptionCount } = await import("../../src/server/push.ts");
     const initial = getSubscriptionCount();
     const added: string[] = [];
+    const keys = validSubscription("https://fcm.googleapis.com/unused").keys;
 
     try {
       // Fill up to 20
       for (let i = initial; i < 20; i++) {
         const ep = `https://fcm.googleapis.com/cap-test-${i}-${Date.now()}`;
-        const result = addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+        const result = addSubscription({ endpoint: ep, keys });
         expect(result.ok).toBe(true);
         added.push(ep);
       }
@@ -335,14 +376,14 @@ describe("push: subscription cap", () => {
       // 21st should fail
       const result = addSubscription({
         endpoint: `https://fcm.googleapis.com/cap-test-overflow-${Date.now()}`,
-        keys: { p256dh: "k", auth: "a" },
+        keys,
       });
       expect(result.ok).toBe(false);
       expect(result.error).toContain("limit");
       expect(getSubscriptionCount()).toBe(20);
 
       // Updating existing endpoint should still work (dedupe path)
-      const updateResult = addSubscription({ endpoint: added[0], keys: { p256dh: "updated", auth: "a" } });
+      const updateResult = addSubscription({ endpoint: added[0], keys });
       expect(updateResult.ok).toBe(true);
       expect(getSubscriptionCount()).toBe(20);
     } finally {
@@ -479,7 +520,7 @@ describe("push: checkSessionTransitions", () => {
   test("keys transition and debounce state by stable identity", async () => {
     const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
     const ep = `https://fcm.googleapis.com/stable-route-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+    addSubscription(validSubscription(ep));
 
     _testing.prevTriageState.set("stable-id", "output");
     checkSessionTransitions([{
@@ -499,7 +540,7 @@ describe("push: checkSessionTransitions", () => {
     const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
 
     const ep = `https://fcm.googleapis.com/runtime-state-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+    addSubscription(validSubscription(ep));
 
     _testing.prevTriageState.set("agent", "output");
     checkSessionTransitions([{ name: "agent", triage: "running", runtimeState: { state: "needs-input" } }]);
@@ -515,7 +556,7 @@ describe("push: checkSessionTransitions", () => {
 
     // Need at least 1 sub for transitions to run
     const ep = `https://fcm.googleapis.com/prune-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+    addSubscription(validSubscription(ep));
 
     // Seed state for a session that will disappear
     _testing.prevTriageState.set("old-session", "idle");
