@@ -1491,6 +1491,28 @@ describe("local task gateway", () => {
     rmSync(taskRoot, { recursive: true, force: true });
   });
 
+  test("uses one sender-authoritative creation instant across remote replicas", async () => {
+    const taskRoot = join(tmpdir(), `wolfpack-task-created-at-${process.pid}-${Date.now()}`);
+    let nowMs = Date.parse("2026-08-03T00:00:00.000Z");
+    const { sender, receiver } = createPeerPair(taskRoot, { now: () => new Date(nowMs += 1_000) });
+
+    try {
+      const sent = await sender.send(remoteSendInput("preserve the canonical creation instant", 60_000));
+      if (!sent.ok) throw new Error("expected remote send");
+      const senderStatus = await sender.status("parent", sent.taskId);
+      const receiverStatus = await receiver.status("receiver", sent.taskId);
+      if (!senderStatus.ok || !receiverStatus.ok) throw new Error("expected sender and receiver task status");
+      const senderCreated = senderStatus.events.find((event) => event.type === TASK_EVENT_TYPE.CREATED);
+      const receiverCreated = receiverStatus.events.find((event) => event.type === TASK_EVENT_TYPE.CREATED);
+
+      expect(receiverCreated).toEqual(senderCreated);
+      expect(senderCreated?.occurredAt).toBe(senderStatus.task.createdAt);
+      expect(Date.parse(senderStatus.task.expiresAt) - Date.parse(senderStatus.task.createdAt)).toBe(60_000);
+    } finally {
+      rmSync(taskRoot, { recursive: true, force: true });
+    }
+  });
+
   test("forwards remote receiver actions to the sender canonical ledger", async () => {
     const senderRoot = join(tmpdir(), `wolfpack-task-peer-sender-${process.pid}-${Date.now()}`);
     const receiverRoot = join(tmpdir(), `wolfpack-task-peer-receiver-${process.pid}-${Date.now()}`);

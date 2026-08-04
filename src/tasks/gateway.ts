@@ -198,7 +198,10 @@ export class TaskGateway {
     if (target !== undefined && input.preflight?.requiredProject !== undefined && input.preflight.requiredProject !== basename(target.value.projectPath)) {
       return failure(TASK_API_ERROR.PROJECT_MISMATCH, "target project does not match preflight");
     }
-    const taskId = generateUuidV7(this.#now().getTime());
+    const createdAt = this.#now();
+    const createdAtMs = createdAt.getTime();
+    const createdAtTimestamp = createdAt.toISOString();
+    const taskId = generateUuidV7(createdAtMs);
     const parent: TaskAddress = { machine: peerOrigin ?? this.#machineId, sessionId: caller.value.sessionId };
     const receiver: TaskAddress = { machine: remote ? input.to.machine : this.#machineId, sessionId: remote ? input.to.sessionId : target!.value.sessionId };
     const assignment: ImmutableTaskAssignment = {
@@ -206,8 +209,8 @@ export class TaskGateway {
       source: parent,
       target: receiver,
       task: input.task,
-      createdAt: this.#now().toISOString(),
-      expiresAt: new Date(this.#now().getTime() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS)).toISOString(),
+      createdAt: createdAtTimestamp,
+      expiresAt: new Date(createdAtMs + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS)).toISOString(),
       context: input.context === undefined ? undefined : { summary: input.context.summary, refs: input.context.refs },
       preflight: input.preflight === undefined ? undefined : { requiredProject: input.preflight.requiredProject },
       role: input.role,
@@ -238,7 +241,10 @@ export class TaskGateway {
       const receiverCreated = await this.#store.createLedger({ role: TASK_LEDGER_ROLE.RECEIVER, assignment, participants });
       if (receiverCreated.kind !== "created" && receiverCreated.kind !== "reused") return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "receiver task ledger unavailable", true);
     }
-    const created = await this.#accept(taskId, this.#event(taskId, TASK_EVENT_TYPE.CREATED, "parent"), { actor: "parent", address: parent });
+    const created = await this.#accept(taskId, {
+      id: generateUuidV7(createdAtMs), taskId, type: TASK_EVENT_TYPE.CREATED, actor: "parent", occurredAt: createdAtTimestamp,
+      message: undefined, replyToMessageId: undefined, payload: { kind: "none" }, completion: undefined,
+    }, { actor: "parent", address: parent });
     if (!created.ok) return created;
     if (input.idempotencyKey !== undefined) {
       const senderLedger = await this.#senderLedger(taskId);
