@@ -14,12 +14,28 @@ function jsonLdFrom(html: string): Record<string, unknown> {
 }
 
 describe("discovery assets", () => {
-  test("publishes the canonical homepage metadata", () => {
+  test("uses Netlify as the canonical public URL", () => {
     const homepage = readRepoFile("site/index.html");
+    const app = readRepoFile("public/index.html");
+    const readme = readRepoFile("README.md");
+    const pagesWorkflow = readRepoFile(".github/workflows/pages.yml");
+    const embeddedLlms = readRepoFile("public/llms.txt");
+    const fullLlms = readRepoFile("site/llms-full.txt");
+    const buildScript = readRepoFile("scripts/build.ts");
+    const packageManifest = JSON.parse(readRepoFile("package.json")) as { readonly homepage?: string };
 
+    expect(packageManifest.homepage).toBe(CANONICAL_URL);
+    expect(buildScript).toContain(`homepage: "${CANONICAL_URL}"`);
     expect(homepage).toContain(`<link rel="canonical" href="${CANONICAL_URL}">`);
     expect(homepage).toContain(`<meta property="og:url" content="${CANONICAL_URL}">`);
-    expect(homepage).toContain("<meta name=\"twitter:card\" content=\"summary_large_image\">");
+    expect(app).toContain(`<link rel="canonical" href="${CANONICAL_URL}" />`);
+    expect(app).toContain(`<meta property="og:url" content="${CANONICAL_URL}" />`);
+    expect(readme).not.toContain("](https://github.com/almogdepaz/wolfpack/releases)");
+    expect(embeddedLlms).toContain(`Canonical homepage: ${CANONICAL_URL}`);
+    expect(embeddedLlms).not.toContain("Repository and README");
+    expect(fullLlms).not.toContain("github.com/almogdepaz/wolfpack#readme");
+    expect(pagesWorkflow).toContain("Generate Netlify redirect");
+    expect(pagesWorkflow).toContain("path: pages-redirect");
 
     const jsonLd = jsonLdFrom(homepage);
     expect(jsonLd["@type"]).toBe("SoftwareApplication");
