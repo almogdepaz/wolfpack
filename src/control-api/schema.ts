@@ -23,6 +23,12 @@ import {
   AGENT_STATUS_SOURCES,
   AGENT_STATUS_STATES,
 } from "../agent-status-contract.ts";
+import {
+  TASK_API_ERROR,
+  TASK_EVENT_TYPE,
+  TASK_LIMITS,
+  TASK_STATUS,
+} from "../tasks/domain.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -35,6 +41,7 @@ type HttpRouteContract = {
   readonly operationId: string;
   readonly stable: boolean;
   readonly auth: "public" | "jwt-when-configured";
+  readonly requestContentType?: "application/json";
   readonly request?: JsonSchema;
   readonly response: JsonSchema;
   readonly errors: readonly string[];
@@ -125,6 +132,63 @@ const object = (
 
 const ok = object({ ok: boolean() }, ["ok"]);
 const error = ref("ErrorEnvelope");
+
+function taskEventVariant(
+  type: string,
+  actor: string | readonly string[],
+  payload: JsonSchema,
+  properties: Record<string, JsonSchema> = {},
+  required: readonly string[] = [],
+  canonical = false,
+): JsonSchema {
+  return object({
+    id: ref("TaskId"),
+    taskId: ref("TaskId"),
+    type: { const: type },
+    actor: Array.isArray(actor) ? { enum: actor } : { const: actor },
+    ...(canonical ? {
+      source: ref("TaskAddress"),
+      destination: ref("TaskAddress"),
+      sequence: { type: "string", pattern: "^[1-9][0-9]*$" },
+    } : {}),
+    occurredAt: string(),
+    ...properties,
+    payload,
+  }, ["id", "taskId", "type", "actor", ...(canonical ? ["source", "destination", "sequence"] : []), "occurredAt", ...required, "payload"]);
+}
+
+const NONE_PAYLOAD = object({ kind: { const: "none" } }, ["kind"]);
+const RECEIPT_CONFIRMATION_PAYLOAD = object({ kind: { const: "receipt_confirmation" }, receiptId: ref("TaskId"), assignmentHash: { type: "string", pattern: "^[0-9a-f]{64}$" }, createdEventId: ref("TaskId"), receivedEventId: ref("TaskId"), receivedEventSequence: { type: "string", pattern: "^[1-9][0-9]*$" }, receivedEventOccurredAt: string() }, ["kind", "receiptId", "assignmentHash", "createdEventId", "receivedEventId", "receivedEventSequence", "receivedEventOccurredAt"]);
+const PARENT_ACKNOWLEDGEMENT_PAYLOAD = object({ kind: { const: "parent_ack" }, pendingAckEventId: ref("TaskId") }, ["kind", "pendingAckEventId"]);
+const DELIVERY_PAYLOAD = object({ kind: { const: "delivery" }, injectedEventId: ref("TaskId") }, ["kind", "injectedEventId"]);
+const DELIVERY_FAILURE_PAYLOAD = object({ kind: { const: "delivery_failure" }, code: string(), message: string() }, ["kind", "code", "message"]);
+const LATE_TERMINAL_PAYLOAD = object({ kind: { const: "late_terminal" }, originalType: ref("TaskTerminalEventType"), originalEventId: ref("TaskId") }, ["kind", "originalType", "originalEventId"]);
+
+function taskEventVariants(completion: JsonSchema, canonical = false, includeLateTerminal = false): readonly JsonSchema[] {
+  return [
+    taskEventVariant("task.created", "parent", NONE_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.received", "receiver", NONE_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.receipt_confirmed", "sender", RECEIPT_CONFIRMATION_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.delivered", "receiver", DELIVERY_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.question", ["parent", "receiver"], NONE_PAYLOAD, { message: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES } }, ["message"], canonical),
+    taskEventVariant("task.answer", ["parent", "receiver"], NONE_PAYLOAD, { message: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES }, replyToMessageId: ref("TaskId") }, ["message", "replyToMessageId"], canonical),
+    taskEventVariant("task.information", ["parent", "receiver"], NONE_PAYLOAD, { message: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES } }, ["message"], canonical),
+    taskEventVariant("message.delivered", "receiver", DELIVERY_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.cancel_requested", "parent", NONE_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.completed", "receiver", NONE_PAYLOAD, { completion }, ["completion"], canonical),
+    taskEventVariant("task.failed", "receiver", NONE_PAYLOAD, { completion }, ["completion"], canonical),
+    taskEventVariant("task.failed", "sender", NONE_PAYLOAD, { completion }, ["completion"], canonical),
+    taskEventVariant("task.cancelled", "receiver", NONE_PAYLOAD, { completion }, ["completion"], canonical),
+    taskEventVariant("task.timed_out", "sender", NONE_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.parent_ack_pending", "sender", NONE_PAYLOAD, {}, [], canonical),
+    taskEventVariant("task.parent_acknowledged", "sender", PARENT_ACKNOWLEDGEMENT_PAYLOAD, { replyToMessageId: ref("TaskId") }, ["replyToMessageId"], canonical),
+    taskEventVariant("event.delivery_failed", "sender", DELIVERY_FAILURE_PAYLOAD, {}, [], canonical),
+    ...(includeLateTerminal ? [taskEventVariant("task.late_terminal", "sender", LATE_TERMINAL_PAYLOAD, {}, [], canonical)] : []),
+  ];
+}
+
+const TASK_EVENT_INPUT_SCHEMA: JsonSchema = { oneOf: taskEventVariants(ref("TaskCompletionInput")) };
+const CANONICAL_TASK_EVENT_SCHEMA: JsonSchema = { oneOf: taskEventVariants(ref("StoredTaskCompletion"), true, true) };
 const AGENT_RUNTIME_STATE_REQUIRED = {
   state: "state",
   authority: "authority",
@@ -158,6 +222,7 @@ export const controlApiSource: ControlApiSource = {
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
+    "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
@@ -318,6 +383,123 @@ export const controlApiSource: ControlApiSource = {
       name: string(),
       url: string(),
     }, ["name", "url"], { additionalProperties: true }),
+    TaskId: {
+      type: "string",
+      pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    },
+    TaskAddress: object({
+      machine: { type: "string", minLength: 1 },
+      sessionId: ref("SessionId"),
+    }, ["machine", "sessionId"]),
+    ContextRef: object({
+      path: { type: "string", minLength: 1 },
+      selector: string(),
+      purpose: string(),
+    }, ["path"]),
+    TaskContext: object({
+      summary: { type: "string", minLength: 1, maxLength: TASK_LIMITS.CONTEXT_SUMMARY_BYTES },
+      refs: arrayOf(ref("ContextRef")),
+    }),
+    TaskMetadata: object({
+      phaseId: string(),
+      issueId: string(),
+      verificationTier: string(),
+      rootCause: string(),
+    }),
+    TaskAssignment: {
+      ...object({
+        taskId: ref("TaskId"),
+        source: ref("TaskAddress"),
+        target: ref("TaskAddress"),
+        task: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES },
+        createdAt: string(),
+        expiresAt: string(),
+        context: ref("TaskContext"),
+        preflight: object({ requiredProject: ref("ProjectName") }),
+        role: string(),
+        metadata: ref("TaskMetadata"),
+        onCompletePrompt: string(),
+      }, ["taskId", "source", "target", "task", "createdAt", "expiresAt"]),
+      maxProperties: 11,
+    },
+    TaskEventType: { enum: Object.values(TASK_EVENT_TYPE) },
+    TaskTerminalEventType: { enum: [TASK_EVENT_TYPE.COMPLETED, TASK_EVENT_TYPE.FAILED, TASK_EVENT_TYPE.CANCELLED, TASK_EVENT_TYPE.TIMED_OUT] },
+    TaskStatus: { enum: Object.values(TASK_STATUS) },
+    TaskMessageType: { enum: ["question", "answer", "information"] },
+    TaskCompletionInput: object({
+      summary: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES, description: "Character ceiling only; runtime enforces the UTF-8 byte limit." },
+      result: object({}, [], { additionalProperties: true }),
+      error: object({
+        code: string(),
+        message: string(),
+        retryable: boolean(),
+      }, ["code", "message", "retryable"]),
+      artifacts: {
+        ...arrayOf(object({
+          path: { type: "string", minLength: 1 },
+          mimeType: string(),
+          description: string(),
+        }, ["path"])),
+        maxItems: TASK_LIMITS.ARTIFACTS,
+      },
+    }, ["summary"]),
+    StoredArtifactRef: object({
+      machine: { type: "string", minLength: 1 },
+      project: { type: "string", minLength: 1 },
+      path: { type: "string", minLength: 1 },
+      mimeType: string(),
+      description: string(),
+      sizeBytes: { type: "integer", minimum: 0 },
+      modifiedAt: string(),
+    }, ["machine", "project", "path"]),
+    TaskWarning: object({ code: string(), message: string() }, ["code", "message"]),
+    StoredTaskCompletion: object({
+      summary: { type: "string", minLength: 1 },
+      result: object({}, [], { additionalProperties: true }),
+      error: object({ code: string(), message: string(), retryable: boolean() }, ["code", "message", "retryable"]),
+      artifacts: { ...arrayOf(ref("StoredArtifactRef")), maxItems: TASK_LIMITS.ARTIFACTS },
+      warnings: arrayOf(ref("TaskWarning")),
+    }, ["summary", "warnings"]),
+    TaskEventPayload: {
+      oneOf: [
+        object({ kind: { const: "none" } }, ["kind"]),
+        object({
+          kind: { const: "receipt_confirmation" },
+          receiptId: ref("TaskId"),
+          assignmentHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+          createdEventId: ref("TaskId"),
+          receivedEventId: ref("TaskId"),
+          receivedEventSequence: { type: "string", pattern: "^[1-9][0-9]*$" },
+          receivedEventOccurredAt: string(),
+        }, ["kind", "receiptId", "assignmentHash", "createdEventId", "receivedEventId", "receivedEventSequence", "receivedEventOccurredAt"]),
+        object({ kind: { const: "parent_ack" }, pendingAckEventId: ref("TaskId") }, ["kind", "pendingAckEventId"]),
+        object({ kind: { const: "delivery" }, injectedEventId: ref("TaskId") }, ["kind", "injectedEventId"]),
+        object({ kind: { const: "delivery_failure" }, code: string(), message: string() }, ["kind", "code", "message"]),
+        LATE_TERMINAL_PAYLOAD,
+      ],
+    },
+    TaskEventInput: TASK_EVENT_INPUT_SCHEMA,
+    CanonicalTaskEvent: CANONICAL_TASK_EVENT_SCHEMA,
+    TaskAcknowledgement: object({
+      ok: { const: true },
+      taskId: ref("TaskId"),
+      eventId: ref("TaskId"),
+      sequence: { type: "string", pattern: "^[1-9][0-9]*$" },
+    }, ["ok", "taskId", "eventId", "sequence"]),
+    TaskInboxPage: object({
+      events: { ...arrayOf(ref("CanonicalTaskEvent")), maxItems: TASK_LIMITS.INBOX_PAGE_EVENTS },
+      nextCursor: { type: "string", pattern: "^(0|[1-9][0-9]*)$" },
+      hasMore: boolean(),
+    }, ["events", "nextCursor", "hasMore"]),
+    TaskApiErrorEnvelope: object({
+      ok: { const: false },
+      error: object({
+        code: { enum: Object.values(TASK_API_ERROR) },
+        message: string(),
+        retryable: boolean(),
+        path: string(),
+      }, ["code", "message", "retryable"]),
+    }, ["ok", "error"]),
     PushSubscription: object({
       endpoint: string(),
       keys: object({
@@ -334,8 +516,154 @@ export const controlApiSource: ControlApiSource = {
       response: object({
         name: string(),
         version: string(),
-      }, ["name", "version"]),
+        machineId: { type: "string", format: "uuid" },
+      }, ["name", "version", "machineId"]),
       errors: [],
+    },
+    "POST /api/tasks/v1/send": {
+      operationId: "sendTask",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        callerSession: ref("SessionSelector"),
+        to: ref("TaskAddress"),
+        task: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES },
+        context: ref("TaskContext"),
+        role: string(),
+        preflight: object({ requiredProject: ref("ProjectName") }),
+        metadata: ref("TaskMetadata"),
+        onCompletePrompt: string(),
+        timeoutMs: { type: "integer", minimum: 1000 },
+        idempotencyKey: { type: "string", minLength: 1 },
+      }, ["callerSession", "to", "task"]),
+      response: ref("TaskAcknowledgement"),
+      errors: ["400 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "422 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "GET /api/tasks/v1/status": {
+      operationId: "getTaskStatus",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        taskId: ref("TaskId"),
+        callerSession: ref("SessionSelector"),
+      }, ["taskId", "callerSession"]),
+      response: object({
+        ok: { const: true },
+        task: ref("TaskAssignment"),
+        status: ref("TaskStatus"),
+        events: arrayOf(ref("CanonicalTaskEvent")),
+        completion: ref("StoredTaskCompletion"),
+        warnings: arrayOf(ref("TaskWarning")),
+      }, ["ok", "task", "status", "events", "warnings"]),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "GET /api/tasks/v1/inbox": {
+      operationId: "getTaskInbox",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        callerSession: ref("SessionSelector"),
+        cursor: { type: "string", pattern: "^(0|[1-9][0-9]*)$" },
+        includeAcknowledged: boolean(),
+      }, ["callerSession", "cursor"]),
+      response: ref("TaskInboxPage"),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/message": {
+      operationId: "sendTaskMessage",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        callerSession: ref("SessionSelector"),
+        taskId: ref("TaskId"),
+        type: ref("TaskMessageType"),
+        message: { type: "string", minLength: 1, maxLength: TASK_LIMITS.TASK_BYTES },
+        replyToMessageId: ref("TaskId"),
+      }, ["callerSession", "taskId", "type", "message"]),
+      response: ref("TaskAcknowledgement"),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/complete": {
+      operationId: "completeTask",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        callerSession: ref("SessionSelector"),
+        taskId: ref("TaskId"),
+        status: { enum: ["completed", "failed", "cancelled"] },
+        result: ref("TaskCompletionInput"),
+      }, ["callerSession", "taskId", "status", "result"]),
+      response: ref("TaskAcknowledgement"),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/cancel": {
+      operationId: "cancelTask",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ callerSession: ref("SessionSelector"), taskId: ref("TaskId") }, ["callerSession", "taskId"]),
+      response: ref("TaskAcknowledgement"),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/delivered": {
+      operationId: "recordTaskDelivery",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        callerSession: ref("SessionSelector"),
+        taskId: ref("TaskId"),
+        eventId: ref("TaskId"),
+      }, ["callerSession", "taskId", "eventId"]),
+      response: ref("TaskAcknowledgement"),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/ack": {
+      operationId: "acknowledgeTask",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ callerSession: ref("SessionSelector"), taskId: ref("TaskId") }, ["callerSession", "taskId"]),
+      response: ref("TaskAcknowledgement"),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/peer/receive": {
+      operationId: "peerReceiveTask",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        source: ref("TaskAddress"),
+        assignment: ref("TaskAssignment"),
+        assignmentHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        createdEventId: ref("TaskId"),
+      }, ["source", "assignment", "assignmentHash", "createdEventId"]),
+      response: object({ ok: { const: true }, receiptId: ref("TaskId") }, ["ok", "receiptId"]),
+      errors: ["400 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "422 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "POST /api/tasks/v1/peer/event": {
+      operationId: "peerAcceptTaskEvent",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        source: ref("TaskAddress"),
+        destination: ref("TaskAddress"),
+        event: { oneOf: [ref("TaskEventInput"), ref("CanonicalTaskEvent")] },
+        projection: object({
+          artifacts: arrayOf(object({
+            sourcePath: string(), machine: string(), project: string(), normalizedPath: string(), sizeBytes: { type: "integer", minimum: 0 }, modifiedAt: string(),
+          }, ["sourcePath", "machine", "project", "normalizedPath"])),
+          warnings: arrayOf(ref("TaskWarning")),
+        }, ["warnings"]),
+      }, ["source", "destination", "event"]),
+      response: object({
+        ok: { const: true }, taskId: ref("TaskId"), eventId: ref("TaskId"), sequence: { type: "string", pattern: "^[1-9][0-9]*$" }, event: ref("CanonicalTaskEvent"),
+      }, ["ok", "taskId", "eventId", "sequence", "event"]),
+      errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
     },
     "GET /api/sessions": {
       operationId: "listSessions",
@@ -797,6 +1125,7 @@ function httpOperationSchemas(source: ControlApiSource): Record<string, unknown>
       route,
       stable: contract.stable,
       auth: contract.auth,
+      requestContentType: contract.requestContentType,
       request: contract.request
         ? schemaWithId(contract.request, `wolfpack:control-api:http:${contract.operationId}:request`, `${contract.operationId} request`)
         : undefined,

@@ -32,7 +32,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     "schemas publish public client contracts; they do not replace route-side project/session/path validation",
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
-    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer"
+    "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
+    "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE"
   ],
   "http": {
     "getInfo": {
@@ -50,15 +51,606 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           },
           "version": {
             "type": "string"
+          },
+          "machineId": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "required": [
           "name",
-          "version"
+          "version",
+          "machineId"
         ],
         "additionalProperties": false
       },
       "errors": []
+    },
+    "sendTask": {
+      "route": "POST /api/tasks/v1/send",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:sendTask:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTask request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "to": {
+            "$ref": "#/$defs/TaskAddress"
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "context": {
+            "$ref": "#/$defs/TaskContext"
+          },
+          "role": {
+            "type": "string"
+          },
+          "preflight": {
+            "type": "object",
+            "properties": {
+              "requiredProject": {
+                "$ref": "#/$defs/ProjectName"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "metadata": {
+            "$ref": "#/$defs/TaskMetadata"
+          },
+          "onCompletePrompt": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "callerSession",
+          "to",
+          "task"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:sendTask:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTask response",
+        "$ref": "#/$defs/TaskAcknowledgement"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "413 TaskApiErrorEnvelope",
+        "422 TaskApiErrorEnvelope",
+        "502 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "getTaskStatus": {
+      "route": "GET /api/tasks/v1/status",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getTaskStatus:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getTaskStatus request",
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          }
+        },
+        "required": [
+          "taskId",
+          "callerSession"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getTaskStatus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getTaskStatus response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "task": {
+            "$ref": "#/$defs/TaskAssignment"
+          },
+          "status": {
+            "$ref": "#/$defs/TaskStatus"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CanonicalTaskEvent"
+            }
+          },
+          "completion": {
+            "$ref": "#/$defs/StoredTaskCompletion"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/TaskWarning"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "task",
+          "status",
+          "events",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "getTaskInbox": {
+      "route": "GET /api/tasks/v1/inbox",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getTaskInbox:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getTaskInbox request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "cursor": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "includeAcknowledged": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "callerSession",
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getTaskInbox:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getTaskInbox response",
+        "$ref": "#/$defs/TaskInboxPage"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "sendTaskMessage": {
+      "route": "POST /api/tasks/v1/message",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:sendTaskMessage:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTaskMessage request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "type": {
+            "$ref": "#/$defs/TaskMessageType"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "replyToMessageId": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "callerSession",
+          "taskId",
+          "type",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:sendTaskMessage:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTaskMessage response",
+        "$ref": "#/$defs/TaskAcknowledgement"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "413 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "completeTask": {
+      "route": "POST /api/tasks/v1/complete",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:completeTask:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "completeTask request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "result": {
+            "$ref": "#/$defs/TaskCompletionInput"
+          }
+        },
+        "required": [
+          "callerSession",
+          "taskId",
+          "status",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:completeTask:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "completeTask response",
+        "$ref": "#/$defs/TaskAcknowledgement"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "413 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "cancelTask": {
+      "route": "POST /api/tasks/v1/cancel",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:cancelTask:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "cancelTask request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "callerSession",
+          "taskId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:cancelTask:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "cancelTask response",
+        "$ref": "#/$defs/TaskAcknowledgement"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "recordTaskDelivery": {
+      "route": "POST /api/tasks/v1/delivered",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:recordTaskDelivery:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "recordTaskDelivery request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "eventId": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "callerSession",
+          "taskId",
+          "eventId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:recordTaskDelivery:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "recordTaskDelivery response",
+        "$ref": "#/$defs/TaskAcknowledgement"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "acknowledgeTask": {
+      "route": "POST /api/tasks/v1/ack",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:acknowledgeTask:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "acknowledgeTask request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "callerSession",
+          "taskId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:acknowledgeTask:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "acknowledgeTask response",
+        "$ref": "#/$defs/TaskAcknowledgement"
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "peerReceiveTask": {
+      "route": "POST /api/tasks/v1/peer/receive",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:peerReceiveTask:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "peerReceiveTask request",
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "#/$defs/TaskAddress"
+          },
+          "assignment": {
+            "$ref": "#/$defs/TaskAssignment"
+          },
+          "assignmentHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "createdEventId": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "source",
+          "assignment",
+          "assignmentHash",
+          "createdEventId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:peerReceiveTask:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "peerReceiveTask response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "receiptId": {
+            "$ref": "#/$defs/TaskId"
+          }
+        },
+        "required": [
+          "ok",
+          "receiptId"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "413 TaskApiErrorEnvelope",
+        "422 TaskApiErrorEnvelope",
+        "502 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
+    },
+    "peerAcceptTaskEvent": {
+      "route": "POST /api/tasks/v1/peer/event",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:peerAcceptTaskEvent:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "peerAcceptTaskEvent request",
+        "type": "object",
+        "properties": {
+          "source": {
+            "$ref": "#/$defs/TaskAddress"
+          },
+          "destination": {
+            "$ref": "#/$defs/TaskAddress"
+          },
+          "event": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/TaskEventInput"
+              },
+              {
+                "$ref": "#/$defs/CanonicalTaskEvent"
+              }
+            ]
+          },
+          "projection": {
+            "type": "object",
+            "properties": {
+              "artifacts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "sourcePath": {
+                      "type": "string"
+                    },
+                    "machine": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": "string"
+                    },
+                    "normalizedPath": {
+                      "type": "string"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "modifiedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sourcePath",
+                    "machine",
+                    "project",
+                    "normalizedPath"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/TaskWarning"
+                }
+              }
+            },
+            "required": [
+              "warnings"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "source",
+          "destination",
+          "event"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:peerAcceptTaskEvent:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "peerAcceptTaskEvent response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "taskId": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "eventId": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "sequence": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "event": {
+            "$ref": "#/$defs/CanonicalTaskEvent"
+          }
+        },
+        "required": [
+          "ok",
+          "taskId",
+          "eventId",
+          "sequence",
+          "event"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 TaskApiErrorEnvelope",
+        "404 TaskApiErrorEnvelope",
+        "409 TaskApiErrorEnvelope",
+        "413 TaskApiErrorEnvelope",
+        "502 TaskApiErrorEnvelope",
+        "503 TaskApiErrorEnvelope"
+      ]
     },
     "listSessions": {
       "route": "GET /api/sessions",
@@ -2116,6 +2708,2469 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "url"
       ],
       "additionalProperties": true
+    },
+    "TaskId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "TaskAddress": {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "machine",
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "ContextRef": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selector": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "TaskContext": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextRef"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "TaskMetadata": {
+      "type": "object",
+      "properties": {
+        "phaseId": {
+          "type": "string"
+        },
+        "issueId": {
+          "type": "string"
+        },
+        "verificationTier": {
+          "type": "string"
+        },
+        "rootCause": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "TaskAssignment": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "source": {
+          "$ref": "#/$defs/TaskAddress"
+        },
+        "target": {
+          "$ref": "#/$defs/TaskAddress"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/TaskContext"
+        },
+        "preflight": {
+          "type": "object",
+          "properties": {
+            "requiredProject": {
+              "$ref": "#/$defs/ProjectName"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "role": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/TaskMetadata"
+        },
+        "onCompletePrompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "source",
+        "target",
+        "task",
+        "createdAt",
+        "expiresAt"
+      ],
+      "additionalProperties": false,
+      "maxProperties": 11
+    },
+    "TaskEventType": {
+      "enum": [
+        "task.created",
+        "task.received",
+        "task.receipt_confirmed",
+        "task.delivered",
+        "task.question",
+        "task.answer",
+        "task.information",
+        "message.delivered",
+        "task.cancel_requested",
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+        "task.timed_out",
+        "task.parent_ack_pending",
+        "task.parent_acknowledged",
+        "event.delivery_failed",
+        "task.late_terminal"
+      ]
+    },
+    "TaskTerminalEventType": {
+      "enum": [
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+        "task.timed_out"
+      ]
+    },
+    "TaskStatus": {
+      "enum": [
+        "pending_delivery",
+        "received",
+        "active",
+        "waiting_for_parent",
+        "waiting_for_receiver",
+        "cancel_requested",
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out"
+      ]
+    },
+    "TaskMessageType": {
+      "enum": [
+        "question",
+        "answer",
+        "information"
+      ]
+    },
+    "TaskCompletionInput": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384,
+          "description": "Character ceiling only; runtime enforces the UTF-8 byte limit."
+        },
+        "result": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": true
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "mimeType": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "StoredArtifactRef": {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modifiedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "machine",
+        "project",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "TaskWarning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "StoredTaskCompletion": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": true
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StoredArtifactRef"
+          },
+          "maxItems": 20
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskWarning"
+          }
+        }
+      },
+      "required": [
+        "summary",
+        "warnings"
+      ],
+      "additionalProperties": false
+    },
+    "TaskEventPayload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "receipt_confirmation"
+            },
+            "receiptId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "assignmentHash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "createdEventId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "receivedEventId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "receivedEventSequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "receivedEventOccurredAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "receiptId",
+            "assignmentHash",
+            "createdEventId",
+            "receivedEventId",
+            "receivedEventSequence",
+            "receivedEventOccurredAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "parent_ack"
+            },
+            "pendingAckEventId": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "pendingAckEventId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "delivery"
+            },
+            "injectedEventId": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "injectedEventId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "delivery_failure"
+            },
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "late_terminal"
+            },
+            "originalType": {
+              "$ref": "#/$defs/TaskTerminalEventType"
+            },
+            "originalEventId": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "originalType",
+            "originalEventId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TaskEventInput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.created"
+            },
+            "actor": {
+              "const": "parent"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.received"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.receipt_confirmed"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "receipt_confirmation"
+                },
+                "receiptId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "assignmentHash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "createdEventId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "receivedEventId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "receivedEventSequence": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "receivedEventOccurredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "receiptId",
+                "assignmentHash",
+                "createdEventId",
+                "receivedEventId",
+                "receivedEventSequence",
+                "receivedEventOccurredAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.delivered"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delivery"
+                },
+                "injectedEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "injectedEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.question"
+            },
+            "actor": {
+              "enum": [
+                "parent",
+                "receiver"
+              ]
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "message",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.answer"
+            },
+            "actor": {
+              "enum": [
+                "parent",
+                "receiver"
+              ]
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "replyToMessageId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "message",
+            "replyToMessageId",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.information"
+            },
+            "actor": {
+              "enum": [
+                "parent",
+                "receiver"
+              ]
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "message",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "message.delivered"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delivery"
+                },
+                "injectedEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "injectedEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.cancel_requested"
+            },
+            "actor": {
+              "const": "parent"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.completed"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/TaskCompletionInput"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.failed"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/TaskCompletionInput"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.failed"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/TaskCompletionInput"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.cancelled"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/TaskCompletionInput"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.timed_out"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.parent_ack_pending"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.parent_acknowledged"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "replyToMessageId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "parent_ack"
+                },
+                "pendingAckEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "pendingAckEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "replyToMessageId",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "event.delivery_failed"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delivery_failure"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "code",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "CanonicalTaskEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.created"
+            },
+            "actor": {
+              "const": "parent"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.received"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.receipt_confirmed"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "receipt_confirmation"
+                },
+                "receiptId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "assignmentHash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "createdEventId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "receivedEventId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "receivedEventSequence": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "receivedEventOccurredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "receiptId",
+                "assignmentHash",
+                "createdEventId",
+                "receivedEventId",
+                "receivedEventSequence",
+                "receivedEventOccurredAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.delivered"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delivery"
+                },
+                "injectedEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "injectedEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.question"
+            },
+            "actor": {
+              "enum": [
+                "parent",
+                "receiver"
+              ]
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "message",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.answer"
+            },
+            "actor": {
+              "enum": [
+                "parent",
+                "receiver"
+              ]
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "replyToMessageId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "message",
+            "replyToMessageId",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.information"
+            },
+            "actor": {
+              "enum": [
+                "parent",
+                "receiver"
+              ]
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "message",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "message.delivered"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delivery"
+                },
+                "injectedEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "injectedEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.cancel_requested"
+            },
+            "actor": {
+              "const": "parent"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.completed"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/StoredTaskCompletion"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.failed"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/StoredTaskCompletion"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.failed"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/StoredTaskCompletion"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.cancelled"
+            },
+            "actor": {
+              "const": "receiver"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "completion": {
+              "$ref": "#/$defs/StoredTaskCompletion"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "completion",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.timed_out"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.parent_ack_pending"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.parent_acknowledged"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "replyToMessageId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "parent_ack"
+                },
+                "pendingAckEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "pendingAckEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "replyToMessageId",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "event.delivery_failed"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delivery_failure"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "code",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "taskId": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "type": {
+              "const": "task.late_terminal"
+            },
+            "actor": {
+              "const": "sender"
+            },
+            "source": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "destination": {
+              "$ref": "#/$defs/TaskAddress"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "occurredAt": {
+              "type": "string"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "late_terminal"
+                },
+                "originalType": {
+                  "$ref": "#/$defs/TaskTerminalEventType"
+                },
+                "originalEventId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "required": [
+                "kind",
+                "originalType",
+                "originalEventId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "taskId",
+            "type",
+            "actor",
+            "source",
+            "destination",
+            "sequence",
+            "occurredAt",
+            "payload"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TaskAcknowledgement": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "eventId": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "sequence": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "ok",
+        "taskId",
+        "eventId",
+        "sequence"
+      ],
+      "additionalProperties": false
+    },
+    "TaskInboxPage": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalTaskEvent"
+          },
+          "maxItems": 50
+        },
+        "nextCursor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "hasMore": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "events",
+        "nextCursor",
+        "hasMore"
+      ],
+      "additionalProperties": false
+    },
+    "TaskApiErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "INVALID_REQUEST",
+                "INVALID_CONTENT_TYPE",
+                "PAYLOAD_TOO_LARGE",
+                "CALLER_NOT_FOUND",
+                "TARGET_NOT_FOUND",
+                "TASK_NOT_FOUND",
+                "TARGET_DEAD",
+                "TARGET_NOT_PI",
+                "PROJECT_MISMATCH",
+                "CALLER_MISMATCH",
+                "IMMUTABLE_CONTENT_CONFLICT",
+                "INVALID_TRANSITION",
+                "INVALID_REPLY",
+                "OPEN_QUESTION_CONFLICT",
+                "PEER_UNREACHABLE",
+                "PEER_AUTH_UNSUPPORTED",
+                "MALFORMED_UPSTREAM_RESPONSE",
+                "STORE_UNAVAILABLE"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "error"
+      ],
+      "additionalProperties": false
     },
     "PushSubscription": {
       "type": "object",
