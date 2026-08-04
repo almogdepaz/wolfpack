@@ -18,6 +18,7 @@
     "llms.txt",
     "docs/agent-skills.md",
     "docs/cli-attach.md",
+    "docs/installation.md",
     "docs/session-control.md",
     "docs/task-gateway.md",
     "skills"
