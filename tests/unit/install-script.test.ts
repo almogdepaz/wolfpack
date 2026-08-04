@@ -170,6 +170,99 @@ describe("install entrypoint parity", () => {
     expect(statSync(join(platformRoot, "wolfpack")).mode & 0o111).not.toBe(0);
     expect(statSync(join(platformRoot, "wolfpack-broker")).mode & 0o111).not.toBe(0);
   });
+
+  test("package runner clears macOS provenance and signs binaries when Bun blocks postinstall", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-runner-macos-")));
+    const packageRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge");
+    const packageBin = join(packageRoot, "bin");
+    const platformRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge-darwin-arm64");
+    const commandBin = join(fixtureRoot, "command-bin");
+    const commandLog = join(fixtureRoot, "commands.log");
+    mkdirSync(packageBin, { recursive: true });
+    mkdirSync(platformRoot, { recursive: true });
+    mkdirSync(commandBin, { recursive: true });
+    writeFileSync(join(packageBin, "run.cjs"), readFileSync(join(process.cwd(), "bin", "run.cjs")));
+    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: "wolfpack-bridge-darwin-arm64", version: "test" }));
+    writeExecutable(join(platformRoot, "wolfpack"), "#!/bin/sh\nprintf 'wolfpack %s\\n' \"$*\"\n");
+    writeExecutable(join(platformRoot, "wolfpack-broker"), "#!/bin/sh\nprintf 'broker\\n'\n");
+    writeExecutable(join(commandBin, "xattr"), "#!/bin/sh\nprintf 'xattr %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
+    writeExecutable(join(commandBin, "codesign"), "#!/bin/sh\nprintf 'codesign %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
+    writeFileSync(commandLog, "");
+
+    const result = spawnSync("node", ["-e", `
+      const Module = require("node:module");
+      const os = require("node:os");
+      const load = Module._load;
+      Module._load = function(request, parent, isMain) {
+        if (request === "node:os") return { ...os, platform: () => "darwin", arch: () => "arm64" };
+        return load.call(this, request, parent, isMain);
+      };
+      require(process.argv[1]);
+    `, join(packageBin, "run.cjs"), "--version"], {
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        PATH: `${commandBin}:${process.env.PATH}`,
+        POSTINSTALL_TEST_LOG: commandLog,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("wolfpack --version\n");
+    expect(readFileSync(commandLog, "utf-8")).toBe([
+      `xattr -cr ${join(platformRoot, "wolfpack")}`,
+      `codesign --sign - --force ${join(platformRoot, "wolfpack")}`,
+      `xattr -cr ${join(platformRoot, "wolfpack-broker")}`,
+      `codesign --sign - --force ${join(platformRoot, "wolfpack-broker")}`,
+      "",
+    ].join("\n"));
+  });
+
+  test("package postinstall clears macOS provenance and signs both binaries", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-postinstall-")));
+    const packageRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge");
+    const packageBin = join(packageRoot, "bin");
+    const platformRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge-darwin-arm64");
+    const commandBin = join(fixtureRoot, "command-bin");
+    const commandLog = join(fixtureRoot, "commands.log");
+    mkdirSync(packageBin, { recursive: true });
+    mkdirSync(platformRoot, { recursive: true });
+    mkdirSync(commandBin, { recursive: true });
+    writeFileSync(join(packageBin, "install.cjs"), readFileSync(join(process.cwd(), "bin", "install.cjs")));
+    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: "wolfpack-bridge-darwin-arm64", version: "test" }));
+    writeFileSync(join(platformRoot, "wolfpack"), "server\n");
+    writeFileSync(join(platformRoot, "wolfpack-broker"), "broker\n");
+    writeExecutable(join(commandBin, "xattr"), "#!/bin/sh\nprintf 'xattr %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
+    writeExecutable(join(commandBin, "codesign"), "#!/bin/sh\nprintf 'codesign %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
+    writeFileSync(commandLog, "");
+
+    const result = spawnSync("node", ["-e", `
+      const Module = require("node:module");
+      const os = require("node:os");
+      const load = Module._load;
+      Module._load = function(request, parent, isMain) {
+        if (request === "node:os") return { ...os, platform: () => "darwin", arch: () => "arm64" };
+        return load.call(this, request, parent, isMain);
+      };
+      require(process.argv[1]);
+    `, join(packageBin, "install.cjs")], {
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        PATH: `${commandBin}:${process.env.PATH}`,
+        POSTINSTALL_TEST_LOG: commandLog,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(commandLog, "utf-8")).toBe([
+      `xattr -cr ${join(packageBin, "wolfpack")}`,
+      `codesign --sign - --force ${join(packageBin, "wolfpack")}`,
+      `xattr -cr ${join(packageBin, "wolfpack-broker")}`,
+      `codesign --sign - --force ${join(packageBin, "wolfpack-broker")}`,
+      "",
+    ].join("\n"));
+  });
 });
 
 describe("install.sh release binary staging", () => {

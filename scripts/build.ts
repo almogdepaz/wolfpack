@@ -176,6 +176,7 @@ for (const target of TARGETS) {
     os: [meta.os],
     cpu: [meta.cpu],
     files: ["wolfpack", "wolfpack-broker", "THIRD_PARTY_NOTICES"],
+    homepage: "https://get-wolfpack.netlify.app/",
     license: "MIT",
     repository: {
       type: "git",

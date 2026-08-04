@@ -12,6 +12,19 @@ const { join, dirname } = require("node:path");
 const { chmodSync, existsSync } = require("node:fs");
 const { platform, arch } = require("node:os");
 
+function prepareMacOSBinary(path) {
+  if (platform() !== "darwin") return true;
+  try {
+    execFileSync("xattr", ["-cr", path], { stdio: "ignore" });
+    execFileSync("codesign", ["--sign", "-", "--force", path], { stdio: "ignore" });
+    return true;
+  } catch (error) {
+    console.error(`wolfpack: could not prepare ${path} for macOS`);
+    console.error(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
 function makeExecutable(path) {
   try {
     chmodSync(path, 0o755);
@@ -36,8 +49,8 @@ function findBinary() {
     const pkgRoot = dirname(require.resolve(`${pkg}/package.json`));
     const binary = join(pkgRoot, "wolfpack");
     const broker = join(pkgRoot, "wolfpack-broker");
-    if (!existsSync(binary) || !makeExecutable(binary)) return null;
-    if (existsSync(broker) && !makeExecutable(broker)) return null;
+    if (!existsSync(binary) || !makeExecutable(binary) || !prepareMacOSBinary(binary)) return null;
+    if (existsSync(broker) && (!makeExecutable(broker) || !prepareMacOSBinary(broker))) return null;
     return binary;
   } catch {}
 
