@@ -9,7 +9,11 @@ export async function applyNotificationPreference(
   change: NotificationPreferenceChange,
 ): Promise<boolean> {
   const changed = await change.changeSubscription();
-  const enabled = changed ? change.requested : change.current;
+  const enabled = changed
+    ? change.requested
+    : change.requested
+      ? false
+      : change.current;
   change.commit(enabled);
   return enabled;
 }
