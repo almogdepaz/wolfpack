@@ -7,8 +7,8 @@ import { TASK_API_ERROR, TASK_LIMITS } from "../tasks/domain.ts";
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 type Body = Record<string, unknown>;
 
-function error(res: ServerResponse, code: TaskApiErrorCode, message: string, status = 400): void {
-  json(res, { ok: false, error: { code, message, retryable: false } }, status);
+function error(res: ServerResponse, code: TaskApiErrorCode, message: string, status = 400, path: string | undefined = undefined): void {
+  json(res, { ok: false, error: { code, message, retryable: false, ...(path === undefined ? {} : { path }) } }, status);
 }
 
 function isObject(value: unknown): value is Body {
@@ -23,7 +23,73 @@ function optionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
 }
 
-type GatewayResponse = { readonly ok: true; readonly [key: string]: unknown } | { readonly ok: false; readonly error: { readonly code: TaskApiErrorCode; readonly message: string; readonly retryable: boolean }; readonly status: number };
+function pointer(...tokens: readonly string[]): string {
+  return tokens.map((token) => `/${token.replaceAll("~", "~0").replaceAll("/", "~1")}`).join("");
+}
+
+function unexpectedProperty(body: Body, keys: readonly string[], parent: readonly string[] = []): string | undefined {
+  const key = Object.keys(body).sort().find((candidate) => !keys.includes(candidate));
+  return key === undefined ? undefined : pointer(...parent, key);
+}
+
+interface SendValidationFailure {
+  readonly path: string;
+  readonly message: string;
+}
+
+function invalidSend(path: string): SendValidationFailure {
+  return { path, message: "invalid task send request" };
+}
+
+function sendValidationFailure(body: Body): SendValidationFailure | undefined {
+  const unexpected = unexpectedProperty(body, ["callerSession", "to", "task", "context", "role", "preflight", "metadata", "onCompletePrompt", "timeoutMs", "idempotencyKey"]);
+  if (unexpected !== undefined) return invalidSend(unexpected);
+  if (!requiredString(body, "callerSession")) return invalidSend("/callerSession");
+  if (!isObject(body.to)) return invalidSend("/to");
+  const unexpectedTarget = unexpectedProperty(body.to, ["machine", "sessionId"], ["to"]);
+  if (unexpectedTarget !== undefined) return invalidSend(unexpectedTarget);
+  if (typeof body.to.machine !== "string") return invalidSend("/to/machine");
+  if (typeof body.to.sessionId !== "string") return invalidSend("/to/sessionId");
+  if (!requiredString(body, "task")) return invalidSend("/task");
+  if (!optionalString(body.role)) return invalidSend("/role");
+  if (!optionalString(body.onCompletePrompt)) return invalidSend("/onCompletePrompt");
+  if (!optionalString(body.idempotencyKey)) return invalidSend("/idempotencyKey");
+  if (body.timeoutMs !== undefined && typeof body.timeoutMs !== "number") return invalidSend("/timeoutMs");
+  if (body.context !== undefined) {
+    if (!isObject(body.context)) return invalidSend("/context");
+    const unexpectedContext = unexpectedProperty(body.context, ["summary", "refs"], ["context"]);
+    if (unexpectedContext !== undefined) return invalidSend(unexpectedContext);
+    if (!optionalString(body.context.summary)) return invalidSend("/context/summary");
+    if (body.context.refs !== undefined) {
+      if (!Array.isArray(body.context.refs)) return invalidSend("/context/refs");
+      for (const [index, ref] of body.context.refs.entries()) {
+        if (!isObject(ref)) return invalidSend(pointer("context", "refs", String(index)));
+        const unexpectedRef = unexpectedProperty(ref, ["path", "selector", "purpose"], ["context", "refs", String(index)]);
+        if (unexpectedRef !== undefined) return invalidSend(unexpectedRef);
+        if (typeof ref.path !== "string") return invalidSend(pointer("context", "refs", String(index), "path"));
+        if (!optionalString(ref.selector)) return invalidSend(pointer("context", "refs", String(index), "selector"));
+        if (!optionalString(ref.purpose)) return invalidSend(pointer("context", "refs", String(index), "purpose"));
+      }
+    }
+  }
+  if (body.preflight !== undefined) {
+    if (!isObject(body.preflight)) return invalidSend("/preflight");
+    const unexpectedPreflight = unexpectedProperty(body.preflight, ["requiredProject"], ["preflight"]);
+    if (unexpectedPreflight !== undefined) return invalidSend(unexpectedPreflight);
+    if (!optionalString(body.preflight.requiredProject) || (body.preflight.requiredProject !== undefined && body.preflight.requiredProject.length === 0)) return invalidSend("/preflight/requiredProject");
+  }
+  if (body.metadata !== undefined) {
+    if (!isObject(body.metadata)) return invalidSend("/metadata");
+    const unexpectedMetadata = unexpectedProperty(body.metadata, ["phaseId", "issueId", "verificationTier", "rootCause"], ["metadata"]);
+    if (unexpectedMetadata !== undefined) return invalidSend(unexpectedMetadata);
+    for (const key of ["phaseId", "issueId", "verificationTier", "rootCause"] as const) {
+      if (!optionalString(body.metadata[key])) return invalidSend(pointer("metadata", key));
+    }
+  }
+  return undefined;
+}
+
+type GatewayResponse = { readonly ok: true; readonly [key: string]: unknown } | { readonly ok: false; readonly error: { readonly code: TaskApiErrorCode; readonly message: string; readonly retryable: boolean; readonly path?: string }; readonly status: number };
 
 function response(res: ServerResponse, value: GatewayResponse): void {
   if (value.ok) {
@@ -73,25 +139,18 @@ export const taskRoutes: Record<string, Handler> = {
   "POST /api/tasks/v1/send": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
-    if (!hasOnly(body, ["callerSession", "to", "task", "context", "role", "preflight", "metadata", "onCompletePrompt", "timeoutMs", "idempotencyKey"])
-      || !isObject(body.to) || !hasOnly(body.to, ["machine", "sessionId"]) || typeof body.to.machine !== "string" || typeof body.to.sessionId !== "string"
-      || !requiredString(body, "callerSession") || !requiredString(body, "task") || !optionalString(body.role) || !optionalString(body.onCompletePrompt)
-      || !optionalString(body.idempotencyKey) || (body.timeoutMs !== undefined && typeof body.timeoutMs !== "number")
-      || (body.context !== undefined && (!isObject(body.context) || !hasOnly(body.context, ["summary", "refs"]) || !optionalString(body.context.summary)
-        || (body.context.refs !== undefined && (!Array.isArray(body.context.refs) || !body.context.refs.every((ref) => isObject(ref)
-          && hasOnly(ref, ["path", "selector", "purpose"]) && typeof ref.path === "string" && optionalString(ref.selector) && optionalString(ref.purpose))))))
-      || (body.preflight !== undefined && (!isObject(body.preflight) || !hasOnly(body.preflight, ["requiredProject"]) || !optionalString(body.preflight.requiredProject)))
-      || (body.metadata !== undefined && (!isObject(body.metadata) || !hasOnly(body.metadata, ["phaseId", "issueId", "verificationTier", "rootCause"])
-        || !optionalString(body.metadata.phaseId) || !optionalString(body.metadata.issueId) || !optionalString(body.metadata.verificationTier) || !optionalString(body.metadata.rootCause)))) {
-      return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task send request");
+    const validationFailure = sendValidationFailure(body);
+    if (validationFailure !== undefined) {
+      return error(res, TASK_API_ERROR.INVALID_REQUEST, validationFailure.message, 400, validationFailure.path);
     }
+    const context = body.context as Body | undefined;
     response(res, await getTaskGateway().send({
       callerSession: body.callerSession as string,
       to: body.to as { machine: string; sessionId: string },
       task: body.task as string,
-      context: body.context === undefined ? undefined : {
-        summary: body.context.summary as string | undefined,
-        refs: (body.context.refs as readonly Body[] | undefined)?.map((ref) => ({
+      context: context === undefined ? undefined : {
+        summary: context.summary as string | undefined,
+        refs: (context.refs as readonly Body[] | undefined)?.map((ref) => ({
           path: ref.path as string,
           selector: ref.selector as string | undefined,
           purpose: ref.purpose as string | undefined,

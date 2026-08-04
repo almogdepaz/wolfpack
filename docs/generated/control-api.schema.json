@@ -5144,6 +5144,9 @@
             },
             "retryable": {
               "type": "boolean"
+            },
+            "path": {
+              "type": "string"
             }
           },
           "required": [

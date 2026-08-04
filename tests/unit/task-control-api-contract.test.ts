@@ -69,10 +69,14 @@ describe("task control api contract", () => {
     expect(objectAt(inboxPageProperties.events, "$defs.TaskInboxPage.events")).toMatchObject({
       maxItems: TASK_LIMITS.INBOX_PAGE_EVENTS,
     });
-    expect(objectAt(defs.TaskApiErrorEnvelope, "$defs.TaskApiErrorEnvelope")).toMatchObject({
+    const taskErrorEnvelope = objectAt(defs.TaskApiErrorEnvelope, "$defs.TaskApiErrorEnvelope");
+    const taskError = objectAt(properties(taskErrorEnvelope).error, "$defs.TaskApiErrorEnvelope.error");
+    expect(taskErrorEnvelope).toMatchObject({
       required: ["ok", "error"],
       additionalProperties: false,
     });
+    expect(properties(taskError).path).toEqual({ type: "string" });
+    expect(taskError.required).toEqual(["code", "message", "retryable"]);
     const eventInput = objectAt(defs.TaskEventInput, "$defs.TaskEventInput");
     expect(eventInput).toHaveProperty("oneOf");
     expect(eventInput).not.toHaveProperty("properties");

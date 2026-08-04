@@ -178,6 +178,7 @@ export interface TaskApiErrorEnvelope {
     readonly code: TaskApiErrorCode;
     readonly message: string;
     readonly retryable: boolean;
+    readonly path?: string;
   };
 }
 

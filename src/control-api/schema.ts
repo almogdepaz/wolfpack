@@ -497,6 +497,7 @@ export const controlApiSource: ControlApiSource = {
         code: { enum: Object.values(TASK_API_ERROR) },
         message: string(),
         retryable: boolean(),
+        path: string(),
       }, ["code", "message", "retryable"]),
     }, ["ok", "error"]),
     PushSubscription: object({

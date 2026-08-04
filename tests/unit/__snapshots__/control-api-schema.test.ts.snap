@@ -5147,6 +5147,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             },
             "retryable": {
               "type": "boolean"
+            },
+            "path": {
+              "type": "string"
             }
           },
           "required": [

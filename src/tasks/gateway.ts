@@ -49,7 +49,7 @@ const INTERNAL_EVENT_TYPES = new Set<string>([
 
 type TaskResponse<T> = { readonly ok: true } & T;
 type PeerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-type TaskFailure = { readonly ok: false; readonly error: { readonly code: TaskApiErrorCode; readonly message: string; readonly retryable: boolean }; readonly status: number };
+type TaskFailure = { readonly ok: false; readonly error: { readonly code: TaskApiErrorCode; readonly message: string; readonly retryable: boolean; readonly path?: string }; readonly status: number };
 type GatewayResult<T> = TaskResponse<T> | TaskFailure;
 type Inspection = Extract<SessionInspectionResult, { readonly ok: true }>;
 
@@ -79,8 +79,8 @@ interface SendInput {
   readonly rawBody: unknown;
 }
 
-function failure(code: TaskApiErrorCode, message: string, retryable = false): TaskFailure {
-  return { ok: false, status: TASK_API_HTTP_STATUS[code], error: { code, message, retryable } };
+function failure(code: TaskApiErrorCode, message: string, retryable = false, path: string | undefined = undefined): TaskFailure {
+  return { ok: false, status: TASK_API_HTTP_STATUS[code], error: { code, message, retryable, ...(path === undefined ? {} : { path }) } };
 }
 
 function assignmentEnvelope(input: SendInput): Omit<SendInput, "rawBody"> {
@@ -170,9 +170,10 @@ export class TaskGateway {
   async send(input: SendInput, idempotencyLocked = false): Promise<GatewayResult<{ readonly taskId: string; readonly eventId: string; readonly sequence: string; readonly warnings: readonly TaskWarning[] }>> {
     const bounds = taskPayloadBoundsError(validateTaskPayloadBounds({ task: input.task, contextSummary: input.context?.summary, assignmentEnvelope: assignmentEnvelope(input), httpBody: input.rawBody }));
     if (bounds) return { ...bounds, status: 413 };
-    if (!isNonEmptyString(input.task) || !this.#validAddress(input.to) || !this.#validOptionalFields(input)) return failure(TASK_API_ERROR.INVALID_REQUEST, "invalid task send request");
+    const validationPath = this.#sendValidationPath(input);
+    if (validationPath !== undefined) return failure(TASK_API_ERROR.INVALID_REQUEST, "invalid task send request", false, validationPath);
     if (input.timeoutMs !== undefined && (!Number.isInteger(input.timeoutMs) || input.timeoutMs < MIN_TIMEOUT_MS || input.timeoutMs > MAX_TIMEOUT_MS)) {
-      return failure(TASK_API_ERROR.INVALID_REQUEST, "timeoutMs must be an integer from 1000ms through 24h");
+      return failure(TASK_API_ERROR.INVALID_REQUEST, "timeoutMs must be an integer from 1000ms through 24h", false, "/timeoutMs");
     }
     await this.#sweep();
     const caller = await this.#resolve(input.callerSession, "caller");
@@ -189,8 +190,9 @@ export class TaskGateway {
     if (remote && (!this.#isPeerOrigin(input.to.machine) || peerOrigin === undefined)) {
       return failure(TASK_API_ERROR.PEER_UNREACHABLE, "remote task delivery requires canonical configured tailnet HTTPS origins", true);
     }
-    if (remote && input.context?.refs?.some((ref) => isAbsolute(ref.path))) {
-      return failure(TASK_API_ERROR.INVALID_REQUEST, "remote assignments cannot include absolute context refs");
+    const absoluteRefIndex = remote ? input.context?.refs?.findIndex((ref) => isAbsolute(ref.path)) : undefined;
+    if (absoluteRefIndex !== undefined && absoluteRefIndex >= 0) {
+      return failure(TASK_API_ERROR.INVALID_REQUEST, "remote assignments cannot include absolute context refs", false, `/context/refs/${absoluteRefIndex}/path`);
     }
     const target = remote ? undefined : await this.#resolve(input.to.sessionId, "target");
     if (target !== undefined && !target.ok) return target;
@@ -973,10 +975,19 @@ export class TaskGateway {
       && isRecord(value.payload);
   }
 
-  #validOptionalFields(input: SendInput): boolean {
-    return (input.role === undefined || isNonEmptyString(input.role)) && (input.onCompletePrompt === undefined || isNonEmptyString(input.onCompletePrompt))
-      && (input.idempotencyKey === undefined || isNonEmptyString(input.idempotencyKey))
-      && (input.context === undefined || isRecord(input.context)) && (input.metadata === undefined || isRecord(input.metadata));
+  #sendValidationPath(input: SendInput): string | undefined {
+    if (!isNonEmptyString(input.task)) return "/task";
+    if (!isRecord(input.to)) return "/to";
+    if (!isNonEmptyString(input.to.machine)) return "/to/machine";
+    if (!isNonEmptyString(input.to.sessionId)) return "/to/sessionId";
+    if (input.role !== undefined && !isNonEmptyString(input.role)) return "/role";
+    if (input.onCompletePrompt !== undefined && !isNonEmptyString(input.onCompletePrompt)) return "/onCompletePrompt";
+    if (input.idempotencyKey !== undefined && !isNonEmptyString(input.idempotencyKey)) return "/idempotencyKey";
+    if (input.context !== undefined && !isRecord(input.context)) return "/context";
+    if (input.preflight !== undefined && !isRecord(input.preflight)) return "/preflight";
+    if (input.preflight?.requiredProject !== undefined && !isNonEmptyString(input.preflight.requiredProject)) return "/preflight/requiredProject";
+    if (input.metadata !== undefined && !isRecord(input.metadata)) return "/metadata";
+    return undefined;
   }
 
   #isParticipant(ledger: TaskLedger, sessionId: string): boolean {
@@ -1018,8 +1029,8 @@ export class TaskGateway {
     const declaredPaths = new Set<string>();
     if ((artifacts?.length ?? 0) > TASK_LIMITS.ARTIFACTS) return { artifacts: undefined, warnings: [{ code: "INVALID_ARTIFACT", message: "too many artifacts" }] };
     for (const artifact of artifacts ?? []) {
-      if (!isNonEmptyString(artifact.path) || isAbsolute(artifact.path)) { warnings.push({ code: "INVALID_ARTIFACT", message: "artifact paths must be project-relative" }); continue; }
-      if (declaredPaths.has(artifact.path)) { warnings.push({ code: "INVALID_ARTIFACT", message: "duplicate artifact declaration" }); continue; }
+      if (!isNonEmptyString(artifact.path) || isAbsolute(artifact.path)) { warnings.push({ code: "INVALID_ARTIFACT", message: `artifact path must be project-relative: ${JSON.stringify(artifact.path)}` }); continue; }
+      if (declaredPaths.has(artifact.path)) { warnings.push({ code: "INVALID_ARTIFACT", message: `duplicate artifact declaration: ${artifact.path}` }); continue; }
       declaredPaths.add(artifact.path);
       const candidate = resolve(projectRoot, artifact.path);
       try {

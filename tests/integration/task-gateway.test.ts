@@ -5,8 +5,8 @@ import { createServer as createHttpServer } from "node:http";
 import type { Server } from "node:http";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 process.env.WOLFPACK_TEST = "1";
@@ -24,7 +24,7 @@ const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("../../src/tasks/domain.ts");
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
-const { TaskGateway } = await import("../../src/tasks/gateway.ts");
+const { TaskGateway, __resetTaskGatewayForTests } = await import("../../src/tasks/gateway.ts");
 
 class PiBackend extends MockBackend {
   override async listIdentities() {
@@ -1316,6 +1316,64 @@ describe("local task gateway", () => {
     expect(receiverLedger?.records.some((record) => record.kind === "cleanup.eligible")).toBe(true);
   });
 
+  test("names every rejected artifact declaration without weakening terminal acceptance or valid provenance", async () => {
+    const validPath = "valid-artifact.txt";
+    const unavailablePath = "unavailable-artifact.txt";
+    const escapedPath = "../escaped-artifact.txt";
+    const symlinkPath = "symlink-artifact.txt";
+    writeFileSync(join(receiverProject, validPath), "verified artifact");
+    writeFileSync(join(parentProject, "escaped-artifact.txt"), "outside receiver project");
+    symlinkSync(join(receiverProject, validPath), join(receiverProject, symlinkPath));
+
+    const sent = await request("/api/tasks/v1/send", "POST", { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "preserve valid artifact provenance" });
+    const assignment = await sent.json() as { taskId: string };
+    const complete = await request("/api/tasks/v1/complete", "POST", {
+      callerSession: "receiver", taskId: assignment.taskId, status: "completed",
+      result: {
+        summary: "artifact warnings name declarations",
+        artifacts: [
+          { path: validPath },
+          { path: "" },
+          { path: "/absolute-artifact.txt" },
+          { path: validPath },
+          { path: unavailablePath },
+          { path: escapedPath },
+          { path: symlinkPath },
+        ],
+      },
+    });
+    expect(complete.status).toBe(200);
+
+    const status = await request(`/api/tasks/v1/status?callerSession=parent&taskId=${assignment.taskId}`, "GET");
+    const result = await status.json() as { readonly status: string; readonly completion: { readonly artifacts: readonly { readonly project: string; readonly path: string }[]; readonly warnings: readonly { readonly code: string; readonly message: string }[] } };
+    expect(result.status).toBe("completed");
+    expect(result.completion.artifacts).toEqual([expect.objectContaining({ project: "receiver-project", path: validPath })]);
+    expect(result.completion.warnings).toEqual([
+      { code: "INVALID_ARTIFACT", message: 'artifact path must be project-relative: ""' },
+      { code: "INVALID_ARTIFACT", message: 'artifact path must be project-relative: "/absolute-artifact.txt"' },
+      { code: "INVALID_ARTIFACT", message: `duplicate artifact declaration: ${validPath}` },
+      { code: "INVALID_ARTIFACT", message: `artifact is unavailable or outside project: ${unavailablePath}` },
+      { code: "INVALID_ARTIFACT", message: `artifact is unavailable or outside project: ${escapedPath}` },
+      { code: "INVALID_ARTIFACT", message: `artifact is unavailable or outside project: ${symlinkPath}` },
+    ]);
+  });
+
+  test("keeps over-limit artifact warnings bounded", async () => {
+    const sent = await request("/api/tasks/v1/send", "POST", { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "bound aggregate artifact warnings" });
+    const assignment = await sent.json() as { taskId: string };
+    const complete = await request("/api/tasks/v1/complete", "POST", {
+      callerSession: "receiver", taskId: assignment.taskId, status: "completed",
+      result: { summary: "too many artifact declarations", artifacts: Array.from({ length: TASK_LIMITS.ARTIFACTS + 1 }, (_, index) => ({ path: `artifact-${index}.txt` })) },
+    });
+    expect(complete.status).toBe(200);
+
+    const status = await request(`/api/tasks/v1/status?callerSession=parent&taskId=${assignment.taskId}`, "GET");
+    const result = await status.json() as { readonly status: string; readonly completion: { readonly warnings: readonly { readonly code: string; readonly message: string }[] } };
+    expect(result.status).toBe("completed");
+    expect(result.completion).not.toHaveProperty("artifacts");
+    expect(result.completion.warnings).toEqual([{ code: "INVALID_ARTIFACT", message: "too many artifacts" }]);
+  });
+
   test("warns for a duplicate artifact declaration while preserving every terminal result", async () => {
     writeFileSync(join(receiverProject, "duplicate-artifact.txt"), "verified artifact");
     for (const terminal of ["completed", "failed", "cancelled"] as const) {
@@ -1335,7 +1393,7 @@ describe("local task gateway", () => {
           summary: `${terminal} with duplicate artifact`,
           result: { checked: true },
           artifacts: [{ path: "duplicate-artifact.txt" }],
-          warnings: [{ code: "INVALID_ARTIFACT", message: "duplicate artifact declaration" }],
+          warnings: [{ code: "INVALID_ARTIFACT", message: "duplicate artifact declaration: duplicate-artifact.txt" }],
         },
       });
     }
@@ -1396,7 +1454,7 @@ describe("local task gateway", () => {
     expect(await sender.send({
       ...remoteSendInput("reject an absolute remote ref"),
       context: { refs: [{ path: parentProject, selector: undefined, purpose: undefined }] },
-    })).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+    })).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST", path: "/context/refs/0/path" } });
     expect(peerFetches).toBe(0);
     expect(await new TaskStore({ root: taskRoot }).ledgers()).toEqual([]);
     rmSync(taskRoot, { recursive: true, force: true });
@@ -2011,6 +2069,86 @@ describe("local task gateway", () => {
     expect(senderLedger?.state.events.filter((event) => event.type === TASK_EVENT_TYPE.DELIVERY_FAILED)).toHaveLength(1);
     rmSync(senderRoot, { recursive: true, force: true });
     rmSync(receiverRoot, { recursive: true, force: true });
+  });
+
+  test("identifies invalid send HTTP fields with JSON Pointers", async () => {
+    const valid = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "send validation" };
+    const cases = [
+      { name: "missing caller", body: { to: valid.to, task: valid.task }, path: "/callerSession" },
+      { name: "wrong target session type", body: { ...valid, to: { machine: "local", sessionId: 1 } }, path: "/to/sessionId" },
+      { name: "empty task", body: { ...valid, task: "" }, path: "/task" },
+      { name: "wrong nested context ref type", body: { ...valid, context: { refs: [{ path: 1 }] } }, path: "/context/refs/0/path" },
+      { name: "unexpected escaped property", body: { ...valid, "unexpected/a~b": true }, path: "/unexpected~1a~0b" },
+    ] as const;
+
+    for (const invalid of cases) {
+      const response = await request("/api/tasks/v1/send", "POST", invalid.body);
+      expect(response.status, invalid.name).toBe(400);
+      expect(await response.json(), invalid.name).toMatchObject({
+        ok: false,
+        error: { code: "INVALID_REQUEST", path: invalid.path },
+      });
+    }
+  });
+
+  test("identifies semantic invalid send fields before persistence", async () => {
+    const taskRoot = join(tmpdir(), `wolfpack-task-send-validation-${process.pid}-${Date.now()}`);
+    const sender = new TaskGateway({
+      root: taskRoot,
+      peerOrigin: "https://sender.example.ts.net",
+      peerFetch: async () => peerResponse({ ok: true }),
+    });
+    const cases = [
+      { name: "empty task", input: remoteSendInput(""), path: "/task" },
+      { name: "out of range timeout", input: remoteSendInput("timeout", 999), path: "/timeoutMs" },
+      { name: "empty required project", input: { ...remoteSendInput("preflight"), to: { machine: "local", sessionId: "receiver" }, preflight: { requiredProject: "" } }, path: "/preflight/requiredProject" },
+      {
+        name: "remote absolute context ref",
+        input: { ...remoteSendInput("absolute ref"), context: { refs: [{ path: parentProject, selector: undefined, purpose: undefined }] } },
+        path: "/context/refs/0/path",
+      },
+    ] as const;
+
+    for (const invalid of cases) {
+      expect(await sender.send(invalid.input), invalid.name).toMatchObject({
+        ok: false,
+        error: { code: "INVALID_REQUEST", path: invalid.path },
+      });
+    }
+    expect(await new TaskStore({ root: taskRoot }).ledgers()).toEqual([]);
+    rmSync(taskRoot, { recursive: true, force: true });
+  });
+
+  test("does not persist an HTTP preflight rejection before one valid retry", async () => {
+    const taskRoot = join(tmpdir(), `wolfpack-task-preflight-retry-${process.pid}-${Date.now()}`);
+    const previousTaskRoot = process.env.WOLFPACK_TASK_ROOT;
+    process.env.WOLFPACK_TASK_ROOT = taskRoot;
+    __resetTaskGatewayForTests();
+    const body = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "retry after preflight correction" };
+
+    try {
+      const rejected = await request("/api/tasks/v1/send", "POST", { ...body, preflight: { requiredProject: "" } });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({
+        ok: false,
+        error: { code: "INVALID_REQUEST", path: "/preflight/requiredProject" },
+      });
+      const store = new TaskStore({ root: taskRoot });
+      expect(await store.ledgers()).toEqual([]);
+
+      const accepted = await request("/api/tasks/v1/send", "POST", { ...body, preflight: { requiredProject: basename(receiverProject) } });
+      expect(accepted.status).toBe(200);
+      const receipt = await accepted.json() as { readonly taskId: string };
+      const ledgers = await new TaskStore({ root: taskRoot }).ledgers();
+      expect(ledgers.filter((ledger) => ledger.key.taskId === receipt.taskId && ledger.key.role === TASK_LEDGER_ROLE.SENDER)).toHaveLength(1);
+      expect(ledgers.filter((ledger) => ledger.key.taskId === receipt.taskId && ledger.key.role === TASK_LEDGER_ROLE.RECEIVER)).toHaveLength(1);
+      expect(new Set(ledgers.map((ledger) => ledger.key.taskId))).toEqual(new Set([receipt.taskId]));
+    } finally {
+      __resetTaskGatewayForTests();
+      if (previousTaskRoot === undefined) delete process.env.WOLFPACK_TASK_ROOT;
+      else process.env.WOLFPACK_TASK_ROOT = previousTaskRoot;
+      rmSync(taskRoot, { recursive: true, force: true });
+    }
   });
 
   test("enforces task content type and keeps local routes strict", async () => {
