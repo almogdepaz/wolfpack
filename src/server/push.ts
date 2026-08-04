@@ -103,6 +103,8 @@ const MAX_SUBSCRIPTIONS = 20;
 const MAX_ENDPOINT_LENGTH = 1024;
 const PUSH_FETCH_TIMEOUT_MS = 10_000;
 const PUSH_DELIVERY_TIMEOUT_CODE = "PUSH_DELIVERY_TIMEOUT";
+const PUSH_RETRY_DELAYS_MS = [250, 1_000] as const;
+const RETRYABLE_PUSH_STATUSES = new Set([408, 425, 429]);
 
 const ALLOWED_PUSH_HOSTS = new Set([
   "fcm.googleapis.com",
@@ -130,6 +132,7 @@ function loadSubscriptions(): PushSubscription[] {
 }
 
 function saveSubscriptions(subs: PushSubscription[]): void {
+  mkdirSync(dirname(SUBS_PATH), { recursive: true, mode: 0o700 });
   const tmp = SUBS_PATH + ".tmp";
   writeFileSync(tmp, JSON.stringify(subs, null, 2), { mode: 0o600 });
   renameSync(tmp, SUBS_PATH);
@@ -175,6 +178,7 @@ export function validateSubscription(sub: PushSubscription): string | null {
 
 export function addSubscription(sub: PushSubscription): { ok: boolean; error?: string } {
   const subs = loadSubscriptions();
+  const hadSubscriptions = subs.length > 0;
   // Dedupe by endpoint
   const idx = subs.findIndex((s) => s.endpoint === sub.endpoint);
   if (idx >= 0) {
@@ -184,6 +188,7 @@ export function addSubscription(sub: PushSubscription): { ok: boolean; error?: s
     subs.push(sub);
   }
   saveSubscriptions(subs);
+  if (!hadSubscriptions) resetSessionTransitionTracking();
   log.info("push subscription added", { endpoint: sub.endpoint.slice(0, 60) });
   return { ok: true };
 }
@@ -191,6 +196,7 @@ export function addSubscription(sub: PushSubscription): { ok: boolean; error?: s
 export function removeSubscription(endpoint: string): void {
   const subs = loadSubscriptions().filter((s) => s.endpoint !== endpoint);
   saveSubscriptions(subs);
+  if (subs.length === 0) resetSessionTransitionTracking();
   log.info("push subscription removed", { endpoint: endpoint.slice(0, 60) });
 }
 
@@ -334,6 +340,29 @@ export interface PushPayload {
   url?: string;
 }
 
+export interface NotificationSessionTarget {
+  readonly sessionId: string;
+  readonly sessionName: string;
+}
+
+export function buildAgentNotificationPayload(
+  message: string,
+  target?: NotificationSessionTarget,
+): PushPayload {
+  return {
+    title: "Wolfpack",
+    body: message,
+    tag: "wolfpack-notify",
+    ...(target && {
+      url: buildSessionNotificationUrl({
+        sessionId: target.sessionId,
+        sessionName: target.sessionName,
+        machineUrl: "",
+      }),
+    }),
+  };
+}
+
 class PushDeliveryTimeoutError extends Error {
   readonly code = PUSH_DELIVERY_TIMEOUT_CODE;
   readonly endpoint: string;
@@ -371,7 +400,54 @@ async function fetchWithDeadline(
   }
 }
 
-export async function sendPush(payload: PushPayload): Promise<{ sent: number; failed: number; pruned: number }> {
+type PushSleep = (delayMs: number) => Promise<void>;
+
+function retryablePushStatus(status: number): boolean {
+  return RETRYABLE_PUSH_STATUSES.has(status) || status >= 500;
+}
+
+async function sendSubscriptionWithRetry(
+  sub: PushSubscription,
+  payload: Buffer,
+  vapid: VapidKeys,
+  fetcher: PushFetch = fetch,
+  sleep: PushSleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+): Promise<number> {
+  const audience = new URL(sub.endpoint).origin;
+  const jwt = createVapidJwt(audience, "mailto:noreply@wolfpack.local", vapid);
+  const { body } = encryptPayload(payload, sub);
+  const request: RequestInit = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Encoding": "aes128gcm",
+      TTL: "86400",
+      Authorization: `vapid t=${jwt}, k=${vapid.publicKey}`,
+    },
+    body: new Uint8Array(body),
+  };
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetchWithDeadline(sub.endpoint, request, PUSH_FETCH_TIMEOUT_MS, fetcher);
+      const retryDelay = PUSH_RETRY_DELAYS_MS[attempt];
+      if (!retryablePushStatus(response.status) || retryDelay === undefined) return response.status;
+      await sleep(retryDelay);
+    } catch (error: unknown) {
+      const retryDelay = PUSH_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined) throw error;
+      await sleep(retryDelay);
+    }
+  }
+}
+
+export interface PushDeliveryResult {
+  readonly sent: number;
+  readonly failed: number;
+  readonly pruned: number;
+}
+
+export async function sendPush(payload: PushPayload): Promise<PushDeliveryResult> {
   const subs = loadSubscriptions();
   if (subs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
 
@@ -391,25 +467,10 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
   }
   if (validSubs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
 
-  const results = await Promise.allSettled(validSubs.map(async (sub) => {
-    const audience = new URL(sub.endpoint).origin;
-    const jwt = createVapidJwt(audience, "mailto:noreply@wolfpack.local", vapid);
-
-    const { body } = encryptPayload(payloadBuf, sub);
-
-    const resp = await fetchWithDeadline(sub.endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "Content-Encoding": "aes128gcm",
-        TTL: "86400",
-        Authorization: `vapid t=${jwt}, k=${vapid.publicKey}`,
-      },
-      body: new Uint8Array(body),
-    }, PUSH_FETCH_TIMEOUT_MS);
-
-    return { endpoint: sub.endpoint, status: resp.status };
-  }));
+  const results = await Promise.allSettled(validSubs.map(async (sub) => ({
+    endpoint: sub.endpoint,
+    status: await sendSubscriptionWithRetry(sub, payloadBuf, vapid),
+  })));
 
   let sent = 0;
   let failed = 0;
@@ -437,6 +498,7 @@ export async function sendPush(payload: PushPayload): Promise<{ sent: number; fa
   if (toRemove.length > 0) {
     const remaining = validSubs.filter((s) => !toRemove.includes(s.endpoint));
     saveSubscriptions(remaining);
+    if (remaining.length === 0) resetSessionTransitionTracking();
     log.info("pruned expired push subscriptions", { count: toRemove.length });
   }
 
@@ -452,6 +514,7 @@ interface SessionTransitionFact {
   readonly triage: TriageStatus;
   readonly identity?: { readonly wolfpackSessionId?: string };
   readonly runtimeState?: { readonly state?: AgentStatusState };
+  readonly notificationEligible?: boolean;
 }
 
 const prevTriageState = new Map<string, SessionNotificationState>();
@@ -510,28 +573,52 @@ function sessionTransitionPayload(session: SessionTransitionFact): PushPayload {
   };
 }
 
+type SessionPushSender = (payload: PushPayload) => Promise<PushDeliveryResult>;
+let testSessionPushSender: SessionPushSender | null = null;
+
+async function sendSessionPush(payload: PushPayload): Promise<PushDeliveryResult> {
+  return (testSessionPushSender ?? sendPush)(payload);
+}
+
 /** Check session runtime transitions and fire push notifications when an active session stops needing live watch. */
-export function checkSessionTransitions(sessions: readonly SessionTransitionFact[]): void {
+export async function checkSessionTransitions(sessions: readonly SessionTransitionFact[]): Promise<void> {
   if (getSubscriptionCount() === 0) return;
   const now = Date.now();
   const activeKeys = new Set(sessions.map(sessionNotificationKey));
   for (const session of sessions) {
     const key = sessionNotificationKey(session);
+    if (session.notificationEligible === false) continue;
     const prev = prevTriageState.get(key);
     const current = sessionNotificationState(session);
-    prevTriageState.set(key, current);
-    if (prev && SESSION_RUNNING_STATES.has(prev) && !SESSION_RUNNING_STATES.has(current)) {
-      const last = lastSessionPushTime.get(key) || 0;
-      if (now - last > PUSH_DEBOUNCE_MS) {
-        lastSessionPushTime.set(key, now);
-        sendPush(sessionTransitionPayload(session)).catch(() => {});
-      }
+    const transitionedToQuiet = prev
+      && SESSION_RUNNING_STATES.has(prev)
+      && !SESSION_RUNNING_STATES.has(current);
+    if (!transitionedToQuiet) {
+      prevTriageState.set(key, current);
+      continue;
+    }
+
+    const last = lastSessionPushTime.get(key) || 0;
+    if (now - last <= PUSH_DEBOUNCE_MS) {
+      prevTriageState.set(key, current);
+      continue;
+    }
+
+    const delivery = await sendSessionPush(sessionTransitionPayload(session));
+    if (delivery.sent > 0) {
+      prevTriageState.set(key, current);
+      lastSessionPushTime.set(key, now);
     }
   }
   // Prune state for removed sessions
   for (const key of prevTriageState.keys()) {
     if (!activeKeys.has(key)) { prevTriageState.delete(key); lastSessionPushTime.delete(key); }
   }
+}
+
+export function resetSessionTransitionTracking(): void {
+  prevTriageState.clear();
+  lastSessionPushTime.clear();
 }
 
 /** Check notify rate limit (10/min). Returns error string or null if ok. */
@@ -548,9 +635,9 @@ export function checkNotifyRateLimit(): string | null {
 /** Reset all per-namespace debounce and rate-limit state. Tests should call this in beforeEach. */
 export function _testingResetDebounce(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("_testingResetDebounce() is only available in test mode");
-  prevTriageState.clear();
-  lastSessionPushTime.clear();
+  resetSessionTransitionTracking();
   notifyTimestamps = [];
+  testSessionPushSender = null;
 }
 
 export const _testing = {
@@ -565,9 +652,15 @@ export const _testing = {
   PUSH_DEBOUNCE_MS,
   PUSH_FETCH_TIMEOUT_MS,
   fetchWithDeadline,
+  sendSubscriptionWithRetry,
   sessionNotificationLabel,
   sessionTransitionPayload,
   resetDebounce: _testingResetDebounce,
+  get sessionPushSender() { return testSessionPushSender; },
+  set sessionPushSender(sender: SessionPushSender | null) {
+    if (!process.env.WOLFPACK_TEST) throw new Error("_testing.sessionPushSender is only available in test mode");
+    testSessionPushSender = sender;
+  },
   get notifyTimestamps() { return notifyTimestamps; },
   set notifyTimestamps(v: number[]) {
     if (!process.env.WOLFPACK_TEST) throw new Error("_testing.notifyTimestamps setter is only available in test mode");

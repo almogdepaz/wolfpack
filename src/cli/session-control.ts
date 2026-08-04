@@ -756,10 +756,18 @@ async function runNotifyParent(
   parsed: Extract<ParsedAgentCommand, { readonly action: "notify-parent" }>,
 ): Promise<number> {
   const message = parsed.message ?? defaultNotifyParentMessage();
+  const parentSessionId = process.env.WOLFPACK_PARENT_SESSION_ID?.trim();
+  const parentSessionName = process.env.WOLFPACK_PARENT_SESSION_NAME?.trim();
   try {
     const response = await call("/api/notify", {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        ...(parentSessionId && parentSessionName && {
+          sessionId: parentSessionId,
+          sessionName: parentSessionName,
+        }),
+      }),
     });
     if (parsed.output === "json") jsonOut(response);
     else print("notified");

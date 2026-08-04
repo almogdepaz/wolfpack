@@ -176,9 +176,12 @@
           <label class="settings-toggle">
             <input type="checkbox" id="setting-haptics" checked> Haptic feedback
           </label>
-          <label class="settings-toggle">
-            <input type="checkbox" id="setting-notifications"> Notifications
-          </label>
+          <div class="notification-setting">
+            <label class="settings-toggle">
+              <input type="checkbox" id="setting-notifications"> Notifications
+            </label>
+            <div id="notification-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
+          </div>
         </div>
         <div class="settings-section" id="settings-terminal">
           <div class="settings-label">Terminal</div>

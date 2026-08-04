@@ -27,14 +27,8 @@ import {
 } from "../validation.js";
 
 import { assets } from "../public-assets.js";
-import type { TriageStatus } from "../triage.js";
-import { brokerOutputSequence } from "../broker-output-sequence.js";
-import {
-  collectAgentStatusSources,
-  getAgentRuntimeStateStore,
-} from "./agent-status.js";
-import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
-import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkSessionTransitions, checkNotifyRateLimit, type PushSubscription } from "./push.js";
+import { getAgentRuntimeStateStore } from "./agent-status.js";
+import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, getSubscriptionCount, buildAgentNotificationPayload, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 
 const log = createLogger("routes");
@@ -44,7 +38,6 @@ import {
   getBackend,
   getRouter,
   DuplicateSessionError,
-  type SessionListFact,
 } from "./backend.js";
 import {
   SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
@@ -110,6 +103,15 @@ import type { InvalidBodyResponse, ParseBodyOptions } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity, PublicSessionIdentity } from "./session-identity.js";
+import {
+  forgetSessionObservation,
+  observeDashboardSessions,
+  resetNotificationObservation,
+} from "./session-observation.js";
+export {
+  __resetSessionObservationForTests,
+  __runSessionNotificationObservationForTests,
+} from "./session-observation.js";
 import {
   isOpenableHarness,
   SESSION_OPEN_ERROR,
@@ -452,32 +454,6 @@ function settingsPath(): string {
   return process.env.WOLFPACK_SETTINGS_PATH || join(homedir(), ".wolfpack", "bridge-settings.json");
 }
 
-/** Previous rendered terminal fingerprint per durable session identity. */
-const prevRenderedActivityFingerprints = new Map<string, string>();
-
-function renderedActivityFingerprint(pane: string): string | undefined {
-  const normalized = pane
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .join("\n")
-    .trimEnd();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-interface KnownSessionSummary {
-  readonly name: string;
-  readonly lastLine: string;
-  readonly identity?: PublicSessionIdentity;
-}
-
-const knownSessionSummaries = new Map<string, KnownSessionSummary>();
-
-export function __resetSessionObservationForTests(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
-  prevRenderedActivityFingerprints.clear();
-  knownSessionSummaries.clear();
-}
-
 /**
  * Default agent commands shown in a fresh install. Order matters — it's
  * the order they appear in the settings list and the session-create picker.
@@ -608,117 +584,7 @@ export const routes: Record<
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const backend = getBackend();
-    const router = getRouter();
-    const routerOwnsBackend = backend === router;
-    let brokerAvailable = !(routerOwnsBackend && !router.isBrokerAvailable());
-    let sessionFacts: SessionListFact[] = [];
-    if (brokerAvailable) {
-      try {
-        sessionFacts = await backend.listSessionFacts();
-      } catch {
-        brokerAvailable = false;
-      }
-    }
-
-    if (!brokerAvailable) {
-      const observedAt = new Date().toISOString();
-      const store = getAgentRuntimeStateStore();
-      const summariesBySessionKey = new Map<string, KnownSessionSummary>();
-      for (const summary of knownSessionSummaries.values()) {
-        summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
-      }
-      for (const sessionKey of Object.keys(store.snapshot().sessions)) {
-        if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
-      }
-      const results = Array.from(summariesBySessionKey.entries()).map(([sessionKey, { name, lastLine, identity }]) => {
-        const previous = store.get(sessionKey);
-        const runtimeState = store.reduce({
-          sessionKey,
-          broker: { state: "unavailable", observedAt },
-          sources: [],
-          fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
-          currentRun: {
-            runId: identity?.wolfpackSessionId ?? previous?.runId,
-            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
-          },
-        });
-        return { name, lastLine, triage: "idle" as TriageStatus, runtimeState, ...(identity && { identity }) };
-      }).sort((a, b) => a.name.localeCompare(b.name));
-      json(res, { sessions: results });
-      checkSessionTransitions(results);
-      return;
-    }
-
-    const activeNames = new Set<string>();
-    const activeSessionKeys = new Set<string>();
-    const results = await Promise.all(
-      sessionFacts.map(async (fact) => {
-        const name = fact.name;
-        activeNames.add(name);
-        const brokerState = fact.alive ? "alive" : "dead";
-        const identity = fact.identity;
-        const sessionKey = identity?.wolfpackSessionId ?? name;
-        activeSessionKeys.add(sessionKey);
-
-        let activityFingerprint: string | undefined;
-        if (brokerState === "alive") {
-          try {
-            activityFingerprint = renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
-          } catch {
-            activityFingerprint = undefined;
-          }
-        }
-        const previousFingerprint = prevRenderedActivityFingerprints.get(sessionKey);
-        const rawOutputChanged = activityFingerprint !== undefined
-          && previousFingerprint !== undefined
-          && activityFingerprint !== previousFingerprint;
-        if (activityFingerprint !== undefined) prevRenderedActivityFingerprints.set(sessionKey, activityFingerprint);
-
-        const outputSequence = brokerOutputSequence(fact.outputSequence);
-        const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-        const lastLine = "";
-        const observedAt = new Date().toISOString();
-        const runtimeState = getAgentRuntimeStateStore().reduce({
-          sessionKey,
-          broker: { state: brokerState, observedAt },
-          sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
-            state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
-            stale: false,
-            observedAt,
-          }) : [],
-          fallback: { rawOutputChanged, observedAt, preview: lastLine },
-          currentRun: {
-            runId: identity?.wolfpackSessionId,
-            runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
-          },
-        });
-
-        const summary = {
-          name,
-          lastLine,
-          triage,
-          runtimeState,
-          ...(outputSequence !== undefined && { outputSequence }),
-          ...(identity && { identity }),
-        };
-        knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
-        return summary;
-      }),
-    );
-    results.sort((a, b) => a.name.localeCompare(b.name));
-    // Prune observations for sessions omitted from authoritative broker truth.
-    for (const key of prevRenderedActivityFingerprints.keys()) {
-      if (!activeSessionKeys.has(key)) prevRenderedActivityFingerprints.delete(key);
-    }
-    for (const key of knownSessionSummaries.keys()) {
-      if (!activeNames.has(key)) knownSessionSummaries.delete(key);
-    }
-    getAgentRuntimeStateStore().prune(activeSessionKeys);
-    json(res, { sessions: results });
-
-    // Fire push notifications for running → idle transitions (async, don't block response)
-    checkSessionTransitions(results);
+    json(res, { sessions: await observeDashboardSessions() });
   },
 
   "POST /api/agent-runtime-state/ack": async (req, res) => {
@@ -1088,8 +954,7 @@ export const routes: Record<
     if (!resolved) return;
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(resolved.name);
-    prevRenderedActivityFingerprints.delete(resolved.identity.wolfpackSessionId);
-    prevRenderedActivityFingerprints.delete(resolved.name);
+    forgetSessionObservation(resolved.identity.wolfpackSessionId, resolved.name);
     await getBackend().killSession(resolved.name);
     json(res, {
       ok: true,
@@ -1398,8 +1263,10 @@ export const routes: Record<
     };
     const validationError = validateSubscription(sub);
     if (validationError) return json(res, { error: validationError }, 400);
+    const hadSubscriptions = getSubscriptionCount() > 0;
     const result = addSubscription(sub);
     if (!result.ok) return json(res, { error: result.error }, 429);
+    if (!hadSubscriptions) resetNotificationObservation();
     json(res, { ok: true });
   },
 
@@ -1408,6 +1275,7 @@ export const routes: Record<
     if (!body) return;
     if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
     removeSubscription(body.endpoint);
+    if (getSubscriptionCount() === 0) resetNotificationObservation();
     json(res, { ok: true });
   },
 
@@ -1417,12 +1285,26 @@ export const routes: Record<
     const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!body.message || typeof body.message !== "string") return json(res, { error: "missing message" }, 400);
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+    const sessionName = typeof body.sessionName === "string" ? body.sessionName : undefined;
+    if ((sessionId === undefined) !== (sessionName === undefined)) {
+      return json(res, { error: "sessionId and sessionName must be provided together" }, 400);
+    }
     const message = body.message.slice(0, 500);
+    let payload;
+    try {
+      payload = buildAgentNotificationPayload(message, sessionId !== undefined && sessionName !== undefined ? {
+        sessionId,
+        sessionName,
+      } : undefined);
+    } catch {
+      return json(res, { error: "invalid notification session target" }, 400);
+    }
 
     const rateLimitError = checkNotifyRateLimit();
     if (rateLimitError) return json(res, { error: rateLimitError }, 429);
 
-    const result = await sendPush({ title: "Wolfpack", body: message, tag: "wolfpack-notify" });
+    const result = await sendPush(payload);
     json(res, { ok: true, ...result });
   },
 };

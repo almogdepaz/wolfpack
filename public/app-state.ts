@@ -1,6 +1,15 @@
 // ── Shared state, settings, and utilities ──
 // Extracted from app.ts — imported back via bundler (inlined at build time)
 
+import {
+  applyNotificationPreference,
+  NOTIFICATION_CHANGE_FAILURE,
+} from "../src/notification-preference";
+import type {
+  NotificationChangeFailure,
+  NotificationChangeResult,
+  NotificationPreferenceOutcome,
+} from "../src/notification-preference";
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
 
 export { esc, escAttr } from "../src/html-escape";
@@ -45,7 +54,96 @@ export const wpSettings = loadWpSettings();
 
 export const TERM_PRESETS = { small: {fontSize:12, lineHeight:1.35}, medium: {fontSize:13, lineHeight:1.45}, large: {fontSize:14, lineHeight:1.55}, xlarge: {fontSize:18, lineHeight:1.45} };
 
+const NOTIFICATION_FAILURE_MESSAGES: Readonly<Record<NotificationChangeFailure, string>> = {
+  [NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED]: "Push notifications are not supported in this browser.",
+  [NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED]: "Notifications are blocked in browser settings. Allow them for this site, then retry.",
+  [NOTIFICATION_CHANGE_FAILURE.SERVICE_WORKER]: "Wolfpack could not start notification support. Reload the app, then retry.",
+  [NOTIFICATION_CHANGE_FAILURE.SUBSCRIPTION]: "This device could not create a push subscription. Check browser notification settings, then retry.",
+  [NOTIFICATION_CHANGE_FAILURE.SERVER]: "Wolfpack could not register this device. Check your connection, then retry.",
+  [NOTIFICATION_CHANGE_FAILURE.UNSUBSCRIBE]: "Wolfpack could not disable notifications. Check your connection, then retry.",
+};
+
+let notificationPreferenceBusy = false;
+
+function setNotificationStatus(message: string, status: "idle" | "pending" | "success" | "error"): void {
+  const control = document.getElementById("notification-setting-status");
+  if (!control) return;
+  control.textContent = message;
+  control.dataset.state = status;
+}
+
+function notificationsSupported(): boolean {
+  return "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+}
+
+function renderNotificationRestingStatus(): void {
+  if (!notificationsSupported()) {
+    setNotificationStatus(NOTIFICATION_FAILURE_MESSAGES[NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED], "error");
+    return;
+  }
+  if (Notification.permission === "denied") {
+    setNotificationStatus(NOTIFICATION_FAILURE_MESSAGES[NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED], "error");
+    return;
+  }
+  if (wpSettings.notifications && state.notificationsEnabled) {
+    setNotificationStatus("Notifications are enabled on this device.", "success");
+    return;
+  }
+  setNotificationStatus("Notifications are off.", "idle");
+}
+
+function renderNotificationOutcome(outcome: NotificationPreferenceOutcome): void {
+  const change = outcome.change;
+  if (change.ok === true) {
+    renderNotificationRestingStatus();
+    return;
+  }
+  setNotificationStatus(NOTIFICATION_FAILURE_MESSAGES[change.reason], "error");
+}
+
+function setNotificationPreferenceBusy(busy: boolean, requested: boolean): void {
+  notificationPreferenceBusy = busy;
+  const control = document.getElementById("setting-notifications") as HTMLInputElement | null;
+  if (control) control.disabled = busy;
+  if (busy) setNotificationStatus(requested ? "Enabling notifications…" : "Disabling notifications…", "pending");
+}
+
+function commitNotificationPreference(enabled: boolean): void {
+  wpSettings.notifications = enabled;
+  localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
+  const control = document.getElementById("setting-notifications") as HTMLInputElement | null;
+  if (control) control.checked = enabled;
+}
+
+let notificationPreferenceChange = Promise.resolve();
+
+async function changeNotificationPreference(requested: boolean): Promise<void> {
+  const change = notificationPreferenceChange.then(async () => {
+    setNotificationPreferenceBusy(true, requested);
+    try {
+      const outcome = await applyNotificationPreference({
+        current: wpSettings.notifications,
+        requested,
+        changeSubscription: requested ? requestNotifications : unsubscribeNotifications,
+        commit: commitNotificationPreference,
+      });
+      renderNotificationOutcome(outcome);
+    } catch (error: unknown) {
+      console.error("Notification preference change failed:", error);
+      setNotificationStatus("Wolfpack could not update notifications. Reload the app, then retry.", "error");
+    } finally {
+      setNotificationPreferenceBusy(false, requested);
+    }
+  });
+  notificationPreferenceChange = change;
+  await change;
+}
+
 export function toggleSetting(key, val) {
+  if (key === "notifications") {
+    void changeNotificationPreference(Boolean(val));
+    return;
+  }
   wpSettings[key] = val;
   localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
   applySetting(key, val);
@@ -53,10 +151,7 @@ export function toggleSetting(key, val) {
 
 export function applySetting(key, val) {
   if (key === "animations") document.body.classList.toggle("no-animations", !val);
-  if (key === "notifications") {
-    if (val) requestNotifications();
-    else unsubscribeNotifications();
-  }
+  if (key === "notifications") void changeNotificationPreference(Boolean(val));
   if (key === "enterSends") {
     const el = document.getElementById("msg-input") as HTMLTextAreaElement | null;
     if (el) el.placeholder = val ? "$ (Enter to send)" : "$ (⚡ to send)";
@@ -118,60 +213,90 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return arr;
 }
 
-export async function requestNotifications() {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+function notificationChangeFailed(
+  reason: NotificationChangeFailure,
+  error: unknown = undefined,
+): NotificationChangeResult {
+  state.notificationsEnabled = false;
+  if (error !== undefined) console.error("Push notification change failed:", error);
+  return { ok: false, reason };
+}
+
+export async function requestNotifications(): Promise<NotificationChangeResult> {
+  if (!notificationsSupported()) {
     console.warn("Push notifications not supported");
-    return;
+    return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED);
   }
 
-  // Request notification permission
-  const permission = await Notification.requestPermission();
+  let permission = Notification.permission;
+  if (permission === "default") {
+    try {
+      permission = await Notification.requestPermission();
+    } catch (error: unknown) {
+      return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED, error);
+    }
+  }
   if (permission !== "granted") {
-    state.notificationsEnabled = false;
-    return;
+    return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED);
   }
 
+  let publicKey: string;
   try {
-    // Get VAPID public key from server
-    const vapidResp = await fetch("/api/push/vapid-key");
-    const { publicKey } = await vapidResp.json();
-    if (!publicKey) throw new Error("no VAPID key from server");
+    const response = await fetch("/api/push/vapid-key");
+    if (!response.ok) throw new Error(`VAPID key request failed: ${response.status}`);
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null || !("publicKey" in body)
+      || typeof body.publicKey !== "string" || body.publicKey.length === 0) {
+      throw new Error("VAPID key response is missing publicKey");
+    }
+    publicKey = body.publicKey;
+  } catch (error: unknown) {
+    return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.SERVER, error);
+  }
 
-    // Register service worker
-    const reg = await navigator.serviceWorker.register("/sw.js");
+  let registration: ServiceWorkerRegistration;
+  try {
+    registration = await navigator.serviceWorker.register("/sw.js");
     await navigator.serviceWorker.ready;
+  } catch (error: unknown) {
+    return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.SERVICE_WORKER, error);
+  }
 
-    // Subscribe to push
-    const sub = await reg.pushManager.subscribe({
+  let subscription: PushSubscription;
+  try {
+    subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
     });
+  } catch (error: unknown) {
+    const reason = Notification.permission === "denied"
+      ? NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED
+      : NOTIFICATION_CHANGE_FAILURE.SUBSCRIPTION;
+    return notificationChangeFailed(reason, error);
+  }
 
-    // Send subscription to server
-    const resp = await fetch("/api/push/subscribe", {
+  try {
+    const response = await fetch("/api/push/subscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sub.toJSON()),
+      body: JSON.stringify(subscription.toJSON()),
     });
-
-    if (resp.ok) {
-      state.notificationsEnabled = true;
-      console.log("Push subscription registered");
-    } else {
-      throw new Error(`subscribe failed: ${resp.status}`);
-    }
-  } catch (e) {
-    console.error("Push subscription failed:", e);
-    state.notificationsEnabled = false;
+    if (!response.ok) throw new Error(`subscription registration failed: ${response.status}`);
+  } catch (error: unknown) {
+    return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.SERVER, error);
   }
+
+  state.notificationsEnabled = true;
+  console.log("Push subscription registered");
+  return { ok: true };
 }
 
-export async function unsubscribeNotifications(): Promise<boolean> {
+export async function unsubscribeNotifications(): Promise<NotificationChangeResult> {
   const outcome = await unsubscribePushNotifications(
     state,
     async () => {
-      const reg = await navigator.serviceWorker.getRegistration();
-      return reg?.pushManager.getSubscription() ?? null;
+      const registration = await navigator.serviceWorker.getRegistration();
+      return registration?.pushManager.getSubscription() ?? null;
     },
     endpoint => fetch("/api/push/unsubscribe", {
       method: "POST",
@@ -181,10 +306,10 @@ export async function unsubscribeNotifications(): Promise<boolean> {
   );
   if ("error" in outcome) {
     console.error("Push unsubscribe failed:", outcome.error);
-    return false;
+    return { ok: false, reason: NOTIFICATION_CHANGE_FAILURE.UNSUBSCRIBE };
   }
   if (outcome.removed) console.log("Push subscription removed");
-  return true;
+  return { ok: true };
 }
 
 // ── State initializer helpers ──
@@ -297,19 +422,25 @@ export function setState(patch) { Object.assign(state, patch); }
 // Detect OS-level notification permission revoke. Browser permission can be
 // toggled from the URL bar / system settings without the page knowing —
 // re-check on visibility/focus so the UI toggle doesn't silently lie.
-export function syncNotificationsPermission() {
+export function syncNotificationsPermission(): void {
+  if (notificationPreferenceBusy) return;
   if (state.notificationUnsubscribePending) {
-    void unsubscribeNotifications();
+    void changeNotificationPreference(false);
     return;
   }
-  if (!("Notification" in window)) return;
+  if (!notificationsSupported()) {
+    renderNotificationRestingStatus();
+    return;
+  }
   const granted = Notification.permission === "granted";
   if (state.notificationsEnabled && !granted) {
     state.notificationsEnabled = false;
     // Route through toggleSetting so applySetting("notifications", false) runs
     // unsubscribeNotifications() — otherwise server retains stale push endpoint.
     toggleSetting("notifications", false);
+    return;
   }
+  renderNotificationRestingStatus();
 }
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", syncNotificationsPermission);

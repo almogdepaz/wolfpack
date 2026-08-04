@@ -680,7 +680,11 @@ export const controlApiSource: ControlApiSource = {
       operationId: "sendNotification",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({ message: string() }, ["message"]),
+      request: object({
+        message: string(),
+        sessionId: ref("SessionId"),
+        sessionName: ref("SessionName"),
+      }, ["message"]),
       response: object({
         ok: boolean(),
         sent: integer(),
