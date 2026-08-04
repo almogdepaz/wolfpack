@@ -17,10 +17,12 @@
  * reinstalls properly, but `wolfpack service install` will print a clear
  * "could not locate wolfpack-broker" error rather than failing silently.
  */
+const { execFileSync } = require("node:child_process");
 const { platform, arch } = require("node:os");
 const { copyFileSync, chmodSync, existsSync } = require("node:fs");
 const { join, dirname } = require("node:path");
 
+const isMacOS = platform() === "darwin";
 const key = `${platform()}-${arch()}`;
 const pkg = `wolfpack-bridge-${key}`;
 
@@ -43,6 +45,10 @@ function copyBinary(name) {
   }
   copyFileSync(src, dest);
   chmodSync(dest, 0o755);
+  if (isMacOS) {
+    execFileSync("xattr", ["-cr", dest], { stdio: "ignore" });
+    execFileSync("codesign", ["--sign", "-", "--force", dest], { stdio: "ignore" });
+  }
   return true;
 }
 
