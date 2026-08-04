@@ -20,6 +20,8 @@ import {
 import { __getTestState } from "../../src/test-hooks";
 import { handlePtyWs, teardownPty } from "../../src/server/websocket";
 
+const BOUNDED_GRID_SCROLLBACK_ROWS = 200;
+
 type Listener = (...args: unknown[]) => void;
 
 class FakeWs {
@@ -311,7 +313,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.hasJsonType("pty_ready")).toBe(true);
   });
 
-  test("viewport attach waits for initial resize redraw output before snapshotting", async () => {
+  test("viewport attach requests bounded grid scrollback after the resize redraw", async () => {
     backend.resizeOutput = new Uint8Array(2 * 1024);
     const ws = new FakeWs();
     attachWs(ws);
@@ -324,7 +326,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     await wait(100);
     expect(backend.prefillCalls).toEqual([
-      { name: SESSION, cols: 80, scrollbackLines: 0 },
+      { name: SESSION, cols: 80, scrollbackLines: BOUNDED_GRID_SCROLLBACK_ROWS },
     ]);
     expect(ws.hasJsonType("pty_ready")).toBe(true);
   });
@@ -402,7 +404,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
       { name: SESSION, cols: 132, rows: 50 },
     ]);
     expect(backend.prefillCalls).toEqual([
-      { name: SESSION, cols: 132, scrollbackLines: 0 },
+      { name: SESSION, cols: 132, scrollbackLines: BOUNDED_GRID_SCROLLBACK_ROWS },
     ]);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
   });

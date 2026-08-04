@@ -5,6 +5,20 @@ import {
 } from "../../src/terminal-connection-lifecycle.ts";
 
 describe("terminal connection lifecycle", () => {
+  test("does not reset a fresh terminal before its authoritative snapshot", () => {
+    const lifecycle = createTerminalConnectionLifecycle();
+
+    expect(lifecycle.onSocketOpen({
+      wasReconnect: false,
+      hydrationStarted: false,
+      hasAuthoritativePrefill: true,
+      hasPendingResizeScrollRestore: false,
+    })).toEqual({
+      rehydrationAction: TERMINAL_REHYDRATION_ACTION.NONE,
+      resetScrollLock: true,
+    });
+  });
+
   test("coordinates a reconnect replacement prefill through its first byte", () => {
     const lifecycle = createTerminalConnectionLifecycle();
 
@@ -14,15 +28,13 @@ describe("terminal connection lifecycle", () => {
       hasAuthoritativePrefill: true,
       hasPendingResizeScrollRestore: false,
     })).toEqual({
-      resetTerminal: false,
       rehydrationAction: TERMINAL_REHYDRATION_ACTION.REPLACEMENT,
       resetScrollLock: true,
     });
     expect(lifecycle.beginReplacementPrefill(false)).toEqual({
       activateHydration: false,
-      resetTerminal: false,
     });
-    expect(lifecycle.onBinaryData()).toEqual({ activateHydration: true, resetTerminal: true });
+    expect(lifecycle.onBinaryData()).toEqual({ activateHydration: true });
   });
 
   test("keeps viewport replacement bytes and activates hydration at prefill completion", () => {
@@ -32,7 +44,6 @@ describe("terminal connection lifecycle", () => {
     lifecycle.onReplacePrefill();
     expect(lifecycle.onPrefillDone()).toEqual({
       activateHydration: true,
-      resetTerminal: false,
     });
   });
 

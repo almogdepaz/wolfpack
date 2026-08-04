@@ -79,6 +79,41 @@ describe("terminal resize lifecycle", () => {
     expect(observerDisconnected).toBe(true);
   });
 
+  test("rehydrates viewport scrollback through the debounced resize lifecycle", () => {
+    const scheduler = new FakeScheduler();
+    let observerCallback: ((entries: readonly unknown[]) => void) | undefined;
+    let reconnects = 0;
+    let lifecycle: ReturnType<typeof createTerminalResizeLifecycle>;
+    const container = { clientWidth: 80, clientHeight: 24 };
+    lifecycle = createTerminalResizeLifecycle({
+      prefillMode: TERMINAL_PREFILL_MODE.VIEWPORT,
+      getContainer: () => container,
+      getTerm: () => ({ viewportY: 7, getScrollbackLength: () => 200 }),
+      getPtyClient: () => ({ isOpen: true, reconnect: () => { reconnects++; } }),
+      shouldSuppressContainerResize: () => false,
+      userRequestedScrollback: () => true,
+      syncLayout: () => lifecycle.scheduleResizeRehydrate(),
+      scheduler,
+      createResizeObserver: (callback) => {
+        observerCallback = callback;
+        return { observe: () => {}, disconnect: () => {} };
+      },
+    });
+
+    lifecycle.observe(container);
+    observerCallback?.([{}]);
+    scheduler.runFrames();
+    observerCallback?.([{}]);
+    scheduler.runFrames();
+    scheduler.runTimers();
+
+    expect(reconnects).toBe(1);
+    expect(lifecycle.takePendingScrollRestore()).toEqual({
+      oldScrollbackLength: 200,
+      oldViewportY: 7,
+    });
+  });
+
   test("debounces a full-prefill resize into one scrollback-preserving reconnect", () => {
     const scheduler = new FakeScheduler();
     let reconnects = 0;
