@@ -161,6 +161,7 @@ export interface InvalidBodyResponse {
 
 export interface ParseBodyOptions {
   readonly invalidResponse?: InvalidBodyResponse;
+  readonly tooLargeResponse?: InvalidBodyResponse;
   readonly maxBytes?: number;
   readonly respondOnTooLarge?: boolean;
 }
@@ -175,7 +176,11 @@ export async function parseBody(
     rawBody = await readBody(req, options.maxBytes, options.respondOnTooLarge === true);
   } catch (error: unknown) {
     if (error instanceof RequestBodyTooLargeError && options.respondOnTooLarge === true) {
-      json(res, { error: "request body too large" }, 413);
+      json(
+        res,
+        options.tooLargeResponse?.envelope ?? { error: "request body too large" },
+        options.tooLargeResponse?.status ?? 413,
+      );
     } else {
       json(res, { error: "invalid JSON body" }, 400);
     }

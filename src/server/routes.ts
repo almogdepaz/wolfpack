@@ -131,6 +131,8 @@ import type {
 import { createTopLevelSession } from "./session-create.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
+import { taskRoutes } from "./task-routes.ts";
+import { getTaskGateway } from "../tasks/gateway.ts";
 
 const SESSION_OPEN_INVALID_BODY_RESPONSE = {
   envelope: {
@@ -604,7 +606,7 @@ export const routes: Record<
     const name = hostname()
       .replace(/\.local$/, "")
       .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
-    json(res, { name, version: VERSION });
+    json(res, { name, version: VERSION, machineId: getTaskGateway().machineId });
   },
 
   "GET /api/sessions": async (_req, res) => {
@@ -1412,6 +1414,8 @@ export const routes: Record<
   },
 
   // ── Agent-triggered notifications ──
+
+  ...taskRoutes,
 
   "POST /api/notify": async (req, res) => {
     const body = await parseObjectBody(req, res);

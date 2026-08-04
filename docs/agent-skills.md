@@ -33,9 +33,10 @@ The packages and resources have distinct ownership:
 
 `npm:@sgtbeatdown/pi-tasks` contains both the extension and its matching
 delegation skill, so those two stay version-aligned. Every participating Pi
-session needs Pi Tasks loaded. Its default filesystem task store also requires
-parent and child sessions to use the same project directory; cross-repository or
-multi-host task state needs a shared store.
+session needs Pi Tasks loaded and a reachable local Wolfpack task gateway. The
+server-owned task store is machine-global, and trusted Tailnet peer routing uses
+stable broker session IDs rather than a project-local filesystem store. See
+[docs/task-gateway.md](task-gateway.md) for the canonical task gateway contract.
 
 Declining changes nothing. If writing the control skill fails, setup removes the
 newly created skill directory before advising a retry; if cleanup also fails, it
