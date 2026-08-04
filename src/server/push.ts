@@ -132,6 +132,7 @@ function loadSubscriptions(): PushSubscription[] {
 }
 
 function saveSubscriptions(subs: PushSubscription[]): void {
+  mkdirSync(dirname(SUBS_PATH), { recursive: true, mode: 0o700 });
   const tmp = SUBS_PATH + ".tmp";
   writeFileSync(tmp, JSON.stringify(subs, null, 2), { mode: 0o600 });
   renameSync(tmp, SUBS_PATH);

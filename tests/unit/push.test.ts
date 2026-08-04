@@ -52,6 +52,28 @@ describe("push: subscription management", () => {
   });
 });
 
+describe("push: subscription persistence initialization", () => {
+  test("creates the private Wolfpack directory on the first subscription", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-push-first-subscription-"));
+    const script = `
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { addSubscription } = await import("./src/server/push.ts");
+      addSubscription({ endpoint: "https://fcm.googleapis.com/first-subscription", keys: { p256dh: "key", auth: "auth" } });
+      console.log(readFileSync(join(process.env.HOME, ".wolfpack", "push-subscriptions.json"), "utf-8"));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: home },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout.toString()).toContain("first-subscription");
+  });
+});
+
 describe("push: corrupt subscription persistence", () => {
   test("refuses to replace malformed persisted subscriptions", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-push-corrupt-"));
