@@ -1,0 +1,32 @@
+# Wolfpack — agent-readable overview
+
+## Summary
+Wolfpack is a self-hosted browser terminal manager and multi-machine control room for AI coding agents. It runs on the machines the operator controls and exposes persistent terminal sessions through a browser/PWA. The intended network path for remote use is a private Tailscale tailnet.
+
+## Activation use case
+Install Wolfpack on two machines, connect both to the same tailnet, start an agent session on one machine, and open Wolfpack from another machine or phone. The operator can inspect output, send input, and continue long-running work without juggling SSH windows or tmux panes.
+
+## Supported environments
+- macOS arm64 and x64
+- Linux x64 and arm64
+- Claude Code, Codex CLI, Gemini CLI, shell, Cursor, Pi, and custom commands when installed on PATH
+
+## Install
+```bash
+curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
+```
+
+Then run `wolfpack`, complete setup, and use `wolfpack doctor` for diagnostics. The installer provides matching prebuilt `wolfpack` and `wolfpack-broker` binaries.
+
+## Architecture
+The local Rust broker owns PTY sessions, so browser-server restarts do not kill agents. Wolfpack is not a hosted orchestration service. It does not require a Wolfpack account, and there is no Wolfpack-hosted relay or prompt-upload service. Tailscale provides the private route for normal remote access.
+
+## Security
+Treat the generated local or tailnet URL as sensitive. Use a trusted tailnet and follow the repository's security model before exposing Wolfpack beyond that boundary. JWT authentication is not assumed by the Tailscale-first setup; review current security guidance before public exposure.
+
+## Links
+- Homepage: https://get-wolfpack.netlify.app/
+- Repository: https://github.com/almogdepaz/wolfpack
+- README: https://github.com/almogdepaz/wolfpack#readme
+- Security model: https://github.com/almogdepaz/wolfpack#trust-and-security-model
+- Tester discussion: https://github.com/almogdepaz/wolfpack/discussions/262

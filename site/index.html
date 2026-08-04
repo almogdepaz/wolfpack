@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07100e">
+  <meta name="description" content="Wolfpack is a private, self-hosted control room for persistent coding-agent sessions across your machines.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://get-wolfpack.netlify.app/">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://get-wolfpack.netlify.app/">
+  <meta property="og:title" content="Wolfpack — your agents. your machines. your tailnet.">
+  <meta property="og:description" content="A self-hosted control room for persistent coding-agent sessions across your machines, connected through your Tailscale tailnet.">
+  <meta property="og:image" content="https://get-wolfpack.netlify.app/assets/desktop-sessions.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Wolfpack — your agents. your machines. your tailnet.">
+  <meta name="twitter:description" content="Self-hosted, multi-machine control for Claude Code, Codex, Gemini, and shell sessions.">
+  <meta name="twitter:image" content="https://get-wolfpack.netlify.app/assets/desktop-sessions.png">
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Wolfpack",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS, Linux",
+      "description": "A self-hosted browser control room for persistent coding-agent terminal sessions across your machines.",
+      "url": "https://get-wolfpack.netlify.app/",
+      "downloadUrl": "https://github.com/almogdepaz/wolfpack",
+      "license": "https://github.com/almogdepaz/wolfpack/blob/main/LICENSE"
+    }
+  </script>
+  <title>Wolfpack — your agents. your machines. your tailnet.</title>
+  <link rel="icon" href="assets/wolfpack-icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="grain"></div>
+  <header class="nav wrap">
+    <a class="brand" href="#top" aria-label="Wolfpack home"><img src="assets/wolfpack-icon.svg" alt=""> <span>WOLFPACK</span></a>
+    <nav><a href="#how">How it works</a><a href="#privacy">Private by default</a><a href="https://github.com/almogdepaz/wolfpack">GitHub <span aria-hidden="true">↗</span></a></nav>
+    <a class="nav-cta" href="https://github.com/almogdepaz/wolfpack#quickstart">Install <span>→</span></a>
+  </header>
+
+  <main id="top">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <div class="eyebrow"><i></i> PRIVATE CONTROL ROOM FOR CODING AGENTS</div>
+        <h1>Your agents.<br><em>Your machines.</em><br>Your tailnet.</h1>
+        <p class="lede">Wolfpack keeps long-running Claude Code, Codex, Gemini, and shell sessions within reach—from your laptop, your workstation, or your phone.</p>
+        <div class="hero-actions"><a class="button primary" href="https://github.com/almogdepaz/wolfpack#quickstart">Install Wolfpack <span>↗</span></a><a class="button ghost" href="https://github.com/almogdepaz/wolfpack/discussions/262">Join the pack <span>→</span></a></div>
+        <div class="terminal-line"><code><span class="prompt">$</span> curl -fsSL raw.githubusercontent.com/.../install.sh | bash</code><button class="copy" title="Copy install command" aria-label="Copy install command">copy</button></div>
+      </div>
+      <div class="hero-visual">
+        <div class="visual-glow"></div>
+        <div class="window">
+          <div class="window-bar"><span class="dots"><b></b><b></b><b></b></span><span class="window-title">wolfpack / sessions</span><span class="live"><i></i> LIVE</span></div>
+          <img src="assets/desktop-sessions.png" alt="Wolfpack session dashboard showing connected coding agent sessions" loading="eager">
+          <div class="signal"><span>●</span> tailnet connected <b>3 machines</b></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="proof wrap"><span class="proof-label">BUILT FOR THE MOMENT BETWEEN MACHINES</span><div class="proof-line"></div><span class="mono">NO ACCOUNT · NO HOSTED RELAY · MIT LICENSE</span></section>
+
+    <section class="section wrap" id="how">
+      <div class="section-head"><div><div class="eyebrow">01 / THE WORKFLOW</div><h2>Start here.<br><span>Finish anywhere.</span></h2></div><p>Wolfpack is the missing control layer between your agents and the machines they run on.</p></div>
+      <div class="steps"><article class="step"><div class="step-num">01</div><div class="step-icon">⌘</div><h3>Run it where the work is</h3><p>Install beside your existing tools. Your projects, credentials, terminals, and agents stay on your machine.</p></article><article class="step"><div class="step-num">02</div><div class="step-icon">↔</div><h3>Connect over your tailnet</h3><p>Tailscale gives your machines a private route. No Wolfpack account. No Wolfpack-hosted relay or prompt upload service.</p></article><article class="step"><div class="step-num">03</div><div class="step-icon">◉</div><h3>Take the session with you</h3><p>Open the PWA from another machine or your phone. Read output, send input, and keep the loop moving.</p></article></div>
+    </section>
+
+    <section class="feature-band" id="privacy"><div class="wrap feature-grid"><div class="feature-art"><div class="radar"><span class="orbit one"></span><span class="orbit two"></span><span class="node n1">your phone</span><span class="node n2">laptop</span><span class="node n3">workstation</span><span class="center">W</span></div></div><div class="feature-copy"><div class="eyebrow">02 / YOUR INFRASTRUCTURE</div><h2>Private by<br><span>construction.</span></h2><p>Wolfpack is self-hosted software for machines you control. Remote access normally travels through your Tailscale network—not through us.</p><ul class="checks"><li><strong>Direct connections</strong><span>Use your tailnet as the trust boundary.</span></li><li><strong>Persistent PTY sessions</strong><span>Keep agents alive through tabs, drops, and context switches.</span></li><li><strong>Auditable surface</strong><span>Open source, local config, explicit service lifecycle.</span></li></ul><a class="text-link" href="https://github.com/almogdepaz/wolfpack#trust-and-security-model">Read the security model <span>↗</span></a></div></div></section>
+
+    <section class="section wrap showcase"><div class="section-head"><div><div class="eyebrow">03 / THE CONTROL ROOM</div><h2>Less SSH juggling.<br><span>More momentum.</span></h2></div><p>See every session, project, and machine at a glance. Jump into the terminal when the agent needs you.</p></div><div class="showcase-frame"><img src="assets/desktop-terminal.png" alt="Wolfpack terminal view with a persistent agent session" loading="lazy"><div class="frame-tag">LIVE TERMINAL / MACHINE: DEV-01</div></div></section>
+
+    <section class="agents wrap"><div class="agents-inner"><div><div class="eyebrow">READY FOR YOUR STACK</div><h2>Bring the agents<br>you already use.</h2></div><div class="agent-list"><span>Claude Code</span><span>Codex CLI</span><span>Gemini CLI</span><span>Shell</span><span>Custom wrappers</span></div></div></section>
+
+    <section class="final-cta wrap"><div class="eyebrow">THE FIRST REMOTE SESSION</div><h2>Put the pack<br><em>to work.</em></h2><p>Install in minutes. Scan the QR code. Pick up the session from wherever the next thought happens.</p><div class="hero-actions"><a class="button primary" href="https://github.com/almogdepaz/wolfpack#quickstart">Get started on GitHub <span>↗</span></a><a class="button ghost" href="https://github.com/almogdepaz/wolfpack/discussions/262">Become a tester <span>→</span></a></div></section>
+  </main>
+  <footer class="footer wrap"><a class="brand" href="#top"><img src="assets/wolfpack-icon.svg" alt=""> <span>WOLFPACK</span></a><span class="footer-note">Self-hosted. Open source. Yours.</span><div><a href="https://github.com/almogdepaz/wolfpack">GitHub ↗</a><a href="https://github.com/almogdepaz/wolfpack/blob/main/LICENSE">MIT License</a></div></footer>
+  <script>document.querySelector('.copy').addEventListener('click',async()=>{await navigator.clipboard.writeText('curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash');const b=document.querySelector('.copy');b.textContent='copied';setTimeout(()=>b.textContent='copy',1600)});</script>
+</body>
+</html>

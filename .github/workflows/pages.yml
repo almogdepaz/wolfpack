@@ -1,0 +1,31 @@
+name: Deploy Wolfpack homepage
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      # v4.2.2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # v5.0.0
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
+      # v3.0.1
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
+        with:
+          path: site
+      - id: deployment
+        # v4.0.5
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e

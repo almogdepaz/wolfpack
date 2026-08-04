@@ -15,7 +15,6 @@ import {
 import type { PublicSessionIdentity } from "./session-identity.js";
 
 const log = createLogger("session-observation");
-const ACTIVITY_FINGERPRINT_LINE_COUNT = 3;
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
 
 const dashboardActivityFingerprints = new Map<string, string>();
@@ -46,12 +45,12 @@ interface SessionObservation {
 const knownSessionSummaries = new Map<string, KnownSessionSummary>();
 
 function renderedActivityFingerprint(pane: string): string | undefined {
-  const nonEmptyLines = pane
+  const normalized = pane
     .split("\n")
     .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0);
-  if (nonEmptyLines.length === 0) return undefined;
-  return nonEmptyLines.slice(-ACTIVITY_FINGERPRINT_LINE_COUNT).join("\n");
+    .join("\n")
+    .trimEnd();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 async function collectSessionObservation(
