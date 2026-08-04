@@ -19,6 +19,7 @@
     "docs/agent-skills.md",
     "docs/cli-attach.md",
     "docs/session-control.md",
+    "docs/task-gateway.md",
     "skills"
   ],
   "scripts": {

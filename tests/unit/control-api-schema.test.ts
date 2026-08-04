@@ -41,6 +41,13 @@ function validate(schema: unknown, value: unknown, root: JsonObject, path = "$")
       : [`${path} did not match anyOf: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
   }
 
+  if (Array.isArray(resolved.oneOf)) {
+    const variants = resolved.oneOf.map((candidate) => validate(candidate, value, root, path));
+    return variants.filter((errors) => errors.length === 0).length === 1
+      ? []
+      : [`${path} did not match exactly one variant: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
+  }
+
   if ("const" in resolved && value !== resolved.const) {
     return [`${path} expected const ${JSON.stringify(resolved.const)}`];
   }
@@ -339,7 +346,7 @@ describe("control api schema compatibility samples", () => {
 
   test("representative http responses satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
-      ["getInfo", { name: "devbox", version: "1.6.6" }],
+      ["getInfo", { name: "devbox", version: "1.6.6", machineId: "018f6b48-4b1c-7000-8000-000000000001" }],
       ["listSessions", { sessions: [{
         name: "wolf-1-sub-agent",
         lastLine: "",
@@ -391,6 +398,58 @@ describe("control api schema compatibility samples", () => {
     for (const [operationId, payload] of samples) {
       expect(validate(httpResponse(operationId), payload, artifact), operationId).toEqual([]);
     }
+  });
+
+  test("standalone task payload limits late-terminal original types to terminals", () => {
+    const payload = { $ref: "#/$defs/TaskEventPayload" };
+    const terminalLate = { kind: "late_terminal", originalType: "task.failed", originalEventId: "018f6b48-4b1c-7000-8000-000000000011" };
+
+    expect(validate(payload, terminalLate, artifact)).toEqual([]);
+    expect(validate(payload, { ...terminalLate, originalType: "task.created" }, artifact)).not.toEqual([]);
+  });
+
+  test("task event schemas reject actor, payload, provenance, and canonical mismatches", () => {
+    const input = { $ref: "#/$defs/TaskEventInput" };
+    const canonical = { $ref: "#/$defs/CanonicalTaskEvent" };
+    const inputCompletion = {
+      id: "018f6b48-4b1c-7000-8000-000000000010",
+      taskId: "018f6b48-4b1c-7000-8000-000000000001",
+      type: "task.completed",
+      actor: "receiver",
+      occurredAt: "2026-08-03T00:00:00.000Z",
+      payload: { kind: "none" },
+      completion: { summary: "finished", artifacts: [{ path: "result.json" }] },
+    };
+    const canonicalCompletion = {
+      ...inputCompletion,
+      source: { machine: "machine-b", sessionId: "receiver" },
+      destination: { machine: "machine-a", sessionId: "parent" },
+      sequence: "1",
+      completion: {
+        summary: "finished",
+        artifacts: [{ machine: "machine-b", project: "receiver-project", path: "result.json" }],
+        warnings: [],
+      },
+    };
+
+    expect(validate(input, inputCompletion, artifact)).toEqual([]);
+    expect(validate(canonical, canonicalCompletion, artifact)).toEqual([]);
+    const parentCancelled = { ...inputCompletion, type: "task.cancelled", actor: "parent", completion: undefined };
+    const senderFailed = { ...inputCompletion, type: "task.failed", actor: "sender" };
+    const lateTerminal = { ...inputCompletion, type: "task.late_terminal", actor: "sender", completion: undefined, payload: { kind: "late_terminal", originalType: "task.failed", originalEventId: "018f6b48-4b1c-7000-8000-000000000011" } };
+    const { completion: _completion, ...lateTerminalWithoutCompletion } = lateTerminal;
+    const canonicalLateTerminal = { ...lateTerminalWithoutCompletion, source: { machine: "machine-a", sessionId: "sender" }, destination: { machine: "machine-b", sessionId: "receiver" }, sequence: "2" };
+
+    expect(validate(input, { ...inputCompletion, actor: "parent" }, artifact)).not.toEqual([]);
+    expect(validate(input, { ...inputCompletion, payload: { kind: "delivery_failure", code: "OFFLINE", message: "offline" } }, artifact)).not.toEqual([]);
+    expect(validate(input, { ...inputCompletion, completion: canonicalCompletion.completion }, artifact)).not.toEqual([]);
+    expect(validate(input, parentCancelled, artifact)).not.toEqual([]);
+    expect(validate(input, senderFailed, artifact)).toEqual([]);
+    expect(validate(input, lateTerminal, artifact)).not.toEqual([]);
+    expect(validate(canonical, { ...canonicalCompletion, actor: "parent" }, artifact)).not.toEqual([]);
+    expect(validate(canonical, { ...canonicalCompletion, completion: inputCompletion.completion }, artifact)).not.toEqual([]);
+    expect(validate(canonical, { ...canonicalLateTerminal, payload: { ...canonicalLateTerminal.payload, originalType: "task.created" } }, artifact)).not.toEqual([]);
+    expect(validate(canonical, canonicalLateTerminal, artifact)).toEqual([]);
   });
 
   test("representative websocket control messages satisfy generated schemas", () => {

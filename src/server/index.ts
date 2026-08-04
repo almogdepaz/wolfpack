@@ -17,6 +17,7 @@ import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } fr
 import { SHELL } from "./shell.js";
 import { initBackend, getBackend, getRouter } from "./backend.js";
 import { routes } from "./routes.js";
+import { getTaskGateway } from "../tasks/gateway.ts";
 import {
   json,
   serveFile,
@@ -270,6 +271,7 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
     }
   }
 
+  await getTaskGateway().initialize();
   getBackend().cleanupOrphans();
 
   server.on("error", (err: NodeJS.ErrnoException) => {
