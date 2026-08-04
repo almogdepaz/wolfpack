@@ -1065,6 +1065,10 @@ body.no-animations, body.no-animations * {
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent-glow);
 }
+.settings-toggle input[type="checkbox"]:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
 .settings-label {
   font-size: 11px;
   color: var(--text-muted);
@@ -2589,6 +2593,10 @@ body.no-animations, body.no-animations * {
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .machine-label { display: none; font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; line-height: 1; }
 .settings-toggle { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; font-size: 12px; color: var(--text-muted); }
+.notification-setting-status { min-height: 16px; margin: -4px 0 6px 48px; font-size: 10px; line-height: 1.45; color: var(--text-dim); }
+.notification-setting-status[data-state="pending"] { color: var(--warning); }
+.notification-setting-status[data-state="success"] { color: var(--accent); }
+.notification-setting-status[data-state="error"] { color: var(--danger-bright); }
 .settings-subsection { padding: 4px 0; font-size: 12px; color: var(--text-muted); }
 .settings-sub-heading { margin-bottom: 6px; }
 .preset-row { display: flex; gap: 6px; }
