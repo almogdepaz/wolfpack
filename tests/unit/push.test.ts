@@ -84,6 +84,22 @@ describe("push: corrupt subscription persistence", () => {
   });
 });
 
+describe("push: notification payload routing", () => {
+  test("routes an explicit notification to a bounded stable session target", async () => {
+    const { buildAgentNotificationPayload } = await import("../../src/server/push.ts");
+
+    expect(buildAgentNotificationPayload("ready for review", {
+      sessionId: "stable-parent-id",
+      sessionName: "parent-agent",
+    })).toEqual({
+      title: "Wolfpack",
+      body: "ready for review",
+      tag: "wolfpack-notify",
+      url: "/?sessionId=stable-parent-id&session=parent-agent&machine=local",
+    });
+  });
+});
+
 describe("push: sendPush with no subscriptions", () => {
   test("returns zeros when no subscriptions", async () => {
     const { sendPush } = await import("../../src/server/push.ts");
@@ -380,6 +396,35 @@ describe("push: checkNotifyRateLimit", () => {
 // ── State transition + debounce tests ──
 
 describe("push: delivery deadline", () => {
+  test("retries a transient delivery failure without redelivering after success", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    const statuses = [503, 201];
+    const client = createECDH("prime256v1");
+    client.generateKeys();
+    let calls = 0;
+    const fetcher = async (): Promise<Response> => {
+      calls++;
+      return new Response(null, { status: statuses.shift() ?? 500 });
+    };
+
+    const status = await _testing.sendSubscriptionWithRetry(
+      {
+        endpoint: "https://fcm.googleapis.com/retry-test",
+        keys: {
+          p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
+          auth: _testing.b64urlEncode(Buffer.alloc(16, 2)),
+        },
+      },
+      Buffer.from("payload"),
+      (await import("../../src/server/push.ts")).getVapidKeys(),
+      fetcher,
+      async () => {},
+    );
+
+    expect(status).toBe(201);
+    expect(calls).toBe(2);
+  });
+
   test("a never-resolving fetch is rejected within the configured deadline", async () => {
     const { _testing } = await import("../../src/server/push.ts");
     const started = Date.now();
@@ -413,25 +458,67 @@ describe("push: checkSessionTransitions", () => {
     // With 0 subs (after cleanup from cap test), should be a no-op
     if (getSubscriptionCount() > 0) return; // skip if other tests left subs
     // Just verify it doesn't throw
-    checkSessionTransitions([{ name: "test", triage: "idle" }]);
+    await checkSessionTransitions([{ name: "test", triage: "idle" }]);
   });
 
-  test("tracks state transitions correctly", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+  test("does not convert an unreliable idle observation into a notification transition", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/unreliable-observation-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    _testing.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    _testing.prevTriageState.set("stable-id", "output");
+    try {
+      await checkSessionTransitions([{
+        name: "agent",
+        triage: "idle",
+        identity: { wolfpackSessionId: "stable-id" },
+        runtimeState: { state: "idle" },
+        notificationEligible: false,
+      }]);
 
-    // Simulate: first call sets initial state
-    _testing.prevTriageState.set("sess1", "running");
-    // Now transition to idle — should trigger push (but we can verify state was recorded)
-    // We can't easily test the sendPush call without a subscription, but we CAN verify
-    // the state tracking maps are updated correctly
+      expect(_testing.prevTriageState.get("stable-id")).toBe("output");
+      expect(_testing.lastSessionPushTime.has("stable-id")).toBe(false);
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
 
-    // Set running state
-    _testing.prevTriageState.set("sess1", "running");
-    _testing.prevTriageState.set("sess2", "idle");
+  test("retries an undelivered transition but does not redeliver after success", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/transition-retry-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const deliveries = [
+      { sent: 0, failed: 1, pruned: 0 },
+      { sent: 1, failed: 0, pruned: 0 },
+    ];
+    const payloads: unknown[] = [];
+    _testing.sessionPushSender = async (payload) => {
+      payloads.push(payload);
+      return deliveries.shift() ?? { sent: 1, failed: 0, pruned: 0 };
+    };
+    _testing.prevTriageState.set("stable-id", "output");
+    const quiet = [{
+      name: "agent",
+      triage: "idle" as const,
+      identity: { wolfpackSessionId: "stable-id" },
+      runtimeState: { state: "idle" as const },
+    }];
 
-    // Verify maps have the expected state
-    expect(_testing.prevTriageState.get("sess1")).toBe("running");
-    expect(_testing.prevTriageState.get("sess2")).toBe("idle");
+    try {
+      await checkSessionTransitions(quiet);
+      await checkSessionTransitions(quiet);
+      await checkSessionTransitions(quiet);
+
+      expect(payloads).toHaveLength(2);
+      expect(payloads[0]).toMatchObject({
+        title: "Wolfpack: agent",
+        url: "/?sessionId=stable-id&session=agent&machine=local",
+      });
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
   });
 
   test("debounce prevents rapid push within 30s", async () => {
@@ -481,8 +568,9 @@ describe("push: checkSessionTransitions", () => {
     const ep = `https://fcm.googleapis.com/stable-route-test-${Date.now()}`;
     addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
 
+    _testing.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     _testing.prevTriageState.set("stable-id", "output");
-    checkSessionTransitions([{
+    await checkSessionTransitions([{
       name: "renamed-agent",
       triage: "idle",
       identity: { wolfpackSessionId: "stable-id" },
@@ -501,8 +589,9 @@ describe("push: checkSessionTransitions", () => {
     const ep = `https://fcm.googleapis.com/runtime-state-test-${Date.now()}`;
     addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
 
+    _testing.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     _testing.prevTriageState.set("agent", "output");
-    checkSessionTransitions([{ name: "agent", triage: "running", runtimeState: { state: "needs-input" } }]);
+    await checkSessionTransitions([{ name: "agent", triage: "running", runtimeState: { state: "needs-input" } }]);
 
     expect(_testing.prevTriageState.get("agent")).toBe("needs-input");
     expect(_testing.lastSessionPushTime.has("agent")).toBe(true);
@@ -522,7 +611,7 @@ describe("push: checkSessionTransitions", () => {
     _testing.lastSessionPushTime.set("old-session", Date.now());
 
     // Call with only "new-session" — old-session should be pruned
-    checkSessionTransitions([{ name: "new-session", triage: "running" }]);
+    await checkSessionTransitions([{ name: "new-session", triage: "running" }]);
 
     expect(_testing.prevTriageState.has("old-session")).toBe(false);
     expect(_testing.lastSessionPushTime.has("old-session")).toBe(false);

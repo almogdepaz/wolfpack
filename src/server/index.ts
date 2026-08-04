@@ -19,6 +19,10 @@ import { initBackend, getBackend, getRouter } from "./backend.js";
 import { routes } from "./routes.js";
 import { getTaskGateway } from "../tasks/gateway.ts";
 import {
+  startSessionNotificationObserver,
+  stopSessionNotificationObserver,
+} from "./session-observation.js";
+import {
   json,
   serveFile,
   shouldAuthenticateApiPath,
@@ -273,6 +277,8 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
 
   await getTaskGateway().initialize();
   getBackend().cleanupOrphans();
+  startSessionNotificationObserver();
+  server.once("close", stopSessionNotificationObserver);
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
