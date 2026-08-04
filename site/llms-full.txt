@@ -27,6 +27,5 @@ Treat the generated local or tailnet URL as sensitive. Use a trusted tailnet and
 ## Links
 - Homepage: https://get-wolfpack.netlify.app/
 - Repository: https://github.com/almogdepaz/wolfpack
-- README: https://github.com/almogdepaz/wolfpack#readme
 - Security model: https://github.com/almogdepaz/wolfpack#trust-and-security-model
 - Tester discussion: https://github.com/almogdepaz/wolfpack/discussions/262

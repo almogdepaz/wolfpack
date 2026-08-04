@@ -3,7 +3,7 @@
   "version": "1.6.15",
   "type": "module",
   "description": "Self-hosted browser terminal manager for AI coding agents on your own machines",
-  "homepage": "https://github.com/almogdepaz/wolfpack#readme",
+  "homepage": "https://get-wolfpack.netlify.app/",
   "bugs": {
     "url": "https://github.com/almogdepaz/wolfpack/issues"
   },
