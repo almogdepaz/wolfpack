@@ -5,13 +5,47 @@
  * Contract:
  *   - WOLFPACK_JWT_SECRET set, ≥32 chars  →  enforce auth ("ok")
  *   - WOLFPACK_JWT_SECRET set, <32 chars  →  refuse to start ("invalid")
- *   - WOLFPACK_JWT_SECRET unset           →  log ERROR, continue ("missing")
+ *   - WOLFPACK_JWT_SECRET unset           →  log an informational security notice and continue ("missing")
  *
  * The "invalid" case is the dangerous one — without this check, a typo
  * (e.g. setting the var to something short) silently disables all auth.
  */
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { getJwtAuthConfig, verifyJwtAuthAtStartup } from "../../src/auth.ts";
+
+describe("server startup JWT notice", () => {
+  test("logs an informational notice when JWT is intentionally unset", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-no-jwt-"));
+    try {
+      const result = spawnSync(process.execPath, ["-e", `
+        const { startServer, server } = await import("${join(process.cwd(), "src/server/index.ts")}");
+        await startServer(0);
+        await new Promise((resolve) => server.once("listening", resolve));
+        await new Promise((resolve) => server.close(resolve));
+      `], {
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          HOME: home,
+          WOLFPACK_TEST: "1",
+          WOLFPACK_LOG_LEVEL: "info",
+          WOLFPACK_JWT_SECRET: "",
+        },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("WOLFPACK_JWT_SECRET is not set");
+      expect(result.stdout).toContain('"level":"info"');
+      expect(result.stdout).toContain("WOLFPACK_JWT_SECRET is not set");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("getJwtAuthConfig — present/enabled distinction", () => {
   test("missing secret: present=false, enabled=false", () => {

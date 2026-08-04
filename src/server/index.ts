@@ -239,8 +239,8 @@ const { server, wss } = createServerInstance();
 export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void> {
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
-  // silently disable authentication. Missing secret is logged loudly but
-  // permitted (matches install.sh behavior — auth is opt-in).
+  // silently disable authentication. A missing secret is surfaced as an
+  // informational notice because Tailscale is the default remote-access boundary.
   const authCfg = getCachedJwtAuthConfig();
   const authStatus = verifyJwtAuthAtStartup(authCfg);
   if (authStatus === "invalid") {
@@ -251,7 +251,7 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
     process.exit(1);
   }
   if (authStatus === "missing") {
-    log.error("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
+    log.info("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
       hint: "set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication",
     });
   }

@@ -526,7 +526,7 @@ const STATUS_ICONS: Record<CheckResult["status"], string> = {
   warn: yellow("⚠"),
 };
 
-function printResults(results: CheckResult[]): { pass: number; fail: number; warn: number } {
+export function printResults(results: CheckResult[]): { pass: number; fail: number; warn: number } {
   const counts = { pass: 0, fail: 0, warn: 0 };
   let currentGroup = "";
 
@@ -536,7 +536,7 @@ function printResults(results: CheckResult[]): { pass: number; fail: number; war
       print("");
       print(bold(`  ${currentGroup}`));
     }
-    counts[r.status]++;
+    if (r.name) counts[r.status]++;
     const icon = STATUS_ICONS[r.status];
     if (r.name) {
       print(`    ${icon} ${r.name}${r.detail ? dim(` — ${r.detail}`) : ""}`);

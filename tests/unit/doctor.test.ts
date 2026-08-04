@@ -103,6 +103,18 @@ describe("applyFixes()", () => {
   });
 });
 
+describe("doctor result rendering", () => {
+  test("does not count log excerpt continuation lines as warnings", async () => {
+    const { printResults } = await import("../../src/cli/doctor.ts");
+    const counts = printResults([
+      { name: "recent errors", group: "Logs", status: "warn", detail: "1 error(s) in last 100 lines" },
+      { name: "", group: "Logs", status: "warn", detail: "matching log excerpt" },
+    ]);
+
+    expect(counts).toEqual({ pass: 0, fail: 0, warn: 1 });
+  });
+});
+
 describe("doctor() integration", () => {
   test("returns 0 or 1 without throwing (no --fix)", async () => {
     const { doctor } = await import("../../src/cli/doctor.ts");
