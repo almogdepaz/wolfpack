@@ -1451,7 +1451,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   let _hydrationStarted = false;
   const connectionLifecycle = createTerminalConnectionLifecycle();
   let _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
-  let _postResetBuffer: Uint8Array[] | null = null;
   let _mounting = false;
   let _userScrolledUp = false;
   let _userRequestedScrollback = false;
@@ -1468,33 +1467,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
   const _canAcceptInput = opts.canAcceptInput || (() => !!(_ptyClient && _ptyClient.isOpen));
   const _canSendResize = opts.canSendResize || _canAcceptInput;
   const _getHydrationElement = opts.getHydrationElement || (() => _container);
-
-  /** Full terminal reset, then flush buffered writes next frame.
-   *  reset() wipes both viewport and scrollback — clear() only wiped
-   *  scrollback and preserved the cursor line, which caused duplicate
-   *  content on reconnect (banner replayed over leftover viewport) and
-   *  broken scrollback history (cursor pinned at bottom of old viewport).
-   *  Canvas is hidden across the rAF gap so the brief blank frame from
-   *  reset() isn't visible. Writes are deferred because ghostty-web WASM
-   *  crashes with "memory access out of bounds" if write() follows
-   *  reset()/clear() in the same tick. */
-  function _scheduleBufferedClear() {
-    if (!_postResetBuffer) _postResetBuffer = [];
-    const canvas = _container ? _container.querySelector('canvas') : null;
-    if (canvas) canvas.style.visibility = 'hidden';
-    _term.reset();
-    requestAnimationFrame(() => {
-      if (!_term || !_postResetBuffer) {
-        if (canvas) canvas.style.visibility = '';
-        return;
-      }
-      const buf = _postResetBuffer;
-      _postResetBuffer = null;
-      for (const chunk of buf) _writeTermData(chunk);
-      // Restore — fresh data is now in the buffer, safe to show.
-      if (canvas) canvas.style.visibility = '';
-    });
-  }
 
   function _writeTermData(data: Uint8Array) {
     if (!_term) return;
@@ -1937,17 +1909,15 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
-        // The connection lifecycle decides whether the initial Ghostty buffer
-        // must be reset and whether this socket replaces displayed content.
+        // The connection lifecycle decides whether this socket replaces
+        // displayed content. The authoritative broker prefill clears terminal
+        // state itself; never reset the Ghostty instance during hydration.
         const socketOpenAction = connectionLifecycle.onSocketOpen({
           wasReconnect,
           hydrationStarted: _hydrationStarted,
           hasAuthoritativePrefill: opts.prefillMode !== TERMINAL_PREFILL_MODE.NONE,
           hasPendingResizeScrollRestore: resizeLifecycle.hasPendingScrollRestore,
         });
-        if (socketOpenAction.resetTerminal && _term) {
-          _term.reset();
-        }
         if (socketOpenAction.rehydrationAction !== TERMINAL_REHYDRATION_ACTION.NONE && _term) {
           if (socketOpenAction.rehydrationAction === TERMINAL_REHYDRATION_ACTION.REPLACEMENT) {
             // Retain the old frame until replacement bytes arrive, then hide
@@ -1968,11 +1938,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
       onPrefillDone: () => {
         if (!isCurrent()) return;
-        // An empty authoritative prefill still replaces old state; clear it
-        // behind hydration instead of leaving a stale reconnect frame visible.
         const prefillAction = connectionLifecycle.onPrefillDone();
         if (prefillAction.activateHydration) activateReplacementHydration();
-        if (prefillAction.resetTerminal) _scheduleBufferedClear();
         _initialPrefillComplete = true;
         if (_hydration) _hydration.scheduleFinish();
       },
@@ -1988,20 +1955,8 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       },
       onBinaryData: (data) => {
         if (!_term) return;
-        // Buffer writes while WASM settles after clear — ghostty-web crashes
-        // with "memory access out of bounds" if write() follows clear() in the
-        // same tick.
-        if (_postResetBuffer) {
-          _postResetBuffer.push(data);
-          return;
-        }
         const binaryAction = connectionLifecycle.onBinaryData();
         if (binaryAction.activateHydration) activateReplacementHydration();
-        if (binaryAction.resetTerminal) {
-          _postResetBuffer = [data];
-          _scheduleBufferedClear();
-          return;
-        }
         _writeTermData(data);
       },
       onViewerConflict: () => { if (isCurrent() && opts.onViewerConflict) opts.onViewerConflict(); },
@@ -2054,7 +2009,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_hydration) { _hydration.cancel(); _hydration = null; }
     _hydrationStarted = false;
     connectionLifecycle.reset();
-    _postResetBuffer = null;
     resizeLifecycle.dispose();
     _mounting = false;
     _userScrolledUp = false;

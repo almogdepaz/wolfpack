@@ -1,6 +1,5 @@
 export interface ReplacementPrefillAction {
   readonly activateHydration: boolean;
-  readonly resetTerminal?: boolean;
 }
 
 export interface ReplacementPrefillLifecycle {
@@ -12,34 +11,25 @@ export interface ReplacementPrefillLifecycle {
 }
 
 export function createReplacementPrefillLifecycle(): ReplacementPrefillLifecycle {
-  let resetPending = false;
   let replacementPending = false;
 
   return {
     begin(hideImmediately): ReplacementPrefillAction {
-      resetPending = true;
       replacementPending = !hideImmediately;
       return { activateHydration: hideImmediately };
     },
     onPrefillDone(): ReplacementPrefillAction {
       if (!replacementPending) return { activateHydration: false };
       replacementPending = false;
-      const resetTerminal = resetPending;
-      resetPending = false;
-      return { activateHydration: true, ...(resetTerminal ? { resetTerminal: true } : {}) };
+      return { activateHydration: true };
     },
     onBinaryData(): ReplacementPrefillAction {
-      if (!resetPending) return { activateHydration: false };
-      const activateHydration = replacementPending;
+      if (!replacementPending) return { activateHydration: false };
       replacementPending = false;
-      resetPending = false;
-      return { activateHydration, resetTerminal: true };
+      return { activateHydration: true };
     },
-    onReplacePrefill(): void {
-      resetPending = false;
-    },
+    onReplacePrefill(): void {},
     reset(): void {
-      resetPending = false;
       replacementPending = false;
     },
   };

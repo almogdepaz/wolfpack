@@ -20,14 +20,12 @@ export interface TerminalSocketOpenState {
 }
 
 export interface TerminalSocketOpenAction {
-  readonly resetTerminal: boolean;
   readonly rehydrationAction: TerminalRehydrationAction;
   readonly resetScrollLock: boolean;
 }
 
 export interface TerminalConnectionPrefillAction {
   readonly activateHydration: boolean;
-  readonly resetTerminal: boolean;
 }
 
 export interface TerminalConnectionLifecycle {
@@ -46,12 +44,8 @@ export interface TerminalConnectionLifecycle {
 
 function prefillAction(action: {
   readonly activateHydration: boolean;
-  readonly resetTerminal?: boolean;
 }): TerminalConnectionPrefillAction {
-  return {
-    activateHydration: action.activateHydration,
-    resetTerminal: action.resetTerminal ?? false,
-  };
+  return { activateHydration: action.activateHydration };
 }
 
 export function createTerminalConnectionLifecycle(): TerminalConnectionLifecycle {
@@ -82,7 +76,6 @@ export function createTerminalConnectionLifecycle(): TerminalConnectionLifecycle
         hydrationWriteTracker.reset();
       }
       return {
-        resetTerminal: !state.wasReconnect,
         rehydrationAction,
         resetScrollLock: !state.hasPendingResizeScrollRestore,
       };
