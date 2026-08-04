@@ -32,11 +32,16 @@ class PiBackend extends MockBackend {
     return {
       parent: { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent", projectPath: parentProject, agentKind: "pi", createdAt: now, updatedAt: now },
       receiver: { wolfpackSessionId: "receiver-id", wolfpackSessionName: "receiver", projectPath: receiverProject, agentKind: "pi", createdAt: now, updatedAt: now },
+      claude: { wolfpackSessionId: "claude-id", wolfpackSessionName: "claude", projectPath: receiverProject, agentKind: "claude", createdAt: now, updatedAt: now },
+      codex: { wolfpackSessionId: "codex-id", wolfpackSessionName: "codex", projectPath: receiverProject, agentKind: "codex", createdAt: now, updatedAt: now },
+      shell: { wolfpackSessionId: "shell-id", wolfpackSessionName: "shell", projectPath: receiverProject, agentKind: "shell", createdAt: now, updatedAt: now },
+      unknown: { wolfpackSessionId: "unknown-id", wolfpackSessionName: "unknown", projectPath: receiverProject, agentKind: "unknown", createdAt: now, updatedAt: now },
+      custom: { wolfpackSessionId: "custom-id", wolfpackSessionName: "custom", projectPath: receiverProject, agentKind: "custom", createdAt: now, updatedAt: now },
     };
   }
 }
 
-__setTestBackend(new PiBackend({ sessions: ["parent", "receiver"] }));
+__setTestBackend(new PiBackend({ sessions: ["parent", "receiver", "claude", "codex", "shell", "unknown", "custom"] }));
 const { server } = createServerInstance();
 let base = "";
 
@@ -93,6 +98,7 @@ interface PeerServerOptions {
   readonly crashBeforePeerEvent?: string;
   readonly crashBeforePeerEventAttempt?: number;
   readonly fastRetry?: boolean;
+  readonly receiverHarness?: string;
 }
 
 async function reservePort(): Promise<number> {
@@ -144,6 +150,7 @@ async function spawnPeerServer(options: PeerServerOptions): Promise<PeerServer> 
       WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT: options.crashBeforePeerEvent ?? "",
       WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT_ATTEMPT: String(options.crashBeforePeerEventAttempt ?? 0),
       WOLFPACK_TEST_FAST_RETRY: options.fastRetry ? "1" : "",
+      WOLFPACK_TEST_RECEIVER_HARNESS: options.receiverHarness ?? "pi",
       WOLFPACK_TEST_LISTEN_PORT: String(options.port),
       WOLFPACK_TEST_PEER_MAP: options.peerMapPath,
       WOLFPACK_TEST_PEER_ORIGIN: options.peerOrigin,
@@ -516,6 +523,145 @@ describe("cross-process peer task gateway", () => {
     } finally {
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a routable Claude target through an isolated peer receiver", async () => {
+    const fixture = await createHttpPeerFixture("claude-target");
+    let sender: PeerServer | undefined;
+    let receiver: PeerServer | undefined;
+    try {
+      receiver = await spawnPeerServer({ ...peerServerOptions(fixture, "receiver"), receiverHarness: "claude" });
+      sender = await spawnPeerServer(peerServerOptions(fixture, "sender"));
+      const sent = await peerRequest(sender.base, "/api/tasks/v1/send", {
+        callerSession: "parent", to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" }, task: "route to Claude without adapter inference",
+      });
+      if (typeof sent.taskId !== "string") throw new Error("expected remote task receipt");
+      const inbox = await fetch(`${receiver.base}/api/tasks/v1/inbox?callerSession=receiver&cursor=0`);
+      expect(inbox.status).toBe(200);
+      expect(await inbox.json()).toMatchObject({ events: [expect.objectContaining({ taskId: sent.taskId, type: "task.created" })] });
+    } finally {
+      await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("round trips opaque accepted assignment fields locally and through an isolated peer", async () => {
+    const opaqueFields = {
+      context: { summary: "bounded handoff context", refs: [{ path: "docs/contract.md", selector: "#opaque-assignment-fields", purpose: "preserve adapter context" }] },
+      role: "implementation specialist",
+      metadata: { phaseId: "015", issueId: "adapter-contract", verificationTier: "focused", rootCause: "delivery-gap" },
+      onCompletePrompt: "independently verify the terminal result before acknowledging it",
+    };
+    const localTaskRoot = join(tmpdir(), `wolfpack-task-opaque-local-${process.pid}-${Date.now()}`);
+    const localGateway = new TaskGateway({ root: localTaskRoot });
+    try {
+      await localGateway.initialize();
+      const local = await localGateway.send({
+        ...remoteSendInput("preserve local opaque fields"), to: { machine: "local", sessionId: "receiver" },
+        ...opaqueFields, preflight: { requiredProject: basename(receiverProject) },
+      });
+      if (!local.ok) throw new Error("expected local opaque assignment receipt");
+      const localStatus = await localGateway.status("parent", local.taskId);
+      if (!localStatus.ok) throw new Error("expected local opaque assignment status");
+      const localTask = localStatus.task as unknown as Record<string, unknown>;
+      expect({ context: localTask.context, role: localTask.role, metadata: localTask.metadata, onCompletePrompt: localTask.onCompletePrompt, preflight: localTask.preflight }).toEqual({
+        ...opaqueFields, preflight: { requiredProject: basename(receiverProject) },
+      });
+    } finally {
+      rmSync(localTaskRoot, { recursive: true, force: true });
+    }
+
+    const fixture = await createHttpPeerFixture("opaque-fields");
+    let sender: PeerServer | undefined;
+    let receiver: PeerServer | undefined;
+    try {
+      receiver = await spawnPeerServer(peerServerOptions(fixture, "receiver"));
+      sender = await spawnPeerServer(peerServerOptions(fixture, "sender"));
+      const sent = await peerRequest(sender.base, "/api/tasks/v1/send", {
+        callerSession: "parent", to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" }, task: "preserve federated opaque fields",
+        ...opaqueFields, preflight: { requiredProject: "receiver-project" },
+      });
+      if (typeof sent.taskId !== "string") throw new Error("expected remote task receipt");
+      const [senderStatus, receiverStatus] = await Promise.all([
+        fetch(`${sender.base}/api/tasks/v1/status?callerSession=parent&taskId=${sent.taskId}`),
+        fetch(`${receiver.base}/api/tasks/v1/status?callerSession=receiver&taskId=${sent.taskId}`),
+      ]);
+      expect([senderStatus.status, receiverStatus.status]).toEqual([200, 200]);
+      const expected = { ...opaqueFields, preflight: { requiredProject: "receiver-project" } };
+      for (const response of [senderStatus, receiverStatus]) {
+        const task = (await response.json() as { readonly task: Record<string, unknown> }).task;
+        expect({ context: task.context, role: task.role, metadata: task.metadata, onCompletePrompt: task.onCompletePrompt, preflight: task.preflight }).toEqual(expected);
+      }
+    } finally {
+      await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts every routable isolated peer harness and rejects non-agent harnesses without durable task state", async () => {
+    const cases = [
+      { harness: "pi", accepted: true },
+      { harness: "claude", accepted: true },
+      { harness: "codex", accepted: true },
+      { harness: "gemini", accepted: true },
+      { harness: "cursor", accepted: true },
+      { harness: "shell", accepted: false },
+      { harness: "custom", accepted: false },
+      { harness: "unknown", accepted: false },
+    ] as const;
+    for (const { harness, accepted } of cases) {
+      const fixture = await createHttpPeerFixture(`peer-harness-${harness}`);
+      let sender: PeerServer | undefined;
+      let receiver: PeerServer | undefined;
+      try {
+        receiver = await spawnPeerServer({ ...peerServerOptions(fixture, "receiver"), receiverHarness: harness });
+        sender = await spawnPeerServer(peerServerOptions(fixture, "sender"));
+        const response = await postPeerRequest(sender.base, "/api/tasks/v1/send", {
+          callerSession: "parent", to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" }, task: `route to ${harness} without adapter inference`,
+        });
+        const body = await response.json() as Record<string, unknown>;
+        const senderLedgers = await new TaskStore({ root: fixture.senderTaskRoot }).ledgers();
+        const receiverLedgers = await new TaskStore({ root: fixture.receiverTaskRoot }).ledgers();
+        expect(peerDispatches(fixture).filter((entry) => entry.role === "sender" && entry.path === "/api/tasks/v1/peer/receive")).toHaveLength(1);
+        if (accepted) {
+          expect(response.status).toBe(200);
+          expect(body).toMatchObject({ ok: true });
+          expect(senderLedgers.filter((ledger) => ledger.key.role === TASK_LEDGER_ROLE.SENDER)).toHaveLength(1);
+          expect(receiverLedgers.filter((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER)).toHaveLength(1);
+        } else {
+          expect(response.status).toBe(422);
+          expect(body).toMatchObject({ ok: false, error: { code: "TARGET_NOT_AGENT" } });
+          expect(receiverLedgers).toEqual([]);
+          expect(senderLedgers).toEqual([]);
+        }
+      } finally {
+        await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    }
+  }, 20_000);
+
+  test("returns definitive remote project rejection without durable task state", async () => {
+    const fixture = await createHttpPeerFixture("peer-project-rejection");
+    let sender: PeerServer | undefined;
+    let receiver: PeerServer | undefined;
+    try {
+      receiver = await spawnPeerServer(peerServerOptions(fixture, "receiver"));
+      sender = await spawnPeerServer(peerServerOptions(fixture, "sender"));
+      const response = await postPeerRequest(sender.base, "/api/tasks/v1/send", {
+        callerSession: "parent",
+        to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" },
+        task: "reject mismatched remote project before acceptance",
+        preflight: { requiredProject: "wrong-project" },
+      });
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({ ok: false, error: { code: "PROJECT_MISMATCH", retryable: false } });
+      expect(await new TaskStore({ root: fixture.senderTaskRoot }).ledgers()).toEqual([]);
+      expect(await new TaskStore({ root: fixture.receiverTaskRoot }).ledgers()).toEqual([]);
+    } finally {
+      await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
+      rmSync(fixture.root, { recursive: true, force: true });
     }
   });
 
@@ -1027,6 +1173,51 @@ describe("local task gateway", () => {
 
     const parentInbox = await request(`/api/tasks/v1/inbox?callerSession=parent&cursor=0`, "GET");
     expect((await parentInbox.json() as { events: unknown[] }).events).toHaveLength(0);
+  });
+
+  test("filters historical internal records from adapter inboxes without deleting status history", async () => {
+    let cursor = "0";
+    for (;;) {
+      const page = await request(`/api/tasks/v1/inbox?callerSession=receiver&cursor=${cursor}`, "GET");
+      const body = await page.json() as { readonly nextCursor: string; readonly hasMore: boolean };
+      cursor = body.nextCursor;
+      if (!body.hasMore) break;
+    }
+    const sent = await request("/api/tasks/v1/send", "POST", {
+      callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "filter a historical internal inbox record",
+    });
+    const receipt = await sent.json() as { readonly taskId: string; readonly eventId: string };
+    const store = new TaskStore({ root: process.env.WOLFPACK_TASK_ROOT });
+    const receiver = (await store.ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === receipt.taskId);
+    const received = receiver?.state.events.find((event) => event.type === TASK_EVENT_TYPE.RECEIVED);
+    if (!receiver || !received) throw new Error("expected receiver replica receipt history");
+    await store.appendInboxRecord(receiver, { id: `historical-inbox:${received.id}`, eventId: received.id, occurredAt: received.occurredAt });
+
+    const inbox = await request(`/api/tasks/v1/inbox?callerSession=receiver&cursor=${cursor}`, "GET");
+    expect((await inbox.json() as { readonly events: readonly { readonly id: string }[] }).events).toEqual([expect.objectContaining({ id: receipt.eventId })]);
+    const status = await request(`/api/tasks/v1/status?callerSession=receiver&taskId=${receipt.taskId}`, "GET");
+    expect((await status.json() as { readonly events: readonly { readonly id: string }[] }).events).toEqual(expect.arrayContaining([expect.objectContaining({ id: received.id })]));
+  });
+
+  test("routes live Claude and Codex targets while rejecting non-agent harnesses without ledgers", async () => {
+    const before = (await new TaskStore({ root: process.env.WOLFPACK_TASK_ROOT }).ledgers()).length;
+    for (const target of ["claude", "codex"]) {
+      const sent = await request("/api/tasks/v1/send", "POST", {
+        callerSession: "parent", to: { machine: "local", sessionId: target }, task: `route ${target}`,
+      });
+      expect(sent.status).toBe(200);
+      const receipt = await sent.json() as { readonly taskId: string };
+      const inbox = await request(`/api/tasks/v1/inbox?callerSession=${target}&cursor=0`, "GET");
+      expect((await inbox.json() as { readonly events: readonly { readonly taskId: string }[] }).events).toEqual(expect.arrayContaining([expect.objectContaining({ taskId: receipt.taskId })]));
+    }
+    for (const target of ["shell", "unknown", "custom"]) {
+      const rejected = await request("/api/tasks/v1/send", "POST", {
+        callerSession: "parent", to: { machine: "local", sessionId: target }, task: `reject ${target}`,
+      });
+      expect(rejected.status).toBe(422);
+      expect(await rejected.json()).toMatchObject({ ok: false, error: { code: "TARGET_NOT_AGENT" } });
+    }
+    expect((await new TaskStore({ root: process.env.WOLFPACK_TASK_ROOT }).ledgers()).length).toBe(before + 4);
   });
 
   test("measures the send assignment envelope without nesting the transport body", async () => {

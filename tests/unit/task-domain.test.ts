@@ -3,6 +3,8 @@ import {
   TASK_API_ERROR,
   TASK_API_HTTP_STATUS,
   TASK_API_ROUTES,
+  TASK_EVENT_DISPOSITION,
+  TASK_EVENT_TYPE,
   TASK_LIMITS,
   acceptSenderEvent,
   allocateLocalDeliverySequence,
@@ -177,6 +179,16 @@ describe("task domain", () => {
     });
     expect(Object.keys(TASK_API_HTTP_STATUS).sort()).toEqual(Object.values(TASK_API_ERROR).sort());
     expect(TASK_API_HTTP_STATUS.MALFORMED_UPSTREAM_RESPONSE).toBe(502);
+  });
+
+  test("defines exactly one adapter disposition for every canonical event type", () => {
+    expect(Object.keys(TASK_EVENT_DISPOSITION).sort()).toEqual(Object.values(TASK_EVENT_TYPE).sort());
+    expect(TASK_EVENT_DISPOSITION[TASK_EVENT_TYPE.CREATED]).toMatchObject({ adapterInbox: "receiver", receiverDelivery: "after-structural-insertion", parentAcknowledgment: "never" });
+    for (const type of [TASK_EVENT_TYPE.QUESTION, TASK_EVENT_TYPE.ANSWER, TASK_EVENT_TYPE.INFORMATION]) {
+      expect(TASK_EVENT_DISPOSITION[type]).toMatchObject({ adapterInbox: "destination", receiverDelivery: "when-destination-is-receiver-after-structural-insertion", parentAcknowledgment: "never" });
+    }
+    expect(TASK_EVENT_DISPOSITION[TASK_EVENT_TYPE.COMPLETED]).toMatchObject({ adapterInbox: "parent", receiverDelivery: "never", parentAcknowledgment: "after-independent-verification" });
+    expect(TASK_EVENT_DISPOSITION[TASK_EVENT_TYPE.DELIVERED]).toMatchObject({ adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" });
   });
 
   test("hashes immutable assignments with stable key ordering", async () => {

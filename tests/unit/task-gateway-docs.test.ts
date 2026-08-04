@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import pkg from "../../package.json";
 
 const taskGatewayDocPath = "docs/task-gateway.md";
+const taskAdapterContractPath = "docs/task-adapter-contract.md";
 
 describe("task gateway documentation", () => {
   test("publishes one packaged canonical operational guide linked from the readme", () => {
@@ -13,6 +14,28 @@ describe("task gateway documentation", () => {
     expect(readme).toContain(taskGatewayDocPath);
     expect(readme).not.toContain("default filesystem store");
     expect(readme).not.toContain("same project directory");
+  });
+
+  test("ships the harness-neutral adapter contract through every task entry point", () => {
+    expect(existsSync(taskAdapterContractPath)).toBe(true);
+    expect(pkg.files).toContain(taskAdapterContractPath);
+    const adapter = readFileSync(taskAdapterContractPath, "utf-8");
+    for (const heading of [
+      "## Terminology and responsibility split",
+      "## Mandatory and optional conformance profile",
+      "## Canonical event-action matrix",
+      "## Adapter receive algorithm",
+      "## Opaque assignment fields",
+      "## Uncertain outcomes and reconciliation",
+      "## Gateway and harness readiness",
+    ]) expect(adapter).toContain(heading);
+    expect(readFileSync("README.md", "utf-8")).toContain(taskAdapterContractPath);
+    expect(readFileSync(taskGatewayDocPath, "utf-8")).toContain("task-adapter-contract.md");
+    expect(readFileSync("docs/agent-skills.md", "utf-8")).toContain("task-adapter-contract.md");
+    expect(readFileSync(taskGatewayDocPath, "utf-8")).toContain("record conforming-adapter structural insertion");
+    expect(readFileSync(taskGatewayDocPath, "utf-8")).not.toContain("structurally inserted Pi delivery");
+    expect(readFileSync(taskGatewayDocPath, "utf-8")).toContain("### Pi adapter readiness");
+    expect(adapter).toContain("only when the canonical destination is the receiver, after receiver structural insertion");
   });
 
   test("documents the locked gateway lifecycle without copying generated schemas", () => {

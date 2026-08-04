@@ -16,8 +16,10 @@ const losePeerReceiveResponse = process.env.WOLFPACK_TEST_LOSE_PEER_RECEIVE_RESP
 const crashAfterPeerEvent = process.env.WOLFPACK_TEST_CRASH_AFTER_PEER_EVENT;
 const crashBeforePeerEvent = process.env.WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT;
 const crashBeforePeerEventAttempt = Number(process.env.WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT_ATTEMPT ?? "0");
+const receiverHarness = process.env.WOLFPACK_TEST_RECEIVER_HARNESS ?? "pi";
 const peerEventResponseDelayMs = Number(process.env.WOLFPACK_TEST_PEER_EVENT_RESPONSE_DELAY_MS ?? "0");
 if (!Number.isInteger(crashBeforePeerEventAttempt) || crashBeforePeerEventAttempt < 0) throw new Error("peer event crash attempt must be a non-negative integer");
+if (!["pi", "claude", "codex", "gemini", "cursor", "shell", "unknown", "custom"].includes(receiverHarness)) throw new Error("peer receiver harness must be a known fixture harness");
 if (!Number.isInteger(peerEventResponseDelayMs) || peerEventResponseDelayMs < 0) throw new Error("peer event response delay must be a non-negative integer");
 let crashBeforePeerEventCount = 0;
 if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
@@ -133,7 +135,7 @@ class PeerBackend extends MockBackend {
         parent: { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent", projectPath: fixtureProjectRoot, agentKind: "pi" as const, createdAt: now, updatedAt: now },
       }
       : {
-        receiver: { wolfpackSessionId: "receiver-id", wolfpackSessionName: "receiver", projectPath: fixtureProjectRoot, agentKind: "pi" as const, createdAt: now, updatedAt: now },
+        receiver: { wolfpackSessionId: "receiver-id", wolfpackSessionName: "receiver", projectPath: fixtureProjectRoot, agentKind: receiverHarness, createdAt: now, updatedAt: now },
       };
   }
 }

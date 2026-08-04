@@ -1,6 +1,6 @@
 # Task gateway v1
 
-Wolfpack owns durable Pi task routing. One server-owned singleton owns one machine-global store at `~/.wolfpack/tasks`; Pi extensions are clients and do not write task files, terminal assignments, or task truth. The singleton uses append-only sender ledgers and receiver replicas; rebuildable indexes are not authoritative.
+Wolfpack owns durable harness-neutral task routing. One server-owned singleton owns one machine-global store at `~/.wolfpack/tasks`; adapters are clients and do not write task files, terminal assignments, or task truth. The singleton uses append-only sender ledgers and receiver replicas; rebuildable indexes are not authoritative. The [harness-neutral adapter contract](task-adapter-contract.md) defines adapter responsibilities and conformance.
 
 This guide is the operational model. The generated [control API schema](generated/control-api.schema.json), tracked at `docs/generated/control-api.schema.json`, is the canonical request, response, bounds, and error contract. The route list below is navigation only; do not copy or maintain full schemas here.
 
@@ -14,7 +14,7 @@ Use `machine: "local"` for same-machine work. A peer machine must be a canonical
 
 ## Routes and federation
 
-Every v1 route is served by the local Wolfpack gateway. Local Pi clients call these eight routes:
+Every v1 route is served by the local Wolfpack gateway. Local conforming adapters call these eight routes:
 
 | Route | Role |
 | --- | --- |
@@ -24,7 +24,7 @@ Every v1 route is served by the local Wolfpack gateway. Local Pi clients call th
 | `POST /api/tasks/v1/message` | append a question, answer, or information event |
 | `POST /api/tasks/v1/complete` | submit a receiver terminal result |
 | `POST /api/tasks/v1/cancel` | request sender-owned cancellation |
-| `POST /api/tasks/v1/delivered` | record structurally inserted Pi delivery |
+| `POST /api/tasks/v1/delivered` | record conforming-adapter structural insertion |
 | `POST /api/tasks/v1/ack` | perform parent terminal acknowledgment |
 
 Peer gateways use these two routes:
@@ -34,9 +34,9 @@ Peer gateways use these two routes:
 | `POST /api/tasks/v1/peer/receive` | persist a provisional remote assignment receipt |
 | `POST /api/tasks/v1/peer/event` | accept confirmed assignments and later task events |
 
-Federation is direct fetch federation between trusted Wolfpack gateways. Pi always calls its own local gateway; it never fetches a peer directly. There is no queue or scheduler.
+Federation is direct fetch federation between trusted Wolfpack gateways. A harness adapter always calls its own local gateway; it never fetches a peer directly. There is no queue or scheduler.
 
-A remote initial send makes one initial attempt. The receiver first writes a provisional receipt and keeps it invisible to Pi. The sender records canonical `task.received` only after that receipt response, then sends receipt confirmation before the receiver promotes the assignment into its inbox. A lost initial response leaves the sender terminally failed and leaves the unconfirmed receiver record eligible for orphan cleanup after 10 minutes.
+A remote initial send makes one initial attempt. The receiver first writes a provisional receipt and keeps it invisible to the receiver adapter. The sender records canonical `task.received` only after that receipt response, then sends receipt confirmation before the receiver promotes the assignment into its inbox. A lost initial response leaves the sender terminally failed and leaves the unconfirmed receiver record eligible for orphan cleanup after 10 minutes.
 
 Receipt confirmation and later remote events use one initial attempt plus three retries: four total attempts around 1, 2, and 4 seconds with jitter. This bounded policy covers messages, terminal updates, cancellation, delivery notices, and parent acknowledgments. Exhaustion records a local `event.delivery_failed` and stops; v1 has no background retry or durable offline dispatch queue.
 
@@ -44,7 +44,7 @@ Receipt confirmation and later remote events use one initial attempt plus three 
 
 The sender is authoritative for canonical task sequence, state, deadline, and terminal choice. The first accepted terminal event wins; late terminals are retained only as diagnostics. The sender alone evaluates expiry, emits timeout, and makes best-effort remote cancellation.
 
-Questions, answers, and information are durable bidirectional events. Only one unresolved question may exist for a task, and an answer must identify that question. Gateway delivery is at-least-once; Pi structurally deduplicates inserted `{ taskId, eventId }` custom messages. On restart, gateway logs rebuild task state and pending delivery/outbox evidence; Pi replays missing structured events rather than parsing prose.
+Questions, answers, and information are durable bidirectional events. Only one unresolved question may exist for a task, and an answer must identify that question. Gateway delivery is at-least-once; a conforming adapter structurally deduplicates inserted `{ taskId, eventId }` events. On restart, gateway logs rebuild task state and pending delivery/outbox evidence; the adapter replays missing structured events rather than parsing prose.
 
 Parent acknowledgment is two-phase for remote tasks. The sender persists `task.parent_ack_pending`, the receiver durably acknowledges that event, then the sender records `task.parent_acknowledged`. If delivery or its response is lost, the task stays visible and an explicit later acknowledgment reuses the pending event ID. Do not clean up a parent-spawned session until the parent independently verifies the result and acknowledgment has succeeded.
 
@@ -58,7 +58,7 @@ Artifacts are paths-only metadata. A receiver may declare up to 20 project-relat
 
 Before scheduling an existing live smoke sequence against a specific peer, complete this read-only checklist and record the evidence with that verification:
 
-1. Record the expected Wolfpack version and expected Pi Tasks version for this run, plus the peer's canonical HTTPS Tailnet origin. Do not substitute a display name, arbitrary URL, or a previous run's result.
+1. Record the expected Wolfpack version and expected receiver-adapter version for this run, plus the peer's canonical HTTPS Tailnet origin. Do not substitute a display name, arbitrary URL, or a previous run's result.
 2. Inspect `GET /api/info` at that origin. Record that it is reachable and its JSON `version` and `machineId`; the version must match the expected Wolfpack version and the machine identity must be the peer being assessed.
 3. Probe the task route without creating work. Request `GET /api/tasks/v1/status` without required query parameters:
 
@@ -77,7 +77,10 @@ Before scheduling an existing live smoke sequence against a specific peer, compl
    Run this as one fail-closed shell block; any failed assertion rejects readiness. The expected structured `400` JSON `INVALID_REQUEST` proves the task route exists. This is intrinsically read-only: the status route cannot create a task. A `404`, HTML/non-JSON response, or a `400` without that structured code is not a pass; stop before task creation.
 4. Record authentication blockers separately. `401/403`, a credential prompt, unavailable Tailnet/DNS, or a TLS failure is a blocker, not evidence that the route or peer is ready; resolve normal Wolfpack authentication before any live task.
 5. Use structured Wolfpack session control to select the receiver and record its stable broker `sessionId`. A terminal label or copied pane text is not a target identity.
-6. On every participating Pi host, record `pi list` output for the configured/installed pinned Pi Tasks package version/spec. This does not prove that the current Pi process loaded the package. Install the approved exact package version when needed, for example `pi install npm:@sgtbeatdown/pi-tasks@0.1.1`, then retain a separate operator record confirming a fresh Pi start or `/reload` completion before dispatch.
+
+### Pi adapter readiness
+
+6. For a Pi receiver, record the expected Pi Tasks version. On every participating Pi host, record `pi list` output for the configured/installed pinned Pi Tasks package version/spec. This does not prove that the current Pi process loaded the package. Install the approved exact package version when needed, for example `pi install npm:@sgtbeatdown/pi-tasks@0.1.1`, then retain a separate operator record confirming a fresh Pi start or `/reload` completion before dispatch.
 
 All records must pass before task creation permits the existing live smoke sequence. Any wrong version, missing route, authentication blocker, absent stable session ID, missing configured/installed package record, or missing fresh Pi start or `/reload` evidence stops before task creation and is reported as fixture-only verification. Isolated two-server coverage is the deterministic acceptance gate, while a specific live peer still requires current readiness at the time of use.
 
@@ -87,8 +90,8 @@ Initial limits are 16 KiB UTF-8 each for task instructions and Markdown context 
 
 JWT federation is unsupported. If Wolfpack global JWT is configured, normal authentication still applies locally; credential-free peer delivery fails clearly instead of weakening auth.
 
-v1 has no queue, scheduler, artifact transfer, or transcript transfer. It also has no exact Pi runtime registration, heartbeat/capability leases, semantic model-start detection, or progress streaming.
+v1 has no queue, scheduler, artifact transfer, or transcript transfer. It also has no exact adapter runtime registration, heartbeat/capability leases, semantic model-start detection, or progress streaming.
 
 ## Deferred follow-up
 
-Keep these as operational debt, not production TODOs: runtime registration and heartbeat/capability leases; durable offline initial dispatch; JWT/authenticated peer federation; artifact transfer and retention; representative payload benchmarking before changing limits; automated recovery summaries; and summary caching only after measured repeated-generation waste. Isolated two-server coverage is the deterministic acceptance gate; current readiness is still required for any specific live peer.
+Keep these as operational debt, not production TODOs: adapter runtime registration and heartbeat/capability leases; durable offline initial dispatch; JWT/authenticated peer federation; artifact transfer and retention; representative payload benchmarking before changing limits; automated recovery summaries; and summary caching only after measured repeated-generation waste. Isolated two-server coverage is the deterministic acceptance gate; current readiness is still required for any specific live peer.

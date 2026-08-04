@@ -171,7 +171,7 @@ Treat Wolfpack access like shell access to that machine.
 - **PWA** — vanilla JS, no framework. ghostty-web renders the terminal.
 - **Server** — Bun HTTP + WebSocket. Pure broker client; owns no PTYs.
 - **Broker** — `wolfpack-broker`, Rust daemon. Owns every PTY, keeps per-session output rings, and uses a statically linked Ghostty VT engine for authoritative terminal state/snapshots. One Unix-domain socket per host (`$XDG_RUNTIME_DIR/wolfpack-broker.sock`, fallback `~/.wolfpack/broker.sock`). Wire protocol in [docs/broker-protocol.md](docs/broker-protocol.md).
-- **Task gateway** — a server-owned singleton/store at `~/.wolfpack/tasks/` durably routes Pi Tasks locally and between trusted Tailnet peers. Its operational contract, retention, and federation limits are in [docs/task-gateway.md](docs/task-gateway.md).
+- **Task gateway** — a server-owned singleton/store at `~/.wolfpack/tasks/` durably routes tasks locally and between trusted Tailnet peers. Its [harness-neutral adapter contract](docs/task-adapter-contract.md) defines the adapter boundary; [docs/task-gateway.md](docs/task-gateway.md) covers operations, retention, and federation limits.
 
 ## Optional JWT auth
 
@@ -231,8 +231,8 @@ Pi Tasks contains both the extension and its matching delegation skill. Every
 participating Pi session needs Pi Tasks loaded and a reachable local Wolfpack
 task gateway; the gateway owns machine-global task state rather than a
 project-local filesystem store. Same-machine and trusted Tailnet peer routing
-use stable broker session IDs. See [docs/task-gateway.md](docs/task-gateway.md)
-for the operational contract and federation limits. Declining the setup prompt
+use stable broker session IDs. Pi is one conforming adapter; see the [harness-neutral adapter contract](docs/task-adapter-contract.md) and [docs/task-gateway.md](docs/task-gateway.md)
+for operations and federation limits. Declining the setup prompt
 changes nothing. Non-interactive setup installs nothing and directs users to
 rerun `wolfpack setup` interactively.
 

@@ -2,12 +2,13 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { AGENT_KIND } from "../agent-kind.ts";
+import { isOpenableHarness } from "../session-open-contract.ts";
 import { getBackend } from "../server/backend.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import {
   TASK_API_ERROR,
   TASK_API_HTTP_STATUS,
+  TASK_EVENT_DISPOSITION,
   TASK_EVENT_TYPE,
   TASK_LIMITS,
   TASK_STATUS,
@@ -39,14 +40,6 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_MESSAGE_BYTES = TASK_LIMITS.TASK_BYTES;
-const INTERNAL_EVENT_TYPES = new Set<string>([
-  TASK_EVENT_TYPE.CREATED,
-  TASK_EVENT_TYPE.RECEIVED,
-  TASK_EVENT_TYPE.RECEIPT_CONFIRMED,
-  TASK_EVENT_TYPE.PARENT_ACK_PENDING,
-  TASK_EVENT_TYPE.PARENT_ACKNOWLEDGED,
-]);
-
 type TaskResponse<T> = { readonly ok: true } & T;
 type PeerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type TaskFailure = { readonly ok: false; readonly error: { readonly code: TaskApiErrorCode; readonly message: string; readonly retryable: boolean; readonly path?: string }; readonly status: number };
@@ -124,6 +117,10 @@ function sameAddress(left: TaskAddress, right: TaskAddress): boolean {
   return left.machine === right.machine && left.sessionId === right.sessionId;
 }
 
+function entersAdapterInbox(event: CanonicalTaskEvent): boolean {
+  return TASK_EVENT_DISPOSITION[event.type].adapterInbox !== "none";
+}
+
 function terminalEvent(status: "completed" | "failed" | "cancelled"): "task.completed" | "task.failed" | "task.cancelled" {
   return status === "completed" ? TASK_EVENT_TYPE.COMPLETED : status === "failed" ? TASK_EVENT_TYPE.FAILED : TASK_EVENT_TYPE.CANCELLED;
 }
@@ -196,7 +193,7 @@ export class TaskGateway {
     }
     const target = remote ? undefined : await this.#resolve(input.to.sessionId, "target");
     if (target !== undefined && !target.ok) return target;
-    if (target !== undefined && target.value.harness !== AGENT_KIND.PI) return failure(TASK_API_ERROR.TARGET_NOT_PI, "target session is not a Pi harness");
+    if (target !== undefined && !isOpenableHarness(target.value.harness)) return failure(TASK_API_ERROR.TARGET_NOT_AGENT, "target session is not a routable agent harness");
     if (target !== undefined && input.preflight?.requiredProject !== undefined && input.preflight.requiredProject !== basename(target.value.projectPath)) {
       return failure(TASK_API_ERROR.PROJECT_MISMATCH, "target project does not match preflight");
     }
@@ -236,6 +233,11 @@ export class TaskGateway {
       if (existing.assignmentHash !== replayHash) return failure(TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT, "idempotency key was already used for different assignment");
       return { ok: true, taskId: existing.taskId, eventId: event.id, sequence: event.sequence, warnings: ledger.state.warnings };
     }
+    const createdEventId = generateUuidV7(createdAtMs);
+    const remoteReceipt = remote
+      ? await this.#postPeerReceive(receiver.machine, { source: parent, assignment, assignmentHash, createdEventId })
+      : undefined;
+    if (remoteReceipt !== undefined && !remoteReceipt.ok && !remoteReceipt.error.retryable) return remoteReceipt;
     const senderCreated = await this.#store.createLedger({ role: TASK_LEDGER_ROLE.SENDER, assignment, participants });
     if (senderCreated.kind === "conflict") return failure(TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT, "task id conflicts with immutable assignment");
     if (senderCreated.kind === "tombstoned") return failure(TASK_API_ERROR.TASK_NOT_FOUND, "task payload was retained only as a tombstone");
@@ -244,7 +246,7 @@ export class TaskGateway {
       if (receiverCreated.kind !== "created" && receiverCreated.kind !== "reused") return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "receiver task ledger unavailable", true);
     }
     const created = await this.#accept(taskId, {
-      id: generateUuidV7(createdAtMs), taskId, type: TASK_EVENT_TYPE.CREATED, actor: "parent", occurredAt: createdAtTimestamp,
+      id: createdEventId, taskId, type: TASK_EVENT_TYPE.CREATED, actor: "parent", occurredAt: createdAtTimestamp,
       message: undefined, replyToMessageId: undefined, payload: { kind: "none" }, completion: undefined,
     }, { actor: "parent", address: parent });
     if (!created.ok) return created;
@@ -254,11 +256,12 @@ export class TaskGateway {
       if (idempotency.kind === "conflict") return failure(TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT, "idempotency key conflicts");
     }
     if (remote) {
-      const receipt = await this.#postPeerReceive(receiver.machine, { source: parent, assignment, assignmentHash, createdEventId: created.eventId });
-      if (!receipt.ok) {
-        await this.#recordInitialPeerFailure(taskId, participants.sender, receipt.error.message);
-        return receipt;
+      if (remoteReceipt === undefined) return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "remote receipt state is unavailable", true);
+      if (!remoteReceipt.ok) {
+        await this.#recordInitialPeerFailure(taskId, participants.sender, remoteReceipt.error.message);
+        return remoteReceipt;
       }
+      const receipt = remoteReceipt;
       const received = await this.#accept(taskId, this.#event(taskId, TASK_EVENT_TYPE.RECEIVED, "receiver"), { actor: "receiver", address: receiver });
       if (!received.ok) return received;
       const receivedEvent = (await this.#senderLedger(taskId)).state.events.find((event) => event.id === received.eventId);
@@ -323,7 +326,7 @@ export class TaskGateway {
       const ledger = await this.#store.getLedger(entry.key);
       const event = ledger?.state.events.find((candidate) => candidate.id === entry.eventId);
       scanned += 1;
-      if (!ledger || !event || !this.#visibleToSession(ledger, event, caller.value.sessionId)) {
+      if (!ledger || !event || !entersAdapterInbox(event) || !this.#visibleToSession(ledger, event, caller.value.sessionId)) {
         nextCursor = entry.deliverySequence;
         continue;
       }
@@ -517,7 +520,7 @@ export class TaskGateway {
     }
     const target = await this.#resolve(assignment.target.sessionId, "target");
     if (!target.ok) return target;
-    if (target.value.harness !== AGENT_KIND.PI) return failure(TASK_API_ERROR.TARGET_NOT_PI, "target session is not a Pi harness");
+    if (!isOpenableHarness(target.value.harness)) return failure(TASK_API_ERROR.TARGET_NOT_AGENT, "target session is not a routable agent harness");
     if (assignment.preflight?.requiredProject !== undefined && assignment.preflight.requiredProject !== basename(target.value.projectPath)) {
       return failure(TASK_API_ERROR.PROJECT_MISMATCH, "target project does not match preflight");
     }
@@ -889,8 +892,7 @@ export class TaskGateway {
   }
 
   async #appendReceiverInboxIfVisible(receiver: TaskLedger, event: CanonicalTaskEvent): Promise<void> {
-    if (!this.#visibleToSession(receiver, event, receiver.header.participants.receiver.sessionId)
-      || (INTERNAL_EVENT_TYPES.has(event.type) && event.type !== TASK_EVENT_TYPE.CREATED)) return;
+    if (!entersAdapterInbox(event) || !this.#visibleToSession(receiver, event, receiver.header.participants.receiver.sessionId)) return;
     await this.#store.appendInboxRecord(receiver, { id: `inbox:${event.id}`, eventId: event.id, occurredAt: event.occurredAt });
   }
 
@@ -902,11 +904,8 @@ export class TaskGateway {
 
   async #appendInboxIfVisible(sender: TaskLedger, event: CanonicalTaskEvent): Promise<void> {
     const confirmed = sender.state.events.some((candidate) => candidate.type === TASK_EVENT_TYPE.RECEIPT_CONFIRMED);
-    if (event.type === TASK_EVENT_TYPE.CREATED) {
-      if (!confirmed) return;
-    } else if (INTERNAL_EVENT_TYPES.has(event.type)) {
-      return;
-    }
+    if (!entersAdapterInbox(event)) return;
+    if (event.type === TASK_EVENT_TYPE.CREATED && !confirmed) return;
     const recipient = event.destination.sessionId === sender.header.participants.parent.sessionId
       ? await this.#senderLedger(event.taskId)
       : (await this.#store.ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === event.taskId);

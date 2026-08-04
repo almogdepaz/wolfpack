@@ -5133,6 +5133,7 @@
                 "TASK_NOT_FOUND",
                 "TARGET_DEAD",
                 "TARGET_NOT_PI",
+                "TARGET_NOT_AGENT",
                 "PROJECT_MISMATCH",
                 "CALLER_MISMATCH",
                 "IMMUTABLE_CONTENT_CONFLICT",

@@ -19,7 +19,9 @@ export const TASK_API_ERROR = {
   TARGET_NOT_FOUND: "TARGET_NOT_FOUND",
   TASK_NOT_FOUND: "TASK_NOT_FOUND",
   TARGET_DEAD: "TARGET_DEAD",
+  /** @deprecated Retained for v1 generated-client compatibility; never emitted. */
   TARGET_NOT_PI: "TARGET_NOT_PI",
+  TARGET_NOT_AGENT: "TARGET_NOT_AGENT",
   PROJECT_MISMATCH: "PROJECT_MISMATCH",
   CALLER_MISMATCH: "CALLER_MISMATCH",
   IMMUTABLE_CONTENT_CONFLICT: "IMMUTABLE_CONTENT_CONFLICT",
@@ -41,6 +43,7 @@ export const TASK_API_HTTP_STATUS = {
   TASK_NOT_FOUND: 404,
   TARGET_DEAD: 422,
   TARGET_NOT_PI: 422,
+  TARGET_NOT_AGENT: 422,
   PROJECT_MISMATCH: 422,
   CALLER_MISMATCH: 409,
   IMMUTABLE_CONTENT_CONFLICT: 409,
@@ -99,6 +102,30 @@ export const TASK_LIMITS = {
 
 export type TaskApiErrorCode = (typeof TASK_API_ERROR)[keyof typeof TASK_API_ERROR];
 export type TaskEventType = (typeof TASK_EVENT_TYPE)[keyof typeof TASK_EVENT_TYPE];
+
+export const TASK_EVENT_DISPOSITION = {
+  [TASK_EVENT_TYPE.CREATED]: { adapterInbox: "receiver", receiverDelivery: "after-structural-insertion", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.RECEIVED]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.RECEIPT_CONFIRMED]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.DELIVERED]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.QUESTION]: { adapterInbox: "destination", receiverDelivery: "when-destination-is-receiver-after-structural-insertion", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.ANSWER]: { adapterInbox: "destination", receiverDelivery: "when-destination-is-receiver-after-structural-insertion", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.INFORMATION]: { adapterInbox: "destination", receiverDelivery: "when-destination-is-receiver-after-structural-insertion", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.MESSAGE_DELIVERED]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.CANCEL_REQUESTED]: { adapterInbox: "receiver", receiverDelivery: "after-structural-insertion", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.COMPLETED]: { adapterInbox: "parent", receiverDelivery: "never", parentAcknowledgment: "after-independent-verification" },
+  [TASK_EVENT_TYPE.FAILED]: { adapterInbox: "parent", receiverDelivery: "never", parentAcknowledgment: "after-independent-verification" },
+  [TASK_EVENT_TYPE.CANCELLED]: { adapterInbox: "parent", receiverDelivery: "never", parentAcknowledgment: "after-independent-verification" },
+  [TASK_EVENT_TYPE.TIMED_OUT]: { adapterInbox: "parent", receiverDelivery: "never", parentAcknowledgment: "after-independent-verification" },
+  [TASK_EVENT_TYPE.PARENT_ACK_PENDING]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.PARENT_ACKNOWLEDGED]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.DELIVERY_FAILED]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+  [TASK_EVENT_TYPE.LATE_TERMINAL]: { adapterInbox: "none", receiverDelivery: "never", parentAcknowledgment: "never" },
+} as const satisfies Readonly<Record<TaskEventType, {
+  readonly adapterInbox: "receiver" | "parent" | "destination" | "none";
+  readonly receiverDelivery: "after-structural-insertion" | "when-destination-is-receiver-after-structural-insertion" | "never";
+  readonly parentAcknowledgment: "after-independent-verification" | "never";
+}>>;
 export type TaskTerminalEventType = "task.completed" | "task.failed" | "task.cancelled" | "task.timed_out";
 export type TaskStatus = (typeof TASK_STATUS)[keyof typeof TASK_STATUS];
 export type TaskActor = "parent" | "receiver" | "sender";
