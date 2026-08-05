@@ -88,13 +88,13 @@ For a manual audited install, clone or update `https://github.com/almogdepaz/wol
 Create a top-level project session with an initial instruction:
 
 ```bash
-wolfpack session create branchout --harness pi --plan .plans/000-task.md --json
+wolfpack session create project-name --harness pi --plan .plans/000-task.md --json
 ```
 
 Spawn a same-harness child agent:
 
 ```bash
-wolfpack agent spawn wolfpack --plan .plans/000-review.md --notify-parent --json
+wolfpack agent spawn project-name --plan .plans/000-review.md --notify-parent --json
 ```
 
 Use `wolfpack session create <project>` for top-level work and `wolfpack agent spawn <project>` for a same-harness child. The CLI validates the project and command, allocates a stable broker session ID, and delivers the initial instruction directly to the harness. For the full command surface and automation contract, use [session control](docs/session-control.md) and [task gateway](docs/task-gateway.md).
