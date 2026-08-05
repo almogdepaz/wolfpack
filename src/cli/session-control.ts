@@ -1,4 +1,6 @@
 import { access, readFile } from "node:fs/promises";
+import { isCreatableHarness } from "../agent-kind.js";
+import type { CreatableHarness } from "../agent-kind.js";
 import {
   isOpenableHarness,
   isSessionOpenErrorCode,
@@ -92,7 +94,7 @@ export type ParsedSessionCommand =
     readonly ok: true;
     readonly action: "create";
     readonly project: string;
-    readonly harness: OpenableHarness | undefined;
+    readonly harness: CreatableHarness | undefined;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
@@ -269,7 +271,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const plan = planValue ?? undefined;
     const sessionName = nameValue ?? undefined;
     const project = args.shift();
-    const harness = harnessValue !== null && isOpenableHarness(harnessValue)
+    const harness = harnessValue !== null && isCreatableHarness(harnessValue)
       ? harnessValue
       : undefined;
     const promptSources = [promptValue, promptFileValue, planValue].filter(value => value !== null);

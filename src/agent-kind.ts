@@ -30,8 +30,17 @@ export const OPENABLE_HARNESSES = [
 
 export type OpenableHarness = typeof OPENABLE_HARNESSES[number];
 
+/** Harnesses valid for explicit top-level session creation. */
+export const CREATABLE_HARNESSES = [
+  AGENT_KIND.SHELL,
+  ...OPENABLE_HARNESSES,
+] as const;
+
+export type CreatableHarness = typeof CREATABLE_HARNESSES[number];
+
 const KNOWN_AGENT_KIND_SET: ReadonlySet<string> = new Set(KNOWN_AGENT_KINDS);
 const OPENABLE_HARNESS_SET: ReadonlySet<string> = new Set(OPENABLE_HARNESSES);
+const CREATABLE_HARNESS_SET: ReadonlySet<string> = new Set(CREATABLE_HARNESSES);
 
 export function isKnownAgentKind(value: string): value is AgentKind {
   return KNOWN_AGENT_KIND_SET.has(value);
@@ -39,6 +48,10 @@ export function isKnownAgentKind(value: string): value is AgentKind {
 
 export function isOpenableHarness(value: string): value is OpenableHarness {
   return OPENABLE_HARNESS_SET.has(value);
+}
+
+export function isCreatableHarness(value: string): value is CreatableHarness {
+  return CREATABLE_HARNESS_SET.has(value);
 }
 
 export function inferAgentKindFromCommand(command: string | undefined): AgentKind | string {

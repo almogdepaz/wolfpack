@@ -251,6 +251,16 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).toEqual([]);
   });
 
+  test("top-level session creation accepts shell without widening child-agent harnesses", () => {
+    const request = httpRequest("createTopLevelSession");
+
+    expect(validate(request, { project: "wolfpack", harness: "shell" }, artifact)).toEqual([]);
+    expect(validate(request, { project: "wolfpack", harness: "future-agent" }, artifact)).not.toEqual([]);
+    expect((artifact.$defs as JsonObject).CreatableHarness).toEqual({
+      enum: ["shell", "pi", "claude", "codex", "gemini", "cursor"],
+    });
+  });
+
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
     const operation = httpOperation("openSession");
     const request = httpRequest("openSession");

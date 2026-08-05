@@ -13,7 +13,7 @@ import {
 import { basename, join } from "node:path";
 import { hostname, homedir } from "node:os";
 import { execFile } from "node:child_process";
-import { AGENT_KIND } from "../agent-kind.js";
+import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { detectProviderReadiness } from "../provider-readiness.js";
 import {
@@ -113,7 +113,6 @@ export {
   __runSessionNotificationObservationForTests,
 } from "./session-observation.js";
 import {
-  isOpenableHarness,
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
 } from "../session-open-contract.js";
@@ -708,7 +707,7 @@ export const routes: Record<
       !body
       || !isSessionCreateBody(body)
       || !isValidProjectName(body.project)
-      || (body.harness !== undefined && !isOpenableHarness(body.harness))
+      || (body.harness !== undefined && !isCreatableHarness(body.harness))
       || (
         body.initialPrompt !== undefined
         && (!body.initialPrompt.trim()

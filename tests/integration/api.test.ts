@@ -780,6 +780,30 @@ describe("agent-native top-level session control", () => {
     });
   });
 
+  test("creates a top-level shell session when explicitly selected", async () => {
+    const res = await post("/api/session-create", {
+      project: "my-app",
+      harness: "shell",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "my-app",
+      sessionId: "mock:my-app",
+      project: "my-app",
+      harness: "shell",
+    });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "my-app",
+      cwd: join(TEST_DEV_DIR, "my-app"),
+      cmd: "shell",
+      agentKind: "shell",
+      initialPrompt: undefined,
+      parentSession: undefined,
+    });
+  });
+
   test("rejects malformed create input before backend mutation", async () => {
     const res = await post("/api/session-create", {
       project: "my-app",

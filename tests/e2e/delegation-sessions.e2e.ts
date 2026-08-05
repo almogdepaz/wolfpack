@@ -189,6 +189,46 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["two-renamed", "one-renamed", "three-renamed", "new"]);
 });
 
+test("desktop card reordering keeps an auto-expanded sidebar open", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop sidebar reorder behavior only");
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
+  });
+  await routeHydratedPty(page);
+  await routeDelegationSessions(page, [
+    fakeSession("one", "one-id"),
+    fakeSession("two", "two-id"),
+  ]);
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => {
+    (window as unknown as { openSession(session: string, machine?: string): void }).openSession("one");
+  });
+
+  const sidebar = page.locator("#desktop-sidebar");
+  await expect(sidebar).toHaveClass(/collapsed/);
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+
+  const secondCard = page.locator('#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="two-id"]');
+  await expect(secondCard).toBeVisible();
+  const dragStart = await secondCard.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  });
+  await page.mouse.move(dragStart.x, dragStart.y);
+  await page.mouse.down();
+  await page.mouse.move(dragStart.x + 8, dragStart.y);
+  await expect(page.locator(".session-order-floating")).toBeVisible();
+  await sidebar.dispatchEvent("mouseleave");
+  await page.waitForTimeout(350);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await page.mouse.up();
+});
+
 test("direct card drag previews live movement and keeps delegation children attached", async ({ page }, testInfo) => {
   await routeDelegationSessions(page, [
     fakeSession("parent", "parent-id"),

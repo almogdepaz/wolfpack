@@ -1,3 +1,4 @@
+import { CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
   OPENABLE_HARNESSES,
@@ -250,6 +251,7 @@ export const controlApiSource: ControlApiSource = {
       description: "Decimal broker PTY output watermark",
     },
     OpenableHarness: { enum: [...OPENABLE_HARNESSES] },
+    CreatableHarness: { enum: [...CREATABLE_HARNESSES] },
     TriageStatus: { enum: ["running", "idle"] },
     AgentStatusState: { enum: [...AGENT_STATUS_STATES] },
     AgentStatusAuthority: { enum: [...AGENT_STATUS_AUTHORITIES] },
@@ -735,7 +737,7 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       request: object({
         project: ref("ProjectName"),
-        harness: ref("OpenableHarness"),
+        harness: ref("CreatableHarness"),
         initialPrompt: {
           type: "string",
           minLength: 1,

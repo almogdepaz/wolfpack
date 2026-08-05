@@ -5301,6 +5301,7 @@ if (!isDesktop()) {
 // ── Desktop Sidebar ──
 
 let sidebarAutoCollapseTimer = null;
+let sidebarSessionOrderDragActive = false;
 let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 300;
 
@@ -5603,7 +5604,7 @@ function initSidebar() {
   sidebar.addEventListener("mouseleave", () => {
     if (state.sidebarAutoExpanded && !state.sidebarPinned) {
       sidebarAutoCollapseTimer = setTimeout(() => {
-        if (state.sidebarAutoExpanded) {
+        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive) {
           state.sidebarTransitionIsHover = true;
           sidebar.classList.add("collapsed");
           state.sidebarCollapsed = true;
@@ -5656,6 +5657,7 @@ function bindHtmlEventListeners(): void {
     move: moveSessionCard,
     moveByOffset: moveSessionCardByOffset,
     reset: resetSessionCardOrder,
+    setDragActive: active => { sidebarSessionOrderDragActive = active; },
   });
 
   // Delegation workspace

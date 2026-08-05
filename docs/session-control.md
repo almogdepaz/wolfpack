@@ -11,7 +11,7 @@ wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--
 - performs one `POST /api/session-create` request.
 - requires an exact existing project under `WOLFPACK_DEV_DIR`.
 - selects the configured default command when `--harness` is omitted.
-- accepts `pi`, `claude`, `codex`, `gemini`, or `cursor` as explicit harnesses.
+- accepts `shell`, `pi`, `claude`, `codex`, `gemini`, or `cursor` as explicit harnesses.
 - allocates `<project>`, then `<project>-2`, `<project>-3`, and so on with bounded collision retries.
 - passes one explicit prompt as an opaque argv value when the harness starts; no terminal-readiness send race is involved.
 - `--prompt-file <file>` reads instruction text from disk to avoid shell heredoc/quoting failures.
