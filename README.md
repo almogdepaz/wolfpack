@@ -5,14 +5,14 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://get-wolfpack.netlify.app/)
 
-Run Claude Code, Codex, Gemini, and shell sessions on machines you control. Reach them from a browser or phone over Tailscale, without a Wolfpack-hosted relay or account.
+Run Claude Code, Codex, Gemini, and shell sessions on machines you control. Reach them locally in a browser, or remotely from a browser or phone over Tailscale, without a Wolfpack-hosted relay or account.
 
 Sessions live in a Rust PTY broker, not the web server, so server restarts and upgrades do not kill your agents.
 
 **Homepage:** [get-wolfpack.netlify.app](https://get-wolfpack.netlify.app/) · **Agent-readable overview:** [llms.txt](https://get-wolfpack.netlify.app/llms.txt)
 
 <p align="center">
-  <img src="docs/assets/wolfpack-desktop-grid.png" width="700" alt="Wolfpack desktop multi-terminal grid" />
+  <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack usage demo showing real broker-backed terminal sessions" />
 </p>
 
 > **security:** wolfpack gives browser users shell-level control over configured projects. Keep it private to a trusted Tailnet. If other people share the Tailnet, configure device/user ACLs and consider JWT. Session control follows the ordinary global API auth policy when configured and has no inter-session authorization layer; read the [full trust model](docs/installation.md#security-and-trust).
