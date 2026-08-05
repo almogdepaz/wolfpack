@@ -14,6 +14,7 @@ export interface SessionOrderUiHandlers {
   ) => boolean;
   readonly moveByOffset: (moving: SessionOrderCardReference, offset: -1 | 1) => boolean;
   readonly reset: (machineUrl: string) => void;
+  readonly setDragActive: (active: boolean) => void;
 }
 
 type Placement = "before" | "after";
@@ -149,6 +150,7 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
     active.placeholder.remove();
     for (const hidden of active.hiddenCards) hidden.element.style.display = hidden.display;
     document.body.classList.remove("session-order-pointer-active");
+    handlers.setDragActive(false);
   };
 
   const finishDrag = (commit: boolean): void => {
@@ -197,6 +199,7 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
     pending.card.style.height = `${cardRect.height}px`;
     document.body.appendChild(pending.card);
     document.body.classList.add("session-order-pointer-active");
+    handlers.setDragActive(true);
     try { pending.card.setPointerCapture(pending.pointerId); } catch { /* synthetic pointer event */ }
 
     drag = {

@@ -27,7 +27,6 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
   let selStartX = 0, selStartY = 0;
   let selAnchorRow = -1, selAnchorCol = -1;
   let selEndRow = -1, selEndCol = -1;
-  let selOverlay = null;
 
   function touchToCell(clientX, clientY) {
     const canvas = container.querySelector("canvas");
@@ -43,101 +42,42 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
     };
   }
 
-  function getSelectedText() {
-    if (selAnchorRow < 0 || selEndRow < 0) return "";
-    const buf = term.buffer.active;
-    const viewportY = Math.max(0, buf.viewportY || 0);
-    let r0 = selAnchorRow, c0 = selAnchorCol, r1 = selEndRow, c1 = selEndCol;
-    if (r0 > r1 || (r0 === r1 && c0 > c1)) {
-      [r0, c0, r1, c1] = [r1, c1, r0, c0];
+  function syncTerminalSelection() {
+    let startRow = selAnchorRow;
+    let startCol = selAnchorCol;
+    let endRow = selEndRow;
+    let endCol = selEndCol;
+    if (startRow > endRow || (startRow === endRow && startCol > endCol)) {
+      [startRow, startCol, endRow, endCol] = [endRow, endCol, startRow, startCol];
     }
-    const lines: string[] = [];
-    for (let r = r0; r <= r1; r++) {
-      const lineIndex = Math.max(0, viewportY + r);
-      const line = buf.getLine(lineIndex);
-      if (!line) continue;
-      const start = r === r0 ? c0 : 0;
-      const end = r === r1 ? c1 + 1 : term.cols;
-      let text = "";
-      for (let c = start; c < end; c++) {
-        const cell = line.getCell(c);
-        text += cell ? cell.getChars() || " " : " ";
-      }
-      lines.push(text.trimEnd());
-    }
-    return lines.join("\n");
+    const length = (endRow - startRow) * term.cols + endCol - startCol + 1;
+    term.select(startCol, startRow, length);
   }
 
-  let selCopyBtn: HTMLButtonElement | null = null;
-
-  function showSelectionOverlay() {
-    if (!selOverlay) {
-      selOverlay = document.createElement("div");
-      selOverlay.style.cssText = "position:absolute;background:rgba(0,255,65,0.18);pointer-events:none;z-index:10;border-radius:2px;";
-      container.appendChild(selOverlay);
+  async function copyTerminalSelection(): Promise<boolean> {
+    const text = term.getSelection();
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const textarea = term.textarea;
+      if (!textarea) return false;
+      const activeElement = document.activeElement;
+      textarea.value = text;
+      textarea.focus({ preventScroll: true });
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      const copied = document.execCommand("copy");
+      if (activeElement instanceof HTMLElement) activeElement.focus({ preventScroll: true });
+      return copied;
     }
-    const canvas = container.querySelector("canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const cRect = container.getBoundingClientRect();
-    const cellW = rect.width / term.cols;
-    const cellH = rect.height / term.rows;
-    let r0 = selAnchorRow, c0 = selAnchorCol, r1 = selEndRow, c1 = selEndCol;
-    if (r0 > r1 || (r0 === r1 && c0 > c1)) {
-      [r0, c0, r1, c1] = [r1, c1, r0, c0];
-    }
-    const ox = rect.left - cRect.left;
-    const oy = rect.top - cRect.top;
-    if (r0 === r1) {
-      selOverlay.style.left = (ox + c0 * cellW) + "px";
-      selOverlay.style.top = (oy + r0 * cellH) + "px";
-      selOverlay.style.width = ((c1 - c0 + 1) * cellW) + "px";
-      selOverlay.style.height = cellH + "px";
-    } else {
-      selOverlay.style.left = ox + "px";
-      selOverlay.style.top = (oy + r0 * cellH) + "px";
-      selOverlay.style.width = (term.cols * cellW) + "px";
-      selOverlay.style.height = ((r1 - r0 + 1) * cellH) + "px";
-    }
-  }
-
-  function showCopyButton() {
-    if (selCopyBtn) selCopyBtn.remove();
-    const canvas = container.querySelector("canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const cRect = container.getBoundingClientRect();
-    const cellH = rect.height / term.rows;
-    const r0 = Math.min(selAnchorRow, selEndRow);
-    const oy = rect.top - cRect.top;
-
-    selCopyBtn = document.createElement("button");
-    selCopyBtn.textContent = "Copy";
-    selCopyBtn.className = "sel-copy-btn";
-    // Position above the selection
-    const btnTop = oy + r0 * cellH - 32;
-    selCopyBtn.style.cssText = "position:absolute;z-index:11;left:50%;transform:translateX(-50%);top:" + Math.max(0, btnTop) + "px;background:var(--accent);color:var(--bg-base);border:none;border-radius:6px;padding:4px 14px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,0.5);";
-    selCopyBtn.addEventListener("touchstart", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const text = getSelectedText();
-      if (text && navigator.clipboard) {
-        navigator.clipboard.writeText(text).then(() => {
-          haptic([10, 30, 10]);
-          if (selCopyBtn) selCopyBtn.textContent = "Copied!";
-          setTimeout(() => clearSelection(), 600);
-        }).catch(() => { clearSelection(); });
-      }
-    }, { passive: false });
-    selCopyBtn.addEventListener("click", (e) => { e.stopPropagation(); });
-    container.appendChild(selCopyBtn);
   }
 
   function clearSelection() {
     selecting = false;
     selAnchorRow = selAnchorCol = selEndRow = selEndCol = -1;
-    if (selOverlay) { selOverlay.remove(); selOverlay = null; }
-    if (selCopyBtn) { selCopyBtn.remove(); selCopyBtn = null; }
+    term.clearSelection();
   }
 
   function cancelLongPress() {
@@ -208,7 +148,6 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
       tracking = false;
       selAnchorRow = selEndRow = cell.row;
       selAnchorCol = selEndCol = cell.col;
-      showSelectionOverlay();
       haptic(30);
     }, LONGPRESS_MS);
   }
@@ -230,7 +169,7 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
         selEndRow = cell.row;
         selEndCol = cell.row > selAnchorRow ? term.cols - 1 : 0;
       }
-      showSelectionOverlay();
+      syncTerminalSelection();
       return;
     }
 
@@ -262,10 +201,12 @@ export function setupTouchScrollHandler(container, term, sendInput, canAcceptInp
     if (dragStarted) dismissKeyboard();
 
     if (selecting) {
-      // Keep selection visible — show copy button for explicit user action.
-      // Selection is dismissed on next touchstart (scroll or new selection).
-      showCopyButton();
-      selecting = false;  // stop extending selection, but keep overlay visible
+      syncTerminalSelection();
+      selecting = false;
+      void copyTerminalSelection().then((copied) => {
+        if (copied) haptic([10, 30, 10]);
+        else console.debug("[clipboard] mobile terminal copy failed");
+      });
       return;
     }
 
