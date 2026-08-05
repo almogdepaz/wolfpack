@@ -28,6 +28,23 @@ describe("session control fast-path parsing", () => {
     });
   });
 
+  test("parses explicit shell selection for a top-level session", () => {
+    expect(parseSessionCommand([
+      "create",
+      "branchout",
+      "--harness",
+      "shell",
+      "--json",
+    ])).toEqual({
+      ok: true,
+      action: "create",
+      project: "branchout",
+      harness: "shell",
+      prompt: undefined,
+      output: "json",
+    });
+  });
+
   test("parses concise status by opaque selector", () => {
     expect(parseSessionCommand(["status", "broker-session-id", "--json"])).toEqual({
       ok: true,

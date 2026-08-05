@@ -877,7 +877,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             "$ref": "#/$defs/ProjectName"
           },
           "harness": {
-            "$ref": "#/$defs/OpenableHarness"
+            "$ref": "#/$defs/CreatableHarness"
           },
           "initialPrompt": {
             "type": "string",
@@ -2180,6 +2180,16 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     },
     "OpenableHarness": {
       "enum": [
+        "pi",
+        "claude",
+        "codex",
+        "gemini",
+        "cursor"
+      ]
+    },
+    "CreatableHarness": {
+      "enum": [
+        "shell",
         "pi",
         "claude",
         "codex",
