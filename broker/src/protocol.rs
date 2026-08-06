@@ -4,6 +4,14 @@ use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u32 = 2;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
+
 // ---------------------------------------------------------------------------
 // Session metadata
 // ---------------------------------------------------------------------------
@@ -33,38 +41,40 @@ pub struct SessionInfo {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CellAttrs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fg: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub bold: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub italic: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub underline: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub reverse: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub blink: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub strike: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub dim: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StyledCell {
     pub ch: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub attrs: CellAttrs,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StyledLine {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<StyledCell>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub wrapped: bool,
 }
 
@@ -374,6 +384,16 @@ mod tests {
             title: Some("ralph".into()),
             captured_at_ms: 1_700_000_000_000,
         }
+    }
+
+    #[test]
+    fn default_snapshot_cells_serialize_compactly_and_roundtrip() {
+        let cell = StyledCell { ch: "x".into(), attrs: CellAttrs::default() };
+        let line = StyledLine { cells: vec![cell], wrapped: false };
+        let value = serde_json::to_value(&line).unwrap();
+        assert_eq!(value, json!({ "cells": [{ "ch": "x" }] }));
+        assert_eq!(serde_json::from_value::<StyledLine>(value).unwrap(), line);
+        assert_eq!(serde_json::to_value(StyledLine::default()).unwrap(), json!({}));
     }
 
     #[test]
