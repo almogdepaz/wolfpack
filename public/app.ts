@@ -23,6 +23,7 @@ import {
 import type { DelegationGridMember } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
+import { bindDelegatedAppActions } from "./app-action-controller";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import { fetchWithTimeout } from "./fetch-timeout";
@@ -5796,32 +5797,20 @@ function bindHtmlEventListeners(): void {
     if (el) el.addEventListener(event, fn);
   };
 
-  document.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const button = target.closest<HTMLElement>("[data-action]");
-    if (!button) return;
-    const action = button.dataset.action;
-    const machine = button.dataset.machine || undefined;
-    const session = button.dataset.session;
-    const index = Number(button.dataset.index);
-    if (action === "quick-send" && Number.isInteger(index)) sendQuickCmd(index);
-    else if (action === "quick-move" && Number.isInteger(index)) moveQuickCmd(index, button.dataset.offset === "-1" ? -1 : 1);
-    else if (action === "quick-edit" && Number.isInteger(index)) void editQuickCmd(index);
-    else if (action === "quick-delete" && Number.isInteger(index)) void deleteQuickCmd(index);
-    else if (action === "delegation-toggle" && button.dataset.delegationKey) toggleSidebarDelegationChildren(button.dataset.delegationKey, event);
-    else if (action === "new-session") void showProjectPicker(machine);
-    else if (action === "open-session" && session) void openSession(session, machine);
-    else if (action === "kill-session" && session) void killSession(session, event, machine);
-    else if (action === "retry-machine") retryMachine(machine || "", event);
-    else if (action === "select-project" && button.dataset.project) selectProject(button.dataset.project);
-    else if (action === "agent-remove" && button.dataset.command) void removeAgent(button.dataset.command);
-    else if (action === "toggle-grid" && session) toggleGrid(session, machine || "", event);
-  });
-  document.addEventListener("change", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement) || target.dataset.action !== "agent-toggle") return;
-    if (target.dataset.command) void toggleAgentEnabled(target.dataset.command, target.checked);
+  bindDelegatedAppActions(document, {
+    quickSend: sendQuickCmd,
+    quickMove: moveQuickCmd,
+    quickEdit: index => { void editQuickCmd(index); },
+    quickDelete: index => { void deleteQuickCmd(index); },
+    delegationToggle: toggleSidebarDelegationChildren,
+    newSession: machine => { void showProjectPicker(machine); },
+    openSession: (session, machine) => { void openSession(session, machine); },
+    killSession: (session, event, machine) => { void killSession(session, event, machine); },
+    retryMachine,
+    selectProject,
+    agentRemove: command => { void removeAgent(command); },
+    agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
+    toggleGrid,
   });
 
   // Header

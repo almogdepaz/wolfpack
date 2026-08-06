@@ -68,7 +68,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Hermetic doctor unit tests use injected checks; host inspection and fixes remain opt-in CLI smoke behavior.
 - [x] Authenticated-or-loopback health readiness, fixed-cardinality JSON/Prometheus metrics, and an explicit broker health state machine.
 - [x] Bounded log rotation/retention, doctor size warnings, and `wolfpack logs --follow/--json` (including broker selection).
-- [ ] Split browser controller and route families behind existing facades; expand strict TypeScript coverage.
+- [x] Split delegated browser action controller and server route families behind stable facades; include both in strict TypeScript coverage.
 
 ## Validation gates
 
