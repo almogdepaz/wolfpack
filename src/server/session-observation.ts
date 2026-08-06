@@ -61,6 +61,15 @@ interface SessionObservation {
 
 const knownSessionSummaries = new Map<string, KnownSessionSummary>();
 
+const SESSION_PREVIEW_MAX_CHARS = 240;
+
+export function lastTerminalPreviewLine(rendered: string | undefined): string {
+  if (!rendered) return "";
+  const lines = rendered.split("\n");
+  const last = (lines.at(-1) ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return Array.from(last).slice(0, SESSION_PREVIEW_MAX_CHARS).join("");
+}
+
 function renderedActivityFingerprint(pane: string): string | undefined {
   const normalized = pane
     .split("\n")
@@ -175,7 +184,8 @@ async function collectSessionObservation(
     }
 
     const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-    const lastLine = knownSessionSummaries.get(name)?.lastLine ?? "";
+    const renderedPreview = lastTerminalPreviewLine(currentRendered);
+    const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
     const observedAt = new Date().toISOString();
     const runtimeState = store.reduce({
       sessionKey,
