@@ -22,7 +22,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Server pong deadlines terminate zombie pending/active viewers.
 - [x] Reconnect budget resets only after authoritative terminal readiness, not TCP open; online/offline transitions are explicit.
 - [x] All browser API requests have a composable hard timeout and preserve caller cancellation.
-- [ ] Abort superseded dashboard/preview refreshes.
+- [x] Abort superseded dashboard/preview refreshes and invalidate stale continuations before they can render.
 - [x] Browser terminal input observes a strict WebSocket buffered-byte high-water mark.
 - [ ] Truthful draft lifecycle and broker stdin byte-bounded ordered queue/per-kind frame limits.
 - [x] Functional browser JWT flow with centralized fetch auth, explicit 401 UX, short-lived one-time WS tickets, and per-peer tab-scoped credentials.

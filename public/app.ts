@@ -3166,7 +3166,7 @@ function machineFailureLabel(category: MachineFailureCategory): string {
   return "Connection failed";
 }
 
-function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
+function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal: AbortSignal) {
   const isRemote = machineIdentity !== "";
   if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
     return Promise.resolve({
@@ -3176,7 +3176,10 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
     });
   }
   const timeoutMs = isRemote ? WP.peerHealthTimeoutMs(state.peerHealth, machineIdentity) : 0;
-  const options = isRemote ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
+  const signal = isRemote
+    ? AbortSignal.any([refreshSignal, AbortSignal.timeout(timeoutMs)])
+    : refreshSignal;
+  const options = { signal };
   return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     return {
@@ -3195,7 +3198,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
   });
 }
 
-async function loadSessionsOnce() {
+async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const myEpoch = ++state.loadSessionsEpoch;
   const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
@@ -3204,7 +3207,7 @@ async function loadSessionsOnce() {
 
   // Single-machine: just fetch and render
   if (!multiMachine) {
-    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad);
+    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad, refreshSignal);
     if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
@@ -3259,7 +3262,7 @@ async function loadSessionsOnce() {
   };
 
   const promises = allMachines.map((m, i) =>
-    fetchMachine(m.url, m.meta, isCurrentLoad).then(g => {
+    fetchMachine(m.url, m.meta, isCurrentLoad, refreshSignal).then(g => {
       if (!isCurrentLoad()) return; // stale call, discard
       groups[i] = g;
       state.lastSessionGroups = groupsInOrder();
@@ -3303,20 +3306,29 @@ async function loadSessionsOnce() {
 }
 
 let sessionRefreshPromise: Promise<void> | null = null;
+let sessionRefreshAbort: AbortController | null = null;
 let forceSessionRefreshAfterCurrent = false;
 
 function loadSessions(forceAfterCurrent = false): Promise<void> {
   if (sessionRefreshPromise) {
-    if (forceAfterCurrent) forceSessionRefreshAfterCurrent = true;
+    if (forceAfterCurrent) {
+      forceSessionRefreshAfterCurrent = true;
+      // Invalidate immediately so stale catch/render continuations cannot update
+      // peer health or the dashboard while their requests are being aborted.
+      state.loadSessionsEpoch += 1;
+      sessionRefreshAbort?.abort(new DOMException("superseded", "AbortError"));
+    }
     return sessionRefreshPromise;
   }
   sessionRefreshPromise = (async () => {
     do {
       forceSessionRefreshAfterCurrent = false;
-      await loadSessionsOnce();
+      sessionRefreshAbort = new AbortController();
+      await loadSessionsOnce(sessionRefreshAbort.signal);
       renderSidebar();
     } while (forceSessionRefreshAfterCurrent);
   })().finally(() => {
+    sessionRefreshAbort = null;
     sessionRefreshPromise = null;
   });
   return sessionRefreshPromise;
