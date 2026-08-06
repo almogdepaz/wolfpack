@@ -394,11 +394,11 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[0].triage).toBe("idle");
   });
 
-  test("keeps dashboard previews empty and snapshots only for explicit reads", async () => {
+  test("derives dashboard previews from the already-sampled rendered fingerprint", async () => {
     mockBackend.setCapturePane(async () => "real output here\n─────────────\n$ \n\n");
 
     const listed = await (await get("/api/sessions")).json();
-    expect(listed.sessions[0].lastLine).toBe("");
+    expect(listed.sessions[0].lastLine).toBe("$");
 
     const read = await (await get("/api/session-control/read?session=wolf-1")).json();
     expect(read.output).toBe("real output here\n─────────────\n$ \n\n");
@@ -456,7 +456,7 @@ describe("GET /api/sessions", () => {
       const initial = await (await get("/api/sessions")).json();
       expect(initial.sessions[0]).toMatchObject({
         name: sessionName,
-        lastLine: "",
+        lastLine: "stable rendered tui",
         triage: "idle",
         outputSequence: "41",
         runtimeState: { state: "idle" },
@@ -467,6 +467,7 @@ describe("GET /api/sessions", () => {
       ]);
       const redraw = await (await get("/api/sessions")).json();
       expect(redraw.sessions[0]).toMatchObject({
+        lastLine: "stable rendered tui",
         triage: "idle",
         outputSequence: "42",
         runtimeState: { state: "idle" },
@@ -482,6 +483,7 @@ describe("GET /api/sessions", () => {
       ]);
       const renderedOutput = await (await get("/api/sessions")).json();
       expect(renderedOutput.sessions[0]).toMatchObject({
+        lastLine: "updated rendered tui",
         triage: "running",
         outputSequence: "43",
         runtimeState: {

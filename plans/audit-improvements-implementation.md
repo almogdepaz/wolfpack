@@ -66,7 +66,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [ ] Axe active-view/dialog scans plus documented VoiceOver/TalkBack checklist.
 - [ ] Safe explicit non-interactive setup that preserves existing config; complete subcommand help and `doctor --json`.
 - [ ] Hermetic doctor unit tests; host inspection/fixes only in opt-in smoke tests.
-- [ ] Authenticated/local health readiness, bounded JSON/Prometheus metrics, broker health state machine.
+- [x] Authenticated-or-loopback health readiness, fixed-cardinality JSON/Prometheus metrics, and an explicit broker health state machine.
 - [ ] Log rotation/retention, size warnings, and `wolfpack logs --follow/--json`.
 - [ ] Split browser controller and route families behind existing facades; expand strict TypeScript coverage.
 

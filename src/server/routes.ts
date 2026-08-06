@@ -31,6 +31,7 @@ import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, getSubscriptionCount, buildAgentNotificationPayload, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 import { issueWebSocketTicket } from "./ws-ticket.js";
+import { boundedMetrics, operationalHealth, prometheusMetrics } from "./operability.js";
 
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
@@ -1262,6 +1263,20 @@ export const routes: Record<
     } catch (e: unknown) {
       json(res, { error: errMsg(e) || "git status failed" }, 500);
     }
+  },
+
+  // ── Readiness and bounded operational metrics ──
+
+  "GET /api/health": (_req, res) => {
+    const health = operationalHealth();
+    json(res, health, health.status === "ready" ? 200 : 503);
+  },
+
+  "GET /api/metrics": (_req, res) => json(res, boundedMetrics()),
+
+  "GET /metrics": (_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+    res.end(prometheusMetrics());
   },
 
   // ── Browser authentication ──

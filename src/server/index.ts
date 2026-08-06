@@ -35,6 +35,7 @@ import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
 import { loadConfig } from "../cli/config.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
+import { isLoopbackAddress } from "./operability.js";
 
 const log = createLogger("server");
 
@@ -146,7 +147,9 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (shouldAuthenticateApiPath(url.pathname)) {
+    const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
+    const localOperationalRequest = operationalPath && isLoopbackAddress(req.socket.remoteAddress);
+    if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
       const auth = validateRequestJwt(req.headers, url, false);
       if (!auth.ok) {
         log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
