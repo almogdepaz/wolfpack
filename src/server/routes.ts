@@ -30,6 +30,7 @@ import { assets } from "../public-assets.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, getSubscriptionCount, buildAgentNotificationPayload, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
+import { issueWebSocketTicket } from "./ws-ticket.js";
 
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
@@ -1261,6 +1262,12 @@ export const routes: Record<
     } catch (e: unknown) {
       json(res, { error: errMsg(e) || "git status failed" }, 500);
     }
+  },
+
+  // ── Browser authentication ──
+
+  "POST /api/auth/ws-ticket": (req, res) => {
+    json(res, issueWebSocketTicket(req.socket.remoteAddress ?? "unknown"));
   },
 
   // ── Push notifications ──

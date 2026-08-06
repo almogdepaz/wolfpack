@@ -34,6 +34,7 @@ import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
 import { loadConfig } from "../cli/config.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
+import { consumeWebSocketTicket } from "./ws-ticket.js";
 
 const log = createLogger("server");
 
@@ -205,7 +206,9 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       }
       const url = new URL(req.url ?? "/", "http://localhost");
 
-      const auth = validateRequestJwt(req.headers, url, true);
+      const ticket = url.searchParams.get("ticket");
+      const ticketOk = ticket ? consumeWebSocketTicket(ticket, clientIp) : false;
+      const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true);
       if (!auth.ok) {
         log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");

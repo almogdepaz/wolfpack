@@ -26,6 +26,7 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import { fetchWithTimeout } from "./fetch-timeout";
+import { browserAuthFetch, setBrowserAuthToken } from "./browser-auth";
 import { OrderedResizeTracker } from "./ordered-resize";
 import { createReconnector } from "./reconnector";
 import {
@@ -456,12 +457,10 @@ function dismissGitStatus() {
 async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && !origin) throw new Error("selected peer is not ready");
-  const headers: Record<string, string> = {};
-  const jwt = localStorage.getItem("wpJwt");
-  if (jwt) headers.Authorization = "Bearer " + jwt;
-  const response = await fetch(origin
+  const target = origin
     ? new URL("/api/copy-text?session=" + encodeURIComponent(session), origin)
-    : "/api/copy-text?session=" + encodeURIComponent(session), { headers });
+    : new URL("/api/copy-text?session=" + encodeURIComponent(session), location.href);
+  const response = await authenticatedFetchWithTimeout(target);
   if (!response.ok) throw new Error("HTTP " + response.status);
   return response.text();
 }
@@ -896,6 +895,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   window.addEventListener("online", handleOnline);
   window.addEventListener("offline", handleOffline);
   let hasConnected = false;
+  let connectGeneration = 0;
+  let connectPending = false;
   let consumeReset = !!opts.resetPty;
   let _initialPrefillMode = opts.prefillMode || TERMINAL_PREFILL_MODE.FULL;
   let _attachAckTimer = null;
@@ -912,18 +913,22 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
 
-  function buildUrl() {
-    const resetSuffix = consumeReset ? "&reset=1" : "";
+  function buildUrl(ticket: string) {
+    const origin = opts.machine ? resolveReadyMachineOrigin(opts.machine) : location.origin;
+    if (!origin) throw new Error("selected peer is not ready");
+    const target = new URL("/ws/pty", origin);
+    target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+    target.searchParams.set("session", opts.session);
+    target.searchParams.set("ticket", ticket);
+    if (consumeReset) target.searchParams.set("reset", "1");
     consumeReset = false;
-    const session = encodeURIComponent(opts.session);
-    if (opts.machine) {
-      const origin = resolveReadyMachineOrigin(opts.machine);
-      if (!origin) throw new Error("selected peer is not ready");
-      const remote = new URL(origin);
-      return "wss://" + remote.host + "/ws/pty?session=" + session + resetSuffix;
-    }
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return proto + "//" + location.host + "/ws/pty?session=" + session + resetSuffix;
+    return target.href;
+  }
+
+  async function requestWebSocketTicket(): Promise<string> {
+    const response = await api<{ readonly ticket?: string }>("/auth/ws-ticket", { method: "POST" }, opts.machine);
+    if (!response.ticket) throw new Error("server did not issue a WebSocket ticket");
+    return response.ticket;
   }
 
   /** Send one attach handshake to bootstrap PTY spawn on fresh WS open. */
@@ -1228,14 +1233,17 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function connect() {
     _rc.cancel();
-    if (navigator.onLine === false) return;
+    if (navigator.onLine === false || connectPending) return;
     if (ws && ws.readyState <= WebSocket.OPEN) return;
+    const generation = ++connectGeneration;
+    connectPending = true;
+    void requestWebSocketTicket().then((ticket) => {
+      if (generation !== connectGeneration || navigator.onLine === false) return;
+      const sock = new WebSocket(buildUrl(ticket));
+      sock.binaryType = "arraybuffer";
+      ws = sock;
 
-    const sock = new WebSocket(buildUrl());
-    sock.binaryType = "arraybuffer";
-    ws = sock;
-
-    sock.onopen = () => {
+      sock.onopen = () => {
       if (ws !== sock) return;
       console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
       const wasReconnect = hasConnected;
@@ -1265,7 +1273,13 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
     };
 
-    sock.onerror = () => {};
+      sock.onerror = () => {};
+    }).catch((error: unknown) => {
+      console.warn("[pty-ws] ticket request failed:", error);
+      if (generation === connectGeneration) scheduleReconnect();
+    }).finally(() => {
+      if (generation === connectGeneration) connectPending = false;
+    });
   }
 
   function scheduleReconnect() {
@@ -1328,6 +1342,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function close() {
+    connectGeneration += 1;
+    connectPending = false;
     window.removeEventListener("online", handleOnline);
     window.removeEventListener("offline", handleOffline);
     _rc.cancel();
@@ -1344,6 +1360,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // tabs kill TCP silently while readyState still reports OPEN — connect() guards
   // against this and bails. reconnect() bypasses that guard. See PR #89 review / df4180c.
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
+    connectGeneration += 1;
+    connectPending = false;
     _rc.cancel();
     resetAttachLifecycle();
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
@@ -2491,11 +2509,39 @@ interface CreateSessionResponse {
   readonly session?: string;
 }
 
+let authPrompt: Promise<boolean> | null = null;
+
+async function promptForBrowserCredential(target: string): Promise<boolean> {
+  if (authPrompt) return authPrompt;
+  authPrompt = (async () => {
+    const origin = new URL(target, location.href).origin;
+    const result = await showAppDialog({
+      title: "Authentication required",
+      message: `Enter the access token for ${origin}. It is kept only in this browser tab.`,
+      fields: [{ name: "token", label: "Access token" }],
+      confirmLabel: "Authenticate",
+    });
+    const token = result?.token?.trim();
+    if (!token) return false;
+    setBrowserAuthToken(target, token);
+    return true;
+  })().finally(() => { authPrompt = null; });
+  return authPrompt;
+}
+
+async function authenticatedFetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  let response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
+  if (response.status === 401 && await promptForBrowserCredential(input.toString())) {
+    response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
+  }
+  return response;
+}
+
 async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
   const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
-  const res = await fetchWithTimeout(base, opts);
+  const res = await authenticatedFetchWithTimeout(base, opts);
   const body = await res.text();
   let data: unknown = {};
   if (body) {

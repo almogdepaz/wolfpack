@@ -259,6 +259,20 @@ describe("JWT auth middleware", () => {
     await closeWs(ws!);
   });
 
+  test("exchanges an authenticated request for a one-time WebSocket ticket", async () => {
+    const response = await fetch(`${baseUrl}/api/auth/ws-ticket`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${createValidToken()}` },
+    });
+    expect(response.status).toBe(200);
+    const { ticket } = await response.json() as { ticket: string };
+    const accepted = await rawUpgrade(`/ws/pty?session=auth-session&ticket=${encodeURIComponent(ticket)}`);
+    expect(accepted.status).toBe(101);
+    await closeWs(accepted.ws!);
+    const replay = await rawUpgrade(`/ws/pty?session=auth-session&ticket=${encodeURIComponent(ticket)}`);
+    expect(replay.status).not.toBe(101);
+  });
+
   test("rejects JWT signed with wrong secret", async () => {
     const now = Math.floor(Date.now() / 1000);
     const token = createJwt(

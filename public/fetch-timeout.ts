@@ -7,12 +7,14 @@ export class RequestTimeoutError extends Error {
   }
 }
 
+export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 /** Fetch with a hard deadline while preserving an optional caller abort signal. */
 export async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
   timeoutMs = API_REQUEST_TIMEOUT_MS,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchLike = fetch,
 ): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
