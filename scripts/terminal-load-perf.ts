@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
   HYDRATION_DEBUG_SILENCE_KEY,
@@ -190,6 +190,12 @@ function resolveBrokerBin(): string | null {
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+let sharedPerfBrowser: Browser | null = null;
+
+async function getPerfBrowser(): Promise<Browser> {
+  if (!sharedPerfBrowser) sharedPerfBrowser = await chromium.launch();
+  return sharedPerfBrowser;
+}
 
 async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -315,6 +321,7 @@ async function createSession(baseUrl: string, name: string, project: string): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ project, cmd: "shell", sessionName: name }),
+    signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) throw new Error(`create ${name} failed: ${res.status} ${await res.text()}`);
 }
@@ -331,24 +338,29 @@ export async function cleanupCreatedSessions(
   sessions: readonly string[],
   fetcher: SessionCleanupFetch = fetch,
 ): Promise<SessionCleanupFailure[]> {
-  const failures: SessionCleanupFailure[] = [];
-  for (const session of [...sessions].reverse()) {
+  const results = await Promise.all([...sessions].reverse().map(async (session): Promise<SessionCleanupFailure | null> => {
     try {
-      const res = await fetcher(`${baseUrl}/api/kill`, {
+      const request = fetcher(`${baseUrl}/api/kill`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ session }),
+        signal: AbortSignal.timeout(3_000),
       });
-      if (!res.ok && res.status !== 404) failures.push({ session, error: `${res.status} ${await res.text()}` });
+      const res = await Promise.race([
+        request,
+        wait(3_000).then(() => { throw new Error("cleanup request timed out"); }),
+      ]);
+      if (!res.ok && res.status !== 404) return { session, error: `${res.status} ${await res.text()}` };
+      return null;
     } catch (error) {
-      failures.push({ session, error: error instanceof Error ? error.message : String(error) });
+      return { session, error: error instanceof Error ? error.message : String(error) };
     }
-  }
-  return failures;
+  }));
+  return results.filter((result): result is SessionCleanupFailure => result !== null);
 }
 
 async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
-  const browser = await chromium.launch();
+  const browser = await getPerfBrowser();
   const deviceMode = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
   const page = await browser.newPage(deviceMode === "mobile" ? {
     viewport: { width: 390, height: 844 },
@@ -406,9 +418,20 @@ async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageL
   });
   const startedAt = performance.now();
   await page.goto(baseUrl);
-  await page.waitForSelector(".card", { timeout: 10_000 });
+  try {
+    await page.waitForSelector(".card", { timeout: 15_000 });
+  } catch (error) {
+    const diagnostic = await page.locator("body").innerText().catch(() => "<body unavailable>");
+    throw new Error(`dashboard cards did not load; console=${consoleErrors.join(" | ")}; body=${diagnostic.slice(0, 500)}`, { cause: error });
+  }
   const cardVisibleMs = +(performance.now() - startedAt).toFixed(3);
-  return { page, pageLoad: { cardVisibleMs, consoleErrors }, close: () => browser.close() };
+  return {
+    page,
+    pageLoad: { cardVisibleMs, consoleErrors },
+    close: async () => {
+      await Promise.race([page.context().close(), wait(5_000)]);
+    },
+  };
 }
 
 async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: number): Promise<PageLoadSummary> {
@@ -711,7 +734,7 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
       };
       w.openSession(names[0]);
     }, sessions);
-    await page.waitForSelector("#desktop-terminal-container canvas", { timeout: 10_000 });
+    await page.waitForSelector("#desktop-terminal-container canvas", { state: "attached", timeout: 10_000 });
     const addDelayMs = gridAddDelayMs();
     if (addDelayMs > 0) await page.waitForTimeout(addDelayMs);
     for (const session of sessions.slice(1)) {
@@ -1096,6 +1119,10 @@ async function main(): Promise<void> {
     console.log("\njson:");
     console.log(JSON.stringify(report, null, 2));
   } finally {
+    if (sharedPerfBrowser) {
+      await Promise.race([sharedPerfBrowser.close(), wait(5_000)]);
+      sharedPerfBrowser = null;
+    }
     if (server) server.proc.kill("SIGTERM");
     if (broker.proc) {
       broker.proc.kill("SIGTERM");

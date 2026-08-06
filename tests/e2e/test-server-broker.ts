@@ -11,6 +11,13 @@ import type { AddressInfo } from "node:net";
 
 process.env.WOLFPACK_TEST = "1";
 
+const { mock: bunMock } = await import("bun:test");
+const realHttp = await import("../../src/server/http.ts");
+await bunMock.module("../../src/server/http.js", () => ({
+  ...realHttp,
+  enumerateLocalTailnetCandidates: async () => ({ candidates: [] }),
+}));
+
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
 if (!socketPath) {
   process.stderr.write("WOLFPACK_BROKER_SOCKET is required\n");
