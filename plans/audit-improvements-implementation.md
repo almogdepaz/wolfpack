@@ -11,7 +11,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Replace per-session dashboard snapshots with output-sequence invalidation and a shared observation cache; snapshot only when the sequence changes.
 - [x] Batch runtime-state persistence to one write per observation; atomic private durable writes replace per-session rewrites.
 - [x] Compact snapshot wire data by omitting default attributes, bound extraction before allocation, and cap concurrent broker snapshots.
-- [ ] Move snapshot serialization outside the terminal lock and add broker-side sequence-keyed snapshot reuse.
+- [x] Keep JSON framing/serialization on the connection writer outside the terminal lock and reuse immutable broker snapshots by sequence and request shape.
 - [x] Atomic snapshot+live attach broker operation or equivalent proven cut that cannot replay-truncate between separate RPCs.
 - [x] Exit `final_seq` barrier and bounded exited-session tombstone so final output precedes lifecycle closure.
 

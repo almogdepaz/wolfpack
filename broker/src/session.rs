@@ -189,6 +189,14 @@ impl Drop for SpawnedChildGuard {
     }
 }
 
+#[derive(Clone)]
+struct CachedSnapshot {
+    seq: u64,
+    scrollback_lines: Option<u32>,
+    target_cols: Option<u16>,
+    snapshot: Snapshot,
+}
+
 pub struct Session {
     inner: Arc<Inner>,
     /// Held only for `resize` — the write half was taken out at spawn time
@@ -208,6 +216,10 @@ pub struct Session {
     /// Live-output fanout. Drainer publishes here; subscribe RPC handlers
     /// attach to it for replay + live streaming.
     bus: Arc<OutputBus>,
+    /// Most recent materialized snapshot. JSON encoding happens later on the
+    /// connection writer, outside the terminal lock; identical sequence/key
+    /// requests reuse this immutable protocol value.
+    snapshot_cache: Mutex<Option<CachedSnapshot>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -338,6 +350,7 @@ impl Session {
             terminal,
             seq,
             bus,
+            snapshot_cache: Mutex::new(None),
         })
     }
 
@@ -426,7 +439,7 @@ impl Session {
     pub fn resize(&self, cols: u16, rows: u16, events: &EventSender) -> Result<(), ResizeError> {
         let id = self.id();
         let mut master = self.master.lock().expect("master poisoned");
-        resize_terminal_pty_and_state(
+        let result = resize_terminal_pty_and_state(
             &self.inner,
             id,
             master.as_mut(),
@@ -434,7 +447,9 @@ impl Session {
             cols,
             rows,
             events,
-        )
+            || *self.snapshot_cache.lock().expect("snapshot cache poisoned") = None,
+        );
+        result
     }
 
     /// Write raw bytes to the PTY master's stdin (e.g. keyboard input from a client).
@@ -459,13 +474,18 @@ impl Session {
         // Read seq under the same lock the drainer holds while bumping it,
         // so the returned (state, seq) pair is consistent.
         let seq = self.seq.load(Ordering::SeqCst);
-        term.try_snapshot_with_reflow(
+        if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
+            return Ok(cached);
+        }
+        let snapshot = term.try_snapshot_with_reflow(
             id,
             seq,
             now_ms(),
             scrollback_lines.map(|n| n as usize),
             target_cols.map(|c| c as usize),
-        )
+        )?;
+        self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
+        Ok(snapshot)
     }
 
     /// Atomically capture terminal state and establish the replay/live cut.
@@ -477,16 +497,53 @@ impl Session {
         let id = self.id();
         let term = self.terminal.lock().expect("terminal poisoned");
         let seq = self.seq.load(Ordering::SeqCst);
-        let snapshot = term.try_snapshot_with_reflow(
-            id,
-            seq,
-            now_ms(),
-            scrollback_lines.map(|n| n as usize),
-            target_cols.map(|c| c as usize),
-        )?;
+        let snapshot = if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
+            cached
+        } else {
+            let snapshot = term.try_snapshot_with_reflow(
+                id,
+                seq,
+                now_ms(),
+                scrollback_lines.map(|n| n as usize),
+                target_cols.map(|c| c as usize),
+            )?;
+            self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
+            snapshot
+        };
         let subscription = self.bus.subscribe(Some(seq))
             .expect("output bus subscriptions remain available for tombstone replay");
         Ok((snapshot, subscription))
+    }
+
+    fn cached_snapshot(
+        &self,
+        seq: u64,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+    ) -> Option<Snapshot> {
+        self.snapshot_cache
+            .lock()
+            .expect("snapshot cache poisoned")
+            .as_ref()
+            .filter(|cached| cached.seq == seq
+                && cached.scrollback_lines == scrollback_lines
+                && cached.target_cols == target_cols)
+            .map(|cached| cached.snapshot.clone())
+    }
+
+    fn cache_snapshot(
+        &self,
+        seq: u64,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+        snapshot: &Snapshot,
+    ) {
+        *self.snapshot_cache.lock().expect("snapshot cache poisoned") = Some(CachedSnapshot {
+            seq,
+            scrollback_lines,
+            target_cols,
+            snapshot: snapshot.clone(),
+        });
     }
 
     /// Block (up to `timeout`) until the reaper marks this session not-alive.
@@ -536,6 +593,7 @@ fn resize_terminal_pty_and_state<P, T>(
     cols: u16,
     rows: u16,
     events: &EventSender,
+    invalidate_snapshot_cache: impl FnOnce(),
 ) -> Result<(), ResizeError>
 where
     P: PtyResize + ?Sized,
@@ -554,6 +612,7 @@ where
             }
             return Err(ResizeError::Pty(pty));
         }
+        invalidate_snapshot_cache();
     }
 
     state.cols = cols;
@@ -1057,6 +1116,20 @@ mod tests {
     }
 
     #[test]
+    fn repeated_snapshot_key_reuses_sequence_cache() {
+        let sess = spawn_session(opts(vec!["printf", "cached"])).expect("spawn");
+        assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
+        let first = sess.snapshot_terminal(Some(10), Some(80)).expect("snapshot");
+        let second = sess.snapshot_terminal(Some(10), Some(80)).expect("cached snapshot");
+        assert_eq!(first, second);
+        let cache = sess.snapshot_cache.lock().expect("snapshot cache poisoned");
+        let cached = cache.as_ref().expect("snapshot should be cached");
+        assert_eq!(cached.seq, first.seq);
+        assert_eq!(cached.scrollback_lines, Some(10));
+        assert_eq!(cached.target_cols, Some(80));
+    }
+
+    #[test]
     fn snapshot_seq_advances_when_drainer_consumes_bytes() {
         let sess = spawn_session(opts(vec!["printf", "abc"])).expect("spawn");
         // Don't capture an "initial" seq before draining — the drainer could
@@ -1202,7 +1275,7 @@ mod tests {
         let terminal = Mutex::new(terminal);
 
         let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
                 .expect_err("terminal resize failure must abort transaction");
 
         assert!(matches!(error, ResizeError::Terminal(_)));
@@ -1227,7 +1300,7 @@ mod tests {
         let terminal = Mutex::new(RecordingTerminalResize::new(80, 24));
 
         let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
                 .expect_err("PTY resize failure must abort transaction");
 
         assert!(matches!(error, ResizeError::Pty(_)));
@@ -1255,7 +1328,7 @@ mod tests {
         let terminal = Mutex::new(terminal);
 
         let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
                 .expect_err("rollback failure must be represented");
 
         assert!(matches!(error, ResizeError::PtyWithTerminalRollback { .. }));
