@@ -27,6 +27,7 @@ import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import { fetchWithTimeout } from "./fetch-timeout";
 import { browserAuthFetch, setBrowserAuthToken } from "./browser-auth";
+import { keyboardOcclusionHeight } from "./viewport-geometry";
 import { OrderedResizeTracker } from "./ordered-resize";
 import { createReconnector } from "./reconnector";
 import {
@@ -442,6 +443,8 @@ async function showGitStatus(): Promise<void> {
   const overlay = document.getElementById("git-status-overlay");
   overlay.innerHTML = '<pre>loading...</pre>';
   overlay.classList.add("visible");
+  overlay.setAttribute("aria-hidden", "false");
+  overlay.focus({ preventScroll: true });
   try {
     const data = await api<{ readonly status?: string }>("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
     overlay.innerHTML = `<div><pre>${esc(data.status || "(clean)")}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
@@ -451,7 +454,9 @@ async function showGitStatus(): Promise<void> {
 }
 
 function dismissGitStatus() {
-  document.getElementById("git-status-overlay").classList.remove("visible");
+  const overlay = document.getElementById("git-status-overlay");
+  overlay.classList.remove("visible");
+  overlay.setAttribute("aria-hidden", "true");
 }
 
 async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
@@ -471,6 +476,8 @@ async function copySessionToClipboard(): Promise<void> {
   const overlay = document.getElementById("git-status-overlay");
   overlay.innerHTML = '<pre>copying...</pre>';
   overlay.classList.add("visible");
+  overlay.setAttribute("aria-hidden", "false");
+  overlay.focus({ preventScroll: true });
   try {
     const text = await fetchSessionText(state.currentSession, state.currentMachine || "");
     await navigator.clipboard.writeText(text);
@@ -2148,6 +2155,9 @@ function setMobileGhosttyKeyboardOpen(open: boolean): boolean {
 function createConflictOverlay(message, buttonLabel, onClick) {
   const overlay = document.createElement("div");
   overlay.className = "viewer-conflict-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", message);
   overlay.innerHTML = '<div class="conflict-msg">' + esc(message) + '</div><button class="conflict-btn" type="button">' + esc(buttonLabel) + "</button>";
   overlay.querySelector(".conflict-btn").addEventListener("click", onClick);
   overlay.addEventListener("click", (e) => e.stopPropagation());
@@ -4215,7 +4225,8 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
 
   if (window.visualViewport && isMobile) {
     const vvHandler = () => {
-      const kbHeight = window.innerHeight - window.visualViewport.height;
+      if (!window.visualViewport) return;
+      const kbHeight = keyboardOcclusionHeight(window.innerHeight, window.visualViewport);
       const kbOpen = kbHeight > 150;
       // Shift terminal sub-elements without changing their layout height.
       // ghostty-web sees no container resize → no reflow → no scroll-through.
@@ -4226,6 +4237,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
     };
     window.visualViewport.addEventListener("resize", vvHandler);
+    window.visualViewport.addEventListener("scroll", vvHandler);
     state.visualViewportHandler = vvHandler;
     // Fire once to catch keyboard already open from previous session
     vvHandler();
@@ -4269,6 +4281,7 @@ function destroyTerminal() {
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
+    window.visualViewport.removeEventListener("scroll", state.visualViewportHandler);
     state.visualViewportHandler = null;
   }
   // Reset terminal positioning
@@ -4518,6 +4531,8 @@ function openDrawer() {
   const chip = document.getElementById("session-chip");
   // remove transition for instant position, then add for animation
   drawer.classList.remove("animating");
+  drawer.removeAttribute("inert");
+  drawer.setAttribute("aria-hidden", "false");
   drawer.style.transform = "translate3d(0, -100%, 0)";
   backdrop.classList.add("visible");
   backdrop.style.opacity = "0";
@@ -4529,6 +4544,7 @@ function openDrawer() {
   backdrop.style.opacity = "1";
   chip.classList.add("open");
   chip.setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => drawer.querySelector<HTMLElement>("button")?.focus({ preventScroll: true }));
   haptic(5);
 }
 
@@ -4540,6 +4556,8 @@ function closeDrawer(instant?: boolean): void {
   const chip = document.getElementById("session-chip");
   chip.classList.remove("open");
   chip.setAttribute("aria-expanded", "false");
+  drawer.setAttribute("aria-hidden", "true");
+  drawer.setAttribute("inert", "");
   if (instant) {
     drawer.classList.remove("animating", "open");
     drawer.style.transform = "";
@@ -5194,6 +5212,10 @@ function revealSettingsSection(sectionId: string, updateLocation = true): void {
   const disclosure = section.closest<HTMLDetailsElement>("details");
   if (disclosure) disclosure.open = true;
   if (updateLocation) history.replaceState(history.state, "", `#${sectionId}`);
+  document.querySelectorAll<HTMLAnchorElement>("#settings-section-nav a").forEach((link) => {
+    if (link.hash === `#${sectionId}`) link.setAttribute("aria-current", "location");
+    else link.removeAttribute("aria-current");
+  });
   requestAnimationFrame(() => section.scrollIntoView({ block: "start", behavior: "smooth" }));
 }
 
@@ -5506,11 +5528,11 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
-  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
+  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
-    <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
+    <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>

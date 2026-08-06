@@ -34,4 +34,12 @@ describe("app shell accessibility contracts", () => {
     expect(manifest.background_color).toBe(theme);
     expect(html).toContain(`<meta name="theme-color" content="${theme}"`);
   });
+
+  test("makes drawers, overlays, and selection state programmatically available", () => {
+    expect(html).toContain('id="session-drawer" aria-label="Switch session" aria-hidden="true" inert');
+    expect(html).toContain('id="git-status-overlay" role="dialog" aria-modal="true"');
+    expect(app).toContain('drawer.removeAttribute("inert")');
+    expect(app).toContain('aria-current="page"');
+    expect(app).toContain('aria-pressed="${inGrid ? "true" : "false"}"');
+  });
 });

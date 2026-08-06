@@ -160,12 +160,20 @@ export function applySetting(key, val) {
   if (key === "termFontSize") {
     document.body.classList.remove("term-size-small", "term-size-medium", "term-size-large", "term-size-xlarge");
     document.body.classList.add("term-size-" + val);
-    document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.size === val));
+    document.querySelectorAll(".term-size-btn").forEach(b => {
+      const selected = (b as HTMLElement).dataset.size === val;
+      b.classList.toggle("active", selected);
+      b.setAttribute("aria-pressed", String(selected));
+    });
     applyTermToXterm();
   }
   if (key === "termFont") {
     document.body.classList.toggle("term-font-alt", val === "alt");
-    document.querySelectorAll(".term-font-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.font === val));
+    document.querySelectorAll(".term-font-btn").forEach(b => {
+      const selected = (b as HTMLElement).dataset.font === val;
+      b.classList.toggle("active", selected);
+      b.setAttribute("aria-pressed", String(selected));
+    });
     applyTermToXterm();
   }
 }

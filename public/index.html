@@ -71,9 +71,9 @@
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
     </nav>
     <div id="sidebar-hover-edge" aria-hidden="true"></div>
-    <div id="drawer-backdrop"></div>
-    <div id="git-status-overlay"></div>
-    <nav id="session-drawer" aria-label="Switch session">
+    <div id="drawer-backdrop" aria-hidden="true"></div>
+    <div id="git-status-overlay" role="dialog" aria-modal="true" aria-label="Session status" aria-hidden="true" tabindex="-1"></div>
+    <nav id="session-drawer" aria-label="Switch session" aria-hidden="true" inert>
       <div id="drawer-list" role="list"></div>
     </nav>
 
@@ -91,7 +91,7 @@
 
     <main id="view-container">
     <!-- Sessions view -->
-    <div id="sessions-view" class="view visible">
+    <div id="sessions-view" class="view visible" role="region" aria-label="Sessions">
       <div id="expanded-toolbar">
         <div class="flex-row">
           <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
@@ -108,7 +108,7 @@
     <div id="session-order-status" class="visually-hidden" role="status" aria-live="polite"></div>
 
     <!-- Project picker view -->
-    <div id="projects-view" class="view" aria-hidden="true" inert>
+    <div id="projects-view" class="view" role="region" aria-label="Projects" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Cancel</button>
       <label class="project-search-field" for="new-project-name">
         <span>Projects</span>
@@ -139,7 +139,7 @@
     </div>
 
     <!-- Agent picker view -->
-    <div id="agent-view" class="view" aria-hidden="true" inert>
+    <div id="agent-view" class="view" role="region" aria-label="Create session" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Back</button>
       <div class="session-name-block">
         <label class="session-name-label" for="session-name-input">session name</label>
@@ -158,7 +158,7 @@
     </div>
 
     <!-- Settings view -->
-    <div id="settings-view" class="view" aria-hidden="true" inert>
+    <div id="settings-view" class="view" role="region" aria-label="Settings" aria-hidden="true" inert>
       <button id="settings-back-btn" class="settings-back-btn" type="button">← Back</button>
       <nav id="settings-section-nav" class="settings-section-nav" aria-label="Settings sections">
         <a href="#settings-effects">Effects</a>
@@ -282,7 +282,7 @@
     </div>
 
     <!-- Terminal view -->
-    <div id="terminal-view" class="view" aria-hidden="true" inert>
+    <div id="terminal-view" class="view" role="region" aria-label="Terminal" aria-hidden="true" inert>
       <button id="terminal-transcript-btn" class="terminal-transcript-btn" type="button" aria-label="Read session transcript">transcript</button>
       <dialog id="terminal-transcript-dialog" class="terminal-transcript-dialog" aria-labelledby="terminal-transcript-title">
         <div class="terminal-transcript-header">

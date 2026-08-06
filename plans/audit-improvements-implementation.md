@@ -43,11 +43,11 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 - [x] Browser session creation supports an optional initial task prompt.
 - [x] Efficient bounded session output preview derived only when the output sequence changes and reused from the observation cache.
-- [ ] Proper drawer buttons/list semantics, chip expanded state, input labels/descriptions, modal overlays, SPA landmarks/focus.
+- [x] Proper drawer buttons/list semantics, chip expanded state, input labels/descriptions, modal overlays, SPA landmarks/focus.
 - [x] iOS safe-area layout and consistent manifest/document theme colors.
 - [ ] WCAG contrast/touch-target/reduced-motion improvements and automated axe coverage.
-- [ ] More robust visual-viewport keyboard geometry.
-- [ ] Accessible selected/pressed/current states for settings and navigation.
+- [x] More robust visual-viewport keyboard geometry using height and offset changes on resize/scroll.
+- [x] Accessible selected/pressed/current states for settings and navigation.
 
 ## Broker resource performance
 
