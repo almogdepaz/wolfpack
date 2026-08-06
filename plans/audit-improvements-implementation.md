@@ -37,7 +37,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Production syntax/whitespace minification plus enforced raw/gzip bundle budgets.
 - [x] Replace aggregate query versions in browser asset URLs with each asset's own content hash.
 - [x] PWA app-shell offline fallback; never cache API, WebSocket, or terminal authority data.
-- [ ] Cache terminal recovery data with TTL, explicit clear control, and privacy disclosure/opt-out.
+- [x] Cache terminal recovery data with a 24-hour TTL, explicit clear control, and privacy disclosure/opt-out.
 
 ## Product and accessibility UX
 

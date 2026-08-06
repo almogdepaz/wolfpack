@@ -5,7 +5,7 @@ import {
   applyTermToXterm, initSettings, haptic, requestNotifications,
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
   state, setState,
-  SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL,
+  SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL, SNAPSHOT_TTL_MS,
   DESKTOP_TERMINAL_SCROLLBACK,
 } from "./app-state";
 
@@ -2200,6 +2200,11 @@ function snapshotEntries() {
     try {
       const snapshot = JSON.parse(localStorage.getItem(key));
       if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+      const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
+      if (typeof savedAt !== "number" || Date.now() - savedAt > SNAPSHOT_TTL_MS) {
+        localStorage.removeItem(key);
+        continue;
+      }
       entries.push({
         key,
         machine: snapshotMachineFromKey(key),
@@ -2217,15 +2222,16 @@ function enforceSnapshotCache() {
   snapshotKeysToEvict(snapshotEntries()).forEach(key => localStorage.removeItem(key));
 }
 function saveSnapshot(machine, session, text) {
-  if (!session || !text) return;
+  if (!wpSettings.recoveryCache || !session || !text) return;
   const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
   try {
-    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, lastUsedAt: Date.now() }));
+    const now = Date.now();
+    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, savedAt: now, lastUsedAt: now }));
     enforceSnapshotCache();
   } catch { /* quota/private-mode */ }
 }
 function loadSnapshot(machine, session) {
-  if (!session) return null;
+  if (!wpSettings.recoveryCache || !session) return null;
   const key = snapshotKey(machine, session);
   let snapshot;
   try {
@@ -2233,14 +2239,21 @@ function loadSnapshot(machine, session) {
     if (!raw) return null;
     snapshot = JSON.parse(raw);
     if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+    const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
+    if (typeof savedAt !== "number" || Date.now() - savedAt > SNAPSHOT_TTL_MS) throw new Error("expired snapshot");
   } catch {
     localStorage.removeItem(key);
     return null;
   }
   try {
-    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, lastUsedAt: Date.now() }));
+    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, savedAt: snapshot.savedAt ?? snapshot.ts, lastUsedAt: Date.now() }));
   } catch { /* preserve a readable snapshot when localStorage is full */ }
   return snapshot.d;
+}
+function clearRecoverySnapshots(): void {
+  for (const entry of snapshotEntries()) localStorage.removeItem(entry.key);
+  const status = document.getElementById("recovery-cache-status");
+  if (status) status.textContent = "Cached terminal recovery output cleared.";
 }
 function cleanSnapshots() {
   enforceSnapshotCache();
@@ -5830,6 +5843,11 @@ function bindHtmlEventListeners(): void {
   on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });
   on("setting-haptics", "change", function(this: HTMLInputElement) { toggleSetting("haptics", this.checked); });
   on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
+  on("setting-recoveryCache", "change", function(this: HTMLInputElement) {
+    toggleSetting("recoveryCache", this.checked);
+    if (!this.checked) clearRecoverySnapshots();
+  });
+  on("clear-recovery-cache-btn", "click", () => clearRecoverySnapshots());
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
