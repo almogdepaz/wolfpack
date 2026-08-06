@@ -99,6 +99,10 @@ export interface BrokerClientApi {
     params?: unknown,
     opts?: { timeoutMs?: number },
   ): Promise<ControlResponse>;
+  snapshotSubscribe(
+    sessionId: string,
+    params?: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number },
+  ): Promise<ControlResponse>;
   writeInput(sessionId: string, data: Uint8Array): void;
   /** Register a per-session output callback; returns an unsubscribe fn. */
   subscribeOutput(sessionId: string, cb: OutputSubscriber): () => void;
@@ -113,6 +117,7 @@ export interface BrokerClientApi {
     opts?: { timeoutMs?: number },
   ): Promise<void>;
   outputSequence(sessionId: string): bigint | undefined;
+  isSubscribed(sessionId: string): boolean;
 }
 
 /** Tmux-style key names → raw byte sequences (mirrors PtyBackend's KEY_MAP). */
@@ -694,7 +699,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   async getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
     if (!id) throw new BrokerRpcError("unknown_session", `session ${name} is unavailable`);
-    const snap = await this.fetchSnapshot(id, name, "getSessionPrefill", cols, options?.scrollbackLines);
+    const snap = await this.fetchSnapshotAndSubscribe(id, name, cols, options?.scrollbackLines);
     const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
     return { data: renderSnapshotToAnsi(snap), seq };
   }
@@ -813,30 +818,38 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     let ref = this.subscriberRefs.get(id);
     const outputBoundarySeq = ref ? this.client.outputSequence(id) : undefined;
     if (!ref) {
-      let resolveReady!: (result: SubscriptionReady) => void;
-      const ready = new Promise<SubscriptionReady>((resolve) => {
-        resolveReady = resolve;
-      });
-      ref = { subscribers: new Set(), ready };
-      this.subscriberRefs.set(id, ref);
-      const pendingRef = ref;
-      this.client.subscribe(id, { sinceSeq }).then(
-        (response) => {
-          const currentSeq = (response.payload as Record<string, unknown> | undefined)?.current_seq;
-          resolveReady({
-            ok: true,
-            outputBoundarySeq: typeof currentSeq === "number"
-              && Number.isSafeInteger(currentSeq)
-              && currentSeq >= 0
-              ? BigInt(currentSeq)
-              : this.client.outputSequence(id),
-          });
-        },
-        (error: unknown) => {
-          this.failOutputSubscribers(id, name, error, pendingRef);
-          resolveReady({ ok: false, error });
-        },
-      );
+      if (this.client.isSubscribed(id)) {
+        ref = {
+          subscribers: new Set(),
+          ready: Promise.resolve({ ok: true, outputBoundarySeq: this.client.outputSequence(id) }),
+        };
+        this.subscriberRefs.set(id, ref);
+      } else {
+        let resolveReady!: (result: SubscriptionReady) => void;
+        const ready = new Promise<SubscriptionReady>((resolve) => {
+          resolveReady = resolve;
+        });
+        ref = { subscribers: new Set(), ready };
+        this.subscriberRefs.set(id, ref);
+        const pendingRef = ref;
+        this.client.subscribe(id, { sinceSeq }).then(
+          (response) => {
+            const currentSeq = (response.payload as Record<string, unknown> | undefined)?.current_seq;
+            resolveReady({
+              ok: true,
+              outputBoundarySeq: typeof currentSeq === "number"
+                && Number.isSafeInteger(currentSeq)
+                && currentSeq >= 0
+                ? BigInt(currentSeq)
+                : this.client.outputSequence(id),
+            });
+          },
+          (error: unknown) => {
+            this.failOutputSubscribers(id, name, error, pendingRef);
+            resolveReady({ ok: false, error });
+          },
+        );
+      }
     }
     ref.subscribers.add(registration);
 
@@ -881,6 +894,27 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
     }
     ref.subscribers.clear();
+  }
+
+  private async fetchSnapshotAndSubscribe(
+    id: string,
+    name: string,
+    targetCols?: number,
+    scrollbackLines: number = SNAPSHOT_SCROLLBACK_LINES,
+  ): Promise<SnapshotPayload> {
+    let response: ControlResponse;
+    try {
+      response = await this.client.snapshotSubscribe(id, { scrollbackLines, targetCols });
+    } catch (error: unknown) {
+      log.warn("getSessionPrefill: atomic snapshot subscribe failed", { name, error: errMsg(error) });
+      throw error;
+    }
+    const payload = unwrap(response);
+    const snapshot = payload.snapshot;
+    if (!snapshot || typeof snapshot !== "object") {
+      throw new BrokerRpcError("invalid_snapshot", "broker returned no atomic snapshot payload");
+    }
+    return snapshot as SnapshotPayload;
   }
 
   /** Issue a bounded `snapshot` RPC or reject with the typed broker failure. */

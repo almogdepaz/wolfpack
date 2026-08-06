@@ -407,6 +407,51 @@ async fn resize_round_trip_updates_session_info_and_snapshot_dimensions() {
 }
 
 #[tokio::test]
+async fn snapshot_subscribe_establishes_atomic_live_cut() {
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+    let resp = round_trip(
+        &mut stream,
+        create_request(1, Some("atomic-cut"), &["sh", "-c", "sleep 0.2; printf atomic-output; sleep 30"]),
+    ).await;
+    let created = match resp.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    let resp = round_trip(&mut stream, ControlRequest {
+        id: 2,
+        method: methods::SNAPSHOT_SUBSCRIBE.into(),
+        params: json!({ "session_id": created.id, "scrollback_lines": 10 }),
+    }).await;
+    let snapshot_seq = match resp.payload.expect("payload") {
+        ResponsePayload::SnapshotSubscribe { snapshot, current_seq, replay_truncated } => {
+            assert_eq!(snapshot.seq, current_seq);
+            assert!(!replay_truncated);
+            snapshot.seq
+        }
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, read_frame_async(&mut stream)).await.expect("output timeout").expect("output frame") {
+            Frame::OutputBinary(output) if output.session_id == created.id => {
+                assert!(output.seq > snapshot_seq);
+                assert!(String::from_utf8_lossy(&output.data).contains("atomic-output"));
+                break;
+            }
+            Frame::Event(_) => continue,
+            other => panic!("unexpected frame after atomic subscribe: {other:?}"),
+        }
+    }
+
+    drop(stream);
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn resize_unknown_session_returns_unknown_session() {
     let h = Harness::boot().await;
     let mut stream = connect(&h.socket_path).await;

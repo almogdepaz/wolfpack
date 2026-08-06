@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::codec::{read_frame_async, write_frame_async, CodecError, Frame, OutputFrame};
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
-    SubscribeParams, UnsubscribeParams,
+    SnapshotParams, SubscribeParams, UnsubscribeParams,
 };
 use crate::registry::Registry;
 use crate::ring_buffer::OutputChunk;
@@ -365,6 +365,7 @@ async fn dispatch_frame(
 ) -> bool {
     match frame {
         Frame::ControlRequest(req) => match req.method.as_str() {
+            methods::SNAPSHOT_SUBSCRIBE => handle_snapshot_subscribe(req, registry, writer_tx, output_tx, subs).await,
             methods::SUBSCRIBE => handle_subscribe(req, registry, writer_tx, output_tx, subs).await,
             methods::UNSUBSCRIBE => handle_unsubscribe(req, writer_tx, subs).await,
             _ => {
@@ -394,6 +395,65 @@ async fn dispatch_frame(
             false
         }
     }
+}
+
+/// Atomically snapshot terminal state and establish the connection-local
+/// replay/live subscription before releasing the terminal ordering lock.
+async fn handle_snapshot_subscribe(
+    req: ControlRequest,
+    registry: &Arc<Registry>,
+    writer_tx: &mpsc::Sender<Frame>,
+    output_tx: &mpsc::Sender<Frame>,
+    subs: &mut HashMap<Uuid, JoinHandle<()>>,
+) -> bool {
+    let id = req.id;
+    let params: SnapshotParams = match req.parse_params() {
+        Ok(params) => params,
+        Err(error) => {
+            return send_response(writer_tx, ControlResponse::err(id, ProtocolError {
+                code: ErrorCode::InvalidRequest,
+                message: format!("snapshot_subscribe params: {error}"),
+            })).await;
+        }
+    };
+    if params.target_cols.is_some_and(|cols| !(20..=300).contains(&cols)) {
+        return send_response(writer_tx, ControlResponse::err(id, ProtocolError {
+            code: ErrorCode::InvalidRequest,
+            message: "snapshot_subscribe target_cols must be between 20 and 300".into(),
+        })).await;
+    }
+    let session = match registry.get(params.session_id) {
+        Some(session) => session,
+        None => return send_response(writer_tx, unknown_session(id, params.session_id)).await,
+    };
+    let (snapshot, sub) = match session.snapshot_and_subscribe(params.scrollback_lines, params.target_cols) {
+        Ok(result) => result,
+        Err(error) => {
+            return send_response(writer_tx, ControlResponse::err(id, ProtocolError {
+                code: ErrorCode::InternalError,
+                message: format!("terminal snapshot failed: {error}"),
+            })).await;
+        }
+    };
+    if let Some(previous) = subs.remove(&params.session_id) {
+        previous.abort();
+    }
+    if !send_response(writer_tx, ControlResponse::ok(id, ResponsePayload::SnapshotSubscribe {
+        snapshot,
+        current_seq: sub.current_seq,
+        replay_truncated: sub.replay_truncated,
+    })).await {
+        return false;
+    }
+    let session_id = params.session_id;
+    let handle = tokio::spawn(forward_output(
+        session_id,
+        sub.replay,
+        sub.receiver,
+        output_tx.clone(),
+    ));
+    subs.insert(session_id, handle);
+    true
 }
 
 /// Subscribe to a session's live output. The protocol contract is:

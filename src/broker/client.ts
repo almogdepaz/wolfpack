@@ -41,6 +41,7 @@ import {
 
 export type OutputSubscriber = (frame: OutputBinaryFrame) => void;
 export type EventSubscriber = (event: EventBody) => void;
+const PENDING_OUTPUT_MAX_BYTES_PER_SESSION = 1024 * 1024;
 
 export interface BrokerClientOptions {
   /** Absolute path to broker Unix socket. Defaults to `defaultBrokerSocketPath()`. */
@@ -176,6 +177,8 @@ export class BrokerClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRpc>();
   private readonly outputSubs = new Map<string, Set<OutputSubscriber>>();
+  private readonly pendingOutput = new Map<string, OutputBinaryFrame[]>();
+  private readonly pendingOutputBytes = new Map<string, number>();
   /** Sessions the caller has asked us to subscribe to. Re-issued on reconnect. */
   private readonly activeSubscriptions = new Set<string>();
   private readonly pendingSubscriptions = new Map<string, Promise<ControlResponse>>();
@@ -333,6 +336,14 @@ export class BrokerClient {
       this.outputSubs.set(sessionId, set);
     }
     set.add(cb);
+    const buffered = this.pendingOutput.get(sessionId);
+    if (buffered) {
+      this.pendingOutput.delete(sessionId);
+      this.pendingOutputBytes.delete(sessionId);
+      for (const frame of buffered) {
+        try { cb(frame); } catch { /* subscriber errors are isolated */ }
+      }
+    }
     return () => {
       const s = this.outputSubs.get(sessionId);
       if (!s) return;
@@ -344,6 +355,38 @@ export class BrokerClient {
   /** Number of distinct sessions with at least one output subscriber. */
   outputSubscriptionCount(): number {
     return this.outputSubs.size;
+  }
+
+  /** Atomically snapshot and establish replay/live output on this connection. */
+  async snapshotSubscribe(
+    sessionId: string,
+    params: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number } = {},
+  ): Promise<ControlResponse> {
+    if (this.state !== "connected") throw new BrokerNotConnectedError();
+    this.activeSubscriptions.add(sessionId);
+    if (!this.activeSubscriptionSeq.has(sessionId)) this.activeSubscriptionSeq.set(sessionId, undefined);
+    try {
+      const response = await this.request("snapshot_subscribe", {
+        session_id: sessionId,
+        ...(params.scrollbackLines !== undefined && { scrollback_lines: params.scrollbackLines }),
+        ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
+      }, { timeoutMs: params.timeoutMs });
+      if (response.status !== "ok") {
+        const code = response.error?.code ?? "internal_error";
+        throw new BrokerSubscribeError(code, response.error?.message ?? "snapshot subscribe failed");
+      }
+      const snapshot = (response.payload as Record<string, unknown> | undefined)?.snapshot as Record<string, unknown> | undefined;
+      const seq = snapshot?.seq;
+      if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
+        const snapshotSeq = BigInt(seq);
+        const observed = this.activeSubscriptionSeq.get(sessionId);
+        this.activeSubscriptionSeq.set(sessionId, observed !== undefined && observed > snapshotSeq ? observed : snapshotSeq);
+      }
+      return response;
+    } catch (error: unknown) {
+      this.clearSubscriptionState(sessionId);
+      throw error;
+    }
   }
 
   /**
@@ -432,6 +475,8 @@ export class BrokerClient {
   private clearSubscriptionState(sessionId: string): void {
     this.activeSubscriptions.delete(sessionId);
     this.activeSubscriptionSeq.delete(sessionId);
+    this.pendingOutput.delete(sessionId);
+    this.pendingOutputBytes.delete(sessionId);
   }
 
   // ── Internals ──
@@ -595,6 +640,18 @@ export class BrokerClient {
         }
         const subs = this.outputSubs.get(sessionId);
         if (!subs) {
+          if (this.activeSubscriptions.has(sessionId)) {
+            const bytes = this.pendingOutputBytes.get(sessionId) ?? 0;
+            if (bytes + frame.value.data.byteLength <= PENDING_OUTPUT_MAX_BYTES_PER_SESSION) {
+              const buffered = this.pendingOutput.get(sessionId) ?? [];
+              buffered.push(frame.value);
+              this.pendingOutput.set(sessionId, buffered);
+              this.pendingOutputBytes.set(sessionId, bytes + frame.value.data.byteLength);
+            } else {
+              this.clearSubscriptionState(sessionId);
+              this.onReplayTruncatedCb?.(sessionId);
+            }
+          }
           this.releaseExitIfComplete(sessionId);
           return;
         }

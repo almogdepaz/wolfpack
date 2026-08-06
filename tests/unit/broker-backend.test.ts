@@ -74,6 +74,26 @@ class FakeBrokerClient implements BrokerClientApi {
     return okResp({ kind: method });
   }
 
+  async snapshotSubscribe(
+    sessionId: string,
+    params: { scrollbackLines?: number; targetCols?: number } = {},
+  ): Promise<ControlResponse> {
+    this.activeSubscriptions.add(sessionId);
+    const rpcParams = {
+      session_id: sessionId,
+      scrollback_lines: params.scrollbackLines,
+      ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
+    };
+    this.requests.push({ method: "snapshot_subscribe", params: rpcParams });
+    if (this.requestError) throw this.requestError;
+    const handler = this.handlers.get("snapshot_subscribe") ?? this.handlers.get("snapshot");
+    return handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+  }
+
+  isSubscribed(sessionId: string): boolean {
+    return this.activeSubscriptions.has(sessionId);
+  }
+
   writeInput(sessionId: string, data: Uint8Array): void {
     if (this.inputError) throw this.inputError;
     // Detach so callers can compare without aliasing concerns.
@@ -1083,6 +1103,8 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     });
     await Promise.resolve();
     const error = new BrokerSubscribeError("unknown_session", "gone");
+    // BrokerClient clears reconnect state before invoking this router callback.
+    client.activeSubscriptions.delete(SESSION_UUID_1);
 
     backend.handleResubscribeError(SESSION_UUID_1, error);
     backend.handleResubscribeError(SESSION_UUID_1, error);

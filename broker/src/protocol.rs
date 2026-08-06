@@ -219,6 +219,7 @@ pub enum ResponsePayload {
     KillSession { killed: bool },
     SessionInfo { session: SessionInfo },
     Snapshot { snapshot: Snapshot },
+    SnapshotSubscribe { snapshot: Snapshot, current_seq: u64, replay_truncated: bool },
     Resize { ok: bool },
     Subscribe { ok: bool, current_seq: u64, replay_truncated: bool },
     Unsubscribe { ok: bool },
@@ -254,6 +255,7 @@ pub mod methods {
     pub const KILL_SESSION: &str = "kill_session";
     pub const SESSION_INFO: &str = "session_info";
     pub const SNAPSHOT: &str = "snapshot";
+    pub const SNAPSHOT_SUBSCRIBE: &str = "snapshot_subscribe";
     pub const RESIZE: &str = "resize";
     pub const SUBSCRIBE: &str = "subscribe";
     pub const UNSUBSCRIBE: &str = "unsubscribe";

@@ -30,7 +30,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::output_bus::OutputBus;
+use crate::output_bus::{OutputBus, Subscription};
 use crate::protocol::{Event, SessionInfo, Snapshot};
 use crate::ring_buffer::OutputChunk;
 use crate::terminal_state::{TerminalState, TerminalStateError};
@@ -468,6 +468,27 @@ impl Session {
         )
     }
 
+    /// Atomically capture terminal state and establish the replay/live cut.
+    pub fn snapshot_and_subscribe(
+        &self,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+    ) -> Result<(Snapshot, Subscription), TerminalStateError> {
+        let id = self.id();
+        let term = self.terminal.lock().expect("terminal poisoned");
+        let seq = self.seq.load(Ordering::SeqCst);
+        let snapshot = term.try_snapshot_with_reflow(
+            id,
+            seq,
+            now_ms(),
+            scrollback_lines.map(|n| n as usize),
+            target_cols.map(|c| c as usize),
+        )?;
+        let subscription = self.bus.subscribe(Some(seq))
+            .expect("output bus subscriptions remain available for tombstone replay");
+        Ok((snapshot, subscription))
+    }
+
     /// Block (up to `timeout`) until the reaper marks this session not-alive.
     /// Returns `true` if the session is dead by the time we return.
     pub fn wait_for_exit(&self, timeout: Duration) -> bool {
@@ -583,14 +604,17 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                 // reflects only N-1 chunks (or vice versa). The new seq
                 // (post-bump) is the chunk's own seq — i.e. snapshot.seq
                 // and OutputChunk.seq use the same monotonic numbering.
-                let new_seq = {
+                {
                     let mut term = terminal.lock().expect("terminal poisoned");
-                    match term.try_feed_chunk(&data) {
+                    let new_seq = match term.try_feed_chunk(&data) {
                         Ok(()) => seq.fetch_add(1, Ordering::SeqCst) + 1,
                         Err(error) => break Err(io::Error::other(error)),
-                    }
-                };
-                bus.publish(OutputChunk { seq: new_seq, data });
+                    };
+                    // Publish before releasing the terminal lock. Atomic
+                    // snapshot+subscribe takes the same terminal→bus order,
+                    // so a chunk cannot be included in both snapshot and live.
+                    bus.publish(OutputChunk { seq: new_seq, data });
+                }
             }
             Err(error) => break Err(error),
         }

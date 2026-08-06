@@ -107,7 +107,7 @@ impl Router for SessionRouter {
                 Ok(p) => self.resize(id, p),
                 Err(e) => invalid_request(id, format!("resize params: {e}")),
             },
-            methods::SUBSCRIBE | methods::UNSUBSCRIBE => ControlResponse::err(
+            methods::SNAPSHOT_SUBSCRIBE | methods::SUBSCRIBE | methods::UNSUBSCRIBE => ControlResponse::err(
                 id,
                 ProtocolError {
                     code: ErrorCode::InternalError,

@@ -546,6 +546,32 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(captured!.since_seq).toBe(1234);
   });
 
+  test("atomic snapshot subscription buffers live output until the renderer attaches", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (req, sock) => {
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "ok",
+          payload: { kind: "snapshot_subscribe", snapshot: { seq: 5 }, current_seq: 5, replay_truncated: false },
+        },
+      });
+      server.send(sock, {
+        kind: FRAME_KIND_OUTPUT_BINARY,
+        value: { sessionId: SAMPLE_UUID, seq: 6n, data: new Uint8Array([6]) },
+      });
+    };
+
+    await client.snapshotSubscribe(SAMPLE_UUID);
+    const received: bigint[] = [];
+    client.subscribeOutput(SAMPLE_UUID, (frame) => received.push(frame.seq));
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(6n);
+    expect(received).toEqual([6n]);
+  });
+
   test("subscription_dropped resumes after the last output delivered before the barrier", async () => {
     const { server, client } = await bootClientToServer();
     const sinceSeqs: Array<number | undefined> = [];
