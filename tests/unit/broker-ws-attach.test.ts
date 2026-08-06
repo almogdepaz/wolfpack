@@ -207,6 +207,21 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
   });
 
+  test("resize acknowledgement is emitted only after the broker applies dimensions", async () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await wait(250);
+    backend.resizeCalls.length = 0;
+
+    ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+    expect(ws.jsonFrames().some(frame => frame.type === "resize_ack")).toBe(false);
+    await wait(100);
+
+    expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 120, rows: 40 }]);
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+  });
+
   test("snapshot failure closes the viewer instead of presenting a blank ready terminal", async () => {
     backend.prefillError = new Error("snapshot transport failed");
     const ws = new FakeWs();

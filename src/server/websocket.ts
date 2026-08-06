@@ -1043,7 +1043,17 @@ function setupNewPtyEntry(
   activePtySessions.set(session, entry);
   let spawning = false;
   const requestedSize: { current: { cols: number; rows: number } | null } = { current: null };
+  let pendingAttachResizeAck: { resizeId: number; cols: number; rows: number } | null = null;
   const layoutStable: { current: { cols: number; rows: number } | null } = { current: null };
+
+  function acknowledgeAttachedResize(applied: { cols: number; rows: number }): void {
+    const pending = pendingAttachResizeAck;
+    if (!pending || pending.cols !== applied.cols || pending.rows !== applied.rows) return;
+    pendingAttachResizeAck = null;
+    if (entryStillCurrent(entry, session, ws)) {
+      safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...pending }));
+    }
+  }
 
   // Streaming attach path: snapshot prefill + subscribe to broker output stream.
   const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
@@ -1102,11 +1112,17 @@ function setupNewPtyEntry(
 
       if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
         if (!subscribeWithCoalescing(ctx, undefined)) return;
-        const latest = requestedSize.current ?? { cols, rows };
-        timing?.mark("resize_apply.start", { cols: latest.cols, rows: latest.rows, prefillMode });
-        await backend.resize(session, latest.cols, latest.rows);
-        timing?.mark("resize_apply.end", { cols: latest.cols, rows: latest.rows, prefillMode });
+        let applied = requestedSize.current ?? { cols, rows };
+        timing?.mark("resize_apply.start", { cols: applied.cols, rows: applied.rows, prefillMode });
+        await backend.resize(session, applied.cols, applied.rows);
+        const latest = requestedSize.current;
+        if (latest && (latest.cols !== applied.cols || latest.rows !== applied.rows)) {
+          applied = latest;
+          await backend.resize(session, applied.cols, applied.rows);
+        }
+        timing?.mark("resize_apply.end", { cols: applied.cols, rows: applied.rows, prefillMode });
         if (!entryStillCurrent(entry, session, ws)) return;
+        acknowledgeAttachedResize(applied);
         timing?.mark("pty_ready.send");
         sendPtyReady(entry, session);
         return;
@@ -1152,6 +1168,7 @@ function setupNewPtyEntry(
 
       if (!subscribeWithCoalescing(ctx, prefillSeq)) return;
 
+      acknowledgeAttachedResize(appliedSize);
       timing?.mark("pty_ready.send");
       sendPtyReady(entry, session);
     } finally {
@@ -1236,9 +1253,13 @@ function setupNewPtyEntry(
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const cols = clampCols(msg.cols);
           const rows = clampRows(msg.rows);
+          const resizeId = typeof msg.resizeId === "number" && Number.isSafeInteger(msg.resizeId) && msg.resizeId >= 0
+            ? msg.resizeId
+            : undefined;
           requestedSize.current = { cols, rows };
           const isAttached = !!entry.unsubscribe;
           if (!isAttached) {
+            if (resizeId !== undefined) pendingAttachResizeAck = { resizeId, cols, rows };
             startPtyAttach(cols, rows);
           } else {
             if (resizeTimer) clearTimeout(resizeTimer);
@@ -1247,6 +1268,9 @@ function setupNewPtyEntry(
               if (!entry.alive) return;
               streamingBackend.resize(session, cols, rows).then(() => {
                 if (!entryStillCurrent(entry, session, ws)) return;
+                if (resizeId !== undefined) {
+                  safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
+                }
               }).catch((e: unknown) => {
                 if (!entryStillCurrent(entry, session, ws)) return;
                 log.warn("streaming backend resize failed — reconnecting viewer", { session, error: errMsg(e) });

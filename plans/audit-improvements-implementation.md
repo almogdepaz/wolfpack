@@ -7,7 +7,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## P0 correctness and scaling
 
-- [ ] Ordered browser/server/broker resize acknowledgement; browser renderer commits dimensions only at the broker-confirmed cut; representative ANSI race regression.
+- [x] Ordered browser/server/broker resize acknowledgement; browser renderer commits dimensions only at the broker-confirmed cut; representative ANSI race regression.
 - [x] Replace per-session dashboard snapshots with output-sequence invalidation and a shared observation cache; snapshot only when the sequence changes.
 - [x] Batch runtime-state persistence to one write per observation; atomic private durable writes replace per-session rewrites.
 - [ ] Compact and budget terminal snapshots; omit default cell attributes, bound before allocation/encoding, minimize terminal-lock duration, add concurrency limits/cache.

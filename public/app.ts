@@ -26,6 +26,7 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import { fetchWithTimeout } from "./fetch-timeout";
+import { OrderedResizeTracker } from "./ordered-resize";
 import { createReconnector } from "./reconnector";
 import {
   GhosttyPrewarmPool,
@@ -94,6 +95,7 @@ import {
 } from "../src/terminal-connection-lifecycle";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
 import {
+  commitTerminalResizePreservingScroll,
   fitTerminalPreservingScroll,
   forceTerminalRepaint,
   syncTerminalLayout,
@@ -821,12 +823,14 @@ interface PtySocketClientOpts {
   readonly prefillMode?: LayoutStablePrefillMode;
   readonly takeControlOnAttach?: boolean;
   readonly getTermDimensions: () => TermDimensions | null;
+  readonly getProposedDimensions?: () => TermDimensions | null;
   readonly getLayoutMetrics?: () => TerminalLayoutMetrics | null;
   readonly fitTerminal: () => void;
   readonly onBinaryData?: (data: Uint8Array) => void;
   readonly onAttach?: () => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
   readonly onPtyReady?: () => void;
+  readonly onResizeAck?: (cols: number, rows: number) => void;
   readonly onPrefillDone?: () => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
@@ -989,20 +993,18 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _awaitingPrefillDone = false;
     _prefillChunks = [];
     _sawViewportPrefill = false;
+    _pendingResizeDimensions = null;
+    if (_resizeDebounceTimer) { clearTimeout(_resizeDebounceTimer); _resizeDebounceTimer = null; }
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
   }
 
   function sendLayoutStable(reason: "after-paint" | "immediate" = "after-paint"): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
-    const dims = opts.getTermDimensions();
+    const dims = opts.getProposedDimensions?.() ?? opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (key !== _lastSentResize) {
-      _lastSentResize = key;
-      ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
-    }
+    if (key !== _lastSentResize) sendResizeRequest(dims);
     ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
     const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
     __wfTraceEvent(_trace, "layout_stable.send", {
@@ -1019,31 +1021,42 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  /** Fit terminal + send resize dimensions over the socket (debounced). */
+  /** Send resize requests with an ordered acknowledgement boundary. */
   let _lastSentResize = "";
+  const _orderedResize = new OrderedResizeTracker();
   let _resizeDebounceTimer = null;
-  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
+  let _pendingResizeDimensions: TermDimensions | null = null;
+
+  function sendResizeRequest(dims: TermDimensions): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (options?.fit !== false) {
-      try { opts.fitTerminal(); } catch {}
-    }
-    const dims = opts.getTermDimensions();
-    if (!dims) return;
-    const key = dims.cols + "x" + dims.rows;
-    if (!options?.force && key === _lastSentResize) return; // same dimensions, skip
-    // Debounce: collapse rapid resize calls into one
+    _lastSentResize = `${dims.cols}x${dims.rows}`;
+    ws.send(JSON.stringify(_orderedResize.request(dims)));
+  }
+
+  function queueResize(dims: TermDimensions, force = false): void {
+    const key = `${dims.cols}x${dims.rows}`;
+    if (!force && key === _lastSentResize) return;
+    _pendingResizeDimensions = dims;
     if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
     _resizeDebounceTimer = setTimeout(() => {
       _resizeDebounceTimer = null;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const d = opts.getTermDimensions();
-      if (!d) return;
-      const nextKey = d.cols + "x" + d.rows;
-      if (!options?.force && nextKey === _lastSentResize) return;
-      const msg = JSON.stringify({ type: "resize", cols: d.cols, rows: d.rows });
-      _lastSentResize = nextKey;
-      ws.send(msg);
+      const pending = _pendingResizeDimensions;
+      _pendingResizeDimensions = null;
+      if (!pending) return;
+      if (!force && `${pending.cols}x${pending.rows}` === _lastSentResize) return;
+      sendResizeRequest(pending);
     }, RESIZE_SEND_DEBOUNCE_MS);
+  }
+
+  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const dims = options?.fit === false
+      ? opts.getTermDimensions()
+      : (opts.getProposedDimensions?.() ?? opts.getTermDimensions());
+    if (!dims) return;
+    // Collapse rapid proposals without committing Ghostty.
+    queueResize(dims, !!options?.force);
   }
 
   type SocketControlMessage = Readonly<Record<string, unknown>> & { readonly type: string };
@@ -1058,6 +1071,13 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     // mobile where layout isn't finalized at connect time. Same-dimension acks
     // are skipped to avoid a duplicate resize cycle immediately after attach.
     sendLayoutStableAfterPaint();
+  }
+
+  function handleResizeAck(message: SocketControlMessage): void {
+    const dimensions = _orderedResize.acknowledge(message);
+    if (!dimensions) return;
+    _lastSentResize = `${dimensions.cols}x${dimensions.rows}`;
+    opts.onResizeAck?.(dimensions.cols, dimensions.rows);
   }
 
   function handlePtyReady(): void {
@@ -1137,6 +1157,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   const terminalControlHandlers: Readonly<Record<string, SocketControlHandler>> = {
     attach_ack: handleAttachAck,
+    resize_ack: handleResizeAck,
     pty_ready: handlePtyReady,
     prefill_viewport: handlePrefillViewport,
     prefill_done: handlePrefillDone,
@@ -1232,9 +1253,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function sendResize(cols: number, rows: number): void {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "resize", cols, rows }));
-    }
+    queueResize({ cols, rows });
   }
 
   function sendTakeControl() {
@@ -1851,6 +1870,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       resetPty: opts.resetPty,
       prefillMode: opts.prefillMode,
       getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
+      getProposedDimensions: () => _fitAddon?.proposeDimensions?.() ?? (_term ? { cols: _term.cols, rows: _term.rows } : null),
       getLayoutMetrics: () => {
         if (!_container) return null;
         const rect = _container.getBoundingClientRect();
@@ -1864,6 +1884,14 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       shouldReconnect: opts.shouldReconnect,
       onAttach: () => {
         _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
+      },
+      onResizeAck: (cols, rows) => {
+        if (!isCurrent() || !_term) return;
+        if (commitTerminalResizePreservingScroll(_term, { cols, rows })) {
+          recordFirstFit({ cols, rows });
+          forceRepaint();
+          resizeLifecycle.scheduleResizeRehydrate();
+        }
       },
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);

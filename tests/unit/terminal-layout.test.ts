@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  commitTerminalResizePreservingScroll,
   fitTerminalPreservingScroll,
   syncTerminalLayout,
 } from "../../public/terminal-layout.ts";
@@ -29,8 +30,8 @@ describe("terminal layout", () => {
     expect(scrollTargets).toEqual([60]);
   });
 
-  test("sends a resize and requests full-prefill rehydration only after dimensions change", () => {
-    const sent: Array<{ readonly force: boolean; readonly fit: boolean }> = [];
+  test("does not commit proposed columns until the broker resize acknowledgement", () => {
+    const sent: Array<{ readonly cols: number; readonly rows: number }> = [];
     let dimensionsChanged = false;
     const term = {
       cols: 80,
@@ -38,26 +39,33 @@ describe("terminal layout", () => {
       viewportY: 8,
       getScrollbackLength: () => 100,
       scrollToLine: () => {},
-      renderer: {
-        render: () => {},
-      },
+      resize: (cols: number, rows: number) => { term.cols = cols; term.rows = rows; },
+      renderer: { render: () => {} },
       wasmTerm: {},
     };
 
     syncTerminalLayout({
       term,
       fitAddon: {
-        fit: () => { term.cols = 120; },
+        proposeDimensions: () => ({ cols: 120, rows: 30 }),
+        fit: () => { throw new Error("fit must not run before broker acknowledgement"); },
       },
       ptyClient: {
-        sendFitResize: (options: { readonly force: boolean; readonly fit: boolean }) => { sent.push(options); },
+        sendResize: (cols: number, rows: number) => { sent.push({ cols, rows }); },
       },
       forceSend: true,
       repaint: true,
       onDimensionsChanged: () => { dimensionsChanged = true; },
     });
 
-    expect(sent).toEqual([{ force: true, fit: false }]);
-    expect(dimensionsChanged).toBe(true);
+    // Representative ANSI output arriving during the resize race is still
+    // interpreted at the broker's currently committed 80-column geometry.
+    const ansiRenderWidthDuringRace = term.cols;
+    expect(sent).toEqual([{ cols: 120, rows: 30 }]);
+    expect(ansiRenderWidthDuringRace).toBe(80);
+    expect(dimensionsChanged).toBe(false);
+
+    expect(commitTerminalResizePreservingScroll(term, { cols: 120, rows: 30 })).toBe(true);
+    expect({ cols: term.cols, rows: term.rows }).toEqual({ cols: 120, rows: 30 });
   });
 });
