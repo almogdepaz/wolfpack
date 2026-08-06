@@ -7,8 +7,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { ASSET_VERSION, assets } from "../public-assets.js";
 import { exec } from "./shell.js";
+import type { ExecFn } from "./shell.js";
 import { getBackend } from "./backend.js";
-import { createLogger } from "../log.js";
+import { createLogger, errMsg } from "../log.js";
+import {
+  buildMachineHandshakeFromTailnetStatus,
+  enumerateTailnetCandidates,
+} from "../tailnet-machine-contract.js";
+import type { MachineHandshake, TailnetMachineCandidate } from "../tailnet-machine-contract.js";
+import { getInstallationId } from "../tailnet-machine-installation.js";
 
 const log = createLogger("http");
 
@@ -94,7 +101,7 @@ export function json(res: ServerResponse, data: unknown, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
-const PUBLIC_API_PATHS = new Set(["/api/info"]);
+const PUBLIC_API_PATHS = new Set(["/api/info", "/api/machine"]);
 
 export function shouldAuthenticateApiPath(pathname: string): boolean {
   return pathname.startsWith("/api/") && !PUBLIC_API_PATHS.has(pathname);
@@ -110,8 +117,9 @@ export function writeUnauthorized(res: ServerResponse): void {
 
 // ── Constants ──
 const MAX_BODY = 64 * 1024;
-const PEER_PROBE_TIMEOUT_MS = 3_000;
 const TAILSCALE_MAX_BUFFER = 10 * 1024 * 1024;
+export const TAILSCALE_STATUS_TIMEOUT_MS = 5_000;
+export const TAILSCALE_STATUS_CACHE_TTL_MS = 1_000;
 
 export class RequestBodyTooLargeError extends Error {
   constructor(readonly maxBytes: number) {
@@ -327,9 +335,6 @@ export function sanitizePeerName(name: unknown): string {
   return name.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 64);
 }
 
-// Cached peer list for server-side aggregation (populated by /api/discover)
-export let cachedPeers: { url: string; name: string }[] = [];
-
 // Must invoke via login shell: the macOS App Store Tailscale CLI
 // (/Applications/Tailscale.app/Contents/MacOS/Tailscale) relies on the user's
 // session env to reach the GUI-hosted daemon. Under launchd's stripped env a
@@ -341,51 +346,101 @@ export function buildTailscaleStatusArgv(tsBin: string): { cmd: string; args: st
   return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status --json`] };
 }
 
-export async function discoverPeers(): Promise<{ peers: any[]; error?: string }> {
-  const tsBin = [
+function findTailscaleBinary(): string | undefined {
+  return [
     "/usr/local/bin/tailscale",
     "/usr/bin/tailscale",
     "/opt/homebrew/bin/tailscale",
     "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-  ].find((p) => { try { execFileSync("test", ["-x", p]); return true; } catch { /* probe: binary not found at this path */ return false; } });
-  if (!tsBin) return { peers: [], error: "tailscale not found" };
-
-  try {
-    const { cmd, args } = buildTailscaleStatusArgv(tsBin);
-    const { stdout } = await exec(
-      cmd, args,
-      { maxBuffer: TAILSCALE_MAX_BUFFER },
-    );
-    const status = JSON.parse(stdout);
-    const self = status.Self?.DNSName?.replace(/\.$/, "");
-    const peers: { hostname: string; url: string }[] = [];
-    for (const [, peer] of Object.entries(status.Peer || {}) as [string, any][]) {
-      if (!peer.Online) continue;
-      const dns = peer.DNSName?.replace(/\.$/, "");
-      if (!dns || dns === self) continue;
-      peers.push({ hostname: dns, url: `https://${dns}` });
+  ].find((path) => {
+    try {
+      execFileSync("test", ["-x", path]);
+      return true;
+    } catch {
+      return false;
     }
+  });
+}
 
-    const results = await Promise.all(
-      peers.map(async (p) => {
-        try {
-          const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), PEER_PROBE_TIMEOUT_MS);
-          const r = await fetch(p.url + "/api/info", { signal: ctrl.signal });
-          clearTimeout(timer);
-          const info = await r.json();
-          const sanitized = sanitizePeerName(info.name);
-          return { ...p, name: sanitized || p.hostname, version: sanitizePeerName(info.version), wolfpack: true as const };
-        } catch { /* expected: peer unreachable or not running wolfpack */
-          return { ...p, name: p.hostname, version: undefined, wolfpack: false as const };
-        }
-      }),
-    );
-    const wolfpackPeers = results.filter((r): r is Extract<typeof r, { wolfpack: true }> => r.wolfpack);
-    cachedPeers = wolfpackPeers.map(p => ({ url: p.url, name: p.name }));
-    return { peers: wolfpackPeers };
-  } catch (e: any) {
-    log.error("discover error", { error: e?.message || String(e) });
-    return { peers: [], error: "failed to query tailscale" };
+export function createTailscaleStatusCache(
+  readStatus: () => Promise<unknown>,
+  now: () => number = Date.now,
+): { readonly read: () => Promise<unknown> } {
+  let cached: { readonly status: unknown; readonly expiresAt: number } | undefined;
+  let inFlight: Promise<unknown> | undefined;
+
+  return {
+    read(): Promise<unknown> {
+      if (cached && now() < cached.expiresAt) return Promise.resolve(cached.status);
+      if (inFlight) return inFlight;
+      try {
+        inFlight = readStatus()
+          .then((status) => {
+            cached = { status, expiresAt: now() + TAILSCALE_STATUS_CACHE_TTL_MS };
+            return status;
+          })
+          .finally(() => {
+            inFlight = undefined;
+          });
+        return inFlight;
+      } catch (error: unknown) {
+        return Promise.reject(error);
+      }
+    },
+  };
+}
+
+export async function executeTailscaleStatus(
+  binary: string,
+  run: ExecFn = exec,
+): Promise<unknown> {
+  const { cmd, args } = buildTailscaleStatusArgv(binary);
+  const { stdout } = await run(cmd, args, {
+    maxBuffer: TAILSCALE_MAX_BUFFER,
+    timeout: TAILSCALE_STATUS_TIMEOUT_MS,
+  });
+  return JSON.parse(stdout) as unknown;
+}
+
+async function readLocalTailscaleStatusUncached(): Promise<unknown> {
+  const binary = findTailscaleBinary();
+  if (!binary) throw new Error("tailscale not found");
+  return executeTailscaleStatus(binary);
+}
+
+const localTailscaleStatusCache = createTailscaleStatusCache(readLocalTailscaleStatusUncached);
+
+async function readLocalTailscaleStatus(): Promise<unknown> {
+  const testStatus = process.env.WOLFPACK_TEST ? process.env.WOLFPACK_TAILSCALE_STATUS_JSON : undefined;
+  if (testStatus !== undefined) return JSON.parse(testStatus) as unknown;
+  return localTailscaleStatusCache.read();
+}
+
+export async function getLocalMachineHandshake(version: string): Promise<MachineHandshake | null> {
+  try {
+    const status = await readLocalTailscaleStatus();
+    return buildMachineHandshakeFromTailnetStatus({
+      status,
+      installationId: getInstallationId(),
+      version,
+    });
+  } catch (error: unknown) {
+    log.warn("machine handshake unavailable", { error: errMsg(error) });
+    return null;
+  }
+}
+
+export async function enumerateLocalTailnetCandidates(): Promise<{
+  readonly candidates: readonly TailnetMachineCandidate[];
+  readonly error?: string;
+}> {
+  try {
+    const enumeration = enumerateTailnetCandidates(await readLocalTailscaleStatus());
+    if (enumeration.kind === "valid") return { candidates: enumeration.candidates };
+    log.warn("tailnet candidate enumeration unavailable", { error: "invalid local status" });
+    return { candidates: [], error: "failed to query tailscale" };
+  } catch (error: unknown) {
+    log.warn("tailnet candidate enumeration unavailable", { error: errMsg(error) });
+    return { candidates: [], error: "failed to query tailscale" };
   }
 }

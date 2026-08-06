@@ -9,6 +9,11 @@ import {
   validateControlApiSchemaArtifact,
 } from "../../scripts/gen-control-api-schema.ts";
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
+import {
+  MACHINE_CAPABILITY,
+  MACHINE_MAX_CAPABILITIES,
+  classifyMachineHandshake,
+} from "../../src/tailnet-machine-contract.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -48,6 +53,14 @@ function validate(schema: unknown, value: unknown, root: JsonObject, path = "$")
       : [`${path} did not match exactly one variant: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
   }
 
+  if (Array.isArray(resolved.allOf)) {
+    const { allOf: _allOf, ...withoutAllOf } = resolved;
+    return [
+      ...resolved.allOf.flatMap((candidate) => validate(candidate, value, root, path)),
+      ...validate(withoutAllOf, value, root, path),
+    ];
+  }
+
   if ("const" in resolved && value !== resolved.const) {
     return [`${path} expected const ${JSON.stringify(resolved.const)}`];
   }
@@ -70,8 +83,18 @@ function validate(schema: unknown, value: unknown, root: JsonObject, path = "$")
     return [`${path} failed pattern ${resolved.pattern}`];
   }
 
-  if (Array.isArray(value) && isObject(resolved.items)) {
-    return value.flatMap((item, index) => validate(resolved.items, item, root, `${path}[${index}]`));
+  if (Array.isArray(value)) {
+    const errors: string[] = [];
+    if (typeof resolved.minItems === "number" && value.length < resolved.minItems) errors.push(`${path} has too few items`);
+    if (typeof resolved.maxItems === "number" && value.length > resolved.maxItems) errors.push(`${path} has too many items`);
+    if (resolved.uniqueItems === true && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) {
+      errors.push(`${path} has duplicate items`);
+    }
+    if (isObject(resolved.contains) && !value.some((item) => validate(resolved.contains, item, root, path).length === 0)) {
+      errors.push(`${path} is missing a required item`);
+    }
+    if (isObject(resolved.items)) errors.push(...value.flatMap((item, index) => validate(resolved.items, item, root, `${path}[${index}]`)));
+    return errors;
   }
 
   if (isObject(value) && isObject(resolved.properties)) {
@@ -158,6 +181,105 @@ describe("control api schema docs", () => {
 });
 
 describe("control api schema compatibility samples", () => {
+  test("matches classifier compatibility for future additions and canonical Tailnet origins", () => {
+    const response = httpResponse("getMachineHandshake");
+    const candidate = {
+      hostname: "peer.example.ts.net",
+      tailnetNodeId: "n-peer",
+      origin: "https://peer.example.ts.net",
+      online: true,
+    };
+    const requiredCapabilities = [
+      MACHINE_CAPABILITY.SESSIONS,
+      MACHINE_CAPABILITY.TERMINAL_WEBSOCKET,
+      MACHINE_CAPABILITY.PUSH_SUBSCRIPTION,
+    ];
+    const futureHandshake = {
+      protocol: { name: "wolfpack-machine", major: 1, minor: 9, futureProtocolField: "allowed" },
+      machine: {
+        tailnetNodeId: candidate.tailnetNodeId,
+        installationId: "2af8af29-c4fe-44f9-9a99-9a0e35952d74",
+        displayName: "peer",
+        origin: candidate.origin,
+        futureMachineField: true,
+      },
+      wolfpack: { version: "1.7.0", futureWolfpackField: "allowed" },
+      capabilities: [...requiredCapabilities, "future-capability"],
+      futureHandshakeField: { allowed: true },
+    };
+
+    expect(classifyMachineHandshake(candidate, futureHandshake).kind).toBe("ready");
+    expect(validate(response, futureHandshake, artifact)).toEqual([]);
+    expect(validate(response, {
+      ...futureHandshake,
+      capabilities: [MACHINE_CAPABILITY.SESSIONS, MACHINE_CAPABILITY.TERMINAL_WEBSOCKET, "future-capability"],
+    }, artifact)).not.toEqual([]);
+
+    for (const capabilities of [
+      [...futureHandshake.capabilities, MACHINE_CAPABILITY.SESSIONS],
+      [
+        ...requiredCapabilities,
+        ...Array.from(
+          { length: MACHINE_MAX_CAPABILITIES - requiredCapabilities.length + 1 },
+          (_, index) => `future-capability-${index}`,
+        ),
+      ],
+    ]) {
+      const handshake = { ...futureHandshake, capabilities };
+      expect(classifyMachineHandshake(candidate, handshake).kind).toBe("incompatible");
+      expect(validate(response, handshake, artifact)).not.toEqual([]);
+    }
+
+    const malformedOrigin = {
+      protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+      machine: {
+        tailnetNodeId: candidate.tailnetNodeId,
+        installationId: "2af8af29-c4fe-44f9-9a99-9a0e35952d74",
+        displayName: "peer",
+        origin: "https://peer..example.ts.net",
+      },
+      wolfpack: { version: "1.7.0" },
+      capabilities: requiredCapabilities,
+    };
+    const malformedCandidate = {
+      ...candidate,
+      hostname: "peer..example.ts.net",
+      origin: "https://peer..example.ts.net",
+    };
+
+    expect(classifyMachineHandshake(malformedCandidate, malformedOrigin).kind).toBe("incompatible");
+    expect(validate(response, malformedOrigin, artifact)).not.toEqual([]);
+  });
+
+  test("publishes canonical typed online and offline Tailnet candidate facts", () => {
+    const operation = httpOperation("discoverTailnetCandidates");
+    const response = httpResponse("discoverTailnetCandidates");
+    const candidates = [
+      { hostname: "online.example.ts.net", tailnetNodeId: "n-online", origin: "https://online.example.ts.net", online: true },
+      { hostname: "offline.example.ts.net", tailnetNodeId: "n-offline", origin: "https://offline.example.ts.net", online: false },
+    ];
+
+    expect(operation.route).toBe("GET /api/tailnet/v1/candidates");
+    expect(validate(response, { candidates }, artifact)).toEqual([]);
+    expect(validate(response, {
+      candidates: [{ hostname: "online.example.ts.net", tailnetNodeId: "n-online", origin: "https://online.example.ts.net" }],
+    }, artifact)).not.toEqual([]);
+  });
+
+  test("preserves the deprecated legacy discovery peer facade", () => {
+    const operation = httpOperation("discoverPeers");
+    const response = httpResponse("discoverPeers");
+    const peers = [{
+      hostname: "online.example.ts.net",
+      url: "https://online.example.ts.net",
+      name: "online.example.ts.net",
+    }];
+
+    expect(operation.route).toBe("GET /api/discover");
+    expect(validate(response, { peers }, artifact)).toEqual([]);
+    expect(validate(response, { candidates: [] }, artifact)).not.toEqual([]);
+  });
+
   test("create-session request requires project or newProject", () => {
     const request = httpRequest("createSession");
 

@@ -63,6 +63,20 @@
       },
       "errors": []
     },
+    "getMachineHandshake": {
+      "route": "GET /api/machine",
+      "stable": true,
+      "auth": "public",
+      "response": {
+        "$id": "wolfpack:control-api:http:getMachineHandshake:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getMachineHandshake response",
+        "$ref": "#/$defs/MachineHandshake"
+      },
+      "errors": [
+        "503 ErrorEnvelope"
+      ]
+    },
     "sendTask": {
       "route": "POST /api/tasks/v1/send",
       "stable": true,
@@ -1550,6 +1564,33 @@
         "404 ErrorEnvelope"
       ]
     },
+    "discoverTailnetCandidates": {
+      "route": "GET /api/tailnet/v1/candidates",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:discoverTailnetCandidates:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "discoverTailnetCandidates response",
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/TailnetMachineCandidate"
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidates"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
     "discoverPeers": {
       "route": "GET /api/discover",
       "stable": true,
@@ -2697,6 +2738,138 @@
         "projectDir",
         "harness",
         "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "TailnetNodeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_:-]{1,256}$"
+    },
+    "TailnetOrigin": {
+      "type": "string",
+      "pattern": "^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.ts\\.net$"
+    },
+    "MachineCapabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 3,
+      "maxItems": 35,
+      "uniqueItems": true,
+      "allOf": [
+        {
+          "contains": {
+            "const": "sessions"
+          }
+        },
+        {
+          "contains": {
+            "const": "terminal-websocket"
+          }
+        },
+        {
+          "contains": {
+            "const": "push-subscription"
+          }
+        }
+      ]
+    },
+    "MachineHandshake": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "const": "wolfpack-machine"
+            },
+            "major": {
+              "const": 1
+            },
+            "minor": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "name",
+            "major",
+            "minor"
+          ],
+          "additionalProperties": true
+        },
+        "machine": {
+          "type": "object",
+          "properties": {
+            "tailnetNodeId": {
+              "$ref": "#/$defs/TailnetNodeId"
+            },
+            "installationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/$defs/TailnetOrigin"
+            }
+          },
+          "required": [
+            "tailnetNodeId",
+            "installationId",
+            "displayName",
+            "origin"
+          ],
+          "additionalProperties": true
+        },
+        "wolfpack": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "version"
+          ],
+          "additionalProperties": true
+        },
+        "capabilities": {
+          "$ref": "#/$defs/MachineCapabilities"
+        }
+      },
+      "required": [
+        "protocol",
+        "machine",
+        "wolfpack",
+        "capabilities"
+      ],
+      "additionalProperties": true
+    },
+    "TailnetMachineCandidate": {
+      "type": "object",
+      "properties": {
+        "hostname": {
+          "type": "string"
+        },
+        "tailnetNodeId": {
+          "$ref": "#/$defs/TailnetNodeId"
+        },
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
+        },
+        "online": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "hostname",
+        "tailnetNodeId",
+        "origin",
+        "online"
       ],
       "additionalProperties": false
     },

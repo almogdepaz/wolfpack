@@ -16,6 +16,10 @@ export interface TestServer {
   close(): void;
 }
 
+export interface TestServerOptions {
+  readonly home?: string;
+}
+
 // ── Server startup ───────────────────────────────────────────────────────────
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -26,7 +30,7 @@ const ROOT = join(import.meta.dirname, "..", "..");
  * Resolves once `READY:<port>` is printed to stdout.
  * Call `close()` in afterAll to tear down.
  */
-export function startTestServer(): Promise<TestServer> {
+export function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
   return new Promise<TestServer>((resolve, reject) => {
     const child: ChildProcess = spawn(
       "bun",
@@ -34,7 +38,7 @@ export function startTestServer(): Promise<TestServer> {
       {
         cwd: ROOT,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, WOLFPACK_TEST: "1" },
+        env: { ...process.env, HOME: options.home ?? process.env.HOME, WOLFPACK_TEST: "1" },
       },
     );
 

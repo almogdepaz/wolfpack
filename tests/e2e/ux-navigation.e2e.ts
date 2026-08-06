@@ -968,24 +968,30 @@ test("desktop escape from new-session picker reopens the previous terminal", asy
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
 });
 
-test("offline machines stay ordered, compact, retryable, and cannot create sessions", async ({ page }) => {
-  let remoteRequests = 0;
+test("offline Tailnet candidates stay ordered, compact, retryable, and cannot create sessions", async ({ page }) => {
+  let candidateRequests = 0;
   await page.addInitScript(() => {
     localStorage.setItem("wolfpack-machines", JSON.stringify([
       { name: "Offline one", url: "https://offline-one.example.ts.net" },
       { name: "Offline two", url: "https://offline-two.example.ts.net" },
     ]));
   });
-  await page.route(/^https:\/\/offline-(one|two)\.example\.ts\.net\/api\//, async (route) => {
-    remoteRequests++;
-    await route.abort("connectionfailed");
+  await page.route("**/api/tailnet/v1/candidates", async (route) => {
+    candidateRequests++;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ candidates: [
+        { hostname: "offline-one.example.ts.net", tailnetNodeId: "n-offline-one", origin: "https://offline-one.example.ts.net", online: false },
+        { hostname: "offline-two.example.ts.net", tailnetNodeId: "n-offline-two", origin: "https://offline-two.example.ts.net", online: false },
+      ] }),
+    });
   });
 
   await page.goto(srv.baseUrl);
-  const remoteGroups = page.locator('#session-list .machine-group[data-machine^="https://offline-"]');
+  const remoteGroups = page.locator('#session-list .machine-group[data-machine^="candidate:n-offline-"]');
   await expect(remoteGroups).toHaveCount(2);
-  await expect(remoteGroups.nth(0)).toHaveAttribute("data-machine", "https://offline-one.example.ts.net");
-  await expect(remoteGroups.nth(1)).toHaveAttribute("data-machine", "https://offline-two.example.ts.net");
+  await expect(remoteGroups.nth(0)).toHaveAttribute("data-machine", "candidate:n-offline-one");
+  await expect(remoteGroups.nth(1)).toHaveAttribute("data-machine", "candidate:n-offline-two");
 
   const first = remoteGroups.nth(0);
   await expect(first).toHaveClass(/offline/);
@@ -993,9 +999,9 @@ test("offline machines stay ordered, compact, retryable, and cannot create sessi
   await expect(first.getByRole("button", { name: /Start a session/ })).toBeDisabled();
   await expect(first.getByRole("status")).toContainText("Unreachable");
   await expect(first.getByRole("status")).toContainText("Live terminal actions require this machine to reconnect");
-  const requestsBeforeRetry = remoteRequests;
+  const requestsBeforeRetry = candidateRequests;
   await first.getByRole("button", { name: "Retry Offline one" }).click();
-  await expect.poll(() => remoteRequests).toBeGreaterThan(requestsBeforeRetry);
+  await expect.poll(() => candidateRequests).toBeGreaterThan(requestsBeforeRetry);
 });
 
 test("desktop settings back from a terminal reopens that terminal", async ({ page }, testInfo) => {

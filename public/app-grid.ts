@@ -107,7 +107,9 @@ const _gridRelayoutHiddenSessions = new Set<GridSession>();
 const MAX_GRID_CELLS = 6;
 
 export function isGridActive() {
-  return !state.activeDelegationRoot && state.gridSessions.length >= 2;
+  return !state.activeDelegationRoot && (
+    state.gridSessions.length >= 2 || state.gridSessions[0]?._retainedSingle === true
+  );
 }
 
 export function canOpenMultiTerminalGrid(): boolean {
@@ -310,6 +312,11 @@ async function mountGridController(gs, cell, idx) {
     },
     onReconnectExhausted: () => {
       gs._slowLoad?.stop();
+      setTerminalLoadVisualState(cell, "failed");
+    },
+    onRouteUnavailable: () => {
+      gs._slowLoad?.stop();
+      if (gs.controller?.term) gs.controller.term.options.disableStdin = true;
       setTerminalLoadVisualState(cell, "failed");
     },
     onHydrationStart: () => {
@@ -591,6 +598,60 @@ export function clearPreservedGrid() {
   state.preservedGridFocusIndex = 0;
 }
 
+export function retirePreservedGridSessionsForMachine(machine: string): boolean {
+  const previous = state.preservedGridSessions;
+  if (!previous.some(session => session.machine === machine)) return false;
+  const focused = previous[state.preservedGridFocusIndex];
+  const remaining = previous.filter(session => session.machine !== machine);
+  if (remaining.length <= 1) {
+    clearPreservedGrid();
+    return true;
+  }
+  state.preservedGridSessions = remaining;
+  state.preservedGridFocusIndex = focused && remaining.includes(focused)
+    ? remaining.indexOf(focused)
+    : Math.min(state.preservedGridFocusIndex, remaining.length - 1);
+  return true;
+}
+
+export type GridRetirementResult = "unaffected" | "grid" | "single" | "empty";
+
+export function retireGridSessionsForMachine(machine: string): GridRetirementResult {
+  const previous = state.gridSessions;
+  if (!previous.some(session => session.machine === machine)) return "unaffected";
+  const focused = previous[state.gridFocusIndex];
+  const remaining = previous.filter(session => session.machine !== machine);
+  for (const session of previous) {
+    if (session.machine !== machine) continue;
+    clearGridCellTakeControlTimer(session);
+    session._slowLoad?.stop();
+    session.controller?.dispose();
+    session.controller = null;
+    session._cellElement?.remove();
+    session._cellElement = null;
+  }
+  state.gridSessions = remaining;
+  state.gridFocusIndex = focused && remaining.includes(focused)
+    ? remaining.indexOf(focused)
+    : Math.min(state.gridFocusIndex, Math.max(0, remaining.length - 1));
+  if (remaining.length >= 2) {
+    renderGridCells();
+    setGridFocus(state.gridFocusIndex);
+    return "grid";
+  }
+  if (remaining.length === 1) {
+    // Keep the mounted controller/socket authoritative rather than remounting
+    // it as a single terminal during peer retirement. This marker makes the
+    // exceptional live one-cell grid participate in the normal grid lifecycle.
+    remaining[0]._retainedSingle = true;
+    renderGridCells();
+    setGridFocus(state.gridFocusIndex);
+    return "grid";
+  }
+  updateGridLayout();
+  return "empty";
+}
+
 export function setCurrentSessionFromGridFocus(sessions, focusIndex) {
   if (!sessions.length) return;
   const idx = Math.max(0, Math.min(focusIndex, sessions.length - 1));
@@ -643,8 +704,12 @@ export function setDelegationGridFocus(idx: number): void {
 
 export function suspendGridMode() {
   const preserved = WP.suspendGridState(state.gridSessions, state.gridFocusIndex);
-  state.preservedGridSessions = preserved.sessions;
-  state.preservedGridFocusIndex = preserved.focusIndex;
+  if (preserved.sessions.length >= 2) {
+    state.preservedGridSessions = preserved.sessions;
+    state.preservedGridFocusIndex = preserved.focusIndex;
+  } else {
+    clearPreservedGrid();
+  }
   cancelGridRelayoutTransition();
   for (const gs of state.gridSessions) {
     clearGridCellTakeControlTimer(gs);
@@ -953,7 +1018,7 @@ export function isSessionInGrid(session, machine) {
   if (state.activeDelegationRoot) {
     return isSessionVisibleInDelegationGrid(session, machine);
   }
-  const sessions = state.gridSessions.length >= 2 ? state.gridSessions : state.preservedGridSessions;
+  const sessions = isGridActive() ? state.gridSessions : state.preservedGridSessions;
   return sessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""));
 }
 

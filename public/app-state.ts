@@ -11,6 +11,7 @@ import type {
   NotificationPreferenceOutcome,
 } from "../src/notification-preference";
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
+import { sameOriginPushUrl } from "../src/push-subscription-origin";
 
 export { esc, escAttr } from "../src/html-escape";
 
@@ -242,7 +243,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
 
   let publicKey: string;
   try {
-    const response = await fetch("/api/push/vapid-key");
+    const response = await fetch(sameOriginPushUrl(location.origin, "/api/push/vapid-key"));
     if (!response.ok) throw new Error(`VAPID key request failed: ${response.status}`);
     const body: unknown = await response.json();
     if (typeof body !== "object" || body === null || !("publicKey" in body)
@@ -256,7 +257,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
 
   let registration: ServiceWorkerRegistration;
   try {
-    registration = await navigator.serviceWorker.register("/sw.js");
+    registration = await navigator.serviceWorker.register(sameOriginPushUrl(location.origin, "/sw.js"));
     await navigator.serviceWorker.ready;
   } catch (error: unknown) {
     return notificationChangeFailed(NOTIFICATION_CHANGE_FAILURE.SERVICE_WORKER, error);
@@ -276,7 +277,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
   }
 
   try {
-    const response = await fetch("/api/push/subscribe", {
+    const response = await fetch(sameOriginPushUrl(location.origin, "/api/push/subscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(subscription.toJSON()),
@@ -298,7 +299,7 @@ export async function unsubscribeNotifications(): Promise<NotificationChangeResu
       const registration = await navigator.serviceWorker.getRegistration();
       return registration?.pushManager.getSubscription() ?? null;
     },
-    endpoint => fetch("/api/push/unsubscribe", {
+    endpoint => fetch(sameOriginPushUrl(location.origin, "/api/push/unsubscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ endpoint }),

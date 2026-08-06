@@ -1,5 +1,11 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo, type Socket } from "node:net";
+import {
+  createTailnetOriginServerFixture,
+  TAILNET_REJECTED_ORIGINS,
+  TAILNET_SIBLING_ORIGIN,
+} from "./tailnet-origin-fixture.ts";
+import type { TailnetOriginServerFixture } from "./tailnet-origin-fixture.ts";
 
 // Use dynamic import so WOLFPACK_TEST is set before server module evaluation.
 process.env.WOLFPACK_TEST = "1";
@@ -21,26 +27,31 @@ const { server } = createServerInstance();
 let port: number;
 let baseUrl: string;
 let baseWsUrl: string;
+let tailnetServer: TailnetOriginServerFixture;
 
 const _realConsoleError = console.error;
 
-beforeAll((done) => {
+beforeAll(async () => {
   console.error = (...args: any[]) => {
     const msg = String(args[0] ?? "");
     if (msg.startsWith("WS error") || msg.startsWith("PTY WS error") || msg.startsWith("Route error")) return;
     _realConsoleError(...args);
   };
-  server.listen(0, "127.0.0.1", () => {
-    port = (server.address() as AddressInfo).port;
-    baseUrl = `http://127.0.0.1:${port}`;
-    baseWsUrl = `ws://127.0.0.1:${port}`;
-    done();
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      port = (server.address() as AddressInfo).port;
+      baseUrl = `http://127.0.0.1:${port}`;
+      baseWsUrl = `ws://127.0.0.1:${port}`;
+      resolve();
+    });
   });
+  tailnetServer = await createTailnetOriginServerFixture();
 });
 
-afterAll(() => {
+afterAll(async () => {
   console.error = _realConsoleError;
   server.close();
+  await tailnetServer.stop();
 });
 
 // ── Helpers ──
@@ -53,6 +64,32 @@ async function rawUpgrade(path: string): Promise<{ status: number; ws?: WebSocke
     ws.addEventListener("close", (ev) => {
       resolve({ status: ev.code === 1006 ? 403 : ev.code });
     });
+  });
+}
+
+function originUpgrade(origin: string, targetPort = port): Promise<{ readonly statusLine: string; readonly socket: Socket }> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(targetPort, "127.0.0.1");
+    let response = "";
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ statusLine: response.split("\r\n", 1)[0] ?? "", socket });
+    };
+    socket.once("error", reject);
+    socket.on("connect", () => socket.write(
+      "GET /ws/pty?session=dispatch-session HTTP/1.1\r\n"
+      + `Host: 127.0.0.1:${targetPort}\r\n`
+      + "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+      + "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+      + `Origin: ${origin}\r\n\r\n`,
+    ));
+    socket.on("data", (chunk) => {
+      response += chunk;
+      if (response.includes("\r\n\r\n")) finish();
+    });
+    socket.once("close", finish);
   });
 }
 
@@ -103,6 +140,33 @@ describe("WS close code semantics (backoff decision drivers)", () => {
     const { status, ws } = await rawUpgrade("/ws/pty?session=no-such-session");
     expect(status).not.toBe(101);
     if (ws) await closeWs(ws);
+  });
+
+  test("configured sibling Tailnet origin reaches websocket upgrade and dispatch", async () => {
+    const session = "dispatch-session";
+    const tailnetPort = Number(new URL(tailnetServer.base).port);
+    const { statusLine, socket } = await originUpgrade(TAILNET_SIBLING_ORIGIN, tailnetPort);
+    try {
+      expect(statusLine).toBe("HTTP/1.1 101 Switching Protocols");
+      expect(await tailnetServer.wasDispatched(session)).toBe(true);
+    } finally {
+      socket.destroy();
+      await wait(50);
+    }
+  });
+
+  test("rejects foreign and lookalike websocket origins before dispatch", async () => {
+    const session = "dispatch-session";
+    const tailnetPort = Number(new URL(tailnetServer.base).port);
+    for (const origin of TAILNET_REJECTED_ORIGINS) {
+      const { statusLine, socket } = await originUpgrade(origin, tailnetPort);
+      try {
+        expect(statusLine, origin).not.toBe("HTTP/1.1 101 Switching Protocols");
+        expect(await tailnetServer.wasDispatched(session), origin).toBe(false);
+      } finally {
+        socket.destroy();
+      }
+    }
   });
 });
 

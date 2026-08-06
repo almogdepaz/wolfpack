@@ -25,6 +25,13 @@ import {
   AGENT_STATUS_STATES,
 } from "../agent-status-contract.ts";
 import {
+  MACHINE_CAPABILITIES,
+  MACHINE_MAX_CAPABILITIES,
+  MACHINE_PROTOCOL,
+  TAILNET_NODE_ID_PATTERN,
+  TAILNET_ORIGIN_PATTERN,
+} from "../tailnet-machine-contract.ts";
+import {
   TASK_API_ERROR,
   TASK_EVENT_TYPE,
   TASK_LIMITS,
@@ -381,6 +388,43 @@ export const controlApiSource: ControlApiSource = {
       "harness",
       "terminal",
     ]),
+    TailnetNodeId: {
+      type: "string",
+      pattern: TAILNET_NODE_ID_PATTERN,
+    },
+    TailnetOrigin: {
+      type: "string",
+      pattern: TAILNET_ORIGIN_PATTERN,
+    },
+    MachineCapabilities: {
+      type: "array",
+      items: { type: "string", minLength: 1 },
+      minItems: MACHINE_CAPABILITIES.length,
+      maxItems: MACHINE_MAX_CAPABILITIES,
+      uniqueItems: true,
+      allOf: MACHINE_CAPABILITIES.map((capability) => ({ contains: { const: capability } })),
+    },
+    MachineHandshake: object({
+      protocol: object({
+        name: { const: MACHINE_PROTOCOL.NAME },
+        major: { const: MACHINE_PROTOCOL.MAJOR },
+        minor: { type: "integer", minimum: 0 },
+      }, ["name", "major", "minor"], { additionalProperties: true }),
+      machine: object({
+        tailnetNodeId: ref("TailnetNodeId"),
+        installationId: { type: "string", format: "uuid" },
+        displayName: string(),
+        origin: ref("TailnetOrigin"),
+      }, ["tailnetNodeId", "installationId", "displayName", "origin"], { additionalProperties: true }),
+      wolfpack: object({ version: string() }, ["version"], { additionalProperties: true }),
+      capabilities: ref("MachineCapabilities"),
+    }, ["protocol", "machine", "wolfpack", "capabilities"], { additionalProperties: true }),
+    TailnetMachineCandidate: object({
+      hostname: string(),
+      tailnetNodeId: ref("TailnetNodeId"),
+      origin: ref("TailnetOrigin"),
+      online: boolean(),
+    }, ["hostname", "tailnetNodeId", "origin", "online"]),
     Peer: object({
       name: string(),
       url: string(),
@@ -521,6 +565,13 @@ export const controlApiSource: ControlApiSource = {
         machineId: { type: "string", format: "uuid" },
       }, ["name", "version", "machineId"]),
       errors: [],
+    },
+    "GET /api/machine": {
+      operationId: "getMachineHandshake",
+      stable: true,
+      auth: "public",
+      response: ref("MachineHandshake"),
+      errors: ["503 ErrorEnvelope"],
     },
     "POST /api/tasks/v1/send": {
       operationId: "sendTask",
@@ -948,6 +999,16 @@ export const controlApiSource: ControlApiSource = {
       }, ["session", "cols", "rows"]),
       response: ok,
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
+    },
+    "GET /api/tailnet/v1/candidates": {
+      operationId: "discoverTailnetCandidates",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: object({
+        candidates: arrayOf(ref("TailnetMachineCandidate")),
+        error: string(),
+      }, ["candidates"]),
+      errors: [],
     },
     "GET /api/discover": {
       operationId: "discoverPeers",

@@ -357,7 +357,7 @@ export function buildAgentNotificationPayload(
       url: buildSessionNotificationUrl({
         sessionId: target.sessionId,
         sessionName: target.sessionName,
-        machineUrl: "",
+        machineIdentity: "local",
       }),
     }),
   };
@@ -567,7 +567,7 @@ function sessionTransitionPayload(session: SessionTransitionFact): PushPayload {
       url: buildSessionNotificationUrl({
         sessionId,
         sessionName: session.name,
-        machineUrl: "",
+        machineIdentity: "local",
       }),
     }),
   };

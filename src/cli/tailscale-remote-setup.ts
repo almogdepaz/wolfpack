@@ -1,10 +1,21 @@
+import { canonicalTailnetOrigin } from "../tailnet-machine-contract.js";
+
 export interface TailscaleCommandRunner {
   readonly run: (file: string, args: readonly string[]) => string;
 }
 
 export type TailscaleRemoteAccessResult =
-  | { readonly status: "verified"; readonly hostname: string }
-  | { readonly status: "unverified" };
+  | { readonly status: "verified"; readonly hostname: string; readonly origin: string }
+  | { readonly status: "unavailable" }
+  | { readonly status: "logged-out" }
+  | { readonly status: "malformed-status" }
+  | { readonly status: "serve-unverified" };
+
+export type TailscaleSelfResult =
+  | { readonly status: "ready"; readonly hostname: string; readonly origin: string }
+  | { readonly status: "unavailable" }
+  | { readonly status: "logged-out" }
+  | { readonly status: "malformed-status" };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -12,52 +23,77 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function parseTailscaleHostname(statusJson: string): string | undefined {
+export function inspectTailscaleSelf(statusJson: string): TailscaleSelfResult {
   try {
     const status = asRecord(JSON.parse(statusJson));
-    const self = asRecord(status?.Self);
-    const value = self?.DNSName;
-    if (typeof value !== "string") return undefined;
-    const hostname = value.replace(/\.$/, "").toLowerCase();
-    return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(hostname)
-      ? hostname
-      : undefined;
+    if (!status) return { status: "malformed-status" };
+    if (!Object.hasOwn(status, "Self")) return { status: "logged-out" };
+    const self = asRecord(status.Self);
+    if (!self || !Object.hasOwn(self, "DNSName")) return { status: "logged-out" };
+    const origin = canonicalTailnetOrigin(self.DNSName);
+    if (!origin) return { status: "malformed-status" };
+    return { status: "ready", hostname: origin.slice("https://".length), origin };
   } catch {
-    return undefined;
+    return { status: "malformed-status" };
   }
 }
 
+export function parseTailscaleHostname(statusJson: string): string | undefined {
+  const result = inspectTailscaleSelf(statusJson);
+  return result.status === "ready" ? result.hostname : undefined;
+}
+
 export function verifiesTailscaleServe(statusJson: string, hostname: string, port: number): boolean {
+  const origin = canonicalTailnetOrigin(hostname);
+  if (!origin || !Number.isInteger(port) || port < 1 || port > 65535) return false;
   try {
     const status = asRecord(JSON.parse(statusJson));
     const web = asRecord(status?.Web);
-    const entry = asRecord(web?.[`${hostname}:443`]);
+    const entry = asRecord(web?.[`${origin.slice("https://".length)}:443`]);
     const handlers = asRecord(entry?.Handlers);
     const rootHandler = asRecord(handlers?.["/"]);
     const proxy = rootHandler?.Proxy;
     if (typeof proxy !== "string") return false;
     const target = new URL(proxy);
-    return (target.hostname === "127.0.0.1" || target.hostname === "localhost")
-      && target.port === String(port);
+    return target.protocol === "http:"
+      && (target.hostname === "127.0.0.1" || target.hostname === "localhost")
+      && target.port === String(port)
+      && target.username === ""
+      && target.password === ""
+      && target.pathname === "/"
+      && target.search === ""
+      && target.hash === "";
   } catch {
     return false;
   }
 }
 
+/**
+ * Configures Tailscale Serve, then proves its exact canonical HTTPS origin
+ * reaches this process's loopback listener. A hostname is returned only after
+ * that proof; every other state is intentionally non-advertisable.
+ */
 export function configureTailscaleRemoteAccess(options: {
   readonly binary: string;
   readonly port: number;
   readonly run: TailscaleCommandRunner["run"];
 }): TailscaleRemoteAccessResult {
+  let selfStatus: string;
   try {
-    const hostname = parseTailscaleHostname(options.run(options.binary, ["status", "--self", "--json"]));
-    if (!hostname) return { status: "unverified" };
+    selfStatus = options.run(options.binary, ["status", "--self", "--json"]);
+  } catch {
+    return { status: "unavailable" };
+  }
+  const self = inspectTailscaleSelf(selfStatus);
+  if (self.status !== "ready") return self;
+
+  try {
     options.run(options.binary, ["serve", "--bg", String(options.port)]);
     const serveStatus = options.run(options.binary, ["serve", "status", "--json"]);
-    return verifiesTailscaleServe(serveStatus, hostname, options.port)
-      ? { status: "verified", hostname }
-      : { status: "unverified" };
+    return verifiesTailscaleServe(serveStatus, self.hostname, options.port)
+      ? { status: "verified", hostname: self.hostname, origin: self.origin }
+      : { status: "serve-unverified" };
   } catch {
-    return { status: "unverified" };
+    return { status: "serve-unverified" };
   }
 }
