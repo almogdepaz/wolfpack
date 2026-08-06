@@ -16,9 +16,9 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## Network, WebSocket, and auth reliability
 
-- [ ] Set transport-level WebSocket payload maximum and upgrade/connection quotas; validate pending viewers consistently.
-- [ ] Catch every attach task failure; distinguish legitimate empty snapshot from snapshot failure and close/retry with a typed reason.
-- [ ] Server pong deadlines terminate zombie pending/active viewers.
+- [x] Set transport-level WebSocket payload maximum and per-IP upgrade/connection quotas; validate pending viewers consistently.
+- [x] Catch every attach task failure; distinguish legitimate empty snapshot from snapshot failure and close/retry with a typed reason.
+- [x] Server pong deadlines terminate zombie pending/active viewers.
 - [ ] Reconnect budget resets only after authoritative terminal readiness, not TCP open.
 - [ ] Bounded/cancellable local API requests and superseded refresh cancellation.
 - [ ] Terminal input backpressure and truthful draft lifecycle; broker stdin byte-bounded ordered queue/per-kind frame limits.

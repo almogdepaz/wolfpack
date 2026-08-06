@@ -10,7 +10,13 @@ import type { TailnetOriginServerFixture } from "./tailnet-origin-fixture.ts";
 // Use dynamic import so WOLFPACK_TEST is set before server module evaluation.
 process.env.WOLFPACK_TEST = "1";
 
-const { createServerInstance } = await import("../../src/server/index.ts");
+const {
+  createServerInstance,
+  __wsConnectionsByIp,
+  __reserveWsConnection,
+  MAX_WS_CONNECTIONS_PER_IP,
+} = await import("../../src/server/index.ts");
+const { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } = await import("../../src/ws-constants.ts");
 const { __getTestState } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
@@ -20,7 +26,7 @@ const FAKE_SESSIONS = ["dispatch-session", "reconnect-session"];
 const mockBackend = new MockBackend({ sessions: FAKE_SESSIONS });
 __setTestBackend(mockBackend);
 
-const { server } = createServerInstance();
+const { server, wss } = createServerInstance();
 
 // ── Test setup ──
 
@@ -104,6 +110,19 @@ function closeWs(ws: WebSocket): Promise<void> {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ── Close code semantics driving reconnect decisions ──
+
+test("WebSocket transport caps payloads before application parsing", () => {
+  expect(wss.options.maxPayload).toBe(PTY_WEBSOCKET_MAX_PAYLOAD_BYTES);
+});
+
+test("WebSocket connection reservations reject an IP at the active cap", () => {
+  __wsConnectionsByIp.set("127.0.0.1", MAX_WS_CONNECTIONS_PER_IP);
+  try {
+    expect(__reserveWsConnection("127.0.0.1")).toBe(false);
+  } finally {
+    __wsConnectionsByIp.clear();
+  }
+});
 
 describe("WS close code semantics (backoff decision drivers)", () => {
   test("attach failure yields 4001 (prevents reconnect loop)", async () => {

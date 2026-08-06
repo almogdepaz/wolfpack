@@ -31,6 +31,7 @@ import {
 import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
+import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
 import { loadConfig } from "../cli/config.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 
@@ -86,14 +87,41 @@ const pollRateLimiter = createPerIpRateLimiter(10);
 
 /** Global limit for all routes (120 req/s per IP). */
 const globalRateLimiter = createPerIpRateLimiter(120);
+/** WebSocket upgrade attempts per second per IP, before auth/backend work. */
+const wsUpgradeRateLimiter = createPerIpRateLimiter(20);
+const MAX_WS_CONNECTIONS_PER_IP = 32;
+const wsConnectionsByIp = new Map<string, number>();
 
-export { pollRateLimiter as __pollRateLimiter, globalRateLimiter as __globalRateLimiter };
+function reserveWsConnection(ip: string): boolean {
+  const current = wsConnectionsByIp.get(ip) ?? 0;
+  if (current >= MAX_WS_CONNECTIONS_PER_IP) return false;
+  wsConnectionsByIp.set(ip, current + 1);
+  return true;
+}
+
+function releaseWsConnection(ip: string): void {
+  const current = wsConnectionsByIp.get(ip) ?? 0;
+  if (current <= 1) wsConnectionsByIp.delete(ip);
+  else wsConnectionsByIp.set(ip, current - 1);
+}
+
+export {
+  pollRateLimiter as __pollRateLimiter,
+  globalRateLimiter as __globalRateLimiter,
+  wsUpgradeRateLimiter as __wsUpgradeRateLimiter,
+  wsConnectionsByIp as __wsConnectionsByIp,
+  reserveWsConnection as __reserveWsConnection,
+  MAX_WS_CONNECTIONS_PER_IP,
+};
 
 // ── Server factory ──
 
 /** Create an isolated server + WebSocketServer pair. Used by tests for parallel isolation. */
 export function createServerInstance(): { server: ReturnType<typeof createServer>; wss: InstanceType<typeof WebSocketServer> } {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: PTY_WEBSOCKET_MAX_PAYLOAD_BYTES,
+  });
 
   const server = createServer(async (req, res) => {
     const origin = req.headers.origin;
@@ -158,7 +186,18 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   });
 
   server.on("upgrade", async (req, socket, head) => {
+    let reservedIp: string | null = null;
     try {
+      const clientIp = req.socket.remoteAddress ?? "unknown";
+      if (!wsUpgradeRateLimiter.allow(clientIp)) {
+        socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      if (!reserveWsConnection(clientIp)) {
+        socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      reservedIp = clientIp;
       const origin = req.headers.origin;
       if (origin && !isAllowedOrigin(origin)) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
@@ -188,13 +227,20 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       }
 
       const reset = url.searchParams.get("reset") === "1";
-      wss.handleUpgrade(req, socket, head, (ws) => handlePtyWs(ws, session, reset));
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const activeIp = clientIp;
+        reservedIp = null;
+        ws.once("close", () => releaseWsConnection(activeIp));
+        handlePtyWs(ws, session, reset);
+      });
     } catch (e: unknown) {
       log.error("ws upgrade error", { error: errMsg(e) });
       if (!socket.destroyed) {
         try { socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n"); } catch { /* socket already unusable */ }
         socket.destroy();
       }
+    } finally {
+      if (reservedIp) releaseWsConnection(reservedIp);
     }
   });
 

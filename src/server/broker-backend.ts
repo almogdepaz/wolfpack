@@ -450,7 +450,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const id = await this.resolveId(name);
     if (!id) return "";
     const snap = await this.fetchSnapshot(id, name, "capturePane", undefined, options?.scrollbackLines);
-    if (!snap) return "";
     return renderSnapshot(snap);
   }
 
@@ -685,17 +684,17 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   /**
    * Fetch a fresh broker snapshot and render it to ANSI bytes for WS prefill.
-   * Returns `{ data: empty, seq: undefined }` when the session is unknown or
-   * the broker rejects the snapshot - callers treat empty data as "no prefill".
+   * A legitimate empty terminal returns empty data with its snapshot sequence.
+   * Snapshot transport/RPC failures reject so attach can reconnect rather than
+   * falsely presenting a blank terminal as ready.
    * `seq` is the final broker PTY-chunk watermark covered by the snapshot;
    * pass it to `onSessionData` so the broker replays chunks emitted between
    * snapshot and subscribe attach.
    */
   async getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
-    if (!id) return { data: Buffer.alloc(0) };
+    if (!id) throw new BrokerRpcError("unknown_session", `session ${name} is unavailable`);
     const snap = await this.fetchSnapshot(id, name, "getSessionPrefill", cols, options?.scrollbackLines);
-    if (!snap) return { data: Buffer.alloc(0) };
     const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
     return { data: renderSnapshotToAnsi(snap), seq };
   }
@@ -884,18 +883,14 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     ref.subscribers.clear();
   }
 
-  /**
-   * Issue a `snapshot` RPC capped at SNAPSHOT_SCROLLBACK_LINES. Returns
-   * `undefined` on transport error or non-ok response - callers treat that
-   * as "no snapshot available" and fall back to empty content.
-   */
+  /** Issue a bounded `snapshot` RPC or reject with the typed broker failure. */
   private async fetchSnapshot(
     id: string,
     name: string,
     callsite: string,
     targetCols?: number,
     scrollbackLines: number = SNAPSHOT_SCROLLBACK_LINES,
-  ): Promise<SnapshotPayload | undefined> {
+  ): Promise<SnapshotPayload> {
     let resp: ControlResponse;
     const params: Record<string, unknown> = {
       session_id: id,
@@ -906,12 +901,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
     try {
       resp = await this.client.request("snapshot", params);
-    } catch (e: unknown) {
-      log.debug(`${callsite}: snapshot failed`, { name, error: errMsg(e) });
-      return undefined;
+    } catch (error: unknown) {
+      log.warn(`${callsite}: snapshot transport failed`, { name, error: errMsg(error) });
+      throw error;
     }
-    if (resp.status !== "ok" || !resp.payload) return undefined;
-    return resp.payload.snapshot as SnapshotPayload | undefined;
+    const payload = unwrap(resp);
+    const snapshot = payload.snapshot;
+    if (!snapshot || typeof snapshot !== "object") {
+      throw new BrokerRpcError("invalid_snapshot", "broker returned no snapshot payload");
+    }
+    return snapshot as SnapshotPayload;
   }
 
   private async resolveId(name: string): Promise<string | undefined> {

@@ -22,6 +22,8 @@ export const CLOSE_CODE_PREFILL_TIMEOUT = 4003;
 
 /** Maximum accepted stdin frame size on /ws/pty. Clients split larger input. */
 export const PTY_BINARY_FRAME_MAX_BYTES = 16_384;
+/** Transport-level payload cap; prevents ws from reassembling its 100 MiB default. */
+export const PTY_WEBSOCKET_MAX_PAYLOAD_BYTES = PTY_BINARY_FRAME_MAX_BYTES;
 
 // ── Close reason strings ──
 
@@ -37,4 +39,6 @@ export const WS_CLOSE_REASONS = {
   PREFILL_TIMEOUT: "prefill timeout",
   RESIZE_FAILED: "resize failed",
   SLOW_VIEWER: "slow viewer",
+  INVALID_MESSAGE: "invalid message",
+  ATTACH_FAILED: "attach failed",
 } as const;

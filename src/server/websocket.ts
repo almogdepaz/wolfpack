@@ -124,6 +124,36 @@ const POLL_INTERVAL_MS = 50;
 const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
+
+function startViewerHeartbeat(ws: WebSocket, session: string, kind: "pending" | "active"): () => void {
+  let awaitingPong = false;
+  const onPong = () => { awaitingPong = false; };
+  ws.on("pong", onPong);
+  const timer = setInterval(() => {
+    if (ws.readyState !== 1) {
+      cleanup();
+      return;
+    }
+    if (awaitingPong) {
+      log.warn("terminal viewer missed pong deadline", { session, kind });
+      try { ws.terminate(); } catch (error: unknown) {
+        log.debug("terminal viewer terminate failed", { session, kind, error: errMsg(error) });
+      }
+      cleanup();
+      return;
+    }
+    awaitingPong = true;
+    try { ws.ping(); } catch (error: unknown) {
+      log.debug("terminal viewer ping failed", { session, kind, error: errMsg(error) });
+    }
+  }, PING_INTERVAL_MS);
+  timer.unref?.();
+  function cleanup(): void {
+    clearInterval(timer);
+    ws.removeListener("pong", onPong);
+  }
+  return cleanup;
+}
 const RATE_LIMIT_PER_SEC = 60;
 const RESIZE_DEBOUNCE_MS = 80;
 const RAPID_EXIT_THRESHOLD_MS = 3_000;
@@ -469,15 +499,13 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     }
     existing.pendingViewer = ws;
 
-    const pingTimer = setInterval(() => {
-      if (ws.readyState === 1) { try { ws.ping(); } catch (e: unknown) { log.debug(`pending ws ping failed`, { session, error: errMsg(e) }); } }
-      else clearInterval(pingTimer);
-    }, PING_INTERVAL_MS);
+    const stopHeartbeat = startViewerHeartbeat(ws, session, "pending");
+    const pendingRateLimiter = createRateLimiter(RATE_LIMIT_PER_SEC);
 
     let pendingAttachDims: { cols: number; rows: number; prefillMode?: string } | null = null;
 
     function cleanupPending() {
-      clearInterval(pingTimer);
+      stopHeartbeat();
       if (existing.pendingViewer && existing.pendingViewer !== ws) {
         tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "cleanupPending: displaced other pending", session);
       }
@@ -487,8 +515,18 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
       existing.pendingViewer = null;
     }
 
-    function pendingMessage(raw: Buffer | string) {
+    function pendingMessage(raw: Buffer | string, isBinary = false) {
       try {
+        if (isBinary || raw.length > MAX_WS_MESSAGE_BYTES || !pendingRateLimiter.allow()) {
+          tryWsClose(
+            ws,
+            CLOSE_CODE_POLICY_VIOLATION,
+            WS_CLOSE_REASONS.INVALID_MESSAGE,
+            "invalid pending viewer message close failed",
+            session,
+          );
+          return;
+        }
         const str = String(raw);
         const msg = JSON.parse(str);
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
@@ -523,7 +561,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     }
 
     function cleanup() {
-      clearInterval(pingTimer);
+      stopHeartbeat();
       ws.removeListener("message", pendingMessage);
       ws.removeListener("close", cleanup);
       ws.removeListener("error", cleanup);
@@ -1127,6 +1165,23 @@ function setupNewPtyEntry(
     if (!prefillMode && options?.skipPrefill === true) prefillMode = TERMINAL_PREFILL_MODE.NONE;
     return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
   };
+  const startPtyAttach = (
+    cols: number,
+    rows: number,
+    options?: { prefillMode?: PrefillMode; skipPrefill?: boolean },
+  ): void => {
+    void spawnPty(cols, rows, options).catch((error: unknown) => {
+      if (!entryStillCurrent(entry, session, ws)) return;
+      log.warn("terminal attach failed", { session, error: errMsg(error) });
+      tryWsClose(
+        ws,
+        CLOSE_CODE_SERVER_ERROR,
+        WS_CLOSE_REASONS.ATTACH_FAILED,
+        "attach failure viewer close failed",
+        session,
+      );
+    });
+  };
 
   const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
   const binaryInputLimiter = createRateLimiter(PTY_BINARY_BYTES_PER_SEC);
@@ -1164,7 +1219,7 @@ function setupNewPtyEntry(
             safeViewerSend(entry, session, JSON.stringify({ type: "attach_ack" }));
           }
           if (!isAttached) {
-            spawnPty(requestedSize.current.cols, requestedSize.current.rows, {
+            startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, {
               prefillMode,
             });
           } else {
@@ -1184,7 +1239,7 @@ function setupNewPtyEntry(
           requestedSize.current = { cols, rows };
           const isAttached = !!entry.unsubscribe;
           if (!isAttached) {
-            spawnPty(cols, rows);
+            startPtyAttach(cols, rows);
           } else {
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
@@ -1218,13 +1273,10 @@ function setupNewPtyEntry(
     }
   });
 
-  const pingTimer = setInterval(() => {
-    if (ws.readyState === 1) { try { ws.ping(); } catch (e: unknown) { log.debug(`pty ws ping failed`, { session, error: errMsg(e) }); } }
-    else clearInterval(pingTimer);
-  }, PING_INTERVAL_MS);
+  const stopHeartbeat = startViewerHeartbeat(ws, session, "active");
 
   function detach() {
-    clearInterval(pingTimer);
+    stopHeartbeat();
     if (entryStillCurrent(entry, session, ws)) {
       entry.viewer = null;
       teardownPty(session);
@@ -1249,7 +1301,7 @@ function setupNewPtyEntry(
         prefillMode,
       });
     }
-    spawnPty(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
+    startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
     safeViewerSend(entry, session, JSON.stringify({ type: "attach_ack" }));
   }
 }

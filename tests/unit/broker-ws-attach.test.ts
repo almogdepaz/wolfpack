@@ -97,6 +97,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   resizeDelayMs = 0;
   resizeError: Error | null = null;
   resizeOutput: Uint8Array | null = null;
+  prefillError: Error | null = null;
 
   // SessionBackend
   async list(): Promise<string[]> { return [...this.alive]; }
@@ -120,6 +121,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   isSessionAlive(name: string): boolean { return this.alive.has(name); }
   getSessionPrefill(name: string, cols?: number, options?: { scrollbackLines?: number }): { data: Buffer; seq?: bigint } | Promise<{ data: Buffer; seq?: bigint }> {
     this.prefillCalls.push({ name, cols, scrollbackLines: options?.scrollbackLines });
+    if (this.prefillError) throw this.prefillError;
     const data = this.prefill.get(name) ?? Buffer.alloc(0);
     return { data };
   }
@@ -203,6 +205,20 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 100, rows: 30 }]);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
+  });
+
+  test("snapshot failure closes the viewer instead of presenting a blank ready terminal", async () => {
+    backend.prefillError = new Error("snapshot transport failed");
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 100, rows: 30 });
+
+    await wait(350);
+
+    expect(ws.closeCode).toBe(1011);
+    expect(ws.closeReason).toBe("attach failed");
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
+    expect(activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("subscribed broker output frames are forwarded to viewer", async () => {
@@ -418,6 +434,18 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     expect(ws.closeCode).toBe(4001);
     expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("pending viewers reject binary messages before parsing", () => {
+    const active = new FakeWs();
+    attachWs(active);
+    const pending = new FakeWs();
+    attachWs(pending);
+
+    pending.pushBinary(Buffer.from([0x01]));
+
+    expect(pending.closeCode).toBe(1008);
+    expect(pending.closeReason).toBe("invalid message");
   });
 
   test("take-control: pending viewer displaces active viewer; new entry re-attaches via broker", async () => {

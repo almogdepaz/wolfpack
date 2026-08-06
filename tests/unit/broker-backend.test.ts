@@ -532,13 +532,13 @@ describe("BrokerBackend.capturePane", () => {
     });
   });
 
-  test("returns empty string when broker fails", async () => {
+  test("rejects when the broker snapshot RPC fails", async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "tui", id: SESSION_UUID_1 })],
     }));
     await backend.list();
     client.setHandler("snapshot", () => errResp("internal_error"));
-    expect(await backend.capturePane("tui")).toBe("");
+    await expect(backend.capturePane("tui")).rejects.toThrow("internal_error");
   });
 
   test("returns empty when session unknown", async () => {
@@ -1265,18 +1265,14 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
     await backend.list();
   });
 
-  test("returns empty data for unknown session", async () => {
+  test("rejects prefill for an unknown session", async () => {
     client.setHandler("list_sessions", () => okResp({ sessions: [] }));
-    const prefill = await backend.getSessionPrefill("ghost");
-    expect(prefill.data.length).toBe(0);
-    expect(prefill.seq).toBeUndefined();
+    await expect(backend.getSessionPrefill("ghost")).rejects.toThrow("unknown_session");
   });
 
-  test("returns empty data when the broker rejects the snapshot RPC", async () => {
+  test("rejects prefill when the broker rejects the snapshot RPC", async () => {
     client.setHandler("snapshot", () => errResp("internal_error"));
-    const prefill = await backend.getSessionPrefill("live");
-    expect(prefill.data.length).toBe(0);
-    expect(prefill.seq).toBeUndefined();
+    await expect(backend.getSessionPrefill("live")).rejects.toThrow("internal_error");
   });
 
   test("renders snapshot to ANSI: clear + scrollback + visible + cursor", async () => {
