@@ -35,7 +35,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Adaptive grid scrollback/memory policy.
 - [x] Audit and enforce prompt disposal of hidden single, grid, collapsed, removed, suspended, and delegation terminal controllers.
 - [x] Production syntax/whitespace minification plus enforced raw/gzip bundle budgets.
-- [ ] Replace the aggregate content version with per-asset content-hashed URLs.
+- [x] Replace aggregate query versions in browser asset URLs with each asset's own content hash.
 - [x] PWA app-shell offline fallback; never cache API, WebSocket, or terminal authority data.
 - [ ] Cache terminal recovery data with TTL, explicit clear control, and privacy disclosure/opt-out.
 
