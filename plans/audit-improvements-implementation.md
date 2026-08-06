@@ -24,7 +24,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] All browser API requests have a composable hard timeout and preserve caller cancellation.
 - [x] Abort superseded dashboard/preview refreshes and invalidate stale continuations before they can render.
 - [x] Browser terminal input observes a strict WebSocket buffered-byte high-water mark.
-- [ ] Truthful draft lifecycle and broker stdin byte-bounded ordered queue/per-kind frame limits.
+- [x] Truthful draft lifecycle plus an ordered 4 MiB broker stdin queue and allocation-time per-kind frame limits.
 - [x] Functional browser JWT flow with centralized fetch auth, explicit 401 UX, short-lived one-time WS tickets, and per-peer tab-scoped credentials.
 - [x] Replace mixed-context inline event-handler construction with delegated DOM listeners and inert data/text contexts.
 - [x] Private or memory-only session identity persistence modes with random exclusive temp files, owner-only permissions, fsync, and atomic rename.

@@ -9,7 +9,29 @@ pub const FRAME_KIND_OUTPUT_BINARY: u8 = 0x03;
 pub const FRAME_KIND_INPUT_BINARY: u8 = 0x04;
 pub const FRAME_KIND_EVENT: u8 = 0x05;
 
-pub const MAX_FRAME_PAYLOAD: u32 = 64 * 1024 * 1024;
+pub const MAX_FRAME_PAYLOAD: u32 = 16 * 1024 * 1024;
+pub const MAX_CONTROL_REQUEST_PAYLOAD: u32 = 1024 * 1024;
+pub const MAX_CONTROL_RESPONSE_PAYLOAD: u32 = MAX_FRAME_PAYLOAD;
+pub const MAX_OUTPUT_BINARY_PAYLOAD: u32 = 1024 * 1024;
+pub const MAX_INPUT_BINARY_PAYLOAD: u32 = 256 * 1024;
+pub const MAX_EVENT_PAYLOAD: u32 = 256 * 1024;
+
+fn max_payload_for_kind(kind: u8) -> Option<u32> {
+    match kind {
+        FRAME_KIND_CONTROL_REQUEST => Some(MAX_CONTROL_REQUEST_PAYLOAD),
+        FRAME_KIND_CONTROL_RESPONSE => Some(MAX_CONTROL_RESPONSE_PAYLOAD),
+        FRAME_KIND_OUTPUT_BINARY => Some(MAX_OUTPUT_BINARY_PAYLOAD),
+        FRAME_KIND_INPUT_BINARY => Some(MAX_INPUT_BINARY_PAYLOAD),
+        FRAME_KIND_EVENT => Some(MAX_EVENT_PAYLOAD),
+        _ => None,
+    }
+}
+
+fn validate_payload_len(kind: u8, len: u32) -> Result<()> {
+    let max = max_payload_for_kind(kind).ok_or(CodecError::UnknownKind(kind))?;
+    if len > max { return Err(CodecError::FrameTooLarge(len)); }
+    Ok(())
+}
 
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -51,9 +73,7 @@ pub enum Frame {
 
 pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<()> {
     let (kind, payload) = encode_payload(frame)?;
-    if payload.len() > MAX_FRAME_PAYLOAD as usize {
-        return Err(CodecError::FrameTooLarge(payload.len() as u32));
-    }
+    validate_payload_len(kind, payload.len() as u32)?;
     let len = (payload.len() as u32).to_be_bytes();
     w.write_all(&[kind])?;
     w.write_all(&len)?;
@@ -66,9 +86,7 @@ pub fn read_frame<R: Read>(r: &mut R) -> Result<Frame> {
     r.read_exact(&mut header)?;
     let kind = header[0];
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
-    if len > MAX_FRAME_PAYLOAD {
-        return Err(CodecError::FrameTooLarge(len));
-    }
+    validate_payload_len(kind, len)?;
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)?;
     decode_payload(kind, &payload)
@@ -83,9 +101,7 @@ where
     r.read_exact(&mut header).await?;
     let kind = header[0];
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
-    if len > MAX_FRAME_PAYLOAD {
-        return Err(CodecError::FrameTooLarge(len));
-    }
+    validate_payload_len(kind, len)?;
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload).await?;
     decode_payload(kind, &payload)
@@ -97,9 +113,7 @@ where
 {
     use tokio::io::AsyncWriteExt;
     let (kind, payload) = encode_payload(frame)?;
-    if payload.len() > MAX_FRAME_PAYLOAD as usize {
-        return Err(CodecError::FrameTooLarge(payload.len() as u32));
-    }
+    validate_payload_len(kind, payload.len() as u32)?;
     let len = (payload.len() as u32).to_be_bytes();
     w.write_all(&[kind]).await?;
     w.write_all(&len).await?;
@@ -291,6 +305,21 @@ mod tests {
         match read_frame(&mut cur) {
             Err(CodecError::FrameTooLarge(_)) => {}
             other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_payloads_above_their_frame_kind_budget_before_allocation() {
+        for (kind, length) in [
+            (FRAME_KIND_INPUT_BINARY, MAX_INPUT_BINARY_PAYLOAD + 1),
+            (FRAME_KIND_CONTROL_REQUEST, MAX_CONTROL_REQUEST_PAYLOAD + 1),
+            (FRAME_KIND_OUTPUT_BINARY, MAX_OUTPUT_BINARY_PAYLOAD + 1),
+            (FRAME_KIND_EVENT, MAX_EVENT_PAYLOAD + 1),
+        ] {
+            let mut buf = vec![kind];
+            buf.extend_from_slice(&length.to_be_bytes());
+            let mut cur = Cursor::new(buf);
+            assert!(matches!(read_frame(&mut cur), Err(CodecError::FrameTooLarge(n)) if n == length));
         }
     }
 

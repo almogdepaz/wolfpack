@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::codec::{read_frame_async, write_frame_async, CodecError, Frame, OutputFrame};
+use crate::codec::{read_frame_async, write_frame_async, CodecError, Frame, InputFrame, OutputFrame, MAX_INPUT_BINARY_PAYLOAD};
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
     SnapshotParams, SubscribeParams, UnsubscribeParams,
@@ -31,6 +31,10 @@ const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 8 * 1024;
 /// but bound per-subscription memory. At the cap we drain queued frames first;
 /// sustained producers then hit the existing broadcast-lag recovery contract.
 const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Input is ordered per connection and bounded by bytes: the codec caps each
+/// frame and this depth caps queued data before socket backpressure applies.
+const INPUT_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const INPUT_QUEUE_CAPACITY: usize = INPUT_QUEUE_MAX_BYTES / MAX_INPUT_BINARY_PAYLOAD as usize;
 
 pub struct ServerConfig {
     pub socket_path: PathBuf,
@@ -241,6 +245,20 @@ async fn handle_connection(
     let (writer_tx, writer_rx) = mpsc::channel::<Frame>(writer_queue_cap);
     let (output_tx, output_rx) = mpsc::channel::<Frame>(writer_queue_cap);
     let writer_task = tokio::spawn(connection_writer(write_half, writer_rx, output_rx));
+    let (input_tx, mut input_rx) = mpsc::channel::<InputFrame>(INPUT_QUEUE_CAPACITY);
+    let input_registry = Arc::clone(&registry);
+    let input_task = tokio::spawn(async move {
+        while let Some(inp) = input_rx.recv().await {
+            match input_registry.get(inp.session_id) {
+                Some(session) => {
+                    if let Err(error) = session.write_stdin(&inp.data) {
+                        warn!(session_id = %inp.session_id, %error, "write_stdin failed");
+                    }
+                }
+                None => debug!(session_id = %inp.session_id, "input_binary for unknown session; ignoring"),
+            }
+        }
+    });
 
     // Drain async lifecycle events into this connection's writer queue.
     // Started here (not inside `accept_loop`) so the receiver was already
@@ -270,6 +288,7 @@ async fn handle_connection(
                         &registry,
                         &writer_tx,
                         &output_tx,
+                        &input_tx,
                         &mut subs,
                     )
                     .await
@@ -303,6 +322,10 @@ async fn handle_connection(
         h.abort();
     }
     event_task.abort();
+    drop(input_tx);
+    if let Err(error) = input_task.await {
+        if !error.is_cancelled() { warn!(%error, "broker input task join error"); }
+    }
     drop(writer_tx);
     drop(output_tx);
     if let Err(e) = writer_task.await {
@@ -361,6 +384,7 @@ async fn dispatch_frame(
     registry: &Arc<Registry>,
     writer_tx: &mpsc::Sender<Frame>,
     output_tx: &mpsc::Sender<Frame>,
+    input_tx: &mpsc::Sender<InputFrame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
     match frame {
@@ -373,19 +397,7 @@ async fn dispatch_frame(
                 writer_tx.send(Frame::ControlResponse(resp)).await.is_ok()
             }
         },
-        Frame::InputBinary(inp) => {
-            match registry.get(inp.session_id) {
-                Some(session) => {
-                    if let Err(e) = session.write_stdin(&inp.data) {
-                        warn!(session_id = %inp.session_id, error = %e, "write_stdin failed");
-                    }
-                }
-                None => {
-                    debug!(session_id = %inp.session_id, "input_binary for unknown session; ignoring");
-                }
-            }
-            true
-        }
+        Frame::InputBinary(inp) => input_tx.send(inp).await.is_ok(),
         Frame::ControlResponse(_) | Frame::OutputBinary(_) | Frame::Event(_) => {
             // Spec: these flow broker→client only. Receiving one from a client
             // is a protocol violation. Match the symmetric TS-side behavior

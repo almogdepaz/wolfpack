@@ -870,7 +870,7 @@ interface PtySocketClient {
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
   sendResize(cols: number, rows: number): void;
   sendTakeControl(): void;
-  send(data: string | Blob | BufferSource): void;
+  send(data: string | Blob | BufferSource): boolean;
   close(): void;
   resetRetry(): void;
   readonly ws: WebSocket | null;
@@ -1298,8 +1298,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }
   }
 
-  function send(data: string | Blob | BufferSource): void {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  function send(data: string | Blob | BufferSource): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     const maxBufferedBytes = 256 * 1024;
     const sendBounded = (frame: string | Blob | ArrayBuffer, byteLength: number): boolean => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
@@ -1311,12 +1311,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       return true;
     };
     if (typeof data === "string") {
-      sendBounded(data, new TextEncoder().encode(data).byteLength);
-      return;
+      return sendBounded(data, new TextEncoder().encode(data).byteLength);
     }
     if (data instanceof Blob) {
-      sendBounded(data, data.size);
-      return;
+      return sendBounded(data, data.size);
     }
     const bytes = data instanceof ArrayBuffer
       ? new Uint8Array(data)
@@ -1324,8 +1322,9 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     for (const frame of WP.splitTerminalInputBytes(bytes)) {
       const copy = new ArrayBuffer(frame.byteLength);
       new Uint8Array(copy).set(frame);
-      if (!sendBounded(copy, copy.byteLength)) break;
+      if (!sendBounded(copy, copy.byteLength)) return false;
     }
+    return true;
   }
 
   function retireSocket(socket: WebSocket): void {
@@ -1449,7 +1448,7 @@ interface PtyTerminalController {
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
   forceRepaint(): void;
   syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): void;
-  send(data: string | Blob | BufferSource): void;
+  send(data: string | Blob | BufferSource): boolean;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
   readonly term: GhosttyTerminal | null;
@@ -2065,13 +2064,13 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     forceRepaint,
     syncLayout,
     send: (data) => {
-      if (_ptyClient && _ptyClient.isOpen) {
-        if (!_firstInputAccepted) {
-          _firstInputAccepted = true;
-          __wfTraceEvent(__wfTraceGet(opts.session, opts.machine || ""), "first.input.accepted", { source: "controller.send" });
-        }
-        _ptyClient.send(data);
+      if (!_ptyClient || !_ptyClient.isOpen) return false;
+      const accepted = _ptyClient.send(data);
+      if (accepted && !_firstInputAccepted) {
+        _firstInputAccepted = true;
+        __wfTraceEvent(__wfTraceGet(opts.session, opts.machine || ""), "first.input.accepted", { source: "controller.send" });
       }
+      return accepted;
     },
     resetRetry: () => { if (_ptyClient) _ptyClient.resetRetry(); },
     reconnect: (reconnectOpts?: { takeControl?: boolean }) => { if (_ptyClient) _ptyClient.reconnect(reconnectOpts); },
@@ -2104,14 +2103,12 @@ function _sendTerminalInput(bytes) {
   if (isGridActive()) {
     const gs = state.gridSessions[state.gridFocusIndex];
     if (gs?.controller?.isConnected) {
-      gs.controller.send(bytes);
-      return true;
+      return gs.controller.send(bytes);
     }
     return false;
   }
   if (state.terminalController?.isConnected) {
-    state.terminalController.send(bytes);
-    return true;
+    return state.terminalController.send(bytes);
   }
   return false;
 }
