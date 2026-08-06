@@ -72,10 +72,10 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## Validation gates
 
-- [ ] `bun run typecheck`
-- [ ] full Bun unit/snapshot/integration suite
-- [ ] broker `cargo test --locked --all`
-- [ ] critical Playwright Chromium and mobile WebKit suites
-- [ ] terminal load performance budgets
-- [ ] package/install smoke in a temporary HOME
-- [ ] clean worktree and review against every checkbox above
+- [x] `bun run typecheck`
+- [x] full Bun unit/snapshot/integration suite
+- [x] broker `cargo test --locked --all`
+- [x] critical Playwright Chromium and mobile WebKit suites
+- [x] terminal load performance budgets
+- [x] package/install smoke in a temporary HOME
+- [x] clean worktree and review against every checkbox above
