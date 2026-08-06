@@ -718,7 +718,7 @@ async fn subscribe_streams_live_pty_output_to_subscriber() {
     .await;
     output.append(&mut more);
 
-    let assembled: Vec<u8> = output.iter().flat_map(|f| f.data.clone()).collect();
+    let assembled: Vec<u8> = output.iter().flat_map(|f| f.data.iter().copied()).collect();
     let assembled_str = String::from_utf8_lossy(&assembled);
     assert!(
         assembled_str.contains("wolfpack-live-test"),
@@ -750,13 +750,8 @@ async fn subscribe_streams_live_pty_output_to_subscriber() {
 }
 
 #[tokio::test]
-async fn subscribe_after_drainer_close_returns_session_not_alive() {
+async fn subscribe_after_drainer_close_replays_retained_final_output() {
     let h = Harness::boot().await;
-
-    // Spawn a child that exits immediately; once the drainer ingests EOF
-    // it closes the OutputBus. Any subsequent subscribe can't attach a
-    // live receiver, so the broker must surface session_not_alive rather
-    // than silently returning an "ok" envelope with no live stream.
     let session = h
         .registry
         .create(wolfpack_broker::registry::CreateOptions {
@@ -769,11 +764,8 @@ async fn subscribe_after_drainer_close_returns_session_not_alive() {
         })
         .expect("create session");
     let session_id = session.id();
-
-    // Wait for the drainer to finish so the bus is closed.
     let bus = session.output_bus();
     assert!(bus.wait_closed(Duration::from_secs(5)));
-    assert!(bus.is_closed());
     assert!(bus.current_seq() >= 1, "drainer must have published");
 
     let mut stream = connect(&h.socket_path).await;
@@ -786,13 +778,15 @@ async fn subscribe_after_drainer_close_returns_session_not_alive() {
         },
     )
     .await;
-
-    assert_eq!(resp.status, Status::Error);
-    assert_eq!(
-        resp.error.expect("error").code,
-        ErrorCode::SessionNotAlive,
-        "subscribe against a closed bus must fail loudly, not silently"
-    );
+    assert_eq!(resp.status, Status::Ok, "closed buses remain replayable during tombstone retention");
+    let output = timeout(TEST_TIMEOUT, read_frame_async(&mut stream))
+        .await
+        .expect("final replay timeout")
+        .expect("final replay frame");
+    match output {
+        Frame::OutputBinary(frame) => assert!(String::from_utf8_lossy(&frame.data).contains("first-then-done")),
+        other => panic!("expected final output replay, got {other:?}"),
+    }
 
     drop(stream);
     h.shutdown().await;
