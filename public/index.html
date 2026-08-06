@@ -45,7 +45,7 @@
     <header>
       <div class="header-left">
         <button class="back-btn" id="back-btn" type="button">← Back</button>
-        <button id="session-chip" type="button" aria-label="Switch session"><span id="chip-label"></span><span class="chip-chevron" aria-hidden="true">&#9660;</span><span class="chip-handle" aria-hidden="true"></span></button>
+        <button id="session-chip" type="button" aria-label="Switch session" aria-expanded="false" aria-controls="session-drawer"><span id="chip-label"></span><span class="chip-chevron" aria-hidden="true">&#9660;</span><span class="chip-handle" aria-hidden="true"></span></button>
       </div>
       <div class="header-center" id="header-center">
         <div class="flex-row">
@@ -58,7 +58,7 @@
         <button class="settings-gear icon-btn" id="gear-btn" type="button" aria-label="Settings" title="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
       </div>
     </header>
-    <div id="desktop-sidebar" class="collapsed" aria-hidden="true" inert>
+    <nav id="desktop-sidebar" class="collapsed" aria-label="Sessions" aria-hidden="true" inert>
       <div class="sidebar-header">
         <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
         <h1>WOLFPACK</h1>
@@ -69,13 +69,13 @@
         </div>
       </div>
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
-    </div>
+    </nav>
     <div id="sidebar-hover-edge" aria-hidden="true"></div>
     <div id="drawer-backdrop"></div>
     <div id="git-status-overlay"></div>
-    <div id="session-drawer">
-      <div id="drawer-list"></div>
-    </div>
+    <nav id="session-drawer" aria-label="Switch session">
+      <div id="drawer-list" role="list"></div>
+    </nav>
 
     <dialog id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message">
       <form id="app-dialog-form">
@@ -89,7 +89,7 @@
       </form>
     </dialog>
 
-    <div id="view-container">
+    <main id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible">
       <div id="expanded-toolbar">
@@ -142,11 +142,16 @@
     <div id="agent-view" class="view" aria-hidden="true" inert>
       <button class="picker-cancel-btn">← Back</button>
       <div class="session-name-block">
-        <div class="session-name-label">session name</div>
+        <label class="session-name-label" for="session-name-input">session name</label>
         <input type="text" class="session-name-input" id="session-name-input"
           spellcheck="false" autocomplete="off" autocapitalize="off"
-          placeholder="session name...">
+          aria-describedby="session-name-error" placeholder="session name...">
         <div class="session-name-error" id="session-name-error"></div>
+        <label class="session-name-label initial-prompt-label" for="initial-task-input">initial task (optional)</label>
+        <textarea class="session-name-input initial-task-input" id="initial-task-input"
+          rows="3" maxlength="16000" aria-describedby="initial-task-description"
+          placeholder="What should the agent do first?"></textarea>
+        <div class="field-description" id="initial-task-description">Sent once after the session is ready.</div>
         <div class="session-name-error" id="agent-create-error" role="alert"></div>
       </div>
       <div id="agent-list" class="list"></div>
@@ -332,7 +337,7 @@
       <div id="msg-preview"></div>
     </div>
 
-    </div><!-- /view-container -->
+    </main><!-- /view-container -->
 
   </body>
 </html>

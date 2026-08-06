@@ -38,10 +38,10 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## Product and accessibility UX
 
-- [ ] Browser session creation supports an optional initial task prompt.
+- [x] Browser session creation supports an optional initial task prompt.
 - [ ] Efficient cached session output preview when output sequence changes.
 - [ ] Proper drawer buttons/list semantics, chip expanded state, input labels/descriptions, modal overlays, SPA landmarks/focus.
-- [ ] iOS safe-area layout and consistent manifest/document theme colors.
+- [x] iOS safe-area layout and consistent manifest/document theme colors.
 - [ ] WCAG contrast/touch-target/reduced-motion improvements and automated axe coverage.
 - [ ] More robust visual-viewport keyboard geometry.
 - [ ] Accessible selected/pressed/current states for settings and navigation.

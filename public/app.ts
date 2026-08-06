@@ -3521,9 +3521,11 @@ async function showAgentPicker() {
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
+  const initialTaskInput = document.getElementById("initial-task-input") as HTMLTextAreaElement;
   const nameError = document.getElementById("session-name-error");
   const createError = document.getElementById("agent-create-error");
   nameInput.value = "";
+  initialTaskInput.value = "";
   createError.textContent = "";
   createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
@@ -3539,13 +3541,22 @@ async function showAgentPicker() {
     // when nothing's on). Manage which cmds appear via the Settings page.
     const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
     const defaultCmd = data.effective?.agentCmd;
-    const html = cmds.map(cmd => `
-      <button type="button" class="card" aria-label="Start ${escAttr(cmd)}" onclick="createSessionWithAgent('${escAttr(cmd)}')">
-        <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
-        <div class="card-name">${esc(cmd)}</div>
-      </button>
-    `).join("");
-    el.innerHTML = html;
+    const cards = cmds.map((cmd) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "card";
+      button.setAttribute("aria-label", `Start ${cmd}`);
+      button.addEventListener("click", () => { void createSessionWithAgent(cmd); });
+      const dot = document.createElement("div");
+      dot.className = `dot ${cmd === defaultCmd ? "brand" : "green"}`;
+      dot.title = cmd === defaultCmd ? "default" : "agent";
+      const name = document.createElement("div");
+      name.className = "card-name";
+      name.textContent = cmd;
+      button.append(dot, name);
+      return button;
+    });
+    el.replaceChildren(...cards);
   } catch {
     el.innerHTML = '<div class="empty">Failed to load agents</div>';
   }
@@ -3776,6 +3787,7 @@ async function deleteCustomCmd(cmd, e) {
 async function createSessionWithAgent(cmd) {
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const sessionName = (nameInput.value || "").trim();
+  const initialPrompt = (document.getElementById("initial-task-input") as HTMLTextAreaElement).value.trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
   const createError = document.getElementById("agent-create-error");
@@ -3783,8 +3795,8 @@ async function createSessionWithAgent(cmd) {
   createError.classList.remove("visible");
   try {
     const body = state.isNewProject
-      ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined }
-      : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
+      ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined }
+      : { project: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined };
     const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4356,10 +4368,12 @@ function drawerItemHtml(item, multiMachine) {
     : row.role === "orphan"
       ? " drawer-orphan-item"
       : row.childSummary ? " drawer-parent-item" : "";
-  return `<div class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
-    <div class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></div>
-    <span class="drawer-item-name">${esc(session.name)}</span>
-    ${machineLbl}
+  return `<div class="drawer-item-row" role="listitem">
+    <button type="button" class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}"${isCurrent ? ' aria-current="page"' : ""}>
+      <span class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></span>
+      <span class="drawer-item-name">${esc(session.name)}</span>
+      ${machineLbl}
+    </button>
     ${sidebarDelegationToggleHtml(row, machineUrl)}
   </div>`;
 }
@@ -4398,6 +4412,7 @@ function openDrawer() {
   backdrop.style.transition = "opacity 0.25s ease";
   backdrop.style.opacity = "1";
   chip.classList.add("open");
+  chip.setAttribute("aria-expanded", "true");
   haptic(5);
 }
 
@@ -4408,6 +4423,7 @@ function closeDrawer(instant?: boolean): void {
   const backdrop = document.getElementById("drawer-backdrop");
   const chip = document.getElementById("session-chip");
   chip.classList.remove("open");
+  chip.setAttribute("aria-expanded", "false");
   if (instant) {
     drawer.classList.remove("animating", "open");
     drawer.style.transform = "";
