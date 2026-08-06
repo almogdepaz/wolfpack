@@ -86,6 +86,13 @@ async function installReplacementSocketHarness(page: Page): Promise<void> {
       value: FakeWebSocket,
     });
   });
+  await page.route("**/auth/ws-ticket", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ ticket: "test-ticket" }),
+    });
+  });
 }
 
 test.beforeAll(async () => {
@@ -142,7 +149,7 @@ test("loads a verified peer before an unrelated candidate machine request times 
   await page.goto(server.baseUrl);
 
   await expect.poll(() => healthySessionsRequested, { timeout: 2_000 }).toBe(true);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toBeVisible();
 });
 
 test("revokes a stale peer after candidate enumeration failures and recovers its stable identity", async ({ page }) => {
@@ -198,7 +205,7 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
@@ -215,7 +222,7 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
     await page.getByRole("button", { name: "Discover Tailnet" }).click();
     await expect(page.locator("#discover-status")).toContainText(failure.status);
     await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
-    await expect(peerGroup).toHaveClass(/offline/);
+    await expect(peerGroup).toHaveCount(0);
     await page.waitForTimeout(100);
     // The generation-start replacement may capture the formerly-ready peer
     // before the failed enumeration revokes its route; its stale result cannot apply.
@@ -290,7 +297,7 @@ test("does not let an older delayed probe restore authority after a newer enumer
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
@@ -303,13 +310,13 @@ test("does not let an older delayed probe restore authority after a newer enumer
   candidateMode = "error";
   await page.getByRole("button", { name: "Discover Tailnet" }).click();
   await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   const sessionRequestsAfterRevocation = peerSessionRequests;
 
   releaseOlderHandshake();
   await page.waitForTimeout(150);
 
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
   expect(peerSessionRequests).toBe(sessionRequestsAfterRevocation);
   expect(peerPtyRequests).toBe(0);
@@ -376,7 +383,7 @@ test("does not let a stale session response restore a peer revoked by a newer re
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
 
@@ -399,7 +406,7 @@ test("does not let a stale session response restore a peer revoked by a newer re
   }, peerIdentity);
 
   releaseStaleSessionResponse();
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   await expect(page.locator("#session-list")).not.toContainText("stale peer session");
   await expect.poll(() => page.evaluate(() => (
     (window as unknown as { staleSessionWasActionable: boolean }).staleSessionWasActionable
@@ -461,7 +468,7 @@ test("does not let an older probe failure overwrite a newer ready peer", async (
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
 
@@ -554,9 +561,23 @@ test("renders local and a verified peer while a malformed candidate stays non-ro
     (window as unknown as { state: { lastSessionGroups: Array<{ machine: { url: string } }> } }).state
       .lastSessionGroups.map((group) => group.machine.url)
   ))).toContain(peerIdentity);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  const verifiedGroup = page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`);
+  await expect(verifiedGroup).toBeVisible();
+  await expect(verifiedGroup.locator(".machine-header")).toContainText("verified peer");
+  await expect(verifiedGroup.locator(".machine-header")).toContainText("peer.example.ts.net");
   await expect(page.locator("#session-list")).toContainText("test-project");
-  await expect(page.locator('#session-list .machine-group[data-machine="candidate:n-bad"]')).toHaveClass(/offline/);
+  await expect(page.locator("#session-list")).not.toContainText(installationId);
+  await expect(page.locator("#session-list")).not.toContainText("n-peer");
+  await expect(page.locator("#desktop-sidebar")).not.toContainText(installationId);
+  const controlRoomHtml = await page.locator("#session-list").evaluate((element) => element.outerHTML);
+  const sidebarHtml = await page.locator("#desktop-sidebar").evaluate((element) => element.outerHTML);
+  expect(controlRoomHtml).not.toContain(installationId);
+  expect(controlRoomHtml).not.toContain("n-peer");
+  expect(sidebarHtml).not.toContain(installationId);
+  expect(sidebarHtml).not.toContain("n-peer");
+  await expect(page.locator('#session-list .machine-group[data-machine="candidate:n-bad"]')).toHaveCount(0);
+  await expect(page.locator('#desktop-sidebar .machine-group[data-machine="candidate:n-bad"]')).toHaveCount(0);
+  await expect(page.locator("#session-list")).not.toContainText("bad.example.ts.net");
   expect(malformedSessionsRequested).toBe(false);
   expect(legacyUrlFetched).toBe(false);
 });
@@ -658,7 +679,7 @@ test("enrolls notifications only after navigating to a currently ready verified 
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toBeVisible();
   await page.getByRole("button", { name: "Settings" }).click();
 
   const readyAction = page.getByRole("button", { name: "Set up notifications on verified peer" });
@@ -756,7 +777,7 @@ test("replacement clears a suspended old-peer grid without disrupting an unrelat
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toBeVisible();
   await expect(page.getByRole("button", { name: "Open local-child" })).toBeVisible();
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { openSession(name: string, machine?: string): void };
@@ -857,8 +878,11 @@ test("replacement clears a suspended old-peer grid without disrupting an unrelat
     closeCounts: socketsBeforeReplacement.closeCounts,
   });
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toHaveCount(1);
+  await expect.poll(() => page.evaluate((machineIdentity) => (
+    (window as unknown as { state: { lastSessionGroups: Array<{ machine: { url: string } }> } }).state.lastSessionGroups
+      .some((group) => group.machine.url === machineIdentity)
+  ), replacementIdentity)).toBe(true);
 });
 
 test("retires an active terminal when a verified peer installation is replaced", async ({ page }) => {
@@ -903,7 +927,7 @@ test("retires an active terminal when a verified peer installation is replaced",
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toBeVisible();
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { openSession(name: string, machine?: string): void };
     app.openSession("peer-session", machineIdentity);
@@ -939,9 +963,12 @@ test("retires an active terminal when a verified peer installation is replaced",
       && app.state.terminalController === null
       && app.__replacementSockets[0]?.closeCount === 1;
   })).toBe(true);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toBeVisible();
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toHaveCount(1);
+  await expect.poll(() => page.evaluate((machineIdentity) => (
+    (window as unknown as { state: { lastSessionGroups: Array<{ machine: { url: string } }> } }).state.lastSessionGroups
+      .some((group) => group.machine.url === machineIdentity)
+  ), replacementIdentity)).toBe(true);
+  await expect(page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`)).toBeVisible();
 
   await page.evaluate(() => {
     const socket = (window as unknown as {
@@ -1070,7 +1097,7 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = page.locator(`#session-list .machine-group[data-machine="peer.example.ts.net"]`);
   await expect(peerGroup).toBeVisible();
 
   await peerGroup.getByRole("button", { name: "Stop peer-session" }).click();
@@ -1085,7 +1112,7 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   const ptyDestinations = (): Promise<string[]> => page.evaluate(() => (
     (window as unknown as ReplacementSocketWindow).__replacementSockets?.map((socket) => socket.url) ?? []
   ));
-  await expect.poll(ptyDestinations).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session"]);
+  await expect.poll(ptyDestinations).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session&ticket=test-ticket"]);
 
   async function confirmRejectedOpen(machine: string): Promise<void> {
     const selectionBefore = await page.evaluate(() => {
@@ -1159,19 +1186,19 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   expect(apiDestinations.filter((destination) => destination.includes("/api/kill"))).toEqual([
     `POST ${peerOrigin}/api/kill`,
   ]);
-  expect(await ptyDestinations()).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session"]);
+  expect(await ptyDestinations()).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session&ticket=test-ticket"]);
 
   candidateMode = "revoked";
   await page.evaluate((machineIdentity) => {
     (window as unknown as { retryMachine(machine: string): void }).retryMachine(machineIdentity);
   }, peerIdentity);
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   await confirmRejectedStop(peerIdentity);
   await confirmRejectedOpen(peerIdentity);
   expect(remoteKills).toHaveLength(1);
   expect(sourceKills).toEqual([]);
   expect(unexpectedDestinations).toEqual([]);
   expect(apiDestinations.some((destination) => destination.includes(evilOrigin))).toBe(false);
-  expect(await ptyDestinations()).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session"]);
+  expect(await ptyDestinations()).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session&ticket=test-ticket"]);
   expect(pageErrors).toEqual([]);
 });

@@ -1213,6 +1213,17 @@ body.no-animations, body.no-animations * {
   border-bottom: 1px solid #151515;
 }
 .machine-header .dot { width: 6px; height: 6px; }
+.machine-header-identity { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.machine-header-hostname {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .machine-add-btn {
   background: var(--bg-elevated);
   border: 1px solid var(--accent-border);

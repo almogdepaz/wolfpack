@@ -310,6 +310,13 @@ export class TailnetPeerRegistry {
       .sort((left, right) => left.tailnetNodeId.localeCompare(right.tailnetNodeId));
   }
 
+  /** Public control-room peers: verified now, stable, and currently routable. */
+  readyEntries(): readonly TailnetPeerEntry[] {
+    return [...this.stableEntries.values()]
+      .filter((entry) => entry.status === "ready" && entry.identity !== undefined && entry.origin !== undefined)
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  }
+
   resolveReadyOrigin(identity: string): string | undefined {
     const entry = this.stableEntries.get(identity);
     return entry?.status === "ready" ? entry.origin : undefined;

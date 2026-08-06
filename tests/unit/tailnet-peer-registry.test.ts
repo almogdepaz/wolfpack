@@ -253,4 +253,33 @@ describe("browser tailnet peer registry", () => {
     })]);
     expect(registry.resolveReadyOrigin(stableMachineIdentity(candidate.tailnetNodeId, installationId))).toBeUndefined();
   });
+  test("exposes only currently verified routable peers to the control room", () => {
+    const registry = new TailnetPeerRegistry();
+    const readyCandidate = candidate;
+    const malformedCandidate = {
+      ...candidate,
+      tailnetNodeId: "n-malformed",
+      hostname: "malformed.example.ts.net",
+      origin: "https://malformed.example.ts.net",
+    };
+    const offlineCandidate = {
+      ...candidate,
+      tailnetNodeId: "n-offline",
+      hostname: "offline.example.ts.net",
+      origin: "https://offline.example.ts.net",
+      online: false,
+    };
+
+    registry.applyProbe({ candidate: malformedCandidate, status: "malformed", diagnostic: "invalid handshake" });
+    registry.applyProbe({ candidate: offlineCandidate, status: "offline", diagnostic: "offline" });
+    registry.applyProbe({ candidate: readyCandidate, status: "ready", handshake: handshake() });
+
+    expect(registry.readyEntries()).toEqual([
+      expect.objectContaining({ displayName: "peer", status: "ready", origin: candidate.origin }),
+    ]);
+
+    registry.markCandidateEnumerationUnavailable();
+    expect(registry.readyEntries()).toEqual([]);
+  });
+
 });

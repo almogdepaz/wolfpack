@@ -968,7 +968,7 @@ test("desktop escape from new-session picker reopens the previous terminal", asy
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
 });
 
-test("offline Tailnet candidates stay ordered, compact, retryable, and cannot create sessions", async ({ page }) => {
+test("offline Tailnet candidates stay out of the control room and sidebar", async ({ page }) => {
   let candidateRequests = 0;
   await page.addInitScript(() => {
     localStorage.setItem("wolfpack-machines", JSON.stringify([
@@ -988,20 +988,11 @@ test("offline Tailnet candidates stay ordered, compact, retryable, and cannot cr
   });
 
   await page.goto(srv.baseUrl);
-  const remoteGroups = page.locator('#session-list .machine-group[data-machine^="candidate:n-offline-"]');
-  await expect(remoteGroups).toHaveCount(2);
-  await expect(remoteGroups.nth(0)).toHaveAttribute("data-machine", "candidate:n-offline-one");
-  await expect(remoteGroups.nth(1)).toHaveAttribute("data-machine", "candidate:n-offline-two");
-
-  const first = remoteGroups.nth(0);
-  await expect(first).toHaveClass(/offline/);
-  await expect(first).toHaveAttribute("data-failure", "network");
-  await expect(first.getByRole("button", { name: /Start a session/ })).toBeDisabled();
-  await expect(first.getByRole("status")).toContainText("Unreachable");
-  await expect(first.getByRole("status")).toContainText("Live terminal actions require this machine to reconnect");
-  const requestsBeforeRetry = candidateRequests;
-  await first.getByRole("button", { name: "Retry Offline one" }).click();
-  await expect.poll(() => candidateRequests).toBeGreaterThan(requestsBeforeRetry);
+  await expect.poll(() => candidateRequests).toBeGreaterThan(0);
+  await expect(page.locator('#session-list .machine-group[data-machine^="candidate:"]')).toHaveCount(0);
+  await expect(page.locator('#desktop-sidebar .machine-group[data-machine^="candidate:"]')).toHaveCount(0);
+  await expect(page.locator("#session-list")).not.toContainText("Offline one");
+  await expect(page.locator("#desktop-sidebar")).not.toContainText("Offline two");
 });
 
 test("desktop settings back from a terminal reopens that terminal", async ({ page }, testInfo) => {

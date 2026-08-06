@@ -2313,14 +2313,48 @@ function legacyMachineDisplayMetadata(): readonly { readonly url: unknown; reado
   }
 }
 
-function getMachines(): readonly { readonly url: string; readonly name: string; readonly version: string; readonly ready: boolean; readonly diagnostic: string | undefined }[] {
-  return tailnetPeers.entries().map((peer) => ({
+interface BrowserMachine {
+  readonly url: string;
+  readonly name: string;
+  readonly hostname: string;
+  readonly version: string;
+  readonly ready: boolean;
+  readonly diagnostic: string | undefined;
+}
+
+function browserMachine(peer: TailnetPeerEntry): BrowserMachine {
+  return {
     url: machineKey(peer),
     name: peer.displayName,
+    hostname: peer.hostname,
     version: peer.version ?? "",
-    ready: peer.status === "ready" && peer.identity !== undefined,
+    ready: peer.status === "ready" && peer.identity !== undefined && peer.origin !== undefined,
     diagnostic: peer.diagnostic,
-  }));
+  };
+}
+
+/** The control room routes and renders only currently verified Wolfpack peers. */
+function getMachines(): readonly BrowserMachine[] {
+  return tailnetPeers.readyEntries().map(browserMachine);
+}
+
+/** Discovery diagnostics remain confined to Settings and never become dashboard routes. */
+function getDiscoveryMachines(): readonly BrowserMachine[] {
+  return tailnetPeers.entries().map(browserMachine);
+}
+
+/** Hostnames are the only peer keys allowed in rendered DOM; stable identities stay in memory. */
+function machineDomKey(machine: BrowserMachine): string {
+  return machine.url ? machine.hostname : "";
+}
+
+function resolveMachineDomKey(hostname: string | undefined): string | undefined {
+  if (!hostname) return undefined;
+  return tailnetPeers.readyEntries().find((entry) => entry.hostname === hostname)?.identity;
+}
+
+function sessionOrderReferenceFromDom(reference: SessionOrderCardReference): SessionOrderCardReference {
+  return { ...reference, machineUrl: resolveMachineDomKey(reference.machineUrl) ?? "" };
 }
 
 function resolveReadyMachineOrigin(machineIdentity: string | undefined): string | undefined {
@@ -2919,7 +2953,7 @@ function sessionOrderRows(
   return orderDelegationSessionRows(rows, effectiveOrder, machineUrl);
 }
 
-function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): {
+function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string, domMachine = machineUrl): {
   readonly attributes: string;
   readonly openAttributes: string;
 } {
@@ -2927,7 +2961,7 @@ function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, 
   if (!identity) return { attributes: "", openAttributes: "" };
   const parentId = row.role === "child" ? row.parent?.wolfpackSessionId ?? "" : "";
   return {
-    attributes: ` data-session-order-id="${escAttr(identity.sessionId)}" data-session-order-machine="${escAttr(machineUrl)}" data-session-order-parent="${escAttr(parentId)}"`,
+    attributes: ` data-session-order-id="${escAttr(identity.sessionId)}" data-session-order-machine="${escAttr(domMachine)}" data-session-order-parent="${escAttr(parentId)}"`,
     openAttributes: ` aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-describedby="session-order-instructions"`,
   };
 }
@@ -2943,15 +2977,21 @@ function saveManualSessionOrder(): boolean {
   );
 }
 
-function sessionOrderResetButtonHtml(machineUrl: string): string {
+function sessionOrderResetButtonHtml(machineUrl: string, domMachine = machineUrl): string {
   if (!hasStoredSessionOrder(machineUrl)) return "";
-  return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(machineUrl)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
+  return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(domMachine)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
 }
 
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
-  const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
+  const machineKey = multiMachine ? g.machine.url || "" : "";
+  const domMachine = multiMachine ? machineDomKey(g.machine) : "";
+  const mUrlAttr = escAttr(domMachine);
   const mName = esc(g.machine.name);
+  const hostname = typeof g.machine.hostname === "string" ? g.machine.hostname : "";
+  const machineLabel = hostname && hostname !== g.machine.name
+    ? `<span class="machine-header-identity"><span>${mName}</span><span class="machine-header-hostname">${esc(hostname)}</span></span>`
+    : `<span class="machine-header-identity"><span>${mName}</span></span>`;
   const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
   const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
@@ -2959,8 +2999,7 @@ function renderMachineGroupHtml(g, multiMachine) {
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
   const createDisabled = multiMachine && !g.online ? " disabled" : "";
-  const machineKey = multiMachine ? g.machine.url || "" : "";
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${machineLabel}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey, domMachine)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -2976,12 +3015,12 @@ function renderMachineGroupHtml(g, multiMachine) {
         const ui = triageUi(s);
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = delegationCardAttributes(row);
-        const ordering = sessionOrderCardHtml(row, machineKey);
+        const ordering = sessionOrderCardHtml(row, machineKey, domMachine);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
           <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
+            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, domMachine) : ""}</div>
             ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
@@ -3250,50 +3289,44 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     ...machines.map(m => ({ url: m.url, meta: m })),
   ];
 
-  // Discovery can finish after the initial local-only render. Materialize any
-  // newly discovered groups before their independent session requests settle.
-  const renderedMachineIds = new Set(Array.from(el.querySelectorAll<HTMLElement>(".machine-group"))
-    .map((group) => group.dataset.machine ?? ""));
-  if (state.firstLoad || allMachines.some((machine) => !renderedMachineIds.has(machine.url))) {
-    el.innerHTML = allMachines.map(m =>
-      renderMachineGroupHtml({ machine: { ...m.meta, url: m.url }, sessions: [], online: false, pending: true }, true)
-    ).join("");
-  }
-
   const groups = new Array(allMachines.length);
-  // Previous cycle's groups by url — used as fallback for unresolved slots
-  // during refresh so sidebar order stays stable (add-order) and peers don't
-  // flicker to "pending" each poll.
-  const prevByUrl = new Map((state.lastSessionGroups || []).map(g => [g.machine.url, g]));
-  const pendingPlaceholder = m => ({
-    machine: { ...m.meta, url: m.url, version: "" },
+  // Keep the previous successful peer group visible while its next session
+  // refresh is pending. New peers do not enter the control room until their
+  // authenticated sessions endpoint also responds successfully.
+  const prevByUrl = new Map((state.lastSessionGroups || [])
+    .filter(group => !group.machine.url || group.online)
+    .map(group => [group.machine.url, group]));
+  const localPending = {
+    machine: { ...allMachines[0].meta, url: "", version: "" },
     sessions: [], online: false, pending: true,
+  };
+  const visibleGroupsInOrder = () => allMachines.flatMap((machine, index) => {
+    const resolved = groups[index];
+    if (resolved) return !machine.url || resolved.online ? [resolved] : [];
+    const previous = prevByUrl.get(machine.url);
+    if (previous) return [previous];
+    return machine.url ? [] : [localPending];
   });
-  const groupsInOrder = () => allMachines.map((m, i) => groups[i] || prevByUrl.get(m.url) || pendingPlaceholder(m));
-
-  // Render each machine group as its fetch resolves — a slow/dead peer can't
-  // delay rendering of machines that responded quickly.
-  const renderGroup = (i, g) => {
-    const m = allMachines[i];
-    const existing = el.querySelector(`[data-machine="${escAttr(m.url)}"]`);
-    if (!existing) return;
-    const newHtml = renderMachineGroupHtml(g, true);
-    if (existing.outerHTML !== newHtml) {
-      const tmp = document.createElement("div");
-      tmp.innerHTML = newHtml;
-      existing.replaceWith(tmp.firstElementChild);
+  const renderVisibleGroups = () => {
+    const visible = visibleGroupsInOrder();
+    state.lastSessionGroups = visible;
+    const html = visible.map(group => renderMachineGroupHtml(group, true)).join("");
+    if (html !== state.lastSessionsHtml) {
+      el.innerHTML = html;
+      state.lastSessionsHtml = html;
     }
+    renderSidebar();
   };
 
+  renderVisibleGroups();
+
+  // Resolve every verified peer independently. A peer that no longer serves
+  // Wolfpack sessions disappears instead of becoming an offline device card.
   const promises = allMachines.map((m, i) =>
     fetchMachine(m.url, m.meta, isCurrentLoad, refreshSignal).then(g => {
       if (!isCurrentLoad()) return; // stale call, discard
       groups[i] = g;
-      state.lastSessionGroups = groupsInOrder();
-      renderGroup(i, g);
-      // Sidebar reads from state.lastSessionGroups — refresh it now so the
-      // local machine's card appears without waiting for slow peers.
-      renderSidebar();
+      renderVisibleGroups();
     })
   );
 
@@ -3311,21 +3344,21 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
       const nowOutdated = g.online && g.machine.version !== newestVersion;
       if (nowOutdated !== !!g.outdated) {
         g.outdated = nowOutdated;
-        renderGroup(i, g);
+        renderVisibleGroups();
       }
     }
   }
 
   state.firstLoad = false;
-  state.lastSessionGroups = groupsInOrder();
+  const visibleGroups = visibleGroupsInOrder();
+  state.lastSessionGroups = visibleGroups;
   const out = [];
-  for (const g of groups) {
-    if (!g) continue;
+  for (const g of visibleGroups) {
     for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
   }
   state.allSessions = out;
   syncDelegationWorkspace();
-  checkStateTransitions(groups);
+  checkStateTransitions(visibleGroups);
   await openSessionFromNotificationRoute(myEpoch);
 }
 
@@ -5265,7 +5298,7 @@ function setUpPeerNotifications(machineIdentity: string): void {
 }
 
 function renderMachinesList(): void {
-  const machines = getMachines();
+  const machines = getDiscoveryMachines();
   const el = document.getElementById("machines-list");
   if (!machines.length) {
     el.innerHTML = '<div class="no-machines">No Tailnet candidates found</div>';
@@ -5275,18 +5308,19 @@ function renderMachinesList(): void {
     const dot = machine.ready ? "green" : "red";
     const status = machine.ready ? "online" : machine.diagnostic || "offline";
     const notificationSetup = machine.ready
-      ? `<button class="machine-notification-setup" type="button" data-machine-identity="${escAttr(machine.url)}">Set up notifications on ${esc(machine.name)}</button>`
+      ? `<button class="machine-notification-setup" type="button" data-machine-hostname="${escAttr(machine.hostname)}">Set up notifications on ${esc(machine.name)}</button>`
       : "";
     return `<div class="machine-item">
       <div class="dot ${dot}" title="${escAttr(status)}"></div>
-      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span></span>
+      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.hostname)}</span></span>
       ${notificationSetup}
     </div>`;
   }).join("");
   el.querySelectorAll<HTMLButtonElement>(".machine-notification-setup").forEach((button) => {
     button.addEventListener("click", () => {
-      const machineIdentity = button.dataset.machineIdentity;
+      const machineIdentity = resolveMachineDomKey(button.dataset.machineHostname);
       if (machineIdentity) setUpPeerNotifications(machineIdentity);
+      else setPeerNotificationEnrollmentUnavailable();
     });
   });
 }
@@ -5298,8 +5332,7 @@ async function discoverMachines(): Promise<void> {
   try {
     const refreshResult = await refreshTailnetPeers();
     if (refreshResult === "stale") return;
-    const machines = getMachines();
-    const ready = machines.filter((machine) => machine.ready).length;
+    const ready = getMachines().length;
     renderMachinesList();
     void loadSessions(true);
     statusEl.textContent = ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet";
@@ -5497,15 +5530,21 @@ function _renderSidebarNow() {
   } else {
     // Multi-machine
     for (const g of groups) {
-      const mUrl = escAttr(g.machine.url);
+      const machineIdentity = g.machine.url;
+      const domMachine = machineDomKey(g.machine);
+      const mUrl = escAttr(domMachine);
       const mName = esc(g.machine.name);
+      const hostname = typeof g.machine.hostname === "string" ? g.machine.hostname : "";
+      const machineLabel = hostname && hostname !== g.machine.name
+        ? `<span class="machine-header-identity"><span>${mName}</span><span class="machine-header-hostname">${esc(hostname)}</span></span>`
+        : `<span class="machine-header-identity"><span>${mName}</span></span>`;
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
       const offlineClass = !g.online && !g.pending ? " offline" : "";
       const createDisabled = !g.online ? " disabled" : "";
       html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(g.machine.url)}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${machineLabel}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineIdentity, domMachine)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrl}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += visibleDelegationRows(sessionOrderRows(g.sessions, g.machine.url), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
+        html += visibleDelegationRows(sessionOrderRows(g.sessions, machineIdentity), machineIdentity).map(row => sidebarCardHtml(row, machineIdentity, domMachine)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -5520,9 +5559,9 @@ function _renderSidebarNow() {
   el.innerHTML = html;
 }
 
-function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
+function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string, domMachine = machineUrl) {
   const s = row.session;
-  const machineUrlAttr = escAttr(machineUrl);
+  const machineUrlAttr = escAttr(domMachine);
   const lastLine = s.lastLine || "";
   const ui = triageUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
@@ -5531,13 +5570,13 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
-  const ordering = sessionOrderCardHtml(row, machineUrl);
+  const ordering = sessionOrderCardHtml(row, machineUrl, domMachine);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
-      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
+      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, domMachine)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
@@ -5803,23 +5842,27 @@ function bindHtmlEventListeners(): void {
     quickEdit: index => { void editQuickCmd(index); },
     quickDelete: index => { void deleteQuickCmd(index); },
     delegationToggle: toggleSidebarDelegationChildren,
-    newSession: machine => { void showProjectPicker(machine); },
-    openSession: (session, machine) => { void openSession(session, machine); },
-    killSession: (session, event, machine) => { void killSession(session, event, machine); },
-    retryMachine,
+    newSession: machine => { void showProjectPicker(resolveMachineDomKey(machine)); },
+    openSession: (session, machine) => { void openSession(session, resolveMachineDomKey(machine)); },
+    killSession: (session, event, machine) => { void killSession(session, event, resolveMachineDomKey(machine)); },
+    retryMachine: (machine, event) => { retryMachine(resolveMachineDomKey(machine) ?? "", event); },
     selectProject,
     agentRemove: command => { void removeAgent(command); },
     agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
-    toggleGrid,
+    toggleGrid: (session, machine, event) => { toggleGrid(session, resolveMachineDomKey(machine) ?? "", event); },
   });
 
   // Header
   on("session-chip", "click", () => toggleDrawer());
   on("gear-btn", "click", () => showSettings());
   bindSessionOrderEvents({
-    move: moveSessionCard,
-    moveByOffset: moveSessionCardByOffset,
-    reset: resetSessionCardOrder,
+    move: (moving, target, placement) => moveSessionCard(
+      sessionOrderReferenceFromDom(moving),
+      sessionOrderReferenceFromDom(target),
+      placement,
+    ),
+    moveByOffset: (moving, offset) => moveSessionCardByOffset(sessionOrderReferenceFromDom(moving), offset),
+    reset: machine => { resetSessionCardOrder(resolveMachineDomKey(machine) ?? ""); },
     setDragActive: active => { sidebarSessionOrderDragActive = active; },
   });
 
