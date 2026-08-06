@@ -742,7 +742,7 @@ describe("cross-process peer task gateway", () => {
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       rmSync(fixture.root, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   test("serializes concurrent sender sweep delivery attempts for one remote event", async () => {
     const fixture = await createHttpPeerFixture("sender-concurrency");

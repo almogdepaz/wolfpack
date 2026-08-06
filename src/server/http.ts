@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
-import { ASSET_VERSION, assets } from "../public-assets.js";
+import { ASSET_VERSIONS, assets } from "../public-assets.js";
 import { exec } from "./shell.js";
 import type { ExecFn } from "./shell.js";
 import { getBackend } from "./backend.js";
@@ -293,7 +293,7 @@ export function serveFile(
 
   const cached = getCachedAsset(filename);
   const version = req?.url ? new URL(req.url, "http://localhost").searchParams.get("v") : null;
-  headers["Cache-Control"] = version === ASSET_VERSION
+  headers["Cache-Control"] = version === ASSET_VERSIONS[filename]
     ? "public, max-age=31536000, immutable"
     : "public, max-age=0, must-revalidate";
   headers.ETag = cached.etag;

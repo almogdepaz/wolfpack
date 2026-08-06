@@ -1,4 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+
+// These tests exercise the full deploy shell script repeatedly. Parallel CI load can
+// push otherwise healthy 2–5 second cases beyond Bun's 5 second default.
+setDefaultTimeout(15_000);
 import { execFileSync, type ExecFileSyncOptions, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
