@@ -1,5 +1,6 @@
 use crate::protocol::{ControlRequest, ControlResponse, Event};
 use std::io::{self, Read, Write};
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -53,7 +54,7 @@ pub type Result<T> = std::result::Result<T, CodecError>;
 pub struct OutputFrame {
     pub session_id: Uuid,
     pub seq: u64,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,16 @@ pub enum Frame {
 }
 
 pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<()> {
+    if let Frame::OutputBinary(out) = frame {
+        let payload_len = 24usize.saturating_add(out.data.len());
+        validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len as u32)?;
+        w.write_all(&[FRAME_KIND_OUTPUT_BINARY])?;
+        w.write_all(&(payload_len as u32).to_be_bytes())?;
+        w.write_all(out.session_id.as_bytes())?;
+        w.write_all(&out.seq.to_be_bytes())?;
+        w.write_all(out.data.as_slice())?;
+        return Ok(());
+    }
     let (kind, payload) = encode_payload(frame)?;
     validate_payload_len(kind, payload.len() as u32)?;
     let len = (payload.len() as u32).to_be_bytes();
@@ -112,6 +123,17 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
+    if let Frame::OutputBinary(out) = frame {
+        let payload_len = 24usize.saturating_add(out.data.len());
+        validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len as u32)?;
+        w.write_all(&[FRAME_KIND_OUTPUT_BINARY]).await?;
+        w.write_all(&(payload_len as u32).to_be_bytes()).await?;
+        w.write_all(out.session_id.as_bytes()).await?;
+        w.write_all(&out.seq.to_be_bytes()).await?;
+        w.write_all(out.data.as_slice()).await?;
+        w.flush().await?;
+        return Ok(());
+    }
     let (kind, payload) = encode_payload(frame)?;
     validate_payload_len(kind, payload.len() as u32)?;
     let len = (payload.len() as u32).to_be_bytes();
@@ -159,7 +181,7 @@ fn decode_payload(kind: u8, payload: &[u8]) -> Result<Frame> {
             Frame::OutputBinary(OutputFrame {
                 session_id: Uuid::from_bytes(id),
                 seq: u64::from_be_bytes(seq),
-                data: payload[24..].to_vec(),
+                data: Arc::new(payload[24..].to_vec()),
             })
         }
         FRAME_KIND_INPUT_BINARY => {
@@ -227,7 +249,7 @@ mod tests {
         let out = OutputFrame {
             session_id: id,
             seq: 0xCAFEBABE,
-            data: b"hello\x1b[Hworld".to_vec(),
+            data: Arc::new(b"hello\x1b[Hworld".to_vec()),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &Frame::OutputBinary(out.clone())).unwrap();
@@ -331,7 +353,7 @@ mod tests {
             params: json!({ "session_id": Uuid::nil() }),
         };
         let resp = ControlResponse::ok(1, ResponsePayload::Subscribe { ok: true, current_seq: 0, replay_truncated: false });
-        let out = OutputFrame { session_id: nil(), seq: 1, data: b"abc".to_vec() };
+        let out = OutputFrame { session_id: nil(), seq: 1, data: Arc::new(b"abc".to_vec()) };
         let inp = InputFrame { session_id: nil(), data: b"\r".to_vec() };
         let ev = Event::SnapshotInvalidated { session_id: nil() };
 

@@ -733,7 +733,7 @@ where
             ));
         }
     }
-    thread::Builder::new().name(name).spawn(f)
+    thread::Builder::new().name(name).stack_size(512 * 1024).spawn(f)
 }
 
 #[cfg(test)]

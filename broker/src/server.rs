@@ -362,17 +362,32 @@ async fn connection_writer(
     mut control_rx: mpsc::Receiver<Frame>,
     mut output_rx: mpsc::Receiver<Frame>,
 ) {
+    const MAX_CONTROL_BURST: usize = 8;
+    let mut control_streak = 0usize;
     loop {
-        let frame = tokio::select! {
+        // Control remains prioritised, but a sustained event/response stream
+        // yields after a bounded burst so terminal output cannot starve.
+        if control_streak >= MAX_CONTROL_BURST {
+            if let Ok(frame) = output_rx.try_recv() {
+                if let Err(error) = write_frame_async(&mut w, &frame).await {
+                    warn!(%error, "broker writer failed; closing connection");
+                    return;
+                }
+                control_streak = 0;
+                continue;
+            }
+        }
+        let (is_control, frame) = tokio::select! {
             biased;
-            Some(frame) = control_rx.recv() => frame,
-            Some(frame) = output_rx.recv() => frame,
+            Some(frame) = control_rx.recv() => (true, frame),
+            Some(frame) = output_rx.recv() => (false, frame),
             else => return,
         };
-        if let Err(e) = write_frame_async(&mut w, &frame).await {
-            warn!(error = %e, "broker writer failed; closing connection");
+        if let Err(error) = write_frame_async(&mut w, &frame).await {
+            warn!(%error, "broker writer failed; closing connection");
             return;
         }
+        control_streak = if is_control { control_streak + 1 } else { 0 };
     }
 }
 
@@ -613,7 +628,7 @@ fn enqueue_output_chunk(
             && last.data.len() + chunk.data.len() <= OUTPUT_FRAME_COALESCE_MAX_BYTES
         {
             last.seq = chunk.seq;
-            last.data.extend_from_slice(&chunk.data);
+            Arc::make_mut(&mut last.data).extend_from_slice(&chunk.data);
             return;
         }
     }
@@ -715,15 +730,12 @@ async fn forward_output(
 }
 
 fn chunk_to_frame(session_id: Uuid, chunk: OutputChunk) -> OutputFrame {
-    // The ring stores `Arc<Vec<u8>>` to share between live + replay; the
-    // codec frame owns its bytes, so we materialise here. With one
-    // outstanding subscriber per session this is just a take; with
-    // multiple subscribers each pays the clone cost separately, which is
-    // an explicit tradeoff for not coupling subscribers to each other.
+    // Ring, replay, broadcast, connection queue and codec framing all retain
+    // the same immutable allocation; fanout clones only the Arc.
     OutputFrame {
         session_id,
         seq: chunk.seq,
-        data: chunk.data.as_ref().clone(),
+        data: chunk.data,
     }
 }
 
@@ -938,7 +950,7 @@ mod tests {
             .send(Frame::OutputBinary(OutputFrame {
                 session_id,
                 seq: 1,
-                data: vec![b'x'],
+                data: Arc::new(vec![b'x']),
             }))
             .await
             .expect("queue output");
@@ -964,6 +976,36 @@ mod tests {
                 ..
             }) if output_session == session_id
         ));
+        writer.await.expect("writer task failed");
+    }
+
+    #[tokio::test]
+    async fn sustained_control_burst_yields_to_queued_output() {
+        let session_id = Uuid::new_v4();
+        let (broker_stream, mut client_stream) = UnixStream::pair().expect("socket pair");
+        let (_read_half, write_half) = broker_stream.into_split();
+        let (control_tx, control_rx) = mpsc::channel(16);
+        let (output_tx, output_rx) = mpsc::channel(16);
+        for id in 0..12 {
+            control_tx.send(Frame::ControlResponse(unknown_session(id, Uuid::nil()))).await.unwrap();
+        }
+        output_tx.send(Frame::OutputBinary(OutputFrame {
+            session_id,
+            seq: 1,
+            data: Arc::new(vec![b'x']),
+        })).await.unwrap();
+        drop(control_tx);
+        drop(output_tx);
+        let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx));
+        let mut output_index = None;
+        for index in 0..13 {
+            if matches!(read_frame_async(&mut client_stream).await.unwrap(), Frame::OutputBinary(_)) {
+                output_index = Some(index);
+                break;
+            }
+        }
+        assert_eq!(output_index, Some(8));
+        drop(client_stream);
         writer.await.expect("writer task failed");
     }
 

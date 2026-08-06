@@ -52,9 +52,9 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 ## Broker resource performance
 
 - [ ] Byte-bounded control/output queues, snapshot/connection/subscription caps, queue high-water metrics.
-- [ ] Shared immutable output bytes and vectored framing to reduce fanout copies.
-- [ ] Byte+chunk replay retention and weighted control/output fairness without violating response ordering.
-- [ ] Scale session threads/stacks and registry creation contention; preserve atomic name reservation with pending state.
+- [x] Shared immutable output bytes from replay through fanout and scatter/gather codec writes without payload materialization.
+- [x] Byte+chunk replay retention and bounded-burst weighted control/output fairness without violating per-queue response ordering.
+- [x] Scale session thread stacks and move process spawning outside registry contention while preserving atomic pending name reservations.
 
 ## Testing, release, CLI, and operability
 

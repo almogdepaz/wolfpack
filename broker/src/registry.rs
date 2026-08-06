@@ -86,29 +86,43 @@ impl Registry {
     }
 
     pub fn create(&self, opts: CreateOptions) -> Result<Arc<Session>, CreateError> {
-        let session = {
+        // Reserve the name atomically, then release the registry lock before
+        // openpty/spawn/thread setup. Concurrent creates see the reservation
+        // as occupied without serialising unrelated process creation.
+        let (name, reservation_id) = {
             let mut guard = self.inner.lock().expect("registry poisoned");
-            // Reborrow once so split-borrowing distinct fields of `Inner` is
-            // visible to the compiler (without this, the MutexGuard's Deref
-            // and DerefMut paths produce overlapping borrows).
             let inner = &mut *guard;
             inner.purge_expired_tombstones();
             let name = resolve_name(opts.name.as_deref(), &inner.names, &mut inner.next_anon)?;
-
-            let spawn_opts = SpawnOptions {
-                name: name.clone(),
-                cwd: opts.cwd,
-                command: opts.command,
-                env: opts.env,
-                cols: opts.cols,
-                rows: opts.rows,
-            };
-            let session = Arc::new(Session::spawn(spawn_opts, self.events.clone())?);
-            let id = session.id();
+            let reservation_id = Uuid::new_v4();
+            inner.names.insert(name.clone(), reservation_id);
+            (name, reservation_id)
+        };
+        let spawn_opts = SpawnOptions {
+            name: name.clone(),
+            cwd: opts.cwd,
+            command: opts.command,
+            env: opts.env,
+            cols: opts.cols,
+            rows: opts.rows,
+        };
+        let session = match Session::spawn(spawn_opts, self.events.clone()) {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                let mut inner = self.inner.lock().expect("registry poisoned");
+                if inner.names.get(&name) == Some(&reservation_id) {
+                    inner.names.remove(&name);
+                }
+                return Err(CreateError::Spawn(error));
+            }
+        };
+        let id = session.id();
+        {
+            let mut inner = self.inner.lock().expect("registry poisoned");
+            debug_assert_eq!(inner.names.get(&name), Some(&reservation_id));
             inner.sessions.insert(id, Arc::clone(&session));
             inner.names.insert(name, id);
-            session
-        };
+        }
         // Publish AFTER releasing the registry lock so a slow subscriber can
         // never stall registry mutations. Best-effort: an Err means no one
         // is currently subscribed.

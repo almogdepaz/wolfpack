@@ -31,6 +31,7 @@ use crate::ring_buffer::{OutputChunk, RingBuffer};
 /// a one-second burst from a chatty TUI at 8KB per chunk while keeping
 /// per-session memory bounded.
 pub const DEFAULT_RING_CAPACITY: usize = 256;
+pub const DEFAULT_RING_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Default live broadcast lag tolerance (chunks). A subscriber that falls
 /// further behind than this surfaces `Lagged` and must recover via the ring
@@ -86,10 +87,14 @@ pub struct Subscription {
 
 impl OutputBus {
     pub fn new(ring_capacity: usize, broadcast_capacity: usize) -> Arc<Self> {
+        Self::new_with_byte_limit(ring_capacity, DEFAULT_RING_MAX_BYTES, broadcast_capacity)
+    }
+
+    pub fn new_with_byte_limit(ring_capacity: usize, ring_max_bytes: usize, broadcast_capacity: usize) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Arc::new(Self {
             sender: Mutex::new(Some(tx)),
-            ring: Mutex::new(RingBuffer::new(ring_capacity)),
+            ring: Mutex::new(RingBuffer::with_limits(ring_capacity, ring_max_bytes)),
             last_seq: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             closed_signal: (Mutex::new(()), Condvar::new()),
