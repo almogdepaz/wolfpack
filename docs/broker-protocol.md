@@ -460,3 +460,7 @@ The `wolfpack-broker` crate carries unit tests for:
 - Back-to-back frame streaming on a single buffer.
 
 Run with `cargo test --manifest-path broker/Cargo.toml`.
+
+## Resource limits
+
+The broker accepts at most 128 simultaneous Unix-socket connections and 32 distinct output subscriptions per connection. Production input, control, output, replay, and subscription-forwarding queues are bounded by conservative byte envelopes; snapshots have a global concurrency cap. Queue depth high-water increases are emitted as structured `broker_queue_high_water` debug events (`queue`, `depth`) for capacity analysis without session-name labels.

@@ -51,7 +51,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## Broker resource performance
 
-- [ ] Byte-bounded control/output queues, snapshot/connection/subscription caps, queue high-water metrics.
+- [x] Byte-bounded control/output queues, snapshot/connection/subscription caps, and fixed-cardinality queue high-water metrics.
 - [x] Shared immutable output bytes from replay through fanout and scatter/gather codec writes without payload materialization.
 - [x] Byte+chunk replay retention and bounded-burst weighted control/output fairness without violating per-queue response ordering.
 - [x] Scale session thread stacks and move process spawning outside registry contention while preserving atomic pending name reservations.
