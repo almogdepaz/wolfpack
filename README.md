@@ -67,12 +67,15 @@ To uninstall: `wolfpack uninstall --yes` (curl), `bunx wolfpack-bridge@latest un
 - **work how you prefer** — phone PWA, desktop terminal grid, notifications, and direct terminal attach.
 - **use the agents you already run** — built-in commands or custom commands on `PATH`; configure them in **Settings → Agents**.
 
+The multi-machine dashboard and desktop sidebar show only local sessions and currently ready, handshake-verified Wolfpack peers. Generic, offline, malformed, and unreachable Tailnet candidates stay out of the control room; **Settings → Machines** retains bounded discovery diagnostics. Peer headers show the machine display name and hostname without rendering internal node, installation, or routing identities.
+
 ## docs
 
 - [installation and first success](docs/installation.md) — install methods, service behavior, platform detail, verification, and uninstall.
 - [troubleshooting](docs/troubleshooting.md) — recover from setup, service, broker, and remote-access failures.
 - [terminal attach](docs/cli-attach.md) — attach a local terminal with `wolfpack attach [name]`.
 - [session control](docs/session-control.md) — scriptable session-control API.
+- [multi-machine control room](docs/multi-machine-control-room.md) — peer readiness, visibility, diagnostics, and identity privacy.
 - [agent skills](docs/agent-skills.md) — install the Wolfpack control skill for supported agent harnesses.
 - [task gateway](docs/task-gateway.md) — durable Pi Task routing, retention, and federation limits.
 - [broker protocol](docs/broker-protocol.md) — broker wire protocol and terminal-state boundary.
