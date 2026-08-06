@@ -75,7 +75,7 @@ jobs:
         run: bunx playwright install --with-deps chromium webkit
 
       - name: Run critical Chromium desktop and mobile E2E
-        run: bunx playwright test accessibility-navigation.e2e.ts axe-accessibility.e2e.ts smoke.e2e.ts terminal.e2e.ts reconnect.e2e.ts --project=desktop --project=iphone-se
+        run: bunx playwright test tests/e2e/accessibility-navigation.e2e.ts tests/e2e/axe-accessibility.e2e.ts tests/e2e/smoke.e2e.ts tests/e2e/terminal.e2e.ts tests/e2e/reconnect.e2e.ts --project=desktop --project=iphone-se
 
       - name: Run critical mobile WebKit E2E shard
         run: bunx playwright test --project=mobile-webkit
