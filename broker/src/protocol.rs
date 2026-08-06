@@ -330,6 +330,9 @@ pub enum Event {
         exit_code: Option<i32>,
         #[serde(default)]
         signal: Option<i32>,
+        /// Decimal u64 watermark covering every published PTY output chunk.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_seq: Option<String>,
     },
     SessionResized { session_id: Uuid, cols: u16, rows: u16 },
     SnapshotInvalidated { session_id: Uuid },
@@ -568,6 +571,7 @@ mod tests {
             session_id: nil(),
             exit_code: Some(0),
             signal: None,
+            final_seq: Some("18446744073709551615".into()),
         };
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["event"], "session_exited");

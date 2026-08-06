@@ -39,6 +39,7 @@ use crate::terminal_state::{TerminalState, TerminalStateError};
 /// `session_exited`, `session_resized`, `snapshot_invalidated`) is published
 /// here so per-connection forwarders can fan events out to clients.
 pub type EventSender = broadcast::Sender<Event>;
+const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct SpawnOptions {
@@ -301,13 +302,13 @@ impl Session {
         let drain_events = events.clone();
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
-            if let Err(error) = drain_reader(reader, drain_terminal, drain_seq, drain_bus) {
+            if let Err(error) = drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus) {
                 tracing::error!(
                     session_id = %drain_id,
                     error = %error,
                     "PTY reader failed; terminating session"
                 );
-                mark_pty_read_failed(&drain_inner, drain_id, &error, &drain_events);
+                mark_pty_read_failed(&drain_inner, drain_id, &error, &drain_events, drain_seq.load(Ordering::SeqCst));
                 if let Err(kill_error) = drain_child_killer.kill() {
                     tracing::error!(
                         session_id = %drain_id,
@@ -321,10 +322,12 @@ impl Session {
         }
 
         let reaper_inner = Arc::clone(&inner);
+        let reaper_bus = Arc::clone(&bus);
+        let reaper_seq = Arc::clone(&seq);
         let reap_id = id;
         let reaper_events = events.clone();
         spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
-            reap(child.into_child(), reaper_inner, reap_id, reaper_events)
+            reap(child.into_child(), reaper_inner, reaper_bus, reaper_seq, reap_id, reaper_events)
         })
         .map_err(|e| SpawnError::ThreadSpawn(e.to_string()))?;
 
@@ -603,6 +606,7 @@ fn mark_pty_read_failed(
     session_id: Uuid,
     error: &io::Error,
     events: &EventSender,
+    final_seq: u64,
 ) -> bool {
     let transitioned = {
         let mut state = inner.state.lock().expect("session state poisoned");
@@ -620,6 +624,7 @@ fn mark_pty_read_failed(
             session_id,
             exit_code: None,
             signal: None,
+            final_seq: Some(final_seq.to_string()),
         });
     }
     transitioned
@@ -698,10 +703,20 @@ fn take_cleanup_observation_for_test() -> (Option<u32>, Option<u32>) {
 fn reap(
     mut child: Box<dyn Child + Send + Sync>,
     inner: Arc<Inner>,
+    output_bus: Arc<OutputBus>,
+    seq: Arc<AtomicU64>,
     session_id: Uuid,
     events: EventSender,
 ) {
     let exit = child.wait();
+    if !output_bus.wait_closed(EXIT_DRAIN_BARRIER_TIMEOUT) {
+        tracing::warn!(
+            %session_id,
+            "PTY output drainer did not close before exit barrier timeout; closing output bus"
+        );
+        output_bus.close();
+    }
+    let final_seq = seq.load(Ordering::SeqCst);
     let (exit_code, transitioned) = {
         let mut st = inner.state.lock().expect("session state poisoned");
         let transitioned = st.alive;
@@ -718,6 +733,7 @@ fn reap(
             session_id,
             exit_code,
             signal: None,
+            final_seq: Some(final_seq.to_string()),
         });
     }
 }
@@ -860,8 +876,8 @@ mod tests {
         let (events, mut receiver) = broadcast::channel(4);
         let error = io::Error::new(io::ErrorKind::BrokenPipe, "forced PTY read failure");
 
-        assert!(mark_pty_read_failed(&inner, id, &error, &events));
-        assert!(!mark_pty_read_failed(&inner, id, &error, &events));
+        assert!(mark_pty_read_failed(&inner, id, &error, &events, 7));
+        assert!(!mark_pty_read_failed(&inner, id, &error, &events, 7));
 
         let state = inner.state.lock().expect("session state poisoned");
         assert!(!state.alive);
@@ -876,7 +892,8 @@ mod tests {
                 session_id,
                 exit_code: None,
                 signal: None,
-            }) if session_id == id
+                final_seq: Some(final_seq),
+            }) if session_id == id && final_seq == "7"
         ));
         assert!(
             receiver.try_recv().is_err(),

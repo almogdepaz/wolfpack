@@ -181,6 +181,8 @@ export class BrokerClient {
   private readonly pendingSubscriptions = new Map<string, Promise<ControlResponse>>();
   /** Last observed output seq per active session (used for reconnect replay). */
   private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
+  /** Exit events held until their final output watermark has been delivered. */
+  private readonly pendingExitEvents = new Map<string, { event: EventBody; finalSeq: bigint }>();
 
   private state: "idle" | "connecting" | "connected" | "closed" = "idle";
 
@@ -554,6 +556,20 @@ export class BrokerClient {
     if (this.state !== "closed") this.scheduleReconnect();
   }
 
+  private emitEvent(event: EventBody): void {
+    if (!this.onEventCb) return;
+    try { this.onEventCb(event); } catch { /* subscriber errors are isolated */ }
+  }
+
+  private releaseExitIfComplete(sessionId: string): void {
+    const pending = this.pendingExitEvents.get(sessionId);
+    if (!pending) return;
+    const delivered = this.activeSubscriptionSeq.get(sessionId) ?? 0n;
+    if (delivered < pending.finalSeq) return;
+    this.pendingExitEvents.delete(sessionId);
+    this.emitEvent(pending.event);
+  }
+
   private dispatch(frame: Frame): void {
     switch (frame.kind) {
       case FRAME_KIND_CONTROL_RESPONSE: {
@@ -578,7 +594,10 @@ export class BrokerClient {
           }
         }
         const subs = this.outputSubs.get(sessionId);
-        if (!subs) return;
+        if (!subs) {
+          this.releaseExitIfComplete(sessionId);
+          return;
+        }
         for (const cb of subs) {
           try {
             cb(frame.value);
@@ -586,6 +605,7 @@ export class BrokerClient {
             // subscriber errors are isolated; transport stays up
           }
         }
+        this.releaseExitIfComplete(sessionId);
         return;
       }
       case FRAME_KIND_EVENT: {
@@ -609,12 +629,19 @@ export class BrokerClient {
           }
           return;
         }
-        if (!this.onEventCb) return;
-        try {
-          this.onEventCb(ev);
-        } catch {
-          // swallow
+        if (ev.event === "session_exited" && typeof ev.session_id === "string" && typeof ev.final_seq === "string") {
+          try {
+            const finalSeq = BigInt(ev.final_seq);
+            if (this.activeSubscriptions.has(ev.session_id)) {
+              this.pendingExitEvents.set(ev.session_id, { event: ev, finalSeq });
+              this.releaseExitIfComplete(ev.session_id);
+              return;
+            }
+          } catch {
+            // Older/malformed final_seq values fall through to compatibility delivery.
+          }
         }
+        this.emitEvent(ev);
         return;
       }
       case FRAME_KIND_CONTROL_REQUEST:

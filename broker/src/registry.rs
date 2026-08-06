@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -37,14 +38,38 @@ pub enum CreateError {
     Spawn(#[from] SpawnError),
 }
 
+const EXITED_TOMBSTONE_TTL: Duration = Duration::from_secs(30);
+const MAX_EXITED_TOMBSTONES: usize = 64;
+
+struct Tombstone {
+    session: Arc<Session>,
+    expires_at: Instant,
+}
+
 #[derive(Default)]
 struct Inner {
     sessions: BTreeMap<Uuid, Arc<Session>>,
+    tombstones: BTreeMap<Uuid, Tombstone>,
     names: BTreeMap<String, Uuid>,
     /// Monotonic counter for anonymous "session-N" names. Never decrements,
     /// even when collisions skip values, so a killed session's slot is not
     /// silently reused.
     next_anon: u64,
+}
+
+impl Inner {
+    fn purge_expired_tombstones(&mut self) {
+        let now = Instant::now();
+        self.tombstones.retain(|_, tombstone| tombstone.expires_at > now);
+        while self.tombstones.len() > MAX_EXITED_TOMBSTONES {
+            let Some(oldest) = self.tombstones
+                .iter()
+                .min_by_key(|(_, tombstone)| tombstone.expires_at)
+                .map(|(id, _)| *id)
+            else { break };
+            self.tombstones.remove(&oldest);
+        }
+    }
 }
 
 pub struct Registry {
@@ -67,6 +92,7 @@ impl Registry {
             // visible to the compiler (without this, the MutexGuard's Deref
             // and DerefMut paths produce overlapping borrows).
             let inner = &mut *guard;
+            inner.purge_expired_tombstones();
             let name = resolve_name(opts.name.as_deref(), &inner.names, &mut inner.next_anon)?;
 
             let spawn_opts = SpawnOptions {
@@ -93,8 +119,10 @@ impl Registry {
     }
 
     pub fn get(&self, id: Uuid) -> Option<Arc<Session>> {
-        let inner = self.inner.lock().expect("registry poisoned");
+        let mut inner = self.inner.lock().expect("registry poisoned");
+        inner.purge_expired_tombstones();
         inner.sessions.get(&id).cloned()
+            .or_else(|| inner.tombstones.get(&id).map(|tombstone| Arc::clone(&tombstone.session)))
     }
 
     pub fn list(&self) -> Vec<Arc<Session>> {
@@ -124,6 +152,11 @@ impl Registry {
         if inner.names.get(&name) == Some(&id) {
             inner.names.remove(&name);
         }
+        inner.tombstones.insert(id, Tombstone {
+            session,
+            expires_at: Instant::now() + EXITED_TOMBSTONE_TTL,
+        });
+        inner.purge_expired_tombstones();
     }
 }
 
@@ -361,16 +394,17 @@ mod tests {
         assert!(sess.wait_for_exit(Duration::from_secs(5)), "child must exit");
         drop(sess);
 
-        // The reaper runs on the runtime; yield until the registry observes
-        // the removal. Bounded retry so a regression of this fix fails fast.
+        // The reaper removes the session from the live list and name map but
+        // retains a bounded by-id tombstone for final output replay.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            if reg.get(id).is_none() {
+            if reg.list().iter().all(|session| session.id() != id) {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "reaper did not drop exited session");
+            assert!(std::time::Instant::now() < deadline, "reaper did not tombstone exited session");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert!(reg.get(id).is_some(), "exited session should remain replayable by id");
 
         // Name slot must be free — recreating with the same name must succeed.
         let sess2 = reg

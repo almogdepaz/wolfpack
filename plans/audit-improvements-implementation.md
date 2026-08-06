@@ -13,7 +13,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Compact snapshot wire data by omitting default attributes, bound extraction before allocation, and cap concurrent broker snapshots.
 - [ ] Move snapshot serialization outside the terminal lock and add broker-side sequence-keyed snapshot reuse.
 - [ ] Atomic snapshot+live attach broker operation or equivalent proven cut that cannot replay-truncate between separate RPCs.
-- [ ] Exit `final_seq` barrier and bounded exited-session tombstone so final output precedes lifecycle closure.
+- [x] Exit `final_seq` barrier and bounded exited-session tombstone so final output precedes lifecycle closure.
 
 ## Network, WebSocket, and auth reliability
 

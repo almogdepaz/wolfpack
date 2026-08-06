@@ -573,6 +573,38 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(sinceSeqs).toEqual([undefined, 42]);
   });
 
+  test("session exit waits for its final output sequence barrier", async () => {
+    const observed: string[] = [];
+    const { server, client } = await bootClientToServer({
+      onEvent: (event) => observed.push(event.event),
+    });
+    server.onRequest = (req, sock) => server.send(sock, {
+      kind: FRAME_KIND_CONTROL_RESPONSE,
+      value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true, current_seq: 0 } },
+    });
+    await client.subscribe(SAMPLE_UUID);
+    client.subscribeOutput(SAMPLE_UUID, (frame) => observed.push(`output:${frame.seq}`));
+
+    // Control/event traffic may overtake the output queue on the broker writer.
+    server.broadcast({
+      kind: FRAME_KIND_EVENT,
+      value: { event: "session_exited", session_id: SAMPLE_UUID, final_seq: "2", exit_code: 0 },
+    });
+    server.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 1n, data: new Uint8Array([1]) },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(observed).toEqual(["output:1"]);
+
+    server.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 2n, data: new Uint8Array([2]) },
+    });
+    await waitFor(() => observed.includes("session_exited"));
+    expect(observed).toEqual(["output:1", "output:2", "session_exited"]);
+  });
+
   test("subscribe clamps since_seq above Number.MAX_SAFE_INTEGER", async () => {
     const { server, client } = await bootClientToServer();
     let captured: Record<string, unknown> | null = null;

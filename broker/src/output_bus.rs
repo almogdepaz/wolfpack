@@ -119,13 +119,18 @@ impl OutputBus {
 
     /// Atomically capture replay + live receiver + current_seq. After the
     /// lock is released, every newly published chunk arrives on the
-    /// receiver. Returns `None` if the bus is already closed (drainer
-    /// exited) — callers should treat the session as dead for live
-    /// streaming purposes.
+    /// receiver. A closed bus still returns its retained replay plus an
+    /// already-closed receiver so bounded exited-session tombstones can drain
+    /// their final output without pretending a live stream remains.
     pub fn subscribe(&self, since_seq: Option<u64>) -> Option<Subscription> {
         let sender_guard = self.sender.lock().expect("output bus sender poisoned");
-        let tx = sender_guard.as_ref()?;
-        let receiver = tx.subscribe();
+        let receiver = if let Some(tx) = sender_guard.as_ref() {
+            tx.subscribe()
+        } else {
+            let (closed_tx, closed_rx) = broadcast::channel(1);
+            drop(closed_tx);
+            closed_rx
+        };
         let ring = self.ring.lock().expect("output bus ring poisoned");
         let (replay, replay_truncated) = match since_seq {
             Some(s) => {
@@ -243,11 +248,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_after_close_returns_none() {
+    async fn subscribe_after_close_returns_retained_replay_then_closed() {
         let bus = OutputBus::new(4, 4);
         bus.publish(chunk(1, b"x"));
         bus.close();
-        assert!(bus.subscribe(Some(0)).is_none());
+        let mut sub = bus.subscribe(Some(0)).expect("closed bus remains replayable");
+        assert_eq!(sub.replay.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(), vec![1]);
+        assert!(sub.receiver.recv().await.is_err());
         assert!(bus.is_closed());
     }
 
