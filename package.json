@@ -31,7 +31,8 @@
     "perf:terminal-load": "bun scripts/terminal-load-perf.ts",
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/ && bunx tsc --noEmit -p public/tsconfig.strict.json",
     "postinstall": "node bin/install.cjs",
-    "check:bundle-budgets": "bun run scripts/check-bundle-budgets.ts"
+    "check:bundle-budgets": "bun run scripts/check-bundle-budgets.ts",
+    "smoke:release": "bun run scripts/smoke-release-artifacts.ts"
   },
   "optionalDependencies": {
     "wolfpack-bridge-darwin-arm64": "1.6.17",
@@ -74,6 +75,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
     "@playwright/test": "^1.58.2",
     "@types/ws": "^8.18.1",
     "bun-types": "^1.3.10",

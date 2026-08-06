@@ -174,6 +174,7 @@ const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_ONLY_PAGE_LOAD: set to 1 to skip single/grid terminal scenarios",
   "WOLFPACK_PERF_PAGE_LOAD_WAIT_MS: extra post-load wait before page-load trace capture",
   "WOLFPACK_PERF_SLOW_PREFILL_MS: inject server-side prefill delay for slow-path measurements",
+  "WOLFPACK_PERF_ENFORCE_BUDGETS: set to 1 to fail on cold/warm p95, heap, long-task, or console budgets",
 ] as const;
 
 function resolveBrokerBin(): string | null {
@@ -1031,6 +1032,23 @@ async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>
   }
 }
 
+export function perfBudgetFailures(summary: PerfRunsSummary, device: PerfDeviceMode): string[] {
+  const limits = device === "mobile"
+    ? { coldP95: 3_000, warmP95: 3_500, heap: 128 * 1024 * 1024, longTasks: 8, longTaskMs: 750 }
+    : { coldP95: 2_000, warmP95: 2_500, heap: 192 * 1024 * 1024, longTasks: 6, longTaskMs: 500 };
+  const failures: string[] = [];
+  const check = (label: string, value: number | null, limit: number) => {
+    if (value !== null && value > limit) failures.push(`${label} ${value.toFixed(1)} exceeds ${limit}`);
+  };
+  check("cold dashboard p95 ms", summary.page.cardVisibleMs.p95, limits.coldP95);
+  check("warm terminal reveal p95 ms", summary.single.setupToRevealMs.p95, limits.warmP95);
+  check("JS heap p95 bytes", summary.page.jsHeapUsedBytes.p95, limits.heap);
+  check("long-task count p95", summary.page.longTaskCount.p95, limits.longTasks);
+  check("long-task total p95 ms", summary.page.longTaskTotalMs.p95, limits.longTaskMs);
+  if (summary.pageConsoleErrorsTotal > 0) failures.push(`console errors ${summary.pageConsoleErrorsTotal} exceeds 0`);
+  return failures;
+}
+
 async function main(): Promise<void> {
   if (process.env.WOLFPACK_PERF_HELP === "1") {
     console.log("terminal-load perf environment:");
@@ -1070,6 +1088,11 @@ async function main(): Promise<void> {
       ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, ...runs[0], summary }
       : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, runs, summary };
     console.log(`\n${formatPerfRunsSummary(summary)}`);
+    if (process.env.WOLFPACK_PERF_ENFORCE_BUDGETS === "1") {
+      const failures = perfBudgetFailures(summary, device);
+      if (failures.length > 0) throw new Error(`terminal performance budgets failed:\n- ${failures.join("\n- ")}`);
+      console.log(`terminal performance budgets passed (${device})`);
+    }
     console.log("\njson:");
     console.log(JSON.stringify(report, null, 2));
   } finally {

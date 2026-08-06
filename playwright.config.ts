@@ -5,12 +5,12 @@ export default defineConfig({
   testMatch: "*.e2e.ts",
   outputDir: "tests/e2e/test-results",
   timeout: 30_000,
-  retries: 0,
-  workers: 1, // serial — shares one server instance
+  retries: process.env.CI ? 1 : 0,
+  workers: 1, // each spec owns an isolated random-port fixture
   reporter: [["list"]],
   use: {
     baseURL: `http://127.0.0.1:${process.env.WOLFPACK_TEST_PORT || 18799}`,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   projects: [

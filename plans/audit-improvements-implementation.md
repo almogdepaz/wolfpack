@@ -45,7 +45,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Efficient bounded session output preview derived only when the output sequence changes and reused from the observation cache.
 - [x] Proper drawer buttons/list semantics, chip expanded state, input labels/descriptions, modal overlays, SPA landmarks/focus.
 - [x] iOS safe-area layout and consistent manifest/document theme colors.
-- [ ] WCAG contrast/touch-target/reduced-motion improvements and automated axe coverage.
+- [x] WCAG contrast/touch-target/reduced-motion improvements and automated axe coverage.
 - [x] More robust visual-viewport keyboard geometry using height and offset changes on resize/scroll.
 - [x] Accessible selected/pressed/current states for settings and navigation.
 
@@ -58,12 +58,12 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## Testing, release, CLI, and operability
 
-- [ ] CI runs all integration tests and critical Chromium/mobile-WebKit E2E; remove stale test paths and verify explicit paths exist.
-- [ ] Pin/freeze main CI toolchains/dependencies consistently.
-- [ ] Reliable isolated E2E fixtures and useful trace-on-failure configuration.
-- [ ] Installed-artifact/package/broker smoke before release publication.
-- [ ] Performance harness enforces desktop/mobile cold/warm p95, heap, long-task, console-error, and bundle budgets.
-- [ ] Axe active-view/dialog scans plus documented VoiceOver/TalkBack checklist.
+- [x] CI discovers every integration test and runs critical Chromium/mobile-WebKit E2E without stale explicit paths.
+- [x] Pin/freeze main CI actions, Bun, Rust, Zig, and dependency installation consistently.
+- [x] Reliable isolated random-port E2E fixtures and retained trace/screenshot-on-failure configuration.
+- [x] Installed-package plus native CLI/broker artifact smoke gates release publication in a temporary HOME.
+- [x] Performance harness enforces desktop/mobile cold/warm p95, heap, long-task, console-error, and bundle budgets.
+- [x] Axe active-view/dialog scans plus documented VoiceOver/TalkBack checklist.
 - [ ] Safe explicit non-interactive setup that preserves existing config; complete subcommand help and `doctor --json`.
 - [ ] Hermetic doctor unit tests; host inspection/fixes only in opt-in smoke tests.
 - [x] Authenticated-or-loopback health readiness, fixed-cardinality JSON/Prometheus metrics, and an explicit broker health state machine.

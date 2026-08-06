@@ -14,6 +14,10 @@ use wolfpack_broker::session_router::{SessionRouter, EVENT_BUS_CAPACITY};
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().skip(1).any(|arg| arg == "--version" || arg == "-V") {
+        println!("wolfpack-broker {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     init_logging();
 
     let socket_path = std::env::var_os("WOLFPACK_BROKER_SOCKET")
