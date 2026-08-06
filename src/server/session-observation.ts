@@ -16,11 +16,28 @@ import type { PublicSessionIdentity } from "./session-identity.js";
 
 const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
+const DASHBOARD_OBSERVATION_CACHE_TTL_MS = process.env.WOLFPACK_TEST ? 0 : 500;
 
-const dashboardActivityFingerprints = new Map<string, string>();
-const notificationActivityFingerprints = new Map<string, string>();
+interface ActivityFingerprint {
+  readonly outputSequence?: string;
+  readonly rendered?: string;
+}
+
+interface RenderedFingerprintFlight {
+  readonly outputSequence: string;
+  readonly promise: Promise<string | undefined>;
+}
+
+const dashboardActivityFingerprints = new Map<string, ActivityFingerprint>();
+const notificationActivityFingerprints = new Map<string, ActivityFingerprint>();
+const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
 let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
 let sessionNotificationObservationPromise: Promise<void> | null = null;
+let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
+let dashboardObservationCache: {
+  readonly expiresAt: number;
+  readonly sessions: readonly ObservedSessionSummary[];
+} | null = null;
 
 interface KnownSessionSummary {
   readonly name: string;
@@ -54,9 +71,33 @@ function renderedActivityFingerprint(pane: string): string | undefined {
 }
 
 async function collectSessionObservation(
-  fingerprints: Map<string, string>,
+  fingerprints: Map<string, ActivityFingerprint>,
 ): Promise<SessionObservation> {
   const backend = getBackend();
+  const renderedFingerprint = async (
+    sessionKey: string,
+    name: string,
+    outputSequence: string | undefined,
+  ): Promise<string | undefined> => {
+    if (outputSequence === undefined) {
+      try {
+        return renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
+      } catch {
+        return undefined;
+      }
+    }
+    const cached = renderedFingerprintFlights.get(sessionKey);
+    if (cached?.outputSequence === outputSequence) return cached.promise;
+    const promise = backend.capturePane(name, { scrollbackLines: 0 })
+      .then(renderedActivityFingerprint)
+      .catch(() => undefined);
+    renderedFingerprintFlights.set(sessionKey, { outputSequence, promise });
+    const result = await promise;
+    if (result === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
+      renderedFingerprintFlights.delete(sessionKey);
+    }
+    return result;
+  };
   const router = getRouter();
   const routerOwnsBackend = backend === router;
   let brokerAvailable = !(routerOwnsBackend && !router.isBrokerAvailable());
@@ -90,15 +131,17 @@ async function collectSessionObservation(
           runId: identity?.wolfpackSessionId ?? previous?.runId,
           runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
         },
-      });
+      }, { persist: false });
       return { name, lastLine, triage: "idle" as TriageStatus, runtimeState, ...(identity && { identity }) };
     }).sort((a, b) => a.name.localeCompare(b.name));
+    store.flush();
     return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()) };
   }
 
   const activeNames = new Set<string>();
   const activeSessionKeys = new Set<string>();
   const unreliableSessionKeys = new Set<string>();
+  const store = getAgentRuntimeStateStore();
   const sessions = await Promise.all(sessionFacts.map(async (fact): Promise<ObservedSessionSummary> => {
     const name = fact.name;
     activeNames.add(name);
@@ -107,26 +150,34 @@ async function collectSessionObservation(
     const sessionKey = identity?.wolfpackSessionId ?? name;
     activeSessionKeys.add(sessionKey);
 
-    let activityFingerprint: string | undefined;
-    if (brokerState === "alive") {
-      try {
-        activityFingerprint = renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
-      } catch {
-        activityFingerprint = undefined;
-      }
-      if (activityFingerprint === undefined) unreliableSessionKeys.add(sessionKey);
-    }
-    const previousFingerprint = fingerprints.get(sessionKey);
-    const rawOutputChanged = activityFingerprint !== undefined
-      && previousFingerprint !== undefined
-      && activityFingerprint !== previousFingerprint;
-    if (activityFingerprint !== undefined) fingerprints.set(sessionKey, activityFingerprint);
-
+    // The output watermark is a cheap invalidation signal. Only materialize a
+    // Ghostty snapshot when it advances; stable sessions do no terminal work.
+    // A shared per-sequence flight prevents the dashboard and notification
+    // observers from requesting the same snapshot concurrently.
     const outputSequence = brokerOutputSequence(fact.outputSequence);
+    const previousFingerprint = fingerprints.get(sessionKey);
+    const shouldSampleRenderedState = brokerState === "alive" && (
+      previousFingerprint === undefined
+      || outputSequence === undefined
+      || previousFingerprint.outputSequence !== outputSequence
+    );
+    const currentRendered = shouldSampleRenderedState
+      ? await renderedFingerprint(sessionKey, name, outputSequence)
+      : previousFingerprint?.rendered;
+    const rawOutputChanged = shouldSampleRenderedState
+      && currentRendered !== undefined
+      && previousFingerprint?.rendered !== undefined
+      && currentRendered !== previousFingerprint.rendered;
+    if (shouldSampleRenderedState && currentRendered === undefined) {
+      unreliableSessionKeys.add(sessionKey);
+    } else if (brokerState === "alive") {
+      fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
+    }
+
     const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-    const lastLine = "";
+    const lastLine = knownSessionSummaries.get(name)?.lastLine ?? "";
     const observedAt = new Date().toISOString();
-    const runtimeState = getAgentRuntimeStateStore().reduce({
+    const runtimeState = store.reduce({
       sessionKey,
       broker: { state: brokerState, observedAt },
       sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
@@ -139,7 +190,7 @@ async function collectSessionObservation(
         runId: identity?.wolfpackSessionId,
         runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
       },
-    });
+    }, { persist: false });
     const summary = {
       name,
       lastLine,
@@ -156,15 +207,35 @@ async function collectSessionObservation(
   for (const key of fingerprints.keys()) {
     if (!activeSessionKeys.has(key)) fingerprints.delete(key);
   }
+  for (const key of renderedFingerprintFlights.keys()) {
+    if (!activeSessionKeys.has(key)) renderedFingerprintFlights.delete(key);
+  }
   for (const key of knownSessionSummaries.keys()) {
     if (!activeNames.has(key)) knownSessionSummaries.delete(key);
   }
-  getAgentRuntimeStateStore().prune(activeSessionKeys);
+  store.prune(activeSessionKeys, { persist: false });
+  store.flush();
   return { sessions, unreliableSessionKeys };
 }
 
 export async function observeDashboardSessions(): Promise<readonly ObservedSessionSummary[]> {
-  return (await collectSessionObservation(dashboardActivityFingerprints)).sessions;
+  const now = Date.now();
+  if (dashboardObservationCache && now < dashboardObservationCache.expiresAt) {
+    return dashboardObservationCache.sessions;
+  }
+  if (dashboardObservationPromise) return dashboardObservationPromise;
+  dashboardObservationPromise = collectSessionObservation(dashboardActivityFingerprints)
+    .then(({ sessions }) => {
+      dashboardObservationCache = {
+        expiresAt: Date.now() + DASHBOARD_OBSERVATION_CACHE_TTL_MS,
+        sessions,
+      };
+      return sessions;
+    })
+    .finally(() => {
+      dashboardObservationPromise = null;
+    });
+  return dashboardObservationPromise;
 }
 
 async function runSessionNotificationObservation(): Promise<void> {
@@ -207,10 +278,13 @@ export function stopSessionNotificationObserver(): void {
 }
 
 export function forgetSessionObservation(sessionId: string, sessionName: string): void {
+  dashboardObservationCache = null;
   dashboardActivityFingerprints.delete(sessionId);
   dashboardActivityFingerprints.delete(sessionName);
   notificationActivityFingerprints.delete(sessionId);
   notificationActivityFingerprints.delete(sessionName);
+  renderedFingerprintFlights.delete(sessionId);
+  renderedFingerprintFlights.delete(sessionName);
 }
 
 export function resetNotificationObservation(): void {
@@ -221,6 +295,9 @@ export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
   dashboardActivityFingerprints.clear();
   notificationActivityFingerprints.clear();
+  dashboardObservationPromise = null;
+  dashboardObservationCache = null;
+  renderedFingerprintFlights.clear();
   knownSessionSummaries.clear();
 }
 

@@ -305,6 +305,7 @@ describe("GET /api/sessions", () => {
     await get("/api/sessions");
 
     mockBackend.setCapturePane(async () => "step two\nseparator\nstatus\nagents\n");
+    mockBackend.setOutputSequence("wolf-1", "2");
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions[0].triage).toBe("running");
@@ -316,6 +317,7 @@ describe("GET /api/sessions", () => {
     await get("/api/sessions");
 
     mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
+    mockBackend.setOutputSequence("wolf-1", "1");
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions[0].triage).toBe("idle");
@@ -334,6 +336,8 @@ describe("GET /api/sessions", () => {
       mockBackend.setCapturePane(async () => "baseline\n");
       await __runSessionNotificationObservationForTests();
       mockBackend.setCapturePane(async () => "changed\n");
+      mockBackend.setOutputSequence("wolf-1", "1");
+      mockBackend.setOutputSequence("wolf-2", "1");
       await __runSessionNotificationObservationForTests();
       await __runSessionNotificationObservationForTests();
 
@@ -359,8 +363,12 @@ describe("GET /api/sessions", () => {
       mockBackend.setCapturePane(async () => "baseline\n");
       await __runSessionNotificationObservationForTests();
       mockBackend.setCapturePane(async () => "changed\n");
+      mockBackend.setOutputSequence("wolf-1", "1");
+      mockBackend.setOutputSequence("wolf-2", "1");
       await __runSessionNotificationObservationForTests();
       mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
+      mockBackend.setOutputSequence("wolf-1", "2");
+      mockBackend.setOutputSequence("wolf-2", "2");
       await __runSessionNotificationObservationForTests();
 
       expect(pushes).toEqual([]);
@@ -401,6 +409,7 @@ describe("GET /api/sessions", () => {
     mockBackend.setCapturePane(async (session: string) => session === "running-sess" ? "step one\n" : "quiet\n");
     await get("/api/sessions");
     mockBackend.setCapturePane(async (session: string) => session === "running-sess" ? "step two\n" : "quiet\n");
+    mockBackend.setOutputSequence("running-sess", "1");
     const res = await get("/api/sessions");
     const data = await res.json();
     // Sessions sorted alphabetically (5cf260d), triage is per-session metadata
@@ -425,6 +434,7 @@ describe("GET /api/sessions", () => {
     });
 
     mockBackend.setCapturePane(async () => "compiling step 2...\n");
+    mockBackend.setOutputSequence("wolf-1", "1");
     const second = await (await get("/api/sessions")).json();
     expect(second.sessions[0].triage).toBe("running");
     expect(second.sessions[0].runtimeState).toMatchObject({
@@ -434,7 +444,7 @@ describe("GET /api/sessions", () => {
     });
   });
 
-  test("uses rendered pane changes for activity while preserving the output sequence", async () => {
+  test("uses output watermarks to skip stable snapshots while preserving rendered activity", async () => {
     const sessionName = "rendered-activity";
     const sessionId = "rendered-activity-id";
     const factBackend = new FactBackend([
@@ -462,11 +472,18 @@ describe("GET /api/sessions", () => {
         runtimeState: { state: "idle" },
       });
 
+      const stable = await (await get("/api/sessions")).json();
+      expect(stable.sessions[0]).toMatchObject({ triage: "idle", outputSequence: "42" });
+      expect(factBackend.capturePaneCalls).toBe(2);
+
       factBackend.setPane(sessionName, "updated rendered tui\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "43", identity: testIdentity(sessionName, sessionId) },
+      ]);
       const renderedOutput = await (await get("/api/sessions")).json();
       expect(renderedOutput.sessions[0]).toMatchObject({
         triage: "running",
-        outputSequence: "42",
+        outputSequence: "43",
         runtimeState: {
           state: "output",
           label: "rendered output activity",
@@ -747,6 +764,7 @@ describe("GET /api/sessions", () => {
     expect(acked.runtimeState.acknowledgedSequence).toBe(runtimeState.transitionSequence);
 
     mockBackend.setCapturePane(async () => "new output\n");
+    mockBackend.setOutputSequence("wolf-1", "1");
     const next = await (await get("/api/sessions")).json();
     expect(next.sessions[0].runtimeState.transitionSequence).toBeGreaterThan(runtimeState.transitionSequence);
     expect(next.sessions[0].runtimeState.unseen).toBe(true);

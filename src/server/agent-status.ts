@@ -1,11 +1,17 @@
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 import {
@@ -502,7 +508,10 @@ export class AgentRuntimeStateStore {
     return this.file.sessions[sessionKey];
   }
 
-  reduce(input: Omit<AgentRuntimeStateInput, "previous">): AgentRuntimeState {
+  reduce(
+    input: Omit<AgentRuntimeStateInput, "previous">,
+    options: { readonly persist?: boolean } = {},
+  ): AgentRuntimeState {
     const next = deriveAgentRuntimeState({
       ...input,
       previous: this.file.sessions[input.sessionKey],
@@ -514,7 +523,7 @@ export class AgentRuntimeStateStore {
         [input.sessionKey]: next,
       },
     };
-    this.write();
+    if (options.persist !== false) this.write();
     return next;
   }
 
@@ -539,11 +548,19 @@ export class AgentRuntimeStateStore {
     return next;
   }
 
-  prune(activeSessionKeys: ReadonlySet<string>): void {
+  prune(
+    activeSessionKeys: ReadonlySet<string>,
+    options: { readonly persist?: boolean } = {},
+  ): void {
     const sessions = Object.fromEntries(
       Object.entries(this.file.sessions).filter(([key]) => activeSessionKeys.has(key)),
     );
     this.file = { schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION, sessions };
+    if (options.persist !== false) this.write();
+  }
+
+  /** Persist a group of in-memory reductions with one full-file write. */
+  flush(): void {
     this.write();
   }
 
@@ -555,8 +572,27 @@ export class AgentRuntimeStateStore {
   }
 
   private write(): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, `${JSON.stringify(this.file, null, 2)}\n`);
+    const directory = dirname(this.path);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+    let fd: number | undefined;
+    try {
+      fd = openSync(tmp, "wx", 0o600);
+      writeFileSync(fd, `${JSON.stringify(this.file, null, 2)}\n`);
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(tmp, this.path);
+      // Best-effort directory durability. APFS can reject directory fsync;
+      // the atomic rename is still complete in that case.
+      try {
+        const dirFd = openSync(directory, "r");
+        try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      } catch { /* platform does not support directory fsync */ }
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      rmSync(tmp, { force: true });
+    }
   }
 }
 
