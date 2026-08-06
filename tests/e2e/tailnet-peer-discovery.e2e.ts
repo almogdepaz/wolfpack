@@ -1489,6 +1489,131 @@ test("replaces an invalidated initial local session load after empty Tailnet enu
   ))).toBe(true);
 });
 
+test("creates a remote session through a ready stable identity and fails closed after revocation", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "remote creation routing is browser-layout independent");
+  const peerOrigin = "https://peer.example.ts.net";
+  let candidateMode: "ready" | "revoked" = "ready";
+  let sessionCreated = false;
+  const remoteCreateRequests: unknown[] = [];
+  const localCreateRequests: string[] = [];
+  const pageErrors: Error[] = [];
+
+  await installReplacementSocketHarness(page);
+  page.on("pageerror", (error) => pageErrors.push(error));
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.origin === server.baseUrl && url.pathname === "/api/create") {
+      localCreateRequests.push(request.url());
+    }
+  });
+  await page.route("**/api/tailnet/v1/candidates", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(candidateMode === "ready"
+        ? { candidates: [{ hostname: "peer.example.ts.net", tailnetNodeId: "n-peer", origin: peerOrigin, online: true }] }
+        : { candidates: [], error: "peer authority revoked" }),
+    });
+  });
+  await page.route(`${peerOrigin}/api/**`, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Headers": "content-type",
+          "Access-Control-Allow-Methods": "GET, POST",
+        },
+      });
+      return;
+    }
+
+    let body: unknown;
+    switch (url.pathname) {
+      case "/api/machine":
+        body = {
+          protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+          machine: { tailnetNodeId: "n-peer", installationId, displayName: "verified peer", origin: peerOrigin },
+          wolfpack: { version: "1.7.0" },
+          capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+        };
+        break;
+      case "/api/sessions":
+        body = { sessions: sessionCreated ? [{ name: "remote-created", triage: "idle" }] : [] };
+        break;
+      case "/api/projects":
+        body = { projects: ["remote-project"] };
+        break;
+      case "/api/settings":
+        body = { settings: { cmds: [{ cmd: "shell", enabled: true }] }, effective: { cmds: ["shell"], agentCmd: "shell" } };
+        break;
+      case "/api/next-session-name":
+        body = { name: "remote-created" };
+        break;
+      case "/api/create":
+        remoteCreateRequests.push(request.postDataJSON());
+        sessionCreated = true;
+        body = { session: "remote-created" };
+        break;
+      default:
+        await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected peer API" }) });
+        return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify(body),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  await expect(peerGroup).toBeVisible();
+  await peerGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
+  await page.getByRole("button", { name: "Open project remote-project" }).click();
+  await expect(page.locator("#session-name-input")).toHaveValue("remote-created");
+  await page.getByRole("button", { name: "Start shell" }).click();
+
+  await expect.poll(() => remoteCreateRequests).toEqual([{
+    project: "remote-project",
+    cmd: "shell",
+    sessionName: "remote-created",
+  }]);
+  await expect.poll(() => page.evaluate(() => {
+    const app = window as unknown as {
+      readonly state: { readonly currentSession: string | null; readonly currentMachine: string };
+    };
+    return { session: app.state.currentSession, machine: app.state.currentMachine };
+  })).toEqual({ session: "remote-created", machine: peerIdentity });
+  const ptyDestinations = (): Promise<string[]> => page.evaluate(() => (
+    (window as unknown as ReplacementSocketWindow).__replacementSockets?.map((socket) => socket.url) ?? []
+  ));
+  await expect.poll(ptyDestinations).toEqual(["wss://peer.example.ts.net/ws/pty?session=remote-created"]);
+  expect(localCreateRequests).toEqual([]);
+
+  await page.evaluate((machineIdentity) => {
+    const app = window as unknown as { showProjectPicker(machine?: string): void };
+    app.showProjectPicker(machineIdentity);
+  }, peerIdentity);
+  await page.getByRole("button", { name: "Open project remote-project" }).click();
+  await expect(page.getByRole("button", { name: "Start shell" })).toBeVisible();
+  const socketsBeforeRevokedCreate = await ptyDestinations();
+
+  candidateMode = "revoked";
+  await page.evaluate((machineIdentity) => {
+    (window as unknown as { retryMachine(machine: string): void }).retryMachine(machineIdentity);
+  }, peerIdentity);
+  await expect(peerGroup).toHaveClass(/offline/);
+  await page.getByRole("button", { name: "Start shell" }).click();
+  await expect(page.locator("#agent-create-error")).toContainText("selected peer is not ready");
+
+  expect(remoteCreateRequests).toHaveLength(1);
+  expect(localCreateRequests).toEqual([]);
+  expect(await ptyDestinations()).toEqual(socketsBeforeRevokedCreate);
+  expect(pageErrors).toEqual([]);
+});
+
 test("routes peer mutation and PTY construction through a ready stable identity", async ({ page }) => {
   const peerOrigin = "https://peer.example.ts.net";
   const undiscoveredIdentity = "n-undiscovered:3bf9bf3a-d5fe-45fa-8a88-8a1e24963e75";
