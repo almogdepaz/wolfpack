@@ -91,7 +91,9 @@ acquire_deploy_lock() {
 acquire_deploy_lock
 
 service_pid() {
-  launchctl list | awk -v label="$1" '$3 == label && $1 ~ /^[0-9]+$/ { print $1; exit }'
+  # Consume the complete launchctl stream. Exiting awk after the first match
+  # makes launchctl receive SIGPIPE under `set -o pipefail` on larger lists.
+  launchctl list | awk -v label="$1" '$3 == label && $1 ~ /^[0-9]+$/ { print $1 }'
 }
 
 wait_for_pid_change() {
