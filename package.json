@@ -30,7 +30,8 @@
     "gen:schema": "bun run scripts/gen-control-api-schema.ts",
     "perf:terminal-load": "bun scripts/terminal-load-perf.ts",
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/ && bunx tsc --noEmit -p public/tsconfig.strict.json",
-    "postinstall": "node bin/install.cjs"
+    "postinstall": "node bin/install.cjs",
+    "check:bundle-budgets": "bun run scripts/check-bundle-budgets.ts"
   },
   "optionalDependencies": {
     "wolfpack-bridge-darwin-arm64": "1.6.17",

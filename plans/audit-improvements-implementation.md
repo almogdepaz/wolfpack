@@ -31,10 +31,12 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 
 ## Rendering and frontend performance
 
-- [ ] Lazy-load Ghostty; idle/device-aware prewarm and compiled-module reuse where supported.
-- [ ] Adaptive grid scrollback/memory policy and prompt disposal of hidden terminals.
-- [ ] Production minification plus per-asset content hashes and bundle budgets.
-- [ ] PWA app-shell offline fallback; never cache API, WebSocket, or terminal authority data.
+- [x] Lazy-load Ghostty; idle/device-aware prewarm and compiled-module reuse where supported.
+- [x] Adaptive grid scrollback/memory policy.
+- [ ] Audit and enforce prompt disposal of every hidden terminal controller.
+- [x] Production syntax/whitespace minification plus enforced raw/gzip bundle budgets.
+- [ ] Replace the aggregate content version with per-asset content-hashed URLs.
+- [x] PWA app-shell offline fallback; never cache API, WebSocket, or terminal authority data.
 - [ ] Cache terminal recovery data with TTL, explicit clear control, and privacy disclosure/opt-out.
 
 ## Product and accessibility UX

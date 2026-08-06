@@ -4,8 +4,9 @@
 
 import {
   esc, escAttr, state, setState, wpSettings,
-  TERM_PRESETS, GRID_TERMINAL_SCROLLBACK, isDesktop,
+  TERM_PRESETS, isDesktop,
 } from "./app-state";
+import { gridTerminalScrollbackBudget } from "../src/grid-scrollback-policy";
 import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
@@ -230,7 +231,10 @@ async function mountGridController(gs, cell, idx) {
     session: gs.session,
     machine: gs.machine || "",
     fontSize: Math.max(tp.fontSize - 2, 10),
-    scrollback: GRID_TERMINAL_SCROLLBACK,
+    scrollback: gridTerminalScrollbackBudget(
+      sessionsForGridSession(gs).length,
+      (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+    ),
     cursorBlink: idx === focusIndexForGridSession(gs),
     disableStdin: idx !== focusIndexForGridSession(gs),
     resetPty: gs._resetPty,

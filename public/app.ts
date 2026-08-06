@@ -6,7 +6,7 @@ import {
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
   state, setState,
   SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL,
-  DESKTOP_TERMINAL_SCROLLBACK, GRID_TERMINAL_SCROLLBACK,
+  DESKTOP_TERMINAL_SCROLLBACK,
 } from "./app-state";
 
 import {
@@ -196,36 +196,57 @@ const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
   },
 });
 
+let ghosttyLoadPromise: Promise<void> | null = null;
+
+function ensureGhosttyLoaded(): Promise<void> {
+  if (typeof window.Terminal === "function" && typeof window.FitAddon === "function") {
+    return window.ghosttyReady?.then(() => undefined) ?? Promise.resolve();
+  }
+  if (ghosttyLoadPromise) return ghosttyLoadPromise;
+  ghosttyLoadPromise = new Promise<void>((resolve, reject) => {
+    const source = document.querySelector<HTMLMetaElement>('meta[name="wolfpack-ghostty-src"]')?.content;
+    if (!source) return reject(new Error("Ghostty asset URL is unavailable"));
+    const script = document.createElement("script");
+    script.src = source;
+    script.async = true;
+    script.onload = () => {
+      const ready = window.ghosttyReady ?? Promise.resolve();
+      ready.then(() => resolve(), reject);
+    };
+    script.onerror = () => reject(new Error("Failed to load terminal renderer"));
+    document.head.appendChild(script);
+  }).catch((error: unknown) => {
+    ghosttyLoadPromise = null;
+    throw error;
+  });
+  return ghosttyLoadPromise;
+}
+
 function canUseWasmTerminal(): boolean {
   return !window.wasmFailed;
 }
 
 function scheduleGhosttyPrewarm(): void {
-  if (typeof window.createIsolatedGhostty !== "function") return;
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  if (connection?.saveData || (deviceMemory !== undefined && deviceMemory < 4)) return;
   const timing = resolveGhosttyPrewarmDebugTiming({
     debugEnabled: wfTraceEnabled,
     storage: safeLocalStorage(),
     defaults: { delayMs: GHOSTTY_PREWARM_DELAY_MS },
   });
-  recordGhosttyPrewarmEvent("schedule", {
-    delayMs: timing.delayMs,
-    poolSize: GHOSTTY_PREWARM_POOL_SIZE,
-  });
-  window.setTimeout(() => {
-    recordGhosttyPrewarmEvent("ghostty_ready.wait");
-    void window.ghosttyReady
-      ?.then(() => {
-        recordGhosttyPrewarmEvent("ghostty_ready.done");
-        for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) {
-          const task = ghosttyPrewarmPool.prewarm();
-          recordGhosttyPrewarmEvent(task ? "prewarm.start" : "prewarm.skip", { slot: i + 1 });
-        }
-      })
-      .catch((error) => {
-        recordGhosttyPrewarmEvent("ghostty_ready.error");
-        console.debug("[wf] ghostty prewarm skipped:", error);
-      });
-  }, timing.delayMs);
+  const warm = (): void => {
+    recordGhosttyPrewarmEvent("schedule", { delayMs: timing.delayMs, poolSize: GHOSTTY_PREWARM_POOL_SIZE });
+    void ensureGhosttyLoaded().then(() => {
+      for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) {
+        const task = ghosttyPrewarmPool.prewarm();
+        recordGhosttyPrewarmEvent(task ? "prewarm.start" : "prewarm.skip", { slot: i + 1 });
+      }
+    }).catch((error: unknown) => console.debug("[wf] ghostty prewarm skipped:", error));
+  };
+  const idle = window.requestIdleCallback;
+  if (idle) window.setTimeout(() => idle(warm, { timeout: 2_000 }), timing.delayMs);
+  else window.setTimeout(warm, timing.delayMs);
 }
 
 function scheduleGhosttyPrewarmRefillForConsumedInstance(): void {
@@ -573,6 +594,7 @@ function installTerminalTextareaInputBridge(
 }
 
 async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, forwardResizeEvents = true, onWheelScroll = null, alwaysForwardWheel = false, trace = null }) {
+  await ensureGhosttyLoaded();
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"

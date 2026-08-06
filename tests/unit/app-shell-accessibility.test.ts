@@ -22,6 +22,12 @@ describe("app shell accessibility contracts", () => {
     expect(app).toContain('initialPrompt: initialPrompt || undefined');
   });
 
+  test("loads the heavy terminal renderer lazily", () => {
+    expect(html).not.toContain('<script defer src="/ghostty-web.bundle.js');
+    expect(html).toContain('name="wolfpack-ghostty-src"');
+    expect(app).toContain("await ensureGhosttyLoaded()");
+  });
+
   test("keeps manifest and document theme colors consistent", () => {
     const theme = String(manifest.theme_color);
     expect(theme).toBe("#0a0a0a");
