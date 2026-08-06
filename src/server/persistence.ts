@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname } from "node:path";
 
 export type PersistenceReadFailure = "unreadable" | "malformed";
 
@@ -42,4 +44,29 @@ export function readValidatedJsonFile<T>(
     throw new PersistenceReadError(label, path, "malformed");
   }
   return value;
+}
+
+
+/** Atomic, owner-only JSON persistence with file and best-effort directory durability. */
+export function writePrivateJsonFile(path: string, value: unknown): void {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(tmp, "wx", 0o600);
+    writeFileSync(fd, `${JSON.stringify(value, null, 2)}
+`);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmp, path);
+    try {
+      const dirFd = openSync(directory, "r");
+      try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+    } catch { /* directory fsync is not supported on every platform */ }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(tmp, { force: true });
+  }
 }

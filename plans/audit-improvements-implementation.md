@@ -27,7 +27,7 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [ ] Truthful draft lifecycle and broker stdin byte-bounded ordered queue/per-kind frame limits.
 - [x] Functional browser JWT flow with centralized fetch auth, explicit 401 UX, short-lived one-time WS tickets, and per-peer tab-scoped credentials.
 - [x] Replace mixed-context inline event-handler construction with delegated DOM listeners and inert data/text contexts.
-- [ ] Private session identity persistence modes and safe temp-file/ownership handling.
+- [x] Private or memory-only session identity persistence modes with random exclusive temp files, owner-only permissions, fsync, and atomic rename.
 
 ## Rendering and frontend performance
 

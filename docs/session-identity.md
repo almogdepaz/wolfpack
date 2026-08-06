@@ -37,3 +37,11 @@ Launched sessions receive these context variables:
 - `WOLFPACK_EXTERNAL_AGENT_ID_FILE`
 
 Delete `$WOLFPACK_DEV_DIR/.wolfpack/session-identities.json` to remove stored identity metadata. This does not delete broker sessions, terminal snapshots, or projects.
+
+
+## Persistence privacy
+
+Session identities use owner-only (`0600`) atomic storage under `.wolfpack` by default. Set
+`WOLFPACK_SESSION_IDENTITY_MODE=memory` before starting the server to keep identity and
+external-agent metadata in process memory only. Memory mode trades restart restoration for
+privacy and writes no session-identity file.
