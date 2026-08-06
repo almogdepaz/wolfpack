@@ -489,7 +489,11 @@ function checkLogs(): CheckResult[] {
   const ago = agoMs < 60000 ? `${Math.round(agoMs / 1000)}s ago`
     : agoMs < 3600000 ? `${Math.round(agoMs / 60000)}m ago`
     : `${Math.round(agoMs / 3600000)}h ago`;
-  results.push({ name: "wolfpack.log", group: "Logs", status: "pass", detail: `${sizeKB}KB, modified ${ago}` });
+  const oversized = stat.size >= 10 * 1024 * 1024;
+  results.push({
+    name: "wolfpack.log", group: "Logs", status: oversized ? "warn" : "pass",
+    detail: `${sizeKB}KB, modified ${ago}${oversized ? " (rotation pending at next service start)" : ""}`,
+  });
 
   // recent errors — read only the tail to avoid loading huge log files
   try {

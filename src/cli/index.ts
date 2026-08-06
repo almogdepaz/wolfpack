@@ -28,6 +28,7 @@ import { lsSessions, killSession } from "./sessions.js";
 import { attachCommand } from "./attach.js";
 import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
+import { logsCommand } from "./logs.js";
 
 export {
   loadConfig,
@@ -75,6 +76,7 @@ Commands:
   wolfpack agent spawn <project>   Spawn a same-harness child agent
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
+  wolfpack logs [--follow|--json]  Read or follow service logs
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
   wolfpack --version               Print the installed version
 
@@ -240,6 +242,10 @@ async function main() {
     process.exit(await runAgentCommand(argv.slice(1)));
   } else if (cmd === "kill") {
     process.exit(await killSession(argv.slice(1)));
+  } else if (cmd === "logs" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack logs [--follow] [--json] [--broker]");
+  } else if (cmd === "logs") {
+    process.exit(await logsCommand(argv.slice(1)));
   } else if (cmd === "attach" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
     print("Usage: wolfpack attach [session] [--take-control] [--prefill full|none]");
   } else if (cmd === "attach") {

@@ -21,6 +21,7 @@ import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 import { prepareServiceAuthFile } from "./service-auth.js";
+import { rotateLogFile } from "./logs.js";
 
 const log = createLogger("service");
 import {
@@ -481,6 +482,10 @@ export function isServiceInstalled(): boolean {
 }
 
 export function serviceInstall() {
+  if (IS_MACOS) {
+    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
+    rotateLogFile(BROKER_LOG_PATH);
+  }
   const config = loadConfig();
   if (!config) {
     print(red("  Run 'wolfpack setup' first."));
@@ -691,6 +696,10 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
 }
 
 export function serviceStart(_options: ServiceActionOptions = {}) {
+  if (IS_MACOS) {
+    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
+    rotateLogFile(BROKER_LOG_PATH);
+  }
   if (!isBrokerServiceRunning()) brokerServiceStart();
   const config = loadConfig();
   if (config && isPortInUse(config.port)) {
