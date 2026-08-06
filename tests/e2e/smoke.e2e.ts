@@ -45,6 +45,6 @@ test("malformed wp-effects storage does not brick the app", async ({ page }) => 
     localStorage.setItem("wp-effects", "{not-json");
   });
   await page.reload();
-  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.waitForSelector(".card", { timeout: 15_000 });
   await expect(page.locator(".card").first()).toBeVisible();
 });

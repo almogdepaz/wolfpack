@@ -10,6 +10,15 @@ import type { AddressInfo } from "node:net";
 
 process.env.WOLFPACK_TEST = "1";
 
+// Keep the default fixture hermetic: peer-specific specs intercept this endpoint
+// in the browser, while ordinary specs must never probe the developer's Tailnet.
+const { mock: bunMock } = await import("bun:test");
+const realHttp = await import("../../src/server/http.ts");
+await bunMock.module("../../src/server/http.js", () => ({
+  ...realHttp,
+  enumerateLocalTailnetCandidates: async () => ({ candidates: [] }),
+}));
+
 const { __setTestBackend } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 

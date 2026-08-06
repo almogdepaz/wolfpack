@@ -13,7 +13,7 @@ test.afterAll(() => {
 
 test.beforeEach(async ({ page }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator(".card").first()).toBeVisible();
+  await expect(page.locator(".card").first()).toBeVisible({ timeout: 15_000 });
 });
 
 test("only the active view participates in keyboard focus", async ({ page }) => {

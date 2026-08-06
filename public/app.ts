@@ -899,7 +899,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       scheduleReconnect();
     }
   };
-  const handleOffline = (): void => _rc.cancel();
+  const handleOffline = (): void => {
+    opts.onReconnecting?.();
+    _rc.cancel();
+  };
   window.addEventListener("online", handleOnline);
   window.addEventListener("offline", handleOffline);
   let hasConnected = false;
