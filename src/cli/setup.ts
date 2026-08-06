@@ -12,12 +12,13 @@ import {
   IS_MACOS,
   IS_LINUX,
   ask,
+  loadConfig,
   saveConfig,
   remoteUrl,
   tailscaleBin,
   type Config,
 } from "./config.js";
-import { serviceInstall } from "./service.js";
+import { isServiceRunning, serviceInstall, serviceRestart } from "./service.js";
 import { createLogger } from "../log.js";
 import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
@@ -27,7 +28,7 @@ import {
   piIntegrationDisclosureLines,
   planPiIntegrationSetup,
 } from "./pi-integration.js";
-import { configureTailscaleRemoteAccess, parseTailscaleHostname } from "./tailscale-remote-setup.js";
+import { configureTailscaleRemoteAccess, inspectTailscaleSelf } from "./tailscale-remote-setup.js";
 
 const log = createLogger("setup");
 
@@ -195,8 +196,9 @@ export async function setup() {
   const portStr = interactive ? ask("  Server port [18790]: ") : "";
   const port = Math.max(1024, Math.min(65535, Number(portStr) || 18790));
 
-  // Tailscale remote endpoint. A remote URL is persisted and advertised only
-  // after `serve status --json` proves it proxies to this Wolfpack port.
+  // Tailscale readiness is persisted only after `serve status --json` proves
+  // this exact canonical HTTPS origin proxies to Wolfpack's loopback port.
+  const previousConfig = loadConfig();
   let verifiedRemoteHostname: string | undefined;
   if (hasTailscale && tsBin) {
     const runTailscale = (args: readonly string[]): string => {
@@ -205,11 +207,12 @@ export async function setup() {
         : [tsBin, [...args]];
       return execFileSync(file, fileArgs, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
     };
-    const tryGetTsHostname = (): string | undefined => {
-      try { return parseTailscaleHostname(runTailscale(["status", "--self", "--json"])); } catch { return undefined; }
+    const inspectSelf = () => {
+      try { return inspectTailscaleSelf(runTailscale(["status", "--self", "--json"])); }
+      catch { return { status: "unavailable" } as const; }
     };
-    let signedInHostname = tryGetTsHostname();
-    if (!signedInHostname) {
+    let self = inspectSelf();
+    if (self.status !== "ready" && (self.status === "logged-out" || self.status === "unavailable")) {
       if (IS_MACOS) {
         print(dim("  Launching Tailscale.app for sign-in..."));
         try { execSync("open /Applications/Tailscale.app", { stdio: "ignore" }); } catch (e: unknown) {
@@ -218,23 +221,27 @@ export async function setup() {
       } else if (IS_LINUX) {
         print(dim("  Run 'sudo tailscale up' in another terminal to sign in."));
       }
-      while (!signedInHostname && interactive) {
+      while (self.status !== "ready" && interactive) {
         const retry = ask("  Sign in, then press Enter to retry (or type skip): ");
         if (retry.toLowerCase() === "skip") break;
-        signedInHostname = tryGetTsHostname();
+        self = inspectSelf();
       }
     }
-    if (signedInHostname) {
+    if (self.status === "ready") {
       const configured = configureTailscaleRemoteAccess({ binary: tsBin, port, run: (_file, args) => runTailscale(args) });
       if (configured.status === "verified") {
         verifiedRemoteHostname = configured.hostname;
-        print(green(`  Tailscale serving at https://${verifiedRemoteHostname}/`));
+        print(green(`  Tailscale serving at ${configured.origin}/`));
       } else {
-        print(red("  Tailscale serve was not verified; no phone QR will be shown."));
+        print(red("  Tailscale Serve could not be structurally verified; no phone QR will be shown."));
         print(dim(`  Retry: ${IS_LINUX ? "sudo " : ""}${tsBin} serve --bg ${port}`));
       }
-    } else if (hasTailscale) {
+    } else if (self.status === "logged-out") {
       print(yellow("  Tailscale is not signed in; phone and remote access remain unavailable."));
+    } else if (self.status === "malformed-status") {
+      print(red("  Tailscale returned malformed identity data; remote access remains unavailable."));
+    } else {
+      print(yellow("  Tailscale is unavailable; phone and remote access remain unavailable."));
     }
   }
 
@@ -244,6 +251,11 @@ export async function setup() {
     ...(verifiedRemoteHostname && { tailscaleHostname: verifiedRemoteHostname }),
   };
   saveConfig(config);
+  if (previousConfig?.tailscaleHostname !== config.tailscaleHostname && isServiceRunning()) {
+    // CORS policy is loaded at server startup. This intentionally restarts
+    // only the server; broker-owned PTYs and sessions remain untouched.
+    serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+  }
 
   initializeProviderSettingsFile({
     settingsPath: join(WOLFPACK_DIR, "bridge-settings.json"),

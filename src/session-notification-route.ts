@@ -1,18 +1,26 @@
+import {
+  LOCAL_MACHINE_IDENTITY,
+  isStableMachineIdentity,
+} from "./tailnet-peer-registry.ts";
+
 const MAX_SESSION_ID_LENGTH = 256;
 const MAX_SESSION_NAME_LENGTH = 100;
-const MAX_MACHINE_URL_LENGTH = 2048;
-const LOCAL_MACHINE_ROUTE = "local";
 
 export interface SessionNotificationReference {
   readonly sessionId: string;
   readonly sessionName: string;
-  readonly machineUrl: string;
+  readonly machineIdentity: string;
 }
 
 function isBoundedNonEmpty(value: string, maxLength: number): boolean {
   return value.length > 0 && value.length <= maxLength;
 }
 
+function isNotificationMachineIdentity(value: string): boolean {
+  return value === LOCAL_MACHINE_IDENTITY || isStableMachineIdentity(value);
+}
+
+/** Push/deep-link routes carry only stable identities; origins are resolved by the verified browser registry. */
 export function buildSessionNotificationUrl(reference: SessionNotificationReference): string {
   if (!isBoundedNonEmpty(reference.sessionId, MAX_SESSION_ID_LENGTH)) {
     throw new Error("session notification route requires a bounded stable session id");
@@ -20,14 +28,14 @@ export function buildSessionNotificationUrl(reference: SessionNotificationRefere
   if (!isBoundedNonEmpty(reference.sessionName, MAX_SESSION_NAME_LENGTH)) {
     throw new Error("session notification route requires a bounded session name");
   }
-  if (reference.machineUrl.length > MAX_MACHINE_URL_LENGTH) {
-    throw new Error("session notification machine context is too long");
+  if (!isNotificationMachineIdentity(reference.machineIdentity)) {
+    throw new Error("session notification route requires a stable machine identity");
   }
 
   const params = new URLSearchParams({
     sessionId: reference.sessionId,
     session: reference.sessionName,
-    machine: reference.machineUrl || LOCAL_MACHINE_ROUTE,
+    machine: reference.machineIdentity,
   });
   return `/?${params.toString()}`;
 }
@@ -36,14 +44,10 @@ export function parseSessionNotificationRoute(search: string): SessionNotificati
   const params = new URLSearchParams(search);
   const sessionId = params.get("sessionId") ?? "";
   const sessionName = params.get("session") ?? "";
-  const machine = params.get("machine") ?? "";
+  const machineIdentity = params.get("machine") ?? "";
   if (!isBoundedNonEmpty(sessionId, MAX_SESSION_ID_LENGTH)) return null;
   if (!isBoundedNonEmpty(sessionName, MAX_SESSION_NAME_LENGTH)) return null;
-  if (!isBoundedNonEmpty(machine, MAX_MACHINE_URL_LENGTH)) return null;
+  if (!isNotificationMachineIdentity(machineIdentity)) return null;
 
-  return {
-    sessionId,
-    sessionName,
-    machineUrl: machine === LOCAL_MACHINE_ROUTE ? "" : machine,
-  };
+  return { sessionId, sessionName, machineIdentity };
 }

@@ -14,6 +14,22 @@ mkdirSync(rawTmpDir, { recursive: true });
 const TEST_DEV_DIR = realpathSync(rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+process.env.WOLFPACK_MACHINE_ID_PATH = join(TEST_DEV_DIR, "machine-id");
+const priorTailscaleStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
+process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
+  Self: {
+    ID: "n-schema-test",
+    DNSName: "schema-test.example.ts.net.",
+    HostName: "schema-test",
+  },
+  Peer: {
+    "n-schema-offline": {
+      ID: "n-schema-offline",
+      DNSName: "schema-offline.example.ts.net.",
+      Online: false,
+    },
+  },
+});
 
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
@@ -150,6 +166,8 @@ beforeAll(async () => {
 
 afterAll(() => {
   (server as Server).close();
+  if (priorTailscaleStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
+  else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = priorTailscaleStatus;
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
 });
 
@@ -157,6 +175,9 @@ describe("control api generated schema against runtime responses", () => {
   test("validates representative real HTTP responses", async () => {
     const samples: Array<[string, unknown]> = [
       ["getInfo", await getJson("/api/info")],
+      ["getMachineHandshake", await getJson("/api/machine")],
+      ["discoverTailnetCandidates", await getJson("/api/tailnet/v1/candidates")],
+      ["discoverPeers", await getJson("/api/discover")],
       ["listSessions", await getJson("/api/sessions")],
       ["getSettings", await getJson("/api/settings")],
       ["listProviderReadiness", await getJson("/api/providers")],

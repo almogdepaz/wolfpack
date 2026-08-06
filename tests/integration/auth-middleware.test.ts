@@ -6,6 +6,10 @@ import type { AddressInfo } from "node:net";
 process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_JWT_SECRET = "wolfpack-test-secret-long-enough-for-validation";
 process.env.WOLFPACK_JWT_AUDIENCE = "wolfpack-client";
+process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
+  Self: { ID: "n-auth-test", DNSName: "auth-test.example.ts.net.", HostName: "auth-test" },
+  Peer: {},
+});
 
 // Reset cached auth config + dynamic import so env vars take effect
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
@@ -102,6 +106,7 @@ afterAll(() => {
   server.close();
   delete process.env.WOLFPACK_JWT_SECRET;
   delete process.env.WOLFPACK_JWT_AUDIENCE;
+  delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   // Reset cached auth config so other test files sharing the module aren't affected
   __resetJwtAuthConfig();
 });
@@ -112,6 +117,12 @@ describe("JWT auth middleware", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { name: string; version: string };
     expect(typeof body.name).toBe("string");
+  });
+
+  test("allows unauthenticated access to GET /api/machine", async () => {
+    const res = await fetch(`${baseUrl}/api/machine`);
+    expect(res.status).not.toBe(401);
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
   test("rejects protected API routes without a token", async () => {
@@ -129,6 +140,7 @@ describe("JWT auth middleware", () => {
       { method: "GET", path: "/api/session-control/status?session=auth-session" },
       { method: "GET", path: "/api/settings" },
       { method: "GET", path: "/api/providers" },
+      { method: "GET", path: "/api/tailnet/v1/candidates" },
       { method: "GET", path: "/api/discover" },
       { method: "POST", path: "/api/resize" },
       { method: "POST", path: "/api/session-create" },
@@ -188,6 +200,16 @@ describe("JWT auth middleware", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { projects: string[] };
     expect(Array.isArray(body.projects)).toBe(true);
+  });
+
+  test("keeps both Tailnet discovery operations behind configured JWT auth", async () => {
+    const token = createValidToken();
+    for (const path of ["/api/tailnet/v1/candidates", "/api/discover"]) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status, path).toBe(200);
+    }
   });
 
   test("applies ordinary JWT middleware to agent-native create routes without a special bypass", async () => {

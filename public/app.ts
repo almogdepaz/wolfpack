@@ -100,6 +100,20 @@ import { createTerminalResizeLifecycle } from "./terminal-resize-lifecycle";
 import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { parseSessionNotificationRoute } from "../src/session-notification-route";
+import {
+  LOCAL_MACHINE_IDENTITY,
+  TailnetPeerRegistry,
+  isStableMachineIdentity,
+  probeTailnetCandidates,
+} from "../src/tailnet-peer-registry";
+import type {
+  TailnetPeerEntry,
+  TailnetPeerIdentityReplacement,
+} from "../src/tailnet-peer-registry";
+import {
+  canonicalTailnetOrigin,
+} from "../src/tailnet-machine-contract";
+import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
 import {
   terminalDataFromBeforeInput,
@@ -414,13 +428,15 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
-async function fetchSessionText(session: string, machine: string): Promise<string> {
-  const path = "/api/copy-text?session=" + encodeURIComponent(session);
-  const base = machine.replace(/\/$/, "");
+async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (machineIdentity && !origin) throw new Error("selected peer is not ready");
   const headers: Record<string, string> = {};
   const jwt = localStorage.getItem("wpJwt");
-  if (jwt) headers["Authorization"] = "Bearer " + jwt;
-  const response = await fetch(base + path, { headers });
+  if (jwt) headers.Authorization = "Bearer " + jwt;
+  const response = await fetch(origin
+    ? new URL("/api/copy-text?session=" + encodeURIComponent(session), origin)
+    : "/api/copy-text?session=" + encodeURIComponent(session), { headers });
   if (!response.ok) throw new Error("HTTP " + response.status);
   return response.text();
 }
@@ -953,9 +969,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     consumeReset = false;
     const session = encodeURIComponent(opts.session);
     if (opts.machine) {
-      const remote = new URL(opts.machine);
-      const proto = remote.protocol === "https:" ? "wss:" : "ws:";
-      return proto + "//" + remote.host + "/ws/pty?session=" + session + resetSuffix;
+      const origin = resolveReadyMachineOrigin(opts.machine);
+      if (!origin) throw new Error("selected peer is not ready");
+      const remote = new URL(origin);
+      return "wss://" + remote.host + "/ws/pty?session=" + session + resetSuffix;
     }
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     return proto + "//" + location.host + "/ws/pty?session=" + session + resetSuffix;
@@ -2244,131 +2261,178 @@ function serializeXtermTail(term, maxLines) {
 
 // ── Machine registry ──
 
-/**
- * Validate a peer URL before any code uses it for `fetch` / WS construction.
- * An XSS payload could write attacker-controlled URLs into localStorage;
- * without this guard those URLs would receive every API call and the
- * bearer JWT in the next page session.
- *
- * Accept only http(s) URLs whose hostname looks tailnet-shaped
- * (`*.ts.net`), is a literal IP, or is localhost. Port is NOT pinned —
- * the wolfpack server port is operator-configurable; we only require it
- * to be numeric and in 1–65535. Reject opaque schemes (javascript:,
- * data:, etc.), userinfo (creds smuggling), and non-numeric/out-of-range
- * ports.
- */
-function isValidMachineUrl(u: unknown): boolean {
-  if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
-  let parsed;
-  try { parsed = new URL(u); } catch { return false; }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-  if (parsed.username || parsed.password) return false;
-  // Allow tailnet host suffix, bare IPv4, or localhost (peer discovery
-  // and dev setups all show up as one of these).
-  const host = parsed.hostname;
-  const isTailnet = /\.ts\.net$/i.test(host);
-  const isIPv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
-  const isLocal = host === "localhost" || host === "127.0.0.1";
-  if (!isTailnet && !isIPv4 && !isLocal) return false;
-  // Port: empty (scheme default) is fine. Otherwise must be a positive
-  // integer in the legal TCP range. URL constructor already rejects most
-  // garbage but be explicit.
-  const port = parsed.port;
-  if (port) {
-    if (!/^\d+$/.test(port)) return false;
-    const n = Number(port);
-    if (n < 1 || n > 65535) return false;
-  }
-  return true;
+const tailnetPeers = new TailnetPeerRegistry();
+const TRANSIENT_MACHINE_KEY_PREFIX = "candidate:";
+
+function machineKey(peer: TailnetPeerEntry): string {
+  return peer.identity ?? `${TRANSIENT_MACHINE_KEY_PREFIX}${peer.tailnetNodeId}`;
 }
 
-function getMachines() {
+function legacyMachineDisplayMetadata(): readonly { readonly url: unknown; readonly name: unknown }[] {
   try {
-    const raw = JSON.parse(localStorage.getItem("wolfpack-machines") || "[]");
-    if (!Array.isArray(raw)) return [];
-    // Drop any entry whose URL fails validation. Names are echoed into the
-    // UI; clamp length and strip control chars so an XSS payload in name
-    // can't widen the blast radius via DOM injection.
-    return raw.filter((m) => m && isValidMachineUrl(m.url)).map((m) => ({
-      url: m.url,
-      name: typeof m.name === "string" ? m.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128) : "",
-    }));
-  } catch { return []; }
-}
-
-function saveMachines(list: Array<{ url: string; name: string }>): void {
-  // Mirror getMachines() validation on the write side so future code paths
-  // that bypass the discover-source can't poison localStorage either.
-  const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
-  localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
-}
-
-function removeMachine(url: string): Array<{ url: string; name: string }> {
-  const machines = getMachines().filter(m => m.url !== url);
-  saveMachines(machines);
-  return machines;
-}
-
-const MACHINE_INFO_CACHE_TTL_MS = 5 * 60_000;
-const machineInfoCache = new Map<string, { readonly info: InfoResponse; readonly fetchedAt: number }>();
-const machineInfoRequests = new Map<string, Promise<InfoResponse>>();
-
-function fetchMachineInfo(machineUrl: string, options?: RequestInit): Promise<InfoResponse> {
-  const cached = machineInfoCache.get(machineUrl);
-  if (cached && Date.now() - cached.fetchedAt < MACHINE_INFO_CACHE_TTL_MS) {
-    return Promise.resolve(cached.info);
+    const stored: unknown = JSON.parse(localStorage.getItem("wolfpack-machines") || "[]");
+    return Array.isArray(stored)
+      ? stored.flatMap((entry) => entry && typeof entry === "object" ? [entry as { readonly url: unknown; readonly name: unknown }] : [])
+      : [];
+  } catch {
+    return [];
   }
-  const pending = machineInfoRequests.get(machineUrl);
-  if (pending) return pending;
-  const request = api<InfoResponse>("/info", options, machineUrl || undefined)
-    .then((info) => {
-      machineInfoCache.set(machineUrl, { info, fetchedAt: Date.now() });
-      return info;
-    })
-    .finally(() => {
-      machineInfoRequests.delete(machineUrl);
-    });
-  machineInfoRequests.set(machineUrl, request);
-  return request;
 }
 
-// Self info, fetched once
+function getMachines(): readonly { readonly url: string; readonly name: string; readonly version: string; readonly ready: boolean; readonly diagnostic: string | undefined }[] {
+  return tailnetPeers.entries().map((peer) => ({
+    url: machineKey(peer),
+    name: peer.displayName,
+    version: peer.version ?? "",
+    ready: peer.status === "ready" && peer.identity !== undefined,
+    diagnostic: peer.diagnostic,
+  }));
+}
+
+function resolveReadyMachineOrigin(machineIdentity: string | undefined): string | undefined {
+  if (!machineIdentity || machineIdentity === LOCAL_MACHINE_IDENTITY) return undefined;
+  return isStableMachineIdentity(machineIdentity)
+    ? tailnetPeers.resolveReadyOrigin(machineIdentity)
+    : undefined;
+}
+
+async function showMachineUnavailable(): Promise<void> {
+  await showAppDialog({
+    title: "Machine unavailable",
+    message: "This Tailnet machine is no longer ready. Refresh Tailnet discovery and try again.",
+    confirmLabel: "Close",
+    cancelLabel: null,
+  });
+}
+
+let tailnetPeerRefreshGeneration = 0;
+let tailnetPeerSessionRefreshScheduled = false;
+let tailnetPeerSessionRefreshGeneration: number | undefined;
+
+function scheduleTailnetPeerSessionRefresh(generation: number): void {
+  tailnetPeerSessionRefreshGeneration = generation;
+  if (tailnetPeerSessionRefreshScheduled) return;
+  tailnetPeerSessionRefreshScheduled = true;
+  queueMicrotask(() => {
+    tailnetPeerSessionRefreshScheduled = false;
+    const scheduledGeneration = tailnetPeerSessionRefreshGeneration;
+    tailnetPeerSessionRefreshGeneration = undefined;
+    if (scheduledGeneration !== tailnetPeerRefreshGeneration) return;
+    void loadSessions(true);
+  });
+}
+
+function retireReplacedPeerIdentity(replacement: TailnetPeerIdentityReplacement): void {
+  const { oldIdentity } = replacement;
+  const manualGridAffected = state.gridSessions.some(session => session.machine === oldIdentity);
+  const preservedGridAffected = state.preservedGridSessions.some(session => session.machine === oldIdentity);
+  const activeDelegationAffected = state.activeDelegationRoot !== null && (
+    state.delegationMachine === oldIdentity
+    || state.delegationGridSessions.some(session => session.machine === oldIdentity)
+  );
+  const singleTerminalAffected = state.currentMachine === oldIdentity;
+  const activeTerminalAffected = manualGridAffected || activeDelegationAffected || singleTerminalAffected;
+  const { [oldIdentity]: _retiredPeerHealth, ...peerHealth } = state.peerHealth;
+
+  if (preservedGridAffected) clearPreservedGrid();
+  if (!activeTerminalAffected) {
+    setState({ peerHealth });
+    return;
+  }
+
+  if (activeDelegationAffected) {
+    if (state.terminalController) destroyTerminal();
+    teardownDelegationWorkspace();
+  } else if (manualGridAffected) {
+    exitGridMode(true);
+  } else {
+    destroyTerminal();
+  }
+  setState({
+    currentSession: null,
+    currentMachine: "",
+    peerHealth,
+  });
+  backToSessions();
+}
+
+function isCandidate(value: unknown): value is TailnetMachineCandidate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.hostname === "string"
+    && typeof candidate.tailnetNodeId === "string"
+    && typeof candidate.origin === "string"
+    && canonicalTailnetOrigin(candidate.hostname) === candidate.origin
+    && typeof candidate.online === "boolean";
+}
+
+function candidateEnumerationCandidates(response: unknown): readonly TailnetMachineCandidate[] {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new Error("tailnet candidate enumeration response is malformed");
+  }
+  const envelope = response as Record<string, unknown>;
+  if ("error" in envelope) {
+    const message = envelope.error;
+    throw new Error(typeof message === "string" && message ? message : "tailnet candidate enumeration unavailable");
+  }
+  if (!Array.isArray(envelope.candidates) || !envelope.candidates.every(isCandidate)) {
+    throw new Error("tailnet candidate enumeration response is malformed");
+  }
+  return envelope.candidates;
+}
+
+type TailnetPeerRefreshResult = "applied" | "stale";
+
+async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
+  const generation = ++tailnetPeerRefreshGeneration;
+  // A new Tailnet authority generation makes every in-flight session result
+  // stale before it can mutate peer health, rendered groups, or routes.
+  state.loadSessionsEpoch++;
+  scheduleTailnetPeerSessionRefresh(generation);
+  const isCurrentGeneration = (): boolean => generation === tailnetPeerRefreshGeneration;
+  try {
+    const response = await api<unknown>("/tailnet/v1/candidates");
+    if (!isCurrentGeneration()) return "stale";
+    const candidates = candidateEnumerationCandidates(response);
+    tailnetPeers.reconcileCandidates(candidates);
+    await probeTailnetCandidates(candidates, fetch, {
+      onSettled: (probe) => {
+        if (!isCurrentGeneration()) return;
+        const applied = tailnetPeers.applyProbe(probe);
+        if (applied.kind === "identity-replaced") retireReplacedPeerIdentity(applied.replacement);
+        scheduleTailnetPeerSessionRefresh(generation);
+      },
+    });
+    if (!isCurrentGeneration()) return "stale";
+    tailnetPeers.applyLegacyDisplayMetadata(legacyMachineDisplayMetadata());
+    return "applied";
+  } catch (error: unknown) {
+    if (!isCurrentGeneration()) return "stale";
+    const retainedEntries = tailnetPeers.entries().length > 0;
+    tailnetPeers.markCandidateEnumerationUnavailable();
+    if (retainedEntries) {
+      renderMachinesList();
+      scheduleTailnetPeerSessionRefresh(generation);
+    }
+    throw error;
+  }
+}
+
 (async () => {
   try {
-    const info = await fetchMachineInfo("");
-    state.selfName = info.name || "this machine";
-    state.selfVersion = info.version || "";
-    // Show version in header
-    const vEl = document.getElementById("settings-version");
-    if (vEl && state.selfVersion) vEl.textContent = "wolfpack v" + state.selfVersion;
-  } catch { state.selfName = "this machine"; }
-  // Auto-discover wolfpack peers on tailnet
+    const machine = await api<{ readonly machine?: { readonly displayName?: string }; readonly wolfpack?: { readonly version?: string } }>("/machine");
+    state.selfName = machine.machine?.displayName || "this machine";
+    state.selfVersion = machine.wolfpack?.version || "";
+    const version = document.getElementById("settings-version");
+    if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
+  } catch {
+    state.selfName = "this machine";
+  }
   try {
-    const d = await api<DiscoverResponse>("/discover");
-    const peers = d.peers || [];
-    if (peers.length) {
-      const peerUrls = new Set(peers.map(p => p.url));
-      // Start from peers as source of truth, preserve any non-tailnet manual entries
-      let machines = getMachines();
-      let changed = false;
-      // Prune stale tailnet machines no longer in peer list
-      const before = machines.length;
-      machines = machines.filter(m => peerUrls.has(m.url));
-      if (machines.length !== before) changed = true;
-      // Add/update from peer list
-      for (const p of peers) {
-        const existing = machines.find(m => m.url === p.url);
-        if (!existing) {
-          machines.push({ url: p.url, name: p.name || p.hostname });
-          changed = true;
-        } else if (existing.name !== (p.name || p.hostname)) {
-          existing.name = p.name || p.hostname;
-          changed = true;
-        }
-      }
-      if (changed) { saveMachines(machines); loadSessions(true); }
-    }
-  } catch {}
+    await refreshTailnetPeers();
+  } catch {
+    // Local sessions remain useful if Tailnet candidate enumeration is unavailable.
+  }
 })();
 
 function errorMessage(err: unknown): string {
@@ -2377,21 +2441,6 @@ function errorMessage(err: unknown): string {
     if (typeof msg === "string" && msg) return msg;
   }
   return String(err || "unknown error");
-}
-
-interface DiscoverPeer {
-  readonly url: string;
-  readonly name?: string;
-  readonly hostname?: string;
-}
-
-interface DiscoverResponse {
-  readonly peers?: readonly DiscoverPeer[];
-}
-
-interface InfoResponse {
-  readonly version?: string;
-  readonly name?: string;
 }
 
 interface SessionsResponse {
@@ -2450,8 +2499,10 @@ interface CreateSessionResponse {
   readonly session?: string;
 }
 
-async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineUrl?: string): Promise<TResponse> {
-  const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
+async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
+  const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
   let data: unknown = {};
@@ -3077,49 +3128,46 @@ function machineFailureLabel(category: MachineFailureCategory): string {
   return "Connection failed";
 }
 
-function fetchMachine(machineUrl, machineMeta) {
-  // Timeout remote machines so one unreachable host can't block the entire UI.
-  // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
-  const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
-  const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-  return Promise.allSettled([
-    api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined),
-    fetchMachineInfo(machineUrl, remoteOpts),
-  ]).then(([sessionsResult, infoResult]) => {
-    if (sessionsResult.status === "rejected") {
-      if (machineUrl) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
-      return {
-        machine: { ...machineMeta, url: machineUrl, version: "" },
-        sessions: [], online: false, pending: false,
-        failure: classifyMachineFailure(sessionsResult.reason),
-      };
-    }
-    if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
-    const info = infoResult.status === "fulfilled" ? infoResult.value : null;
+function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
+  const isRemote = machineIdentity !== "";
+  if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
+    return Promise.resolve({
+      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      sessions: [], online: false, pending: false,
+      failure: "network" as const,
+    });
+  }
+  const timeoutMs = isRemote ? WP.peerHealthTimeoutMs(state.peerHealth, machineIdentity) : 0;
+  const options = isRemote ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
+  return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
+    if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     return {
-      machine: {
-        ...machineMeta,
-        url: machineUrl,
-        version: info?.version || "",
-        name: info?.name || machineMeta.name,
-      },
-      sessions: sessionsResult.value.sessions || [],
+      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      sessions: sessions.sessions || [],
       online: true,
       pending: false,
+    };
+  }).catch((error: unknown) => {
+    if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineIdentity);
+    return {
+      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      sessions: [], online: false, pending: false,
+      failure: classifyMachineFailure(error),
     };
   });
 }
 
 async function loadSessionsOnce() {
   const myEpoch = ++state.loadSessionsEpoch;
+  const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
   const machines = getMachines();
   const multiMachine = machines.length > 0;
 
   // Single-machine: just fetch and render
   if (!multiMachine) {
-    const g = await fetchMachine("", { name: state.selfName || "this machine" });
-    if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
+    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad);
+    if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
     const html = renderMachineGroupHtml(g, false);
@@ -3127,7 +3175,7 @@ async function loadSessionsOnce() {
     syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
-    await openSessionFromNotificationRoute();
+    await openSessionFromNotificationRoute(myEpoch);
     return;
   }
 
@@ -3137,8 +3185,11 @@ async function loadSessionsOnce() {
     ...machines.map(m => ({ url: m.url, meta: m })),
   ];
 
-  // Show placeholders on first load
-  if (state.firstLoad) {
+  // Discovery can finish after the initial local-only render. Materialize any
+  // newly discovered groups before their independent session requests settle.
+  const renderedMachineIds = new Set(Array.from(el.querySelectorAll<HTMLElement>(".machine-group"))
+    .map((group) => group.dataset.machine ?? ""));
+  if (state.firstLoad || allMachines.some((machine) => !renderedMachineIds.has(machine.url))) {
     el.innerHTML = allMachines.map(m =>
       renderMachineGroupHtml({ machine: { ...m.meta, url: m.url }, sessions: [], online: false, pending: true }, true)
     ).join("");
@@ -3170,8 +3221,8 @@ async function loadSessionsOnce() {
   };
 
   const promises = allMachines.map((m, i) =>
-    fetchMachine(m.url, m.meta).then(g => {
-      if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
+    fetchMachine(m.url, m.meta, isCurrentLoad).then(g => {
+      if (!isCurrentLoad()) return; // stale call, discard
       groups[i] = g;
       state.lastSessionGroups = groupsInOrder();
       renderGroup(i, g);
@@ -3182,7 +3233,7 @@ async function loadSessionsOnce() {
   );
 
   await Promise.all(promises);
-  if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
+  if (!isCurrentLoad()) return; // stale call, discard
 
   // Version-outdated check requires all machines resolved. Re-render only
   // groups whose outdated flag actually changed — avoids flicker.
@@ -3210,7 +3261,7 @@ async function loadSessionsOnce() {
   state.allSessions = out;
   syncDelegationWorkspace();
   checkStateTransitions(groups);
-  await openSessionFromNotificationRoute();
+  await openSessionFromNotificationRoute(myEpoch);
 }
 
 let sessionRefreshPromise: Promise<void> | null = null;
@@ -3233,15 +3284,21 @@ function loadSessions(forceAfterCurrent = false): Promise<void> {
   return sessionRefreshPromise;
 }
 
-async function openSessionFromNotificationRoute(): Promise<void> {
+async function openSessionFromNotificationRoute(expectedLoadEpoch: number): Promise<void> {
+  if (expectedLoadEpoch !== state.loadSessionsEpoch) return;
   const route = parseSessionNotificationRoute(location.search);
   if (!route) return;
+  const machineIdentity = route.machineIdentity === LOCAL_MACHINE_IDENTITY ? "" : route.machineIdentity;
   const group = state.lastSessionGroups.find(candidate =>
-    (candidate.machine.url || "") === route.machineUrl && candidate.online);
+    (candidate.machine.url || "") === machineIdentity && candidate.online);
   const session = group?.sessions.find(candidate => sessionIdentityId(candidate) === route.sessionId);
-  if (!session) return;
+  if (!session) {
+    console.warn("notification target is unavailable; refresh Tailnet discovery and retry");
+    return;
+  }
+  if (expectedLoadEpoch !== state.loadSessionsEpoch) return;
 
-  await openSession(session.name, route.machineUrl || undefined);
+  await openSession(session.name, machineIdentity || undefined);
   const cleanUrl = new URL(location.href);
   cleanUrl.searchParams.delete("sessionId");
   cleanUrl.searchParams.delete("session");
@@ -3249,9 +3306,11 @@ async function openSessionFromNotificationRoute(): Promise<void> {
   history.replaceState(history.state, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
 }
 
-function retryMachine(_machineUrl: string, event?: Event): void {
+function retryMachine(_machineIdentity: string, event?: Event): void {
   event?.stopPropagation();
-  void loadSessions(true);
+  void refreshTailnetPeers()
+    .then((result) => result === "applied" ? loadSessions(true) : undefined)
+    .catch(() => undefined);
 }
 
 const SESSION_REFRESH_INTERVAL_MS = 5_000;
@@ -3290,6 +3349,10 @@ function collapseAutoExpandedSidebarImmediately(): void {
 
 async function openSession(name, machineUrl) {
   const targetMachine = machineUrl || "";
+  if (targetMachine && !resolveReadyMachineOrigin(targetMachine)) {
+    await showMachineUnavailable();
+    return;
+  }
   if (isDesktop()) {
     const delegation = delegationWorkspaceContext(name, targetMachine);
     if (delegation) {
@@ -4565,6 +4628,10 @@ async function switchSession(val) {
     machineUrl = "";
     name = val;
   }
+  if (machineUrl && !resolveReadyMachineOrigin(machineUrl)) {
+    await showMachineUnavailable();
+    return;
+  }
   if (name === state.currentSession && machineUrl === state.currentMachine) {
     // Same session — reconnect or reinitialize if the terminal is not active.
     if (state.terminalController) {
@@ -5084,75 +5151,64 @@ async function showSettings() {
   toggleDebugPanel();
 }
 
-async function renderMachinesList() {
+function setPeerNotificationEnrollmentUnavailable(): void {
+  const status = document.getElementById("discover-status");
+  if (!status) return;
+  status.textContent = "This Tailnet machine is no longer ready for notification setup.";
+  status.style.color = "#cc3333";
+}
+
+function setUpPeerNotifications(machineIdentity: string): void {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (!origin) {
+    setPeerNotificationEnrollmentUnavailable();
+    return;
+  }
+  window.location.assign(new URL("/#settings-effects", origin).href);
+}
+
+function renderMachinesList(): void {
   const machines = getMachines();
   const el = document.getElementById("machines-list");
   if (!machines.length) {
-    el.innerHTML = '<div class="no-machines">No remote machines added</div>';
+    el.innerHTML = '<div class="no-machines">No Tailnet candidates found</div>';
     return;
   }
-  // Check status of each machine
-  const checks = await Promise.all(machines.map(m =>
-    fetch(new URL("/api/info", m.url).href, { signal: AbortSignal.timeout(3000) })
-      .then(() => true).catch(() => false)
-  ));
-  el.innerHTML = machines.map((m, i) => {
-    const dot = checks[i] ? "green" : "red";
-    const dotTitle = checks[i] ? "online" : "offline";
+  el.innerHTML = machines.map((machine) => {
+    const dot = machine.ready ? "green" : "red";
+    const status = machine.ready ? "online" : machine.diagnostic || "offline";
+    const notificationSetup = machine.ready
+      ? `<button class="machine-notification-setup" type="button" data-machine-identity="${escAttr(machine.url)}">Set up notifications on ${esc(machine.name)}</button>`
+      : "";
     return `<div class="machine-item">
-      <div class="dot ${dot}" title="${dotTitle}"></div>
-      <span class="machine-item-name">${esc(m.name)}<span class="machine-item-url">${esc(m.url)}</span></span>
-      <button class="machine-remove-btn" onclick="removeMachineUI('${escAttr(m.url)}')">&times;</button>
+      <div class="dot ${dot}" title="${escAttr(status)}"></div>
+      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span></span>
+      ${notificationSetup}
     </div>`;
   }).join("");
+  el.querySelectorAll<HTMLButtonElement>(".machine-notification-setup").forEach((button) => {
+    button.addEventListener("click", () => {
+      const machineIdentity = button.dataset.machineIdentity;
+      if (machineIdentity) setUpPeerNotifications(machineIdentity);
+    });
+  });
 }
 
-function removeMachineUI(url: string): void {
-  removeMachine(url);
-  renderMachinesList();
-}
-
-async function discoverMachines() {
+async function discoverMachines(): Promise<void> {
   const statusEl = document.getElementById("discover-status");
   statusEl.textContent = "Scanning tailnet...";
   statusEl.style.color = "#555";
   try {
-    const data = await api<DiscoverResponse>("/discover");
-    const peers = data.peers || [];
-    if (!peers.length) {
-      statusEl.textContent = "No wolfpack instances found on tailnet";
-      statusEl.style.color = "#555";
-      return;
-    }
-    const peerUrls = new Set(peers.map(p => p.url));
-    let machines = getMachines();
-    // Prune stale machines no longer in peer list
-    const before = machines.length;
-    machines = machines.filter(m => peerUrls.has(m.url));
-    const pruned = before - machines.length;
-    // Add new / update existing
-    let added = 0;
-    for (const p of peers) {
-      const existing = machines.find(m => m.url === p.url);
-      if (!existing) {
-        machines.push({ url: p.url, name: p.name || p.hostname });
-        added++;
-      } else if (existing.name !== (p.name || p.hostname)) {
-        existing.name = p.name || p.hostname;
-      }
-    }
-    if (added > 0 || pruned > 0) {
-      saveMachines(machines);
-      renderMachinesList();
-    }
-    const parts = [`Found ${peers.length}`];
-    if (added > 0) parts.push(`added ${added}`);
-    if (pruned > 0) parts.push(`pruned ${pruned} stale`);
-    if (!added && !pruned) parts.push("all up to date");
-    statusEl.textContent = parts.join(", ");
-    statusEl.style.color = "#00ff41";
-  } catch (e) {
-    statusEl.textContent = errorMessage(e);
+    const refreshResult = await refreshTailnetPeers();
+    if (refreshResult === "stale") return;
+    const machines = getMachines();
+    const ready = machines.filter((machine) => machine.ready).length;
+    renderMachinesList();
+    void loadSessions(true);
+    statusEl.textContent = ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet";
+    statusEl.style.color = ready ? "#00ff41" : "#555";
+  } catch (error) {
+    statusEl.textContent = errorMessage(error);
     statusEl.style.color = "#cc3333";
   }
 }
@@ -5789,7 +5845,7 @@ Object.assign(window, {
   // session/project onclick handlers
   openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
-  createSessionWithAgent, deleteCustomCmd, removeMachineUI, retryMachine,
+  createSessionWithAgent, deleteCustomCmd, retryMachine,
   // agent settings onclick handlers (inline in renderAgentsList)
   toggleAgentEnabled, removeAgent, addAgent,
   // grid + view (used by onclick and e2e page.evaluate)

@@ -1269,6 +1269,12 @@ body.no-animations, body.no-animations * {
 .machine-item .dot { width: 6px; height: 6px; }
 .machine-item-name { flex: 1; font-size: 14px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .machine-item-url { font-size: 10px; color: var(--text-ghost); margin-left: 4px; }
+.machine-notification-setup { flex: 0 0 auto; min-height: 32px; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--accent); font: inherit; font-size: 10px; cursor: pointer; }
+.machine-notification-setup:hover, .machine-notification-setup:focus-visible { border-color: var(--accent); outline: none; }
+@media (max-width: 768px) {
+  .machine-item { flex-wrap: wrap; }
+  .machine-notification-setup { width: 100%; }
+}
 .machine-remove-btn {
   background: none;
   border: none;

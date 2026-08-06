@@ -26,6 +26,18 @@ describe("parseConfig", () => {
     });
   });
 
+  test("clears malformed optional tailscale readiness without discarding local config", () => {
+    expect(parseConfig({
+      devDir: "/tmp/x",
+      port: 8787,
+      tailscaleHostname: "https://evil.example.com",
+    })).toEqual({
+      devDir: "/tmp/x",
+      port: 8787,
+      tailscaleHostname: undefined,
+    });
+  });
+
   test("rejects non-number and fractional ports", () => {
     for (const port of ["18790", true, false, 18790.5, NaN, Infinity]) {
       expect(parseConfig({ devDir: "/Users/home/Dev", port })).toBeNull();

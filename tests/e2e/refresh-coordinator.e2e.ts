@@ -11,6 +11,15 @@ test.afterAll(() => {
   server?.close();
 });
 
+// Peer enumeration reflects the test runner's real Tailnet unless isolated.
+// These cadence tests exercise only local session refreshes.
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ candidates: [] }),
+  }));
+});
+
 test("session summaries survive metadata endpoint failure", async ({ page }) => {
   await page.route("**/api/info", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "metadata unavailable" }) }));
   await page.goto(server.baseUrl);
@@ -70,5 +79,7 @@ test("visibility resume keeps one session refresh cadence", async ({ page }) => 
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await page.waitForTimeout(5_500);
 
-  expect(sessionRequests).toBeLessThanOrEqual(2);
+  // The startup Tailnet generation coordinates one replacement; visibility
+  // resume and the 5s cadence add at most two more local captures.
+  expect(sessionRequests).toBeLessThanOrEqual(3);
 });

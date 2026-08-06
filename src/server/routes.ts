@@ -49,7 +49,6 @@ import {
 
 
 // ── Constants ──
-const PEER_FETCH_TIMEOUT_MS = 3_000;
 const SESSION_WAIT_DEFAULT_TIMEOUT_MS = 30_000;
 const SESSION_WAIT_MAX_TIMEOUT_MS = 600_000;
 const SESSION_WAIT_BUFFER_MAX_CHARS = 128 * 1024;
@@ -96,8 +95,8 @@ import {
   json,
   parseBody,
   serveFile,
-  cachedPeers,
-  discoverPeers,
+  enumerateLocalTailnetCandidates,
+  getLocalMachineHandshake,
 } from "./http.js";
 import type { InvalidBodyResponse, ParseBodyOptions } from "./http.js";
 import { activePtySessions, notifySubSessionOpened, teardownPty } from "./websocket.js";
@@ -582,6 +581,13 @@ export const routes: Record<
       .replace(/\.local$/, "")
       .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
     json(res, { name, version: VERSION, machineId: getTaskGateway().machineId });
+  },
+
+  "GET /api/machine": async (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const handshake = await getLocalMachineHandshake(VERSION);
+    if (!handshake) return json(res, { error: "tailnet machine identity unavailable" }, 503);
+    json(res, handshake);
   },
 
   "GET /api/sessions": async (_req, res) => {
@@ -1191,10 +1197,24 @@ export const routes: Record<
     json(res, { ok: true });
   },
 
+  "GET /api/tailnet/v1/candidates": async (_req, res) => {
+    json(res, await enumerateLocalTailnetCandidates());
+  },
+
   "GET /api/discover": async (_req, res) => {
-    const result = await discoverPeers();
-    if (result.error) return json(res, { peers: [], error: result.error });
-    json(res, { peers: result.peers });
+    const discovery = await enumerateLocalTailnetCandidates();
+    res.setHeader("Deprecation", "true");
+    res.setHeader("Link", '</api/tailnet/v1/candidates>; rel="successor-version"');
+    json(res, {
+      peers: discovery.candidates
+        .filter((candidate) => candidate.online)
+        .map((candidate) => ({
+          hostname: candidate.hostname,
+          url: candidate.origin,
+          name: candidate.hostname,
+        })),
+      ...(discovery.error ? { error: discovery.error } : {}),
+    });
   },
 
   "GET /api/poll": async (req, res) => {

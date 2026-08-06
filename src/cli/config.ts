@@ -14,6 +14,7 @@ import {
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { isValidPort } from "../validation.js";
+import { canonicalTailnetOrigin } from "../tailnet-machine-contract.js";
 import { print, dim, yellow } from "./formatting.js";
 
 export const IS_MACOS = platform() === "darwin";
@@ -55,10 +56,11 @@ export function parseConfig(raw: unknown): Config | null {
   const devDir = typeof candidate.devDir === "string" ? candidate.devDir.trim() : "";
   const port = candidate.port;
   if (!devDir || typeof port !== "number" || !isValidPort(port)) return null;
-  const tailscaleHostname =
-    typeof candidate.tailscaleHostname === "string"
-      ? candidate.tailscaleHostname.trim() || undefined
-      : undefined;
+  const configuredHostname = typeof candidate.tailscaleHostname === "string"
+    ? candidate.tailscaleHostname.trim()
+    : "";
+  const canonicalOrigin = configuredHostname ? canonicalTailnetOrigin(configuredHostname) : null;
+  const tailscaleHostname = canonicalOrigin?.slice("https://".length);
   return { devDir, port, tailscaleHostname };
 }
 
@@ -176,8 +178,7 @@ export function waitForPortFree(port: number, timeoutMs = 10000) {
 }
 
 export function remoteUrl(config: Config): string | null {
-  if (!config.tailscaleHostname) return null;
-  return `https://${config.tailscaleHostname}`;
+  return canonicalTailnetOrigin(config.tailscaleHostname);
 }
 
 const TAILSCALE_MAC_CLI =

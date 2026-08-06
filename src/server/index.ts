@@ -8,9 +8,7 @@ import {
 } from "node:http";
 import { WebSocketServer } from "ws";
 
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import pkg from "../../package.json";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
@@ -28,13 +26,13 @@ import {
   shouldAuthenticateApiPath,
   writeUnauthorized,
   isAllowedSession,
-  discoverPeers,
-  cachedPeers,
   createPerIpRateLimiter,
 } from "./http.js";
 import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
+import { loadConfig } from "../cli/config.js";
+import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 
 const log = createLogger("server");
 
@@ -58,43 +56,32 @@ try {
   if (add.length) process.env.PATH = [...add, cur].join(":");
 }
 
-// CORS origin allowlist
-const ALLOWED_ORIGINS = new Set<string>([
-  `http://localhost:${PORT}`,
-  `http://127.0.0.1:${PORT}`,
-]);
-
-// Extract tailnet suffix from config
-const TAILNET_SUFFIX = (() => {
-  try {
-    const cfg = JSON.parse(readFileSync(join(homedir(), ".wolfpack", "config.json"), "utf-8"));
-    const h = cfg.tailscaleHostname as string;
-    const dot = h.indexOf(".");
-    if (dot !== -1) return h.substring(dot + 1);
-  } catch { /* config not yet written — handled by warning below */ }
-  return "";
-})();
-
-if (!TAILNET_SUFFIX) {
-  log.warn("no tailscaleHostname in config — remote browser access will be blocked by CORS", { hint: "run 'wolfpack setup' to fix" });
+// Cross-origin Tailnet access derives solely from the canonical hostname that
+// setup persisted after Serve verification. No forwarded/request header can
+// expand this authority.
+const configuredTailnetHostname = loadConfig()?.tailscaleHostname;
+const originPolicy = createTailnetOriginPolicy({
+  port: PORT,
+  tailscaleHostname: configuredTailnetHostname,
+  testMode: Boolean(process.env.WOLFPACK_TEST),
+});
+if (!configuredTailnetHostname) {
+  log.warn("no verified tailscaleHostname in config — remote browser access will be blocked by CORS", { hint: "run 'wolfpack setup' to fix" });
 }
 
 function isAllowedOrigin(origin: string): boolean {
-  if (process.env.WOLFPACK_TEST && origin.startsWith("http://127.0.0.1:")) return true;
-  if (ALLOWED_ORIGINS.has(origin)) return true;
-  if (TAILNET_SUFFIX) {
-    try {
-      const url = new URL(origin);
-      if (url.protocol === "https:" && url.hostname.endsWith("." + TAILNET_SUFFIX)) return true;
-    } catch { /* expected: malformed origin URL */ }
-  }
-  return false;
+  return originPolicy.isAllowed(origin);
 }
 
 // ── Rate limiting ──
 
 /** Poll-heavy endpoints get a tighter limit (10 req/s per IP). */
-const POLL_HEAVY_PATHS = new Set(["/api/sessions"]);
+const POLL_HEAVY_PATHS = new Set([
+  "/api/sessions",
+  "/api/machine",
+  "/api/tailnet/v1/candidates",
+  "/api/discover",
+]);
 const pollRateLimiter = createPerIpRateLimiter(10);
 
 /** Global limit for all routes (120 req/s per IP). */
@@ -109,25 +96,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer(async (req, res) => {
-    let origin = req.headers.origin;
-    // Tailscale serve strips the Origin header when proxying to localhost.
-    // Detect this via Tailscale-User-Login (injected by tailscale daemon,
-    // cannot be spoofed when traffic flows through tailscale serve).
-    // TRUST MODEL: This relies on tailscale-user-login being unforgeable.
-    // If wolfpack is ever exposed via a non-Tailscale reverse proxy that
-    // forwards arbitrary client headers, this becomes a CORS bypass.
-    const tsLogin = req.headers["tailscale-user-login"];
-    if (!origin && tsLogin && typeof tsLogin === "string" && tsLogin.length > 0 && TAILNET_SUFFIX) {
-      const referer = req.headers.referer;
-      if (referer) {
-        try {
-          const refUrl = new URL(referer);
-          if (refUrl.protocol === "https:" && refUrl.hostname.endsWith("." + TAILNET_SUFFIX)) {
-            origin = refUrl.origin;
-          }
-        } catch { /* malformed referer — leave origin empty */ }
-      }
-    }
+    const origin = req.headers.origin;
     if (origin) {
       if (isAllowedOrigin(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
@@ -192,8 +161,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     try {
       const origin = req.headers.origin;
       if (origin && !isAllowedOrigin(origin)) {
-        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-        socket.destroy();
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
       }
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -291,9 +259,6 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
 
   server.listen(port, host, () => {
     log.info("server started", { url: `http://localhost:${port}/` });
-    discoverPeers().then(() => {
-      if (cachedPeers.length) log.info("discovered peers", { count: cachedPeers.length, peers: cachedPeers.map(p => p.name) });
-    }).catch((e: unknown) => { log.warn("peer discovery failed at startup", { error: e instanceof Error ? e.message : String(e) }); });
   });
 }
 
