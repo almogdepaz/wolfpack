@@ -25,6 +25,8 @@ import type { DelegationGridMember } from "./app-grid";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
+import { fetchWithTimeout } from "./fetch-timeout";
+import { createReconnector } from "./reconnector";
 import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
@@ -496,95 +498,6 @@ function recordRecent(machine: string | null | undefined, name: string): void {
   if (state.sessionRecents.length > MAX_RECENTS) state.sessionRecents.length = MAX_RECENTS;
   saveRecents();
 }
-const RECONNECT_BUDGET_MS = 2 * 60 * 1000;
-const RECONNECT_BASE_DELAY_MS = 500;
-const RECONNECT_MAX_DELAY_MS = 5000;
-
-/**
- * Shared reconnect backoff engine used by both desktop PTY and mobile WS paths.
- * @param {object} opts
- * @param {() => boolean} [opts.shouldReconnect] - guard; returning false skips scheduling
- * @param {() => void} [opts.onReconnecting] - called when a reconnect attempt is scheduled
- * @param {() => void} [opts.onExhausted] - called when the retry budget is spent
- * @returns {{ schedule, cancel, reset, block, connected, isBlocked: boolean, pending: boolean }}
- */
-interface ReconnectorOpts {
-  shouldReconnect?: () => boolean;
-  onReconnecting?: () => void;
-  onExhausted?: () => void;
-}
-
-interface Reconnector {
-  schedule(connectFn: () => void): void;
-  cancel(): void;
-  reset(): void;
-  block(): void;
-  connected(): void;
-  readonly isBlocked: boolean;
-  readonly pending: boolean;
-}
-
-function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
-  let _timer: ReturnType<typeof setTimeout> | null = null;
-  let _delay = RECONNECT_BASE_DELAY_MS;
-  let _startedAt = 0;
-  let _blocked = false;
-
-  function schedule(connectFn: () => void): void {
-    if (_timer) return;
-    if (_blocked) return;
-    if (opts.shouldReconnect && !opts.shouldReconnect()) return;
-    const now = Date.now();
-    if (!_startedAt) _startedAt = now;
-    const elapsed = now - _startedAt;
-    const remaining = RECONNECT_BUDGET_MS - elapsed;
-    if (remaining <= 0) {
-      _blocked = true;
-      if (opts.onExhausted) opts.onExhausted();
-      return;
-    }
-    if (opts.onReconnecting) opts.onReconnecting();
-    const jitterMs = Math.floor(Math.random() * 200);
-    const delayMs = Math.min(_delay + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
-    _timer = setTimeout(() => {
-      _timer = null;
-      if (opts.shouldReconnect && !opts.shouldReconnect()) return;
-      connectFn();
-    }, delayMs);
-    _delay = Math.min(Math.floor(_delay * 1.8), RECONNECT_MAX_DELAY_MS);
-  }
-
-  function cancel() {
-    if (_timer) { clearTimeout(_timer); _timer = null; }
-  }
-
-  function reset() {
-    _blocked = false;
-    _startedAt = 0;
-    _delay = RECONNECT_BASE_DELAY_MS;
-  }
-
-  function block() { _blocked = true; }
-
-  /** Call on successful connect. Returns true if this was a reconnect (budget was active). */
-  function connected() {
-    const wasReconnecting = _startedAt > 0;
-    _delay = RECONNECT_BASE_DELAY_MS;
-    _startedAt = 0;
-    _blocked = false;
-    return wasReconnecting;
-  }
-
-  return {
-    schedule,
-    cancel,
-    reset,
-    block,
-    connected,
-    get isBlocked() { return _blocked; },
-    get pending() { return !!_timer; },
-  };
-}
 
 /**
  * Creates a configured ghostty-web Terminal with addons, copy/paste, and stdin wired up.
@@ -943,10 +856,19 @@ interface PtySocketClient {
 function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let ws: WebSocket | null = null;
   const _rc = createReconnector({
-    shouldReconnect: opts.shouldReconnect,
+    shouldReconnect: () => navigator.onLine !== false && (opts.shouldReconnect?.() ?? true),
     onReconnecting: opts.onReconnecting,
     onExhausted: opts.onReconnectExhausted,
   });
+  const handleOnline = (): void => {
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      _rc.reset();
+      scheduleReconnect();
+    }
+  };
+  const handleOffline = (): void => _rc.cancel();
+  window.addEventListener("online", handleOnline);
+  window.addEventListener("offline", handleOffline);
   let hasConnected = false;
   let consumeReset = !!opts.resetPty;
   let _initialPrefillMode = opts.prefillMode || TERMINAL_PREFILL_MODE.FULL;
@@ -1140,6 +1062,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function handlePtyReady(): void {
     __wfTraceEvent(_trace, "pty_ready");
+    // A TCP/WebSocket open is not a usable terminal. Preserve exponential
+    // backoff across attach/prefill failures and reset it only after the
+    // broker-backed terminal reaches its authoritative ready boundary.
+    _rc.connected();
     if (opts.onPtyReady) opts.onPtyReady();
   }
 
@@ -1259,6 +1185,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function connect() {
     _rc.cancel();
+    if (navigator.onLine === false) return;
     if (ws && ws.readyState <= WebSocket.OPEN) return;
 
     const sock = new WebSocket(buildUrl());
@@ -1270,7 +1197,6 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
       const wasReconnect = hasConnected;
       hasConnected = true;
-      _rc.connected();
       sendAttachHandshake();
       // attach trace was created inside sendAttachHandshake above
       __wfTraceEvent(_trace, "ws.open", { wasReconnect });
@@ -1319,8 +1245,22 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function send(data: string | Blob | BufferSource): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (typeof data === "string" || data instanceof Blob) {
-      ws.send(data);
+    const maxBufferedBytes = 256 * 1024;
+    const sendBounded = (frame: string | Blob | ArrayBuffer, byteLength: number): boolean => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      if (ws.bufferedAmount + byteLength > maxBufferedBytes) {
+        ws.close(1013, "client input backpressure");
+        return false;
+      }
+      ws.send(frame);
+      return true;
+    };
+    if (typeof data === "string") {
+      sendBounded(data, new TextEncoder().encode(data).byteLength);
+      return;
+    }
+    if (data instanceof Blob) {
+      sendBounded(data, data.size);
       return;
     }
     const bytes = data instanceof ArrayBuffer
@@ -1329,7 +1269,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     for (const frame of WP.splitTerminalInputBytes(bytes)) {
       const copy = new ArrayBuffer(frame.byteLength);
       new Uint8Array(copy).set(frame);
-      ws.send(copy);
+      if (!sendBounded(copy, copy.byteLength)) break;
     }
   }
 
@@ -1347,6 +1287,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function close() {
+    window.removeEventListener("online", handleOnline);
+    window.removeEventListener("offline", handleOffline);
     _rc.cancel();
     _rc.block();
     resetAttachLifecycle();
@@ -2503,7 +2445,7 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
   const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
-  const res = await fetch(base, opts);
+  const res = await fetchWithTimeout(base, opts);
   const body = await res.text();
   let data: unknown = {};
   if (body) {
