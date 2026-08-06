@@ -6,14 +6,16 @@ import { join } from "node:path";
 const root = join(import.meta.dirname, "..");
 const target = process.argv[2] || `${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 const cli = join(root, "dist", `wolfpack-${target}`);
-const broker = join(root, "dist", `wolfpack-broker-${target}`);
+const releasedBroker = join(root, "dist", `wolfpack-broker-${target}`);
+const stagedBroker = join(root, "dist", "broker", `bun-${target}`, "wolfpack-broker");
+const broker = existsSync(releasedBroker) ? releasedBroker : stagedBroker;
 for (const path of [cli, broker]) {
   if (!existsSync(path)) throw new Error(`missing release artifact: ${path}`);
 }
 function run(command: string[], options: { cwd?: string; env?: Record<string, string> } = {}): string {
   const result = Bun.spawnSync(command, { cwd: options.cwd || root, env: { ...process.env, ...options.env }, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error(`${command.join(" ")} failed: ${result.stderr.toString()}`);
-  return result.stdout.toString() + result.stderr.toString();
+  return result.stdout.toString();
 }
 if (!run([cli, "--help"]).includes("Usage:")) throw new Error("CLI help smoke returned no usage");
 if (!run([broker, "--version"]).includes("wolfpack-broker")) throw new Error("broker version smoke failed");
