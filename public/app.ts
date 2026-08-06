@@ -354,7 +354,7 @@ function renderCmdPalette() {
     return;
   }
   el.innerHTML = state.quickCmds.map((c, i) =>
-    `<button class="cmd-chip" onclick="sendQuickCmd(${i})">${esc(c.label)}</button>`
+    `<button type="button" class="cmd-chip" data-action="quick-send" data-index="${i}">${esc(c.label)}</button>`
   ).join("");
   el.classList.toggle("visible", state.kbAccessoryOpen);
 }
@@ -376,10 +376,10 @@ function renderQuickCmdSettings() {
     <div class="qc-item">
       <span class="qc-label">${esc(c.label)}</span>
       <span class="qc-cmd">${esc(c.cmd)}</span>
-      ${i > 0 ? `<button onclick="moveQuickCmd(${i},-1)" class="qc-btn move" title="Move up">&#9650;</button>` : '<span class="qc-spacer"></span>'}
-      ${i < state.quickCmds.length - 1 ? `<button onclick="moveQuickCmd(${i},1)" class="qc-btn move" title="Move down">&#9660;</button>` : '<span class="qc-spacer"></span>'}
-      <button onclick="editQuickCmd(${i})" class="qc-btn edit" title="Edit">&#9998;</button>
-      <button onclick="deleteQuickCmd(${i})" class="qc-btn delete" title="Delete">&#10005;</button>
+      ${i > 0 ? `<button type="button" data-action="quick-move" data-index="${i}" data-offset="-1" class="qc-btn move" title="Move up">&#9650;</button>` : '<span class="qc-spacer"></span>'}
+      ${i < state.quickCmds.length - 1 ? `<button type="button" data-action="quick-move" data-index="${i}" data-offset="1" class="qc-btn move" title="Move down">&#9660;</button>` : '<span class="qc-spacer"></span>'}
+      <button type="button" data-action="quick-edit" data-index="${i}" class="qc-btn edit" title="Edit">&#9998;</button>
+      <button type="button" data-action="quick-delete" data-index="${i}" class="qc-btn delete" title="Delete">&#10005;</button>
     </div>
   `).join("");
 }
@@ -2818,7 +2818,7 @@ function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSession
   const count = row.childSummary.total;
   const accessibleLabel = `${count} child ${count === 1 ? "agent" : "agents"}`;
   const visibleLabel = `${count} ${count === 1 ? "agent" : "agents"}`;
-  return `<button type="button" class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(accessibleLabel)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
+  return `<button type="button" class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" data-action="delegation-toggle" data-delegation-key="${escAttr(key)}" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(accessibleLabel)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
 }
 
 function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
@@ -2936,7 +2936,7 @@ function renderMachineGroupHtml(g, multiMachine) {
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
   const createDisabled = multiMachine && !g.online ? " disabled" : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${mUrlAttr}')"${createDisabled}>+</button></div></div>`;
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -2954,7 +2954,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         const grouping = delegationCardAttributes(row);
         const ordering = sessionOrderCardHtml(row, machineKey);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
-          <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes} onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})"></button>
+          <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
             <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
@@ -2962,13 +2962,13 @@ function renderMachineGroupHtml(g, multiMachine) {
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
-          <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
+          <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
         </div>`;
       }).join("");
     }
   } else if (multiMachine) {
     const failure = machineFailureLabel(g.failure || "unknown");
-    html += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect. <button type="button" class="machine-retry-btn" aria-label="Retry ${escAttr(g.machine.name)}" onclick="retryMachine('${mUrlAttr}', event)">Retry</button></div>`;
+    html += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect. <button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${mUrlAttr}" aria-label="Retry ${escAttr(g.machine.name)}">Retry</button></div>`;
   }
   html += `</div>`;
   return html;
@@ -3535,7 +3535,7 @@ function renderProjectNames(projects: readonly string[]): void {
   list.innerHTML = projects
     .map(
       (project) => `
-<button type="button" class="card" aria-label="Open project ${escAttr(project)}" onclick="selectProject('${escAttr(project)}')">
+<button type="button" class="card" data-action="select-project" data-project="${escAttr(project)}" aria-label="Open project ${escAttr(project)}">
   <div class="dot brand" title="project"></div>
   <div class="card-name">${esc(project)}</div>
 </button>
@@ -3732,14 +3732,12 @@ function renderAgentsList(data: SettingsResponse): void {
   list.innerHTML = cmds.map(c => {
     const isDefault = c.cmd === defaultCmd && c.enabled;
     return `<div class="agent-row${c.enabled ? "" : " disabled"}">
-      <input type="checkbox" class="agent-row-checkbox"
+      <input type="checkbox" class="agent-row-checkbox" data-action="agent-toggle" data-command="${escAttr(c.cmd)}"
         ${c.enabled ? "checked" : ""}
-        onchange="toggleAgentEnabled('${escAttr(c.cmd)}', this.checked)"
         aria-label="Enable ${escAttr(c.cmd)}">
       <span class="agent-row-cmd">${esc(c.cmd)}</span>
       ${isDefault ? '<span class="agent-row-default">default</span>' : ""}
-      <button class="agent-row-delete"
-        onclick="removeAgent('${escAttr(c.cmd)}')"
+      <button type="button" class="agent-row-delete" data-action="agent-remove" data-command="${escAttr(c.cmd)}"
         title="Remove" aria-label="Remove ${escAttr(c.cmd)}">&times;</button>
     </div>`;
   }).join("");
@@ -5443,7 +5441,7 @@ function _renderSidebarNow() {
   if (!multiMachine) {
     // Single machine — simple list with + New
     const g = groups[0];
-    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" aria-label="Start a session on this machine" onclick="showProjectPicker()"><span aria-hidden="true">+</span> New session</button>${sessionOrderResetButtonHtml("")}</div>`;
+    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine"><span aria-hidden="true">+</span> New session</button>${sessionOrderResetButtonHtml("")}</div>`;
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
       html += visibleDelegationRows(sessionOrderRows(g.sessions, ""), "").map(row => sidebarCardHtml(row, "")).join("");
@@ -5460,13 +5458,13 @@ function _renderSidebarNow() {
       const offlineClass = !g.online && !g.pending ? " offline" : "";
       const createDisabled = !g.online ? " disabled" : "";
       html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${escAttr(g.machine.url)}')"${createDisabled}>+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(g.machine.url)}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
       if (g.online && g.sessions.length) {
         html += visibleDelegationRows(sessionOrderRows(g.sessions, g.machine.url), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
-        html += `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))} <button type="button" class="machine-retry-btn" aria-label="Retry ${escAttr(g.machine.name)}" onclick="retryMachine('${mUrl}', event)">Retry</button></div>`;
+        html += `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))} <button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${mUrl}" aria-label="Retry ${escAttr(g.machine.name)}">Retry</button></div>`;
       }
       html += '</div>';
     }
@@ -5485,18 +5483,12 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
-  const onclick = machineUrl
-    ? `openSession('${escAttr(s.name)}', '${machineUrlAttr}')`
-    : `openSession('${escAttr(s.name)}')`;
-  const gridBtnOnclick = machineUrl
-    ? `toggleGrid('${escAttr(s.name)}', '${machineUrlAttr}', event)`
-    : `toggleGrid('${escAttr(s.name)}', '', event)`;
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
-  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
+  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
-    <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes} onclick="${onclick}"></button>
+    <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
@@ -5505,7 +5497,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
-    <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + machineUrlAttr + "'" : ''})">&times;</button>
+    <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
   </div>`;
 }
 
@@ -5759,6 +5751,34 @@ function bindHtmlEventListeners(): void {
     const el = $(id);
     if (el) el.addEventListener(event, fn);
   };
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest<HTMLElement>("[data-action]");
+    if (!button) return;
+    const action = button.dataset.action;
+    const machine = button.dataset.machine || undefined;
+    const session = button.dataset.session;
+    const index = Number(button.dataset.index);
+    if (action === "quick-send" && Number.isInteger(index)) sendQuickCmd(index);
+    else if (action === "quick-move" && Number.isInteger(index)) moveQuickCmd(index, button.dataset.offset === "-1" ? -1 : 1);
+    else if (action === "quick-edit" && Number.isInteger(index)) void editQuickCmd(index);
+    else if (action === "quick-delete" && Number.isInteger(index)) void deleteQuickCmd(index);
+    else if (action === "delegation-toggle" && button.dataset.delegationKey) toggleSidebarDelegationChildren(button.dataset.delegationKey, event);
+    else if (action === "new-session") void showProjectPicker(machine);
+    else if (action === "open-session" && session) void openSession(session, machine);
+    else if (action === "kill-session" && session) void killSession(session, event, machine);
+    else if (action === "retry-machine") retryMachine(machine || "", event);
+    else if (action === "select-project" && button.dataset.project) selectProject(button.dataset.project);
+    else if (action === "agent-remove" && button.dataset.command) void removeAgent(button.dataset.command);
+    else if (action === "toggle-grid" && session) toggleGrid(session, machine || "", event);
+  });
+  document.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.dataset.action !== "agent-toggle") return;
+    if (target.dataset.command) void toggleAgentEnabled(target.dataset.command, target.checked);
+  });
 
   // Header
   on("session-chip", "click", () => toggleDrawer());
