@@ -112,7 +112,13 @@ function installPackages(pkgs: string[]) {
   }
 }
 
-export async function setup() {
+export interface SetupOptions {
+  readonly nonInteractive?: boolean;
+  readonly devDir?: string;
+  readonly port?: number;
+}
+
+export async function setup(options: SetupOptions = {}) {
   print(dim(WOLF));
   print(bold("  WOLFPACK — AI Agent Bridge"));
   print(dim("  Deploy your pack. Command from anywhere."));
@@ -122,13 +128,17 @@ export async function setup() {
   // setup can apply deterministic local-only defaults without prompting.
   // process.stdin.isTTY is undefined when not a TTY — treat any non-true
   // value as non-interactive.
-  const interactive = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-  if (!interactive) {
-    print(yellow("  Non-interactive shell detected (no TTY)."));
-    print(dim("  All prompts will be skipped; defaults applied silently."));
-    print(dim("  Run from an interactive terminal to be prompted."));
+  const hasTty = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  const interactive = hasTty && !options.nonInteractive;
+  if (!interactive && !options.nonInteractive) {
+    throw new Error("setup requires a TTY; pass --non-interactive explicitly for safe unattended setup");
+  }
+  if (options.nonInteractive) {
+    print(yellow("  Explicit non-interactive setup."));
+    print(dim("  Existing configuration is preserved unless an override is provided."));
     print("");
   }
+  const previousConfig = loadConfig();
 
   print(bold("  Checking prerequisites...\n"));
 
@@ -168,8 +178,8 @@ export async function setup() {
   }
 
   // Dev directory
-  const defaultDev = resolve(homedir(), "Dev");
-  const rawDevDir = interactive ? ask(`  Projects directory [${defaultDev}]: `) : "";
+  const defaultDev = previousConfig?.devDir ?? resolve(homedir(), "Dev");
+  const rawDevDir = options.devDir ?? (interactive ? ask(`  Projects directory [${defaultDev}]: `) : "");
   const devDir = resolve(rawDevDir || defaultDev);
 
   const SYSTEM_PREFIXES = ["/etc", "/var", "/usr", "/bin", "/sbin", "/sys", "/proc"];
@@ -193,14 +203,14 @@ export async function setup() {
   }
 
   // Port
-  const portStr = interactive ? ask("  Server port [18790]: ") : "";
-  const port = Math.max(1024, Math.min(65535, Number(portStr) || 18790));
+  const defaultPort = previousConfig?.port ?? 18790;
+  const portStr = options.port !== undefined ? String(options.port) : (interactive ? ask(`  Server port [${defaultPort}]: `) : "");
+  const port = Math.max(1024, Math.min(65535, Number(portStr) || defaultPort));
 
   // Tailscale readiness is persisted only after `serve status --json` proves
   // this exact canonical HTTPS origin proxies to Wolfpack's loopback port.
-  const previousConfig = loadConfig();
-  let verifiedRemoteHostname: string | undefined;
-  if (hasTailscale && tsBin) {
+    let verifiedRemoteHostname: string | undefined;
+  if (interactive && hasTailscale && tsBin) {
     const runTailscale = (args: readonly string[]): string => {
       const [file, fileArgs] = IS_LINUX
         ? ["sudo", [tsBin, ...args]]
@@ -248,7 +258,9 @@ export async function setup() {
   const config: Config = {
     devDir,
     port,
-    ...(verifiedRemoteHostname && { tailscaleHostname: verifiedRemoteHostname }),
+    ...((verifiedRemoteHostname ?? (!interactive ? previousConfig?.tailscaleHostname : undefined)) && {
+      tailscaleHostname: verifiedRemoteHostname ?? previousConfig?.tailscaleHostname,
+    }),
   };
   saveConfig(config);
   if (previousConfig?.tailscaleHostname !== config.tailscaleHostname && isServiceRunning()) {

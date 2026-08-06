@@ -42,7 +42,7 @@ export interface CheckResult {
   fix?: () => void;
 }
 
-type CheckFn = () => CheckResult[] | Promise<CheckResult[]>;
+export type DoctorCheckFn = () => CheckResult[] | Promise<CheckResult[]>;
 
 // ---------------------------------------------------------------------------
 // Check group 1: Dependencies
@@ -552,7 +552,7 @@ export function printResults(results: CheckResult[]): { pass: number; fail: numb
   return counts;
 }
 
-async function runCheckGroups(groups: CheckFn[]): Promise<CheckResult[]> {
+async function runCheckGroups(groups: DoctorCheckFn[]): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const group of groups) {
     results.push(...await group());
@@ -576,18 +576,18 @@ export function applyFixes(results: CheckResult[]): number {
   return fixable.length;
 }
 
-export async function doctor({ fix: doFix = process.argv.includes("--fix") } = {}) {
+export interface DoctorOptions {
+  readonly fix?: boolean;
+  readonly json?: boolean;
+  /** Test seam: production callers omit this so real host probes remain opt-in CLI behavior. */
+  readonly checkGroups?: DoctorCheckFn[];
+}
 
-  const checkGroups: CheckFn[] = [
-    checkDeps,
-    checkConfig,
-    checkService,
-    checkConnectivity,
-    checkBinary,
-    checkBroker,
-    checkEnvironment,
-    checkLogs,
-  ];
+export async function doctor({
+  fix: doFix = process.argv.includes("--fix"),
+  json = process.argv.includes("--json"),
+  checkGroups = [checkDeps, checkConfig, checkService, checkConnectivity, checkBinary, checkBroker, checkEnvironment, checkLogs],
+}: DoctorOptions = {}) {
 
   let allResults = await runCheckGroups(checkGroups);
 
@@ -596,8 +596,22 @@ export async function doctor({ fix: doFix = process.argv.includes("--fix") } = {
     allResults = await runCheckGroups(checkGroups);
   }
 
-  const counts = printResults(allResults);
+  const counts = json
+    ? allResults.reduce((acc, result) => {
+        if (result.name) acc[result.status]++;
+        return acc;
+      }, { pass: 0, fail: 0, warn: 0 })
+    : printResults(allResults);
   const total = counts.pass + counts.fail + counts.warn;
+
+  if (json) {
+    print(JSON.stringify({
+      ok: counts.fail === 0,
+      counts,
+      checks: allResults.map(({ fix: _fix, ...result }) => result),
+    }));
+    return counts.fail > 0 ? 1 : 0;
+  }
 
   print("");
   if (counts.fail === 0) {

@@ -86,14 +86,39 @@ Help:
 }
 
 export function setupUsage(): string {
-  return `Usage: wolfpack setup
+  return `Usage: wolfpack setup [--non-interactive] [--dev-dir <path>] [--port <1024-65535>]
 
-Run the interactive first-run setup wizard.`;
+Run the first-run setup wizard. Unattended setup must be explicitly enabled;
+unspecified fields preserve an existing valid configuration.`;
 }
 
-async function runSetup(): Promise<void> {
+export interface ParsedSetupOptions {
+  readonly nonInteractive: boolean;
+  readonly devDir?: string;
+  readonly port?: number;
+}
+
+export function parseSetupOptions(argv: readonly string[]): ParsedSetupOptions | null {
+  const parsed: { nonInteractive: boolean; devDir?: string; port?: number } = { nonInteractive: false };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--non-interactive") parsed.nonInteractive = true;
+    else if (arg === "--dev-dir" && argv[i + 1]) parsed.devDir = argv[++i];
+    else if (arg === "--port" && argv[i + 1]) {
+      const port = Number(argv[++i]);
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) return null;
+      parsed.port = port;
+    } else return null;
+  }
+  if ((parsed.devDir !== undefined || parsed.port !== undefined) && !parsed.nonInteractive) return null;
+  return parsed;
+}
+
+async function runSetup(args: readonly string[] = []): Promise<void> {
+  const options = parseSetupOptions(args);
+  if (!options) throw new Error(`invalid setup options. ${setupUsage()}`);
   const { setup } = await import("./setup.js");
-  await setup();
+  await setup(options);
 }
 
 export function shouldStartDashboard(argv: readonly string[]): boolean {
@@ -126,7 +151,7 @@ async function start() {
       throw new Error("missing or invalid config. Run 'wolfpack setup' to recreate ~/.wolfpack/config.json.");
     }
     print("  No valid config found. Running setup first...\n");
-    await runSetup();
+    await runSetup([]);
     process.exit(0);
   }
 
@@ -186,7 +211,9 @@ async function main() {
   } else if (cmd === "setup" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
     print(setupUsage());
   } else if (cmd === "setup") {
-    await runSetup();
+    await runSetup(argv.slice(1));
+  } else if (cmd === "service" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
   } else if (cmd === "service") {
     const serviceCommand = parseServiceCommand(argv.slice(1));
     if (!serviceCommand) {
@@ -199,8 +226,12 @@ async function main() {
     else if (serviceCommand.action === "start") serviceStart();
     else if (serviceCommand.action === "restart") serviceRestart(serviceCommand.broker ? { broker: true } : {});
     else if (serviceCommand.action === "status") serviceStatus();
+  } else if (cmd === "doctor" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack doctor [--json] [--fix]");
   } else if (cmd === "doctor") {
-    process.exit(await doctor());
+    const flags = argv.slice(1);
+    if (flags.some(flag => flag !== "--json" && flag !== "--fix")) throw new Error("Usage: wolfpack doctor [--json] [--fix]");
+    process.exit(await doctor({ fix: flags.includes("--fix"), json: flags.includes("--json") }));
   } else if (cmd === "ls" || cmd === "list") {
     process.exit(await lsSessions(argv.slice(1)));
   } else if (cmd === "session") {
@@ -209,8 +240,12 @@ async function main() {
     process.exit(await runAgentCommand(argv.slice(1)));
   } else if (cmd === "kill") {
     process.exit(await killSession(argv.slice(1)));
+  } else if (cmd === "attach" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack attach [session] [--take-control] [--prefill full|none]");
   } else if (cmd === "attach") {
     process.exit(await attachCommand(argv.slice(1)));
+  } else if (cmd === "uninstall" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack uninstall --yes");
   } else if (cmd === "uninstall") {
     if (!hasUninstallConfirmationFlag(argv.slice(1))) {
       print(red("  Refusing to uninstall without confirmation."));

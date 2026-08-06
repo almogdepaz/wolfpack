@@ -64,8 +64,8 @@ This roadmap turns the performance/UX/rendering/reliability audit into independe
 - [x] Installed-package plus native CLI/broker artifact smoke gates release publication in a temporary HOME.
 - [x] Performance harness enforces desktop/mobile cold/warm p95, heap, long-task, console-error, and bundle budgets.
 - [x] Axe active-view/dialog scans plus documented VoiceOver/TalkBack checklist.
-- [ ] Safe explicit non-interactive setup that preserves existing config; complete subcommand help and `doctor --json`.
-- [ ] Hermetic doctor unit tests; host inspection/fixes only in opt-in smoke tests.
+- [x] Safe explicit non-interactive setup preserves existing config; complete subcommand help and `doctor --json`.
+- [x] Hermetic doctor unit tests use injected checks; host inspection and fixes remain opt-in CLI smoke behavior.
 - [x] Authenticated-or-loopback health readiness, fixed-cardinality JSON/Prometheus metrics, and an explicit broker health state machine.
 - [ ] Log rotation/retention, size warnings, and `wolfpack logs --follow/--json`.
 - [ ] Split browser controller and route families behind existing facades; expand strict TypeScript coverage.
