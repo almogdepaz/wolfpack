@@ -2436,9 +2436,9 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
 
 (async () => {
   try {
-    const machine = await api<{ readonly machine?: { readonly displayName?: string }; readonly wolfpack?: { readonly version?: string } }>("/machine");
-    state.selfName = machine.machine?.displayName || "this machine";
-    state.selfVersion = machine.wolfpack?.version || "";
+    const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
+    state.selfName = info.name || "this machine";
+    state.selfVersion = info.version || "";
     const version = document.getElementById("settings-version");
     if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
   } catch {
