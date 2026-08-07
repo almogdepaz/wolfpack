@@ -1581,7 +1581,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             "type": "array",
             "items": {
               "$ref": "#/$defs/TailnetMachineCandidate"
-            }
+            },
+            "maxItems": 32
           },
           "error": {
             "type": "string"

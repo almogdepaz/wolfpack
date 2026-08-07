@@ -5,7 +5,7 @@ import {
   stableMachineIdentity,
 } from "../../src/tailnet-peer-registry.ts";
 import { MACHINE_CAPABILITY } from "../../src/tailnet-machine-contract.ts";
-import type { MachineHandshake } from "../../src/tailnet-machine-contract.ts";
+import type { MachineHandshake, TailnetMachineCandidate } from "../../src/tailnet-machine-contract.ts";
 
 const installationId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
 const candidate = {
@@ -14,6 +14,19 @@ const candidate = {
   origin: "https://peer.example.ts.net",
   online: true,
 } as const;
+
+function stalledCandidates(count: number): TailnetMachineCandidate[] {
+  return Array.from({ length: count }, (_, index) => {
+    const suffix = String(index).padStart(2, "0");
+    const hostname = `stalled-${suffix}.example.ts.net`;
+    return {
+      hostname,
+      tailnetNodeId: `n-stalled-${suffix}`,
+      origin: `https://${hostname}`,
+      online: true,
+    };
+  });
+}
 
 function handshake(
   origin: string = candidate.origin,
@@ -67,6 +80,49 @@ describe("browser tailnet peer registry", () => {
 
     expect(Date.now() - started).toBeLessThan(500);
     expect(outcomes.map(outcome => outcome.status)).toEqual(["offline", "ready"]);
+  });
+
+  test("starts exactly eight default-concurrency probes", async () => {
+    let started = 0;
+    let releaseFirstWave: (() => void) | undefined;
+    const firstWave = new Promise<Response>((resolve) => {
+      releaseFirstWave = () => resolve(new Response("", { status: 503 }));
+    });
+    const batch = probeTailnetCandidates(stalledCandidates(9), async () => {
+      started++;
+      return firstWave;
+    });
+
+    try {
+      expect(started).toBe(8);
+    } finally {
+      releaseFirstWave?.();
+    }
+    await batch;
+  });
+
+  test("finishes 32 stalled peers in four short default-concurrency timeout waves", async () => {
+    const timeoutMs = 25;
+    let active = 0;
+    let maxActive = 0;
+    const started = Date.now();
+    const outcomes = await probeTailnetCandidates(stalledCandidates(32), async (_input, init) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          active--;
+          reject(new Error("aborted"));
+        }, { once: true });
+      });
+    }, { timeoutMs });
+    const elapsed = Date.now() - started;
+
+    expect(maxActive).toBe(8);
+    expect(outcomes).toHaveLength(32);
+    expect(outcomes.every((outcome) => outcome.status === "offline")).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(timeoutMs * 3);
+    expect(elapsed).toBeLessThan(timeoutMs * 6);
   });
 
   test("reports a healthy settled probe before a stalled batch peer times out", async () => {

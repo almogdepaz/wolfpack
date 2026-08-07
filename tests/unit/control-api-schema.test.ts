@@ -12,6 +12,7 @@ import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-cont
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,
+  TAILNET_MAX_CANDIDATES,
   classifyMachineHandshake,
 } from "../../src/tailnet-machine-contract.ts";
 
@@ -254,13 +255,16 @@ describe("control api schema compatibility samples", () => {
   test("publishes canonical typed online and offline Tailnet candidate facts", () => {
     const operation = httpOperation("discoverTailnetCandidates");
     const response = httpResponse("discoverTailnetCandidates");
-    const candidates = [
-      { hostname: "online.example.ts.net", tailnetNodeId: "n-online", origin: "https://online.example.ts.net", online: true },
-      { hostname: "offline.example.ts.net", tailnetNodeId: "n-offline", origin: "https://offline.example.ts.net", online: false },
-    ];
+    const candidates = Array.from({ length: TAILNET_MAX_CANDIDATES }, (_, index) => ({
+      hostname: `peer-${index}.example.ts.net`,
+      tailnetNodeId: `n-peer-${index}`,
+      origin: `https://peer-${index}.example.ts.net`,
+      online: index % 2 === 0,
+    }));
 
     expect(operation.route).toBe("GET /api/tailnet/v1/candidates");
     expect(validate(response, { candidates }, artifact)).toEqual([]);
+    expect(validate(response, { candidates: [...candidates, candidates[0]] }, artifact)).not.toEqual([]);
     expect(validate(response, {
       candidates: [{ hostname: "online.example.ts.net", tailnetNodeId: "n-online", origin: "https://online.example.ts.net" }],
     }, artifact)).not.toEqual([]);

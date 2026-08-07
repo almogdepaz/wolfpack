@@ -8,8 +8,8 @@ import type {
 } from "./tailnet-machine-contract.ts";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
-const DEFAULT_MAX_CONCURRENT_PROBES = 4;
 const MAX_CONCURRENT_PROBES = 8;
+const DEFAULT_MAX_CONCURRENT_PROBES = MAX_CONCURRENT_PROBES;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TAILNET_NODE_ID_REGEXP = new RegExp(TAILNET_NODE_ID_PATTERN);
 const SETTLED_OBSERVER_FAILURE_DIAGNOSTIC = "tailnet probe settlement observer failed";

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MACHINE_CAPABILITY,
+  TAILNET_MAX_CANDIDATES,
   buildMachineHandshake,
   classifyMachineHandshake,
   enumerateTailnetCandidates,
@@ -124,47 +125,46 @@ describe("machine handshake contract", () => {
     })).toEqual({
       kind: "valid",
       candidates: [
-        { hostname: "offline.example.ts.net", tailnetNodeId: "n-offline", origin: "https://offline.example.ts.net", online: false },
         candidate,
+        { hostname: "offline.example.ts.net", tailnetNodeId: "n-offline", origin: "https://offline.example.ts.net", online: false },
       ],
     });
   });
 
-  test("deduplicates candidate IDs and bounds deterministic candidate ordering", () => {
-    const candidateLimit = 1_000;
-    const duplicateId = "n-duplicate";
-    const sequentialIds = Array.from(
-      { length: candidateLimit + 1 },
-      (_, index) => `n-${String(index).padStart(4, "0")}`,
-    );
-    const peers = Object.fromEntries([
-      ["duplicate-first", { ID: duplicateId, DNSName: "duplicate-first.example.ts.net.", Online: true }],
-      ["duplicate-second", { ID: duplicateId, DNSName: "duplicate-second.example.ts.net.", Online: false }],
-      ...sequentialIds.map((id) => [
-        `peer-${id}`,
-        { ID: id, DNSName: `peer-${id}.example.ts.net.`, Online: true },
-      ]),
-    ]);
-
-    const enumeration = enumerateTailnetCandidates({
+  test("selects the bounded online-first candidate set independently of Tailnet JSON order", () => {
+    const online = Array.from({ length: TAILNET_MAX_CANDIDATES }, (_, index) => {
+      const id = `n-online-${String(index).padStart(2, "0")}`;
+      return [`online-${id}`, { ID: id, DNSName: `online-${id}.example.ts.net.`, Online: true }] as const;
+    });
+    const offline = Array.from({ length: 2 }, (_, index) => {
+      const id = `n-offline-${String(index).padStart(2, "0")}`;
+      return [`offline-${id}`, { ID: id, DNSName: `offline-${id}.example.ts.net.`, Online: false }] as const;
+    });
+    const duplicateOffline = ["duplicate-online-00", {
+      ID: "n-online-00",
+      DNSName: "duplicate.example.ts.net.",
+      Online: false,
+    }] as const;
+    const entries = [...offline, duplicateOffline, ...online];
+    const enumerate = (peerEntries: readonly (readonly [string, object])[]) => enumerateTailnetCandidates({
       Self: { ID: "n-local", DNSName: "local.example.ts.net." },
-      Peer: peers,
+      Peer: Object.fromEntries(peerEntries),
     });
 
-    expect(enumeration.kind).toBe("valid");
-    if (enumeration.kind !== "valid") throw new Error("expected valid local Tailnet status");
-    expect(enumeration.candidates).toHaveLength(candidateLimit);
-    expect(enumeration.candidates.filter((candidate) => candidate.tailnetNodeId === duplicateId)).toEqual([{
-      hostname: "duplicate-first.example.ts.net",
-      tailnetNodeId: duplicateId,
-      origin: "https://duplicate-first.example.ts.net",
+    const first = enumerate(entries);
+    const reversed = enumerate([...entries].reverse());
+    expect(first).toEqual(reversed);
+    expect(first.kind).toBe("valid");
+    if (first.kind !== "valid") throw new Error("expected valid local Tailnet status");
+    expect(first.candidates).toHaveLength(TAILNET_MAX_CANDIDATES);
+    expect(first.candidates.map((candidate) => candidate.tailnetNodeId)).toEqual(
+      online.map(([_, peer]) => peer.ID).sort((left, right) => left.localeCompare(right)),
+    );
+    expect(first.candidates.find((candidate) => candidate.tailnetNodeId === "n-online-00")).toEqual({
+      hostname: "online-n-online-00.example.ts.net",
+      tailnetNodeId: "n-online-00",
+      origin: "https://online-n-online-00.example.ts.net",
       online: true,
-    }]);
-    expect(enumeration.candidates.map((candidate) => candidate.tailnetNodeId)).toEqual([
-      ...sequentialIds.slice(0, candidateLimit - 1),
-      duplicateId,
-    ].sort((left, right) => left.localeCompare(right)));
-    expect(enumeration.candidates.map((candidate) => candidate.tailnetNodeId)).not.toContain(sequentialIds[candidateLimit - 1]);
-    expect(enumeration.candidates.map((candidate) => candidate.tailnetNodeId)).not.toContain(sequentialIds[candidateLimit]);
+    });
   });
 });

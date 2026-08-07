@@ -28,6 +28,7 @@ import {
   MACHINE_CAPABILITIES,
   MACHINE_MAX_CAPABILITIES,
   MACHINE_PROTOCOL,
+  TAILNET_MAX_CANDIDATES,
   TAILNET_NODE_ID_PATTERN,
   TAILNET_ORIGIN_PATTERN,
 } from "../tailnet-machine-contract.ts";
@@ -1005,7 +1006,7 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       response: object({
-        candidates: arrayOf(ref("TailnetMachineCandidate")),
+        candidates: { ...arrayOf(ref("TailnetMachineCandidate")), maxItems: TAILNET_MAX_CANDIDATES },
         error: string(),
       }, ["candidates"]),
       errors: [],
