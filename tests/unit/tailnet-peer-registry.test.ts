@@ -8,6 +8,7 @@ import { MACHINE_CAPABILITY } from "../../src/tailnet-machine-contract.ts";
 import type { MachineHandshake, TailnetMachineCandidate } from "../../src/tailnet-machine-contract.ts";
 
 const installationId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+const MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT = 32 * 1024;
 const candidate = {
   hostname: "peer.example.ts.net",
   tailnetNodeId: "n-peer",
@@ -80,6 +81,131 @@ describe("browser tailnet peer registry", () => {
 
     expect(Date.now() - started).toBeLessThan(500);
     expect(outcomes.map(outcome => outcome.status)).toEqual(["offline", "ready"]);
+  });
+
+  test("rejects an oversized declared handshake response without consuming its body", async () => {
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+        controller.close();
+      },
+    }), { headers: { "content-length": String(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT + 1) } });
+
+    let fetchSignal: AbortSignal | null | undefined;
+    const outcomes = await probeTailnetCandidates([candidate], async (_input, init) => {
+      fetchSignal = init.signal;
+      return response;
+    });
+
+    expect(outcomes).toEqual([expect.objectContaining({
+      status: "malformed",
+      diagnostic: "machine handshake response exceeds 32 KiB",
+    })]);
+    expect(fetchSignal?.aborted).toBe(true);
+    expect(response.bodyUsed).toBe(false);
+  });
+
+  test.each([
+    ["chunked", undefined],
+    ["understated", "1"],
+  ])("rejects and cancels an oversized %s handshake stream", async (_kind, contentLength) => {
+    let cancelled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), {
+      headers: contentLength === undefined ? undefined : { "content-length": contentLength },
+    });
+
+    const outcomes = await probeTailnetCandidates([candidate], async () => response);
+
+    expect(outcomes).toEqual([expect.objectContaining({
+      status: "malformed",
+      diagnostic: "machine handshake response exceeds 32 KiB",
+    })]);
+    expect(cancelled).toBe(true);
+  });
+
+  test("settles an oversized handshake when stream cancellation never resolves", async () => {
+    const timeoutMs = 20;
+    const stalled = Symbol("stalled");
+    let fetchSignal: AbortSignal | null | undefined;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT + 1));
+      },
+      cancel() {
+        return new Promise<void>(() => {});
+      },
+    }));
+    const batch = probeTailnetCandidates([candidate], async (_input, init) => {
+      fetchSignal = init.signal;
+      return response;
+    }, { timeoutMs });
+
+    const outcomes = await Promise.race([
+      batch,
+      new Promise<typeof stalled>((resolve) => setTimeout(() => resolve(stalled), timeoutMs * 5)),
+    ]);
+
+    expect(outcomes).not.toBe(stalled);
+    if (outcomes === stalled) throw new Error("oversized handshake probe did not settle");
+    expect(outcomes).toEqual([expect.objectContaining({
+      status: "malformed",
+      diagnostic: "machine handshake response exceeds 32 KiB",
+    })]);
+    expect(fetchSignal?.aborted).toBe(true);
+  });
+
+  test("accepts a valid handshake response at the byte ceiling", async () => {
+    const encoder = new TextEncoder();
+    const payloadWithEmptyPadding = JSON.stringify({ ...handshake(), padding: "" });
+    const payload = JSON.stringify({
+      ...handshake(),
+      padding: "x".repeat(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT - encoder.encode(payloadWithEmptyPadding).byteLength),
+    });
+    expect(encoder.encode(payload)).toHaveLength(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT);
+
+    const outcomes = await probeTailnetCandidates([candidate], async () => new Response(payload, {
+      headers: { "content-length": String(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT) },
+    }));
+
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["ready"]);
+  });
+
+  test("times out when a handshake body stalls after headers", async () => {
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        bodyController = controller;
+      },
+    });
+    const timeoutMs = 20;
+    const stalled = Symbol("stalled");
+    const batch = probeTailnetCandidates([candidate], async (_input, init) => {
+      init.signal?.addEventListener("abort", () => bodyController?.error(new Error("aborted")), { once: true });
+      return new Response(body);
+    }, { timeoutMs });
+
+    try {
+      const outcomes = await Promise.race([
+        batch,
+        new Promise<typeof stalled>((resolve) => setTimeout(() => resolve(stalled), timeoutMs * 5)),
+      ]);
+      expect(outcomes).not.toBe(stalled);
+      if (outcomes === stalled) throw new Error("handshake body probe did not time out");
+      expect(outcomes).toEqual([expect.objectContaining({
+        status: "offline",
+        diagnostic: "machine handshake did not respond",
+      })]);
+    } finally {
+      bodyController?.error(new Error("test cleanup"));
+      await batch;
+    }
   });
 
   test("starts exactly eight default-concurrency probes", async () => {

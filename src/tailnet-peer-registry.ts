@@ -10,9 +10,15 @@ import type {
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
 const MAX_CONCURRENT_PROBES = 8;
 const DEFAULT_MAX_CONCURRENT_PROBES = MAX_CONCURRENT_PROBES;
+const MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES = 32 * 1024;
+const OVERSIZED_MACHINE_HANDSHAKE_DIAGNOSTIC = "machine handshake response exceeds 32 KiB";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TAILNET_NODE_ID_REGEXP = new RegExp(TAILNET_NODE_ID_PATTERN);
 const SETTLED_OBSERVER_FAILURE_DIAGNOSTIC = "tailnet probe settlement observer failed";
+
+class MachineHandshakeTimedOutError extends Error {}
+class MachineHandshakeResponseTooLargeError extends Error {}
+class MachineHandshakeBodyReadError extends Error {}
 
 export const LOCAL_MACHINE_IDENTITY = "local";
 
@@ -82,23 +88,77 @@ function boundedProbeOption(value: number | undefined, fallback: number, maximum
 function probeTimeout(timeoutMs: number): {
   readonly signal: AbortSignal;
   readonly expired: Promise<never>;
+  readonly didExpire: () => boolean;
+  readonly abort: () => void;
   readonly cancel: () => void;
 } {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let didExpire = false;
   const expired = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      didExpire = true;
       controller.abort();
-      reject(new Error("machine handshake timed out"));
+      reject(new MachineHandshakeTimedOutError());
     }, timeoutMs);
   });
   return {
     signal: controller.signal,
     expired,
+    didExpire: () => didExpire,
+    abort: () => controller.abort(),
     cancel: () => {
       if (timer !== undefined) clearTimeout(timer);
     },
   };
+}
+
+function responseContentLengthExceedsLimit(response: Response): boolean {
+  const contentLength = response.headers.get("content-length");
+  return contentLength !== null && Number(contentLength) > MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES;
+}
+
+function cancelReaderWithoutWaiting(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  void reader.cancel().catch(() => undefined);
+}
+
+async function readBoundedMachineHandshakeBody(
+  response: Response,
+  timeout: Pick<ReturnType<typeof probeTimeout>, "expired" | "didExpire" | "abort">,
+): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    for (;;) {
+      const chunk = await Promise.race([reader.read(), timeout.expired]);
+      if (chunk.done) break;
+      const nextByteLength = byteLength + chunk.value.byteLength;
+      if (nextByteLength > MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES) {
+        timeout.abort();
+        cancelReaderWithoutWaiting(reader);
+        throw new MachineHandshakeResponseTooLargeError();
+      }
+      chunks.push(chunk.value);
+      byteLength = nextByteLength;
+    }
+  } catch (error) {
+    if (error instanceof MachineHandshakeResponseTooLargeError) throw error;
+    if (timeout.didExpire()) throw new MachineHandshakeTimedOutError();
+    throw new MachineHandshakeBodyReadError();
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 async function probeCandidate(
@@ -127,10 +187,19 @@ async function probeCandidate(
         diagnostic: `machine handshake returned HTTP ${response.status}`,
       };
     }
+    if (responseContentLengthExceedsLimit(response)) {
+      timeout.abort();
+      return { candidate, status: "malformed", diagnostic: OVERSIZED_MACHINE_HANDSHAKE_DIAGNOSTIC };
+    }
     let body: unknown;
     try {
-      body = await response.json();
-    } catch {
+      const bytes = await readBoundedMachineHandshakeBody(response, timeout);
+      body = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error) {
+      if (error instanceof MachineHandshakeResponseTooLargeError) {
+        return { candidate, status: "malformed", diagnostic: OVERSIZED_MACHINE_HANDSHAKE_DIAGNOSTIC };
+      }
+      if (error instanceof MachineHandshakeTimedOutError) throw error;
       return { candidate, status: "malformed", diagnostic: "machine handshake was not JSON" };
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
