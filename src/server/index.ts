@@ -96,7 +96,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   const wss = new WebSocketServer({ noServer: true });
 
   const server = createServer(async (req, res) => {
-    const origin = req.headers.origin;
+    const origin = req.headers.origin ?? originPolicy.recoverServeOrigin(req.headers);
     if (origin) {
       if (isAllowedOrigin(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);

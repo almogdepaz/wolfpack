@@ -2387,6 +2387,17 @@ describe("CORS", () => {
     expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
   });
 
+  test("Tailscale Serve recovery reflects a canonical sibling Referer for GET", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      headers: {
+        "Tailscale-User-Login": "user@example.com",
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control`,
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
   test("foreign and lookalike origins get 403", async () => {
     for (const origin of TAILNET_REJECTED_ORIGINS) {
       const res = await fetch(`${tailnetServer.base}/api/info`, { headers: { Origin: origin } });
@@ -2420,6 +2431,33 @@ describe("CORS", () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
+  test("Tailscale Serve recovery reflects a canonical sibling Referer for OPTIONS", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      method: "OPTIONS",
+      headers: {
+        "Tailscale-User-Login": "user@example.com",
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control`,
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
+  test("Tailscale Serve recovery ignores missing login, forwarded, foreign, and lookalike headers", async () => {
+    const rejectedHeaders: readonly Record<string, string>[] = [
+      { Referer: `${TAILNET_SIBLING_ORIGIN}/control` },
+      { "Tailscale-User-Login": "", Referer: `${TAILNET_SIBLING_ORIGIN}/control` },
+      { "Tailscale-User-Login": "user@example.com", Referer: "https://evil.example/control" },
+      { "Tailscale-User-Login": "user@example.com", Referer: "https://phone.tailnet.ts.net.evil.example/control" },
+      { "Tailscale-User-Login": "user@example.com", "X-Forwarded-Host": "phone.tailnet.ts.net" },
+    ];
+    for (const headers of rejectedHeaders) {
+      const res = await fetch(`${tailnetServer.base}/api/info`, { headers });
+      expect(res.status, JSON.stringify(headers)).toBe(200);
+      expect(res.headers.get("access-control-allow-origin"), JSON.stringify(headers)).toBeNull();
+    }
   });
 
   test("OPTIONS preflight with rejected origin → 403", async () => {
