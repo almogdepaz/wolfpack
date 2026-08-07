@@ -12,6 +12,7 @@ import type {
 } from "../src/notification-preference";
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
 import { sameOriginPushUrl } from "../src/push-subscription-origin";
+import { authenticatedFetchWithTimeout } from "./browser-auth";
 
 export { esc, escAttr } from "../src/html-escape";
 
@@ -251,7 +252,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
 
   let publicKey: string;
   try {
-    const response = await fetch(sameOriginPushUrl(location.origin, "/api/push/vapid-key"));
+    const response = await authenticatedFetchWithTimeout(sameOriginPushUrl(location.origin, "/api/push/vapid-key"));
     if (!response.ok) throw new Error(`VAPID key request failed: ${response.status}`);
     const body: unknown = await response.json();
     if (typeof body !== "object" || body === null || !("publicKey" in body)
@@ -285,7 +286,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
   }
 
   try {
-    const response = await fetch(sameOriginPushUrl(location.origin, "/api/push/subscribe"), {
+    const response = await authenticatedFetchWithTimeout(sameOriginPushUrl(location.origin, "/api/push/subscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(subscription.toJSON()),
@@ -307,7 +308,7 @@ export async function unsubscribeNotifications(): Promise<NotificationChangeResu
       const registration = await navigator.serviceWorker.getRegistration();
       return registration?.pushManager.getSubscription() ?? null;
     },
-    endpoint => fetch(sameOriginPushUrl(location.origin, "/api/push/unsubscribe"), {
+    endpoint => authenticatedFetchWithTimeout(sameOriginPushUrl(location.origin, "/api/push/unsubscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ endpoint }),

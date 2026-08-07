@@ -26,8 +26,7 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { bindDelegatedAppActions } from "./app-action-controller";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
-import { fetchWithTimeout } from "./fetch-timeout";
-import { browserAuthFetch, setBrowserAuthToken } from "./browser-auth";
+import { authenticatedFetchWithTimeout } from "./browser-auth";
 import { keyboardOcclusionHeight } from "./viewport-geometry";
 import { OrderedResizeTracker } from "./ordered-resize";
 import { createReconnector } from "./reconnector";
@@ -2488,14 +2487,24 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
 
 (async () => {
   try {
-    const machine = await api<{ readonly machine?: { readonly displayName?: string }; readonly wolfpack?: { readonly version?: string } }>("/machine");
+    const machine = await api<{
+      readonly machine?: { readonly displayName?: string };
+      readonly wolfpack?: { readonly version?: string };
+    }>("/machine");
     state.selfName = machine.machine?.displayName || "this machine";
     state.selfVersion = machine.wolfpack?.version || "";
-    const version = document.getElementById("settings-version");
-    if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
   } catch {
-    state.selfName = "this machine";
+    try {
+      const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
+      state.selfName = info.name || "this machine";
+      state.selfVersion = info.version || "";
+    } catch {
+      state.selfName = "this machine";
+      state.selfVersion = "";
+    }
   }
+  const version = document.getElementById("settings-version");
+  if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
   try {
     await refreshTailnetPeers();
   } catch {
@@ -2565,34 +2574,6 @@ interface NextSessionNameResponse {
 
 interface CreateSessionResponse {
   readonly session?: string;
-}
-
-let authPrompt: Promise<boolean> | null = null;
-
-async function promptForBrowserCredential(target: string): Promise<boolean> {
-  if (authPrompt) return authPrompt;
-  authPrompt = (async () => {
-    const origin = new URL(target, location.href).origin;
-    const result = await showAppDialog({
-      title: "Authentication required",
-      message: `Enter the access token for ${origin}. It is kept only in this browser tab.`,
-      fields: [{ name: "token", label: "Access token" }],
-      confirmLabel: "Authenticate",
-    });
-    const token = result?.token?.trim();
-    if (!token) return false;
-    setBrowserAuthToken(target, token);
-    return true;
-  })().finally(() => { authPrompt = null; });
-  return authPrompt;
-}
-
-async function authenticatedFetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  let response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
-  if (response.status === 401 && await promptForBrowserCredential(input.toString())) {
-    response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
-  }
-  return response;
 }
 
 async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
@@ -4621,6 +4602,7 @@ function closeDrawer(instant?: boolean): void {
   const hdr = document.querySelector("header");
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
+  const TAP_SLOP_PX = 15;
   let startY = 0, startX = 0, startTime = 0, dragging = false, maxDrag = 0;
   let touchTarget = null;
 
@@ -4638,7 +4620,7 @@ function closeDrawer(instant?: boolean): void {
     if (state.currentView !== "terminal") return;
     const dy = e.touches[0].clientY - startY;
     // opening: drag down when closed (header only)
-    if (!state.drawerOpen && dy > 5) {
+    if (!state.drawerOpen && dy > TAP_SLOP_PX) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating", "open");
@@ -4651,7 +4633,7 @@ function closeDrawer(instant?: boolean): void {
       backdrop.style.transition = "none";
     }
     // closing: drag up when open (header or drawer)
-    if (state.drawerOpen && dy < -5) {
+    if (state.drawerOpen && dy < -TAP_SLOP_PX) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating");
@@ -4669,7 +4651,7 @@ function closeDrawer(instant?: boolean): void {
       const dt = Date.now() - startTime;
       const ex = e.changedTouches[0].clientX, ey = e.changedTouches[0].clientY;
       const dist = Math.abs(ex - startX) + Math.abs(ey - startY);
-      if (dt < 300 && dist < 15 && touchTarget) {
+      if (dt < 300 && dist <= TAP_SLOP_PX && touchTarget) {
         const disclosure = touchTarget.closest(".delegation-sidebar-toggle");
         if (disclosure && drawer.contains(disclosure)) {
           e.preventDefault();

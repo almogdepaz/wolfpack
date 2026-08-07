@@ -31,6 +31,26 @@ describe("Tailnet browser origin policy", () => {
     }
   });
 
+  test("recovers only a canonical sibling origin from a loopback Tailscale Serve request", () => {
+    expect(policy.recoverTailscaleServeOrigin({
+      fromLoopback: true,
+      tailscaleUserLogin: "user@example.com",
+      referer: `${peer}/dashboard?view=all`,
+    })).toBe(peer);
+
+    for (const input of [
+      { fromLoopback: false, tailscaleUserLogin: "user@example.com", referer: `${peer}/` },
+      { fromLoopback: true, tailscaleUserLogin: undefined, referer: `${peer}/` },
+      { fromLoopback: true, tailscaleUserLogin: "   ", referer: `${peer}/` },
+      { fromLoopback: true, tailscaleUserLogin: ["user@example.com"], referer: `${peer}/` },
+      { fromLoopback: true, tailscaleUserLogin: "user@example.com", referer: "https://evil.example/" },
+      { fromLoopback: true, tailscaleUserLogin: "user@example.com", referer: "not a URL" },
+      { fromLoopback: true, tailscaleUserLogin: "user@example.com", referer: local },
+    ] as const) {
+      expect(policy.recoverTailscaleServeOrigin(input)).toBeUndefined();
+    }
+  });
+
   test("does not enable remote origins from malformed or unverified config", () => {
     const policyWithoutVerifiedIdentity = createTailnetOriginPolicy({
       port,

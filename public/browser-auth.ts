@@ -1,3 +1,6 @@
+import { showAppDialog } from "./app-dialog";
+import { fetchWithTimeout } from "./fetch-timeout";
+
 const STORAGE_KEY = "wpAuthTokens:v1";
 
 function scopeFor(input: RequestInfo | URL): string {
@@ -44,4 +47,37 @@ export async function browserAuthFetch(input: RequestInfo | URL, init: RequestIn
   const token = getBrowserAuthToken(input);
   if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
   return fetch(input, { ...init, headers });
+}
+
+let authPrompt: Promise<boolean> | null = null;
+
+async function promptForBrowserCredential(input: RequestInfo | URL): Promise<boolean> {
+  if (authPrompt) return authPrompt;
+  authPrompt = (async () => {
+    const target = input instanceof Request ? input.url : input.toString();
+    const origin = new URL(target, location.href).origin;
+    const result = await showAppDialog({
+      title: "Authentication required",
+      message: `Enter the access token for ${origin}. It is kept only in this browser tab.`,
+      fields: [{ name: "token", label: "Access token" }],
+      confirmLabel: "Authenticate",
+    });
+    const token = result?.token?.trim();
+    if (!token) return false;
+    setBrowserAuthToken(input, token);
+    return true;
+  })().finally(() => { authPrompt = null; });
+  return authPrompt;
+}
+
+/** Timed browser request with per-origin bearer auth and one interactive retry. */
+export async function authenticatedFetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  let response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
+  if (response.status === 401 && await promptForBrowserCredential(input)) {
+    response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
+  }
+  return response;
 }

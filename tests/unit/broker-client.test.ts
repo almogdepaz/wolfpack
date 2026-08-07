@@ -572,6 +572,23 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(received).toEqual([6n]);
   });
 
+  test("unknown snapshot_subscribe leaves no active state for legacy fallback", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (req, sock) => {
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "error",
+          error: { code: "unknown_method", message: "unknown method: snapshot_subscribe" },
+        },
+      });
+    };
+
+    await expect(client.snapshotSubscribe(SAMPLE_UUID)).rejects.toThrow("unknown_method");
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+  });
+
   test("subscription_dropped resumes after the last output delivered before the barrier", async () => {
     const { server, client } = await bootClientToServer();
     const sinceSeqs: Array<number | undefined> = [];

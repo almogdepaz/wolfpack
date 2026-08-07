@@ -1,6 +1,6 @@
 # Audit Improvements Implementation Roadmap
 
-Branch: `feat/audit-improvements`  
+Branch: `feat/audit-improvements`
 Worktree: `/Users/home/Dev/wolfpack-all-improvements`
 
 This roadmap turns the performance/UX/rendering/reliability audit into independently testable changes. Preserve the broker ordering, snapshot, resize rollback, security, and bounded-queue invariants documented in `edc-context/`.

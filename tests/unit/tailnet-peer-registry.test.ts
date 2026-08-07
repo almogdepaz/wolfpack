@@ -153,6 +153,90 @@ describe("browser tailnet peer registry", () => {
     }
   });
 
+  test("bounds total scan time and leaves unstarted peers unavailable", async () => {
+    const candidates = Array.from({ length: 100 }, (_, index) => ({
+      ...candidate,
+      tailnetNodeId: `n-${index}`,
+      hostname: `peer-${index}.example.ts.net`,
+      origin: `https://peer-${index}.example.ts.net`,
+    }));
+    let calls = 0;
+    const started = Date.now();
+    const outcomes = await probeTailnetCandidates(candidates, async () => {
+      calls++;
+      return new Promise<Response>(() => {});
+    }, { timeoutMs: 1_000, totalTimeoutMs: 25, maxConcurrent: 4, maxNetworkProbes: 100 });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(calls).toBe(4);
+    expect(outcomes).toHaveLength(100);
+    expect(outcomes.slice(0, 4).every(outcome => outcome.status === "offline")).toBe(true);
+    expect(outcomes.slice(4).every(outcome => outcome.status === "unavailable")).toBe(true);
+  });
+
+  test("caps network work independently of the scan deadline", async () => {
+    const candidates = Array.from({ length: 12 }, (_, index) => ({
+      ...candidate,
+      tailnetNodeId: `n-budget-${index}`,
+      hostname: `budget-${index}.example.ts.net`,
+      origin: `https://budget-${index}.example.ts.net`,
+    }));
+    let calls = 0;
+    const outcomes = await probeTailnetCandidates(candidates, async () => {
+      calls++;
+      return new Response("not found", { status: 404 });
+    }, { maxNetworkProbes: 3, totalTimeoutMs: 1_000 });
+
+    expect(calls).toBe(3);
+    expect(outcomes.slice(0, 3).every(outcome => outcome.status === "non-wolfpack")).toBe(true);
+    expect(outcomes.slice(3).every(outcome =>
+      outcome.status === "unavailable" && outcome.diagnostic === "tailnet network probe budget exhausted"
+    )).toBe(true);
+  });
+
+  test("rejects declared and streamed oversized handshake bodies", async () => {
+    const declared = await probeTailnetCandidates([candidate], async () => new Response(null, {
+      status: 200,
+      headers: { "Content-Length": String(16 * 1024 + 1) },
+    }));
+    expect(declared[0]).toMatchObject({
+      status: "malformed",
+      diagnostic: "machine handshake body exceeded size limit",
+    });
+
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(10 * 1024));
+        controller.enqueue(new Uint8Array(10 * 1024));
+      },
+      cancel() { cancelled = true; },
+    });
+    const streamed = await probeTailnetCandidates([candidate], async () => new Response(stream, {
+      status: 200,
+      headers: { "Content-Length": "1" },
+    }));
+    expect(streamed[0]).toMatchObject({
+      status: "malformed",
+      diagnostic: "machine handshake body exceeded size limit",
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  test("keeps the timeout active while reading a stalled handshake body", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"protocol":')); },
+    });
+    const started = Date.now();
+    const outcomes = await probeTailnetCandidates(
+      [candidate],
+      async () => new Response(stream, { status: 200 }),
+      { timeoutMs: 20, totalTimeoutMs: 100 },
+    );
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(outcomes[0]).toMatchObject({ status: "offline", diagnostic: "machine handshake did not respond" });
+  });
+
   test("reports a verified installation replacement while revoking the old stable identity", () => {
     const registry = new TailnetPeerRegistry();
     const replacementInstallationId = "3bf9bf3a-d5fe-45fa-8a88-8a1e24963e75";

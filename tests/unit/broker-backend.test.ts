@@ -85,9 +85,14 @@ class FakeBrokerClient implements BrokerClientApi {
       ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
     };
     this.requests.push({ method: "snapshot_subscribe", params: rpcParams });
-    if (this.requestError) throw this.requestError;
-    const handler = this.handlers.get("snapshot_subscribe") ?? this.handlers.get("snapshot");
-    return handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+    try {
+      if (this.requestError) throw this.requestError;
+      const handler = this.handlers.get("snapshot_subscribe") ?? this.handlers.get("snapshot");
+      return handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+    } catch (error: unknown) {
+      this.activeSubscriptions.delete(sessionId);
+      throw error;
+    }
   }
 
   isSubscribed(sessionId: string): boolean {
@@ -1295,6 +1300,31 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
   test("rejects prefill when the broker rejects the snapshot RPC", async () => {
     client.setHandler("snapshot", () => errResp("internal_error"));
     await expect(backend.getSessionPrefill("live")).rejects.toThrow("internal_error");
+  });
+
+  test("falls back to legacy snapshot and replay-safe subscribe for an older protocol-v2 broker", async () => {
+    client.setHandler("snapshot_subscribe", () => {
+      throw new BrokerSubscribeError("unknown_method", "unknown method: snapshot_subscribe");
+    });
+    const snap = styledSnapshot(["legacy"]);
+    snap.snapshot.seq = 42;
+    client.setHandler("snapshot", () => okResp(snap));
+
+    const prefill = await backend.getSessionPrefill("live");
+    expect(prefill.seq).toBe(42n);
+    expect(client.requests.map(request => request.method)).toEqual([
+      "list_sessions",
+      "snapshot_subscribe",
+      "snapshot",
+    ]);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+
+    const unsubscribe = backend.onSessionData("live", () => {}, { onSubscribeError: () => {}, sinceSeq: prefill.seq });
+    expect(unsubscribe).not.toBeNull();
+    await Promise.resolve();
+    expect(client.subscribeCallCount).toBe(1);
+    expect(client.subscribeSeqs.get(SESSION_UUID_1)).toBe(42n);
+    unsubscribe?.();
   });
 
   test("renders snapshot to ANSI: clear + scrollback + visible + cursor", async () => {

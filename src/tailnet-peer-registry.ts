@@ -8,8 +8,12 @@ import type {
 } from "./tailnet-machine-contract.ts";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
+const DEFAULT_TOTAL_PROBE_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_CONCURRENT_PROBES = 4;
+const DEFAULT_MAX_NETWORK_PROBES = 32;
 const MAX_CONCURRENT_PROBES = 8;
+const MAX_NETWORK_PROBES = 128;
+const MAX_MACHINE_HANDSHAKE_BYTES = 16 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TAILNET_NODE_ID_REGEXP = new RegExp(TAILNET_NODE_ID_PATTERN);
 const SETTLED_OBSERVER_FAILURE_DIAGNOSTIC = "tailnet probe settlement observer failed";
@@ -51,7 +55,9 @@ export type TailnetProbeSettledCallback = (probe: TailnetPeerProbe) => void | Pr
 
 export interface TailnetProbeOptions {
   readonly timeoutMs?: number;
+  readonly totalTimeoutMs?: number;
   readonly maxConcurrent?: number;
+  readonly maxNetworkProbes?: number;
   /** Observes each completed probe without delaying its worker. */
   readonly onSettled?: TailnetProbeSettledCallback;
 }
@@ -101,6 +107,46 @@ function probeTimeout(timeoutMs: number): {
   };
 }
 
+class HandshakeBodyTooLargeError extends Error {}
+class HandshakeBodyMalformedError extends Error {}
+
+async function readBoundedJson(response: Response, expired: Promise<never>): Promise<unknown> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength && /^\d+$/.test(declaredLength)
+    && Number(declaredLength) > MAX_MACHINE_HANDSHAKE_BYTES) {
+    throw new HandshakeBodyTooLargeError();
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new HandshakeBodyMalformedError();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    for (;;) {
+      const result = await Promise.race([reader.read(), expired]);
+      if (result.done) break;
+      byteLength += result.value.byteLength;
+      if (byteLength > MAX_MACHINE_HANDSHAKE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new HandshakeBodyTooLargeError();
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new HandshakeBodyMalformedError();
+  }
+}
+
 async function probeCandidate(
   candidate: TailnetMachineCandidate,
   fetcher: TailnetProbeFetch,
@@ -129,9 +175,15 @@ async function probeCandidate(
     }
     let body: unknown;
     try {
-      body = await response.json();
-    } catch {
-      return { candidate, status: "malformed", diagnostic: "machine handshake was not JSON" };
+      body = await readBoundedJson(response, timeout.expired);
+    } catch (error: unknown) {
+      if (error instanceof HandshakeBodyTooLargeError) {
+        return { candidate, status: "malformed", diagnostic: "machine handshake body exceeded size limit" };
+      }
+      if (error instanceof HandshakeBodyMalformedError) {
+        return { candidate, status: "malformed", diagnostic: "machine handshake was not JSON" };
+      }
+      throw error;
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return { candidate, status: "malformed", diagnostic: "machine handshake was not an object" };
@@ -153,23 +205,42 @@ export async function probeTailnetCandidates(
   options: TailnetProbeOptions = {},
 ): Promise<readonly TailnetPeerProbe[]> {
   const timeoutMs = boundedProbeOption(options.timeoutMs, DEFAULT_PROBE_TIMEOUT_MS, 30_000);
+  const totalTimeoutMs = boundedProbeOption(options.totalTimeoutMs, DEFAULT_TOTAL_PROBE_TIMEOUT_MS, 30_000);
   const maxConcurrent = boundedProbeOption(options.maxConcurrent, DEFAULT_MAX_CONCURRENT_PROBES, MAX_CONCURRENT_PROBES);
+  const maxNetworkProbes = boundedProbeOption(options.maxNetworkProbes, DEFAULT_MAX_NETWORK_PROBES, MAX_NETWORK_PROBES);
   const outcomes = new Array<TailnetPeerProbe>(candidates.length);
+  const deadline = Date.now() + totalTimeoutMs;
   let next = 0;
+  let networkProbes = 0;
+  const notifySettled = (outcome: TailnetPeerProbe): void => {
+    if (!options.onSettled) return;
+    queueMicrotask(() => {
+      void Promise.resolve()
+        .then(() => options.onSettled?.(outcome))
+        .catch((error: unknown) => console.error(SETTLED_OBSERVER_FAILURE_DIAGNOSTIC, error));
+    });
+  };
   const worker = async (): Promise<void> => {
     for (;;) {
       const index = next++;
       const candidate = candidates[index];
       if (!candidate) return;
-      const outcome = await probeCandidate(candidate, fetcher, timeoutMs);
-      outcomes[index] = outcome;
-      if (options.onSettled) {
-        queueMicrotask(() => {
-          void Promise.resolve()
-            .then(() => options.onSettled?.(outcome))
-            .catch((error: unknown) => console.error(SETTLED_OBSERVER_FAILURE_DIAGNOSTIC, error));
-        });
+      let outcome: TailnetPeerProbe;
+      if (!candidate.online) {
+        outcome = { candidate, status: "offline", diagnostic: "tailnet reports this peer offline" };
+      } else {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          outcome = { candidate, status: "unavailable", diagnostic: "tailnet probe deadline exceeded" };
+        } else if (networkProbes >= maxNetworkProbes) {
+          outcome = { candidate, status: "unavailable", diagnostic: "tailnet network probe budget exhausted" };
+        } else {
+          networkProbes++;
+          outcome = await probeCandidate(candidate, fetcher, Math.min(timeoutMs, remainingMs));
+        }
       }
+      outcomes[index] = outcome;
+      notifySettled(outcome);
     }
   };
   await Promise.all(Array.from({ length: Math.min(maxConcurrent, candidates.length) }, () => worker()));

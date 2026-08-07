@@ -126,13 +126,21 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   });
 
   const server = createServer(async (req, res) => {
-    const origin = req.headers.origin;
+    const directOrigin = req.headers.origin;
+    const recoveredServeOrigin = directOrigin
+      ? undefined
+      : originPolicy.recoverTailscaleServeOrigin({
+          fromLoopback: isLoopbackAddress(req.socket.remoteAddress),
+          tailscaleUserLogin: req.headers["tailscale-user-login"],
+          referer: req.headers.referer,
+        });
+    const origin = directOrigin ?? recoveredServeOrigin;
+    res.setHeader("Vary", directOrigin ? "Origin" : "Origin, Referer, Tailscale-User-Login");
     if (origin) {
       if (isAllowedOrigin(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-        res.setHeader("Vary", "Origin");
       } else {
         res.writeHead(403, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "origin not allowed" }));

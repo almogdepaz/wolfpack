@@ -426,12 +426,12 @@ test("mobile drawer groups child sessions directly under their parent", async ({
   await expect.poll(localNames).toEqual(["parent", "solo"]);
 
   const parentItem = drawer.locator('.drawer-item[data-val="parent"]');
-  const toggle = parentItem.locator(".delegation-sidebar-toggle");
+  const toggle = parentItem.locator("..").locator(".delegation-sidebar-toggle");
   await expect(toggle).toHaveAttribute("aria-label", "Expand 1 child agent");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   const toggleBox = await toggle.boundingBox();
   expect(toggleBox).not.toBeNull();
-  const toggleSelector = '#drawer-list .drawer-item[data-val="parent"] .delegation-sidebar-toggle';
+  const toggleSelector = '#drawer-list .drawer-item[data-val="parent"] + .delegation-sidebar-toggle';
   await dispatchSyntheticTouch(page, toggleSelector, "touchstart", 11, toggleBox!.x + 4, toggleBox!.y + 4);
   await dispatchSyntheticTouch(page, toggleSelector, "touchend", 11, toggleBox!.x + 4, toggleBox!.y + 4);
   await expect(drawer).toHaveClass(/open/);

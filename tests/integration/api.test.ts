@@ -2419,6 +2419,48 @@ describe("CORS", () => {
     const res = await get("/api/info");
     expect(res.status).toBe(200);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    expect(res.headers.get("vary")).toBe("Origin, Referer, Tailscale-User-Login");
+  });
+
+  test("recovers a stripped Origin only for a local Tailscale Serve request", async () => {
+    for (const method of ["GET", "OPTIONS"] as const) {
+      const res = await fetch(`${tailnetServer.base}/api/info`, {
+        method,
+        headers: {
+          Referer: `${TAILNET_SIBLING_ORIGIN}/control-room`,
+          "Tailscale-User-Login": "user@example.com",
+        },
+      });
+      expect(res.status).toBe(method === "OPTIONS" ? 204 : 200);
+      expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+      expect(res.headers.get("vary")).toBe("Origin, Referer, Tailscale-User-Login");
+    }
+  });
+
+  test("an explicit disallowed Origin remains authoritative over valid Serve recovery headers", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      headers: {
+        Origin: "https://evil.example",
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control-room`,
+        "Tailscale-User-Login": "user@example.com",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  test("generic forwarding headers cannot recover a stripped Origin", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      headers: {
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control-room`,
+        Forwarded: "for=203.0.113.1;proto=https;host=phone.tailnet.ts.net",
+        "X-Forwarded-For": "203.0.113.1",
+        "X-Forwarded-Host": "phone.tailnet.ts.net",
+        "X-Forwarded-Proto": "https",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
 
   test("OPTIONS preflight with allowed origin → 204", async () => {

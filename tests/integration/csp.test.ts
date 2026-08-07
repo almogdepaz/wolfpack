@@ -1,33 +1,17 @@
-import { describe, test, expect, beforeAll, afterAll, mock } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const TEST_HTML = '<!doctype html><html><head><script src="/a.js"></script><script src="/b.js"></script></head><body></body></html>';
 
-// Mock assets to provide a test HTML page
-await mock.module("../../src/public-assets.js", () => ({
-  ASSET_VERSION: "test",
-  assets: new Map([
-    ["index.html", { content: TEST_HTML, mime: "text/html" }],
-    ["a.js", { content: "console.log('a')", mime: "application/javascript" }],
-  ]),
-}));
-
-// Stub shell.exec so http.ts's git invocations don't shell out during tests
-await mock.module("../../src/server/shell.js", () => ({
-  exec: mock(async () => ({ stdout: "", stderr: "" })),
-  SHELL: "/bin/zsh",
-  __setExecOverride: () => {},
-}));
-
-const { serveFile } = await import("../../src/server/http.js");
+const { serveFile, serveHtml } = await import("../../src/server/http.js");
 
 let server: ReturnType<typeof createServer>;
 let base: string;
 
 beforeAll(async () => {
   server = createServer((_req: IncomingMessage, res: ServerResponse) => {
-    serveFile(res, "index.html");
+    serveHtml(res, TEST_HTML);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const addr = server.address() as AddressInfo;
@@ -93,7 +77,7 @@ describe("CSP header on HTML responses", () => {
 
   test("non-HTML assets do not get CSP header", async () => {
     // Create a server that serves JS
-    const jsServer = createServer((_req, res) => { serveFile(res, "a.js"); });
+    const jsServer = createServer((_req, res) => { serveFile(res, "app.bundle.js"); });
     await new Promise<void>((resolve) => jsServer.listen(0, "127.0.0.1", resolve));
     const jsBase = `http://127.0.0.1:${(jsServer.address() as AddressInfo).port}`;
     try {

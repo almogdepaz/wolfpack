@@ -17,6 +17,8 @@ interface SetupFlowFixture {
   readonly tailscale?: TailscaleFixture;
   readonly failsTailscaleInstallation?: boolean;
   readonly serviceRunning?: boolean;
+  readonly serviceInstalled?: boolean;
+  readonly setupOptions?: { readonly devDir?: string; readonly port?: number };
   readonly existingConfig?: { readonly devDir: string; readonly port: number; readonly tailscaleHostname?: string };
 }
 
@@ -83,17 +85,22 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
       tailscaleBin: () => fixture?.tailscale ? "tailscale" : null,
     }));
-    if (fixture?.serviceRunning) {
+    if (fixture?.serviceRunning || fixture?.serviceInstalled) {
       const service = await import("./src/cli/service.ts");
       await mock.module("./src/cli/service.js", () => ({
         ...service,
-        isServiceRunning: () => true,
+        isServiceInstalled: () => fixture?.serviceInstalled ?? false,
+        isServiceRunning: () => fixture?.serviceRunning ?? false,
+        refreshInstalledServerService: () => console.log("SERVICE_REFRESH=server-only"),
         serviceRestart: (options) => console.log("SERVICE_RESTART=" + JSON.stringify(options)),
       }));
     }
 
     const { setup } = await import("./src/cli/setup.ts");
-    await setup({ nonInteractive: !fixture?.failsTailscaleInstallation && !fixture?.tailscale });
+    await setup({
+      nonInteractive: !fixture?.failsTailscaleInstallation && !fixture?.tailscale,
+      ...(fixture?.setupOptions ?? {}),
+    });
   `;
 
   const child = Bun.spawnSync([process.execPath, "-e", script], {
@@ -224,6 +231,36 @@ describe("first-run setup", () => {
       expect(result.stdout).toContain(message);
       expect(result.stdout).not.toContain("Remote:");
     }
+  });
+
+  test("refreshes an installed server descriptor when its port changes", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      existingConfig: { devDir: join(home, "Dev"), port: 18790 },
+      setupOptions: { port: 24444 },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
+
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({ port: 24444 });
+    expect(result.stdout).toContain("SERVICE_REFRESH=server-only");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
+  test("does not refresh an installed descriptor when embedded settings are unchanged", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      existingConfig: { devDir: join(home, "Dev"), port: 18790 },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
+
+    expectSuccessfulSetup(result);
+    expect(result.stdout).not.toContain("SERVICE_REFRESH=");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
   });
 
   test("refreshes only the running server after verified remote readiness changes", () => {

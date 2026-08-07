@@ -18,7 +18,13 @@ import {
   tailscaleBin,
   type Config,
 } from "./config.js";
-import { isServiceRunning, serviceInstall, serviceRestart } from "./service.js";
+import {
+  isServiceInstalled,
+  isServiceRunning,
+  refreshInstalledServerService,
+  serviceInstall,
+  serviceRestart,
+} from "./service.js";
 import { createLogger } from "../log.js";
 import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
@@ -263,7 +269,14 @@ export async function setup(options: SetupOptions = {}) {
     }),
   };
   saveConfig(config);
-  if (previousConfig?.tailscaleHostname !== config.tailscaleHostname && isServiceRunning()) {
+  const descriptorSettingsChanged = previousConfig?.devDir !== config.devDir
+    || previousConfig?.port !== config.port;
+  const remotePolicyChanged = previousConfig?.tailscaleHostname !== config.tailscaleHostname;
+  if (descriptorSettingsChanged && isServiceInstalled()) {
+    // The plist/unit embeds these values; a plain restart would reload stale
+    // environment. Refresh only the server descriptor and preserve broker PTYs.
+    refreshInstalledServerService();
+  } else if (remotePolicyChanged && isServiceRunning()) {
     // CORS policy is loaded at server startup. This intentionally restarts
     // only the server; broker-owned PTYs and sessions remain untouched.
     serviceRestart({ broker: false, skipBrokerSessionWarning: true });

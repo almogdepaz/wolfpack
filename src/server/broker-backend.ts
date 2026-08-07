@@ -906,6 +906,14 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     try {
       response = await this.client.snapshotSubscribe(id, { scrollbackLines, targetCols });
     } catch (error: unknown) {
+      if (error instanceof BrokerSubscribeError && error.code === "unknown_method") {
+        // Upgrade compatibility: protocol-v2 brokers installed before
+        // snapshot_subscribe still support snapshot followed by
+        // subscribe(since_seq). The normal WS attach path performs that
+        // subscribe after this returns and retains replay-truncation recovery.
+        log.warn("getSessionPrefill: broker lacks atomic snapshot subscribe; using legacy replay-safe attach", { name });
+        return this.fetchSnapshot(id, name, "getSessionPrefill", targetCols, scrollbackLines);
+      }
       log.warn("getSessionPrefill: atomic snapshot subscribe failed", { name, error: errMsg(error) });
       throw error;
     }

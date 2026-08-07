@@ -103,6 +103,28 @@ test.afterAll(() => {
   server?.close();
 });
 
+test("uses local info metadata when Tailnet machine identity is unavailable", async ({ page }) => {
+  await page.route("**/api/machine", route => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "tailnet machine identity unavailable" }),
+  }));
+  await page.route("**/api/info", route => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ name: "local-only-mac", version: "9.9.9", machineId: "local-id" }),
+  }));
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ candidates: [], error: "tailscale unavailable" }),
+  }));
+
+  await page.goto(server.baseUrl);
+
+  await expect(page.locator("#session-list .machine-header-identity")).toContainText("local-only-mac");
+  await expect(page.locator("#settings-version")).toHaveText("wolfpack v9.9.9");
+});
+
 test("loads a verified peer before an unrelated candidate machine request times out", async ({ page }) => {
   let healthySessionsRequested = false;
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
@@ -586,7 +608,7 @@ test("enrolls notifications only after navigating to a currently ready verified 
   const peerOrigin = "https://peer.example.ts.net";
   const badOrigin = "https://bad.example.ts.net";
   let candidateMode: "valid" | "error" = "valid";
-  const peerPushRequests: string[] = [];
+  const peerPushRequests: Array<{ readonly request: string; readonly authorization: string | undefined }> = [];
 
   await page.addInitScript(() => {
     const testWindow = window as unknown as { serviceWorkerRegistrationUrls: string[] };
@@ -598,27 +620,37 @@ test("enrolls notifications only after navigating to a currently ready verified 
       configurable: true,
       value: class PushManager {},
     });
+    const subscription = {
+      endpoint: "https://push.example.test/subscription",
+      toJSON: () => ({
+        endpoint: "https://push.example.test/subscription",
+        keys: { p256dh: "key", auth: "auth" },
+      }),
+      unsubscribe: async () => true,
+    };
+    let currentSubscription: typeof subscription | null = null;
+    const registration = {
+      pushManager: {
+        subscribe: async () => {
+          currentSubscription = subscription;
+          return subscription;
+        },
+        getSubscription: async () => currentSubscription,
+      },
+    };
     Object.defineProperty(navigator, "serviceWorker", {
       configurable: true,
       value: {
-        ready: Promise.resolve(),
-        getRegistration: async () => undefined,
+        ready: Promise.resolve(registration),
+        getRegistration: async () => registration,
         register: async (url: string) => {
           testWindow.serviceWorkerRegistrationUrls ??= [];
           testWindow.serviceWorkerRegistrationUrls.push(url);
-          return {
-            pushManager: {
-              subscribe: async () => ({
-                toJSON: () => ({
-                  endpoint: "https://push.example.test/subscription",
-                  keys: { p256dh: "key", auth: "auth" },
-                }),
-              }),
-            },
-          };
+          return registration;
         },
       },
     });
+    sessionStorage.setItem("wpAuthTokens:v1", JSON.stringify({ [location.origin]: "push-test-token" }));
   });
 
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
@@ -658,12 +690,26 @@ test("enrolls notifications only after navigating to a currently ready verified 
       return;
     }
     if (url.pathname === "/api/push/vapid-key") {
-      peerPushRequests.push(`${route.request().method()} ${url.href}`);
+      peerPushRequests.push({
+        request: `${route.request().method()} ${url.href}`,
+        authorization: route.request().headers()["authorization"],
+      });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ publicKey: "AQID" }) });
       return;
     }
     if (url.pathname === "/api/push/subscribe") {
-      peerPushRequests.push(`${route.request().method()} ${url.href}`);
+      peerPushRequests.push({
+        request: `${route.request().method()} ${url.href}`,
+        authorization: route.request().headers()["authorization"],
+      });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      return;
+    }
+    if (url.pathname === "/api/push/unsubscribe") {
+      peerPushRequests.push({
+        request: `${route.request().method()} ${url.href}`,
+        authorization: route.request().headers()["authorization"],
+      });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
       return;
     }
@@ -709,14 +755,20 @@ test("enrolls notifications only after navigating to a currently ready verified 
   await notificationToggle.check();
   await expect(page.locator("#notification-setting-status")).toContainText("Notifications are enabled");
   expect(peerPushRequests).toEqual([
-    `GET ${peerOrigin}/api/push/vapid-key`,
-    `POST ${peerOrigin}/api/push/subscribe`,
+    { request: `GET ${peerOrigin}/api/push/vapid-key`, authorization: "Bearer push-test-token" },
+    { request: `POST ${peerOrigin}/api/push/subscribe`, authorization: "Bearer push-test-token" },
   ]);
+  await notificationToggle.uncheck();
+  await expect(page.locator("#notification-setting-status")).toContainText("Notifications are off");
+  expect(peerPushRequests.at(-1)).toEqual({
+    request: `POST ${peerOrigin}/api/push/unsubscribe`,
+    authorization: "Bearer push-test-token",
+  });
   expect(await page.evaluate(() => (
     (window as unknown as { serviceWorkerRegistrationUrls: string[] }).serviceWorkerRegistrationUrls
   ))).toEqual([`${peerOrigin}/sw.js`]);
-  expect(peerPushRequests.every((request) => request.includes(peerOrigin))).toBe(true);
-  expect(peerPushRequests.some((request) => request.includes(badOrigin) || request.includes(server.baseUrl))).toBe(false);
+  expect(peerPushRequests.every(({ request }) => request.includes(peerOrigin))).toBe(true);
+  expect(peerPushRequests.some(({ request }) => request.includes(badOrigin) || request.includes(server.baseUrl))).toBe(false);
 });
 
 test("replacement clears a suspended old-peer grid without disrupting an unrelated focused delegation workspace", async ({ page }, testInfo) => {

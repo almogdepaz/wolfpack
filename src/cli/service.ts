@@ -347,6 +347,15 @@ function launchdBootstrap() {
   execSync(`launchctl kickstart ${LAUNCHD_TARGET}`);
 }
 
+function isLaunchdServiceLoaded(): boolean {
+  try {
+    execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function launchdBootoutBroker() {
   try { execSync(`launchctl bootout ${BROKER_LAUNCHD_TARGET} 2>/dev/null`); } catch { /* expected when not loaded */ }
 }
@@ -479,6 +488,35 @@ export function isServiceInstalled(): boolean {
   if (IS_MACOS) return existsSync(PLIST_PATH);
   if (IS_LINUX) return existsSync(SYSTEMD_PATH);
   return false;
+}
+
+/**
+ * Rewrite and reload only the installed server descriptor after setup changes
+ * descriptor-backed config. The independent broker and its PTYs are untouched.
+ */
+export function refreshInstalledServerService(): void {
+  if (!isServiceInstalled()) return;
+  const wasRunning = isServiceRunning();
+  // launchd can have a loaded KeepAlive job between process instances. It
+  // still holds an in-memory copy of the old plist and must be re-bootstrapped.
+  const wasLoaded = IS_MACOS ? isLaunchdServiceLoaded() : wasRunning;
+  const authState = prepareServiceAuthFile(SERVICE_AUTH_PATH);
+  const serviceAuthPath = authState === "absent" ? undefined : SERVICE_AUTH_PATH;
+
+  if (IS_MACOS) {
+    mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(PLIST_PATH, generatePlist(serviceAuthPath));
+    if (wasLoaded) {
+      launchdBootout();
+      launchdBootstrap();
+    }
+  } else if (IS_LINUX) {
+    mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
+    writeFileSync(SYSTEMD_PATH, generateSystemdUnit(serviceAuthPath));
+    execSync("systemctl --user daemon-reload");
+    if (wasRunning) execSync(`systemctl --user restart ${SYSTEMD_SERVICE}`);
+  }
+  print(dim(`  Refreshed installed server service${wasLoaded ? " and reloaded it" : ""}.`));
 }
 
 export function serviceInstall() {
