@@ -591,10 +591,12 @@ describe("control api schema compatibility samples", () => {
   test("representative websocket control messages satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["attach", { type: "attach", cols: 120, rows: 40, prefillMode: "full" }],
-      ["resize", { type: "resize", cols: 100, rows: 30 }],
+      ["resize", { type: "resize", resizeId: 1, cols: 100, rows: 30 }],
       ["layout_stable", { type: "layout_stable", cols: 100, rows: 30 }],
       ["take_control", { type: "take_control" }],
-      ["attach_ack", { type: "attach_ack" }],
+      ["attach_ack", { type: "attach_ack", capabilities: ["ordered-resize-ack"] }],
+      ["attach_ack", { type: "attach_ack" }], // same-major peer without ordered resize support
+      ["resize_ack", { type: "resize_ack", resizeId: 1, cols: 100, rows: 30 }],
       ["prefill_done", { type: "prefill_done" }],
       ["prefill_viewport", { type: "prefill_viewport" }],
       ["pty_ready", { type: "pty_ready" }],

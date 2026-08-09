@@ -501,6 +501,35 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(client.outputSequence(SAMPLE_UUID)).toBeUndefined();
   });
 
+  test("re-attach during an in-flight subscription preserves the active broker stream", async () => {
+    const { server, client } = await bootClientToServer();
+    const requests: Array<{ readonly request: ControlRequest; readonly socket: net.Socket }> = [];
+    server.onRequest = (request, socket) => {
+      requests.push({ request, socket });
+      if (request.method === "unsubscribe") {
+        server.send(socket, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: request.id, status: "ok", payload: { kind: "unsubscribe", ok: true } },
+        });
+      }
+    };
+
+    const initialSubscribe = client.subscribe(SAMPLE_UUID);
+    await waitFor(() => requests.length === 1);
+    const observerDetach = client.unsubscribe(SAMPLE_UUID);
+    const forwardingSubscribe = client.subscribe(SAMPLE_UUID);
+
+    const initial = requests[0];
+    server.send(initial.socket, {
+      kind: FRAME_KIND_CONTROL_RESPONSE,
+      value: { id: initial.request.id, status: "ok", payload: { kind: "subscribe", ok: true, current_seq: 0 } },
+    });
+    await Promise.all([initialSubscribe, observerDetach, forwardingSubscribe]);
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(requests.map(({ request }) => request.method)).toEqual(["subscribe"]);
+  });
+
   test("subscribe rejects broker error responses without tracking reconnect state", async () => {
     const { server, client } = await bootClientToServer();
     server.onRequest = (req, sock) => {
@@ -620,6 +649,142 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     };
     await client.unsubscribe(SAMPLE_UUID);
     expect(calls.length).toBe(0);
+  });
+
+  test("cancelSubscription force-detaches a rejected re-subscribe", async () => {
+    const { server, client } = await bootClientToServer();
+    const methods: string[] = [];
+    server.onRequest = (req, sock) => {
+      methods.push(req.method);
+      if (req.method === "subscribe" && methods.length === 2) {
+        server.send(sock, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: req.id, status: "error", error: { code: "session_not_alive", message: "gone" } },
+        });
+        return;
+      }
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true } },
+      });
+    };
+
+    await client.subscribe(SAMPLE_UUID);
+    await expect(client.subscribe(SAMPLE_UUID, { sinceSeq: 10n })).rejects.toThrow("session_not_alive");
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+
+    await client.cancelSubscription(SAMPLE_UUID);
+    expect(methods).toEqual(["subscribe", "subscribe", "unsubscribe"]);
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+  });
+
+  test("forced cancellation timeout drops the socket and restores only other active subscriptions", async () => {
+    const otherUuid = "33333333-3333-3333-3333-333333333333";
+    const socketPath = makeSocketPath();
+    const server = await startMockServer(socketPath);
+    activeServer = server;
+    let connects = 0;
+    let firstSocket: net.Socket | undefined;
+    let firstSocketClosed = false;
+    let receivedOutput = false;
+    const restored: string[] = [];
+    const client = new BrokerClient({
+      socketPath,
+      reconnectInitialDelayMs: 20,
+      reconnectMaxDelayMs: 100,
+      requestTimeoutMs: 25,
+      requestTimeoutCircuitBreakerThreshold: 3,
+      onConnect: () => { connects++; },
+    });
+    activeClient = client;
+    server.onRequest = (request, socket) => {
+      if (!firstSocket) {
+        firstSocket = socket;
+        socket.once("close", () => { firstSocketClosed = true; });
+      }
+      if (request.method === "subscribe") {
+        if (socket !== firstSocket) {
+          restored.push((request.params as { session_id: string }).session_id);
+        }
+        server.send(socket, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: request.id, status: "ok", payload: { kind: "subscribe", ok: true } },
+        });
+        return;
+      }
+      if (request.method === "unsubscribe") {
+        server.send(socket, {
+          kind: FRAME_KIND_OUTPUT_BINARY,
+          value: { sessionId: SAMPLE_UUID, seq: 1n, data: new Uint8Array([1]) },
+        });
+      }
+    };
+    client.start();
+    await waitFor(() => connects === 1);
+    await client.subscribe(SAMPLE_UUID);
+    await client.subscribe(otherUuid);
+    client.subscribeOutput(SAMPLE_UUID, () => { receivedOutput = true; });
+
+    const cancellation = client.cancelSubscription(SAMPLE_UUID);
+    await waitFor(() => receivedOutput);
+    await expect(cancellation).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
+    await waitFor(() => firstSocketClosed);
+    await waitFor(() => connects === 2);
+    await waitFor(() => restored.length === 1);
+
+    expect(restored).toEqual([otherUuid]);
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(client.isSubscribed(otherUuid)).toBe(true);
+  });
+
+  test("superseded cancellation timeout preserves the replacement subscription", async () => {
+    const { server, client } = await bootClientToServer();
+    let subscribes = 0;
+    let firstSocketClosed = false;
+    server.onRequest = (request, socket) => {
+      if (request.method === "subscribe") {
+        subscribes++;
+        socket.once("close", () => { firstSocketClosed = true; });
+        server.send(socket, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: request.id, status: "ok", payload: { kind: "subscribe", ok: true } },
+        });
+      }
+    };
+
+    await client.subscribe(SAMPLE_UUID);
+    const cancellation = client.cancelSubscription(SAMPLE_UUID, { timeoutMs: 25 });
+    const replacement = client.subscribe(SAMPLE_UUID);
+    await replacement;
+    await expect(cancellation).rejects.toBeInstanceOf(BrokerRequestTimeoutError);
+
+    expect(subscribes).toBe(2);
+    expect(firstSocketClosed).toBe(false);
+    expect(client.isConnected()).toBe(true);
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+  });
+
+  test("replacement subscribe supersedes a pending forced teardown", async () => {
+    const { server, client } = await bootClientToServer();
+    const requests: Array<{ readonly request: ControlRequest; readonly socket: net.Socket }> = [];
+    server.onRequest = (request, socket) => {
+      requests.push({ request, socket });
+    };
+
+    const initial = client.subscribe(SAMPLE_UUID);
+    await waitFor(() => requests.length === 1);
+    const teardown = client.cancelSubscription(SAMPLE_UUID);
+    const replacement = client.subscribe(SAMPLE_UUID);
+
+    const first = requests[0];
+    server.send(first.socket, {
+      kind: FRAME_KIND_CONTROL_RESPONSE,
+      value: { id: first.request.id, status: "ok", payload: { kind: "subscribe", ok: true } },
+    });
+    await Promise.all([initial, teardown, replacement]);
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(requests.map(({ request }) => request.method)).toEqual(["subscribe"]);
   });
 
   test("re-issues subscribe for every active session on reconnect", async () => {

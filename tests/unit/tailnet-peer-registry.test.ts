@@ -365,6 +365,40 @@ describe("browser tailnet peer registry", () => {
     expect(registry.resolveReadyOrigin(newIdentity)).toBe(candidate.origin);
   });
 
+  test("revokes a ready origin when current candidate facts change before its replacement handshake", () => {
+    const registry = new TailnetPeerRegistry();
+    const id = stableMachineIdentity(candidate.tailnetNodeId, installationId);
+    registry.applyProbe({ candidate, status: "ready", handshake: handshake() });
+
+    const renamed = {
+      ...candidate,
+      hostname: "renamed.example.ts.net",
+      origin: "https://renamed.example.ts.net",
+    };
+    registry.reconcileCandidates([renamed]);
+
+    expect(registry.entries()).toEqual([expect.objectContaining({
+      identity: id,
+      status: "offline",
+      origin: candidate.origin,
+      hostname: candidate.hostname,
+    })]);
+    expect(registry.resolveReadyOrigin(id)).toBeUndefined();
+
+    registry.applyProbe({ candidate: renamed, status: "ready", handshake: handshake(renamed.origin, "renamed") });
+    expect(registry.resolveReadyOrigin(id)).toBe(renamed.origin);
+
+    registry.reconcileCandidates([{ ...renamed, online: false }]);
+    expect(registry.entries()).toEqual([expect.objectContaining({
+      status: "offline",
+      diagnostic: "tailnet reports this peer offline",
+    })]);
+    expect(registry.resolveReadyOrigin(id)).toBeUndefined();
+
+    registry.applyProbe({ candidate: renamed, status: "ready", handshake: handshake(renamed.origin, "renamed") });
+    expect(registry.resolveReadyOrigin(id)).toBe(renamed.origin);
+  });
+
   test("keeps one stable peer through hostname changes and recovery", () => {
     const registry = new TailnetPeerRegistry();
     const id = stableMachineIdentity(candidate.tailnetNodeId, installationId);

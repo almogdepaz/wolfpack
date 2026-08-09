@@ -36,9 +36,13 @@ import {
   TERMINAL_PREFILL_MODE,
 } from "../terminal-prefill.js";
 import type { TerminalPrefillMode } from "../terminal-prefill.js";
+import { PTY_ATTACH_CAPABILITY } from "../pty-websocket-contract.js";
 
 const log = createLogger("ws");
 const PTY_BINARY_BYTES_PER_SEC = PTY_BINARY_FRAME_MAX_BYTES * 60;
+// Input accepted after attach_ack waits for a replay-capable subscription.
+// Bound the gate to one second of the existing binary-input allowance.
+const MAX_PENDING_INPUT_BYTES = PTY_BINARY_BYTES_PER_SEC;
 const TERMINAL_LOAD_TIMING_ENABLED = isTerminalLoadTimingEnabled(process.env);
 
 interface ServerTerminalLoadTiming {
@@ -264,6 +268,13 @@ function sendPrefillDone(entry: { viewer: WebSocket | null; alive: boolean }, se
 
 function sendPtyReady(entry: { viewer: WebSocket | null; alive: boolean }, session: string): boolean {
   return safeViewerSend(entry, session, JSON.stringify({ type: "pty_ready" }));
+}
+
+function sendAttachAck(entry: { viewer: WebSocket | null; alive: boolean }, session: string): boolean {
+  return safeViewerSend(entry, session, JSON.stringify({
+    type: "attach_ack",
+    capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK],
+  }));
 }
 
 /** True when `entry` is still the live, current owner of `session` and `ws`
@@ -506,7 +517,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
             performImmediateTakeover(pendingAttachDims);
             return;
           }
-          safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "attach_ack" }));
+          sendAttachAck({ viewer: ws, alive: true }, session);
           return;
         }
         if (msg.type === "take_control") {
@@ -545,6 +556,24 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
  *  current. Convenience wrapper around {@link entryStillCurrent}. */
 function bail(ctx: PtyEntryContext): boolean {
   return !entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
+}
+
+/** Resize failure invalidates the browser's proposed geometry. Close instead of
+ * continuing an attach with an acknowledgement or readiness signal. */
+async function applyAttachResize(
+  ctx: PtyEntryContext,
+  size: { cols: number; rows: number },
+): Promise<boolean> {
+  try {
+    await ctx.backend.resize(ctx.session, size.cols, size.rows);
+  } catch (error: unknown) {
+    if (entryStillCurrent(ctx.entry, ctx.session, ctx.ws)) {
+      log.warn("attach resize failed — reconnecting viewer", { session: ctx.session, error: errMsg(error) });
+      tryWsClose(ctx.ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "attach resize failure viewer close failed", ctx.session);
+    }
+    return false;
+  }
+  return entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
 }
 
 /** Wait for the client's pre-snapshot resize messages to settle so we apply
@@ -630,7 +659,7 @@ async function waitForOutputQuiescence(
     },
   });
   try {
-    await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+    if (!await applyAttachResize(ctx, appliedSize)) return null;
     let lastResizeAt = Date.now();
     settleStart = lastResizeAt;
     while (true) {
@@ -640,7 +669,7 @@ async function waitForOutputQuiescence(
       const latest = ctx.requestedSize.current;
       if (latest && (latest.cols !== appliedSize.cols || latest.rows !== appliedSize.rows)) {
         appliedSize = latest;
-        await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+        if (!await applyAttachResize(ctx, appliedSize)) return null;
         lastResizeAt = Date.now();
       }
       const now = Date.now();
@@ -659,7 +688,10 @@ async function waitForOutputQuiescence(
       await new Promise(resolve => setTimeout(resolve, 16));
     }
   } finally {
-    if (observe) observe();
+    if (observe) {
+      observe();
+      if (observe.closed) await observe.closed;
+    }
   }
   ctx.timing?.mark("quiescence_wait.end", {
     cols: appliedSize.cols,
@@ -706,7 +738,7 @@ async function waitForSettledResizeAndOutputQuiescence(
   let lastResizeAt = Date.now();
   const settleStart = lastResizeAt;
   try {
-    await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+    if (!await applyAttachResize(ctx, appliedSize)) return null;
     resizeApplyCount += 1;
     lastResizeAt = Date.now();
 
@@ -719,7 +751,7 @@ async function waitForSettledResizeAndOutputQuiescence(
       }
       if (pendingSize.cols !== appliedSize.cols || pendingSize.rows !== appliedSize.rows) {
         appliedSize = pendingSize;
-        await ctx.backend.resize(ctx.session, appliedSize.cols, appliedSize.rows);
+        if (!await applyAttachResize(ctx, appliedSize)) return null;
         resizeApplyCount += 1;
         lastResizeAt = Date.now();
       }
@@ -750,7 +782,10 @@ async function waitForSettledResizeAndOutputQuiescence(
       await new Promise(resolve => setTimeout(resolve, 16));
     }
   } finally {
-    if (observe) observe();
+    if (observe) {
+      observe();
+      if (observe.closed) await observe.closed;
+    }
   }
 
   const elapsedMs = Date.now() - settleStart;
@@ -835,10 +870,10 @@ async function sendSnapshotPrefill(
  *  `ctx.entry.unsubscribeLifecycle`. Returns `true` if the subscription
  *  was established, `false` if the session vanished and the viewer was
  *  closed. */
-function subscribeWithCoalescing(
+async function subscribeWithCoalescing(
   ctx: PtyEntryContext,
   prefillSeq: bigint | undefined,
-): boolean {
+): Promise<boolean> {
   const { entry, session, backend } = ctx;
 
   // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
@@ -934,7 +969,6 @@ function subscribeWithCoalescing(
     }
     return false;
   }
-  ctx.timing?.mark("subscribe.success");
   // Wrap unsub so the coalesce timer + buffer don't leak past detach.
   // Drop the buffer rather than flushing: viewer is gone, no point.
   entry.unsubscribe = () => {
@@ -985,6 +1019,9 @@ function subscribeWithCoalescing(
     }
   });
   if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
+  if (unsub.ready && !await unsub.ready) return false;
+  if (!entryStillCurrent(entry, session, ctx.ws)) return false;
+  ctx.timing?.mark("subscribe.success");
   return true;
 }
 
@@ -1004,8 +1041,27 @@ function setupNewPtyEntry(
   };
   activePtySessions.set(session, entry);
   let spawning = false;
+  let attachFinalizing = false;
+  let attachFinalizationRequest: { resizeId: number | undefined; cols: number; rows: number } | null = null;
+  // attach_ack is intentionally immediate, but broker subscribe is async.
+  // Hold input accepted after that acknowledgement until the replay-backed
+  // subscription is live, otherwise its PTY output can precede the snapshot
+  // → live boundary and disappear.
+  let inputGateActive = false;
+  const pendingInput: Buffer[] = [];
+  let pendingInputBytes = 0;
   const requestedSize: { current: { cols: number; rows: number } | null } = { current: null };
+  let pendingAttachResizeAck: { resizeId: number; cols: number; rows: number } | null = null;
   const layoutStable: { current: { cols: number; rows: number } | null } = { current: null };
+
+  function acknowledgeAttachedResize(applied: { cols: number; rows: number }): void {
+    const pending = pendingAttachResizeAck;
+    if (!pending || pending.cols !== applied.cols || pending.rows !== applied.rows) return;
+    pendingAttachResizeAck = null;
+    if (entryStillCurrent(entry, session, ws)) {
+      safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...pending }));
+    }
+  }
 
   // Streaming attach path: snapshot prefill + subscribe to broker output stream.
   const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
@@ -1016,6 +1072,40 @@ function setupNewPtyEntry(
     tryWsClose(ws, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "streaming backend missing close failed", session);
     activePtySessions.delete(session);
     return;
+  }
+
+  /** Apply only finalizer-owned requests from the subscription boundary until
+   * the newest matching acknowledgement has been sent. */
+  async function finalizeAttachResizes(
+    ctx: PtyEntryContext,
+    initialAppliedSize: { cols: number; rows: number },
+    initialGeometryAlreadyApplied: boolean,
+  ): Promise<{ cols: number; rows: number } | null> {
+    let appliedSize = initialAppliedSize;
+    let hasAppliedSize = initialGeometryAlreadyApplied;
+    let sentFinalAck = false;
+    while (attachFinalizationRequest) {
+      const request = attachFinalizationRequest;
+      attachFinalizationRequest = null;
+      // A boundary request supersedes any older pre-attach acknowledgement.
+      pendingAttachResizeAck = null;
+      const needsResize = !hasAppliedSize || !sameSize(appliedSize, request);
+      appliedSize = { cols: request.cols, rows: request.rows };
+      if (needsResize) {
+        if (!await applyAttachResize(ctx, appliedSize)) return null;
+        hasAppliedSize = true;
+      }
+      // A request received while resize awaited is newer and becomes the
+      // next (and only) finalizer-owned application.
+      if (attachFinalizationRequest) continue;
+      if (request.resizeId !== undefined) {
+        safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...request }));
+        sentFinalAck = true;
+      }
+    }
+
+    if (!sentFinalAck) acknowledgeAttachedResize(appliedSize);
+    return appliedSize;
   }
 
   // ── Snapshot + subscribe attach path (PTY backend in-process, broker over RPC) ──
@@ -1063,12 +1153,20 @@ function setupNewPtyEntry(
       const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize, layoutStable, timing: timing || null };
 
       if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
-        if (!subscribeWithCoalescing(ctx, undefined)) return;
-        const latest = requestedSize.current ?? { cols, rows };
-        timing?.mark("resize_apply.start", { cols: latest.cols, rows: latest.rows, prefillMode });
-        await backend.resize(session, latest.cols, latest.rows);
-        timing?.mark("resize_apply.end", { cols: latest.cols, rows: latest.rows, prefillMode });
-        if (!entryStillCurrent(entry, session, ws)) return;
+        // Subscription is intentionally established before the first resize
+        // so no live output falls into an attach gap. Claim the finalizer
+        // before that boundary: ordered resize frames cannot also arm the
+        // ordinary post-attach debounce while the initial geometry awaits.
+        attachFinalizing = true;
+        const initialAppliedSize = requestedSize.current ?? { cols, rows };
+        attachFinalizationRequest = { resizeId: undefined, ...initialAppliedSize };
+        if (!await subscribeWithCoalescing(ctx, undefined)) return;
+        if (!flushPendingInput()) return;
+        timing?.mark("resize_apply.start", { cols: initialAppliedSize.cols, rows: initialAppliedSize.rows, prefillMode });
+        const finalAppliedSize = await finalizeAttachResizes(ctx, initialAppliedSize, false);
+        if (finalAppliedSize === null) return;
+        timing?.mark("resize_apply.end", { cols: finalAppliedSize.cols, rows: finalAppliedSize.rows, prefillMode });
+        attachFinalizing = false;
         timing?.mark("pty_ready.send");
         sendPtyReady(entry, session);
         return;
@@ -1096,29 +1194,50 @@ function setupNewPtyEntry(
       }
 
       // Snapshot AFTER resize so scrollback is reflowed to client cols.
+      // From this point through pty_ready, the attach finalizer owns resize
+      // requests. It coalesces them instead of also scheduling a post-attach
+      // debounce, so the newest request has one authoritative application.
+      attachFinalizing = true;
       const prefillSeq = await sendSnapshotPrefill(ctx, appliedSize, prefillMode);
 
       if (!entryStillCurrent(entry, session, ws)) return;
+      if (!await subscribeWithCoalescing(ctx, prefillSeq)) return;
+      if (!flushPendingInput()) return;
 
-      // Final reconciliation catches resize frames that arrived while the
-      // snapshot bytes were being fetched/sent. The resulting SIGWINCH
-      // redraw lands in the live stream with seq > prefillSeq; the coalesce
-      // logic in subscribeWithCoalescing holds it through ghostty's render
-      // cycle so it never paints as mid-redraw fragments.
-      const latest = requestedSize.current;
-      if (latest && (latest.cols !== appliedSize.cols || latest.rows !== appliedSize.rows)) {
-        appliedSize = latest;
-        await backend.resize(session, appliedSize.cols, appliedSize.rows);
-        if (!entryStillCurrent(entry, session, ws)) return;
-      }
-
-      if (!subscribeWithCoalescing(ctx, prefillSeq)) return;
-
+      if (await finalizeAttachResizes(ctx, appliedSize, true) === null) return;
+      attachFinalizing = false;
       timing?.mark("pty_ready.send");
       sendPtyReady(entry, session);
     } finally {
       spawning = false;
+      attachFinalizing = false;
+      attachFinalizationRequest = null;
+      if (inputGateActive) discardPendingInput();
     }
+  }
+
+  function discardPendingInput(): void {
+    pendingInput.length = 0;
+    pendingInputBytes = 0;
+  }
+
+  function flushPendingInput(): boolean {
+    const backend = streamingBackend;
+    if (!backend || !entryStillCurrent(entry, session, ws)) {
+      discardPendingInput();
+      return false;
+    }
+    inputGateActive = false;
+    const queuedInput = pendingInput.splice(0);
+    pendingInputBytes = 0;
+    for (const data of queuedInput) {
+      if (!backend.writeToTerminal(session, data)) {
+        log.warn("terminal input write failed", { session });
+        tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED, "buffered input write close failed", session);
+        return false;
+      }
+    }
+    return true;
   }
 
   // Backend-uniform spawn — both PTY and broker use attachStreamingBackend.
@@ -1145,7 +1264,7 @@ function setupNewPtyEntry(
           typeof msg.rows === "number"
         ) {
           requestedSize.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
-          const isAttached = !!entry.unsubscribe;
+          const isAttached = !!entry.unsubscribe || attachFinalizing;
           let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
           if (typeof msg.prefillMode === "string" && isTerminalPrefillMode(msg.prefillMode)) {
             prefillMode = msg.prefillMode;
@@ -1161,13 +1280,14 @@ function setupNewPtyEntry(
             });
           }
           if (entry.viewer && entry.viewer.readyState === 1) {
-            safeViewerSend(entry, session, JSON.stringify({ type: "attach_ack" }));
+            sendAttachAck(entry, session);
           }
           if (!isAttached) {
+            inputGateActive = true;
             spawnPty(requestedSize.current.cols, requestedSize.current.rows, {
               prefillMode,
             });
-          } else {
+          } else if (!attachFinalizing) {
             sendPtyReady(entry, session);
             if (prefillMode !== TERMINAL_PREFILL_MODE.NONE) sendPrefillDone(entry, session);
           }
@@ -1181,9 +1301,17 @@ function setupNewPtyEntry(
         } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const cols = clampCols(msg.cols);
           const rows = clampRows(msg.rows);
+          const resizeId = typeof msg.resizeId === "number" && Number.isSafeInteger(msg.resizeId) && msg.resizeId > 0
+            ? msg.resizeId
+            : undefined;
           requestedSize.current = { cols, rows };
+          if (attachFinalizing) {
+            attachFinalizationRequest = { resizeId, cols, rows };
+            return;
+          }
           const isAttached = !!entry.unsubscribe;
           if (!isAttached) {
+            if (resizeId !== undefined) pendingAttachResizeAck = { resizeId, cols, rows };
             spawnPty(cols, rows);
           } else {
             if (resizeTimer) clearTimeout(resizeTimer);
@@ -1192,6 +1320,9 @@ function setupNewPtyEntry(
               if (!entry.alive) return;
               streamingBackend.resize(session, cols, rows).then(() => {
                 if (!entryStillCurrent(entry, session, ws)) return;
+                if (resizeId !== undefined) {
+                  safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
+                }
               }).catch((e: unknown) => {
                 if (!entryStillCurrent(entry, session, ws)) return;
                 log.warn("streaming backend resize failed — reconnecting viewer", { session, error: errMsg(e) });
@@ -1203,11 +1334,19 @@ function setupNewPtyEntry(
       } else {
         // Binary data — write to terminal via the streaming backend.
         if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
+        if (inputGateActive && pendingInputBytes + raw.length > MAX_PENDING_INPUT_BYTES) {
+          discardPendingInput();
+          tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.PENDING_INPUT_LIMITED, "pending input limit viewer close failed", session);
+          return;
+        }
         if (!binaryInputLimiter.allow(raw.length)) {
           tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.INPUT_RATE_LIMITED, "input rate limit viewer close failed", session);
           return;
         }
-        if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
+        if (inputGateActive) {
+          pendingInput.push(Buffer.from(raw));
+          pendingInputBytes += raw.length;
+        } else if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
           log.warn("terminal input write failed", { session });
           ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);
         }
@@ -1225,6 +1364,7 @@ function setupNewPtyEntry(
 
   function detach() {
     clearInterval(pingTimer);
+    discardPendingInput();
     if (entryStillCurrent(entry, session, ws)) {
       entry.viewer = null;
       teardownPty(session);
@@ -1249,7 +1389,8 @@ function setupNewPtyEntry(
         prefillMode,
       });
     }
+    inputGateActive = true;
     spawnPty(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
-    safeViewerSend(entry, session, JSON.stringify({ type: "attach_ack" }));
+    sendAttachAck(entry, session);
   }
 }

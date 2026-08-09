@@ -34,6 +34,7 @@ export const WS_CLOSE_REASONS = {
   SUBSCRIBE_FAILED: "subscribe rpc failed",
   WRITE_FAILED: "write failed",
   INPUT_RATE_LIMITED: "input rate limit exceeded",
+  PENDING_INPUT_LIMITED: "pending input limit exceeded",
   PREFILL_TIMEOUT: "prefill timeout",
   RESIZE_FAILED: "resize failed",
   SLOW_VIEWER: "slow viewer",

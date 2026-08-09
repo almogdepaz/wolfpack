@@ -13,6 +13,7 @@ import {
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import type { OrderedResizeSettlement } from "./ordered-resize";
 
 // ── Dependency injection ──
 
@@ -27,7 +28,8 @@ interface GridTerminalController {
   sendTakeControl(): void;
   forceRepaint(): void;
   focus(): void;
-  resize(): void;
+  readonly supportsOrderedResize: boolean;
+  resize(): void | Promise<OrderedResizeSettlement>;
   dispose(): void;
 }
 
@@ -930,6 +932,7 @@ function scheduleGridRelayoutFit(
   hideUntilRepaint = false,
   containerId = "desktop-grid-container",
   activeSessions: GridSession[] = state.gridSessions,
+  onSettled?: (acknowledged: boolean) => void,
 ): void {
   if (_gridRelayoutFitRaf != null) cancelAnimationFrame(_gridRelayoutFitRaf);
   if (_gridRelayoutRevealRaf != null) {
@@ -943,29 +946,65 @@ function scheduleGridRelayoutFit(
       _gridRelayoutHiddenSessions.add(gs);
     }
   }
+  const transitionId = ++state.gridRelayoutTransitionId;
   _gridRelayoutFitRaf = requestAnimationFrame(() => {
     _gridRelayoutFitRaf = null;
-    if (activeSessions.length < 1) return;
+    if (transitionId !== state.gridRelayoutTransitionId) return;
+    if (activeSessions.length < 1) { onSettled?.(true); return; }
     const container = document.getElementById(containerId);
     if (container) void container.offsetWidth;
+    const revealAfterRepaint = () => {
+      if (transitionId !== state.gridRelayoutTransitionId) return;
+      if (_gridRelayoutHiddenSessions.size === 0) { onSettled?.(true); return; }
+      _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+        if (transitionId !== state.gridRelayoutTransitionId) return;
+        for (const gs of _gridRelayoutHiddenSessions) {
+          if (activeSessions.includes(gs) && gs.controller) {
+            try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
+          }
+        }
+        _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+          if (transitionId !== state.gridRelayoutTransitionId) return;
+          _gridRelayoutRevealRaf = null;
+          for (const gs of _gridRelayoutHiddenSessions) {
+            gs._cellElement?.classList.remove("transitioning");
+          }
+          _gridRelayoutHiddenSessions.clear();
+          onSettled?.(true);
+        });
+      });
+    };
+    const orderedSettlements: Promise<OrderedResizeSettlement>[] = [];
     for (const gs of cells) {
       if (!activeSessions.includes(gs) || !gs.controller) continue;
-      try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }
-    }
-    if (_gridRelayoutHiddenSessions.size === 0) return;
-    _gridRelayoutRevealRaf = requestAnimationFrame(() => {
-      for (const gs of _gridRelayoutHiddenSessions) {
-        if (activeSessions.includes(gs) && gs.controller) {
-          try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
+      const controller = gs.controller;
+      const supportsOrderedResize = controller.supportsOrderedResize;
+      try {
+        const settlement = controller.resize();
+        if (supportsOrderedResize) {
+          orderedSettlements.push(Promise.resolve(settlement).then((outcome) => {
+            return outcome === "acknowledged" || outcome === "cancelled" ? outcome : "cancelled";
+          }, (error: unknown) => {
+            console.warn("[grid] cell resize settlement failed:", error);
+            return "cancelled" as const;
+          }));
         }
+      } catch (error: unknown) {
+        console.warn("[grid] cell resize failed:", error);
+        if (supportsOrderedResize) orderedSettlements.push(Promise.resolve("cancelled"));
       }
-      _gridRelayoutRevealRaf = requestAnimationFrame(() => {
-        _gridRelayoutRevealRaf = null;
-        for (const gs of _gridRelayoutHiddenSessions) {
-          gs._cellElement?.classList.remove("transitioning");
-        }
-        _gridRelayoutHiddenSessions.clear();
-      });
+    }
+    if (orderedSettlements.length === 0) {
+      revealAfterRepaint();
+      return;
+    }
+    void Promise.all(orderedSettlements).then((outcomes) => {
+      if (transitionId !== state.gridRelayoutTransitionId) return;
+      if (outcomes.some((outcome) => outcome === "cancelled")) {
+        onSettled?.(false);
+        return;
+      }
+      revealAfterRepaint();
     });
   });
 }
@@ -994,17 +1033,19 @@ export function revealGridCellsWithoutResize() {
   }
 }
 
-export function scheduleGridStabilizedFit() {
+export function scheduleGridStabilizedFit(onSettled?: (acknowledged: boolean) => void) {
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
     scheduleGridRelayoutFit(
       state.delegationGridSessions,
       true,
       "delegation-grid-container",
       state.delegationGridSessions,
+      onSettled,
     );
     return;
   }
-  if (isGridActive()) scheduleGridRelayoutFit(state.gridSessions, true);
+  if (isGridActive()) scheduleGridRelayoutFit(state.gridSessions, true, "desktop-grid-container", state.gridSessions, onSettled);
+  else onSettled?.(true);
 }
 
 function isSessionVisibleInDelegationGrid(session, machine): boolean {

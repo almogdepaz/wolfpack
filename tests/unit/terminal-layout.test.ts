@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  commitTerminalResizePreservingScroll,
   fitTerminalPreservingScroll,
   syncTerminalLayout,
 } from "../../public/terminal-layout.ts";
@@ -29,8 +30,8 @@ describe("terminal layout", () => {
     expect(scrollTargets).toEqual([60]);
   });
 
-  test("sends a resize and requests full-prefill rehydration only after dimensions change", () => {
-    const sent: Array<{ readonly force: boolean; readonly fit: boolean }> = [];
+  test("does not commit proposed columns until the ordered broker resize acknowledgement", () => {
+    const sent: Array<{ readonly cols: number; readonly rows: number }> = [];
     let dimensionsChanged = false;
     const term = {
       cols: 80,
@@ -42,22 +43,55 @@ describe("terminal layout", () => {
         render: () => {},
       },
       wasmTerm: {},
+      resize: (cols: number, rows: number) => { term.cols = cols; term.rows = rows; },
     };
 
     syncTerminalLayout({
       term,
       fitAddon: {
-        fit: () => { term.cols = 120; },
+        proposeDimensions: () => ({ cols: 120, rows: 30 }),
+        fit: () => { throw new Error("fit must not run before broker acknowledgement"); },
       },
       ptyClient: {
-        sendFitResize: (options: { readonly force: boolean; readonly fit: boolean }) => { sent.push(options); },
+        supportsOrderedResize: true,
+        sendResize: (cols: number, rows: number) => { sent.push({ cols, rows }); return Promise.resolve(); },
       },
       forceSend: true,
       repaint: true,
       onDimensionsChanged: () => { dimensionsChanged = true; },
     });
 
-    expect(sent).toEqual([{ force: true, fit: false }]);
-    expect(dimensionsChanged).toBe(true);
+    expect(sent).toEqual([{ cols: 120, rows: 30 }]);
+    expect(term.cols).toBe(80);
+    expect(dimensionsChanged).toBe(false);
+
+    expect(commitTerminalResizePreservingScroll(term, { cols: 120, rows: 30 })).toBe(true);
+    expect({ cols: term.cols, rows: term.rows }).toEqual({ cols: 120, rows: 30 });
+  });
+
+  test("keeps legacy peers functional without ordered resize capability", () => {
+    const sent: Array<{ readonly cols: number; readonly rows: number }> = [];
+    const term = {
+      cols: 80,
+      rows: 24,
+      scrollToLine: () => {},
+    };
+
+    syncTerminalLayout({
+      term,
+      fitAddon: {
+        proposeDimensions: () => ({ cols: 120, rows: 30 }),
+        fit: () => { term.cols = 120; term.rows = 30; },
+      },
+      ptyClient: {
+        supportsOrderedResize: false,
+        sendResize: (cols: number, rows: number) => { sent.push({ cols, rows }); return Promise.resolve(); },
+      },
+      forceSend: false,
+      repaint: false,
+    });
+
+    expect(sent).toEqual([{ cols: 120, rows: 30 }]);
+    expect({ cols: term.cols, rows: term.rows }).toEqual({ cols: 120, rows: 30 });
   });
 });

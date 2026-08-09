@@ -968,7 +968,7 @@ test("desktop escape from new-session picker reopens the previous terminal", asy
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
 });
 
-test("offline Tailnet candidates stay ordered, compact, retryable, and cannot create sessions", async ({ page }) => {
+test("offline Tailnet candidates stay out of workspace navigation but remain in settings inventory", async ({ page }, testInfo) => {
   let candidateRequests = 0;
   await page.addInitScript(() => {
     localStorage.setItem("wolfpack-machines", JSON.stringify([
@@ -989,19 +989,19 @@ test("offline Tailnet candidates stay ordered, compact, retryable, and cannot cr
 
   await page.goto(srv.baseUrl);
   const remoteGroups = page.locator('#session-list .machine-group[data-machine^="candidate:n-offline-"]');
-  await expect(remoteGroups).toHaveCount(2);
-  await expect(remoteGroups.nth(0)).toHaveAttribute("data-machine", "candidate:n-offline-one");
-  await expect(remoteGroups.nth(1)).toHaveAttribute("data-machine", "candidate:n-offline-two");
+  await expect(remoteGroups).toHaveCount(0);
+  if (testInfo.project.name === "desktop") {
+    await expect(page.locator('#sidebar-session-list .machine-group[data-machine^="candidate:n-offline-"]')).toHaveCount(0);
+  }
 
-  const first = remoteGroups.nth(0);
-  await expect(first).toHaveClass(/offline/);
-  await expect(first).toHaveAttribute("data-failure", "network");
-  await expect(first.getByRole("button", { name: /Start a session/ })).toBeDisabled();
-  await expect(first.getByRole("status")).toContainText("Unreachable");
-  await expect(first.getByRole("status")).toContainText("Live terminal actions require this machine to reconnect");
-  const requestsBeforeRetry = candidateRequests;
-  await first.getByRole("button", { name: "Retry Offline one" }).click();
-  await expect.poll(() => candidateRequests).toBeGreaterThan(requestsBeforeRetry);
+  await page.getByRole("button", { name: "Settings" }).click();
+  const machines = page.locator("#machines-list .machine-item");
+  await expect(machines).toHaveCount(2);
+  await expect(machines.nth(0)).toContainText("Offline one");
+  await expect(machines.nth(0).locator(".dot")).toHaveAttribute("title", "tailnet reports this peer offline");
+  await expect(machines.nth(1)).toContainText("Offline two");
+  await expect(machines.nth(1).locator(".dot")).toHaveAttribute("title", "tailnet reports this peer offline");
+  expect(candidateRequests).toBeGreaterThan(0);
 });
 
 test("desktop settings back from a terminal reopens that terminal", async ({ page }, testInfo) => {

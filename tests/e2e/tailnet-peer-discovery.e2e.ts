@@ -233,7 +233,174 @@ test("loads a verified peer before an unrelated candidate machine request times 
   await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
 });
 
-test("revokes a stale peer after candidate enumeration failures and recovers its stable identity", async ({ page }) => {
+test("does not route REST or WebSocket traffic to a former origin while its replacement probe is pending", async ({ page }) => {
+  const formerOrigin = "https://peer.example.ts.net";
+  const replacementOrigin = "https://renamed.example.ts.net";
+  let candidateOrigin = formerOrigin;
+  let replacementProbeStarted = false;
+  let releaseReplacementProbe: () => void = () => {};
+  const replacementProbeReleased = new Promise<void>((resolve) => {
+    releaseReplacementProbe = resolve;
+  });
+  const formerOriginRequests: string[] = [];
+
+  await installReplacementSocketHarness(page);
+  page.on("request", (request) => {
+    if (new URL(request.url()).origin === formerOrigin) formerOriginRequests.push(request.url());
+  });
+  await page.route("**/api/tailnet/v1/candidates", async (route) => {
+    const isReplacement = candidateOrigin === replacementOrigin;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ candidates: [{
+        hostname: isReplacement ? "renamed.example.ts.net" : "peer.example.ts.net",
+        tailnetNodeId: "n-peer",
+        origin: candidateOrigin,
+        online: true,
+      }] }),
+    });
+  });
+  await page.route(`${formerOrigin}/api/machine`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+        machine: { tailnetNodeId: "n-peer", installationId, displayName: "verified peer", origin: formerOrigin },
+        wolfpack: { version: "1.7.0" },
+        capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+      }),
+    });
+  });
+  await page.route(`${replacementOrigin}/api/machine`, async (route) => {
+    replacementProbeStarted = true;
+    await replacementProbeReleased;
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+        machine: { tailnetNodeId: "n-peer", installationId, displayName: "renamed peer", origin: replacementOrigin },
+        wolfpack: { version: "1.7.0" },
+        capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+      }),
+    });
+  });
+  await page.route(`${formerOrigin}/api/sessions`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ sessions: [{ name: "peer-session", triage: "idle" }] }),
+    });
+  });
+  await page.route(`${formerOrigin}/api/info`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ name: "former peer" }),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await page.evaluate((machineIdentity) => {
+    const app = window as unknown as { openSession(name: string, machine?: string): void };
+    app.openSession("peer-session", machineIdentity);
+  }, peerIdentity);
+  await expect.poll(() => page.evaluate(() => (
+    (window as unknown as ReplacementSocketWindow).__replacementSockets?.length ?? 0
+  ))).toBe(1);
+  await page.evaluate(() => {
+    const socket = (window as unknown as ReplacementSocketWindow).__replacementSockets?.[0];
+    if (!socket) throw new Error("missing initial peer socket");
+    socket.open();
+    socket.serverText(JSON.stringify({ type: "attach_ack" }));
+    socket.serverText(JSON.stringify({ type: "prefill_done" }));
+    socket.serverText(JSON.stringify({ type: "pty_ready" }));
+  });
+
+  candidateOrigin = replacementOrigin;
+  await page.evaluate((machineIdentity) => {
+    (window as unknown as { retryMachine(machine: string): void }).retryMachine(machineIdentity);
+  }, peerIdentity);
+  await expect.poll(() => replacementProbeStarted).toBe(true);
+
+  formerOriginRequests.length = 0;
+  try {
+    await page.evaluate(async (machineIdentity) => {
+      const app = window as unknown as {
+        api(path: string, options?: RequestInit, machine?: string): Promise<unknown>;
+      };
+      try {
+        await app.api("/info", undefined, machineIdentity);
+      } catch {
+        // The route must fail closed until the replacement handshake settles.
+      }
+    }, peerIdentity);
+    await page.evaluate(() => {
+      const socket = (window as unknown as ReplacementSocketWindow).__replacementSockets?.[0];
+      if (!socket) throw new Error("missing established peer socket");
+      socket.forceClose();
+    });
+
+    await expect(page.locator("#conn-status")).toHaveText("machine unavailable — refresh Tailnet discovery before reconnecting");
+    expect(formerOriginRequests).toEqual([]);
+    expect(await page.evaluate(() => (
+      (window as unknown as ReplacementSocketWindow).__replacementSockets?.map((socket) => socket.url) ?? []
+    ))).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session"]);
+  } finally {
+    releaseReplacementProbe();
+  }
+});
+
+test("removes a ready peer from workspace navigation when its sessions request fails", async ({ page }, testInfo) => {
+  await page.route("**/api/tailnet/v1/candidates", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ candidates: [
+        { hostname: "peer.example.ts.net", tailnetNodeId: "n-peer", origin: "https://peer.example.ts.net", online: true },
+      ] }),
+    });
+  });
+  await page.route("https://peer.example.ts.net/api/machine", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+        machine: {
+          tailnetNodeId: "n-peer",
+          installationId,
+          displayName: "verified peer",
+          origin: "https://peer.example.ts.net",
+        },
+        wolfpack: { version: "1.7.0" },
+        capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+      }),
+    });
+  });
+  await page.route("https://peer.example.ts.net/api/sessions", async (route) => {
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
+  });
+
+  await page.goto(server.baseUrl);
+
+  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
+  if (testInfo.project.name === "desktop") {
+    await expect(page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
+  }
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator("#machines-list .machine-item")).toHaveCount(1);
+  await expect(page.locator("#machines-list .machine-item .dot")).toHaveAttribute("title", "online");
+  await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
+  await expect(page.locator("#session-list .machine-group")).toHaveCount(1);
+  const localSession = page.getByRole("button", { name: "Open test-project" });
+  await expect(localSession).toBeVisible();
+  await localSession.click();
+  await expect(page.locator("#terminal-view")).toBeVisible();
+});
+
+test("revokes a stale peer after candidate enumeration failures and recovers its stable identity", async ({ page }, testInfo) => {
   let candidateMode: "valid" | "transport-failure" | "malformed-envelope" | "error-envelope" = "valid";
   let peerSessionRequests = 0;
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
@@ -303,7 +470,10 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
     await page.getByRole("button", { name: "Discover Tailnet" }).click();
     await expect(page.locator("#discover-status")).toContainText(failure.status);
     await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
-    await expect(peerGroup).toHaveClass(/offline/);
+    await expect(peerGroup).toHaveCount(0);
+    if (testInfo.project.name === "desktop") {
+      await expect(page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
+    }
     await page.waitForTimeout(100);
     // The generation-start replacement may capture the formerly-ready peer
     // before the failed enumeration revokes its route; its stale result cannot apply.
@@ -311,7 +481,6 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
 
     candidateMode = "valid";
     await page.getByRole("button", { name: "Discover Tailnet" }).click();
-    await expect(peerGroup).not.toHaveClass(/offline/);
     await expect(peerGroup).toHaveCount(1);
     await expect.poll(() => peerSessionRequests).toBeGreaterThan(requestsBeforeFailure);
   }
@@ -391,13 +560,13 @@ test("does not let an older delayed probe restore authority after a newer enumer
   candidateMode = "error";
   await page.getByRole("button", { name: "Discover Tailnet" }).click();
   await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   const sessionRequestsAfterRevocation = peerSessionRequests;
 
   releaseOlderHandshake();
   await page.waitForTimeout(150);
 
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
   expect(peerSessionRequests).toBe(sessionRequestsAfterRevocation);
   expect(peerPtyRequests).toBe(0);
@@ -487,7 +656,7 @@ test("does not let a stale session response restore a peer revoked by a newer re
   }, peerIdentity);
 
   releaseStaleSessionResponse();
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   await expect(page.locator("#session-list")).not.toContainText("stale peer session");
   await expect.poll(() => page.evaluate(() => (
     (window as unknown as { staleSessionWasActionable: boolean }).staleSessionWasActionable
@@ -644,7 +813,7 @@ test("renders local and a verified peer while a malformed candidate stays non-ro
   ))).toContain(peerIdentity);
   await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
   await expect(page.locator("#session-list")).toContainText("test-project");
-  await expect(page.locator('#session-list .machine-group[data-machine="candidate:n-bad"]')).toHaveClass(/offline/);
+  await expect(page.locator('#session-list .machine-group[data-machine="candidate:n-bad"]')).toHaveCount(0);
   expect(malformedSessionsRequested).toBe(false);
   expect(legacyUrlFetched).toBe(false);
 });
@@ -1604,7 +1773,7 @@ test("creates a remote session through a ready stable identity and fails closed 
   await page.evaluate((machineIdentity) => {
     (window as unknown as { retryMachine(machine: string): void }).retryMachine(machineIdentity);
   }, peerIdentity);
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   await page.getByRole("button", { name: "Start shell" }).click();
   await expect(page.locator("#agent-create-error")).toContainText("selected peer is not ready");
 
@@ -1792,7 +1961,7 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   await page.evaluate((machineIdentity) => {
     (window as unknown as { retryMachine(machine: string): void }).retryMachine(machineIdentity);
   }, peerIdentity);
-  await expect(peerGroup).toHaveClass(/offline/);
+  await expect(peerGroup).toHaveCount(0);
   const intendedTerminal = await page.evaluate(() => {
     const app = window as unknown as {
       state: {

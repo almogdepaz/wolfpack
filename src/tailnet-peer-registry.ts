@@ -266,19 +266,27 @@ export class TailnetPeerRegistry {
   private readonly candidateOriginsByNode = new Map<string, string>();
   private readonly legacyNamesByNode = new Map<string, string>();
 
-  /** Removes routing authority when the current local candidate enumeration no longer contains a peer. */
+  /** Removes routing authority when current local candidate facts no longer match a verified peer. */
   reconcileCandidates(candidates: readonly TailnetMachineCandidate[]): void {
-    const present = new Set(candidates.map((candidate) => candidate.tailnetNodeId));
+    const candidatesByNode = new Map(candidates.map((candidate) => [candidate.tailnetNodeId, candidate]));
     for (const [identity, entry] of this.stableEntries) {
-      if (present.has(entry.tailnetNodeId)) continue;
+      const candidate = candidatesByNode.get(entry.tailnetNodeId);
+      const diagnostic = !candidate
+        ? "candidate is no longer present in local Tailnet status"
+        : !candidate.online
+          ? "tailnet reports this peer offline"
+          : candidate.origin !== entry.origin || candidate.hostname !== entry.hostname
+            ? "candidate origin or hostname changed in local Tailnet status"
+            : undefined;
+      if (!diagnostic) continue;
       this.stableEntries.set(identity, {
         ...entry,
         status: "offline",
-        diagnostic: "candidate is no longer present in local Tailnet status",
+        diagnostic,
       });
     }
     for (const [nodeId, entry] of this.transientEntries) {
-      if (present.has(nodeId)) continue;
+      if (candidatesByNode.has(nodeId)) continue;
       this.transientEntries.set(nodeId, {
         ...entry,
         status: "offline",

@@ -24,6 +24,7 @@ import {
   AGENT_STATUS_SOURCES,
   AGENT_STATUS_STATES,
 } from "../agent-status-contract.ts";
+import { PTY_ATTACH_CAPABILITIES } from "../pty-websocket-contract.ts";
 import {
   MACHINE_CAPABILITIES,
   MACHINE_MAX_CAPABILITIES,
@@ -1120,6 +1121,7 @@ export const controlApiSource: ControlApiSource = {
           direction: "client-to-server",
           schema: object({
             type: { const: "resize" },
+            resizeId: { type: "integer", minimum: 1 },
             cols: integer(),
             rows: integer(),
           }, ["type", "cols", "rows"]),
@@ -1132,7 +1134,20 @@ export const controlApiSource: ControlApiSource = {
         attach_ack: {
           stable: true,
           direction: "server-to-client",
-          schema: object({ type: { const: "attach_ack" } }, ["type"]),
+          schema: object({
+            type: { const: "attach_ack" },
+            capabilities: arrayOf({ enum: PTY_ATTACH_CAPABILITIES }),
+          }, ["type"]),
+        },
+        resize_ack: {
+          stable: true,
+          direction: "server-to-client",
+          schema: object({
+            type: { const: "resize_ack" },
+            resizeId: { type: "integer", minimum: 1 },
+            cols: integer(),
+            rows: integer(),
+          }, ["type", "resizeId", "cols", "rows"]),
         },
         prefill_done: {
           stable: true,

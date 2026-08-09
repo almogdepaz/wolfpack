@@ -45,6 +45,10 @@ class FakeBrokerClient implements BrokerClientApi {
   subscribeSeqs = new Map<string, bigint | undefined>();
   /** Number of distinct unsubscribe RPCs observed. */
   unsubscribeCallCount = 0;
+  /** Number of forced subscription cancellations observed. */
+  cancelSubscriptionCallCount = 0;
+  /** Models a client whose transport is disconnected before subscribe mutates state. */
+  disconnected = false;
   /** When set, the next subscribe() call rejects with this error then resets to null. */
   nextSubscribeError: Error | null = null;
   /** Per-session output subscribers registered via subscribeOutput. */
@@ -59,8 +63,12 @@ class FakeBrokerClient implements BrokerClientApi {
   onWriteInput: ((sessionId: string, data: Uint8Array) => void) | null = null;
   /** Optional gate used to prove input waits for subscribe readiness. */
   subscribeGate: Promise<void> | null = null;
+  /** Optional gate used to prove unsubscribe completion barriers. */
+  unsubscribeGate: Promise<void> | null = null;
   /** Last output sequence observed by the fake subscription. */
   outputSeqs = new Map<string, bigint>();
+  /** Retained output frames replayed by a subsequent sinceSeq subscription. */
+  outputHistory = new Map<string, OutputBinaryFrame[]>();
 
   setHandler(method: string, h: (params: unknown) => ControlResponse | Promise<ControlResponse>): void {
     this.handlers.set(method, h);
@@ -99,6 +107,7 @@ class FakeBrokerClient implements BrokerClientApi {
   }
 
   async subscribe(sessionId: string, opts?: { sinceSeq?: bigint }): Promise<ControlResponse> {
+    if (this.disconnected) throw new BrokerNotConnectedError("broker disconnected");
     this.subscribeCallCount++;
     this.subscribeSeqs.set(sessionId, opts?.sinceSeq);
     if (opts?.sinceSeq !== undefined) this.outputSeqs.set(sessionId, opts.sinceSeq);
@@ -109,6 +118,11 @@ class FakeBrokerClient implements BrokerClientApi {
       throw err;
     }
     this.activeSubscriptions.add(sessionId);
+    if (opts?.sinceSeq !== undefined) {
+      for (const frame of this.outputHistory.get(sessionId) ?? []) {
+        if (frame.seq > opts.sinceSeq) this.deliver(frame);
+      }
+    }
     return okResp({ kind: "subscribe", ok: true, current_seq: 17 });
   }
 
@@ -118,15 +132,33 @@ class FakeBrokerClient implements BrokerClientApi {
 
   async unsubscribe(sessionId: string): Promise<void> {
     this.unsubscribeCallCount++;
+    await this.unsubscribeGate;
     this.activeSubscriptions.delete(sessionId);
+  }
+
+  async cancelSubscription(sessionId: string): Promise<void> {
+    this.cancelSubscriptionCallCount++;
+    this.activeSubscriptions.delete(sessionId);
+  }
+
+  async reconnect(): Promise<void> {
+    this.disconnected = false;
+    await Promise.all(Array.from(this.activeSubscriptions, (sessionId) => this.subscribe(sessionId)));
   }
 
   /** Push an output_binary frame to every subscriber for `sessionId`. */
   emit(sessionId: string, data: Uint8Array, seq = 1n): void {
     this.outputSeqs.set(sessionId, seq);
-    const set = this.outputSubs.get(sessionId);
-    if (!set) return;
     const frame: OutputBinaryFrame = { sessionId, seq, data };
+    const history = this.outputHistory.get(sessionId) ?? [];
+    history.push(frame);
+    this.outputHistory.set(sessionId, history);
+    this.deliver(frame);
+  }
+
+  private deliver(frame: OutputBinaryFrame): void {
+    const set = this.outputSubs.get(frame.sessionId);
+    if (!set) return;
     for (const cb of set) cb(frame);
   }
 }
@@ -974,8 +1006,8 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     backend.onSessionData("live", (d) => seenA.push(d[0]), noopErr);
     backend.onSessionData("live", (d) => seenB.push(d[0]), noopErr);
     await Promise.resolve();
-    client.emit(SESSION_UUID_1, new Uint8Array([0x41]));
-    client.emit(SESSION_UUID_1, new Uint8Array([0x42]));
+    client.emit(SESSION_UUID_1, new Uint8Array([0x41]), 1n);
+    client.emit(SESSION_UUID_1, new Uint8Array([0x42]), 2n);
     expect(seenA).toEqual([0x41, 0x42]);
     expect(seenB).toEqual([0x41, 0x42]);
   });
@@ -989,6 +1021,24 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     expect(client.unsubscribeCallCount).toBe(1);
   });
 
+  test("unsubscribe.closed waits for the final broker detach", async () => {
+    let releaseBrokerDetach!: () => void;
+    client.unsubscribeGate = new Promise<void>((resolve) => { releaseBrokerDetach = resolve; });
+    const unsub = backend.onSessionData("live", () => {}, noopErr)!;
+    await Promise.resolve();
+
+    unsub();
+    let closed = false;
+    void unsub.closed!.then(() => { closed = true; });
+    await Promise.resolve();
+    expect(client.unsubscribeCallCount).toBe(1);
+    expect(closed).toBe(false);
+
+    releaseBrokerDetach();
+    await unsub.closed;
+    expect(closed).toBe(true);
+  });
+
   test("unsubscribe stops further frames reaching the callback", async () => {
     const seen: number[] = [];
     const unsub = backend.onSessionData("live", (d) => seen.push(d[0]), noopErr)!;
@@ -997,6 +1047,100 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     unsub();
     client.emit(SESSION_UUID_1, new Uint8Array([2]));
     expect(seen).toEqual([1]);
+  });
+
+  test("onSessionData suppresses stale frames at the snapshot boundary after a prior detach", async () => {
+    const observation = backend.onSessionData("live", () => {}, noopErr)!;
+    await Promise.resolve();
+    observation();
+    await observation.closed;
+
+    const seen: number[] = [];
+    backend.onSessionData("live", (data) => seen.push(data[0]), {
+      sinceSeq: 10n,
+      onSubscribeError: () => {},
+    });
+    await Promise.resolve();
+
+    client.emit(SESSION_UUID_1, new Uint8Array([9]), 9n);
+    client.emit(SESSION_UUID_1, new Uint8Array([10]), 10n);
+    client.emit(SESSION_UUID_1, new Uint8Array([11]), 11n);
+
+    expect(seen).toEqual([11]);
+  });
+
+  test("onSessionData without sinceSeq forwards every frame", async () => {
+    const seen: number[] = [];
+    backend.onSessionData("live", (data) => seen.push(data[0]), noopErr);
+    await Promise.resolve();
+
+    client.emit(SESSION_UUID_1, new Uint8Array([1]), 1n);
+    expect(seen).toEqual([1]);
+  });
+
+  test("sinceSeq replays the snapshot gap when another logical subscriber retains the broker stream", async () => {
+    const seenA: number[] = [];
+    backend.onSessionData("live", (data) => seenA.push(data[0]), noopErr);
+    await Promise.resolve();
+    client.emit(SESSION_UUID_1, new Uint8Array([11]), 11n);
+
+    const seenB: number[] = [];
+    const subscriptionB = backend.onSessionData("live", (data) => seenB.push(data[0]), {
+      sinceSeq: 10n,
+      onSubscribeError: () => {},
+    })!;
+    await subscriptionB.ready;
+
+    expect(client.subscribeCallCount).toBe(2);
+    expect(seenA).toEqual([11]);
+    expect(seenB).toEqual([11]);
+  });
+
+  test("replay does not duplicate a live frame delivered before its subscribe response", async () => {
+    const seenA: number[] = [];
+    backend.onSessionData("live", (data) => seenA.push(data[0]), noopErr);
+    await Promise.resolve();
+
+    let releaseReplay!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseReplay = resolve; });
+    const seenB: number[] = [];
+    const subscriptionB = backend.onSessionData("live", (data) => seenB.push(data[0]), {
+      sinceSeq: 10n,
+      onSubscribeError: () => {},
+    })!;
+    await Promise.resolve();
+    client.emit(SESSION_UUID_1, new Uint8Array([11]), 11n);
+    releaseReplay();
+    await subscriptionB.ready;
+
+    expect(seenA).toEqual([11]);
+    expect(seenB).toEqual([11]);
+  });
+
+  test("concurrent replay registrations preserve each distinct snapshot floor", async () => {
+    const seenA: number[] = [];
+    backend.onSessionData("live", (data) => seenA.push(data[0]), noopErr);
+    await Promise.resolve();
+    client.emit(SESSION_UUID_1, new Uint8Array([9]), 9n);
+    client.emit(SESSION_UUID_1, new Uint8Array([10]), 10n);
+    client.emit(SESSION_UUID_1, new Uint8Array([11]), 11n);
+
+    const seenB: number[] = [];
+    const subscriptionB = backend.onSessionData("live", (data) => seenB.push(data[0]), {
+      sinceSeq: 10n,
+      onSubscribeError: () => {},
+    })!;
+    const seenC: number[] = [];
+    const subscriptionC = backend.onSessionData("live", (data) => seenC.push(data[0]), {
+      sinceSeq: 8n,
+      onSubscribeError: () => {},
+    })!;
+    await Promise.all([subscriptionB.ready, subscriptionC.ready]);
+
+    expect(client.subscribeCallCount).toBe(3);
+    expect(seenA).toEqual([9, 10, 11]);
+    expect(seenB).toEqual([11]);
+    expect(seenC).toEqual([9, 10, 11]);
   });
 
   test("sinceSeq is forwarded to the broker subscribe RPC", async () => {
@@ -1009,6 +1153,69 @@ describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
     backend.onSessionData("live", () => {}, noopErr);
     await Promise.resolve();
     expect(client.subscribeSeqs.get(SESSION_UUID_1)).toBeUndefined();
+  });
+
+  test("failed replay while disconnected clears retained reconnect state", async () => {
+    backend.onSessionData("live", () => {}, noopErr);
+    await Promise.resolve();
+    client.disconnected = true;
+
+    const replay = backend.onSessionData("live", () => {}, {
+      sinceSeq: 10n,
+      onSubscribeError: () => {},
+    })!;
+    expect(await replay.ready).toBe(false);
+    await Promise.resolve();
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
+    await client.reconnect();
+    expect(client.subscribeCallCount).toBe(1);
+  });
+
+  test("failed replay force-cancels an established forwarder", async () => {
+    const errorsA: unknown[] = [];
+    const errorsB: unknown[] = [];
+    backend.onSessionData("live", () => {}, { onSubscribeError: (error) => errorsA.push(error) });
+    await Promise.resolve();
+    client.nextSubscribeError = new Error("replay rejected");
+
+    const replay = backend.onSessionData("live", () => {}, {
+      sinceSeq: 10n,
+      onSubscribeError: (error) => errorsB.push(error),
+    })!;
+    expect(await replay.ready).toBe(false);
+    await Promise.resolve();
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
+    expect(client.outputSubs.has(SESSION_UUID_1)).toBe(false);
+    expect(errorsA).toHaveLength(1);
+    expect(errorsB).toHaveLength(1);
+  });
+
+  test("stale failed-ref cleanup cannot cancel a replacement subscription", async () => {
+    const old = backend.onSessionData("live", () => {}, noopErr)!;
+    await old.ready;
+    const internal = backend as unknown as {
+      subscriberRefs: Map<string, unknown>;
+      failOutputSubscribers(id: string, name: string, error: unknown, expectedRef: unknown): void;
+    };
+    const oldRef = internal.subscriberRefs.get(SESSION_UUID_1);
+    if (!oldRef) throw new Error("missing old subscriber ref");
+
+    internal.failOutputSubscribers(SESSION_UUID_1, "live", new Error("old replay failed"), oldRef);
+    await Promise.resolve();
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+
+    const seen: number[] = [];
+    const replacement = backend.onSessionData("live", (data) => seen.push(data[0]), noopErr)!;
+    await replacement.ready;
+    internal.failOutputSubscribers(SESSION_UUID_1, "live", new Error("stale cleanup"), oldRef);
+    client.emit(SESSION_UUID_1, new Uint8Array([1]), 1n);
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(seen).toEqual([1]);
   });
 
   test("subscribe RPC failure unwinds local subscriber and refcount (no leak)", async () => {

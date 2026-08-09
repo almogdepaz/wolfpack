@@ -1980,6 +1980,10 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
               "type": {
                 "const": "resize"
               },
+              "resizeId": {
+                "type": "integer",
+                "minimum": 1
+              },
               "cols": {
                 "type": "integer"
               },
@@ -2025,10 +2029,50 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             "properties": {
               "type": {
                 "const": "attach_ack"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "ordered-resize-ack"
+                  ]
+                }
               }
             },
             "required": [
               "type"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "resize_ack": {
+          "stable": true,
+          "direction": "server-to-client",
+          "schema": {
+            "$id": "wolfpack:control-api:ws:pty:resize_ack",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "/ws/pty resize_ack",
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "resize_ack"
+              },
+              "resizeId": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "cols": {
+                "type": "integer"
+              },
+              "rows": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "type",
+              "resizeId",
+              "cols",
+              "rows"
             ],
             "additionalProperties": false
           }

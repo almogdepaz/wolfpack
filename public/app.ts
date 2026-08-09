@@ -27,6 +27,12 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import {
+  OrderedResizeTracker,
+  shouldSendResizeRequest,
+  type OrderedResizeRequest,
+  type OrderedResizeSettlement,
+} from "./ordered-resize";
+import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
 } from "./ghostty-prewarm-pool";
@@ -92,7 +98,9 @@ import {
   createTerminalConnectionLifecycle,
 } from "../src/terminal-connection-lifecycle";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
+import { PTY_ATTACH_CAPABILITY } from "../src/pty-websocket-contract";
 import {
+  commitTerminalResizePreservingScroll,
   fitTerminalPreservingScroll,
   forceTerminalRepaint,
   syncTerminalLayout,
@@ -132,6 +140,7 @@ const GHOSTTY_PREWARM_DELAY_MS = 0;
 const ATTACH_DIMENSION_RETRY_DELAY_MS = 50;
 const ATTACH_DIMENSION_MAX_ATTEMPTS = 20;
 const RESIZE_SEND_DEBOUNCE_MS = 120;
+const ORDERED_RESIZE_BARRIER_MAX_BYTES = 1_048_576;
 
 function safeLocalStorage(): Storage | null {
   try { return window.localStorage; }
@@ -909,12 +918,14 @@ interface PtySocketClientOpts {
   readonly prefillMode?: LayoutStablePrefillMode;
   readonly takeControlOnAttach?: boolean;
   readonly getTermDimensions: () => TermDimensions | null;
+  readonly getProposedDimensions?: () => TermDimensions | null;
   readonly getLayoutMetrics?: () => TerminalLayoutMetrics | null;
   readonly fitTerminal: () => void;
   readonly onBinaryData?: (data: Uint8Array) => void;
   readonly onAttach?: () => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
   readonly onPtyReady?: () => void;
+  readonly onResizeAck?: (cols: number, rows: number) => void;
   readonly onPrefillDone?: () => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
@@ -931,8 +942,9 @@ interface PtySocketClient {
   connect(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
   scheduleReconnect(): void;
-  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
-  sendResize(cols: number, rows: number): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean; readonly immediate?: boolean }): Promise<OrderedResizeSettlement>;
+  sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement>;
+  readonly supportsOrderedResize: boolean;
   sendTakeControl(): void;
   send(data: string | Blob | BufferSource): void;
   close(): void;
@@ -965,6 +977,15 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
+  let _supportsOrderedResize = false;
+  let _hasAttached = false;
+  let _attachUsesProposedDimensions = false;
+  let _orderedResizeBarrier = false;
+  type DeferredOrderedResizeFrame =
+    | { readonly kind: "binary"; readonly data: ArrayBuffer; readonly bytes: number }
+    | { readonly kind: "control"; readonly message: SocketControlMessage; readonly bytes: number };
+  let _deferredOrderedResizeFrames: DeferredOrderedResizeFrame[] = [];
+  let _deferredOrderedResizeBytes = 0;
 
   type PtySocketRoute =
     | { readonly kind: "available"; readonly url: string }
@@ -991,8 +1012,14 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function sendAttachHandshake() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
-    const dims = opts.getTermDimensions();
+    cancelResizeLifecycle();
+    _attachUsesProposedDimensions = _hasAttached;
+    if (!_attachUsesProposedDimensions) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = _attachUsesProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
     const dimensionAction = WP.nextAttachDimensionAction(
       dims,
       _attachDimensionRetry.attempt,
@@ -1014,6 +1041,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (opts.onAttach) opts.onAttach();
     const prefillMode = _initialPrefillMode;
+    _hasAttached = true;
     _currentAttachPrefillMode = prefillMode;
     _lastSentResize = attachDims.cols + "x" + attachDims.rows;
     _awaitingAttachAck = true;
@@ -1075,20 +1103,31 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _awaitingPrefillDone = false;
     _prefillChunks = [];
     _sawViewportPrefill = false;
+    cancelResizeLifecycle();
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
   }
 
-  function sendLayoutStable(reason: "after-paint" | "immediate" = "after-paint"): void {
+  function shouldUseProposedDimensions(): boolean {
+    return _supportsOrderedResize || (_attachUsesProposedDimensions && _awaitingAttachAck);
+  }
+
+  function sendLayoutStable(
+    reason: "after-paint" | "immediate" = "after-paint",
+    forceOrderedResize = false,
+  ): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
-    const dims = opts.getTermDimensions();
+    const useProposedDimensions = shouldUseProposedDimensions();
+    if (!useProposedDimensions) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = useProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (key !== _lastSentResize) {
-      _lastSentResize = key;
-      ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
-    }
+    if (forceOrderedResize) sendResizeRequest(createResizeRequest(dims));
+    else if (key !== _lastSentResize) sendResizeRequest(createResizeRequest(dims));
     ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
     const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
     __wfTraceEvent(_trace, "layout_stable.send", {
@@ -1099,51 +1138,142 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  function sendLayoutStableAfterPaint(): void {
+  function sendLayoutStableAfterPaint(forceOrderedResize = false): void {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => { sendLayoutStable("after-paint"); });
+      requestAnimationFrame(() => { sendLayoutStable("after-paint", forceOrderedResize); });
     });
   }
 
-  /** Fit terminal + send resize dimensions over the socket (debounced). */
+  /** Sends resize requests, delaying local geometry only when negotiated. */
   let _lastSentResize = "";
+  const _orderedResize = new OrderedResizeTracker();
   let _resizeDebounceTimer = null;
-  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
+  let _pendingResizeRequest: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } | null = null;
+
+  function clearQueuedResizeRequest(): void {
+    if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
+    _resizeDebounceTimer = null;
+    _pendingResizeRequest = null;
+  }
+
+  function cancelResizeLifecycle(): void {
+    clearQueuedResizeRequest();
+    _orderedResize.clear();
+    _supportsOrderedResize = false;
+    _orderedResizeBarrier = false;
+    _deferredOrderedResizeFrames = [];
+    _deferredOrderedResizeBytes = 0;
+  }
+
+  function createResizeRequest(dims: TermDimensions): OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } {
+    return _supportsOrderedResize
+      ? _orderedResize.request(dims)
+      : { type: "resize", ...dims };
+  }
+
+  function sendResizeRequest(request: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number }): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (options?.fit !== false) {
+    clearQueuedResizeRequest();
+    _lastSentResize = `${request.cols}x${request.rows}`;
+    // An ordered resize is a broker/local geometry transaction. Hold output
+    // only once the request actually leaves this socket; queued proposals may
+    // still be replaced without requiring a barrier.
+    if ("resizeId" in request) _orderedResizeBarrier = true;
+    ws.send(JSON.stringify(request));
+  }
+
+  function queueResize(dims: TermDimensions, options: { readonly force?: boolean; readonly immediate?: boolean } = {}): Promise<OrderedResizeSettlement> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
+    const key = `${dims.cols}x${dims.rows}`;
+    const pendingProposalSupersedesLastSent = _supportsOrderedResize
+      && _orderedResize.hasPending()
+      && !_orderedResize.hasPendingDimensions(dims);
+    if (!options.force && key === _lastSentResize && !pendingProposalSupersedesLastSent) {
+      if (!_supportsOrderedResize) clearQueuedResizeRequest();
+      return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+    }
+    clearQueuedResizeRequest();
+    const request = createResizeRequest(dims);
+    _pendingResizeRequest = request;
+    if (options.immediate) {
+      sendResizeRequest(request);
+    } else {
+      _resizeDebounceTimer = setTimeout(() => {
+        _resizeDebounceTimer = null;
+        const pending = _pendingResizeRequest;
+        _pendingResizeRequest = null;
+        if (!pending || !shouldSendResizeRequest(pending, _lastSentResize, options.force === true)) return;
+        sendResizeRequest(pending);
+      }, RESIZE_SEND_DEBOUNCE_MS);
+    }
+    return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+  }
+
+  function sendFitResize(options?: { force?: boolean; fit?: boolean; immediate?: boolean }): Promise<OrderedResizeSettlement> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
+    const useProposedDimensions = shouldUseProposedDimensions();
+    if (!useProposedDimensions && options?.fit !== false) {
       try { opts.fitTerminal(); } catch {}
     }
-    const dims = opts.getTermDimensions();
-    if (!dims) return;
-    const key = dims.cols + "x" + dims.rows;
-    if (!options?.force && key === _lastSentResize) return; // same dimensions, skip
-    // Debounce: collapse rapid resize calls into one
-    if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
-    _resizeDebounceTimer = setTimeout(() => {
-      _resizeDebounceTimer = null;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const d = opts.getTermDimensions();
-      if (!d) return;
-      const nextKey = d.cols + "x" + d.rows;
-      if (!options?.force && nextKey === _lastSentResize) return;
-      const msg = JSON.stringify({ type: "resize", cols: d.cols, rows: d.rows });
-      _lastSentResize = nextKey;
-      ws.send(msg);
-    }, RESIZE_SEND_DEBOUNCE_MS);
+    const dims = useProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
+    if (!dims) return Promise.resolve("cancelled");
+    return queueResize(dims, options);
   }
 
   type SocketControlMessage = Readonly<Record<string, unknown>> & { readonly type: string };
   type SocketControlHandler = (message: SocketControlMessage) => void;
 
-  function handleAttachAck(): void {
+  function isOrderedResizeBarrierControl(type: string): boolean {
+    return type === "prefill_viewport" || type === "prefill_done" || type === "pty_ready";
+  }
+
+  function deferOrderedResizeFrame(frame: DeferredOrderedResizeFrame): void {
+    if (_deferredOrderedResizeBytes + frame.bytes > ORDERED_RESIZE_BARRIER_MAX_BYTES) {
+      ws?.close(WP.CLOSE_CODE_SERVER_ERROR, "ordered resize barrier overflow");
+      return;
+    }
+    _deferredOrderedResizeBytes += frame.bytes;
+    _deferredOrderedResizeFrames.push(frame);
+  }
+
+  function releaseOrderedResizeBarrier(): void {
+    _orderedResizeBarrier = false;
+    const frames = _deferredOrderedResizeFrames;
+    _deferredOrderedResizeFrames = [];
+    _deferredOrderedResizeBytes = 0;
+    for (const frame of frames) {
+      if (frame.kind === "binary") handleBinaryFrame(frame.data);
+      else {
+        const handler = terminalControlHandlers[frame.message.type] ?? applicationControlHandlers[frame.message.type];
+        if (handler) handler(frame.message);
+      }
+    }
+  }
+
+  function handleAttachAck(message: SocketControlMessage): void {
     __wfTraceEvent(_trace, "attach_ack");
+    _supportsOrderedResize = Array.isArray(message.capabilities)
+      && message.capabilities.includes(PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK);
+    _orderedResizeBarrier = _supportsOrderedResize;
     _attachAckReceived = true;
     _awaitingAttachAck = false;
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
     // Re-check dimensions after layout settles — catches stale initial dims on
-    // mobile where layout isn't finalized at connect time. Same-dimension acks
-    // are skipped to avoid a duplicate resize cycle immediately after attach.
-    sendLayoutStableAfterPaint();
+    // mobile where layout isn't finalized at connect time. Ordered peers must
+    // acknowledge even matching attach geometry before the local terminal can
+    // commit a reconnect/take-control proposal.
+    sendLayoutStableAfterPaint(_supportsOrderedResize);
+  }
+
+  function handleResizeAck(message: SocketControlMessage): void {
+    if (!_supportsOrderedResize) return;
+    const dimensions = _orderedResize.acknowledge(message);
+    if (!dimensions) return;
+    _lastSentResize = `${dimensions.cols}x${dimensions.rows}`;
+    opts.onResizeAck?.(dimensions.cols, dimensions.rows);
+    releaseOrderedResizeBarrier();
   }
 
   function handlePtyReady(): void {
@@ -1219,6 +1349,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   const terminalControlHandlers: Readonly<Record<string, SocketControlHandler>> = {
     attach_ack: handleAttachAck,
+    resize_ack: handleResizeAck,
     pty_ready: handlePtyReady,
     prefill_viewport: handlePrefillViewport,
     prefill_done: handlePrefillDone,
@@ -1236,6 +1367,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       const message = parsed as Readonly<Record<string, unknown>>;
       if (typeof message.type !== "string") return;
       const typedMessage = message as SocketControlMessage;
+      if (_orderedResizeBarrier && isOrderedResizeBarrierControl(typedMessage.type)) {
+        deferOrderedResizeFrame({ kind: "control", message: typedMessage, bytes: new TextEncoder().encode(raw).byteLength });
+        return;
+      }
       const handler = terminalControlHandlers[typedMessage.type] ?? applicationControlHandlers[typedMessage.type];
       if (handler) handler(typedMessage);
     } catch (error: unknown) {
@@ -1244,6 +1379,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function handleBinaryFrame(data: ArrayBuffer): void {
+    if (_orderedResizeBarrier) {
+      deferOrderedResizeFrame({ kind: "binary", data: data.slice(0), bytes: data.byteLength });
+      return;
+    }
     if (_awaitingPrefillDone) {
       const bytes = new Uint8Array(data);
       if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: bytes.length });
@@ -1319,10 +1458,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  function sendResize(cols: number, rows: number): void {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "resize", cols, rows }));
-    }
+  function sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement> {
+    return queueResize({ cols, rows });
   }
 
   function sendTakeControl() {
@@ -1395,6 +1532,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     get ws() { return ws; },
     get isOpen() { return !!(ws && ws.readyState === WebSocket.OPEN); },
     get retryBlocked() { return _rc.isBlocked; },
+    get supportsOrderedResize() { return _supportsOrderedResize; },
   };
 }
 
@@ -1456,13 +1594,14 @@ interface PtyTerminalController {
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
   focus(): void;
   scrollToBottom(): void;
-  resize(): void;
+  resize(): void | Promise<OrderedResizeSettlement>;
+  readonly supportsOrderedResize: boolean;
   dispose(): void;
   scheduleReconnect(): void;
   sendTakeControl(): void;
-  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
-  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): void;
+  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
   send(data: string | Blob | BufferSource): void;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
@@ -1554,9 +1693,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     forceTerminalRepaint(_term);
   }
 
-  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
-    if (!_container) return;
-    syncTerminalLayout({
+  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }): Promise<void> {
+    if (!_container) return Promise.resolve();
+    return syncTerminalLayout({
       term: _term,
       fitAddon: _fitAddon,
       ptyClient: _ptyClient,
@@ -1924,6 +2063,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       resetPty: opts.resetPty,
       prefillMode: opts.prefillMode,
       getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
+      getProposedDimensions: () => _fitAddon?.proposeDimensions?.() ?? (_term ? { cols: _term.cols, rows: _term.rows } : null),
       getLayoutMetrics: () => {
         if (!_container) return null;
         const rect = _container.getBoundingClientRect();
@@ -1968,6 +2108,14 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
+      onResizeAck: (cols, rows) => {
+        if (!isCurrent() || !_term) return;
+        if (commitTerminalResizePreservingScroll(_term, { cols, rows })) {
+          recordFirstFit({ cols, rows });
+          forceRepaint();
+          resizeLifecycle.scheduleResizeRehydrate();
+        }
+      },
       onPrefillDone: () => {
         if (!isCurrent()) return;
         const prefillAction = connectionLifecycle.onPrefillDone();
@@ -2028,8 +2176,18 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_term) _term.scrollToBottom();
   }
 
-  function resize() {
-    syncLayout({ forceSend: true, repaint: true, reason: "resize" });
+  function resize(): void | Promise<OrderedResizeSettlement> {
+    if (!_ptyClient) {
+      void syncLayout({ forceSend: true, repaint: true, reason: "resize" });
+      return;
+    }
+    const supportsOrderedResize = _ptyClient.supportsOrderedResize;
+    const settlement = _ptyClient.sendFitResize({ force: true, immediate: true });
+    if (!supportsOrderedResize) {
+      forceRepaint();
+      return;
+    }
+    return settlement;
   }
 
   /**
@@ -2067,7 +2225,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     // Delegation to pty client
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
     sendTakeControl: () => { if (_ptyClient) _ptyClient.sendTakeControl(); },
-    sendFitResize: (options?: { force?: boolean; fit?: boolean }) => { if (_ptyClient) _ptyClient.sendFitResize(options); },
+    sendFitResize: (options?: { force?: boolean; fit?: boolean; immediate?: boolean }) => _ptyClient
+      ? _ptyClient.sendFitResize(options)
+      : Promise.resolve("cancelled" as const),
     forceRepaint,
     syncLayout,
     send: (data) => {
@@ -2086,6 +2246,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     get fitAddon() { return _fitAddon; },
     get ptyClient() { return _ptyClient; },
     get hydration() { return _hydration; },
+    get supportsOrderedResize() { return _ptyClient?.supportsOrderedResize ?? false; },
     get isConnected() { return !!(_ptyClient && _ptyClient.isOpen); },
     get retryBlocked() { return _ptyClient ? _ptyClient.retryBlocked : false; },
   };
@@ -2303,6 +2464,10 @@ function getMachines(): readonly { readonly url: string; readonly name: string; 
     ready: peer.status === "ready" && peer.identity !== undefined,
     diagnostic: peer.diagnostic,
   }));
+}
+
+function getWorkspaceMachines(): readonly { readonly url: string; readonly name: string; readonly version: string }[] {
+  return getMachines().filter((machine) => machine.ready);
 }
 
 function resolveReadyMachineOrigin(machineIdentity: string | undefined): string | undefined {
@@ -2741,9 +2906,9 @@ function showView(name: string, skipAnimation?: boolean): void {
       chip.style.display = "flex";
       headerCenter.style.transform = "";
       const hml = document.getElementById("header-machine-label");
-      if (getMachines().length > 0) {
+      if (getWorkspaceMachines().length > 0) {
         const mName = state.currentMachine
-          ? (getMachines().find(m => m.url === state.currentMachine)?.name || "remote")
+          ? (getWorkspaceMachines().find(m => m.url === state.currentMachine)?.name || "remote")
           : (state.selfName || "local");
         hml.textContent = mName;
         hml.style.display = "block";
@@ -2824,7 +2989,7 @@ function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSes
 function renderSessionListFromState(): void {
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
-  const multiMachine = getMachines().length > 0;
+  const multiMachine = getWorkspaceMachines().length > 0;
   const html = multiMachine
     ? state.lastSessionGroups.map(group => renderMachineGroupHtml(group, true)).join("")
     : renderMachineGroupHtml(state.lastSessionGroups[0], false);
@@ -3177,7 +3342,7 @@ async function loadSessionsOnce() {
   const myEpoch = ++state.loadSessionsEpoch;
   const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
-  const machines = getMachines();
+  const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
   // Single-machine: just fetch and render
@@ -3201,50 +3366,42 @@ async function loadSessionsOnce() {
     ...machines.map(m => ({ url: m.url, meta: m })),
   ];
 
-  // Discovery can finish after the initial local-only render. Materialize any
-  // newly discovered groups before their independent session requests settle.
-  const renderedMachineIds = new Set(Array.from(el.querySelectorAll<HTMLElement>(".machine-group"))
-    .map((group) => group.dataset.machine ?? ""));
-  if (state.firstLoad || allMachines.some((machine) => !renderedMachineIds.has(machine.url))) {
-    el.innerHTML = allMachines.map(m =>
-      renderMachineGroupHtml({ machine: { ...m.meta, url: m.url }, sessions: [], online: false, pending: true }, true)
-    ).join("");
-  }
-
   const groups = new Array(allMachines.length);
-  // Previous cycle's groups by url — used as fallback for unresolved slots
-  // during refresh so sidebar order stays stable (add-order) and peers don't
-  // flicker to "pending" each poll.
-  const prevByUrl = new Map((state.lastSessionGroups || []).map(g => [g.machine.url, g]));
-  const pendingPlaceholder = m => ({
-    machine: { ...m.meta, url: m.url, version: "" },
+  // Keep a previous successful peer group visible while its next session
+  // request is pending. New peers enter workspace navigation only after that
+  // request succeeds; failures remove their workspace group.
+  const prevByUrl = new Map((state.lastSessionGroups || [])
+    .filter(group => !group.machine.url || group.online)
+    .map(group => [group.machine.url, group]));
+  const localPending = {
+    machine: { ...allMachines[0].meta, url: "", version: "" },
     sessions: [], online: false, pending: true,
-  });
-  const groupsInOrder = () => allMachines.map((m, i) => groups[i] || prevByUrl.get(m.url) || pendingPlaceholder(m));
-
-  // Render each machine group as its fetch resolves — a slow/dead peer can't
-  // delay rendering of machines that responded quickly.
-  const renderGroup = (i, g) => {
-    const m = allMachines[i];
-    const existing = el.querySelector(`[data-machine="${escAttr(m.url)}"]`);
-    if (!existing) return;
-    const newHtml = renderMachineGroupHtml(g, true);
-    if (existing.outerHTML !== newHtml) {
-      const tmp = document.createElement("div");
-      tmp.innerHTML = newHtml;
-      existing.replaceWith(tmp.firstElementChild);
-    }
   };
+  const visibleGroupsInOrder = () => allMachines.flatMap((machine, index) => {
+    const resolved = groups[index];
+    if (resolved) return !machine.url || resolved.online ? [resolved] : [];
+    const previous = prevByUrl.get(machine.url);
+    if (previous) return [previous];
+    return machine.url ? [] : [localPending];
+  });
+  const renderVisibleGroups = () => {
+    const visible = visibleGroupsInOrder();
+    state.lastSessionGroups = visible;
+    const html = visible.map(group => renderMachineGroupHtml(group, true)).join("");
+    if (html !== state.lastSessionsHtml) {
+      el.innerHTML = html;
+      state.lastSessionsHtml = html;
+    }
+    renderSidebar();
+  };
+
+  renderVisibleGroups();
 
   const promises = allMachines.map((m, i) =>
     fetchMachine(m.url, m.meta, isCurrentLoad).then(g => {
       if (!isCurrentLoad()) return; // stale call, discard
       groups[i] = g;
-      state.lastSessionGroups = groupsInOrder();
-      renderGroup(i, g);
-      // Sidebar reads from state.lastSessionGroups — refresh it now so the
-      // local machine's card appears without waiting for slow peers.
-      renderSidebar();
+      renderVisibleGroups();
     })
   );
 
@@ -3262,21 +3419,21 @@ async function loadSessionsOnce() {
       const nowOutdated = g.online && g.machine.version !== newestVersion;
       if (nowOutdated !== !!g.outdated) {
         g.outdated = nowOutdated;
-        renderGroup(i, g);
+        renderVisibleGroups();
       }
     }
   }
 
   state.firstLoad = false;
-  state.lastSessionGroups = groupsInOrder();
+  const visibleGroups = visibleGroupsInOrder();
+  state.lastSessionGroups = visibleGroups;
   const out = [];
-  for (const g of groups) {
-    if (!g) continue;
+  for (const g of visibleGroups) {
     for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
   }
   state.allSessions = out;
   syncDelegationWorkspace();
-  checkStateTransitions(groups);
+  checkStateTransitions(visibleGroups);
   await openSessionFromNotificationRoute(myEpoch);
 }
 
@@ -4401,7 +4558,7 @@ async function killSession(name, e, machineUrl) {
 function renderDrawerList() {
   const groups = state.lastSessionGroups;
   const list = document.getElementById("drawer-list");
-  const multiMachine = getMachines().length > 0;
+  const multiMachine = getWorkspaceMachines().length > 0;
 
   const all = groups.flatMap(group => {
     const machineUrl = group.machine.url || "";
@@ -4682,9 +4839,9 @@ async function switchSession(val) {
   loadSessionSwitcher();
   // Update machine label in header (showView sets it, but drawer bypasses showView)
   const hml = document.getElementById("header-machine-label");
-  if (getMachines().length > 0) {
+  if (getWorkspaceMachines().length > 0) {
     const mName = machineUrl
-      ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
+      ? (getWorkspaceMachines().find(m => m.url === machineUrl)?.name || "remote")
       : (state.selfName || "local");
     hml.textContent = mName;
     hml.style.display = "block";
@@ -5386,7 +5543,10 @@ if (!isDesktop()) {
 let sidebarAutoCollapseTimer = null;
 let sidebarSessionOrderDragActive = false;
 let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 300;
+let sidebarLayoutTransitionId = 0;
+let sidebarLayoutSettlementTransitionId: number | null = null;
+// Mirrors #desktop-sidebar's 200ms margin-left transition when transitionend is unavailable.
+const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 200;
 
 let sidebarInitialRender = false;
 let _sidebarRafId = null;
@@ -5409,7 +5569,7 @@ function _renderSidebarNow() {
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
   if (groups.length) sidebarInitialRender = true;
-  const machines = getMachines();
+  const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
   let html = "";
@@ -5610,17 +5770,48 @@ function initSidebar() {
       clearTimeout(sidebarLayoutTransitionFallbackTimer);
       sidebarLayoutTransitionFallbackTimer = null;
     }
-    state.sidebarLayoutTransitioning = false;
+    const transitionId = sidebarLayoutTransitionId;
+    if (sidebarLayoutSettlementTransitionId === transitionId) return;
+    sidebarLayoutSettlementTransitionId = transitionId;
+    const complete = (acknowledged = true) => {
+      if (transitionId !== sidebarLayoutTransitionId) return;
+      sidebarLayoutSettlementTransitionId = null;
+      state.sidebarLayoutTransitioning = false;
+      if (acknowledged) revealGridCellsWithoutResize();
+    };
     if (activeGridTerminalSessions() !== null) {
-      scheduleGridStabilizedFit();
-    } else {
-      state.terminalController?.resize();
-      revealGridCellsWithoutResize();
+      scheduleGridStabilizedFit(complete);
+      return;
     }
+    const controller = state.terminalController;
+    if (!controller) {
+      complete();
+      return;
+    }
+    const supportsOrderedResize = controller.supportsOrderedResize;
+    let settlement: void | Promise<OrderedResizeSettlement>;
+    try {
+      settlement = controller.resize();
+    } catch (error: unknown) {
+      console.warn("[sidebar] terminal resize failed:", error);
+      complete(false);
+      return;
+    }
+    if (!supportsOrderedResize) {
+      complete();
+      return;
+    }
+    void Promise.resolve(settlement).then((outcome) => {
+      complete(outcome === "acknowledged");
+    }, (error) => {
+      console.warn("[sidebar] terminal resize settlement failed:", error);
+      complete(false);
+    });
   }
 
   function beginSidebarLayoutTransition(): void {
     if (sidebarLayoutTransitionFallbackTimer) clearTimeout(sidebarLayoutTransitionFallbackTimer);
+    sidebarLayoutTransitionId += 1;
     state.sidebarTransitionIsHover = false;
     state.sidebarLayoutTransitioning = true;
     hideGridCellsForTransition();
