@@ -10,6 +10,7 @@ export interface DelegatedAppActions {
   retryMachine(machine: string, event: MouseEvent): void;
   selectProject(project: string): void;
   agentRemove(command: string): void;
+  createAgentSession(command: string): void;
   agentToggle(command: string, enabled: boolean): void;
   toggleGrid(session: string, machine: string, event: MouseEvent): void;
 }
@@ -36,6 +37,7 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "retry-machine") actions.retryMachine(machine || "", event);
     else if (action === "select-project" && button.dataset.project) actions.selectProject(button.dataset.project);
     else if (action === "agent-remove" && button.dataset.command) actions.agentRemove(button.dataset.command);
+    else if (action === "create-agent-session" && button.dataset.command) actions.createAgentSession(button.dataset.command);
     else if (action === "toggle-grid" && session) actions.toggleGrid(session, machine || "", event);
   };
   const change = (event: Event) => {
