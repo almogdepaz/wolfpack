@@ -116,6 +116,24 @@ wait_for_pid_change() {
   return 1
 }
 
+# bootout returns before launchd necessarily finishes unregistering the job.
+# Bootstrap during that window fails with "operation already in progress".
+wait_for_service_unloaded() {
+  local label="$1"
+  local name="$2"
+  local attempts=$((VERIFY_TIMEOUT_SECS * 5))
+  local i=0
+  while [ "$i" -le "$attempts" ]; do
+    if ! launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  echo "ERROR: $name did not finish unloading" >&2
+  return 1
+}
+
 start_replacement_service() {
   local label="$1"
   local plist="$2"
@@ -130,6 +148,7 @@ start_replacement_service() {
     else
       launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
     fi
+    wait_for_service_unloaded "$label" "$name"
     launchctl bootstrap "$DOMAIN" "$plist"
   elif ! launchctl kickstart -k "$DOMAIN/$label" 2>/dev/null; then
     echo "ERROR: $name service is not installed; run 'wolfpack service install' first" >&2

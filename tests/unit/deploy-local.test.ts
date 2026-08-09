@@ -95,14 +95,38 @@ case "$*" in
     ;;
   *"bootout"*"com.wolfpack.broker"*)
     rm -f "$STATE_DIR/broker-kicked" "$STATE_DIR/broker-bootstrapped"
+    touch "$STATE_DIR/broker-bootout-pending"
     ;;
   *"bootout"*"com.wolfpack.server"*)
     rm -f "$STATE_DIR/server-kicked" "$STATE_DIR/server-bootstrapped"
+    touch "$STATE_DIR/server-bootout-pending"
+    ;;
+  *"print"*"com.wolfpack.broker"*)
+    if [ -f "$STATE_DIR/broker-bootout-pending" ]; then
+      if [ ! -f "$STATE_DIR/broker-bootout-observed" ]; then
+        touch "$STATE_DIR/broker-bootout-observed"
+        exit 0
+      fi
+      rm -f "$STATE_DIR/broker-bootout-pending"
+      exit 1
+    fi
+    ;;
+  *"print"*"com.wolfpack.server"*)
+    if [ -f "$STATE_DIR/server-bootout-pending" ]; then
+      if [ ! -f "$STATE_DIR/server-bootout-observed" ]; then
+        touch "$STATE_DIR/server-bootout-observed"
+        exit 0
+      fi
+      rm -f "$STATE_DIR/server-bootout-pending"
+      exit 1
+    fi
     ;;
   *"bootstrap"*"com.wolfpack.broker.plist"*)
+    if [ -f "$STATE_DIR/broker-bootout-pending" ]; then exit 37; fi
     touch "$STATE_DIR/broker-bootstrapped"
     ;;
   *"bootstrap"*"com.wolfpack.server.plist"*)
+    if [ -f "$STATE_DIR/server-bootout-pending" ]; then exit 37; fi
     touch "$STATE_DIR/server-bootstrapped"
     ;;
 esac
