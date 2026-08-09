@@ -125,8 +125,10 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid behavior only");
 
   const attachCounts = new Map<string, number>();
+  const closeCounts = new Map<string, number>();
   await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
     const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onClose(() => closeCounts.set(session, (closeCounts.get(session) ?? 0) + 1));
     ws.onMessage((message) => {
       if (typeof message !== "string") return;
       const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
@@ -155,6 +157,7 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
 
   await page.getByRole("button", { name: "Collapse child" }).click();
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
+  await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
   await page.getByRole("button", { name: "Expand child" }).click();
 
   await expect.poll(() => page.evaluate(() => {

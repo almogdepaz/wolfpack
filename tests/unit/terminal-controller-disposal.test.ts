@@ -10,9 +10,8 @@ describe("terminal controller disposal contract", () => {
     expect(app).toMatch(/terminalController\.dispose\(\); state\.terminalController = null/);
   });
 
-  test("grid removal, suspension, collapse and exit dispose controllers", () => {
+  test("grid removal, suspension and exit dispose controllers", () => {
     expect(grid).toContain("removed.controller?.dispose()");
-    expect(grid).toMatch(/if \(gs\._collapsed && gs\.controller\)[\s\S]*?gs\.controller\.dispose\(\)/);
     expect(grid).toMatch(/export function suspendGridMode\(\)[\s\S]*?gs\.controller\) gs\.controller\.dispose\(\)/);
     expect(grid).toMatch(/export function exitGridMode\(skipRestore\?\)[\s\S]*?gs\.controller\) gs\.controller\.dispose\(\)/);
     expect(grid).toMatch(/suspendDelegationGridTerminals[\s\S]*?session\.controller\?\.dispose\(\)/);
