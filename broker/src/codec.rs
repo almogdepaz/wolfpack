@@ -1,5 +1,5 @@
 use crate::protocol::{ControlRequest, ControlResponse, Event};
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
@@ -72,6 +72,37 @@ pub enum Frame {
     Event(Event),
 }
 
+fn output_frame_header(out: &OutputFrame) -> Result<[u8; 29]> {
+    let payload_len = 24usize.saturating_add(out.data.len());
+    let payload_len = u32::try_from(payload_len).unwrap_or(u32::MAX);
+    validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len)?;
+    let mut header = [0u8; 29];
+    header[0] = FRAME_KIND_OUTPUT_BINARY;
+    header[1..5].copy_from_slice(&payload_len.to_be_bytes());
+    header[5..21].copy_from_slice(out.session_id.as_bytes());
+    header[21..29].copy_from_slice(&out.seq.to_be_bytes());
+    Ok(header)
+}
+
+async fn write_all_vectored_async<W>(w: &mut W, bufs: &mut [IoSlice<'_>]) -> io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    let mut remaining = bufs;
+    while !remaining.is_empty() {
+        let written = w.write_vectored(remaining).await?;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write frame",
+            ));
+        }
+        IoSlice::advance_slices(&mut remaining, written);
+    }
+    Ok(())
+}
+
 pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<()> {
     if let Frame::OutputBinary(out) = frame {
         let payload_len = 24usize.saturating_add(out.data.len());
@@ -124,13 +155,12 @@ where
 {
     use tokio::io::AsyncWriteExt;
     if let Frame::OutputBinary(out) = frame {
-        let payload_len = 24usize.saturating_add(out.data.len());
-        validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len as u32)?;
-        w.write_all(&[FRAME_KIND_OUTPUT_BINARY]).await?;
-        w.write_all(&(payload_len as u32).to_be_bytes()).await?;
-        w.write_all(out.session_id.as_bytes()).await?;
-        w.write_all(&out.seq.to_be_bytes()).await?;
-        w.write_all(out.data.as_slice()).await?;
+        let header = output_frame_header(out)?;
+        write_all_vectored_async(
+            w,
+            &mut [IoSlice::new(&header), IoSlice::new(out.data.as_slice())],
+        )
+        .await?;
         w.flush().await?;
         return Ok(());
     }
@@ -205,6 +235,51 @@ mod tests {
     use crate::protocol::{methods, ControlResponse, Event, ProtocolError, ErrorCode, ResponsePayload};
     use serde_json::json;
     use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    #[derive(Default)]
+    struct AsyncVectoredOnlyWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl tokio::io::AsyncWrite for AsyncVectoredOnlyWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::other("scalar async write used")))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            let limit = 7;
+            let mut written = 0;
+            for buf in bufs {
+                let take = (limit - written).min(buf.len());
+                self.bytes.extend_from_slice(&buf[..take]);
+                written += take;
+                if written == limit {
+                    break;
+                }
+            }
+            Poll::Ready(Ok(written))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     fn nil() -> Uuid {
         Uuid::nil()
@@ -259,6 +334,22 @@ mod tests {
             Frame::OutputBinary(b) => assert_eq!(b, out),
             other => panic!("wrong kind: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn async_output_binary_uses_partial_safe_scatter_gather_writes() {
+        let frame = Frame::OutputBinary(OutputFrame {
+            session_id: nil(),
+            seq: 42,
+            data: Arc::new(b"shared-output".to_vec()),
+        });
+        let mut writer = AsyncVectoredOnlyWriter::default();
+
+        write_frame_async(&mut writer, &frame)
+            .await
+            .expect("vectored frame write");
+
+        assert_eq!(read_frame(&mut Cursor::new(writer.bytes)).unwrap(), frame);
     }
 
     #[test]
