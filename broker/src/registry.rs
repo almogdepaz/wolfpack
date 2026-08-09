@@ -5,9 +5,10 @@
 //! exists purely so `create_session` can reject duplicate names and so the
 //! anonymous-name generator can skip collisions.
 //!
-//! The registry locks across `Session::spawn` so a name reservation and the
-//! actual spawn happen atomically — no second caller can grab the same name
-//! between resolve and insert.
+//! Session creation reserves the name under the registry mutex, releases the
+//! mutex while `Session::spawn` performs PTY/process setup, then replaces the
+//! reservation with the live session id. Concurrent creators observe the
+//! reservation as occupied without serializing unrelated process creation.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
