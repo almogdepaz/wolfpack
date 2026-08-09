@@ -39,6 +39,7 @@ import {
   TASK_LIMITS,
   TASK_STATUS,
 } from "../tasks/domain.ts";
+import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../task-relay/domain.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -142,6 +143,7 @@ const object = (
 
 const ok = object({ ok: boolean() }, ["ok"]);
 const error = ref("ErrorEnvelope");
+const OPAQUE_RELAY_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
 function taskEventVariant(
   type: string,
@@ -233,6 +235,7 @@ export const controlApiSource: ControlApiSource = {
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
+    "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
@@ -378,6 +381,7 @@ export const controlApiSource: ControlApiSource = {
       harness: string(),
       terminal: ref("SessionTerminalLiveness"),
       parentSession: ref("SessionControlIdentity"),
+      taskEndpoint: ref("RelayEndpoint"),
     }, [
       "ok",
       "selector",
@@ -431,6 +435,47 @@ export const controlApiSource: ControlApiSource = {
       name: string(),
       url: string(),
     }, ["name", "url"], { additionalProperties: true }),
+    RelayEndpoint: object({
+      relay: { type: "string", pattern: `^${RELAY_ID.replaceAll("-", "\\-")}(?::peer:${OPAQUE_RELAY_UUID_PATTERN})?$` },
+      id: { type: "string", format: "uuid" },
+    }, ["relay", "id"], { description: "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin." }),
+    RelayEnvelope: object({
+      envelopeId: { type: "string", minLength: 1, maxLength: 512 },
+      protocolVersion: { const: RELAY_PROTOCOL_VERSION },
+      source: ref("RelayEndpoint"),
+      target: ref("RelayEndpoint"),
+      payload: {},
+      createdAt: string(),
+    }, ["envelopeId", "protocolVersion", "source", "target", "payload", "createdAt"]),
+    RelayErrorEnvelope: object({
+      ok: { const: false },
+      error: object({ code: { enum: Object.values(RELAY_ERROR) }, message: string(), retryable: boolean() }, ["code", "message", "retryable"]),
+    }, ["ok", "error"]),
+    RelayConnectResponse: { oneOf: [
+      object({ ok: { const: true }, endpoint: ref("RelayEndpoint"), leaseExpiresAt: string() }, ["ok", "endpoint", "leaseExpiresAt"]),
+      ref("RelayErrorEnvelope"),
+    ] },
+    RelayResolveResponse: { oneOf: [
+      object({ ok: { const: true }, endpoint: ref("RelayEndpoint") }, ["ok", "endpoint"]),
+      ref("RelayErrorEnvelope"),
+    ] },
+    RelaySendResponse: { oneOf: [
+      object({ ok: { const: true }, kind: { enum: ["accepted", "duplicate"] }, acceptanceId: { type: "string", format: "uuid" }, forwarding: { enum: ["local", "forwarded", "pending"] } }, ["ok", "kind", "acceptanceId", "forwarding"]),
+      ref("RelayErrorEnvelope"),
+    ] },
+    RelayReceiveResponse: { oneOf: [
+      object({ ok: { const: true }, envelopes: arrayOf(ref("RelayEnvelope")), nextCursor: { type: "string", pattern: "^(0|[1-9][0-9]*)$" }, hasMore: boolean() }, ["ok", "envelopes", "nextCursor", "hasMore"]),
+      ref("RelayErrorEnvelope"),
+    ] },
+    RelayAcknowledgementResponse: { oneOf: [
+      object({ ok: { const: true }, kind: { enum: ["acknowledged", "duplicate"] } }, ["ok", "kind"]),
+      ref("RelayErrorEnvelope"),
+    ] },
+    RelayPeerReceiveResponse: { oneOf: [
+      object({ ok: { const: true }, kind: { enum: ["accepted", "duplicate"] }, acceptanceId: { type: "string", format: "uuid" } }, ["ok", "kind", "acceptanceId"]),
+      ref("RelayErrorEnvelope"),
+    ] },
+    RelayEmptyResponse: { oneOf: [ok, ref("RelayErrorEnvelope")] },
     TaskId: {
       type: "string",
       pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -574,6 +619,82 @@ export const controlApiSource: ControlApiSource = {
       auth: "public",
       response: ref("MachineHandshake"),
       errors: ["503 ErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/connect": {
+      operationId: "connectTaskRelay",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        callerSession: ref("SessionSelector"),
+        generation: { type: "string", minLength: 1, maxLength: 512 },
+        protocolVersions: arrayOf({ type: "integer" }),
+        leaseMs: { type: "integer", minimum: 1, maximum: RELAY_LIMITS.MAX_LEASE_MS },
+      }, ["callerSession", "generation", "protocolVersions"]),
+      response: ref("RelayConnectResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/disconnect": {
+      operationId: "disconnectTaskRelay",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ callerSession: ref("SessionSelector"), endpoint: ref("RelayEndpoint") }, ["callerSession", "endpoint"]),
+      response: ref("RelayEmptyResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/resolve": {
+      operationId: "resolveTaskRelayEndpoint",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ callerSession: ref("SessionSelector"), target: ref("RelayEndpoint"), protocolVersion: { const: RELAY_PROTOCOL_VERSION } }, ["callerSession", "target", "protocolVersion"]),
+      response: ref("RelayResolveResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/peer/resolve": {
+      operationId: "resolvePeerTaskRelayTopology",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ origin: ref("TailnetOrigin"), endpoint: ref("RelayEndpoint") }, ["origin", "endpoint"]),
+      response: ref("RelayResolveResponse"),
+      errors: ["400 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/send": {
+      operationId: "sendTaskRelayEnvelope",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ callerSession: ref("SessionSelector"), envelope: ref("RelayEnvelope") }, ["callerSession", "envelope"]),
+      response: ref("RelaySendResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "410 RelayErrorEnvelope", "413 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "GET /api/task-relay/v2/receive": {
+      operationId: "receiveTaskRelayEnvelopes",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ callerSession: ref("SessionSelector"), cursor: { type: "string", pattern: "^(0|[1-9][0-9]*)$" } }, ["callerSession", "cursor"]),
+      response: ref("RelayReceiveResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/delivery-ack": {
+      operationId: "acknowledgeTaskRelayDelivery",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ callerSession: ref("SessionSelector"), envelopeId: { type: "string", minLength: 1, maxLength: 512 } }, ["callerSession", "envelopeId"]),
+      response: ref("RelayAcknowledgementResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    },
+    "POST /api/task-relay/v2/peer/receive": {
+      operationId: "receivePeerTaskRelayEnvelope",
+      stable: true,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: ref("RelayEnvelope"),
+      response: ref("RelayPeerReceiveResponse"),
+      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "413 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
     },
     "POST /api/tasks/v1/send": {
       operationId: "sendTask",

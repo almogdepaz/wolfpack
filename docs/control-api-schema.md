@@ -31,3 +31,11 @@ Compatibility rules:
 `GET /api/discover` remains the legacy `discoverPeers` operation for existing browser clients. Its `{ peers, error? }` envelope contains only candidates whose local `online` fact is `true`, mapped to `{ hostname, url, name }`. It sends `Deprecation: true` and a `Link` successor-version header for `/api/tailnet/v1/candidates`. Both routes preserve the same non-sensitive error when local Tailscale status is malformed or unavailable.
 
 Schema compatibility checks live in `tests/unit/control-api-schema.test.ts`; representative runtime response checks live in integration tests.
+
+## pi tasks relay v2 boundary
+
+`/api/task-relay/v2/*` is the Pi Tasks adapter contract. It preserves the v1 task routes and ledgers; relay v2 is a separate, content-blind transport and does not interpret task payloads or own task lifecycle.
+
+The relay inherits Wolfpack's trusted local processes and trusted Tailnet machines boundary. It does not provide per-Pi-session authorization or per-session relay credentials in v2. Normal Wolfpack HTTP/JWT and Tailnet admission remain the authority for peer requests.
+
+Relay endpoint fields are opaque IDs. A trusted local adapter qualifies a remote relay's local endpoint through `POST /api/task-relay/v2/peer/resolve`; its canonical Tailnet origin is persisted only in the local relay route directory, and the response contains only the opaque peer-qualified endpoint. Peer Tailnet origins never appear in generic Pi Tasks records or endpoint fields. Remote envelopes persist only in the sender's forwarding outbox until the target relay accepts them; the recipient mailbox is created solely by the target relay. Forwarding retries are single-flight per envelope, bounded, durable, and retain exhaustion diagnostics for cleanup.
