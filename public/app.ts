@@ -53,6 +53,7 @@ import {
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
+import { createReconnector } from "./reconnector";
 import { resolveHydrationDebugTiming } from "../src/terminal-hydration-debug";
 import {
   resolveGhosttyPrewarmDebugPoolSize,
@@ -542,96 +543,6 @@ function recordRecent(machine: string | null | undefined, name: string): void {
   if (state.sessionRecents.length > MAX_RECENTS) state.sessionRecents.length = MAX_RECENTS;
   saveRecents();
 }
-const RECONNECT_BUDGET_MS = 2 * 60 * 1000;
-const RECONNECT_BASE_DELAY_MS = 500;
-const RECONNECT_MAX_DELAY_MS = 5000;
-
-/**
- * Shared reconnect backoff engine used by both desktop PTY and mobile WS paths.
- * @param {object} opts
- * @param {() => boolean} [opts.shouldReconnect] - guard; returning false skips scheduling
- * @param {() => void} [opts.onReconnecting] - called when a reconnect attempt is scheduled
- * @param {() => void} [opts.onExhausted] - called when the retry budget is spent
- * @returns {{ schedule, cancel, reset, block, connected, isBlocked: boolean, pending: boolean }}
- */
-interface ReconnectorOpts {
-  shouldReconnect?: () => boolean;
-  onReconnecting?: () => void;
-  onExhausted?: () => void;
-}
-
-interface Reconnector {
-  schedule(connectFn: () => void): void;
-  cancel(): void;
-  reset(): void;
-  block(): void;
-  connected(): void;
-  readonly isBlocked: boolean;
-  readonly pending: boolean;
-}
-
-function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
-  let _timer: ReturnType<typeof setTimeout> | null = null;
-  let _delay = RECONNECT_BASE_DELAY_MS;
-  let _startedAt = 0;
-  let _blocked = false;
-
-  function schedule(connectFn: () => void): void {
-    if (_timer) return;
-    if (_blocked) return;
-    if (opts.shouldReconnect && !opts.shouldReconnect()) return;
-    const now = Date.now();
-    if (!_startedAt) _startedAt = now;
-    const elapsed = now - _startedAt;
-    const remaining = RECONNECT_BUDGET_MS - elapsed;
-    if (remaining <= 0) {
-      _blocked = true;
-      if (opts.onExhausted) opts.onExhausted();
-      return;
-    }
-    if (opts.onReconnecting) opts.onReconnecting();
-    const jitterMs = Math.floor(Math.random() * 200);
-    const delayMs = Math.min(_delay + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
-    _timer = setTimeout(() => {
-      _timer = null;
-      if (opts.shouldReconnect && !opts.shouldReconnect()) return;
-      connectFn();
-    }, delayMs);
-    _delay = Math.min(Math.floor(_delay * 1.8), RECONNECT_MAX_DELAY_MS);
-  }
-
-  function cancel() {
-    if (_timer) { clearTimeout(_timer); _timer = null; }
-  }
-
-  function reset() {
-    _blocked = false;
-    _startedAt = 0;
-    _delay = RECONNECT_BASE_DELAY_MS;
-  }
-
-  function block() { _blocked = true; }
-
-  /** Call on successful connect. Returns true if this was a reconnect (budget was active). */
-  function connected() {
-    const wasReconnecting = _startedAt > 0;
-    _delay = RECONNECT_BASE_DELAY_MS;
-    _startedAt = 0;
-    _blocked = false;
-    return wasReconnecting;
-  }
-
-  return {
-    schedule,
-    cancel,
-    reset,
-    block,
-    connected,
-    get isBlocked() { return _blocked; },
-    get pending() { return !!_timer; },
-  };
-}
-
 /**
  * Creates a configured ghostty-web Terminal with addons, copy/paste, and stdin wired up.
  * @param {object} opts
@@ -1319,6 +1230,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function handlePtyReady(): void {
     __wfTraceEvent(_trace, "pty_ready");
+    _rc.connected();
     if (opts.onPtyReady) opts.onPtyReady();
   }
 
@@ -1470,7 +1382,6 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
         console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
         const wasReconnect = hasConnected;
         hasConnected = true;
-        _rc.connected();
         sendAttachHandshake();
         __wfTraceEvent(_trace, "ws.open", { wasReconnect });
         if (opts.onOpen) opts.onOpen(wasReconnect);

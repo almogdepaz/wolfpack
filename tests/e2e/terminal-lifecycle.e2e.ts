@@ -440,6 +440,101 @@ test("legacy return to sent geometry cancels a conflicting debounced resize", as
   expect(result.resizeMessages).not.toContainEqual(expect.objectContaining(result.queuedGeometry));
 });
 
+test("WebSocket open without pty_ready preserves reconnect backoff", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop reconnect budget test");
+  await page.addInitScript(() => {
+    class FakeWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+
+      readonly sent: unknown[] = [];
+      readonly createdAt = performance.now();
+      readyState = FakeWebSocket.CONNECTING;
+      binaryType = "blob";
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor(readonly url: string) {
+        const testWindow = window as unknown as { __budgetSockets?: FakeWebSocket[] };
+        testWindow.__budgetSockets ??= [];
+        testWindow.__budgetSockets.push(this);
+      }
+
+      send(data: unknown): void { this.sent.push(data); }
+      close(code = 1011, reason = "test disconnect"): void {
+        if (this.readyState === FakeWebSocket.CLOSED) return;
+        this.readyState = FakeWebSocket.CLOSED;
+        this.onclose?.(new CloseEvent("close", { code, reason }));
+      }
+      open(): void {
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.(new Event("open"));
+      }
+      serverText(data: string): void { this.onmessage?.(new MessageEvent("message", { data })); }
+      serverBinary(data: string): void {
+        const bytes = new TextEncoder().encode(data);
+        this.onmessage?.(new MessageEvent("message", { data: bytes.buffer }));
+      }
+    }
+
+    Math.random = () => 0;
+    Object.defineProperty(window, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: FakeWebSocket,
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5_000 });
+  await page.evaluate(() => {
+    // @ts-ignore browser bundle global
+    openSession("test-project", "");
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __budgetSockets?: unknown[] }).__budgetSockets?.length ?? 0,
+  )).toBe(1);
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __budgetSockets: Array<{
+        open(): void;
+        close(): void;
+        serverText(data: string): void;
+        serverBinary(data: string): void;
+      }>;
+    }).__budgetSockets[0];
+    socket?.open();
+    socket?.serverText(JSON.stringify({ type: "attach_ack" }));
+    socket?.serverBinary("INITIAL\r\n");
+    socket?.serverText(JSON.stringify({ type: "prefill_done" }));
+    socket?.serverText(JSON.stringify({ type: "pty_ready" }));
+    socket?.close();
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __budgetSockets?: unknown[] }).__budgetSockets?.length ?? 0,
+  )).toBe(2);
+
+  const closedAt = await page.evaluate(() => {
+    const socket = (window as unknown as { __budgetSockets: Array<{ open(): void; close(): void }> }).__budgetSockets[1];
+    if (!socket) throw new Error("missing reconnect socket");
+    socket.open();
+    socket.close();
+    return performance.now();
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __budgetSockets?: unknown[] }).__budgetSockets?.length ?? 0,
+  ), { timeout: 2_000 }).toBe(3);
+  const nextCreatedAt = await page.evaluate(() =>
+    (window as unknown as { __budgetSockets: Array<{ createdAt: number }> }).__budgetSockets[2]?.createdAt,
+  );
+
+  expect(nextCreatedAt - closedAt).toBeGreaterThanOrEqual(800);
+});
+
 test("reconnect/take-control attach defers proposed geometry until the current ordered resize acknowledgement", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop reconnect geometry test");
   await page.addInitScript(() => {
