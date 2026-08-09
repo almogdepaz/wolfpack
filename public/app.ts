@@ -4376,6 +4376,10 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       setConnState("machine-unavailable");
     },
     onHydrationStart: () => {
+      // A controller survives reconnects, but each hydration cycle needs its
+      // own final live transition after the mobile post-mount gate is ready.
+      hydrated = false;
+      terminalMarkedLive = false;
       setTerminalLoadVisualState(container, "hydrating");
       slowLoad.start("hydrating terminal");
     },
