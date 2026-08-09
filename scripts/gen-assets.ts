@@ -85,6 +85,16 @@ function versionIndexAssetUrls(source: string): string {
   );
 }
 
+function versionServiceWorkerAssetUrls(source: string): string {
+  return source.replace(
+    /"\/([^"?]+)\?v=__WOLFPACK_ASSET_VERSION__"/g,
+    (match, file: string) => {
+      const version = assetVersions.get(file);
+      return version ? `"/${file}?v=${version}"` : match;
+    },
+  );
+}
+
 for (const file of files) {
   const ext = extname(file).toLowerCase();
   // Skip .ts source files — only serve compiled bundles
@@ -94,9 +104,12 @@ for (const file of files) {
 
   if (isText(ext)) {
     const source = readFileSync(filePath, "utf-8");
-    const content = file === "index.html"
-      ? versionIndexAssetUrls(source).replaceAll(ASSET_VERSION_TOKEN, assetVersion)
-      : source;
+    let content = source;
+    if (file === "index.html") {
+      content = versionIndexAssetUrls(source).replaceAll(ASSET_VERSION_TOKEN, assetVersion);
+    } else if (file === "sw.js") {
+      content = versionServiceWorkerAssetUrls(source);
+    }
     // Use JSON.stringify to safely embed the string
     entries.push(
       `  [${JSON.stringify(file)}, { content: ${JSON.stringify(content)}, mime: ${JSON.stringify(mime)} }]`,

@@ -55,9 +55,9 @@ if (typeof module !== "undefined" && module.exports) {
 const SHELL_CACHE = "wolfpack-shell-v1";
 const SHELL_ASSETS = [
   "/",
-  "/styles.css",
-  "/wolfpack-lib.js",
-  "/app.bundle.js",
+  "/styles.css?v=__WOLFPACK_ASSET_VERSION__",
+  "/wolfpack-lib.js?v=__WOLFPACK_ASSET_VERSION__",
+  "/app.bundle.js?v=__WOLFPACK_ASSET_VERSION__",
   "/manifest.json",
   "/wolfpack-icon.svg",
 ];
