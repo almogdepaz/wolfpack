@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import pkg from "../../package.json";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
@@ -32,7 +33,8 @@ import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
-import { loadConfig } from "../cli/config.js";
+import { loadConfig, WOLFPACK_DIR } from "../cli/config.js";
+import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
@@ -307,6 +309,14 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
     } else {
       log.info("broker reachable", { socketPath: router.getBrokerSocketPath() });
     }
+  }
+
+  if (process.platform === "darwin" && process.env.WOLFPACK_SERVICE === "1") {
+    const stopLogRotation = startLogRotationMonitor(
+      [join(WOLFPACK_DIR, "wolfpack.log"), join(WOLFPACK_DIR, "broker.log")],
+      { onError: (path, error) => log.warn("service log rotation failed", { path, error: errMsg(error) }) },
+    );
+    server.once("close", stopLogRotation);
   }
 
   await getTaskGateway().initialize();

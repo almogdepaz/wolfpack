@@ -1,23 +1,10 @@
-import { copyFileSync, existsSync, readFileSync, renameSync, statSync, truncateSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { rotateLogFile } from "../log-rotation.js";
 import { WOLFPACK_DIR } from "./config.js";
 import { print, printError, printJson, red } from "./formatting.js";
 
-export const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
-export const LOG_RETENTION = 5;
-
-export function rotateLogFile(path: string, maxBytes = LOG_ROTATE_BYTES, retention = LOG_RETENTION): boolean {
-  if (!existsSync(path) || statSync(path).size < maxBytes) return false;
-  for (let generation = retention; generation >= 2; generation--) {
-    const source = `${path}.${generation - 1}`;
-    const destination = `${path}.${generation}`;
-    if (existsSync(source)) renameSync(source, destination);
-  }
-  copyFileSync(path, `${path}.1`);
-  // Truncation preserves an already-open service-manager file descriptor.
-  truncateSync(path, 0);
-  return true;
-}
+export { LOG_RETENTION, LOG_ROTATE_BYTES, rotateLogFile } from "../log-rotation.js";
 
 export interface ParsedLogsOptions { readonly follow: boolean; readonly json: boolean; readonly broker: boolean }
 export function parseLogsOptions(argv: readonly string[]): ParsedLogsOptions | null {

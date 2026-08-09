@@ -14,6 +14,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { join } from "node:path";
 import * as net from "node:net";
 import { createLogger, errMsg } from "../log.js";
+import { LOG_ROTATE_BYTES } from "../log-rotation.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 
 const log = createLogger("doctor");
@@ -489,10 +490,10 @@ function checkLogs(): CheckResult[] {
   const ago = agoMs < 60000 ? `${Math.round(agoMs / 1000)}s ago`
     : agoMs < 3600000 ? `${Math.round(agoMs / 60000)}m ago`
     : `${Math.round(agoMs / 3600000)}h ago`;
-  const oversized = stat.size >= 10 * 1024 * 1024;
+  const oversized = stat.size >= LOG_ROTATE_BYTES;
   results.push({
     name: "wolfpack.log", group: "Logs", status: oversized ? "warn" : "pass",
-    detail: `${sizeKB}KB, modified ${ago}${oversized ? " (rotation pending at next service start)" : ""}`,
+    detail: `${sizeKB}KB, modified ${ago}${oversized ? " (rotation pending)" : ""}`,
   });
 
   // recent errors — read only the tail to avoid loading huge log files
