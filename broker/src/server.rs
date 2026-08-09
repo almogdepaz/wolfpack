@@ -19,7 +19,7 @@ use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
     SnapshotParams, SubscribeParams, UnsubscribeParams,
 };
-use crate::registry::Registry;
+use crate::registry::{Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::ring_buffer::OutputChunk;
 use crate::router::Router;
 use crate::session::EventSender;
@@ -554,6 +554,22 @@ async fn handle_snapshot_subscribe(
         Some(session) => session,
         None => return send_response(writer_tx, unknown_session(id, params.session_id)).await,
     };
+    let snapshot_permit = match registry.try_acquire_snapshot() {
+        Some(permit) => permit,
+        None => {
+            return send_response(
+                writer_tx,
+                ControlResponse::err(
+                    id,
+                    ProtocolError {
+                        code: ErrorCode::InternalError,
+                        message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
+                    },
+                ),
+            )
+            .await;
+        }
+    };
     let (snapshot, sub) =
         match session.snapshot_and_subscribe(params.scrollback_lines, params.target_cols) {
             Ok(result) => result,
@@ -571,6 +587,7 @@ async fn handle_snapshot_subscribe(
                 .await;
             }
         };
+    drop(snapshot_permit);
     if let Some(previous) = subs.remove(&params.session_id) {
         previous.abort();
     }
@@ -888,6 +905,60 @@ fn unknown_session(id: u64, session_id: Uuid) -> ControlResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Status;
+    use crate::registry::{CreateOptions, MAX_CONCURRENT_SNAPSHOTS};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn snapshot_subscribe_shares_the_process_snapshot_limit() {
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events));
+        let session = registry
+            .create(CreateOptions {
+                name: Some("snapshot-limit".into()),
+                cwd: "/tmp".into(),
+                command: vec!["sleep".into(), "30".into()],
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            })
+            .expect("create session");
+        let permits: Vec<_> = (0..MAX_CONCURRENT_SNAPSHOTS)
+            .map(|_| registry.try_acquire_snapshot().expect("snapshot permit"))
+            .collect();
+        let (writer_tx, mut writer_rx) = mpsc::channel(1);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let mut subscriptions = HashMap::new();
+
+        assert!(
+            handle_snapshot_subscribe(
+                ControlRequest {
+                    id: 7,
+                    method: methods::SNAPSHOT_SUBSCRIBE.into(),
+                    params: json!({ "session_id": session.id() }),
+                },
+                &registry,
+                &writer_tx,
+                &output_tx,
+                &mut subscriptions,
+            )
+            .await
+        );
+
+        let response = match writer_rx.recv().await.expect("snapshot response") {
+            Frame::ControlResponse(response) => response,
+            frame => panic!("unexpected frame: {frame:?}"),
+        };
+        assert_eq!(response.status, Status::Error);
+        assert_eq!(
+            response.error.expect("error").message,
+            "snapshot concurrency limit reached; retry"
+        );
+
+        drop(permits);
+        let _ = session.kill(libc::SIGKILL);
+        let _ = session.wait_for_exit(std::time::Duration::from_secs(5));
+    }
 
     #[test]
     fn production_queue_capacities_are_byte_bounded() {

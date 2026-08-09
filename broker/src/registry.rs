@@ -10,6 +10,7 @@
 //! between resolve and insert.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,17 @@ pub enum CreateError {
 
 const EXITED_TOMBSTONE_TTL: Duration = Duration::from_secs(30);
 const MAX_EXITED_TOMBSTONES: usize = 64;
+pub(crate) const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
+pub(crate) const SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE: &str =
+    "snapshot concurrency limit reached; retry";
+
+pub(crate) struct SnapshotPermit<'a>(&'a AtomicUsize);
+
+impl Drop for SnapshotPermit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
 
 struct Tombstone {
     session: Arc<Session>,
@@ -75,6 +87,7 @@ impl Inner {
 pub struct Registry {
     inner: Mutex<Inner>,
     events: EventSender,
+    snapshots_in_flight: AtomicUsize,
 }
 
 impl Registry {
@@ -82,7 +95,17 @@ impl Registry {
         Self {
             inner: Mutex::new(Inner::default()),
             events,
+            snapshots_in_flight: AtomicUsize::new(0),
         }
+    }
+
+    pub(crate) fn try_acquire_snapshot(&self) -> Option<SnapshotPermit<'_>> {
+        let previous = self.snapshots_in_flight.fetch_add(1, Ordering::Acquire);
+        if previous >= MAX_CONCURRENT_SNAPSHOTS {
+            self.snapshots_in_flight.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        Some(SnapshotPermit(&self.snapshots_in_flight))
     }
 
     pub fn create(&self, opts: CreateOptions) -> Result<Arc<Session>, CreateError> {

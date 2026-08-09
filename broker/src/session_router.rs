@@ -26,7 +26,6 @@
 //!   * `ResizeError::Pty(_)`             → `resize_failed`
 //!   * malformed params                  → `invalid_request`
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
@@ -37,7 +36,7 @@ use crate::protocol::{
     KillSessionParams, ListSessionsParams, ProtocolError, ResizeParams, ResponsePayload,
     SessionInfoParams, SnapshotParams,
 };
-use crate::registry::{CreateError, CreateOptions, Registry};
+use crate::registry::{CreateError, CreateOptions, Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::router::Router;
 use crate::session::{EventSender, KillError, KillOutcome, ResizeError, SpawnError};
 use crate::terminal_state::TerminalStateError;
@@ -47,29 +46,15 @@ const MIN_TERMINAL_COLS: u16 = 20;
 const MAX_TERMINAL_COLS: u16 = 300;
 const MIN_TERMINAL_ROWS: u16 = 5;
 const MAX_TERMINAL_ROWS: u16 = 100;
-const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
-
-struct SnapshotSlot<'a>(&'a AtomicUsize);
-
-impl Drop for SnapshotSlot<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Release);
-    }
-}
 
 pub struct SessionRouter {
     registry: Arc<Registry>,
     events: EventSender,
-    snapshots_in_flight: AtomicUsize,
 }
 
 impl SessionRouter {
     pub fn new(registry: Arc<Registry>, events: EventSender) -> Self {
-        Self {
-            registry,
-            events,
-            snapshots_in_flight: AtomicUsize::new(0),
-        }
+        Self { registry, events }
     }
 
     /// Subscribe to broker-emitted async events. Used by per-connection
@@ -232,18 +217,16 @@ impl SessionRouter {
         if let Err(message) = validate_snapshot_target_cols(p.target_cols) {
             return invalid_request(id, format!("snapshot params: {message}"));
         }
-        let previous = self.snapshots_in_flight.fetch_add(1, Ordering::Acquire);
-        if previous >= MAX_CONCURRENT_SNAPSHOTS {
-            self.snapshots_in_flight.fetch_sub(1, Ordering::Release);
-            return ControlResponse::err(
+        let _permit = match self.registry.try_acquire_snapshot() {
+            Some(permit) => permit,
+            None => return ControlResponse::err(
                 id,
                 ProtocolError {
                     code: ErrorCode::InternalError,
-                    message: "snapshot concurrency limit reached; retry".into(),
+                    message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
                 },
-            );
-        }
-        let _slot = SnapshotSlot(&self.snapshots_in_flight);
+            ),
+        };
         match self.registry.get(p.session_id) {
             Some(s) => match s.snapshot_terminal(p.scrollback_lines, p.target_cols) {
                 Ok(snapshot) => ControlResponse::ok(id, ResponsePayload::Snapshot { snapshot }),
