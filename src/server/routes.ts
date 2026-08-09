@@ -32,7 +32,12 @@ import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, getSubscriptionCount, buildAgentNotificationPayload, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
 import { issueWebSocketTicket } from "./ws-ticket.js";
-import { boundedMetrics, operationalHealth, prometheusMetrics } from "./operability.js";
+import {
+  boundedMetrics,
+  classifyRequestClient,
+  operationalHealth,
+  prometheusMetrics,
+} from "./operability.js";
 
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
@@ -1283,7 +1288,11 @@ const routeImplementations: Record<
   // ── Browser authentication ──
 
   "POST /api/auth/ws-ticket": (req, res) => {
-    json(res, issueWebSocketTicket(req.socket.remoteAddress ?? "unknown"));
+    const client = classifyRequestClient({
+      remoteAddress: req.socket.remoteAddress,
+      tailscaleUserLogin: req.headers["tailscale-user-login"],
+    });
+    json(res, issueWebSocketTicket(client.clientKey));
   },
 
   // ── Push notifications ──

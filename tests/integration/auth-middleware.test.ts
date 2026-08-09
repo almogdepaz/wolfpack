@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import type { Server } from "node:http";
+import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 
 process.env.WOLFPACK_TEST = "1";
@@ -19,7 +20,12 @@ __resetJwtAuthConfig();
 
 __setTestBackend(new MockBackend({ sessions: ["auth-session"] }));
 
-const { createServerInstance } = await import("../../src/server/index.ts");
+const {
+  __pollRateLimiter,
+  __wsConnectionsByIp,
+  __wsUpgradeRateLimiter,
+  createServerInstance,
+} = await import("../../src/server/index.ts");
 const { server } = createServerInstance();
 
 const AUTH_SECRET = "wolfpack-test-secret-long-enough-for-validation";
@@ -91,6 +97,39 @@ async function rawUpgrade(path: string): Promise<{ status: number; ws?: WebSocke
   });
 }
 
+function rawServeUpgrade(path: string, tailscaleUserLogin: string): Promise<number> {
+  return new Promise((resolve) => {
+    const socket = connect({ host: "127.0.0.1", port });
+    let response = "";
+    let status: number | undefined;
+    const finish = (nextStatus: number): void => {
+      if (status !== undefined) return;
+      status = nextStatus;
+      socket.destroy();
+    };
+    socket.once("close", () => resolve(status ?? 0));
+    socket.once("connect", () => {
+      socket.write([
+        `GET ${path} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        `Tailscale-User-Login: ${tailscaleUserLogin}`,
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    socket.on("data", (chunk: Buffer) => {
+      response += chunk.toString("utf8");
+      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
+      if (match) finish(Number(match[1]));
+    });
+    socket.once("error", () => finish(0));
+  });
+}
+
 beforeAll(async () => {
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -102,8 +141,10 @@ beforeAll(async () => {
   });
 });
 
-afterAll(() => {
-  server.close();
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
   delete process.env.WOLFPACK_JWT_SECRET;
   delete process.env.WOLFPACK_JWT_AUDIENCE;
   delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
@@ -257,6 +298,60 @@ describe("JWT auth middleware", () => {
     expect(status).toBe(101);
     expect(ws).toBeDefined();
     await closeWs(ws!);
+  });
+
+  test("requires JWT for operational requests proxied by Tailscale Serve but preserves direct loopback", async () => {
+    expect((await fetch(`${baseUrl}/api/health`)).status).toBe(200);
+    const proxied = await fetch(`${baseUrl}/api/health`, {
+      headers: { "Tailscale-User-Login": "alice@example.test" },
+    });
+    expect(proxied.status).toBe(401);
+    const malformed = await fetch(`${baseUrl}/api/health`, {
+      headers: { "Tailscale-User-Login": "" },
+    });
+    expect(malformed.status).toBe(401);
+    const authenticated = await fetch(`${baseUrl}/api/health`, {
+      headers: {
+        Authorization: `Bearer ${createValidToken()}`,
+        "Tailscale-User-Login": "alice@example.test",
+      },
+    });
+    expect(authenticated.status).toBe(200);
+  });
+
+  test("keeps verified Tailscale Serve users in separate poll quotas", async () => {
+    __pollRateLimiter._map.clear();
+    const headers = (login: string): HeadersInit => ({
+      Authorization: `Bearer ${createValidToken()}`,
+      "Tailscale-User-Login": login,
+    });
+    for (let request = 0; request < 10; request += 1) {
+      expect((await fetch(`${baseUrl}/api/sessions`, { headers: headers("alice@example.test") })).status).toBe(200);
+    }
+    expect((await fetch(`${baseUrl}/api/sessions`, { headers: headers("alice@example.test") })).status).toBe(429);
+    expect((await fetch(`${baseUrl}/api/sessions`, { headers: headers("bob@example.test") })).status).toBe(200);
+  });
+
+  test("binds WebSocket tickets to the verified Tailscale Serve user", async () => {
+    __wsUpgradeRateLimiter._map.clear();
+    __wsConnectionsByIp.clear();
+    const issue = async (login = "alice@example.test"): Promise<string> => {
+      const response = await fetch(`${baseUrl}/api/auth/ws-ticket`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${createValidToken()}`,
+          "Tailscale-User-Login": login,
+        },
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { ticket: string }).ticket;
+    };
+    const crossUserTicket = await issue();
+    expect(await rawServeUpgrade(`/ws/pty?session=auth-session&ticket=${encodeURIComponent(crossUserTicket)}`, "bob@example.test")).not.toBe(101);
+    const sameUserTicket = await issue();
+    expect(await rawServeUpgrade(`/ws/pty?session=auth-session&ticket=${encodeURIComponent(sameUserTicket)}`, "alice@example.test")).toBe(101);
+    const normalizedUserTicket = await issue(" Alice@Example.test ");
+    expect(await rawServeUpgrade(`/ws/pty?session=auth-session&ticket=${encodeURIComponent(normalizedUserTicket)}`, "alice@example.test")).toBe(101);
   });
 
   test("exchanges an authenticated request for a one-time WebSocket ticket", async () => {

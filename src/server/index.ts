@@ -35,7 +35,7 @@ import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
 import { loadConfig } from "../cli/config.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
-import { isLoopbackAddress } from "./operability.js";
+import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
 
 const log = createLogger("server");
 
@@ -155,8 +155,12 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     const url = new URL(req.url ?? "/", "http://localhost");
+    const client = classifyRequestClient({
+      remoteAddress: req.socket.remoteAddress,
+      tailscaleUserLogin: req.headers["tailscale-user-login"],
+    });
     const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
-    const localOperationalRequest = operationalPath && isLoopbackAddress(req.socket.remoteAddress);
+    const localOperationalRequest = operationalPath && client.isDirectLoopback;
     if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
       const auth = validateRequestJwt(req.headers, url, false);
       if (!auth.ok) {
@@ -167,12 +171,11 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     // Rate limiting — per-IP, checked before route dispatch
-    const clientIp = req.socket.remoteAddress ?? "unknown";
-    if (!globalRateLimiter.allow(clientIp)) {
+    if (!globalRateLimiter.allow(client.clientKey)) {
       json(res, { error: "rate limit exceeded" }, 429);
       return;
     }
-    if (POLL_HEAVY_PATHS.has(url.pathname) && !pollRateLimiter.allow(clientIp)) {
+    if (POLL_HEAVY_PATHS.has(url.pathname) && !pollRateLimiter.allow(client.clientKey)) {
       json(res, { error: "rate limit exceeded" }, 429);
       return;
     }
@@ -200,16 +203,19 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   server.on("upgrade", async (req, socket, head) => {
     let reservedIp: string | null = null;
     try {
-      const clientIp = req.socket.remoteAddress ?? "unknown";
-      if (!wsUpgradeRateLimiter.allow(clientIp)) {
+      const client = classifyRequestClient({
+        remoteAddress: req.socket.remoteAddress,
+        tailscaleUserLogin: req.headers["tailscale-user-login"],
+      });
+      if (!wsUpgradeRateLimiter.allow(client.clientKey)) {
         socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
         return;
       }
-      if (!reserveWsConnection(clientIp)) {
+      if (!reserveWsConnection(client.clientKey)) {
         socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
         return;
       }
-      reservedIp = clientIp;
+      reservedIp = client.clientKey;
       const origin = req.headers.origin;
       if (origin && !isAllowedOrigin(origin)) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
@@ -218,7 +224,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       const url = new URL(req.url ?? "/", "http://localhost");
 
       const ticket = url.searchParams.get("ticket");
-      const ticketOk = ticket ? consumeWebSocketTicket(ticket, clientIp) : false;
+      const ticketOk = ticket ? consumeWebSocketTicket(ticket, client.clientKey) : false;
       const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true);
       if (!auth.ok) {
         log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
@@ -242,9 +248,9 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 
       const reset = url.searchParams.get("reset") === "1";
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const activeIp = clientIp;
+        const activeClientKey = client.clientKey;
         reservedIp = null;
-        ws.once("close", () => releaseWsConnection(activeIp));
+        ws.once("close", () => releaseWsConnection(activeClientKey));
         handlePtyWs(ws, session, reset);
       });
     } catch (e: unknown) {
