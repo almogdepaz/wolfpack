@@ -13,6 +13,7 @@ export const MACHINE_CAPABILITY = {
 export type MachineCapability = (typeof MACHINE_CAPABILITY)[keyof typeof MACHINE_CAPABILITY];
 export const MACHINE_CAPABILITIES: readonly MachineCapability[] = Object.values(MACHINE_CAPABILITY);
 export const MACHINE_MAX_CAPABILITIES = MACHINE_CAPABILITIES.length + 32;
+export const TAILNET_MAX_CANDIDATES = 32;
 export const TAILNET_NODE_ID_PATTERN = "^[A-Za-z0-9_:-]{1,256}$";
 export const TAILNET_ORIGIN_PATTERN = "^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.ts\\.net$";
 
@@ -23,7 +24,6 @@ const TAILNET_ORIGIN_REGEXP = new RegExp(TAILNET_ORIGIN_PATTERN);
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f-\x9f]/;
 const MAX_DISPLAY_NAME_LENGTH = 128;
 const MAX_VERSION_LENGTH = 128;
-const MAX_CANDIDATES = 1_000;
 
 export interface TailnetMachineCandidate {
   readonly hostname: string;
@@ -164,29 +164,40 @@ export function buildMachineHandshakeFromTailnetStatus(input: {
   return buildMachineHandshake({ ...facts, installationId: input.installationId, version: input.version });
 }
 
+function compareTailnetCandidates(left: TailnetMachineCandidate, right: TailnetMachineCandidate): number {
+  if (left.online !== right.online) return left.online ? -1 : 1;
+  const nodeIdOrder = left.tailnetNodeId.localeCompare(right.tailnetNodeId);
+  return nodeIdOrder || left.origin.localeCompare(right.origin);
+}
+
 /** Returns bounded, local-Tailscale-derived candidate facts; it never probes a peer. */
 export function enumerateTailnetCandidates(status: unknown): TailnetCandidateEnumeration {
   const self = localTailnetIdentity(status);
   if (!self || !isRecord(status) || !isRecord(status.Peer)) return { kind: "invalid-local-status" };
 
-  const candidates = new Map<string, TailnetMachineCandidate>();
+  const candidatesByNodeId = new Map<string, TailnetMachineCandidate>();
   for (const value of Object.values(status.Peer)) {
     if (!isRecord(value)) continue;
     const online = value.Online;
     if ((online !== true && online !== false) || !isTailnetNodeId(value.ID) || value.ID === self.tailscaleNodeId) continue;
     const origin = canonicalTailnetOrigin(value.DNSName);
-    if (!origin || candidates.has(value.ID)) continue;
-    candidates.set(value.ID, {
+    if (!origin) continue;
+    const candidate = {
       hostname: origin.slice("https://".length),
       tailnetNodeId: value.ID,
       origin,
       online,
-    });
-    if (candidates.size === MAX_CANDIDATES) break;
+    };
+    const existing = candidatesByNodeId.get(candidate.tailnetNodeId);
+    if (!existing || compareTailnetCandidates(candidate, existing) < 0) {
+      candidatesByNodeId.set(candidate.tailnetNodeId, candidate);
+    }
   }
   return {
     kind: "valid",
-    candidates: [...candidates.values()].sort((left, right) => left.tailnetNodeId.localeCompare(right.tailnetNodeId)),
+    candidates: [...candidatesByNodeId.values()]
+      .sort(compareTailnetCandidates)
+      .slice(0, TAILNET_MAX_CANDIDATES),
   };
 }
 

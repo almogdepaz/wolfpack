@@ -30,12 +30,14 @@ class FakeWs {
   bufferedAmount = 0;
   closeCode: number | null = null;
   closeReason: string | null = null;
+  onSend: ((data: Buffer | string) => void) | null = null;
   private listeners = new Map<string, Listener[]>();
 
   send(data: Buffer | string): void {
     if (this.readyState !== 1) return;
     if (typeof data === "string") this.frames.push(data);
     else this.frames.push(Buffer.from(data));
+    this.onSend?.(data);
   }
   close(code?: number, reason?: string): void {
     if (this.readyState === 3) return;
@@ -95,9 +97,25 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   prefillCalls: Array<{ name: string; cols?: number; scrollbackLines?: number }> = [];
   writeCalls: Array<{ name: string; data: Uint8Array }> = [];
   resizeDelayMs = 0;
+  resizePaused = false;
+  resizeResolvers: Array<() => void> = [];
   resizeError: Error | null = null;
   resizeOutput: Uint8Array | null = null;
-  prefillError: Error | null = null;
+  prefillSeq: bigint | undefined;
+  onResizeComplete: ((cols: number, rows: number) => void) | null = null;
+  onLiveSubscribe: ((sinceSeq: bigint | undefined) => void) | null = null;
+  onWrite: ((name: string, data: Uint8Array) => void) | null = null;
+  subscriptionCount = 0;
+  deferSubscriptionReadyAt: number | null = null;
+  subscriptionReadyResolvers: Array<() => void> = [];
+  deferSubscriptionCleanup = false;
+  subscriptionCleanupRequested = false;
+  subscriptionCleanupResolvers: Array<() => void> = [];
+  physicalSubscriptionActive = false;
+  physicalSubscriptionSince: bigint | undefined;
+  retainedOutput: Array<{ readonly seq: bigint; readonly data: Uint8Array }> = [];
+  retainInputOutput = false;
+  nextOutputSeq = 2n;
 
   // SessionBackend
   async list(): Promise<string[]> { return [...this.alive]; }
@@ -110,7 +128,26 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     if (this.resizeDelayMs > 0) await wait(this.resizeDelayMs);
     if (this.resizeError) throw this.resizeError;
     this.resizeCalls.push({ name, cols, rows });
+    if (this.resizePaused) {
+      await new Promise<void>((resolve) => this.resizeResolvers.push(resolve));
+    }
+    this.onResizeComplete?.(cols, rows);
     if (this.resizeOutput) this.emitData(name, this.resizeOutput);
+  }
+  releaseNextResize(): void {
+    const resolve = this.resizeResolvers.shift();
+    if (!resolve) throw new Error("no paused resize to release");
+    resolve();
+  }
+  releaseNextSubscriptionReady(): void {
+    const resolve = this.subscriptionReadyResolvers.shift();
+    if (!resolve) throw new Error("no deferred subscription readiness to release");
+    resolve();
+  }
+  releaseSubscriptionCleanup(): void {
+    const resolve = this.subscriptionCleanupResolvers.shift();
+    if (!resolve) throw new Error("no deferred subscription cleanup to release");
+    resolve();
   }
   async send(): Promise<void> {}
   async sendKey(): Promise<void> {}
@@ -121,22 +158,59 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   isSessionAlive(name: string): boolean { return this.alive.has(name); }
   getSessionPrefill(name: string, cols?: number, options?: { scrollbackLines?: number }): { data: Buffer; seq?: bigint } | Promise<{ data: Buffer; seq?: bigint }> {
     this.prefillCalls.push({ name, cols, scrollbackLines: options?.scrollbackLines });
-    if (this.prefillError) throw this.prefillError;
     const data = this.prefill.get(name) ?? Buffer.alloc(0);
-    return { data };
+    return { data, seq: this.prefillSeq };
   }
-  onSessionData(name: string, cb: (data: Uint8Array) => void, _opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void }): (() => void) | null {
+  onSessionData(name: string, cb: (data: Uint8Array) => void, opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void }): (() => void) | null {
     if (!this.alive.has(name)) return null;
     let set = this.dataListeners.get(name);
     if (!set) { set = new Set(); this.dataListeners.set(name, set); }
     set.add(cb);
-    return () => { set!.delete(cb); };
+    const startsPhysicalSubscription = !this.physicalSubscriptionActive;
+    if (startsPhysicalSubscription) {
+      this.physicalSubscriptionActive = true;
+      this.physicalSubscriptionSince = opts.sinceSeq;
+    }
+    this.subscriptionCount += 1;
+    this.onLiveSubscribe?.(opts.sinceSeq);
+    if (startsPhysicalSubscription && opts.sinceSeq !== undefined) {
+      for (const output of this.retainedOutput) {
+        if (output.seq > opts.sinceSeq) cb(output.data);
+      }
+    }
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const unsubscribe = (() => {
+      set!.delete(cb);
+      if (this.deferSubscriptionCleanup) {
+        this.subscriptionCleanupRequested = true;
+        this.subscriptionCleanupResolvers.push(() => {
+          this.physicalSubscriptionActive = false;
+          this.physicalSubscriptionSince = undefined;
+          resolveClosed();
+        });
+        return;
+      }
+      this.physicalSubscriptionActive = false;
+      this.physicalSubscriptionSince = undefined;
+      resolveClosed();
+    }) as (() => void) & { ready?: Promise<boolean>; closed?: Promise<void> };
+    unsubscribe.ready = this.subscriptionCount === this.deferSubscriptionReadyAt
+      ? new Promise<boolean>((resolve) => this.subscriptionReadyResolvers.push(() => resolve(true)))
+      : Promise.resolve(true);
+    unsubscribe.closed = closed;
+    return unsubscribe;
   }
   writeToTerminal(name: string, data: Buffer | string): boolean {
     const src = typeof data === "string" ? Buffer.from(data) : data;
     const copy = new Uint8Array(src.length);
     copy.set(src);
     this.writeCalls.push({ name, data: copy });
+    this.onWrite?.(name, copy);
+    if (this.retainInputOutput) {
+      this.retainedOutput.push({ seq: this.nextOutputSeq++, data: copy });
+      this.emitData(name, copy);
+    }
     return true;
   }
   onSessionLifecycle(name: string, cb: (event: SessionLifecycleEvent) => void): (() => void) | null {
@@ -161,6 +235,14 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+    await wait(5);
+  }
+}
 const SESSION = "broker-attach-test";
 const { activePtySessions } = __getTestState();
 
@@ -184,9 +266,16 @@ function attachWs(ws: FakeWs, session = SESSION): void {
 }
 
 describe("broker WS attach: snapshot + subscribe path", () => {
-  test("attach delivers prefill, prefill_done, pty_ready and registers a broker subscribe + resize", async () => {
+  test("attach establishes probe and forwarding subscriptions before pty_ready", async () => {
+    const attachEvents: string[] = [];
     backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    backend.onLiveSubscribe = () => attachEvents.push("subscribe");
     const ws = new FakeWs();
+    ws.onSend = (data) => {
+      if (typeof data === "string" && JSON.parse(data).type === "pty_ready") {
+        attachEvents.push("pty_ready");
+      }
+    };
     attachWs(ws);
     ws.pushJson({ type: "attach", cols: 100, rows: 30 });
     // Attach flow waits PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS=200ms for first
@@ -194,7 +283,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     // plus broker IO. 350ms covers the whole flow with margin.
     await wait(350);
 
-    expect(ws.hasJsonType("attach_ack")).toBe(true);
+    expect(ws.jsonFrames()).toContainEqual({ type: "attach_ack", capabilities: ["ordered-resize-ack"] });
     expect(ws.hasJsonType("prefill_viewport")).toBe(false);
     expect(ws.hasJsonType("prefill_done")).toBe(true);
     expect(ws.hasJsonType("pty_ready")).toBe(true);
@@ -205,35 +294,97 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 100, rows: 30 }]);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
+    expect(attachEvents).toEqual(["subscribe", "subscribe", "pty_ready"]);
   });
 
-  test("resize acknowledgement is emitted only after the broker applies dimensions", async () => {
+  test("input accepted after attach_ack is forwarded once the replay-backed subscription confirms", async () => {
+    const input = Buffer.from("redraw command\n");
+    let acceptedInput: Uint8Array | null = null;
+    let resolveForwardingSubscribe!: () => void;
+    const forwardingSubscribe = new Promise<void>((resolve) => { resolveForwardingSubscribe = resolve; });
+    backend.deferSubscriptionReadyAt = 2;
+    backend.onWrite = (_name, data) => {
+      acceptedInput = data;
+      backend.emitData(SESSION, data);
+    };
+    backend.onLiveSubscribe = () => {
+      if (backend.subscriptionCount === 2) resolveForwardingSubscribe();
+    };
+
     const ws = new FakeWs();
     attachWs(ws);
-    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
-    await wait(250);
-    backend.resizeCalls.length = 0;
+    ws.pushJson({ type: "attach", cols: 80, rows: 24 });
+    expect(ws.jsonFrames()).toContainEqual({ type: "attach_ack", capabilities: ["ordered-resize-ack"] });
+    let resolvePtyReady!: () => void;
+    let resolveForwardedOutput!: () => void;
+    const ptyReady = new Promise<void>((resolve) => { resolvePtyReady = resolve; });
+    const forwardedOutput = new Promise<void>((resolve) => { resolveForwardedOutput = resolve; });
+    ws.onSend = (data) => {
+      if (typeof data === "string" && JSON.parse(data).type === "pty_ready") resolvePtyReady();
+      if (Buffer.isBuffer(data) && data.equals(input)) resolveForwardedOutput();
+    };
+    ws.pushBinary(input);
 
-    ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
-    expect(ws.jsonFrames().some(frame => frame.type === "resize_ack")).toBe(false);
-    await wait(100);
-
-    expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 120, rows: 40 }]);
-    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
-  });
-
-  test("snapshot failure closes the viewer instead of presenting a blank ready terminal", async () => {
-    backend.prefillError = new Error("snapshot transport failed");
-    const ws = new FakeWs();
-    attachWs(ws);
-    ws.pushJson({ type: "attach", cols: 100, rows: 30 });
-
-    await wait(350);
-
-    expect(ws.closeCode).toBe(1011);
-    expect(ws.closeReason).toBe("attach failed");
+    await forwardingSubscribe;
+    await Promise.resolve();
+    expect(backend.writeCalls).toHaveLength(0);
     expect(ws.hasJsonType("pty_ready")).toBe(false);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    backend.releaseNextSubscriptionReady();
+    await Promise.all([ptyReady, forwardedOutput]);
+
+    expect(backend.writeCalls).toHaveLength(1);
+    expect(ws.binaryFrames().some((frame) => frame.equals(input))).toBe(true);
+  });
+
+  test("queued input is discarded when the viewer closes before subscription readiness", async () => {
+    const input = Buffer.from("cancel before live subscription");
+    backend.deferSubscriptionReadyAt = 2;
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24 });
+    ws.pushBinary(input);
+
+    await waitFor(() => backend.subscriptionCount === 2);
+    ws.close();
+    backend.releaseNextSubscriptionReady();
+    await wait(20);
+
+    expect(backend.writeCalls).toEqual([]);
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
+  });
+
+  test("queued input is bounded while attach waits for subscription readiness", () => {
+    const ws = new FakeWs();
+    backend.deferSubscriptionReadyAt = 2;
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24 });
+
+    for (let i = 0; i < 60; i++) ws.pushBinary(Buffer.alloc(16 * 1024));
+    ws.pushBinary(Buffer.from([0x61]));
+
+    expect(backend.writeCalls).toEqual([]);
+    expect(ws.closeCode).toBe(1008);
+    expect(ws.closeReason).toBe("pending input limit exceeded");
+  });
+
+  test("output triggered by input after attach_ack replays across the snapshot-to-live boundary", async () => {
+    const input = Buffer.from("redraw burst after attach acknowledgement");
+    backend.prefillSeq = 1n;
+    backend.deferSubscriptionCleanup = true;
+    backend.retainInputOutput = true;
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24 });
+    expect(ws.jsonFrames()).toContainEqual({ type: "attach_ack", capabilities: ["ordered-resize-ack"] });
+    ws.pushBinary(input);
+
+    await waitFor(() => backend.subscriptionCleanupRequested);
+    expect(ws.binaryFrames().some((frame) => frame.equals(input))).toBe(false);
+    backend.releaseSubscriptionCleanup();
+    await waitFor(() => ws.hasJsonType("pty_ready"));
+    await waitFor(() => ws.binaryFrames().some((frame) => frame.equals(input)));
+
+    expect(ws.binaryFrames().some((frame) => frame.equals(input))).toBe(true);
   });
 
   test("subscribed broker output frames are forwarded to viewer", async () => {
@@ -283,6 +434,167 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.closeReason).toBe("input rate limit exceeded");
   });
 
+  for (const prefillMode of ["full", "viewport", "none"] as const) test(`final ${prefillMode} attach reconciliation applies and acknowledges a boundary resize exactly once`, async () => {
+    const ws = new FakeWs();
+    const events: string[] = [];
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    backend.prefillSeq = 1n;
+    backend.resizeDelayMs = 20;
+    backend.onResizeComplete = (cols, rows) => events.push(`resize:${cols}x${rows}`);
+    ws.onSend = (data) => {
+      if (typeof data !== "string") return;
+      const frame = JSON.parse(data) as { readonly type?: string; readonly resizeId?: number };
+      if (frame.type === "resize_ack") events.push(`ack:${frame.resizeId}`);
+    };
+    backend.onLiveSubscribe = (sinceSeq) => {
+      if (prefillMode === "none" ? sinceSeq !== undefined : sinceSeq === undefined) return;
+      backend.onLiveSubscribe = null;
+      ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+    };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode });
+    await wait(500);
+
+    expect(backend.resizeCalls.filter((call) => call.cols === 120 && call.rows === 40)).toHaveLength(1);
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+    expect(events.indexOf("resize:120x40")).toBeLessThan(events.indexOf("ack:42"));
+  });
+
+  for (const prefillMode of ["full", "viewport"] as const) test(`final ${prefillMode} attach acknowledges a forced same-dimension boundary without another backend resize`, async () => {
+    const ws = new FakeWs();
+    const events: string[] = [];
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    backend.prefillSeq = 1n;
+    backend.resizeDelayMs = 20;
+    backend.onResizeComplete = (cols, rows) => events.push(`resize:${cols}x${rows}`);
+    ws.onSend = (data) => {
+      if (typeof data !== "string") return;
+      const frame = JSON.parse(data) as { readonly type?: string; readonly resizeId?: number };
+      if (frame.type === "resize_ack") events.push(`ack:${frame.resizeId}`);
+      if (frame.type === "pty_ready") events.push("pty_ready");
+    };
+    backend.onLiveSubscribe = (sinceSeq) => {
+      if (sinceSeq === undefined) return;
+      backend.onLiveSubscribe = null;
+      ws.pushJson({ type: "resize", resizeId: 42, cols: 80, rows: 24 });
+    };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode });
+    await wait(500);
+
+    expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 80, rows: 24 }]);
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 42, cols: 80, rows: 24 });
+    expect(events.indexOf("resize:80x24")).toBeLessThan(events.indexOf("ack:42"));
+    expect(events.indexOf("ack:42")).toBeLessThan(events.indexOf("pty_ready"));
+  });
+
+  for (const prefillMode of ["full", "viewport", "none"] as const) test(`failed ${prefillMode} attach resize closes without acknowledgement or readiness`, async () => {
+    const ws = new FakeWs();
+    backend.resizeError = new Error("broker unavailable");
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode });
+    await wait(500);
+
+    expect(ws.closeCode).toBe(1011);
+    expect(ws.closeReason).toBe("resize failed");
+    expect(ws.hasJsonType("resize_ack")).toBe(false);
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
+  });
+
+  test("none attach owns boundary and in-flight ordered resizes through the final acknowledgement", async () => {
+    const ws = new FakeWs();
+    const events: string[] = [];
+    backend.resizePaused = true;
+    backend.onResizeComplete = (cols, rows) => events.push(`resize:${cols}x${rows}`);
+    ws.onSend = (data) => {
+      if (typeof data !== "string") return;
+      const frame = JSON.parse(data) as { readonly type?: string; readonly resizeId?: number };
+      if (frame.type === "resize_ack") events.push(`ack:${frame.resizeId}`);
+      if (frame.type === "pty_ready") events.push("pty_ready");
+    };
+    backend.onLiveSubscribe = () => {
+      backend.onLiveSubscribe = null;
+      ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+    };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+
+    await wait(20);
+    expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 120, rows: 40 }]);
+
+    ws.pushJson({ type: "resize", resizeId: 43, cols: 132, rows: 50 });
+    backend.releaseNextResize();
+    await wait(20);
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 120, rows: 40 },
+      { name: SESSION, cols: 132, rows: 50 },
+    ]);
+
+    ws.pushJson({ type: "resize", resizeId: 44, cols: 140, rows: 55 });
+    backend.releaseNextResize();
+    await wait(20);
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 120, rows: 40 },
+      { name: SESSION, cols: 132, rows: 50 },
+      { name: SESSION, cols: 140, rows: 55 },
+    ]);
+
+    backend.releaseNextResize();
+    await wait(120);
+
+    expect(ws.jsonFrames()).not.toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+    expect(ws.jsonFrames()).not.toContainEqual({ type: "resize_ack", resizeId: 43, cols: 132, rows: 50 });
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 44, cols: 140, rows: 55 });
+    expect(events.indexOf("resize:140x55")).toBeLessThan(events.indexOf("ack:44"));
+    expect(events.indexOf("ack:44")).toBeLessThan(events.indexOf("pty_ready"));
+  });
+
+  test("a resize received while the boundary resize awaits becomes the final authoritative dimensions", async () => {
+    const ws = new FakeWs();
+    const events: string[] = [];
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    backend.prefillSeq = 1n;
+    backend.resizeDelayMs = 20;
+    backend.onResizeComplete = (cols, rows) => {
+      events.push(`resize:${cols}x${rows}`);
+      if (cols === 120 && rows === 40) ws.pushJson({ type: "resize", resizeId: 43, cols: 132, rows: 50 });
+    };
+    ws.onSend = (data) => {
+      if (typeof data !== "string") return;
+      const frame = JSON.parse(data) as { readonly type?: string; readonly resizeId?: number };
+      if (frame.type === "resize_ack") events.push(`ack:${frame.resizeId}`);
+    };
+    backend.onLiveSubscribe = (sinceSeq) => {
+      if (sinceSeq === undefined) return;
+      backend.onLiveSubscribe = null;
+      ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+    };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24 });
+    await wait(600);
+
+    expect(backend.resizeCalls.filter((call) => call.cols === 120 && call.rows === 40)).toHaveLength(1);
+    expect(backend.resizeCalls.filter((call) => call.cols === 132 && call.rows === 50)).toHaveLength(1);
+    expect(ws.jsonFrames()).not.toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 43, cols: 132, rows: 50 });
+    expect(events.indexOf("resize:132x50")).toBeLessThan(events.indexOf("ack:43"));
+  });
+
+  test("resize acknowledgement is emitted only after the broker applies dimensions", async () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await wait(20);
+    backend.resizeCalls.length = 0;
+
+    ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+    expect(ws.hasJsonType("resize_ack")).toBe(false);
+    await wait(150);
+
+    expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 120, rows: 40 }]);
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+  });
+
   test("resize after attach calls broker.resize (debounced ~80ms)", async () => {
     const ws = new FakeWs();
     attachWs(ws);
@@ -296,18 +608,21 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 132, rows: 50 }]);
   });
 
-  test("post-attach resize rejection closes the stale viewer instead of silently drifting geometry", async () => {
+  test("post-attach resize rejection closes without acknowledgement or a second readiness frame", async () => {
     const ws = new FakeWs();
     attachWs(ws);
     ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
     await wait(20);
+    ws.frames.length = 0;
 
     backend.resizeError = new Error("broker unavailable");
-    ws.pushJson({ type: "resize", cols: 132, rows: 50 });
+    ws.pushJson({ type: "resize", resizeId: 42, cols: 132, rows: 50 });
     await wait(150);
 
     expect(ws.closeCode).toBe(1011);
     expect(ws.closeReason).toBe("resize failed");
+    expect(ws.hasJsonType("resize_ack")).toBe(false);
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
     expect(activePtySessions.has(SESSION)).toBe(false);
   });
 
@@ -449,18 +764,6 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     expect(ws.closeCode).toBe(4001);
     expect(activePtySessions.has(SESSION)).toBe(false);
-  });
-
-  test("pending viewers reject binary messages before parsing", () => {
-    const active = new FakeWs();
-    attachWs(active);
-    const pending = new FakeWs();
-    attachWs(pending);
-
-    pending.pushBinary(Buffer.from([0x01]));
-
-    expect(pending.closeCode).toBe(1008);
-    expect(pending.closeReason).toBe("invalid message");
   });
 
   test("take-control: pending viewer displaces active viewer; new entry re-attaches via broker", async () => {

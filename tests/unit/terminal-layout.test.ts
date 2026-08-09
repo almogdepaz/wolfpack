@@ -30,7 +30,7 @@ describe("terminal layout", () => {
     expect(scrollTargets).toEqual([60]);
   });
 
-  test("does not commit proposed columns until the broker resize acknowledgement", () => {
+  test("does not commit proposed columns until the ordered broker resize acknowledgement", () => {
     const sent: Array<{ readonly cols: number; readonly rows: number }> = [];
     let dimensionsChanged = false;
     const term = {
@@ -39,9 +39,11 @@ describe("terminal layout", () => {
       viewportY: 8,
       getScrollbackLength: () => 100,
       scrollToLine: () => {},
-      resize: (cols: number, rows: number) => { term.cols = cols; term.rows = rows; },
-      renderer: { render: () => {} },
+      renderer: {
+        render: () => {},
+      },
       wasmTerm: {},
+      resize: (cols: number, rows: number) => { term.cols = cols; term.rows = rows; },
     };
 
     syncTerminalLayout({
@@ -51,21 +53,45 @@ describe("terminal layout", () => {
         fit: () => { throw new Error("fit must not run before broker acknowledgement"); },
       },
       ptyClient: {
-        sendResize: (cols: number, rows: number) => { sent.push({ cols, rows }); },
+        supportsOrderedResize: true,
+        sendResize: (cols: number, rows: number) => { sent.push({ cols, rows }); return Promise.resolve(); },
       },
       forceSend: true,
       repaint: true,
       onDimensionsChanged: () => { dimensionsChanged = true; },
     });
 
-    // Representative ANSI output arriving during the resize race is still
-    // interpreted at the broker's currently committed 80-column geometry.
-    const ansiRenderWidthDuringRace = term.cols;
     expect(sent).toEqual([{ cols: 120, rows: 30 }]);
-    expect(ansiRenderWidthDuringRace).toBe(80);
+    expect(term.cols).toBe(80);
     expect(dimensionsChanged).toBe(false);
 
     expect(commitTerminalResizePreservingScroll(term, { cols: 120, rows: 30 })).toBe(true);
+    expect({ cols: term.cols, rows: term.rows }).toEqual({ cols: 120, rows: 30 });
+  });
+
+  test("keeps legacy peers functional without ordered resize capability", () => {
+    const sent: Array<{ readonly cols: number; readonly rows: number }> = [];
+    const term = {
+      cols: 80,
+      rows: 24,
+      scrollToLine: () => {},
+    };
+
+    syncTerminalLayout({
+      term,
+      fitAddon: {
+        proposeDimensions: () => ({ cols: 120, rows: 30 }),
+        fit: () => { term.cols = 120; term.rows = 30; },
+      },
+      ptyClient: {
+        supportsOrderedResize: false,
+        sendResize: (cols: number, rows: number) => { sent.push({ cols, rows }); return Promise.resolve(); },
+      },
+      forceSend: false,
+      repaint: false,
+    });
+
+    expect(sent).toEqual([{ cols: 120, rows: 30 }]);
     expect({ cols: term.cols, rows: term.rows }).toEqual({ cols: 120, rows: 30 });
   });
 });

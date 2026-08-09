@@ -27,6 +27,7 @@ import type {
   CapturePaneOptions,
   PtyBackendMethods,
   SessionBackend,
+  SessionDataUnsubscribe,
   SessionLaunchOptions,
   SessionLifecycleEvent,
   SessionListFact,
@@ -116,8 +117,12 @@ export interface BrokerClientApi {
     sessionId: string,
     opts?: { timeoutMs?: number },
   ): Promise<void>;
+  /** Cancel a failed subscription and force remote teardown when connected. */
+  cancelSubscription(
+    sessionId: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<void>;
   outputSequence(sessionId: string): bigint | undefined;
-  isSubscribed(sessionId: string): boolean;
 }
 
 /** Tmux-style key names → raw byte sequences (mirrors PtyBackend's KEY_MAP). */
@@ -170,8 +175,13 @@ interface SnapshotPayload extends SnapshotForRender {
 }
 
 interface SubscriberRegistration {
-  readonly unsubscribeData: () => void;
+  unsubscribeData: (() => void) | undefined;
+  readonly cb: OutputSubscriber;
   readonly onSubscribeError: (error: unknown) => void;
+  readonly sinceSeq: bigint | undefined;
+  lastDeliveredSeq: bigint | undefined;
+  readonly ready: Promise<SubscriptionReady>;
+  readonly resolveReady: (result: SubscriptionReady) => void;
 }
 
 type SubscriptionReady =
@@ -180,13 +190,16 @@ type SubscriptionReady =
 
 interface SubscriberRef {
   readonly subscribers: Set<SubscriberRegistration>;
-  readonly ready: Promise<SubscriptionReady>;
+  /** The first physical subscribe result, used by non-replay registrations. */
+  readonly initialReady: Promise<SubscriptionReady>;
+  /** Serializes broker replays so BrokerClient cannot coalesce distinct floors. */
+  replayQueue: Promise<void>;
 }
 
 interface SubscriberHandle {
   readonly ready: Promise<SubscriptionReady>;
   readonly outputBoundarySeq: bigint | undefined;
-  readonly unsubscribe: () => void;
+  readonly unsubscribe: SessionDataUnsubscribe;
 }
 
 type LifecycleSubscriber = (event: SessionLifecycleEvent) => void;
@@ -663,16 +676,19 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       sinceSeq?: bigint;
       onSubscribeError: (err: unknown) => void;
     },
-  ): (() => void) | null {
+  ): SessionDataUnsubscribe | null {
     const id = this.nameToId.get(name);
     if (!id) return null;
-    return this.registerOutputSubscriber(
+    const subscriber = this.registerOutputSubscriber(
       id,
       name,
       (frame) => cb(frame.data),
       opts.onSubscribeError,
       opts.sinceSeq,
-    ).unsubscribe;
+    );
+    const unsubscribe = subscriber.unsubscribe as SessionDataUnsubscribe;
+    unsubscribe.ready = subscriber.ready.then((result) => result.ok);
+    return unsubscribe;
   }
 
   writeToTerminal(name: string, data: Buffer | string): boolean {
@@ -689,16 +705,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   /**
    * Fetch a fresh broker snapshot and render it to ANSI bytes for WS prefill.
-   * A legitimate empty terminal returns empty data with its snapshot sequence.
-   * Snapshot transport/RPC failures reject so attach can reconnect rather than
-   * falsely presenting a blank terminal as ready.
+   * Returns `{ data: empty, seq: undefined }` when the session is unknown or
+   * the broker rejects the snapshot - callers treat empty data as "no prefill".
    * `seq` is the final broker PTY-chunk watermark covered by the snapshot;
    * pass it to `onSessionData` so the broker replays chunks emitted between
    * snapshot and subscribe attach.
    */
   async getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
-    if (!id) throw new BrokerRpcError("unknown_session", `session ${name} is unavailable`);
+    if (!id) throw new BrokerRpcError("unknown_session", `session not found: ${name}`);
     const snap = await this.fetchSnapshotAndSubscribe(id, name, cols, options?.scrollbackLines);
     const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
     return { data: renderSnapshotToAnsi(snap), seq };
@@ -811,66 +826,94 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     onSubscribeError: (error: unknown) => void,
     sinceSeq?: bigint,
   ): SubscriberHandle {
+    const existingRef = this.subscriberRefs.get(id);
+    const outputBoundarySeq = existingRef ? this.client.outputSequence(id) : undefined;
+    let resolveReady!: (result: SubscriptionReady) => void;
+    const ready = new Promise<SubscriptionReady>((resolve) => {
+      resolveReady = resolve;
+    });
     const registration: SubscriberRegistration = {
-      unsubscribeData: this.client.subscribeOutput(id, cb),
+      unsubscribeData: undefined,
+      cb,
       onSubscribeError,
+      sinceSeq,
+      lastDeliveredSeq: sinceSeq,
+      ready,
+      resolveReady,
     };
-    let ref = this.subscriberRefs.get(id);
-    const outputBoundarySeq = ref ? this.client.outputSequence(id) : undefined;
-    if (!ref) {
-      if (this.client.isSubscribed(id)) {
-        ref = {
-          subscribers: new Set(),
-          ready: Promise.resolve({ ok: true, outputBoundarySeq: this.client.outputSequence(id) }),
-        };
-        this.subscriberRefs.set(id, ref);
-      } else {
-        let resolveReady!: (result: SubscriptionReady) => void;
-        const ready = new Promise<SubscriptionReady>((resolve) => {
-          resolveReady = resolve;
-        });
-        ref = { subscribers: new Set(), ready };
-        this.subscriberRefs.set(id, ref);
-        const pendingRef = ref;
-        this.client.subscribe(id, { sinceSeq }).then(
-          (response) => {
-            const currentSeq = (response.payload as Record<string, unknown> | undefined)?.current_seq;
-            resolveReady({
-              ok: true,
-              outputBoundarySeq: typeof currentSeq === "number"
-                && Number.isSafeInteger(currentSeq)
-                && currentSeq >= 0
-                ? BigInt(currentSeq)
-                : this.client.outputSequence(id),
-            });
-          },
-          (error: unknown) => {
-            this.failOutputSubscribers(id, name, error, pendingRef);
-            resolveReady({ ok: false, error });
-          },
-        );
-      }
-    }
+    const ref = existingRef ?? {
+      subscribers: new Set(),
+      initialReady: ready,
+      replayQueue: Promise.resolve(),
+    };
+    if (!existingRef) this.subscriberRefs.set(id, ref);
     ref.subscribers.add(registration);
 
-    let released = false;
-    return {
-      ready: ref.ready,
-      outputBoundarySeq,
-      unsubscribe: () => {
-        if (released) return;
-        released = true;
-        try { registration.unsubscribeData(); } catch { /* teardown must not throw */ }
-        if (this.subscriberRefs.get(id) !== ref) return;
-        ref.subscribers.delete(registration);
-        if (ref.subscribers.size === 0) {
-          this.subscriberRefs.delete(id);
-          this.client.unsubscribe(id).catch((error: unknown) => {
-            log.debug("unsubscribe rpc failed", { name, id, error: errMsg(error) });
-          });
-        }
-      },
+    const attachOutput = (): void => {
+      registration.unsubscribeData = this.client.subscribeOutput(id, (frame) => {
+        if (registration.lastDeliveredSeq !== undefined && frame.seq <= registration.lastDeliveredSeq) return;
+        registration.lastDeliveredSeq = frame.seq;
+        registration.cb(frame);
+      });
     };
+    const activate = async (): Promise<void> => {
+      if (this.subscriberRefs.get(id) !== ref || !ref.subscribers.has(registration)) {
+        resolveReady({ ok: false, error: new Error("output subscription cancelled") });
+        return;
+      }
+      attachOutput();
+      try {
+        const response = await this.client.subscribe(id, { sinceSeq: registration.sinceSeq });
+        const currentSeq = (response.payload as Record<string, unknown> | undefined)?.current_seq;
+        resolveReady({
+          ok: true,
+          outputBoundarySeq: typeof currentSeq === "number"
+            && Number.isSafeInteger(currentSeq)
+            && currentSeq >= 0
+            ? BigInt(currentSeq)
+            : this.client.outputSequence(id),
+        });
+      } catch (error: unknown) {
+        resolveReady({ ok: false, error });
+        this.failOutputSubscribers(id, name, error, ref);
+      }
+    };
+
+    if (!existingRef) {
+      const initial = activate();
+      ref.replayQueue = initial.catch(() => undefined);
+    } else if (sinceSeq !== undefined) {
+      const queued = ref.replayQueue.then(activate);
+      ref.replayQueue = queued.catch(() => undefined);
+    } else {
+      attachOutput();
+      void ref.initialReady.then(resolveReady);
+    }
+
+    let released = false;
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const unsubscribe = (() => {
+      if (released) return;
+      released = true;
+      try { registration.unsubscribeData?.(); } catch { /* teardown must not throw */ }
+      registration.resolveReady({ ok: false, error: new Error("output subscription cancelled") });
+      if (this.subscriberRefs.get(id) !== ref) {
+        resolveClosed();
+        return;
+      }
+      ref.subscribers.delete(registration);
+      if (ref.subscribers.size !== 0) {
+        resolveClosed();
+        return;
+      }
+      this.subscriberRefs.delete(id);
+      this.client.unsubscribe(id).catch((error: unknown) => {
+        log.debug("unsubscribe rpc failed", { name, id, error: errMsg(error) });
+      }).finally(resolveClosed);
+    }) as SessionDataUnsubscribe;
+    unsubscribe.closed = closed;
+    return { ready: registration.ready, outputBoundarySeq, unsubscribe };
   }
 
   private failOutputSubscribers(
@@ -882,9 +925,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const ref = this.subscriberRefs.get(id);
     if (!ref || (expectedRef && ref !== expectedRef)) return;
     this.subscriberRefs.delete(id);
+    void this.client.cancelSubscription(id).catch((cleanupError: unknown) => {
+      log.debug("failed subscription cancellation failed", { name, id, error: errMsg(cleanupError) });
+    });
     log.warn("subscribe rpc failed; unwinding", { name, id, error: errMsg(error) });
     for (const subscriber of ref.subscribers) {
-      try { subscriber.unsubscribeData(); } catch { /* ignore */ }
+      try { subscriber.unsubscribeData?.(); } catch { /* ignore */ }
+      subscriber.resolveReady({ ok: false, error });
       try { subscriber.onSubscribeError(error); } catch (callbackError: unknown) {
         log.debug("onSubscribeError callback threw", {
           name,
@@ -907,10 +954,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       response = await this.client.snapshotSubscribe(id, { scrollbackLines, targetCols });
     } catch (error: unknown) {
       if (error instanceof BrokerSubscribeError && error.code === "unknown_method") {
-        // Upgrade compatibility: protocol-v2 brokers installed before
-        // snapshot_subscribe still support snapshot followed by
-        // subscribe(since_seq). The normal WS attach path performs that
-        // subscribe after this returns and retains replay-truncation recovery.
+        // Older protocol-v2 brokers lack this atomic RPC. The subsequent
+        // subscribe(since_seq) preserves the replay-safe attach contract.
         log.warn("getSessionPrefill: broker lacks atomic snapshot subscribe; using legacy replay-safe attach", { name });
         return this.fetchSnapshot(id, name, "getSessionPrefill", targetCols, scrollbackLines);
       }

@@ -106,16 +106,16 @@ describe("direct machine contract routes", () => {
     expect(await response.json()).toEqual({
       candidates: [
         {
-          hostname: "offline.example.ts.net",
-          tailnetNodeId: "n-offline",
-          origin: "https://offline.example.ts.net",
-          online: false,
-        },
-        {
           hostname: "peer.example.ts.net",
           tailnetNodeId: "n-peer",
           origin: "https://peer.example.ts.net",
           online: true,
+        },
+        {
+          hostname: "offline.example.ts.net",
+          tailnetNodeId: "n-offline",
+          origin: "https://offline.example.ts.net",
+          online: false,
         },
       ],
     });

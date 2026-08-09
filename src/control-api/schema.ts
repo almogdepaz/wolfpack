@@ -24,10 +24,12 @@ import {
   AGENT_STATUS_SOURCES,
   AGENT_STATUS_STATES,
 } from "../agent-status-contract.ts";
+import { PTY_ATTACH_CAPABILITIES } from "../pty-websocket-contract.ts";
 import {
   MACHINE_CAPABILITIES,
   MACHINE_MAX_CAPABILITIES,
   MACHINE_PROTOCOL,
+  TAILNET_MAX_CANDIDATES,
   TAILNET_NODE_ID_PATTERN,
   TAILNET_ORIGIN_PATTERN,
 } from "../tailnet-machine-contract.ts";
@@ -1005,7 +1007,7 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       response: object({
-        candidates: arrayOf(ref("TailnetMachineCandidate")),
+        candidates: { ...arrayOf(ref("TailnetMachineCandidate")), maxItems: TAILNET_MAX_CANDIDATES },
         error: string(),
       }, ["candidates"]),
       errors: [],
@@ -1119,6 +1121,7 @@ export const controlApiSource: ControlApiSource = {
           direction: "client-to-server",
           schema: object({
             type: { const: "resize" },
+            resizeId: { type: "integer", minimum: 1 },
             cols: integer(),
             rows: integer(),
           }, ["type", "cols", "rows"]),
@@ -1131,7 +1134,20 @@ export const controlApiSource: ControlApiSource = {
         attach_ack: {
           stable: true,
           direction: "server-to-client",
-          schema: object({ type: { const: "attach_ack" } }, ["type"]),
+          schema: object({
+            type: { const: "attach_ack" },
+            capabilities: arrayOf({ enum: PTY_ATTACH_CAPABILITIES }),
+          }, ["type"]),
+        },
+        resize_ack: {
+          stable: true,
+          direction: "server-to-client",
+          schema: object({
+            type: { const: "resize_ack" },
+            resizeId: { type: "integer", minimum: 1 },
+            cols: integer(),
+            rows: integer(),
+          }, ["type", "resizeId", "cols", "rows"]),
         },
         prefill_done: {
           stable: true,

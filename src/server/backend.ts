@@ -120,6 +120,13 @@ export interface SessionPrefillOptions {
   scrollbackLines?: number;
 }
 
+export type SessionDataUnsubscribe = (() => void) & {
+  /** Resolves once the broker accepts (or rejects) the shared subscription. */
+  ready?: Promise<boolean>;
+  /** Resolves after this subscriber's final detach reaches the broker. */
+  closed?: Promise<void>;
+};
+
 export interface PtyBackendMethods {
   onSessionData(
     name: string,
@@ -139,7 +146,7 @@ export interface PtyBackendMethods {
        */
       onSubscribeError: (err: unknown) => void;
     },
-  ): (() => void) | null;
+  ): SessionDataUnsubscribe | null;
   writeToTerminal(name: string, data: Buffer | string): boolean;
   /**
    * Returns prefill bytes + snapshot seq for the WS attach handler.

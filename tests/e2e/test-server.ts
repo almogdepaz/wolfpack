@@ -6,9 +6,51 @@
  * Prints `READY:<port>` to stdout when listening.
  * Exits on SIGTERM or when stdin closes (parent process dies).
  */
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+const ISOLATED_HOME_ARG = "--isolated-e2e-home";
+const isolatedHome = process.argv[2] === ISOLATED_HOME_ARG ? process.argv[3] : undefined;
+
+// Bun resolves os.homedir() when it starts, before this script can change HOME.
+// Re-exec so every production module sees the fresh test home from process start.
+if (!isolatedHome) {
+  const freshHome = mkdtempSync(join(tmpdir(), "wolfpack-e2e-server-"));
+  const child = spawn(process.execPath, [import.meta.path, ISOLATED_HOME_ARG, freshHome], {
+    cwd: process.cwd(),
+    env: { ...process.env, HOME: freshHome },
+    stdio: "inherit",
+  });
+  process.once("SIGTERM", () => child.kill("SIGTERM"));
+  let exitCode: number;
+  try {
+    exitCode = await new Promise<number>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code) => resolve(code ?? 1));
+    });
+  } finally {
+    rmSync(freshHome, { recursive: true, force: true });
+  }
+  process.exit(exitCode);
+}
+
+process.env.HOME = isolatedHome;
 process.env.WOLFPACK_TEST = "1";
+process.stdin.resume();
+process.stdin.once("end", () => process.exit(0));
+process.once("SIGTERM", () => process.exit(0));
+process.env.WOLFPACK_MACHINE_ID_PATH = join(import.meta.dirname, "fixtures", "test-server-installation-id");
+process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
+  Self: {
+    ID: "n-e2e-test-server",
+    HostName: "e2e-test-server",
+    DNSName: "e2e-test-server.example.ts.net.",
+  },
+  Peer: {},
+});
 
 // Keep the default fixture hermetic: peer-specific specs intercept this endpoint
 // in the browser, while ordinary specs must never probe the developer's Tailnet.
@@ -61,8 +103,3 @@ server.listen(0, "127.0.0.1", () => {
   // Signal to parent that we're ready
   console.log(`READY:${port}`);
 });
-
-// Exit when parent disconnects
-process.stdin.resume();
-process.stdin.on("end", () => process.exit(0));
-process.on("SIGTERM", () => process.exit(0));

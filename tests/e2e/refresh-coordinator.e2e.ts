@@ -27,6 +27,15 @@ test("session summaries survive metadata endpoint failure", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Open test-project" })).toBeVisible();
 });
 
+test("local info metadata survives an unavailable Tailnet handshake", async ({ page }) => {
+  await page.route("**/api/machine", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "tailnet machine identity unavailable" }) }));
+  await page.route("**/api/info", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "local-no-tailnet", version: "9.9.9" }) }));
+  await page.goto(server.baseUrl);
+
+  await expect(page.locator("#settings-version")).toHaveText("wolfpack v9.9.9");
+  await expect(page.locator("#session-list .machine-header")).toContainText("local-no-tailnet");
+});
+
 test("concurrent refresh requests share one in-flight capture", async ({ page }) => {
   await page.goto(server.baseUrl);
   await expect(page.locator("#session-list .card").first()).toBeVisible();

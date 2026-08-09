@@ -34,6 +34,53 @@ function runCli(args: readonly string[], env: Readonly<Record<string, string>> =
   };
 }
 
+interface DashboardServiceFixture {
+  readonly serviceStartThrows: boolean;
+  readonly running: readonly boolean[];
+}
+
+function runDashboard(fixture: DashboardServiceFixture): CliResult {
+  const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-dashboard-"));
+  const preloadPath = join(home, "service-fixture.ts");
+  mkdirSync(join(home, ".wolfpack"), { recursive: true });
+  writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ devDir: root, port: 18790 }));
+  writeFileSync(preloadPath, `
+    import { mock } from "bun:test";
+    const running = ${JSON.stringify(fixture.running)};
+    let runningCall = 0;
+    mock.module(${JSON.stringify(join(root, "src", "cli", "service.ts"))}, () => ({
+      serviceInstall: () => {},
+      serviceUninstall: () => {},
+      serviceStop: () => {},
+      serviceStart: ${fixture.serviceStartThrows ? '() => { throw new Error("simulated dashboard service start failure"); }' : "() => {}"},
+      serviceRestart: () => {},
+      serviceStatus: () => {},
+      isServiceInstalled: () => true,
+      isServiceRunning: () => running[runningCall++] ?? false,
+      updateStableBinary: () => false,
+      uninstall: () => {},
+      generatePlist: () => "",
+      generateSystemdUnit: () => "",
+    }));
+  `);
+  const { WOLFPACK_SERVICE: _serviceMode, ...environment } = process.env;
+  try {
+    const child = Bun.spawnSync([process.execPath, "--preload", preloadPath, cliEntry], {
+      cwd: root,
+      env: { ...environment, HOME: home, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      exitCode: child.exitCode,
+      stdout: child.stdout.toString(),
+      stderr: child.stderr.toString(),
+    };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 afterAll(() => {
   rmSync(emptyHome, { recursive: true, force: true });
 });
@@ -180,6 +227,51 @@ describe("cli help dispatch", () => {
     expect(child.stderr).not.toContain("\x1b[");
     expect(child.stderr).not.toContain("No valid config found");
     expect(child.stderr).not.toContain("Scan to open on your phone");
+  });
+
+  test("dashboard service-start diagnostics and retry help use stderr", () => {
+    const child = runDashboard({ serviceStartThrows: true, running: [false] });
+
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout).toContain("WOLFPACK");
+    expect(child.stdout).not.toContain("Service startup failed");
+    expect(child.stdout).not.toContain("Wolfpack service is not running");
+    expect(child.stderr).toContain("Service startup failed: Error: simulated dashboard service start failure");
+    expect(child.stderr).toContain("Run 'wolfpack service install' to retry.");
+    expect(child.stderr).toContain("Wolfpack service is not running.");
+    expect(child.stderr).toContain("wolfpack service start");
+    expect(child.stderr).not.toContain("\x1b[");
+  });
+
+  test("dashboard restart warning uses stderr without contaminating dashboard output", () => {
+    const child = runDashboard({ serviceStartThrows: false, running: [true, false] });
+
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout).toContain("WOLFPACK");
+    expect(child.stdout).not.toContain("Service was running but didn't restart.");
+    expect(child.stderr).toContain("Service was running but didn't restart.");
+    expect(child.stderr).toContain("Run wolfpack service start to restart it.");
+    expect(child.stderr).not.toContain("\x1b[");
+  });
+
+  test("invalid service usage writes its diagnostic to stderr", () => {
+    const child = runCli(["service"]);
+
+    expect(child.exitCode).toBe(1);
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
+    expect(child.stderr).not.toContain("\x1b[");
+  });
+
+  test("uninstall refusal writes its diagnostic to stderr", () => {
+    const child = runCli(["uninstall"]);
+
+    expect(child.exitCode).toBe(1);
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("Refusing to uninstall without confirmation.");
+    expect(child.stderr).toContain("This will recursively delete ~/.wolfpack/ (keys, secrets, config).");
+    expect(child.stderr).toContain("Re-run with: wolfpack uninstall --yes");
+    expect(child.stderr).not.toContain("\x1b[");
   });
 
   test("only zero arguments select dashboard startup", async () => {

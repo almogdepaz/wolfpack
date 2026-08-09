@@ -51,7 +51,7 @@ Run the matching diagnosis command after setup:
 | Bunx | `bunx wolfpack-bridge@latest doctor` |
 | npm/npx | `npx --yes wolfpack-bridge@latest doctor` |
 
-`doctor` checks the server, broker, binaries, JWT configuration, Tailscale, and common service problems. Resolve any reported failures; see [troubleshooting](troubleshooting.md) for recovery steps.
+`doctor` checks the server, broker, binaries, JWT configuration, Tailscale, and common service problems. Resolve any reported failures; see [troubleshooting](troubleshooting.md) for recovery steps. Before a Tailnet release, complete the blocked [physical-device release matrix](tailnet-release-matrix.md); automated checks do not replace recorded operator evidence.
 
 ## service and platform behavior
 

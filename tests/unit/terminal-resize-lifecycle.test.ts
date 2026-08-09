@@ -79,6 +79,35 @@ describe("terminal resize lifecycle", () => {
     expect(observerDisconnected).toBe(true);
   });
 
+  test("skips a deferred observer layout sync when suppression starts before its frame", () => {
+    const scheduler = new FakeScheduler();
+    let observerCallback: ((entries: readonly unknown[]) => void) | undefined;
+    let suppressContainerResize = false;
+    const syncCalls: unknown[] = [];
+    const container = { clientWidth: 80, clientHeight: 24 };
+    const lifecycle = createTerminalResizeLifecycle({
+      prefillMode: TERMINAL_PREFILL_MODE.FULL,
+      getContainer: () => container,
+      getTerm: () => ({ viewportY: 0, getScrollbackLength: () => 0 }),
+      getPtyClient: () => null,
+      shouldSuppressContainerResize: () => suppressContainerResize,
+      userRequestedScrollback: () => false,
+      syncLayout: (options) => { syncCalls.push(options); },
+      scheduler,
+      createResizeObserver: (callback) => {
+        observerCallback = callback;
+        return { observe: () => {}, disconnect: () => {} };
+      },
+    });
+
+    lifecycle.observe(container);
+    observerCallback?.([{}]);
+    suppressContainerResize = true;
+    scheduler.runFrames();
+
+    expect(syncCalls).toEqual([]);
+  });
+
   test("rehydrates viewport scrollback through the debounced resize lifecycle", () => {
     const scheduler = new FakeScheduler();
     let observerCallback: ((entries: readonly unknown[]) => void) | undefined;

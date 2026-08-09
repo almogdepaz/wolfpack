@@ -281,6 +281,7 @@ test("grid topology add hides existing canvases until relayout repaint completes
 });
 
 test("grid topology add waits one frame after relayout repaint before revealing existing cells", async ({ page }) => {
+  await routeHydratedPty(page);
   await loadApp(page);
 
   await page.evaluate(() => {

@@ -12,6 +12,7 @@ import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-cont
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,
+  TAILNET_MAX_CANDIDATES,
   classifyMachineHandshake,
 } from "../../src/tailnet-machine-contract.ts";
 
@@ -254,13 +255,16 @@ describe("control api schema compatibility samples", () => {
   test("publishes canonical typed online and offline Tailnet candidate facts", () => {
     const operation = httpOperation("discoverTailnetCandidates");
     const response = httpResponse("discoverTailnetCandidates");
-    const candidates = [
-      { hostname: "online.example.ts.net", tailnetNodeId: "n-online", origin: "https://online.example.ts.net", online: true },
-      { hostname: "offline.example.ts.net", tailnetNodeId: "n-offline", origin: "https://offline.example.ts.net", online: false },
-    ];
+    const candidates = Array.from({ length: TAILNET_MAX_CANDIDATES }, (_, index) => ({
+      hostname: `peer-${index}.example.ts.net`,
+      tailnetNodeId: `n-peer-${index}`,
+      origin: `https://peer-${index}.example.ts.net`,
+      online: index % 2 === 0,
+    }));
 
     expect(operation.route).toBe("GET /api/tailnet/v1/candidates");
     expect(validate(response, { candidates }, artifact)).toEqual([]);
+    expect(validate(response, { candidates: [...candidates, candidates[0]] }, artifact)).not.toEqual([]);
     expect(validate(response, {
       candidates: [{ hostname: "online.example.ts.net", tailnetNodeId: "n-online", origin: "https://online.example.ts.net" }],
     }, artifact)).not.toEqual([]);
@@ -587,10 +591,12 @@ describe("control api schema compatibility samples", () => {
   test("representative websocket control messages satisfy generated schemas", () => {
     const samples: Array<[string, unknown]> = [
       ["attach", { type: "attach", cols: 120, rows: 40, prefillMode: "full" }],
-      ["resize", { type: "resize", cols: 100, rows: 30 }],
+      ["resize", { type: "resize", resizeId: 1, cols: 100, rows: 30 }],
       ["layout_stable", { type: "layout_stable", cols: 100, rows: 30 }],
       ["take_control", { type: "take_control" }],
-      ["attach_ack", { type: "attach_ack" }],
+      ["attach_ack", { type: "attach_ack", capabilities: ["ordered-resize-ack"] }],
+      ["attach_ack", { type: "attach_ack" }], // same-major peer without ordered resize support
+      ["resize_ack", { type: "resize_ack", resizeId: 1, cols: 100, rows: 30 }],
       ["prefill_done", { type: "prefill_done" }],
       ["prefill_viewport", { type: "prefill_viewport" }],
       ["pty_ready", { type: "pty_ready" }],

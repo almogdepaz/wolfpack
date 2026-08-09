@@ -8,15 +8,17 @@ import type {
 } from "./tailnet-machine-contract.ts";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
-const DEFAULT_TOTAL_PROBE_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_CONCURRENT_PROBES = 4;
-const DEFAULT_MAX_NETWORK_PROBES = 32;
 const MAX_CONCURRENT_PROBES = 8;
-const MAX_NETWORK_PROBES = 128;
-const MAX_MACHINE_HANDSHAKE_BYTES = 16 * 1024;
+const DEFAULT_MAX_CONCURRENT_PROBES = MAX_CONCURRENT_PROBES;
+const MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES = 32 * 1024;
+const OVERSIZED_MACHINE_HANDSHAKE_DIAGNOSTIC = "machine handshake response exceeds 32 KiB";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TAILNET_NODE_ID_REGEXP = new RegExp(TAILNET_NODE_ID_PATTERN);
 const SETTLED_OBSERVER_FAILURE_DIAGNOSTIC = "tailnet probe settlement observer failed";
+
+class MachineHandshakeTimedOutError extends Error {}
+class MachineHandshakeResponseTooLargeError extends Error {}
+class MachineHandshakeBodyReadError extends Error {}
 
 export const LOCAL_MACHINE_IDENTITY = "local";
 
@@ -55,9 +57,7 @@ export type TailnetProbeSettledCallback = (probe: TailnetPeerProbe) => void | Pr
 
 export interface TailnetProbeOptions {
   readonly timeoutMs?: number;
-  readonly totalTimeoutMs?: number;
   readonly maxConcurrent?: number;
-  readonly maxNetworkProbes?: number;
   /** Observes each completed probe without delaying its worker. */
   readonly onSettled?: TailnetProbeSettledCallback;
 }
@@ -88,63 +88,77 @@ function boundedProbeOption(value: number | undefined, fallback: number, maximum
 function probeTimeout(timeoutMs: number): {
   readonly signal: AbortSignal;
   readonly expired: Promise<never>;
+  readonly didExpire: () => boolean;
+  readonly abort: () => void;
   readonly cancel: () => void;
 } {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let didExpire = false;
   const expired = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      didExpire = true;
       controller.abort();
-      reject(new Error("machine handshake timed out"));
+      reject(new MachineHandshakeTimedOutError());
     }, timeoutMs);
   });
   return {
     signal: controller.signal,
     expired,
+    didExpire: () => didExpire,
+    abort: () => controller.abort(),
     cancel: () => {
       if (timer !== undefined) clearTimeout(timer);
     },
   };
 }
 
-class HandshakeBodyTooLargeError extends Error {}
-class HandshakeBodyMalformedError extends Error {}
+function responseContentLengthExceedsLimit(response: Response): boolean {
+  const contentLength = response.headers.get("content-length");
+  return contentLength !== null && Number(contentLength) > MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES;
+}
 
-async function readBoundedJson(response: Response, expired: Promise<never>): Promise<unknown> {
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength && /^\d+$/.test(declaredLength)
-    && Number(declaredLength) > MAX_MACHINE_HANDSHAKE_BYTES) {
-    throw new HandshakeBodyTooLargeError();
-  }
+function cancelReaderWithoutWaiting(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  void reader.cancel().catch(() => undefined);
+}
+
+async function readBoundedMachineHandshakeBody(
+  response: Response,
+  timeout: Pick<ReturnType<typeof probeTimeout>, "expired" | "didExpire" | "abort">,
+): Promise<Uint8Array> {
   const reader = response.body?.getReader();
-  if (!reader) throw new HandshakeBodyMalformedError();
+  if (!reader) return new Uint8Array();
+
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
   try {
     for (;;) {
-      const result = await Promise.race([reader.read(), expired]);
-      if (result.done) break;
-      byteLength += result.value.byteLength;
-      if (byteLength > MAX_MACHINE_HANDSHAKE_BYTES) {
-        void reader.cancel().catch(() => {});
-        throw new HandshakeBodyTooLargeError();
+      const chunk = await Promise.race([reader.read(), timeout.expired]);
+      if (chunk.done) break;
+      const nextByteLength = byteLength + chunk.value.byteLength;
+      if (nextByteLength > MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES) {
+        timeout.abort();
+        cancelReaderWithoutWaiting(reader);
+        throw new MachineHandshakeResponseTooLargeError();
       }
-      chunks.push(result.value);
+      chunks.push(chunk.value);
+      byteLength = nextByteLength;
     }
+  } catch (error) {
+    if (error instanceof MachineHandshakeResponseTooLargeError) throw error;
+    if (timeout.didExpire()) throw new MachineHandshakeTimedOutError();
+    throw new MachineHandshakeBodyReadError();
   } finally {
     reader.releaseLock();
   }
+
   const bytes = new Uint8Array(byteLength);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw new HandshakeBodyMalformedError();
-  }
+  return bytes;
 }
 
 async function probeCandidate(
@@ -173,17 +187,20 @@ async function probeCandidate(
         diagnostic: `machine handshake returned HTTP ${response.status}`,
       };
     }
+    if (responseContentLengthExceedsLimit(response)) {
+      timeout.abort();
+      return { candidate, status: "malformed", diagnostic: OVERSIZED_MACHINE_HANDSHAKE_DIAGNOSTIC };
+    }
     let body: unknown;
     try {
-      body = await readBoundedJson(response, timeout.expired);
-    } catch (error: unknown) {
-      if (error instanceof HandshakeBodyTooLargeError) {
-        return { candidate, status: "malformed", diagnostic: "machine handshake body exceeded size limit" };
+      const bytes = await readBoundedMachineHandshakeBody(response, timeout);
+      body = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error) {
+      if (error instanceof MachineHandshakeResponseTooLargeError) {
+        return { candidate, status: "malformed", diagnostic: OVERSIZED_MACHINE_HANDSHAKE_DIAGNOSTIC };
       }
-      if (error instanceof HandshakeBodyMalformedError) {
-        return { candidate, status: "malformed", diagnostic: "machine handshake was not JSON" };
-      }
-      throw error;
+      if (error instanceof MachineHandshakeTimedOutError) throw error;
+      return { candidate, status: "malformed", diagnostic: "machine handshake was not JSON" };
     }
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return { candidate, status: "malformed", diagnostic: "machine handshake was not an object" };
@@ -205,42 +222,23 @@ export async function probeTailnetCandidates(
   options: TailnetProbeOptions = {},
 ): Promise<readonly TailnetPeerProbe[]> {
   const timeoutMs = boundedProbeOption(options.timeoutMs, DEFAULT_PROBE_TIMEOUT_MS, 30_000);
-  const totalTimeoutMs = boundedProbeOption(options.totalTimeoutMs, DEFAULT_TOTAL_PROBE_TIMEOUT_MS, 30_000);
   const maxConcurrent = boundedProbeOption(options.maxConcurrent, DEFAULT_MAX_CONCURRENT_PROBES, MAX_CONCURRENT_PROBES);
-  const maxNetworkProbes = boundedProbeOption(options.maxNetworkProbes, DEFAULT_MAX_NETWORK_PROBES, MAX_NETWORK_PROBES);
   const outcomes = new Array<TailnetPeerProbe>(candidates.length);
-  const deadline = Date.now() + totalTimeoutMs;
   let next = 0;
-  let networkProbes = 0;
-  const notifySettled = (outcome: TailnetPeerProbe): void => {
-    if (!options.onSettled) return;
-    queueMicrotask(() => {
-      void Promise.resolve()
-        .then(() => options.onSettled?.(outcome))
-        .catch((error: unknown) => console.error(SETTLED_OBSERVER_FAILURE_DIAGNOSTIC, error));
-    });
-  };
   const worker = async (): Promise<void> => {
     for (;;) {
       const index = next++;
       const candidate = candidates[index];
       if (!candidate) return;
-      let outcome: TailnetPeerProbe;
-      if (!candidate.online) {
-        outcome = { candidate, status: "offline", diagnostic: "tailnet reports this peer offline" };
-      } else {
-        const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) {
-          outcome = { candidate, status: "unavailable", diagnostic: "tailnet probe deadline exceeded" };
-        } else if (networkProbes >= maxNetworkProbes) {
-          outcome = { candidate, status: "unavailable", diagnostic: "tailnet network probe budget exhausted" };
-        } else {
-          networkProbes++;
-          outcome = await probeCandidate(candidate, fetcher, Math.min(timeoutMs, remainingMs));
-        }
-      }
+      const outcome = await probeCandidate(candidate, fetcher, timeoutMs);
       outcomes[index] = outcome;
-      notifySettled(outcome);
+      if (options.onSettled) {
+        queueMicrotask(() => {
+          void Promise.resolve()
+            .then(() => options.onSettled?.(outcome))
+            .catch((error: unknown) => console.error(SETTLED_OBSERVER_FAILURE_DIAGNOSTIC, error));
+        });
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(maxConcurrent, candidates.length) }, () => worker()));
@@ -268,19 +266,27 @@ export class TailnetPeerRegistry {
   private readonly candidateOriginsByNode = new Map<string, string>();
   private readonly legacyNamesByNode = new Map<string, string>();
 
-  /** Removes routing authority when the current local candidate enumeration no longer contains a peer. */
+  /** Removes routing authority when current local candidate facts no longer match a verified peer. */
   reconcileCandidates(candidates: readonly TailnetMachineCandidate[]): void {
-    const present = new Set(candidates.map((candidate) => candidate.tailnetNodeId));
+    const candidatesByNode = new Map(candidates.map((candidate) => [candidate.tailnetNodeId, candidate]));
     for (const [identity, entry] of this.stableEntries) {
-      if (present.has(entry.tailnetNodeId)) continue;
+      const candidate = candidatesByNode.get(entry.tailnetNodeId);
+      const diagnostic = !candidate
+        ? "candidate is no longer present in local Tailnet status"
+        : !candidate.online
+          ? "tailnet reports this peer offline"
+          : candidate.origin !== entry.origin || candidate.hostname !== entry.hostname
+            ? "candidate origin or hostname changed in local Tailnet status"
+            : undefined;
+      if (!diagnostic) continue;
       this.stableEntries.set(identity, {
         ...entry,
         status: "offline",
-        diagnostic: "candidate is no longer present in local Tailnet status",
+        diagnostic,
       });
     }
     for (const [nodeId, entry] of this.transientEntries) {
-      if (present.has(nodeId)) continue;
+      if (candidatesByNode.has(nodeId)) continue;
       this.transientEntries.set(nodeId, {
         ...entry,
         status: "offline",
@@ -379,13 +385,6 @@ export class TailnetPeerRegistry {
   entries(): readonly TailnetPeerEntry[] {
     return [...this.stableEntries.values(), ...this.transientEntries.values()]
       .sort((left, right) => left.tailnetNodeId.localeCompare(right.tailnetNodeId));
-  }
-
-  /** Public control-room peers: verified now, stable, and currently routable. */
-  readyEntries(): readonly TailnetPeerEntry[] {
-    return [...this.stableEntries.values()]
-      .filter((entry) => entry.status === "ready" && entry.identity !== undefined && entry.origin !== undefined)
-      .sort((left, right) => left.displayName.localeCompare(right.displayName));
   }
 
   resolveReadyOrigin(identity: string): string | undefined {

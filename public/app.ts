@@ -12,7 +12,8 @@ import {
 import {
   initGridDeps,
   isGridActive, updateGridLayout, renderGridCells, getGridCellElement,
-  hasPreservedGrid, clearPreservedGrid, setCurrentSessionFromGridFocus,
+  hasPreservedGrid, clearPreservedGrid, retireGridSessionsForMachine,
+  retirePreservedGridSessionsForMachine, setCurrentSessionFromGridFocus,
   returnToTerminalView, setGridFocus, suspendGridMode, restorePreservedGrid,
   backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
@@ -23,13 +24,16 @@ import {
 import type { DelegationGridMember } from "./app-grid";
 
 import { setupTouchScrollHandler } from "./app-touch";
-import { bindDelegatedAppActions } from "./app-action-controller";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
-import { authenticatedFetchWithTimeout } from "./browser-auth";
+import { authenticatedFetchWithTimeout, getBrowserAuthToken } from "./browser-auth";
 import { keyboardOcclusionHeight } from "./viewport-geometry";
-import { OrderedResizeTracker } from "./ordered-resize";
-import { createReconnector } from "./reconnector";
+import {
+  OrderedResizeTracker,
+  shouldSendResizeRequest,
+  type OrderedResizeRequest,
+  type OrderedResizeSettlement,
+} from "./ordered-resize";
 import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
@@ -96,6 +100,7 @@ import {
   createTerminalConnectionLifecycle,
 } from "../src/terminal-connection-lifecycle";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
+import { PTY_ATTACH_CAPABILITY } from "../src/pty-websocket-contract";
 import {
   commitTerminalResizePreservingScroll,
   fitTerminalPreservingScroll,
@@ -137,6 +142,7 @@ const GHOSTTY_PREWARM_DELAY_MS = 0;
 const ATTACH_DIMENSION_RETRY_DELAY_MS = 50;
 const ATTACH_DIMENSION_MAX_ATTEMPTS = 20;
 const RESIZE_SEND_DEBOUNCE_MS = 120;
+const ORDERED_RESIZE_BARRIER_MAX_BYTES = 1_048_576;
 
 function safeLocalStorage(): Storage | null {
   try { return window.localStorage; }
@@ -462,10 +468,9 @@ function dismissGitStatus() {
 async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && !origin) throw new Error("selected peer is not ready");
-  const target = origin
+  const response = await authenticatedFetchWithTimeout(origin
     ? new URL("/api/copy-text?session=" + encodeURIComponent(session), origin)
-    : new URL("/api/copy-text?session=" + encodeURIComponent(session), location.href);
-  const response = await authenticatedFetchWithTimeout(target);
+    : "/api/copy-text?session=" + encodeURIComponent(session));
   if (!response.ok) throw new Error("HTTP " + response.status);
   return response.text();
 }
@@ -526,6 +531,95 @@ function recordRecent(machine: string | null | undefined, name: string): void {
   state.sessionRecents.unshift({ key, name, machine: machine || "", ts: Date.now() });
   if (state.sessionRecents.length > MAX_RECENTS) state.sessionRecents.length = MAX_RECENTS;
   saveRecents();
+}
+const RECONNECT_BUDGET_MS = 2 * 60 * 1000;
+const RECONNECT_BASE_DELAY_MS = 500;
+const RECONNECT_MAX_DELAY_MS = 5000;
+
+/**
+ * Shared reconnect backoff engine used by both desktop PTY and mobile WS paths.
+ * @param {object} opts
+ * @param {() => boolean} [opts.shouldReconnect] - guard; returning false skips scheduling
+ * @param {() => void} [opts.onReconnecting] - called when a reconnect attempt is scheduled
+ * @param {() => void} [opts.onExhausted] - called when the retry budget is spent
+ * @returns {{ schedule, cancel, reset, block, connected, isBlocked: boolean, pending: boolean }}
+ */
+interface ReconnectorOpts {
+  shouldReconnect?: () => boolean;
+  onReconnecting?: () => void;
+  onExhausted?: () => void;
+}
+
+interface Reconnector {
+  schedule(connectFn: () => void): void;
+  cancel(): void;
+  reset(): void;
+  block(): void;
+  connected(): void;
+  readonly isBlocked: boolean;
+  readonly pending: boolean;
+}
+
+function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
+  let _timer: ReturnType<typeof setTimeout> | null = null;
+  let _delay = RECONNECT_BASE_DELAY_MS;
+  let _startedAt = 0;
+  let _blocked = false;
+
+  function schedule(connectFn: () => void): void {
+    if (_timer) return;
+    if (_blocked) return;
+    if (opts.shouldReconnect && !opts.shouldReconnect()) return;
+    const now = Date.now();
+    if (!_startedAt) _startedAt = now;
+    const elapsed = now - _startedAt;
+    const remaining = RECONNECT_BUDGET_MS - elapsed;
+    if (remaining <= 0) {
+      _blocked = true;
+      if (opts.onExhausted) opts.onExhausted();
+      return;
+    }
+    if (opts.onReconnecting) opts.onReconnecting();
+    const jitterMs = Math.floor(Math.random() * 200);
+    const delayMs = Math.min(_delay + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
+    _timer = setTimeout(() => {
+      _timer = null;
+      if (opts.shouldReconnect && !opts.shouldReconnect()) return;
+      connectFn();
+    }, delayMs);
+    _delay = Math.min(Math.floor(_delay * 1.8), RECONNECT_MAX_DELAY_MS);
+  }
+
+  function cancel() {
+    if (_timer) { clearTimeout(_timer); _timer = null; }
+  }
+
+  function reset() {
+    _blocked = false;
+    _startedAt = 0;
+    _delay = RECONNECT_BASE_DELAY_MS;
+  }
+
+  function block() { _blocked = true; }
+
+  /** Call on successful connect. Returns true if this was a reconnect (budget was active). */
+  function connected() {
+    const wasReconnecting = _startedAt > 0;
+    _delay = RECONNECT_BASE_DELAY_MS;
+    _startedAt = 0;
+    _blocked = false;
+    return wasReconnecting;
+  }
+
+  return {
+    schedule,
+    cancel,
+    reset,
+    block,
+    connected,
+    get isBlocked() { return _blocked; },
+    get pending() { return !!_timer; },
+  };
 }
 
 /**
@@ -867,6 +961,7 @@ interface PtySocketClientOpts {
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
   readonly onReconnectExhausted?: () => void;
+  readonly onRouteUnavailable?: () => void;
   readonly shouldReconnect?: () => boolean;
 }
 
@@ -874,8 +969,9 @@ interface PtySocketClient {
   connect(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
   scheduleReconnect(): void;
-  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
-  sendResize(cols: number, rows: number): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean; readonly immediate?: boolean }): Promise<OrderedResizeSettlement>;
+  sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement>;
+  readonly supportsOrderedResize: boolean;
   sendTakeControl(): void;
   send(data: string | Blob | BufferSource): boolean;
   close(): void;
@@ -888,22 +984,10 @@ interface PtySocketClient {
 function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   let ws: WebSocket | null = null;
   const _rc = createReconnector({
-    shouldReconnect: () => navigator.onLine !== false && (opts.shouldReconnect?.() ?? true),
+    shouldReconnect: opts.shouldReconnect,
     onReconnecting: opts.onReconnecting,
     onExhausted: opts.onReconnectExhausted,
   });
-  const handleOnline = (): void => {
-    if (!ws || ws.readyState === WebSocket.CLOSED) {
-      _rc.reset();
-      scheduleReconnect();
-    }
-  };
-  const handleOffline = (): void => {
-    opts.onReconnecting?.();
-    _rc.cancel();
-  };
-  window.addEventListener("online", handleOnline);
-  window.addEventListener("offline", handleOffline);
   let hasConnected = false;
   let connectGeneration = 0;
   let connectPending = false;
@@ -922,17 +1006,30 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
+  let _supportsOrderedResize = false;
+  let _hasAttached = false;
+  let _attachUsesProposedDimensions = false;
+  let _orderedResizeBarrier = false;
+  type DeferredOrderedResizeFrame =
+    | { readonly kind: "binary"; readonly data: ArrayBuffer; readonly bytes: number }
+    | { readonly kind: "control"; readonly message: SocketControlMessage; readonly bytes: number };
+  let _deferredOrderedResizeFrames: DeferredOrderedResizeFrame[] = [];
+  let _deferredOrderedResizeBytes = 0;
 
-  function buildUrl(ticket: string) {
+  type PtySocketRoute =
+    | { readonly kind: "available"; readonly url: string }
+    | { readonly kind: "unavailable" };
+
+  function buildUrl(ticket: string | undefined): PtySocketRoute {
     const origin = opts.machine ? resolveReadyMachineOrigin(opts.machine) : location.origin;
-    if (!origin) throw new Error("selected peer is not ready");
+    if (!origin) return { kind: "unavailable" };
     const target = new URL("/ws/pty", origin);
     target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
     target.searchParams.set("session", opts.session);
-    target.searchParams.set("ticket", ticket);
+    if (ticket) target.searchParams.set("ticket", ticket);
     if (consumeReset) target.searchParams.set("reset", "1");
     consumeReset = false;
-    return target.href;
+    return { kind: "available", url: target.href };
   }
 
   async function requestWebSocketTicket(): Promise<string> {
@@ -946,8 +1043,14 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function sendAttachHandshake() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
-    const dims = opts.getTermDimensions();
+    cancelResizeLifecycle();
+    _attachUsesProposedDimensions = _hasAttached;
+    if (!_attachUsesProposedDimensions) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = _attachUsesProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
     const dimensionAction = WP.nextAttachDimensionAction(
       dims,
       _attachDimensionRetry.attempt,
@@ -969,6 +1072,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (opts.onAttach) opts.onAttach();
     const prefillMode = _initialPrefillMode;
+    _hasAttached = true;
     _currentAttachPrefillMode = prefillMode;
     _lastSentResize = attachDims.cols + "x" + attachDims.rows;
     _awaitingAttachAck = true;
@@ -1030,18 +1134,31 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _awaitingPrefillDone = false;
     _prefillChunks = [];
     _sawViewportPrefill = false;
-    _pendingResizeDimensions = null;
-    if (_resizeDebounceTimer) { clearTimeout(_resizeDebounceTimer); _resizeDebounceTimer = null; }
+    cancelResizeLifecycle();
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
   }
 
-  function sendLayoutStable(reason: "after-paint" | "immediate" = "after-paint"): void {
+  function shouldUseProposedDimensions(): boolean {
+    return _supportsOrderedResize || (_attachUsesProposedDimensions && _awaitingAttachAck);
+  }
+
+  function sendLayoutStable(
+    reason: "after-paint" | "immediate" = "after-paint",
+    forceOrderedResize = false,
+  ): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const dims = opts.getProposedDimensions?.() ?? opts.getTermDimensions();
+    const useProposedDimensions = shouldUseProposedDimensions();
+    if (!useProposedDimensions) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = useProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (key !== _lastSentResize) sendResizeRequest(dims);
+    if (forceOrderedResize) sendResizeRequest(createResizeRequest(dims));
+    else if (key !== _lastSentResize) sendResizeRequest(createResizeRequest(dims));
     ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
     const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
     __wfTraceEvent(_trace, "layout_stable.send", {
@@ -1052,77 +1169,146 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  function sendLayoutStableAfterPaint(): void {
+  function sendLayoutStableAfterPaint(forceOrderedResize = false): void {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => { sendLayoutStable("after-paint"); });
+      requestAnimationFrame(() => { sendLayoutStable("after-paint", forceOrderedResize); });
     });
   }
 
-  /** Send resize requests with an ordered acknowledgement boundary. */
+  /** Sends resize requests, delaying local geometry only when negotiated. */
   let _lastSentResize = "";
   const _orderedResize = new OrderedResizeTracker();
   let _resizeDebounceTimer = null;
-  let _pendingResizeDimensions: TermDimensions | null = null;
+  let _pendingResizeRequest: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } | null = null;
 
-  function sendResizeRequest(dims: TermDimensions): void {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    _lastSentResize = `${dims.cols}x${dims.rows}`;
-    ws.send(JSON.stringify(_orderedResize.request(dims)));
-  }
-
-  function queueResize(dims: TermDimensions, force = false): void {
-    const key = `${dims.cols}x${dims.rows}`;
-    if (!force && key === _lastSentResize) return;
-    _pendingResizeDimensions = dims;
+  function clearQueuedResizeRequest(): void {
     if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
-    _resizeDebounceTimer = setTimeout(() => {
-      _resizeDebounceTimer = null;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const pending = _pendingResizeDimensions;
-      _pendingResizeDimensions = null;
-      if (!pending) return;
-      if (!force && `${pending.cols}x${pending.rows}` === _lastSentResize) return;
-      sendResizeRequest(pending);
-    }, RESIZE_SEND_DEBOUNCE_MS);
+    _resizeDebounceTimer = null;
+    _pendingResizeRequest = null;
   }
 
-  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
+  function cancelResizeLifecycle(): void {
+    clearQueuedResizeRequest();
+    _orderedResize.clear();
+    _supportsOrderedResize = false;
+    _orderedResizeBarrier = false;
+    _deferredOrderedResizeFrames = [];
+    _deferredOrderedResizeBytes = 0;
+  }
+
+  function createResizeRequest(dims: TermDimensions): OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } {
+    return _supportsOrderedResize
+      ? _orderedResize.request(dims)
+      : { type: "resize", ...dims };
+  }
+
+  function sendResizeRequest(request: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number }): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const dims = options?.fit === false
-      ? opts.getTermDimensions()
-      : (opts.getProposedDimensions?.() ?? opts.getTermDimensions());
-    if (!dims) return;
-    // Collapse rapid proposals without committing Ghostty.
-    queueResize(dims, !!options?.force);
+    clearQueuedResizeRequest();
+    _lastSentResize = `${request.cols}x${request.rows}`;
+    // An ordered resize is a broker/local geometry transaction. Hold output
+    // only once the request actually leaves this socket; queued proposals may
+    // still be replaced without requiring a barrier.
+    if ("resizeId" in request) _orderedResizeBarrier = true;
+    ws.send(JSON.stringify(request));
+  }
+
+  function queueResize(dims: TermDimensions, options: { readonly force?: boolean; readonly immediate?: boolean } = {}): Promise<OrderedResizeSettlement> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
+    const key = `${dims.cols}x${dims.rows}`;
+    const pendingProposalSupersedesLastSent = _supportsOrderedResize
+      && _orderedResize.hasPending()
+      && !_orderedResize.hasPendingDimensions(dims);
+    if (!options.force && key === _lastSentResize && !pendingProposalSupersedesLastSent) {
+      if (!_supportsOrderedResize) clearQueuedResizeRequest();
+      return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+    }
+    clearQueuedResizeRequest();
+    const request = createResizeRequest(dims);
+    _pendingResizeRequest = request;
+    if (options.immediate) {
+      sendResizeRequest(request);
+    } else {
+      _resizeDebounceTimer = setTimeout(() => {
+        _resizeDebounceTimer = null;
+        const pending = _pendingResizeRequest;
+        _pendingResizeRequest = null;
+        if (!pending || !shouldSendResizeRequest(pending, _lastSentResize, options.force === true)) return;
+        sendResizeRequest(pending);
+      }, RESIZE_SEND_DEBOUNCE_MS);
+    }
+    return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+  }
+
+  function sendFitResize(options?: { force?: boolean; fit?: boolean; immediate?: boolean }): Promise<OrderedResizeSettlement> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
+    const useProposedDimensions = shouldUseProposedDimensions();
+    if (!useProposedDimensions && options?.fit !== false) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = useProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
+    if (!dims) return Promise.resolve("cancelled");
+    return queueResize(dims, options);
   }
 
   type SocketControlMessage = Readonly<Record<string, unknown>> & { readonly type: string };
   type SocketControlHandler = (message: SocketControlMessage) => void;
 
-  function handleAttachAck(): void {
+  function isOrderedResizeBarrierControl(type: string): boolean {
+    return type === "prefill_viewport" || type === "prefill_done" || type === "pty_ready";
+  }
+
+  function deferOrderedResizeFrame(frame: DeferredOrderedResizeFrame): void {
+    if (_deferredOrderedResizeBytes + frame.bytes > ORDERED_RESIZE_BARRIER_MAX_BYTES) {
+      ws?.close(WP.CLOSE_CODE_SERVER_ERROR, "ordered resize barrier overflow");
+      return;
+    }
+    _deferredOrderedResizeBytes += frame.bytes;
+    _deferredOrderedResizeFrames.push(frame);
+  }
+
+  function releaseOrderedResizeBarrier(): void {
+    _orderedResizeBarrier = false;
+    const frames = _deferredOrderedResizeFrames;
+    _deferredOrderedResizeFrames = [];
+    _deferredOrderedResizeBytes = 0;
+    for (const frame of frames) {
+      if (frame.kind === "binary") handleBinaryFrame(frame.data);
+      else {
+        const handler = terminalControlHandlers[frame.message.type] ?? applicationControlHandlers[frame.message.type];
+        if (handler) handler(frame.message);
+      }
+    }
+  }
+
+  function handleAttachAck(message: SocketControlMessage): void {
     __wfTraceEvent(_trace, "attach_ack");
+    _supportsOrderedResize = Array.isArray(message.capabilities)
+      && message.capabilities.includes(PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK);
+    _orderedResizeBarrier = _supportsOrderedResize;
     _attachAckReceived = true;
     _awaitingAttachAck = false;
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
     // Re-check dimensions after layout settles — catches stale initial dims on
-    // mobile where layout isn't finalized at connect time. Same-dimension acks
-    // are skipped to avoid a duplicate resize cycle immediately after attach.
-    sendLayoutStableAfterPaint();
+    // mobile where layout isn't finalized at connect time. Ordered peers must
+    // acknowledge even matching attach geometry before the local terminal can
+    // commit a reconnect/take-control proposal.
+    sendLayoutStableAfterPaint(_supportsOrderedResize);
   }
 
   function handleResizeAck(message: SocketControlMessage): void {
+    if (!_supportsOrderedResize) return;
     const dimensions = _orderedResize.acknowledge(message);
     if (!dimensions) return;
     _lastSentResize = `${dimensions.cols}x${dimensions.rows}`;
     opts.onResizeAck?.(dimensions.cols, dimensions.rows);
+    releaseOrderedResizeBarrier();
   }
 
   function handlePtyReady(): void {
     __wfTraceEvent(_trace, "pty_ready");
-    // A TCP/WebSocket open is not a usable terminal. Preserve exponential
-    // backoff across attach/prefill failures and reset it only after the
-    // broker-backed terminal reaches its authoritative ready boundary.
-    _rc.connected();
     if (opts.onPtyReady) opts.onPtyReady();
   }
 
@@ -1212,6 +1398,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       const message = parsed as Readonly<Record<string, unknown>>;
       if (typeof message.type !== "string") return;
       const typedMessage = message as SocketControlMessage;
+      if (_orderedResizeBarrier && isOrderedResizeBarrierControl(typedMessage.type)) {
+        deferOrderedResizeFrame({ kind: "control", message: typedMessage, bytes: new TextEncoder().encode(raw).byteLength });
+        return;
+      }
       const handler = terminalControlHandlers[typedMessage.type] ?? applicationControlHandlers[typedMessage.type];
       if (handler) handler(typedMessage);
     } catch (error: unknown) {
@@ -1220,6 +1410,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function handleBinaryFrame(data: ArrayBuffer): void {
+    if (_orderedResizeBarrier) {
+      deferOrderedResizeFrame({ kind: "binary", data: data.slice(0), bytes: data.byteLength });
+      return;
+    }
     if (_awaitingPrefillDone) {
       const bytes = new Uint8Array(data);
       if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: bytes.length });
@@ -1241,52 +1435,61 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (opts.onBinaryData) opts.onBinaryData(bytes);
   }
 
-  function connect() {
+  function connect(): void {
     _rc.cancel();
-    if (navigator.onLine === false || connectPending) return;
     if (ws && ws.readyState <= WebSocket.OPEN) return;
+    if (connectPending) return;
+
     const generation = ++connectGeneration;
     connectPending = true;
-    void requestWebSocketTicket().then((ticket) => {
-      if (generation !== connectGeneration || navigator.onLine === false) return;
-      const sock = new WebSocket(buildUrl(ticket));
+    const origin = opts.machine ? resolveReadyMachineOrigin(opts.machine) : location.origin;
+    void (origin && getBrowserAuthToken(origin) ? requestWebSocketTicket() : Promise.resolve(undefined)).then((ticket) => {
+      if (generation !== connectGeneration) return;
+      const route = buildUrl(ticket);
+      if (route.kind === "unavailable") {
+        _rc.block();
+        if (opts.onRouteUnavailable) opts.onRouteUnavailable();
+        return;
+      }
+      const sock = new WebSocket(route.url);
       sock.binaryType = "arraybuffer";
       ws = sock;
 
       sock.onopen = () => {
-      if (ws !== sock) return;
-      console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
-      const wasReconnect = hasConnected;
-      hasConnected = true;
-      sendAttachHandshake();
-      // attach trace was created inside sendAttachHandshake above
-      __wfTraceEvent(_trace, "ws.open", { wasReconnect });
-      if (opts.onOpen) opts.onOpen(wasReconnect);
-    };
+        if (ws !== sock) return;
+        console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
+        const wasReconnect = hasConnected;
+        hasConnected = true;
+        _rc.connected();
+        sendAttachHandshake();
+        __wfTraceEvent(_trace, "ws.open", { wasReconnect });
+        if (opts.onOpen) opts.onOpen(wasReconnect);
+      };
 
-    sock.onmessage = (event) => {
-      if (ws !== sock) return;
-      if (typeof event.data === "string") {
-        handleTextFrame(event.data);
-        return;
-      }
-      handleBinaryFrame(event.data as ArrayBuffer);
-    };
+      sock.onmessage = (event) => {
+        if (ws !== sock) return;
+        if (typeof event.data === "string") {
+          handleTextFrame(event.data);
+          return;
+        }
+        handleBinaryFrame(event.data as ArrayBuffer);
+      };
 
-    sock.onclose = (ev) => {
-      // Ignore stale close events from sockets replaced by reconnect().
-      if (ws !== sock) return;
-      __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
-      __wfTraceRafStop(_trace);
-      ws = null;
-      resetAttachLifecycle();
-      if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
-    };
+      sock.onclose = (ev) => {
+        if (ws !== sock) return;
+        __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
+        __wfTraceRafStop(_trace);
+        ws = null;
+        resetAttachLifecycle();
+        if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
+      };
 
       sock.onerror = () => {};
     }).catch((error: unknown) => {
-      console.warn("[pty-ws] ticket request failed:", error);
-      if (generation === connectGeneration) scheduleReconnect();
+      if (generation === connectGeneration) {
+        console.warn("[pty-ws] ticket request failed:", error);
+        scheduleReconnect();
+      }
     }).finally(() => {
       if (generation === connectGeneration) connectPending = false;
     });
@@ -1298,8 +1501,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  function sendResize(cols: number, rows: number): void {
-    queueResize({ cols, rows });
+  function sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement> {
+    return queueResize({ cols, rows });
   }
 
   function sendTakeControl() {
@@ -1312,20 +1515,12 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     const maxBufferedBytes = 256 * 1024;
     const sendBounded = (frame: string | Blob | ArrayBuffer, byteLength: number): boolean => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-      if (ws.bufferedAmount + byteLength > maxBufferedBytes) {
-        ws.close(1013, "client input backpressure");
-        return false;
-      }
+      if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + byteLength > maxBufferedBytes) return false;
       ws.send(frame);
       return true;
     };
-    if (typeof data === "string") {
-      return sendBounded(data, new TextEncoder().encode(data).byteLength);
-    }
-    if (data instanceof Blob) {
-      return sendBounded(data, data.size);
-    }
+    if (typeof data === "string") return sendBounded(data, new TextEncoder().encode(data).byteLength);
+    if (data instanceof Blob) return sendBounded(data, data.size);
     const bytes = data instanceof ArrayBuffer
       ? new Uint8Array(data)
       : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -1351,10 +1546,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function close() {
-    connectGeneration += 1;
-    connectPending = false;
-    window.removeEventListener("online", handleOnline);
-    window.removeEventListener("offline", handleOffline);
+    connectGeneration++;
     _rc.cancel();
     _rc.block();
     resetAttachLifecycle();
@@ -1369,8 +1561,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // tabs kill TCP silently while readyState still reports OPEN — connect() guards
   // against this and bails. reconnect() bypasses that guard. See PR #89 review / df4180c.
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
-    connectGeneration += 1;
-    connectPending = false;
+    connectGeneration++;
     _rc.cancel();
     resetAttachLifecycle();
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
@@ -1391,6 +1582,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     get ws() { return ws; },
     get isOpen() { return !!(ws && ws.readyState === WebSocket.OPEN); },
     get retryBlocked() { return _rc.isBlocked; },
+    get supportsOrderedResize() { return _supportsOrderedResize; },
   };
 }
 
@@ -1443,6 +1635,7 @@ interface PtyTerminalControllerOpts {
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
   readonly onReconnectExhausted?: () => void;
+  readonly onRouteUnavailable?: () => void;
   readonly onHydrationStart?: () => void;
   readonly onHydrated?: () => void;
 }
@@ -1451,13 +1644,14 @@ interface PtyTerminalController {
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
   focus(): void;
   scrollToBottom(): void;
-  resize(): void;
+  resize(): void | Promise<OrderedResizeSettlement>;
+  readonly supportsOrderedResize: boolean;
   dispose(): void;
   scheduleReconnect(): void;
   sendTakeControl(): void;
-  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
-  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): void;
+  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
   send(data: string | Blob | BufferSource): boolean;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
@@ -1549,9 +1743,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     forceTerminalRepaint(_term);
   }
 
-  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
-    if (!_container) return;
-    syncTerminalLayout({
+  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }): Promise<void> {
+    if (!_container) return Promise.resolve();
+    return syncTerminalLayout({
       term: _term,
       fitAddon: _fitAddon,
       ptyClient: _ptyClient,
@@ -1934,14 +2128,6 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onAttach: () => {
         _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
       },
-      onResizeAck: (cols, rows) => {
-        if (!isCurrent() || !_term) return;
-        if (commitTerminalResizePreservingScroll(_term, { cols, rows })) {
-          recordFirstFit({ cols, rows });
-          forceRepaint();
-          resizeLifecycle.scheduleResizeRehydrate();
-        }
-      },
       onOpen: (wasReconnect) => {
         console.log("[pty-ctrl]", opts.session, "onOpen, isCurrent=", isCurrent(), "wasReconnect=", wasReconnect);
         if (!isCurrent()) return;
@@ -1972,6 +2158,14 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
+      onResizeAck: (cols, rows) => {
+        if (!isCurrent() || !_term) return;
+        if (commitTerminalResizePreservingScroll(_term, { cols, rows })) {
+          recordFirstFit({ cols, rows });
+          forceRepaint();
+          resizeLifecycle.scheduleResizeRehydrate();
+        }
+      },
       onPrefillDone: () => {
         if (!isCurrent()) return;
         const prefillAction = connectionLifecycle.onPrefillDone();
@@ -2016,6 +2210,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onDisconnected: (code, reason) => { if (isCurrent() && opts.onDisconnected) opts.onDisconnected(code, reason); },
       onReconnecting: () => { if (isCurrent() && opts.onReconnecting) opts.onReconnecting(); },
       onReconnectExhausted: () => { if (isCurrent() && opts.onReconnectExhausted) opts.onReconnectExhausted(); },
+      onRouteUnavailable: () => { if (isCurrent() && opts.onRouteUnavailable) opts.onRouteUnavailable(); },
     });
     _ptyClient.connect();
   }
@@ -2031,8 +2226,18 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_term) _term.scrollToBottom();
   }
 
-  function resize() {
-    syncLayout({ forceSend: true, repaint: true, reason: "resize" });
+  function resize(): void | Promise<OrderedResizeSettlement> {
+    if (!_ptyClient) {
+      void syncLayout({ forceSend: true, repaint: true, reason: "resize" });
+      return;
+    }
+    const supportsOrderedResize = _ptyClient.supportsOrderedResize;
+    const settlement = _ptyClient.sendFitResize({ force: true, immediate: true });
+    if (!supportsOrderedResize) {
+      forceRepaint();
+      return;
+    }
+    return settlement;
   }
 
   /**
@@ -2070,7 +2275,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     // Delegation to pty client
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
     sendTakeControl: () => { if (_ptyClient) _ptyClient.sendTakeControl(); },
-    sendFitResize: (options?: { force?: boolean; fit?: boolean }) => { if (_ptyClient) _ptyClient.sendFitResize(options); },
+    sendFitResize: (options?: { force?: boolean; fit?: boolean; immediate?: boolean }) => _ptyClient
+      ? _ptyClient.sendFitResize(options)
+      : Promise.resolve("cancelled" as const),
     forceRepaint,
     syncLayout,
     send: (data) => {
@@ -2089,6 +2296,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     get fitAddon() { return _fitAddon; },
     get ptyClient() { return _ptyClient; },
     get hydration() { return _hydration; },
+    get supportsOrderedResize() { return _ptyClient?.supportsOrderedResize ?? false; },
     get isConnected() { return !!(_ptyClient && _ptyClient.isOpen); },
     get retryBlocked() { return _ptyClient ? _ptyClient.retryBlocked : false; },
   };
@@ -2112,14 +2320,10 @@ function _sendTerminalInput(bytes) {
   // In grid mode, route to the focused grid cell's controller
   if (isGridActive()) {
     const gs = state.gridSessions[state.gridFocusIndex];
-    if (gs?.controller?.isConnected) {
-      return gs.controller.send(bytes);
-    }
+    if (gs?.controller?.isConnected) return gs.controller.send(bytes);
     return false;
   }
-  if (state.terminalController?.isConnected) {
-    return state.terminalController.send(bytes);
-  }
+  if (state.terminalController?.isConnected) return state.terminalController.send(bytes);
   return false;
 }
 
@@ -2312,48 +2516,18 @@ function legacyMachineDisplayMetadata(): readonly { readonly url: unknown; reado
   }
 }
 
-interface BrowserMachine {
-  readonly url: string;
-  readonly name: string;
-  readonly hostname: string;
-  readonly version: string;
-  readonly ready: boolean;
-  readonly diagnostic: string | undefined;
-}
-
-function browserMachine(peer: TailnetPeerEntry): BrowserMachine {
-  return {
+function getMachines(): readonly { readonly url: string; readonly name: string; readonly version: string; readonly ready: boolean; readonly diagnostic: string | undefined }[] {
+  return tailnetPeers.entries().map((peer) => ({
     url: machineKey(peer),
     name: peer.displayName,
-    hostname: peer.hostname,
     version: peer.version ?? "",
-    ready: peer.status === "ready" && peer.identity !== undefined && peer.origin !== undefined,
+    ready: peer.status === "ready" && peer.identity !== undefined,
     diagnostic: peer.diagnostic,
-  };
+  }));
 }
 
-/** The control room routes and renders only currently verified Wolfpack peers. */
-function getMachines(): readonly BrowserMachine[] {
-  return tailnetPeers.readyEntries().map(browserMachine);
-}
-
-/** Discovery diagnostics remain confined to Settings and never become dashboard routes. */
-function getDiscoveryMachines(): readonly BrowserMachine[] {
-  return tailnetPeers.entries().map(browserMachine);
-}
-
-/** Hostnames are the only peer keys allowed in rendered DOM; stable identities stay in memory. */
-function machineDomKey(machine: BrowserMachine): string {
-  return machine.url ? machine.hostname : "";
-}
-
-function resolveMachineDomKey(hostname: string | undefined): string | undefined {
-  if (!hostname) return undefined;
-  return tailnetPeers.readyEntries().find((entry) => entry.hostname === hostname)?.identity;
-}
-
-function sessionOrderReferenceFromDom(reference: SessionOrderCardReference): SessionOrderCardReference {
-  return { ...reference, machineUrl: resolveMachineDomKey(reference.machineUrl) ?? "" };
+function getWorkspaceMachines(): readonly { readonly url: string; readonly name: string; readonly version: string }[] {
+  return getMachines().filter((machine) => machine.ready);
 }
 
 function resolveReadyMachineOrigin(machineIdentity: string | undefined): string | undefined {
@@ -2392,26 +2566,26 @@ function scheduleTailnetPeerSessionRefresh(generation: number): void {
 function retireReplacedPeerIdentity(replacement: TailnetPeerIdentityReplacement): void {
   const { oldIdentity } = replacement;
   const manualGridAffected = state.gridSessions.some(session => session.machine === oldIdentity);
-  const preservedGridAffected = state.preservedGridSessions.some(session => session.machine === oldIdentity);
   const activeDelegationAffected = state.activeDelegationRoot !== null && (
     state.delegationMachine === oldIdentity
     || state.delegationGridSessions.some(session => session.machine === oldIdentity)
   );
   const singleTerminalAffected = state.currentMachine === oldIdentity;
-  const activeTerminalAffected = manualGridAffected || activeDelegationAffected || singleTerminalAffected;
   const { [oldIdentity]: _retiredPeerHealth, ...peerHealth } = state.peerHealth;
 
-  if (preservedGridAffected) clearPreservedGrid();
-  if (!activeTerminalAffected) {
-    setState({ peerHealth });
-    return;
-  }
-
+  retirePreservedGridSessionsForMachine(oldIdentity);
   if (activeDelegationAffected) {
     if (state.terminalController) destroyTerminal();
     teardownDelegationWorkspace();
   } else if (manualGridAffected) {
-    exitGridMode(true);
+    const result = retireGridSessionsForMachine(oldIdentity);
+    if (result === "grid" || result === "single") {
+      setState({ peerHealth });
+      return;
+    }
+  } else if (!singleTerminalAffected) {
+    setState({ peerHealth });
+    return;
   } else {
     destroyTerminal();
   }
@@ -2487,24 +2661,14 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
 
 (async () => {
   try {
-    const machine = await api<{
-      readonly machine?: { readonly displayName?: string };
-      readonly wolfpack?: { readonly version?: string };
-    }>("/machine");
-    state.selfName = machine.machine?.displayName || "this machine";
-    state.selfVersion = machine.wolfpack?.version || "";
+    const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
+    state.selfName = info.name || "this machine";
+    state.selfVersion = info.version || "";
+    const version = document.getElementById("settings-version");
+    if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
   } catch {
-    try {
-      const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
-      state.selfName = info.name || "this machine";
-      state.selfVersion = info.version || "";
-    } catch {
-      state.selfName = "this machine";
-      state.selfVersion = "";
-    }
+    state.selfName = "this machine";
   }
-  const version = document.getElementById("settings-version");
-  if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
   try {
     await refreshTailnetPeers();
   } catch {
@@ -2802,9 +2966,9 @@ function showView(name: string, skipAnimation?: boolean): void {
       chip.style.display = "flex";
       headerCenter.style.transform = "";
       const hml = document.getElementById("header-machine-label");
-      if (getMachines().length > 0) {
+      if (getWorkspaceMachines().length > 0) {
         const mName = state.currentMachine
-          ? (getMachines().find(m => m.url === state.currentMachine)?.name || "remote")
+          ? (getWorkspaceMachines().find(m => m.url === state.currentMachine)?.name || "remote")
           : (state.selfName || "local");
         hml.textContent = mName;
         hml.style.display = "block";
@@ -2885,7 +3049,7 @@ function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSes
 function renderSessionListFromState(): void {
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
-  const multiMachine = getMachines().length > 0;
+  const multiMachine = getWorkspaceMachines().length > 0;
   const html = multiMachine
     ? state.lastSessionGroups.map(group => renderMachineGroupHtml(group, true)).join("")
     : renderMachineGroupHtml(state.lastSessionGroups[0], false);
@@ -2934,7 +3098,7 @@ function sessionOrderRows(
   return orderDelegationSessionRows(rows, effectiveOrder, machineUrl);
 }
 
-function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string, domMachine = machineUrl): {
+function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): {
   readonly attributes: string;
   readonly openAttributes: string;
 } {
@@ -2942,7 +3106,7 @@ function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, 
   if (!identity) return { attributes: "", openAttributes: "" };
   const parentId = row.role === "child" ? row.parent?.wolfpackSessionId ?? "" : "";
   return {
-    attributes: ` data-session-order-id="${escAttr(identity.sessionId)}" data-session-order-machine="${escAttr(domMachine)}" data-session-order-parent="${escAttr(parentId)}"`,
+    attributes: ` data-session-order-id="${escAttr(identity.sessionId)}" data-session-order-machine="${escAttr(machineUrl)}" data-session-order-parent="${escAttr(parentId)}"`,
     openAttributes: ` aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-describedby="session-order-instructions"`,
   };
 }
@@ -2958,21 +3122,15 @@ function saveManualSessionOrder(): boolean {
   );
 }
 
-function sessionOrderResetButtonHtml(machineUrl: string, domMachine = machineUrl): string {
+function sessionOrderResetButtonHtml(machineUrl: string): string {
   if (!hasStoredSessionOrder(machineUrl)) return "";
-  return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(domMachine)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
+  return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(machineUrl)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
 }
 
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
-  const machineKey = multiMachine ? g.machine.url || "" : "";
-  const domMachine = multiMachine ? machineDomKey(g.machine) : "";
-  const mUrlAttr = escAttr(domMachine);
+  const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
   const mName = esc(g.machine.name);
-  const hostname = typeof g.machine.hostname === "string" ? g.machine.hostname : "";
-  const machineLabel = hostname && hostname !== g.machine.name
-    ? `<span class="machine-header-identity"><span>${mName}</span><span class="machine-header-hostname">${esc(hostname)}</span></span>`
-    : `<span class="machine-header-identity"><span>${mName}</span></span>`;
   const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
   const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
@@ -2980,7 +3138,8 @@ function renderMachineGroupHtml(g, multiMachine) {
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
   const createDisabled = multiMachine && !g.online ? " disabled" : "";
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${machineLabel}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey, domMachine)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
+  const machineKey = multiMachine ? g.machine.url || "" : "";
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -2996,12 +3155,12 @@ function renderMachineGroupHtml(g, multiMachine) {
         const ui = triageUi(s);
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = delegationCardAttributes(row);
-        const ordering = sessionOrderCardHtml(row, machineKey, domMachine);
+        const ordering = sessionOrderCardHtml(row, machineKey);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
           <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, domMachine) : ""}</div>
+            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
             ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
@@ -3178,7 +3337,7 @@ function exitDelegationWorkspace(): void {
     restorePreservedGrid();
     return;
   }
-  if (state.gridSessions.length >= 2) {
+  if (isGridActive()) {
     setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
     updateGridLayout();
     showView("terminal", true);
@@ -3246,7 +3405,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const myEpoch = ++state.loadSessionsEpoch;
   const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
-  const machines = getMachines();
+  const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
   // Single-machine: just fetch and render
@@ -3271,9 +3430,9 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
   ];
 
   const groups = new Array(allMachines.length);
-  // Keep the previous successful peer group visible while its next session
-  // refresh is pending. New peers do not enter the control room until their
-  // authenticated sessions endpoint also responds successfully.
+  // Keep a previous successful peer group visible while its next session
+  // request is pending. New peers enter workspace navigation only after that
+  // request succeeds; failures remove their workspace group.
   const prevByUrl = new Map((state.lastSessionGroups || [])
     .filter(group => !group.machine.url || group.online)
     .map(group => [group.machine.url, group]));
@@ -3301,8 +3460,6 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
 
   renderVisibleGroups();
 
-  // Resolve every verified peer independently. A peer that no longer serves
-  // Wolfpack sessions disappears instead of becoming an offline device card.
   const promises = allMachines.map((m, i) =>
     fetchMachine(m.url, m.meta, isCurrentLoad, refreshSignal).then(g => {
       if (!isCurrentLoad()) return; // stale call, discard
@@ -3685,22 +3842,13 @@ async function showAgentPicker() {
     // when nothing's on). Manage which cmds appear via the Settings page.
     const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
     const defaultCmd = data.effective?.agentCmd;
-    const cards = cmds.map((cmd) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "card";
-      button.setAttribute("aria-label", `Start ${cmd}`);
-      button.addEventListener("click", () => { void createSessionWithAgent(cmd); });
-      const dot = document.createElement("div");
-      dot.className = `dot ${cmd === defaultCmd ? "brand" : "green"}`;
-      dot.title = cmd === defaultCmd ? "default" : "agent";
-      const name = document.createElement("div");
-      name.className = "card-name";
-      name.textContent = cmd;
-      button.append(dot, name);
-      return button;
-    });
-    el.replaceChildren(...cards);
+    const html = cmds.map(cmd => `
+      <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
+        <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
+        <div class="card-name">${esc(cmd)}</div>
+      </button>
+    `).join("");
+    el.innerHTML = html;
   } catch {
     el.innerHTML = '<div class="empty">Failed to load agents</div>';
   }
@@ -4202,6 +4350,11 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       setTerminalLoadVisualState(container, "failed");
       setConnState("offline");
     },
+    onRouteUnavailable: () => {
+      slowLoad.stop();
+      setTerminalLoadVisualState(container, "failed");
+      setConnState("machine-unavailable");
+    },
     onHydrationStart: () => {
       setTerminalLoadVisualState(container, "hydrating");
       slowLoad.start("hydrating terminal");
@@ -4342,6 +4495,12 @@ function setConnState(connState: string): void {
     if (retryBtn) retryBtn.onclick = retryConnection;
     return;
   }
+  if (connState === "machine-unavailable") {
+    statusEl.style.display = "block";
+    statusEl.style.background = "#cc3333";
+    statusEl.textContent = "machine unavailable — refresh Tailnet discovery before reconnecting";
+    return;
+  }
   statusEl.style.display = "block";
   statusEl.style.background = "#cc3333";
   statusEl.textContent = "session ended \u2014 use \u2190 to go back";
@@ -4472,7 +4631,7 @@ async function killSession(name, e, machineUrl) {
 function renderDrawerList() {
   const groups = state.lastSessionGroups;
   const list = document.getElementById("drawer-list");
-  const multiMachine = getMachines().length > 0;
+  const multiMachine = getWorkspaceMachines().length > 0;
 
   const all = groups.flatMap(group => {
     const machineUrl = group.machine.url || "";
@@ -4512,12 +4671,10 @@ function drawerItemHtml(item, multiMachine) {
     : row.role === "orphan"
       ? " drawer-orphan-item"
       : row.childSummary ? " drawer-parent-item" : "";
-  return `<div class="drawer-item-row" role="listitem">
-    <button type="button" class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}"${isCurrent ? ' aria-current="page"' : ""}>
-      <span class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></span>
-      <span class="drawer-item-name">${esc(session.name)}</span>
-      ${machineLbl}
-    </button>
+  return `<div class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
+    <div class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></div>
+    <span class="drawer-item-name">${esc(session.name)}</span>
+    ${machineLbl}
     ${sidebarDelegationToggleHtml(row, machineUrl)}
   </div>`;
 }
@@ -4602,7 +4759,6 @@ function closeDrawer(instant?: boolean): void {
   const hdr = document.querySelector("header");
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
-  const TAP_SLOP_PX = 15;
   let startY = 0, startX = 0, startTime = 0, dragging = false, maxDrag = 0;
   let touchTarget = null;
 
@@ -4620,7 +4776,7 @@ function closeDrawer(instant?: boolean): void {
     if (state.currentView !== "terminal") return;
     const dy = e.touches[0].clientY - startY;
     // opening: drag down when closed (header only)
-    if (!state.drawerOpen && dy > TAP_SLOP_PX) {
+    if (!state.drawerOpen && dy > 5) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating", "open");
@@ -4633,7 +4789,7 @@ function closeDrawer(instant?: boolean): void {
       backdrop.style.transition = "none";
     }
     // closing: drag up when open (header or drawer)
-    if (state.drawerOpen && dy < -TAP_SLOP_PX) {
+    if (state.drawerOpen && dy < -5) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating");
@@ -4651,7 +4807,7 @@ function closeDrawer(instant?: boolean): void {
       const dt = Date.now() - startTime;
       const ex = e.changedTouches[0].clientX, ey = e.changedTouches[0].clientY;
       const dist = Math.abs(ex - startX) + Math.abs(ey - startY);
-      if (dt < 300 && dist <= TAP_SLOP_PX && touchTarget) {
+      if (dt < 300 && dist < 15 && touchTarget) {
         const disclosure = touchTarget.closest(".delegation-sidebar-toggle");
         if (disclosure && drawer.contains(disclosure)) {
           e.preventDefault();
@@ -4763,9 +4919,9 @@ async function switchSession(val) {
   loadSessionSwitcher();
   // Update machine label in header (showView sets it, but drawer bypasses showView)
   const hml = document.getElementById("header-machine-label");
-  if (getMachines().length > 0) {
+  if (getWorkspaceMachines().length > 0) {
     const mName = machineUrl
-      ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
+      ? (getWorkspaceMachines().find(m => m.url === machineUrl)?.name || "remote")
       : (state.selfName || "local");
     hml.textContent = mName;
     hml.style.display = "block";
@@ -5280,7 +5436,7 @@ function setUpPeerNotifications(machineIdentity: string): void {
 }
 
 function renderMachinesList(): void {
-  const machines = getDiscoveryMachines();
+  const machines = getMachines();
   const el = document.getElementById("machines-list");
   if (!machines.length) {
     el.innerHTML = '<div class="no-machines">No Tailnet candidates found</div>';
@@ -5290,19 +5446,18 @@ function renderMachinesList(): void {
     const dot = machine.ready ? "green" : "red";
     const status = machine.ready ? "online" : machine.diagnostic || "offline";
     const notificationSetup = machine.ready
-      ? `<button class="machine-notification-setup" type="button" data-machine-hostname="${escAttr(machine.hostname)}">Set up notifications on ${esc(machine.name)}</button>`
+      ? `<button class="machine-notification-setup" type="button" data-machine-identity="${escAttr(machine.url)}">Set up notifications on ${esc(machine.name)}</button>`
       : "";
     return `<div class="machine-item">
       <div class="dot ${dot}" title="${escAttr(status)}"></div>
-      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.hostname)}</span></span>
+      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span></span>
       ${notificationSetup}
     </div>`;
   }).join("");
   el.querySelectorAll<HTMLButtonElement>(".machine-notification-setup").forEach((button) => {
     button.addEventListener("click", () => {
-      const machineIdentity = resolveMachineDomKey(button.dataset.machineHostname);
+      const machineIdentity = button.dataset.machineIdentity;
       if (machineIdentity) setUpPeerNotifications(machineIdentity);
-      else setPeerNotificationEnrollmentUnavailable();
     });
   });
 }
@@ -5314,7 +5469,8 @@ async function discoverMachines(): Promise<void> {
   try {
     const refreshResult = await refreshTailnetPeers();
     if (refreshResult === "stale") return;
-    const ready = getMachines().length;
+    const machines = getMachines();
+    const ready = machines.filter((machine) => machine.ready).length;
     renderMachinesList();
     void loadSessions(true);
     statusEl.textContent = ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet";
@@ -5471,7 +5627,10 @@ if (!isDesktop()) {
 let sidebarAutoCollapseTimer = null;
 let sidebarSessionOrderDragActive = false;
 let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 300;
+let sidebarLayoutTransitionId = 0;
+let sidebarLayoutSettlementTransitionId: number | null = null;
+// Mirrors #desktop-sidebar's 200ms margin-left transition when transitionend is unavailable.
+const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 200;
 
 let sidebarInitialRender = false;
 let _sidebarRafId = null;
@@ -5494,7 +5653,7 @@ function _renderSidebarNow() {
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
   if (groups.length) sidebarInitialRender = true;
-  const machines = getMachines();
+  const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
   let html = "";
@@ -5512,21 +5671,15 @@ function _renderSidebarNow() {
   } else {
     // Multi-machine
     for (const g of groups) {
-      const machineIdentity = g.machine.url;
-      const domMachine = machineDomKey(g.machine);
-      const mUrl = escAttr(domMachine);
+      const mUrl = escAttr(g.machine.url);
       const mName = esc(g.machine.name);
-      const hostname = typeof g.machine.hostname === "string" ? g.machine.hostname : "";
-      const machineLabel = hostname && hostname !== g.machine.name
-        ? `<span class="machine-header-identity"><span>${mName}</span><span class="machine-header-hostname">${esc(hostname)}</span></span>`
-        : `<span class="machine-header-identity"><span>${mName}</span></span>`;
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
       const offlineClass = !g.online && !g.pending ? " offline" : "";
       const createDisabled = !g.online ? " disabled" : "";
       html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${machineLabel}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineIdentity, domMachine)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrl}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(g.machine.url)}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
       if (g.online && g.sessions.length) {
-        html += visibleDelegationRows(sessionOrderRows(g.sessions, machineIdentity), machineIdentity).map(row => sidebarCardHtml(row, machineIdentity, domMachine)).join("");
+        html += visibleDelegationRows(sessionOrderRows(g.sessions, g.machine.url), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
@@ -5541,9 +5694,9 @@ function _renderSidebarNow() {
   el.innerHTML = html;
 }
 
-function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string, domMachine = machineUrl) {
+function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
   const s = row.session;
-  const machineUrlAttr = escAttr(domMachine);
+  const machineUrlAttr = escAttr(machineUrl);
   const lastLine = s.lastLine || "";
   const ui = triageUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
@@ -5552,13 +5705,13 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
-  const ordering = sessionOrderCardHtml(row, machineUrl, domMachine);
+  const ordering = sessionOrderCardHtml(row, machineUrl);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
-      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, domMachine)}</div>
+      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
@@ -5695,17 +5848,48 @@ function initSidebar() {
       clearTimeout(sidebarLayoutTransitionFallbackTimer);
       sidebarLayoutTransitionFallbackTimer = null;
     }
-    state.sidebarLayoutTransitioning = false;
+    const transitionId = sidebarLayoutTransitionId;
+    if (sidebarLayoutSettlementTransitionId === transitionId) return;
+    sidebarLayoutSettlementTransitionId = transitionId;
+    const complete = (acknowledged = true) => {
+      if (transitionId !== sidebarLayoutTransitionId) return;
+      sidebarLayoutSettlementTransitionId = null;
+      state.sidebarLayoutTransitioning = false;
+      if (acknowledged) revealGridCellsWithoutResize();
+    };
     if (activeGridTerminalSessions() !== null) {
-      scheduleGridStabilizedFit();
-    } else {
-      state.terminalController?.resize();
-      revealGridCellsWithoutResize();
+      scheduleGridStabilizedFit(complete);
+      return;
     }
+    const controller = state.terminalController;
+    if (!controller) {
+      complete();
+      return;
+    }
+    const supportsOrderedResize = controller.supportsOrderedResize;
+    let settlement: void | Promise<OrderedResizeSettlement>;
+    try {
+      settlement = controller.resize();
+    } catch (error: unknown) {
+      console.warn("[sidebar] terminal resize failed:", error);
+      complete(false);
+      return;
+    }
+    if (!supportsOrderedResize) {
+      complete();
+      return;
+    }
+    void Promise.resolve(settlement).then((outcome) => {
+      complete(outcome === "acknowledged");
+    }, (error) => {
+      console.warn("[sidebar] terminal resize settlement failed:", error);
+      complete(false);
+    });
   }
 
   function beginSidebarLayoutTransition(): void {
     if (sidebarLayoutTransitionFallbackTimer) clearTimeout(sidebarLayoutTransitionFallbackTimer);
+    sidebarLayoutTransitionId += 1;
     state.sidebarTransitionIsHover = false;
     state.sidebarLayoutTransitioning = true;
     hideGridCellsForTransition();
@@ -5818,33 +6002,42 @@ function bindHtmlEventListeners(): void {
     if (el) el.addEventListener(event, fn);
   };
 
-  bindDelegatedAppActions(document, {
-    quickSend: sendQuickCmd,
-    quickMove: moveQuickCmd,
-    quickEdit: index => { void editQuickCmd(index); },
-    quickDelete: index => { void deleteQuickCmd(index); },
-    delegationToggle: toggleSidebarDelegationChildren,
-    newSession: machine => { void showProjectPicker(resolveMachineDomKey(machine)); },
-    openSession: (session, machine) => { void openSession(session, resolveMachineDomKey(machine)); },
-    killSession: (session, event, machine) => { void killSession(session, event, resolveMachineDomKey(machine)); },
-    retryMachine: (machine, event) => { retryMachine(resolveMachineDomKey(machine) ?? "", event); },
-    selectProject,
-    agentRemove: command => { void removeAgent(command); },
-    agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
-    toggleGrid: (session, machine, event) => { toggleGrid(session, resolveMachineDomKey(machine) ?? "", event); },
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest<HTMLElement>("[data-action]");
+    if (!button) return;
+    const action = button.dataset.action;
+    const machine = button.dataset.machine || undefined;
+    const session = button.dataset.session;
+    const index = Number(button.dataset.index);
+    if (action === "quick-send" && Number.isInteger(index)) sendQuickCmd(index);
+    else if (action === "quick-move" && Number.isInteger(index)) moveQuickCmd(index, button.dataset.offset === "-1" ? -1 : 1);
+    else if (action === "quick-edit" && Number.isInteger(index)) void editQuickCmd(index);
+    else if (action === "quick-delete" && Number.isInteger(index)) void deleteQuickCmd(index);
+    else if (action === "delegation-toggle" && button.dataset.delegationKey) toggleSidebarDelegationChildren(button.dataset.delegationKey, event);
+    else if (action === "new-session") void showProjectPicker(machine);
+    else if (action === "open-session" && session) void openSession(session, machine);
+    else if (action === "kill-session" && session) void killSession(session, event, machine);
+    else if (action === "retry-machine") retryMachine(machine || "", event);
+    else if (action === "select-project" && button.dataset.project) selectProject(button.dataset.project);
+    else if (action === "agent-remove" && button.dataset.command) void removeAgent(button.dataset.command);
+    else if (action === "create-agent-session" && button.dataset.command) void createSessionWithAgent(button.dataset.command);
+    else if (action === "toggle-grid" && session) toggleGrid(session, machine || "", event);
+  });
+  document.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.dataset.action !== "agent-toggle") return;
+    if (target.dataset.command) void toggleAgentEnabled(target.dataset.command, target.checked);
   });
 
   // Header
   on("session-chip", "click", () => toggleDrawer());
   on("gear-btn", "click", () => showSettings());
   bindSessionOrderEvents({
-    move: (moving, target, placement) => moveSessionCard(
-      sessionOrderReferenceFromDom(moving),
-      sessionOrderReferenceFromDom(target),
-      placement,
-    ),
-    moveByOffset: (moving, offset) => moveSessionCardByOffset(sessionOrderReferenceFromDom(moving), offset),
-    reset: machine => { resetSessionCardOrder(resolveMachineDomKey(machine) ?? ""); },
+    move: moveSessionCard,
+    moveByOffset: moveSessionCardByOffset,
+    reset: resetSessionCardOrder,
     setDragActive: active => { sidebarSessionOrderDragActive = active; },
   });
 

@@ -177,15 +177,15 @@ async function start() {
     } else if (action === "start") serviceStart();
     else if (action === "install") serviceInstall();
   } catch (e) {
-    print(red(`  Service startup failed: ${e}`));
-    print(dim("  Run 'wolfpack service install' to retry."));
+    printError(red(`  Service startup failed: ${e}`));
+    printError(dim("  Run 'wolfpack service install' to retry."));
   }
   if (wasRunning && !isServiceRunning()) {
-    print(yellow("  Service was running but didn't restart."));
-    print(yellow(`  Run ${bold("wolfpack service start")} to restart it.`));
+    printError(yellow("  Service was running but didn't restart."));
+    printError(yellow(`  Run ${bold("wolfpack service start")} to restart it.`));
   } else if (!isServiceRunning()) {
-    print(yellow("  Wolfpack service is not running."));
-    print(yellow(`  Run ${bold("wolfpack service start")} or ${bold("wolfpack service install")} to launch it.`));
+    printError(yellow("  Wolfpack service is not running."));
+    printError(yellow(`  Run ${bold("wolfpack service start")} or ${bold("wolfpack service install")} to launch it.`));
   }
 
   print(dim(WOLF));
@@ -219,7 +219,7 @@ async function main() {
   } else if (cmd === "service") {
     const serviceCommand = parseServiceCommand(argv.slice(1));
     if (!serviceCommand) {
-      print("  Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
+      printError("  Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
       process.exit(1);
     }
     if (serviceCommand.action === "install") serviceInstall();
@@ -254,9 +254,9 @@ async function main() {
     print("Usage: wolfpack uninstall --yes");
   } else if (cmd === "uninstall") {
     if (!hasUninstallConfirmationFlag(argv.slice(1))) {
-      print(red("  Refusing to uninstall without confirmation."));
-      print(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
-      print(dim("  Re-run with: wolfpack uninstall --yes"));
+      printError(red("  Refusing to uninstall without confirmation."));
+      printError(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
+      printError(dim("  Re-run with: wolfpack uninstall --yes"));
       process.exit(1);
     }
     uninstall();

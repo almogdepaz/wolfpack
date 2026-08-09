@@ -5,15 +5,29 @@ import {
   stableMachineIdentity,
 } from "../../src/tailnet-peer-registry.ts";
 import { MACHINE_CAPABILITY } from "../../src/tailnet-machine-contract.ts";
-import type { MachineHandshake } from "../../src/tailnet-machine-contract.ts";
+import type { MachineHandshake, TailnetMachineCandidate } from "../../src/tailnet-machine-contract.ts";
 
 const installationId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+const MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT = 32 * 1024;
 const candidate = {
   hostname: "peer.example.ts.net",
   tailnetNodeId: "n-peer",
   origin: "https://peer.example.ts.net",
   online: true,
 } as const;
+
+function stalledCandidates(count: number): TailnetMachineCandidate[] {
+  return Array.from({ length: count }, (_, index) => {
+    const suffix = String(index).padStart(2, "0");
+    const hostname = `stalled-${suffix}.example.ts.net`;
+    return {
+      hostname,
+      tailnetNodeId: `n-stalled-${suffix}`,
+      origin: `https://${hostname}`,
+      online: true,
+    };
+  });
+}
 
 function handshake(
   origin: string = candidate.origin,
@@ -67,6 +81,174 @@ describe("browser tailnet peer registry", () => {
 
     expect(Date.now() - started).toBeLessThan(500);
     expect(outcomes.map(outcome => outcome.status)).toEqual(["offline", "ready"]);
+  });
+
+  test("rejects an oversized declared handshake response without consuming its body", async () => {
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+        controller.close();
+      },
+    }), { headers: { "content-length": String(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT + 1) } });
+
+    let fetchSignal: AbortSignal | null | undefined;
+    const outcomes = await probeTailnetCandidates([candidate], async (_input, init) => {
+      fetchSignal = init.signal;
+      return response;
+    });
+
+    expect(outcomes).toEqual([expect.objectContaining({
+      status: "malformed",
+      diagnostic: "machine handshake response exceeds 32 KiB",
+    })]);
+    expect(fetchSignal?.aborted).toBe(true);
+    expect(response.bodyUsed).toBe(false);
+  });
+
+  test.each([
+    ["chunked", undefined],
+    ["understated", "1"],
+  ])("rejects and cancels an oversized %s handshake stream", async (_kind, contentLength) => {
+    let cancelled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), {
+      headers: contentLength === undefined ? undefined : { "content-length": contentLength },
+    });
+
+    const outcomes = await probeTailnetCandidates([candidate], async () => response);
+
+    expect(outcomes).toEqual([expect.objectContaining({
+      status: "malformed",
+      diagnostic: "machine handshake response exceeds 32 KiB",
+    })]);
+    expect(cancelled).toBe(true);
+  });
+
+  test("settles an oversized handshake when stream cancellation never resolves", async () => {
+    const timeoutMs = 20;
+    const stalled = Symbol("stalled");
+    let fetchSignal: AbortSignal | null | undefined;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT + 1));
+      },
+      cancel() {
+        return new Promise<void>(() => {});
+      },
+    }));
+    const batch = probeTailnetCandidates([candidate], async (_input, init) => {
+      fetchSignal = init.signal;
+      return response;
+    }, { timeoutMs });
+
+    const outcomes = await Promise.race([
+      batch,
+      new Promise<typeof stalled>((resolve) => setTimeout(() => resolve(stalled), timeoutMs * 5)),
+    ]);
+
+    expect(outcomes).not.toBe(stalled);
+    if (outcomes === stalled) throw new Error("oversized handshake probe did not settle");
+    expect(outcomes).toEqual([expect.objectContaining({
+      status: "malformed",
+      diagnostic: "machine handshake response exceeds 32 KiB",
+    })]);
+    expect(fetchSignal?.aborted).toBe(true);
+  });
+
+  test("accepts a valid handshake response at the byte ceiling", async () => {
+    const encoder = new TextEncoder();
+    const payloadWithEmptyPadding = JSON.stringify({ ...handshake(), padding: "" });
+    const payload = JSON.stringify({
+      ...handshake(),
+      padding: "x".repeat(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT - encoder.encode(payloadWithEmptyPadding).byteLength),
+    });
+    expect(encoder.encode(payload)).toHaveLength(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT);
+
+    const outcomes = await probeTailnetCandidates([candidate], async () => new Response(payload, {
+      headers: { "content-length": String(MACHINE_HANDSHAKE_RESPONSE_BYTE_LIMIT) },
+    }));
+
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["ready"]);
+  });
+
+  test("times out when a handshake body stalls after headers", async () => {
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        bodyController = controller;
+      },
+    });
+    const timeoutMs = 20;
+    const stalled = Symbol("stalled");
+    const batch = probeTailnetCandidates([candidate], async (_input, init) => {
+      init.signal?.addEventListener("abort", () => bodyController?.error(new Error("aborted")), { once: true });
+      return new Response(body);
+    }, { timeoutMs });
+
+    try {
+      const outcomes = await Promise.race([
+        batch,
+        new Promise<typeof stalled>((resolve) => setTimeout(() => resolve(stalled), timeoutMs * 5)),
+      ]);
+      expect(outcomes).not.toBe(stalled);
+      if (outcomes === stalled) throw new Error("handshake body probe did not time out");
+      expect(outcomes).toEqual([expect.objectContaining({
+        status: "offline",
+        diagnostic: "machine handshake did not respond",
+      })]);
+    } finally {
+      bodyController?.error(new Error("test cleanup"));
+      await batch;
+    }
+  });
+
+  test("starts exactly eight default-concurrency probes", async () => {
+    let started = 0;
+    let releaseFirstWave: (() => void) | undefined;
+    const firstWave = new Promise<Response>((resolve) => {
+      releaseFirstWave = () => resolve(new Response("", { status: 503 }));
+    });
+    const batch = probeTailnetCandidates(stalledCandidates(9), async () => {
+      started++;
+      return firstWave;
+    });
+
+    try {
+      expect(started).toBe(8);
+    } finally {
+      releaseFirstWave?.();
+    }
+    await batch;
+  });
+
+  test("finishes 32 stalled peers in four short default-concurrency timeout waves", async () => {
+    const timeoutMs = 25;
+    let active = 0;
+    let maxActive = 0;
+    const started = Date.now();
+    const outcomes = await probeTailnetCandidates(stalledCandidates(32), async (_input, init) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          active--;
+          reject(new Error("aborted"));
+        }, { once: true });
+      });
+    }, { timeoutMs });
+    const elapsed = Date.now() - started;
+
+    expect(maxActive).toBe(8);
+    expect(outcomes).toHaveLength(32);
+    expect(outcomes.every((outcome) => outcome.status === "offline")).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(timeoutMs * 3);
+    expect(elapsed).toBeLessThan(timeoutMs * 6);
   });
 
   test("reports a healthy settled probe before a stalled batch peer times out", async () => {
@@ -153,90 +335,6 @@ describe("browser tailnet peer registry", () => {
     }
   });
 
-  test("bounds total scan time and leaves unstarted peers unavailable", async () => {
-    const candidates = Array.from({ length: 100 }, (_, index) => ({
-      ...candidate,
-      tailnetNodeId: `n-${index}`,
-      hostname: `peer-${index}.example.ts.net`,
-      origin: `https://peer-${index}.example.ts.net`,
-    }));
-    let calls = 0;
-    const started = Date.now();
-    const outcomes = await probeTailnetCandidates(candidates, async () => {
-      calls++;
-      return new Promise<Response>(() => {});
-    }, { timeoutMs: 1_000, totalTimeoutMs: 25, maxConcurrent: 4, maxNetworkProbes: 100 });
-
-    expect(Date.now() - started).toBeLessThan(500);
-    expect(calls).toBe(4);
-    expect(outcomes).toHaveLength(100);
-    expect(outcomes.slice(0, 4).every(outcome => outcome.status === "offline")).toBe(true);
-    expect(outcomes.slice(4).every(outcome => outcome.status === "unavailable")).toBe(true);
-  });
-
-  test("caps network work independently of the scan deadline", async () => {
-    const candidates = Array.from({ length: 12 }, (_, index) => ({
-      ...candidate,
-      tailnetNodeId: `n-budget-${index}`,
-      hostname: `budget-${index}.example.ts.net`,
-      origin: `https://budget-${index}.example.ts.net`,
-    }));
-    let calls = 0;
-    const outcomes = await probeTailnetCandidates(candidates, async () => {
-      calls++;
-      return new Response("not found", { status: 404 });
-    }, { maxNetworkProbes: 3, totalTimeoutMs: 1_000 });
-
-    expect(calls).toBe(3);
-    expect(outcomes.slice(0, 3).every(outcome => outcome.status === "non-wolfpack")).toBe(true);
-    expect(outcomes.slice(3).every(outcome =>
-      outcome.status === "unavailable" && outcome.diagnostic === "tailnet network probe budget exhausted"
-    )).toBe(true);
-  });
-
-  test("rejects declared and streamed oversized handshake bodies", async () => {
-    const declared = await probeTailnetCandidates([candidate], async () => new Response(null, {
-      status: 200,
-      headers: { "Content-Length": String(16 * 1024 + 1) },
-    }));
-    expect(declared[0]).toMatchObject({
-      status: "malformed",
-      diagnostic: "machine handshake body exceeded size limit",
-    });
-
-    let cancelled = false;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(10 * 1024));
-        controller.enqueue(new Uint8Array(10 * 1024));
-      },
-      cancel() { cancelled = true; },
-    });
-    const streamed = await probeTailnetCandidates([candidate], async () => new Response(stream, {
-      status: 200,
-      headers: { "Content-Length": "1" },
-    }));
-    expect(streamed[0]).toMatchObject({
-      status: "malformed",
-      diagnostic: "machine handshake body exceeded size limit",
-    });
-    expect(cancelled).toBe(true);
-  });
-
-  test("keeps the timeout active while reading a stalled handshake body", async () => {
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(new TextEncoder().encode('{"protocol":')); },
-    });
-    const started = Date.now();
-    const outcomes = await probeTailnetCandidates(
-      [candidate],
-      async () => new Response(stream, { status: 200 }),
-      { timeoutMs: 20, totalTimeoutMs: 100 },
-    );
-    expect(Date.now() - started).toBeLessThan(500);
-    expect(outcomes[0]).toMatchObject({ status: "offline", diagnostic: "machine handshake did not respond" });
-  });
-
   test("reports a verified installation replacement while revoking the old stable identity", () => {
     const registry = new TailnetPeerRegistry();
     const replacementInstallationId = "3bf9bf3a-d5fe-45fa-8a88-8a1e24963e75";
@@ -265,6 +363,40 @@ describe("browser tailnet peer registry", () => {
     })]);
     expect(registry.resolveReadyOrigin(oldIdentity)).toBeUndefined();
     expect(registry.resolveReadyOrigin(newIdentity)).toBe(candidate.origin);
+  });
+
+  test("revokes a ready origin when current candidate facts change before its replacement handshake", () => {
+    const registry = new TailnetPeerRegistry();
+    const id = stableMachineIdentity(candidate.tailnetNodeId, installationId);
+    registry.applyProbe({ candidate, status: "ready", handshake: handshake() });
+
+    const renamed = {
+      ...candidate,
+      hostname: "renamed.example.ts.net",
+      origin: "https://renamed.example.ts.net",
+    };
+    registry.reconcileCandidates([renamed]);
+
+    expect(registry.entries()).toEqual([expect.objectContaining({
+      identity: id,
+      status: "offline",
+      origin: candidate.origin,
+      hostname: candidate.hostname,
+    })]);
+    expect(registry.resolveReadyOrigin(id)).toBeUndefined();
+
+    registry.applyProbe({ candidate: renamed, status: "ready", handshake: handshake(renamed.origin, "renamed") });
+    expect(registry.resolveReadyOrigin(id)).toBe(renamed.origin);
+
+    registry.reconcileCandidates([{ ...renamed, online: false }]);
+    expect(registry.entries()).toEqual([expect.objectContaining({
+      status: "offline",
+      diagnostic: "tailnet reports this peer offline",
+    })]);
+    expect(registry.resolveReadyOrigin(id)).toBeUndefined();
+
+    registry.applyProbe({ candidate: renamed, status: "ready", handshake: handshake(renamed.origin, "renamed") });
+    expect(registry.resolveReadyOrigin(id)).toBe(renamed.origin);
   });
 
   test("keeps one stable peer through hostname changes and recovery", () => {
@@ -337,33 +469,4 @@ describe("browser tailnet peer registry", () => {
     })]);
     expect(registry.resolveReadyOrigin(stableMachineIdentity(candidate.tailnetNodeId, installationId))).toBeUndefined();
   });
-  test("exposes only currently verified routable peers to the control room", () => {
-    const registry = new TailnetPeerRegistry();
-    const readyCandidate = candidate;
-    const malformedCandidate = {
-      ...candidate,
-      tailnetNodeId: "n-malformed",
-      hostname: "malformed.example.ts.net",
-      origin: "https://malformed.example.ts.net",
-    };
-    const offlineCandidate = {
-      ...candidate,
-      tailnetNodeId: "n-offline",
-      hostname: "offline.example.ts.net",
-      origin: "https://offline.example.ts.net",
-      online: false,
-    };
-
-    registry.applyProbe({ candidate: malformedCandidate, status: "malformed", diagnostic: "invalid handshake" });
-    registry.applyProbe({ candidate: offlineCandidate, status: "offline", diagnostic: "offline" });
-    registry.applyProbe({ candidate: readyCandidate, status: "ready", handshake: handshake() });
-
-    expect(registry.readyEntries()).toEqual([
-      expect.objectContaining({ displayName: "peer", status: "ready", origin: candidate.origin }),
-    ]);
-
-    registry.markCandidateEnumerationUnavailable();
-    expect(registry.readyEntries()).toEqual([]);
-  });
-
 });

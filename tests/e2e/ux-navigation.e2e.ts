@@ -968,7 +968,7 @@ test("desktop escape from new-session picker reopens the previous terminal", asy
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
 });
 
-test("offline Tailnet candidates stay out of the control room and sidebar", async ({ page }) => {
+test("offline Tailnet candidates stay out of workspace navigation but remain in settings inventory", async ({ page }, testInfo) => {
   let candidateRequests = 0;
   await page.addInitScript(() => {
     localStorage.setItem("wolfpack-machines", JSON.stringify([
@@ -988,11 +988,20 @@ test("offline Tailnet candidates stay out of the control room and sidebar", asyn
   });
 
   await page.goto(srv.baseUrl);
-  await expect.poll(() => candidateRequests).toBeGreaterThan(0);
-  await expect(page.locator('#session-list .machine-group[data-machine^="candidate:"]')).toHaveCount(0);
-  await expect(page.locator('#desktop-sidebar .machine-group[data-machine^="candidate:"]')).toHaveCount(0);
-  await expect(page.locator("#session-list")).not.toContainText("Offline one");
-  await expect(page.locator("#desktop-sidebar")).not.toContainText("Offline two");
+  const remoteGroups = page.locator('#session-list .machine-group[data-machine^="candidate:n-offline-"]');
+  await expect(remoteGroups).toHaveCount(0);
+  if (testInfo.project.name === "desktop") {
+    await expect(page.locator('#sidebar-session-list .machine-group[data-machine^="candidate:n-offline-"]')).toHaveCount(0);
+  }
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  const machines = page.locator("#machines-list .machine-item");
+  await expect(machines).toHaveCount(2);
+  await expect(machines.nth(0)).toContainText("Offline one");
+  await expect(machines.nth(0).locator(".dot")).toHaveAttribute("title", "tailnet reports this peer offline");
+  await expect(machines.nth(1)).toContainText("Offline two");
+  await expect(machines.nth(1).locator(".dot")).toHaveAttribute("title", "tailnet reports this peer offline");
+  expect(candidateRequests).toBeGreaterThan(0);
 });
 
 test("desktop settings back from a terminal reopens that terminal", async ({ page }, testInfo) => {

@@ -14,6 +14,7 @@ import {
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import type { OrderedResizeSettlement } from "./ordered-resize";
 
 // ── Dependency injection ──
 
@@ -28,7 +29,8 @@ interface GridTerminalController {
   sendTakeControl(): void;
   forceRepaint(): void;
   focus(): void;
-  resize(): void;
+  readonly supportsOrderedResize: boolean;
+  resize(): void | Promise<OrderedResizeSettlement>;
   dispose(): void;
 }
 
@@ -108,7 +110,9 @@ const _gridRelayoutHiddenSessions = new Set<GridSession>();
 const MAX_GRID_CELLS = 6;
 
 export function isGridActive() {
-  return !state.activeDelegationRoot && state.gridSessions.length >= 2;
+  return !state.activeDelegationRoot && (
+    state.gridSessions.length >= 2 || state.gridSessions[0]?._retainedSingle === true
+  );
 }
 
 export function canOpenMultiTerminalGrid(): boolean {
@@ -314,6 +318,11 @@ async function mountGridController(gs, cell, idx) {
     },
     onReconnectExhausted: () => {
       gs._slowLoad?.stop();
+      setTerminalLoadVisualState(cell, "failed");
+    },
+    onRouteUnavailable: () => {
+      gs._slowLoad?.stop();
+      if (gs.controller?.term) gs.controller.term.options.disableStdin = true;
       setTerminalLoadVisualState(cell, "failed");
     },
     onHydrationStart: () => {
@@ -595,6 +604,60 @@ export function clearPreservedGrid() {
   state.preservedGridFocusIndex = 0;
 }
 
+export function retirePreservedGridSessionsForMachine(machine: string): boolean {
+  const previous = state.preservedGridSessions;
+  if (!previous.some(session => session.machine === machine)) return false;
+  const focused = previous[state.preservedGridFocusIndex];
+  const remaining = previous.filter(session => session.machine !== machine);
+  if (remaining.length <= 1) {
+    clearPreservedGrid();
+    return true;
+  }
+  state.preservedGridSessions = remaining;
+  state.preservedGridFocusIndex = focused && remaining.includes(focused)
+    ? remaining.indexOf(focused)
+    : Math.min(state.preservedGridFocusIndex, remaining.length - 1);
+  return true;
+}
+
+export type GridRetirementResult = "unaffected" | "grid" | "single" | "empty";
+
+export function retireGridSessionsForMachine(machine: string): GridRetirementResult {
+  const previous = state.gridSessions;
+  if (!previous.some(session => session.machine === machine)) return "unaffected";
+  const focused = previous[state.gridFocusIndex];
+  const remaining = previous.filter(session => session.machine !== machine);
+  for (const session of previous) {
+    if (session.machine !== machine) continue;
+    clearGridCellTakeControlTimer(session);
+    session._slowLoad?.stop();
+    session.controller?.dispose();
+    session.controller = null;
+    session._cellElement?.remove();
+    session._cellElement = null;
+  }
+  state.gridSessions = remaining;
+  state.gridFocusIndex = focused && remaining.includes(focused)
+    ? remaining.indexOf(focused)
+    : Math.min(state.gridFocusIndex, Math.max(0, remaining.length - 1));
+  if (remaining.length >= 2) {
+    renderGridCells();
+    setGridFocus(state.gridFocusIndex);
+    return "grid";
+  }
+  if (remaining.length === 1) {
+    // Keep the mounted controller/socket authoritative rather than remounting
+    // it as a single terminal during peer retirement. This marker makes the
+    // exceptional live one-cell grid participate in the normal grid lifecycle.
+    remaining[0]._retainedSingle = true;
+    renderGridCells();
+    setGridFocus(state.gridFocusIndex);
+    return "grid";
+  }
+  updateGridLayout();
+  return "empty";
+}
+
 export function setCurrentSessionFromGridFocus(sessions, focusIndex) {
   if (!sessions.length) return;
   const idx = Math.max(0, Math.min(focusIndex, sessions.length - 1));
@@ -647,8 +710,12 @@ export function setDelegationGridFocus(idx: number): void {
 
 export function suspendGridMode() {
   const preserved = WP.suspendGridState(state.gridSessions, state.gridFocusIndex);
-  state.preservedGridSessions = preserved.sessions;
-  state.preservedGridFocusIndex = preserved.focusIndex;
+  if (preserved.sessions.length >= 2) {
+    state.preservedGridSessions = preserved.sessions;
+    state.preservedGridFocusIndex = preserved.focusIndex;
+  } else {
+    clearPreservedGrid();
+  }
   cancelGridRelayoutTransition();
   for (const gs of state.gridSessions) {
     clearGridCellTakeControlTimer(gs);
@@ -869,6 +936,7 @@ function scheduleGridRelayoutFit(
   hideUntilRepaint = false,
   containerId = "desktop-grid-container",
   activeSessions: GridSession[] = state.gridSessions,
+  onSettled?: (acknowledged: boolean) => void,
 ): void {
   if (_gridRelayoutFitRaf != null) cancelAnimationFrame(_gridRelayoutFitRaf);
   if (_gridRelayoutRevealRaf != null) {
@@ -882,29 +950,65 @@ function scheduleGridRelayoutFit(
       _gridRelayoutHiddenSessions.add(gs);
     }
   }
+  const transitionId = ++state.gridRelayoutTransitionId;
   _gridRelayoutFitRaf = requestAnimationFrame(() => {
     _gridRelayoutFitRaf = null;
-    if (activeSessions.length < 1) return;
+    if (transitionId !== state.gridRelayoutTransitionId) return;
+    if (activeSessions.length < 1) { onSettled?.(true); return; }
     const container = document.getElementById(containerId);
     if (container) void container.offsetWidth;
+    const revealAfterRepaint = () => {
+      if (transitionId !== state.gridRelayoutTransitionId) return;
+      if (_gridRelayoutHiddenSessions.size === 0) { onSettled?.(true); return; }
+      _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+        if (transitionId !== state.gridRelayoutTransitionId) return;
+        for (const gs of _gridRelayoutHiddenSessions) {
+          if (activeSessions.includes(gs) && gs.controller) {
+            try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
+          }
+        }
+        _gridRelayoutRevealRaf = requestAnimationFrame(() => {
+          if (transitionId !== state.gridRelayoutTransitionId) return;
+          _gridRelayoutRevealRaf = null;
+          for (const gs of _gridRelayoutHiddenSessions) {
+            gs._cellElement?.classList.remove("transitioning");
+          }
+          _gridRelayoutHiddenSessions.clear();
+          onSettled?.(true);
+        });
+      });
+    };
+    const orderedSettlements: Promise<OrderedResizeSettlement>[] = [];
     for (const gs of cells) {
       if (!activeSessions.includes(gs) || !gs.controller) continue;
-      try { gs.controller.resize(); } catch (e) { console.warn("[grid] cell resize failed:", e); }
-    }
-    if (_gridRelayoutHiddenSessions.size === 0) return;
-    _gridRelayoutRevealRaf = requestAnimationFrame(() => {
-      for (const gs of _gridRelayoutHiddenSessions) {
-        if (activeSessions.includes(gs) && gs.controller) {
-          try { gs.controller.forceRepaint(); } catch (e) { console.warn("[grid] cell repaint failed:", e); }
+      const controller = gs.controller;
+      const supportsOrderedResize = controller.supportsOrderedResize;
+      try {
+        const settlement = controller.resize();
+        if (supportsOrderedResize) {
+          orderedSettlements.push(Promise.resolve(settlement).then((outcome) => {
+            return outcome === "acknowledged" || outcome === "cancelled" ? outcome : "cancelled";
+          }, (error: unknown) => {
+            console.warn("[grid] cell resize settlement failed:", error);
+            return "cancelled" as const;
+          }));
         }
+      } catch (error: unknown) {
+        console.warn("[grid] cell resize failed:", error);
+        if (supportsOrderedResize) orderedSettlements.push(Promise.resolve("cancelled"));
       }
-      _gridRelayoutRevealRaf = requestAnimationFrame(() => {
-        _gridRelayoutRevealRaf = null;
-        for (const gs of _gridRelayoutHiddenSessions) {
-          gs._cellElement?.classList.remove("transitioning");
-        }
-        _gridRelayoutHiddenSessions.clear();
-      });
+    }
+    if (orderedSettlements.length === 0) {
+      revealAfterRepaint();
+      return;
+    }
+    void Promise.all(orderedSettlements).then((outcomes) => {
+      if (transitionId !== state.gridRelayoutTransitionId) return;
+      if (outcomes.some((outcome) => outcome === "cancelled")) {
+        onSettled?.(false);
+        return;
+      }
+      revealAfterRepaint();
     });
   });
 }
@@ -933,17 +1037,19 @@ export function revealGridCellsWithoutResize() {
   }
 }
 
-export function scheduleGridStabilizedFit() {
+export function scheduleGridStabilizedFit(onSettled?: (acknowledged: boolean) => void) {
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
     scheduleGridRelayoutFit(
       state.delegationGridSessions,
       true,
       "delegation-grid-container",
       state.delegationGridSessions,
+      onSettled,
     );
     return;
   }
-  if (isGridActive()) scheduleGridRelayoutFit(state.gridSessions, true);
+  if (isGridActive()) scheduleGridRelayoutFit(state.gridSessions, true, "desktop-grid-container", state.gridSessions, onSettled);
+  else onSettled?.(true);
 }
 
 function isSessionVisibleInDelegationGrid(session, machine): boolean {
@@ -957,7 +1063,7 @@ export function isSessionInGrid(session, machine) {
   if (state.activeDelegationRoot) {
     return isSessionVisibleInDelegationGrid(session, machine);
   }
-  const sessions = state.gridSessions.length >= 2 ? state.gridSessions : state.preservedGridSessions;
+  const sessions = isGridActive() ? state.gridSessions : state.preservedGridSessions;
   return sessions.some(gs => gs.session === session && (gs.machine || "") === (machine || ""));
 }
 

@@ -74,6 +74,7 @@ export function createTerminalResizeLifecycle(
     if (layoutSyncFrame !== null) options.scheduler.cancelFrame(layoutSyncFrame);
     layoutSyncFrame = options.scheduler.requestFrame(() => {
       layoutSyncFrame = null;
+      if (options.shouldSuppressContainerResize()) return;
       options.syncLayout(CONTAINER_RESIZE_SYNC_OPTIONS);
     });
   };

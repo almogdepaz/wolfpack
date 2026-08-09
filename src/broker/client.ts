@@ -182,6 +182,11 @@ export class BrokerClient {
   /** Sessions the caller has asked us to subscribe to. Re-issued on reconnect. */
   private readonly activeSubscriptions = new Set<string>();
   private readonly pendingSubscriptions = new Map<string, Promise<ControlResponse>>();
+  /** Deferred detaches awaiting an in-flight subscribe response. A new
+   *  subscriber cancels the detach so the broker stream remains active. */
+  private readonly pendingUnsubscribes = new Map<string, Promise<void>>();
+  /** Explicit failed-subscription teardowns, superseded by a replacement subscribe. */
+  private readonly pendingSubscriptionCancellations = new Map<string, symbol>();
   /** Last observed output seq per active session (used for reconnect replay). */
   private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
   /** Exit events held until their final output watermark has been delivered. */
@@ -225,6 +230,8 @@ export class BrokerClient {
     this.activeSubscriptions.clear();
     this.activeSubscriptionSeq.clear();
     this.pendingSubscriptions.clear();
+    this.pendingUnsubscribes.clear();
+    this.pendingSubscriptionCancellations.clear();
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
@@ -409,9 +416,11 @@ export class BrokerClient {
     if (this.state !== "connected") {
       throw new BrokerNotConnectedError();
     }
-    const pending = this.pendingSubscriptions.get(sessionId);
-    if (pending) return pending;
-
+    // A new consumer replaces a detach that was waiting for the initial
+    // subscribe RPC. Without this cancellation, the stale detach can clear
+    // the shared stream after this caller reuses the in-flight subscription.
+    this.pendingUnsubscribes.delete(sessionId);
+    this.pendingSubscriptionCancellations.delete(sessionId);
     this.activeSubscriptions.add(sessionId);
     if (opts.sinceSeq !== undefined) {
       // Take max(prev, sinceSeq): never lower the floor below what we've
@@ -425,6 +434,9 @@ export class BrokerClient {
     } else if (!this.activeSubscriptionSeq.has(sessionId)) {
       this.activeSubscriptionSeq.set(sessionId, undefined);
     }
+
+    const pending = this.pendingSubscriptions.get(sessionId);
+    if (pending) return pending;
 
     const attempt = this.issueSubscribe(sessionId, opts)
       .catch((error: unknown) => {
@@ -450,11 +462,62 @@ export class BrokerClient {
     opts: { timeoutMs?: number } = {},
   ): Promise<void> {
     const wasActive = this.activeSubscriptions.has(sessionId);
+    if (!wasActive || this.state === "closed") return;
+
+    const pending = this.pendingSubscriptions.get(sessionId);
+    if (pending) {
+      let deferred!: Promise<void>;
+      deferred = pending.catch(() => undefined).then(async () => {
+        if (this.pendingUnsubscribes.get(sessionId) !== deferred) return;
+        this.pendingUnsubscribes.delete(sessionId);
+        await this.unsubscribe(sessionId, opts);
+      });
+      this.pendingUnsubscribes.set(sessionId, deferred);
+      await deferred;
+      return;
+    }
+
     this.clearSubscriptionState(sessionId);
-    if (this.state === "closed") return;
-    if (!wasActive) return;
     if (this.state !== "connected") return;
     await this.request("unsubscribe", { session_id: sessionId }, opts);
+  }
+
+  /**
+   * Cancel a failed logical subscription. Unlike {@link unsubscribe}, this
+   * clears reconnect state even when the failed subscribe never marked the
+   * session active, and still sends a remote detach when connected.
+   */
+  async cancelSubscription(
+    sessionId: string,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<void> {
+    const cancellation = Symbol("subscription cancellation");
+    this.pendingSubscriptionCancellations.set(sessionId, cancellation);
+    this.pendingUnsubscribes.delete(sessionId);
+    this.clearSubscriptionState(sessionId);
+    try {
+      const pending = this.pendingSubscriptions.get(sessionId);
+      if (pending) await pending.catch(() => undefined);
+      if (this.pendingSubscriptionCancellations.get(sessionId) !== cancellation) return;
+      if (this.state !== "connected") return;
+      await this.request("unsubscribe", { session_id: sessionId }, opts);
+    } catch (error: unknown) {
+      // A failed forced unsubscribe leaves the broker's connection-local
+      // forwarder live. Only this still-current cancellation may fail-close
+      // the transport; a replacement subscribe has revoked that authority.
+      if (
+        this.pendingSubscriptionCancellations.get(sessionId) === cancellation
+        && this.state === "connected"
+        && this.socket
+      ) {
+        this.socket.destroy(toError(error));
+      }
+      throw error;
+    } finally {
+      if (this.pendingSubscriptionCancellations.get(sessionId) === cancellation) {
+        this.pendingSubscriptionCancellations.delete(sessionId);
+      }
+    }
   }
 
   /** True iff this session is in the active-subscriptions set. */

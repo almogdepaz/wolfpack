@@ -1606,6 +1606,7 @@ body.no-animations, body.no-animations * {
   height: auto;
 }
 /* Auto-layout classes set by JS */
+#desktop-grid-container.grid-1 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 #desktop-grid-container.grid-2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
 #desktop-grid-container.grid-3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
 #desktop-grid-container.grid-3 .grid-cell:last-child { grid-column: 1 / -1; }
