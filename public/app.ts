@@ -205,10 +205,13 @@ const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
 });
 
 let ghosttyLoadPromise: Promise<void> | null = null;
+let ghosttyRendererReady = false;
 
 function ensureGhosttyLoaded(): Promise<void> {
   if (typeof window.Terminal === "function" && typeof window.FitAddon === "function") {
-    return window.ghosttyReady?.then(() => undefined) ?? Promise.resolve();
+    return (window.ghosttyReady ?? Promise.resolve()).then(() => {
+      ghosttyRendererReady = true;
+    });
   }
   if (ghosttyLoadPromise) return ghosttyLoadPromise;
   ghosttyLoadPromise = new Promise<void>((resolve, reject) => {
@@ -219,7 +222,10 @@ function ensureGhosttyLoaded(): Promise<void> {
     script.async = true;
     script.onload = () => {
       const ready = window.ghosttyReady ?? Promise.resolve();
-      ready.then(() => resolve(), reject);
+      ready.then(() => {
+        ghosttyRendererReady = true;
+        resolve();
+      }, reject);
     };
     script.onerror = () => reject(new Error("Failed to load terminal renderer"));
     document.head.appendChild(script);
@@ -232,6 +238,10 @@ function ensureGhosttyLoaded(): Promise<void> {
 
 function canUseWasmTerminal(): boolean {
   return !window.wasmFailed;
+}
+
+function ensureGridIsolation(): Promise<boolean> {
+  return ensureGhosttyLoaded().then(() => typeof window.createIsolatedGhostty === "function");
 }
 
 function scheduleGhosttyPrewarm(): void {
@@ -4229,6 +4239,16 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
   document.getElementById("msg-preview").style.display = "none";
 
   _tcState = { displaced: false, autoTakeControl: false };
+  let hydrated = false;
+  let mobilePostMountReady = !isMobile;
+  let terminalMarkedLive = false;
+  const markTerminalLive = () => {
+    if (!hydrated || !mobilePostMountReady || terminalMarkedLive) return;
+    terminalMarkedLive = true;
+    slowLoad.stop();
+    setTerminalLoadVisualState(container, "live");
+    scheduleGhosttyPrewarm();
+  };
   let _cachedPendingReset = showCachedPlaceholder;
   // Cached placeholders are currently disabled for solo full because stale
   // plaintext can flash at the wrong width before broker prefill hydrates.
@@ -4360,9 +4380,8 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       slowLoad.start("hydrating terminal");
     },
     onHydrated: () => {
-      slowLoad.stop();
-      setTerminalLoadVisualState(container, "live");
-      scheduleGhosttyPrewarm();
+      hydrated = true;
+      markTerminalLive();
     },
   });
 
@@ -4394,7 +4413,12 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
   if (window.visualViewport && isMobile) {
     const vvHandler = () => {
       if (!window.visualViewport) return;
-      const kbHeight = keyboardOcclusionHeight(window.innerHeight, window.visualViewport);
+      const kbHeight = keyboardOcclusionHeight(window.innerHeight, {
+        height: window.visualViewport.height,
+        // Browsers always provide offsetTop; use zero for incomplete viewport
+        // implementations so keyboard resize handling still fails safely.
+        offsetTop: window.visualViewport.offsetTop ?? 0,
+      });
       const kbOpen = kbHeight > 150;
       // Shift terminal sub-elements without changing their layout height.
       // ghostty-web sees no container resize → no reflow → no scroll-through.
@@ -4411,6 +4435,10 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
     vvHandler();
   }
 
+  // Hydration can complete while mount awaits Ghostty. Do not expose a live
+  // terminal on mobile until its visual viewport handlers are ready.
+  mobilePostMountReady = true;
+  markTerminalLive();
   connectDesktopWs();
 }
 
@@ -6133,6 +6161,8 @@ initGridDeps({
   createPtyTerminalController, createConflictOverlay,
   showNotice: (title, message) => { void showAppDialog({ title, message, confirmLabel: "Close", cancelLabel: null }); },
   canUseWasmTerminal,
+  isGhosttyRendererReady: () => ghosttyRendererReady,
+  ensureGridIsolation,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });

@@ -41,7 +41,7 @@ async function loadApp(page: Page) {
  * Inject two fake grid sessions into page state without going through the PTY
  * layer. `controller: null` is intentional — dispose() is guarded.
  */
-async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>> {
+async function routeHydratedPty(page: Page, ptyReadyGate?: Promise<void>): Promise<Map<string, WebSocketRoute>> {
   const sockets = new Map<string, WebSocketRoute>();
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     const session = new URL(ws.url()).searchParams.get("session") ?? "";
@@ -56,7 +56,11 @@ async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>
         ws.send(JSON.stringify({ type: "prefill_viewport" }));
       }
       ws.send(JSON.stringify({ type: "prefill_done" }));
-      ws.send(JSON.stringify({ type: "pty_ready" }));
+      if (ptyReadyGate) {
+        void ptyReadyGate.then(() => ws.send(JSON.stringify({ type: "pty_ready" })));
+      } else {
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+      }
     });
   });
   return sockets;
@@ -224,6 +228,67 @@ test("addToGrid from terminal view shows grid loading immediately", async ({ pag
   for (const cell of cellStates) {
     expect(cell.loading || cell.hydrating).toBe(true);
   }
+});
+
+test("lazy renderer topology rerender keeps one controller per grid session", async ({ page }) => {
+  let releaseRenderer: () => void;
+  const rendererHeld = new Promise<void>((resolve) => { releaseRenderer = resolve; });
+  await page.route("**/ghostty-web.bundle.js*", async (route) => {
+    const response = await route.fetch();
+    const bundle = await response.text();
+    await rendererHeld;
+    await route.fulfill({
+      response,
+      body: `${bundle}\nwindow.__ghosttyTerminalCreations = 0;\nconst OriginalTerminal = window.Terminal;\nwindow.Terminal = class extends OriginalTerminal {\n  constructor(...args) { window.__ghosttyTerminalCreations++; super(...args); }\n};`,
+    });
+  });
+
+  const attachCounts = new Map<string, number>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      attachCounts.set(session, (attachCounts.get(session) ?? 0) + 1);
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+
+  await loadApp(page);
+  await page.evaluate(() => {
+    // @ts-ignore
+    state.currentSession = "test-project";
+    // @ts-ignore
+    state.currentMachine = "";
+    // @ts-ignore
+    showView("terminal", true);
+    // @ts-ignore
+    addToGrid("another-project", "");
+    // Re-render the two pending cells while the lazy renderer is unresolved.
+    // @ts-ignore
+    addToGrid("third-project", "");
+  });
+
+  releaseRenderer!();
+  await expect.poll(() => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.every((session) => session.controller?.isConnected);
+  }), { timeout: 5000 }).toBe(true);
+
+  expect(await page.locator("#desktop-grid-container .grid-cell").count()).toBe(3);
+  expect(await page.evaluate(() => {
+    return (window as unknown as { __ghosttyTerminalCreations: number }).__ghosttyTerminalCreations;
+  })).toBe(3);
+  expect([...attachCounts.entries()].sort()).toEqual([
+    ["another-project", 1],
+    ["test-project", 1],
+    ["third-project", 1],
+  ]);
 });
 
 test("grid topology add hides existing canvases until relayout repaint completes", async ({ page }) => {
@@ -922,6 +987,8 @@ test("re-adding the remaining preserved session from settings reinitializes term
 // #0a0a0a fillRect (app.ts:1006-1011) sticks until something forces a render.
 
 test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }) => {
+  let releasePtyReady: () => void;
+  const ptyReadyGate = new Promise<void>((resolve) => { releasePtyReady = resolve; });
   await loadApp(page);
 
   // Open a single terminal first so addToGrid promotes single→grid (2 cells).
@@ -941,13 +1008,18 @@ test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }
     return !!state.terminalController?.term;
   }), { timeout: 5000 }).toBe(true);
 
-  // addToGrid synchronously creates both controllers (mountGridController
-  // assigns gs.controller before its first await — see app-grid.ts:135 + 196).
-  // Wrapping forceRepaint immediately after the call wins the race vs the
-  // WS pty_ready round-trip.
+  // Controller creation awaits lazy renderer isolation. Gate pty_ready so
+  // every controller gets its spy before the event can trigger a repaint.
+  await routeHydratedPty(page, ptyReadyGate);
   await page.evaluate(() => {
     // @ts-ignore
     addToGrid("another-project", "");
+  });
+  await expect.poll(async () => page.evaluate(() => {
+    // @ts-ignore
+    return state.gridSessions.length === 2 && state.gridSessions.every((gs) => !!gs.controller);
+  }), { timeout: 5000 }).toBe(true);
+  await page.evaluate(() => {
     // @ts-ignore
     state.gridSessions.forEach((gs) => {
       gs._forceRepaintCount = 0;
@@ -955,8 +1027,9 @@ test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }
       gs.controller.forceRepaint = () => { gs._forceRepaintCount++; orig(); };
     });
   });
+  releasePtyReady!();
 
-  // Wait for WS handshake + pty_ready on every cell.
+  // Wait for gated WS handshake + pty_ready on every cell.
   await expect.poll(async () => page.evaluate(() => {
     // @ts-ignore
     return state.gridSessions.every((gs) => !!gs.controller?.isConnected);

@@ -48,6 +48,7 @@ interface GridSession {
   _statusLabel?: string;
   _idle?: boolean;
   _collapsed?: boolean;
+  _gridIsolationFailed?: boolean;
   [field: string]: unknown;
 }
 
@@ -71,11 +72,15 @@ interface GridDeps {
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   showNotice: (title: string, message: string) => void;
   canUseWasmTerminal?: () => boolean;
+  isGhosttyRendererReady?: () => boolean;
+  ensureGridIsolation?: () => Promise<boolean>;
   focusDelegationSession?: (session: string, machine: string) => void;
   leaveDelegationWorkspace?: () => void;
 }
 
 let deps: GridDeps;
+let reportedGridIsolationFailure = false;
+const pendingGridMountCells = new WeakMap<GridSession, HTMLElement>();
 
 export function initGridDeps(d: GridDeps) {
   deps = d;
@@ -123,8 +128,10 @@ export function canOpenMultiTerminalGrid(): boolean {
   // Without per-Terminal WASM isolation, all grid cells share one
   // WebAssembly.Memory. Concurrent fit()/write() across cells produce
   // out-of-bounds memory accesses that crash every terminal in the tab.
-  // Refuse to enter grid mode in that state and surface a visible warning.
-  if (typeof window.createIsolatedGhostty !== "function") {
+  // A missing factory before the lazy renderer resolves is expected. Once the
+  // renderer has resolved, though, its absence means this bundle is unsafe for
+  // concurrent terminals and must remain blocked.
+  if (deps.isGhosttyRendererReady?.() && typeof window.createIsolatedGhostty !== "function") {
     console.error("[grid] createIsolatedGhostty unavailable — grid mode disabled to prevent WASM OOB crash. Reload to pick up a newer ghostty-web bundle.");
     deps.showNotice(
       "Grid mode unavailable",
@@ -228,10 +235,46 @@ function createGridCell(gs: GridSession, idx: number): HTMLElement {
   return cell;
 }
 
+function ownsGridMount(gs: GridSession, cell: HTMLElement): boolean {
+  return !gs._collapsed && pendingGridMountCells.get(gs) === cell &&
+    sessionsForGridSession(gs).includes(gs) && gs._cellElement === cell && cell.parentNode !== null;
+}
+
+function clearPendingGridMount(gs: GridSession, cell: HTMLElement): void {
+  if (pendingGridMountCells.get(gs) === cell) pendingGridMountCells.delete(gs);
+}
+
 async function mountGridController(gs, cell, idx) {
-  if (gs.controller) return; // already mounted
+  if (gs.controller || pendingGridMountCells.get(gs) !== cell) return;
+  let hasGridIsolation = true;
+  try {
+    hasGridIsolation = deps.ensureGridIsolation ? await deps.ensureGridIsolation() : true;
+  } catch (error) {
+    console.error("[grid] Ghostty renderer failed before isolation could be verified:", error);
+    hasGridIsolation = false;
+  }
+  // Lazy renderer resolution yields control to topology changes. Only the
+  // cell that still owns this logical session may create or activate a PTY.
+  if (!ownsGridMount(gs, cell)) {
+    clearPendingGridMount(gs, cell);
+    return;
+  }
+  if (!hasGridIsolation) {
+    clearPendingGridMount(gs, cell);
+    gs._gridIsolationFailed = true;
+    gs._slowLoad?.stop();
+    setTerminalLoadVisualState(cell, "failed");
+    if (!reportedGridIsolationFailure) {
+      reportedGridIsolationFailure = true;
+      deps.showNotice(
+        "Grid mode unavailable",
+        "Grid mode is disabled in this tab. The terminal WASM bundle does not support per-cell isolation, which is required to safely show multiple terminals at once. Reload the page to pick up a fresh bundle.",
+      );
+    }
+    return;
+  }
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
-  gs.controller = deps.createPtyTerminalController({
+  const controller = deps.createPtyTerminalController({
     session: gs.session,
     machine: gs.machine || "",
     fontSize: Math.max(tp.fontSize - 2, 10),
@@ -334,8 +377,23 @@ async function mountGridController(gs, cell, idx) {
       setTerminalLoadVisualState(cell, "live");
     },
   });
+  gs.controller = controller;
   delete gs._resetPty;
-  await gs.controller.mount(cell);
+  try {
+    await controller.mount(cell, {});
+  } catch (error) {
+    clearPendingGridMount(gs, cell);
+    if (gs.controller === controller) gs.controller = null;
+    controller.dispose();
+    throw error;
+  }
+  if (!ownsGridMount(gs, cell) || gs.controller !== controller) {
+    clearPendingGridMount(gs, cell);
+    controller.dispose();
+    if (gs.controller === controller) gs.controller = null;
+    return;
+  }
+  clearPendingGridMount(gs, cell);
   gs._needsConnect = true;
 }
 
@@ -352,16 +410,19 @@ function renderGridSessionCells(
   const existingCellSessions: GridSession[] = [];
   let topologyChanged = false;
   sessions.forEach((gs, idx) => {
-    if (gs._cellElement && gs._cellElement.parentNode === container && gs.controller) {
+    if (gs._cellElement && gs._cellElement.parentNode === container && (
+      !!gs.controller || pendingGridMountCells.get(gs) === gs._cellElement || gs._gridIsolationFailed
+    )) {
       gs._cellElement.dataset.gridIndex = String(idx);
       gs._cellElement.classList.toggle("grid-focused", idx === focusIndex);
       const wasCollapsed = gs._cellElement.classList.contains("collapsed");
       gs._cellElement.classList.toggle("collapsed", !!gs._collapsed);
       if (wasCollapsed !== !!gs._collapsed) topologyChanged = true;
-      if (gs._collapsed && gs.controller) {
+      if (gs._collapsed) {
+        clearPendingGridMount(gs, gs._cellElement);
         clearGridCellTakeControlTimer(gs);
         gs._slowLoad?.stop();
-        gs.controller.dispose();
+        gs.controller?.dispose();
         gs.controller = null;
         gs._loading = false;
       }
@@ -385,6 +446,7 @@ function renderGridSessionCells(
         gs._slowLoad?.stop();
         return;
       }
+      pendingGridMountCells.set(gs, cell);
       void mountGridController(gs, cell, idx).then(() => {
         if (!sessionsForGridSession(gs).includes(gs)) return;
         if (gs._cellElement !== cell || cell.parentNode !== container) return;
@@ -394,6 +456,8 @@ function renderGridSessionCells(
         }
         setGridCellLoading(gs, false);
       }).catch(err => {
+        if (!sessionsForGridSession(gs).includes(gs)) return;
+        if (gs._cellElement !== cell || cell.parentNode !== container) return;
         setGridCellLoading(gs, false);
         gs._slowLoad?.stop();
         setTerminalLoadVisualState(cell, "failed");

@@ -497,11 +497,13 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
 
   const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  const sockets = await routeHydratedPty(page);
   await page.route("**/api/sessions", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         sessions: [
+          { name: "solo", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "solo-id", wolfpackSessionName: "solo" } },
           { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
           { name: "child", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
         ],
@@ -510,6 +512,12 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   });
   await page.goto(srv.baseUrl);
   await page.evaluate(() => {
+    (window as unknown as WolfpackTestWindow).openSession("solo", "");
+  });
+  await expect.poll(() => sockets.has("solo")).toBe(true);
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await page.evaluate(() => {
+    (window as unknown as Window & { backToSessions(): void }).backToSessions();
     (window as unknown as Window & { createIsolatedGhostty?: unknown }).createIsolatedGhostty = undefined;
   });
 
