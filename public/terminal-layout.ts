@@ -17,15 +17,18 @@ export interface TerminalLayoutTerm {
     ) => void;
   };
   getScrollbackLength?(): number;
+  resize?(cols: number, rows: number): void;
   scrollToLine(line: number): void;
 }
 
 export interface TerminalFitAddon {
+  proposeDimensions?(): TerminalDimensions | undefined;
   fit(): void;
 }
 
 export interface TerminalResizeClient {
-  sendFitResize(options: { readonly force: boolean; readonly fit: boolean }): void;
+  readonly supportsOrderedResize: boolean;
+  sendResize(cols: number, rows: number): Promise<void>;
 }
 
 export interface TerminalDimensions {
@@ -74,6 +77,28 @@ export function fitTerminalPreservingScroll(
   return dimensions;
 }
 
+/** Commits broker-acknowledged dimensions while preserving scroll position. */
+export function commitTerminalResizePreservingScroll(
+  term: TerminalLayoutTerm | null,
+  dimensions: TerminalDimensions,
+): boolean {
+  if (!term || dimensions.cols < 1 || dimensions.rows < 1 || !term.resize) return false;
+  const before = { cols: term.cols, rows: term.rows };
+  if (before.cols === dimensions.cols && before.rows === dimensions.rows) return false;
+
+  const viewportY = term.viewportY ?? 0;
+  const oldScrollbackLength = term.getScrollbackLength?.() ?? 0;
+  const wasAtBottom = viewportY === 0;
+  term.resize(dimensions.cols, dimensions.rows);
+
+  if (!wasAtBottom && viewportY > 0) {
+    const newScrollbackLength = term.getScrollbackLength?.() ?? oldScrollbackLength;
+    const target = Math.max(0, newScrollbackLength - (oldScrollbackLength - viewportY));
+    try { term.scrollToLine(target); } catch {}
+  }
+  return true;
+}
+
 /**
  * Forces a renderer pass when a fit keeps the same terminal dimensions.
  * Ghostty's public resize/fit paths skip same-size repaints, so this calls the
@@ -86,24 +111,32 @@ export function forceTerminalRepaint(term: TerminalLayoutTerm | null): void {
   } catch {}
 }
 
-/** Fits, repaints when needed, and forwards a changed terminal size to the PTY. */
-export function syncTerminalLayout(options: SyncTerminalLayoutOptions): boolean {
+/** Fits, repaints when needed, and resolves after the active resize settles. */
+export function syncTerminalLayout(options: SyncTerminalLayoutOptions): Promise<void> {
   const { term, fitAddon } = options;
-  if (!term || !fitAddon) return false;
+  if (!term || !fitAddon) return Promise.resolve();
 
   const before = { cols: term.cols, rows: term.rows };
+  const proposed = options.ptyClient?.supportsOrderedResize
+    ? fitAddon.proposeDimensions?.()
+    : undefined;
+  if (options.ptyClient && proposed) {
+    const dimensionsChanged = shouldSendResizeAfterGridFit(before, proposed);
+    return dimensionsChanged
+      ? options.ptyClient.sendResize(proposed.cols, proposed.rows)
+      : Promise.resolve();
+  }
+
   const after = fitTerminalPreservingScroll(options);
-  if (!after) return false;
+  if (!after) return Promise.resolve();
 
   if (shouldForceRepaintAfterFit(before, after, options.repaint)) {
     forceTerminalRepaint(term);
   }
 
   const dimensionsChanged = shouldSendResizeAfterGridFit(before, after);
-  if (options.ptyClient && dimensionsChanged) {
-    options.ptyClient.sendFitResize({ force: options.forceSend, fit: false });
-  }
   if (dimensionsChanged) options.onDimensionsChanged?.();
-
-  return dimensionsChanged;
+  return options.ptyClient && dimensionsChanged
+    ? options.ptyClient.sendResize(after.cols, after.rows)
+    : Promise.resolve();
 }

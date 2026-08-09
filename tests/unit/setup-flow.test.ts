@@ -7,7 +7,8 @@ const root = process.cwd();
 const temporaryHomes: string[] = [];
 
 interface TailscaleFixture {
-  readonly hostname: string;
+  readonly hostname?: string;
+  readonly selfStatus?: string;
   readonly serveStatus: Record<string, unknown>;
   readonly previousHostname?: string;
 }
@@ -15,6 +16,7 @@ interface TailscaleFixture {
 interface SetupFlowFixture {
   readonly tailscale?: TailscaleFixture;
   readonly failsTailscaleInstallation?: boolean;
+  readonly serviceRunning?: boolean;
 }
 
 interface SetupFlowResult {
@@ -46,7 +48,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
           return childProcess.execSync(command, options);
         },
         execFileSync: (_file, args) => {
-          if (args[0] === "status") return JSON.stringify({ Self: { DNSName: fixture.tailscale.hostname + "." } });
+          if (args[0] === "status") return fixture.tailscale.selfStatus ?? JSON.stringify({ Self: { DNSName: fixture.tailscale.hostname + "." } });
           if (args[0] === "serve" && args[1] === "status") return JSON.stringify(fixture.tailscale.serveStatus);
           return "";
         },
@@ -78,6 +80,14 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
       tailscaleBin: () => fixture?.tailscale ? "tailscale" : null,
     }));
+    if (fixture?.serviceRunning) {
+      const service = await import("./src/cli/service.ts");
+      await mock.module("./src/cli/service.js", () => ({
+        ...service,
+        isServiceRunning: () => true,
+        serviceRestart: (options) => console.log("SERVICE_RESTART=" + JSON.stringify(options)),
+      }));
+    }
 
     const { setup } = await import("./src/cli/setup.ts");
     await setup();
@@ -179,6 +189,37 @@ describe("first-run setup", () => {
     expect(result.stdout).toContain("Phone and remote access stay unavailable");
   });
 
+  test("keeps setup local-only for logged-out or malformed Tailscale identity states", () => {
+    for (const [selfStatus, message] of [
+      [JSON.stringify({ Self: {} }), "Tailscale is not signed in"],
+      ["not json", "Tailscale returned malformed identity data"],
+    ] as const) {
+      const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+      temporaryHomes.push(home);
+      const configPath = join(home, ".wolfpack", "config.json");
+      const result = runSetupFlow(home, { tailscale: { selfStatus, serveStatus: {} } });
+
+      expectSuccessfulSetup(result);
+      expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({ devDir: join(home, "Dev"), port: 18790 });
+      expect(result.stdout).toContain(message);
+      expect(result.stdout).not.toContain("Remote:");
+    }
+  });
+
+  test("refreshes only the running server after verified remote readiness changes", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const hostname = "new.tailnet.ts.net";
+    const result = runSetupFlow(home, { tailscale: {
+      hostname,
+      previousHostname: "stale.tailnet.ts.net",
+      serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
+    }, serviceRunning: true });
+
+    expectSuccessfulSetup(result);
+    expect(result.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
+  });
+
   test("does not retain an unverified remote URL from an earlier setup", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
     temporaryHomes.push(home);
@@ -195,7 +236,7 @@ describe("first-run setup", () => {
       devDir: join(home, "Dev"),
       port: 18790,
     });
-    expect(result.stdout).toContain("Tailscale serve was not verified");
+    expect(result.stdout).toContain("Tailscale Serve could not be structurally verified");
     expect(result.stdout).not.toContain("Remote: https://stale.tailnet.ts.net");
   });
 });

@@ -18,6 +18,14 @@ import {
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
 } from "../../src/session-prompt-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../../src/validation.ts";
+import {
+  createTailnetOriginServerFixture,
+  getTailnetReadyPort,
+  TAILNET_ORIGIN_IPC_MESSAGE_TYPE,
+  TAILNET_REJECTED_ORIGINS,
+  TAILNET_SIBLING_ORIGIN,
+} from "./tailnet-origin-fixture.ts";
+import type { TailnetOriginServerFixture } from "./tailnet-origin-fixture.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
@@ -2336,6 +2344,35 @@ describe("body > 64KB", () => {
 });
 
 describe("CORS", () => {
+  let tailnetServer: TailnetOriginServerFixture;
+
+  test("accepts only an exact structured ready envelope with a valid integer port", () => {
+    expect(getTailnetReadyPort({ type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: 1 })).toBe(1);
+    expect(getTailnetReadyPort({ type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: 65535 })).toBe(65535);
+
+    for (const message of [
+      "xREADY:70000\n",
+      { type: "READY", port: 3000 },
+      { type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: "3000" },
+      { type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: 0 },
+      { type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: 65536 },
+      { type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: 3000.5 },
+      { type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY, port: NaN },
+      { port: 3000 },
+      { type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.READY },
+    ]) {
+      expect(getTailnetReadyPort(message), JSON.stringify(message)).toBeUndefined();
+    }
+  });
+
+  beforeAll(async () => {
+    tailnetServer = await createTailnetOriginServerFixture();
+  });
+
+  afterAll(async () => {
+    await tailnetServer.stop();
+  });
+
   test("allowed origin gets CORS headers", async () => {
     const res = await get("/api/info", { Origin: base });
     expect(res.status).toBe(200);
@@ -2343,11 +2380,30 @@ describe("CORS", () => {
     expect(res.headers.get("vary")).toBe("Origin");
   });
 
-  test("rejected origin gets 403", async () => {
-    const res = await get("/api/info", { Origin: "https://evil.com" });
-    expect(res.status).toBe(403);
-    const data = await res.json();
-    expect(data.error).toBe("origin not allowed");
+  test("configured sibling Tailnet origin reaches the route with a reflected allow-origin", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, { headers: { Origin: TAILNET_SIBLING_ORIGIN } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ name: expect.any(String), version: pkg.version });
+    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
+  test("Tailscale Serve recovery reflects a canonical sibling Referer for GET", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      headers: {
+        "Tailscale-User-Login": "user@example.com",
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control`,
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
+  test("foreign and lookalike origins get 403", async () => {
+    for (const origin of TAILNET_REJECTED_ORIGINS) {
+      const res = await fetch(`${tailnetServer.base}/api/info`, { headers: { Origin: origin } });
+      expect(res.status, origin).toBe(403);
+      expect((await res.json()).error, origin).toBe("origin not allowed");
+    }
   });
 
   test("no origin header → no CORS headers, request proceeds", async () => {
@@ -2366,6 +2422,42 @@ describe("CORS", () => {
     expect(res.headers.get("access-control-allow-methods")).toBe(
       "GET, POST, OPTIONS",
     );
+  });
+
+  test("OPTIONS preflight from a configured sibling Tailnet origin → 204 with reflected allow-origin", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      method: "OPTIONS",
+      headers: { Origin: TAILNET_SIBLING_ORIGIN },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
+  test("Tailscale Serve recovery reflects a canonical sibling Referer for OPTIONS", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      method: "OPTIONS",
+      headers: {
+        "Tailscale-User-Login": "user@example.com",
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control`,
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+  });
+
+  test("Tailscale Serve recovery ignores missing login, forwarded, foreign, and lookalike headers", async () => {
+    const rejectedHeaders: readonly Record<string, string>[] = [
+      { Referer: `${TAILNET_SIBLING_ORIGIN}/control` },
+      { "Tailscale-User-Login": "", Referer: `${TAILNET_SIBLING_ORIGIN}/control` },
+      { "Tailscale-User-Login": "user@example.com", Referer: "https://evil.example/control" },
+      { "Tailscale-User-Login": "user@example.com", Referer: "https://phone.tailnet.ts.net.evil.example/control" },
+      { "Tailscale-User-Login": "user@example.com", "X-Forwarded-Host": "phone.tailnet.ts.net" },
+    ];
+    for (const headers of rejectedHeaders) {
+      const res = await fetch(`${tailnetServer.base}/api/info`, { headers });
+      expect(res.status, JSON.stringify(headers)).toBe(200);
+      expect(res.headers.get("access-control-allow-origin"), JSON.stringify(headers)).toBeNull();
+    }
   });
 
   test("OPTIONS preflight with rejected origin → 403", async () => {

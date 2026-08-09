@@ -12,7 +12,8 @@ import {
 import {
   initGridDeps,
   isGridActive, updateGridLayout, renderGridCells, getGridCellElement,
-  hasPreservedGrid, clearPreservedGrid, setCurrentSessionFromGridFocus,
+  hasPreservedGrid, clearPreservedGrid, retireGridSessionsForMachine,
+  retirePreservedGridSessionsForMachine, setCurrentSessionFromGridFocus,
   returnToTerminalView, setGridFocus, suspendGridMode, restorePreservedGrid,
   backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
@@ -25,6 +26,12 @@ import type { DelegationGridMember } from "./app-grid";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
+import {
+  OrderedResizeTracker,
+  shouldSendResizeRequest,
+  type OrderedResizeRequest,
+  type OrderedResizeSettlement,
+} from "./ordered-resize";
 import {
   GhosttyPrewarmPool,
   scheduleGhosttyPrewarmRefill,
@@ -91,7 +98,9 @@ import {
   createTerminalConnectionLifecycle,
 } from "../src/terminal-connection-lifecycle";
 import { createAttachDimensionRetryState } from "../src/attach-dimension-retry";
+import { PTY_ATTACH_CAPABILITY } from "../src/pty-websocket-contract";
 import {
+  commitTerminalResizePreservingScroll,
   fitTerminalPreservingScroll,
   forceTerminalRepaint,
   syncTerminalLayout,
@@ -100,6 +109,20 @@ import { createTerminalResizeLifecycle } from "./terminal-resize-lifecycle";
 import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { parseSessionNotificationRoute } from "../src/session-notification-route";
+import {
+  LOCAL_MACHINE_IDENTITY,
+  TailnetPeerRegistry,
+  isStableMachineIdentity,
+  probeTailnetCandidates,
+} from "../src/tailnet-peer-registry";
+import type {
+  TailnetPeerEntry,
+  TailnetPeerIdentityReplacement,
+} from "../src/tailnet-peer-registry";
+import {
+  canonicalTailnetOrigin,
+} from "../src/tailnet-machine-contract";
+import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
 import {
   terminalDataFromBeforeInput,
@@ -117,6 +140,7 @@ const GHOSTTY_PREWARM_DELAY_MS = 0;
 const ATTACH_DIMENSION_RETRY_DELAY_MS = 50;
 const ATTACH_DIMENSION_MAX_ATTEMPTS = 20;
 const RESIZE_SEND_DEBOUNCE_MS = 120;
+const ORDERED_RESIZE_BARRIER_MAX_BYTES = 1_048_576;
 
 function safeLocalStorage(): Storage | null {
   try { return window.localStorage; }
@@ -414,13 +438,15 @@ function dismissGitStatus() {
   document.getElementById("git-status-overlay").classList.remove("visible");
 }
 
-async function fetchSessionText(session: string, machine: string): Promise<string> {
-  const path = "/api/copy-text?session=" + encodeURIComponent(session);
-  const base = machine.replace(/\/$/, "");
+async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (machineIdentity && !origin) throw new Error("selected peer is not ready");
   const headers: Record<string, string> = {};
   const jwt = localStorage.getItem("wpJwt");
-  if (jwt) headers["Authorization"] = "Bearer " + jwt;
-  const response = await fetch(base + path, { headers });
+  if (jwt) headers.Authorization = "Bearer " + jwt;
+  const response = await fetch(origin
+    ? new URL("/api/copy-text?session=" + encodeURIComponent(session), origin)
+    : "/api/copy-text?session=" + encodeURIComponent(session), { headers });
   if (!response.ok) throw new Error("HTTP " + response.status);
   return response.text();
 }
@@ -892,12 +918,14 @@ interface PtySocketClientOpts {
   readonly prefillMode?: LayoutStablePrefillMode;
   readonly takeControlOnAttach?: boolean;
   readonly getTermDimensions: () => TermDimensions | null;
+  readonly getProposedDimensions?: () => TermDimensions | null;
   readonly getLayoutMetrics?: () => TerminalLayoutMetrics | null;
   readonly fitTerminal: () => void;
   readonly onBinaryData?: (data: Uint8Array) => void;
   readonly onAttach?: () => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
   readonly onPtyReady?: () => void;
+  readonly onResizeAck?: (cols: number, rows: number) => void;
   readonly onPrefillDone?: () => void;
   readonly onViewerConflict?: () => void;
   readonly onControlGranted?: () => void;
@@ -906,6 +934,7 @@ interface PtySocketClientOpts {
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
   readonly onReconnectExhausted?: () => void;
+  readonly onRouteUnavailable?: () => void;
   readonly shouldReconnect?: () => boolean;
 }
 
@@ -913,8 +942,9 @@ interface PtySocketClient {
   connect(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
   scheduleReconnect(): void;
-  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
-  sendResize(cols: number, rows: number): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean; readonly immediate?: boolean }): Promise<OrderedResizeSettlement>;
+  sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement>;
+  readonly supportsOrderedResize: boolean;
   sendTakeControl(): void;
   send(data: string | Blob | BufferSource): void;
   close(): void;
@@ -947,18 +977,34 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
+  let _supportsOrderedResize = false;
+  let _hasAttached = false;
+  let _attachUsesProposedDimensions = false;
+  let _orderedResizeBarrier = false;
+  type DeferredOrderedResizeFrame =
+    | { readonly kind: "binary"; readonly data: ArrayBuffer; readonly bytes: number }
+    | { readonly kind: "control"; readonly message: SocketControlMessage; readonly bytes: number };
+  let _deferredOrderedResizeFrames: DeferredOrderedResizeFrame[] = [];
+  let _deferredOrderedResizeBytes = 0;
 
-  function buildUrl() {
+  type PtySocketRoute =
+    | { readonly kind: "available"; readonly url: string }
+    | { readonly kind: "unavailable" };
+
+  function buildUrl(): PtySocketRoute {
+    const session = encodeURIComponent(opts.session);
+    let baseUrl: string;
+    if (opts.machine) {
+      const origin = resolveReadyMachineOrigin(opts.machine);
+      if (!origin) return { kind: "unavailable" };
+      baseUrl = "wss://" + new URL(origin).host + "/ws/pty?session=" + session;
+    } else {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      baseUrl = proto + "//" + location.host + "/ws/pty?session=" + session;
+    }
     const resetSuffix = consumeReset ? "&reset=1" : "";
     consumeReset = false;
-    const session = encodeURIComponent(opts.session);
-    if (opts.machine) {
-      const remote = new URL(opts.machine);
-      const proto = remote.protocol === "https:" ? "wss:" : "ws:";
-      return proto + "//" + remote.host + "/ws/pty?session=" + session + resetSuffix;
-    }
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return proto + "//" + location.host + "/ws/pty?session=" + session + resetSuffix;
+    return { kind: "available", url: baseUrl + resetSuffix };
   }
 
   /** Send one attach handshake to bootstrap PTY spawn on fresh WS open. */
@@ -966,8 +1012,14 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function sendAttachHandshake() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
-    const dims = opts.getTermDimensions();
+    cancelResizeLifecycle();
+    _attachUsesProposedDimensions = _hasAttached;
+    if (!_attachUsesProposedDimensions) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = _attachUsesProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
     const dimensionAction = WP.nextAttachDimensionAction(
       dims,
       _attachDimensionRetry.attempt,
@@ -989,6 +1041,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (opts.onAttach) opts.onAttach();
     const prefillMode = _initialPrefillMode;
+    _hasAttached = true;
     _currentAttachPrefillMode = prefillMode;
     _lastSentResize = attachDims.cols + "x" + attachDims.rows;
     _awaitingAttachAck = true;
@@ -1050,20 +1103,31 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     _awaitingPrefillDone = false;
     _prefillChunks = [];
     _sawViewportPrefill = false;
+    cancelResizeLifecycle();
     if (_prefillDoneTimeout) { clearTimeout(_prefillDoneTimeout); _prefillDoneTimeout = null; }
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
   }
 
-  function sendLayoutStable(reason: "after-paint" | "immediate" = "after-paint"): void {
+  function shouldUseProposedDimensions(): boolean {
+    return _supportsOrderedResize || (_attachUsesProposedDimensions && _awaitingAttachAck);
+  }
+
+  function sendLayoutStable(
+    reason: "after-paint" | "immediate" = "after-paint",
+    forceOrderedResize = false,
+  ): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    try { opts.fitTerminal(); } catch {}
-    const dims = opts.getTermDimensions();
+    const useProposedDimensions = shouldUseProposedDimensions();
+    if (!useProposedDimensions) {
+      try { opts.fitTerminal(); } catch {}
+    }
+    const dims = useProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (key !== _lastSentResize) {
-      _lastSentResize = key;
-      ws.send(JSON.stringify({ type: "resize", cols: dims.cols, rows: dims.rows }));
-    }
+    if (forceOrderedResize) sendResizeRequest(createResizeRequest(dims));
+    else if (key !== _lastSentResize) sendResizeRequest(createResizeRequest(dims));
     ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
     const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
     __wfTraceEvent(_trace, "layout_stable.send", {
@@ -1074,51 +1138,142 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  function sendLayoutStableAfterPaint(): void {
+  function sendLayoutStableAfterPaint(forceOrderedResize = false): void {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => { sendLayoutStable("after-paint"); });
+      requestAnimationFrame(() => { sendLayoutStable("after-paint", forceOrderedResize); });
     });
   }
 
-  /** Fit terminal + send resize dimensions over the socket (debounced). */
+  /** Sends resize requests, delaying local geometry only when negotiated. */
   let _lastSentResize = "";
+  const _orderedResize = new OrderedResizeTracker();
   let _resizeDebounceTimer = null;
-  function sendFitResize(options?: { force?: boolean; fit?: boolean }) {
+  let _pendingResizeRequest: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } | null = null;
+
+  function clearQueuedResizeRequest(): void {
+    if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
+    _resizeDebounceTimer = null;
+    _pendingResizeRequest = null;
+  }
+
+  function cancelResizeLifecycle(): void {
+    clearQueuedResizeRequest();
+    _orderedResize.clear();
+    _supportsOrderedResize = false;
+    _orderedResizeBarrier = false;
+    _deferredOrderedResizeFrames = [];
+    _deferredOrderedResizeBytes = 0;
+  }
+
+  function createResizeRequest(dims: TermDimensions): OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } {
+    return _supportsOrderedResize
+      ? _orderedResize.request(dims)
+      : { type: "resize", ...dims };
+  }
+
+  function sendResizeRequest(request: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number }): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (options?.fit !== false) {
+    clearQueuedResizeRequest();
+    _lastSentResize = `${request.cols}x${request.rows}`;
+    // An ordered resize is a broker/local geometry transaction. Hold output
+    // only once the request actually leaves this socket; queued proposals may
+    // still be replaced without requiring a barrier.
+    if ("resizeId" in request) _orderedResizeBarrier = true;
+    ws.send(JSON.stringify(request));
+  }
+
+  function queueResize(dims: TermDimensions, options: { readonly force?: boolean; readonly immediate?: boolean } = {}): Promise<OrderedResizeSettlement> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
+    const key = `${dims.cols}x${dims.rows}`;
+    const pendingProposalSupersedesLastSent = _supportsOrderedResize
+      && _orderedResize.hasPending()
+      && !_orderedResize.hasPendingDimensions(dims);
+    if (!options.force && key === _lastSentResize && !pendingProposalSupersedesLastSent) {
+      if (!_supportsOrderedResize) clearQueuedResizeRequest();
+      return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+    }
+    clearQueuedResizeRequest();
+    const request = createResizeRequest(dims);
+    _pendingResizeRequest = request;
+    if (options.immediate) {
+      sendResizeRequest(request);
+    } else {
+      _resizeDebounceTimer = setTimeout(() => {
+        _resizeDebounceTimer = null;
+        const pending = _pendingResizeRequest;
+        _pendingResizeRequest = null;
+        if (!pending || !shouldSendResizeRequest(pending, _lastSentResize, options.force === true)) return;
+        sendResizeRequest(pending);
+      }, RESIZE_SEND_DEBOUNCE_MS);
+    }
+    return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+  }
+
+  function sendFitResize(options?: { force?: boolean; fit?: boolean; immediate?: boolean }): Promise<OrderedResizeSettlement> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
+    const useProposedDimensions = shouldUseProposedDimensions();
+    if (!useProposedDimensions && options?.fit !== false) {
       try { opts.fitTerminal(); } catch {}
     }
-    const dims = opts.getTermDimensions();
-    if (!dims) return;
-    const key = dims.cols + "x" + dims.rows;
-    if (!options?.force && key === _lastSentResize) return; // same dimensions, skip
-    // Debounce: collapse rapid resize calls into one
-    if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
-    _resizeDebounceTimer = setTimeout(() => {
-      _resizeDebounceTimer = null;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const d = opts.getTermDimensions();
-      if (!d) return;
-      const nextKey = d.cols + "x" + d.rows;
-      if (!options?.force && nextKey === _lastSentResize) return;
-      const msg = JSON.stringify({ type: "resize", cols: d.cols, rows: d.rows });
-      _lastSentResize = nextKey;
-      ws.send(msg);
-    }, RESIZE_SEND_DEBOUNCE_MS);
+    const dims = useProposedDimensions
+      ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
+      : opts.getTermDimensions();
+    if (!dims) return Promise.resolve("cancelled");
+    return queueResize(dims, options);
   }
 
   type SocketControlMessage = Readonly<Record<string, unknown>> & { readonly type: string };
   type SocketControlHandler = (message: SocketControlMessage) => void;
 
-  function handleAttachAck(): void {
+  function isOrderedResizeBarrierControl(type: string): boolean {
+    return type === "prefill_viewport" || type === "prefill_done" || type === "pty_ready";
+  }
+
+  function deferOrderedResizeFrame(frame: DeferredOrderedResizeFrame): void {
+    if (_deferredOrderedResizeBytes + frame.bytes > ORDERED_RESIZE_BARRIER_MAX_BYTES) {
+      ws?.close(WP.CLOSE_CODE_SERVER_ERROR, "ordered resize barrier overflow");
+      return;
+    }
+    _deferredOrderedResizeBytes += frame.bytes;
+    _deferredOrderedResizeFrames.push(frame);
+  }
+
+  function releaseOrderedResizeBarrier(): void {
+    _orderedResizeBarrier = false;
+    const frames = _deferredOrderedResizeFrames;
+    _deferredOrderedResizeFrames = [];
+    _deferredOrderedResizeBytes = 0;
+    for (const frame of frames) {
+      if (frame.kind === "binary") handleBinaryFrame(frame.data);
+      else {
+        const handler = terminalControlHandlers[frame.message.type] ?? applicationControlHandlers[frame.message.type];
+        if (handler) handler(frame.message);
+      }
+    }
+  }
+
+  function handleAttachAck(message: SocketControlMessage): void {
     __wfTraceEvent(_trace, "attach_ack");
+    _supportsOrderedResize = Array.isArray(message.capabilities)
+      && message.capabilities.includes(PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK);
+    _orderedResizeBarrier = _supportsOrderedResize;
     _attachAckReceived = true;
     _awaitingAttachAck = false;
     if (_attachAckTimer) { clearTimeout(_attachAckTimer); _attachAckTimer = null; }
     // Re-check dimensions after layout settles — catches stale initial dims on
-    // mobile where layout isn't finalized at connect time. Same-dimension acks
-    // are skipped to avoid a duplicate resize cycle immediately after attach.
-    sendLayoutStableAfterPaint();
+    // mobile where layout isn't finalized at connect time. Ordered peers must
+    // acknowledge even matching attach geometry before the local terminal can
+    // commit a reconnect/take-control proposal.
+    sendLayoutStableAfterPaint(_supportsOrderedResize);
+  }
+
+  function handleResizeAck(message: SocketControlMessage): void {
+    if (!_supportsOrderedResize) return;
+    const dimensions = _orderedResize.acknowledge(message);
+    if (!dimensions) return;
+    _lastSentResize = `${dimensions.cols}x${dimensions.rows}`;
+    opts.onResizeAck?.(dimensions.cols, dimensions.rows);
+    releaseOrderedResizeBarrier();
   }
 
   function handlePtyReady(): void {
@@ -1194,6 +1349,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   const terminalControlHandlers: Readonly<Record<string, SocketControlHandler>> = {
     attach_ack: handleAttachAck,
+    resize_ack: handleResizeAck,
     pty_ready: handlePtyReady,
     prefill_viewport: handlePrefillViewport,
     prefill_done: handlePrefillDone,
@@ -1211,6 +1367,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
       const message = parsed as Readonly<Record<string, unknown>>;
       if (typeof message.type !== "string") return;
       const typedMessage = message as SocketControlMessage;
+      if (_orderedResizeBarrier && isOrderedResizeBarrierControl(typedMessage.type)) {
+        deferOrderedResizeFrame({ kind: "control", message: typedMessage, bytes: new TextEncoder().encode(raw).byteLength });
+        return;
+      }
       const handler = terminalControlHandlers[typedMessage.type] ?? applicationControlHandlers[typedMessage.type];
       if (handler) handler(typedMessage);
     } catch (error: unknown) {
@@ -1219,6 +1379,10 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function handleBinaryFrame(data: ArrayBuffer): void {
+    if (_orderedResizeBarrier) {
+      deferOrderedResizeFrame({ kind: "binary", data: data.slice(0), bytes: data.byteLength });
+      return;
+    }
     if (_awaitingPrefillDone) {
       const bytes = new Uint8Array(data);
       if (_prefillChunks.length === 0) __wfTraceEvent(_trace, "prefill.first_chunk", { size: bytes.length });
@@ -1240,11 +1404,17 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     if (opts.onBinaryData) opts.onBinaryData(bytes);
   }
 
-  function connect() {
+  function connect(): void {
     _rc.cancel();
     if (ws && ws.readyState <= WebSocket.OPEN) return;
 
-    const sock = new WebSocket(buildUrl());
+    const route = buildUrl();
+    if (route.kind === "unavailable") {
+      _rc.block();
+      if (opts.onRouteUnavailable) opts.onRouteUnavailable();
+      return;
+    }
+    const sock = new WebSocket(route.url);
     sock.binaryType = "arraybuffer";
     ws = sock;
 
@@ -1288,10 +1458,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     });
   }
 
-  function sendResize(cols: number, rows: number): void {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "resize", cols, rows }));
-    }
+  function sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement> {
+    return queueResize({ cols, rows });
   }
 
   function sendTakeControl() {
@@ -1364,6 +1532,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     get ws() { return ws; },
     get isOpen() { return !!(ws && ws.readyState === WebSocket.OPEN); },
     get retryBlocked() { return _rc.isBlocked; },
+    get supportsOrderedResize() { return _supportsOrderedResize; },
   };
 }
 
@@ -1416,6 +1585,7 @@ interface PtyTerminalControllerOpts {
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
   readonly onReconnectExhausted?: () => void;
+  readonly onRouteUnavailable?: () => void;
   readonly onHydrationStart?: () => void;
   readonly onHydrated?: () => void;
 }
@@ -1424,13 +1594,14 @@ interface PtyTerminalController {
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
   focus(): void;
   scrollToBottom(): void;
-  resize(): void;
+  resize(): void | Promise<OrderedResizeSettlement>;
+  readonly supportsOrderedResize: boolean;
   dispose(): void;
   scheduleReconnect(): void;
   sendTakeControl(): void;
-  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): void;
+  sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
-  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): void;
+  syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
   send(data: string | Blob | BufferSource): void;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
@@ -1522,9 +1693,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     forceTerminalRepaint(_term);
   }
 
-  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }) {
-    if (!_container) return;
-    syncTerminalLayout({
+  function syncLayout(options?: { forceSend?: boolean; repaint?: boolean; reason?: string }): Promise<void> {
+    if (!_container) return Promise.resolve();
+    return syncTerminalLayout({
       term: _term,
       fitAddon: _fitAddon,
       ptyClient: _ptyClient,
@@ -1892,6 +2063,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       resetPty: opts.resetPty,
       prefillMode: opts.prefillMode,
       getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
+      getProposedDimensions: () => _fitAddon?.proposeDimensions?.() ?? (_term ? { cols: _term.cols, rows: _term.rows } : null),
       getLayoutMetrics: () => {
         if (!_container) return null;
         const rect = _container.getBoundingClientRect();
@@ -1936,6 +2108,14 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         if (opts.onOpen) opts.onOpen(wasReconnect);
       },
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
+      onResizeAck: (cols, rows) => {
+        if (!isCurrent() || !_term) return;
+        if (commitTerminalResizePreservingScroll(_term, { cols, rows })) {
+          recordFirstFit({ cols, rows });
+          forceRepaint();
+          resizeLifecycle.scheduleResizeRehydrate();
+        }
+      },
       onPrefillDone: () => {
         if (!isCurrent()) return;
         const prefillAction = connectionLifecycle.onPrefillDone();
@@ -1980,6 +2160,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onDisconnected: (code, reason) => { if (isCurrent() && opts.onDisconnected) opts.onDisconnected(code, reason); },
       onReconnecting: () => { if (isCurrent() && opts.onReconnecting) opts.onReconnecting(); },
       onReconnectExhausted: () => { if (isCurrent() && opts.onReconnectExhausted) opts.onReconnectExhausted(); },
+      onRouteUnavailable: () => { if (isCurrent() && opts.onRouteUnavailable) opts.onRouteUnavailable(); },
     });
     _ptyClient.connect();
   }
@@ -1995,8 +2176,18 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     if (_term) _term.scrollToBottom();
   }
 
-  function resize() {
-    syncLayout({ forceSend: true, repaint: true, reason: "resize" });
+  function resize(): void | Promise<OrderedResizeSettlement> {
+    if (!_ptyClient) {
+      void syncLayout({ forceSend: true, repaint: true, reason: "resize" });
+      return;
+    }
+    const supportsOrderedResize = _ptyClient.supportsOrderedResize;
+    const settlement = _ptyClient.sendFitResize({ force: true, immediate: true });
+    if (!supportsOrderedResize) {
+      forceRepaint();
+      return;
+    }
+    return settlement;
   }
 
   /**
@@ -2034,7 +2225,9 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     // Delegation to pty client
     scheduleReconnect: () => { if (_ptyClient) _ptyClient.scheduleReconnect(); },
     sendTakeControl: () => { if (_ptyClient) _ptyClient.sendTakeControl(); },
-    sendFitResize: (options?: { force?: boolean; fit?: boolean }) => { if (_ptyClient) _ptyClient.sendFitResize(options); },
+    sendFitResize: (options?: { force?: boolean; fit?: boolean; immediate?: boolean }) => _ptyClient
+      ? _ptyClient.sendFitResize(options)
+      : Promise.resolve("cancelled" as const),
     forceRepaint,
     syncLayout,
     send: (data) => {
@@ -2053,6 +2246,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     get fitAddon() { return _fitAddon; },
     get ptyClient() { return _ptyClient; },
     get hydration() { return _hydration; },
+    get supportsOrderedResize() { return _ptyClient?.supportsOrderedResize ?? false; },
     get isConnected() { return !!(_ptyClient && _ptyClient.isOpen); },
     get retryBlocked() { return _ptyClient ? _ptyClient.retryBlocked : false; },
   };
@@ -2244,131 +2438,182 @@ function serializeXtermTail(term, maxLines) {
 
 // ── Machine registry ──
 
-/**
- * Validate a peer URL before any code uses it for `fetch` / WS construction.
- * An XSS payload could write attacker-controlled URLs into localStorage;
- * without this guard those URLs would receive every API call and the
- * bearer JWT in the next page session.
- *
- * Accept only http(s) URLs whose hostname looks tailnet-shaped
- * (`*.ts.net`), is a literal IP, or is localhost. Port is NOT pinned —
- * the wolfpack server port is operator-configurable; we only require it
- * to be numeric and in 1–65535. Reject opaque schemes (javascript:,
- * data:, etc.), userinfo (creds smuggling), and non-numeric/out-of-range
- * ports.
- */
-function isValidMachineUrl(u: unknown): boolean {
-  if (typeof u !== "string" || u.length === 0 || u.length > 256) return false;
-  let parsed;
-  try { parsed = new URL(u); } catch { return false; }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-  if (parsed.username || parsed.password) return false;
-  // Allow tailnet host suffix, bare IPv4, or localhost (peer discovery
-  // and dev setups all show up as one of these).
-  const host = parsed.hostname;
-  const isTailnet = /\.ts\.net$/i.test(host);
-  const isIPv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
-  const isLocal = host === "localhost" || host === "127.0.0.1";
-  if (!isTailnet && !isIPv4 && !isLocal) return false;
-  // Port: empty (scheme default) is fine. Otherwise must be a positive
-  // integer in the legal TCP range. URL constructor already rejects most
-  // garbage but be explicit.
-  const port = parsed.port;
-  if (port) {
-    if (!/^\d+$/.test(port)) return false;
-    const n = Number(port);
-    if (n < 1 || n > 65535) return false;
-  }
-  return true;
+const tailnetPeers = new TailnetPeerRegistry();
+const TRANSIENT_MACHINE_KEY_PREFIX = "candidate:";
+
+function machineKey(peer: TailnetPeerEntry): string {
+  return peer.identity ?? `${TRANSIENT_MACHINE_KEY_PREFIX}${peer.tailnetNodeId}`;
 }
 
-function getMachines() {
+function legacyMachineDisplayMetadata(): readonly { readonly url: unknown; readonly name: unknown }[] {
   try {
-    const raw = JSON.parse(localStorage.getItem("wolfpack-machines") || "[]");
-    if (!Array.isArray(raw)) return [];
-    // Drop any entry whose URL fails validation. Names are echoed into the
-    // UI; clamp length and strip control chars so an XSS payload in name
-    // can't widen the blast radius via DOM injection.
-    return raw.filter((m) => m && isValidMachineUrl(m.url)).map((m) => ({
-      url: m.url,
-      name: typeof m.name === "string" ? m.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 128) : "",
-    }));
-  } catch { return []; }
-}
-
-function saveMachines(list: Array<{ url: string; name: string }>): void {
-  // Mirror getMachines() validation on the write side so future code paths
-  // that bypass the discover-source can't poison localStorage either.
-  const safe = (Array.isArray(list) ? list : []).filter((m) => m && isValidMachineUrl(m.url));
-  localStorage.setItem("wolfpack-machines", JSON.stringify(safe));
-}
-
-function removeMachine(url: string): Array<{ url: string; name: string }> {
-  const machines = getMachines().filter(m => m.url !== url);
-  saveMachines(machines);
-  return machines;
-}
-
-const MACHINE_INFO_CACHE_TTL_MS = 5 * 60_000;
-const machineInfoCache = new Map<string, { readonly info: InfoResponse; readonly fetchedAt: number }>();
-const machineInfoRequests = new Map<string, Promise<InfoResponse>>();
-
-function fetchMachineInfo(machineUrl: string, options?: RequestInit): Promise<InfoResponse> {
-  const cached = machineInfoCache.get(machineUrl);
-  if (cached && Date.now() - cached.fetchedAt < MACHINE_INFO_CACHE_TTL_MS) {
-    return Promise.resolve(cached.info);
+    const stored: unknown = JSON.parse(localStorage.getItem("wolfpack-machines") || "[]");
+    return Array.isArray(stored)
+      ? stored.flatMap((entry) => entry && typeof entry === "object" ? [entry as { readonly url: unknown; readonly name: unknown }] : [])
+      : [];
+  } catch {
+    return [];
   }
-  const pending = machineInfoRequests.get(machineUrl);
-  if (pending) return pending;
-  const request = api<InfoResponse>("/info", options, machineUrl || undefined)
-    .then((info) => {
-      machineInfoCache.set(machineUrl, { info, fetchedAt: Date.now() });
-      return info;
-    })
-    .finally(() => {
-      machineInfoRequests.delete(machineUrl);
-    });
-  machineInfoRequests.set(machineUrl, request);
-  return request;
 }
 
-// Self info, fetched once
+function getMachines(): readonly { readonly url: string; readonly name: string; readonly version: string; readonly ready: boolean; readonly diagnostic: string | undefined }[] {
+  return tailnetPeers.entries().map((peer) => ({
+    url: machineKey(peer),
+    name: peer.displayName,
+    version: peer.version ?? "",
+    ready: peer.status === "ready" && peer.identity !== undefined,
+    diagnostic: peer.diagnostic,
+  }));
+}
+
+function getWorkspaceMachines(): readonly { readonly url: string; readonly name: string; readonly version: string }[] {
+  return getMachines().filter((machine) => machine.ready);
+}
+
+function resolveReadyMachineOrigin(machineIdentity: string | undefined): string | undefined {
+  if (!machineIdentity || machineIdentity === LOCAL_MACHINE_IDENTITY) return undefined;
+  return isStableMachineIdentity(machineIdentity)
+    ? tailnetPeers.resolveReadyOrigin(machineIdentity)
+    : undefined;
+}
+
+async function showMachineUnavailable(): Promise<void> {
+  await showAppDialog({
+    title: "Machine unavailable",
+    message: "This Tailnet machine is no longer ready. Refresh Tailnet discovery and try again.",
+    confirmLabel: "Close",
+    cancelLabel: null,
+  });
+}
+
+let tailnetPeerRefreshGeneration = 0;
+let tailnetPeerSessionRefreshScheduled = false;
+let tailnetPeerSessionRefreshGeneration: number | undefined;
+
+function scheduleTailnetPeerSessionRefresh(generation: number): void {
+  tailnetPeerSessionRefreshGeneration = generation;
+  if (tailnetPeerSessionRefreshScheduled) return;
+  tailnetPeerSessionRefreshScheduled = true;
+  queueMicrotask(() => {
+    tailnetPeerSessionRefreshScheduled = false;
+    const scheduledGeneration = tailnetPeerSessionRefreshGeneration;
+    tailnetPeerSessionRefreshGeneration = undefined;
+    if (scheduledGeneration !== tailnetPeerRefreshGeneration) return;
+    void loadSessions(true);
+  });
+}
+
+function retireReplacedPeerIdentity(replacement: TailnetPeerIdentityReplacement): void {
+  const { oldIdentity } = replacement;
+  const manualGridAffected = state.gridSessions.some(session => session.machine === oldIdentity);
+  const activeDelegationAffected = state.activeDelegationRoot !== null && (
+    state.delegationMachine === oldIdentity
+    || state.delegationGridSessions.some(session => session.machine === oldIdentity)
+  );
+  const singleTerminalAffected = state.currentMachine === oldIdentity;
+  const { [oldIdentity]: _retiredPeerHealth, ...peerHealth } = state.peerHealth;
+
+  retirePreservedGridSessionsForMachine(oldIdentity);
+  if (activeDelegationAffected) {
+    if (state.terminalController) destroyTerminal();
+    teardownDelegationWorkspace();
+  } else if (manualGridAffected) {
+    const result = retireGridSessionsForMachine(oldIdentity);
+    if (result === "grid" || result === "single") {
+      setState({ peerHealth });
+      return;
+    }
+  } else if (!singleTerminalAffected) {
+    setState({ peerHealth });
+    return;
+  } else {
+    destroyTerminal();
+  }
+  setState({
+    currentSession: null,
+    currentMachine: "",
+    peerHealth,
+  });
+  backToSessions();
+}
+
+function isCandidate(value: unknown): value is TailnetMachineCandidate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.hostname === "string"
+    && typeof candidate.tailnetNodeId === "string"
+    && typeof candidate.origin === "string"
+    && canonicalTailnetOrigin(candidate.hostname) === candidate.origin
+    && typeof candidate.online === "boolean";
+}
+
+function candidateEnumerationCandidates(response: unknown): readonly TailnetMachineCandidate[] {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new Error("tailnet candidate enumeration response is malformed");
+  }
+  const envelope = response as Record<string, unknown>;
+  if ("error" in envelope) {
+    const message = envelope.error;
+    throw new Error(typeof message === "string" && message ? message : "tailnet candidate enumeration unavailable");
+  }
+  if (!Array.isArray(envelope.candidates) || !envelope.candidates.every(isCandidate)) {
+    throw new Error("tailnet candidate enumeration response is malformed");
+  }
+  return envelope.candidates;
+}
+
+type TailnetPeerRefreshResult = "applied" | "stale";
+
+async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
+  const generation = ++tailnetPeerRefreshGeneration;
+  // A new Tailnet authority generation makes every in-flight session result
+  // stale before it can mutate peer health, rendered groups, or routes.
+  state.loadSessionsEpoch++;
+  scheduleTailnetPeerSessionRefresh(generation);
+  const isCurrentGeneration = (): boolean => generation === tailnetPeerRefreshGeneration;
+  try {
+    const response = await api<unknown>("/tailnet/v1/candidates");
+    if (!isCurrentGeneration()) return "stale";
+    const candidates = candidateEnumerationCandidates(response);
+    tailnetPeers.reconcileCandidates(candidates);
+    await probeTailnetCandidates(candidates, fetch, {
+      onSettled: (probe) => {
+        if (!isCurrentGeneration()) return;
+        const applied = tailnetPeers.applyProbe(probe);
+        if (applied.kind === "identity-replaced") retireReplacedPeerIdentity(applied.replacement);
+        scheduleTailnetPeerSessionRefresh(generation);
+      },
+    });
+    if (!isCurrentGeneration()) return "stale";
+    tailnetPeers.applyLegacyDisplayMetadata(legacyMachineDisplayMetadata());
+    return "applied";
+  } catch (error: unknown) {
+    if (!isCurrentGeneration()) return "stale";
+    const retainedEntries = tailnetPeers.entries().length > 0;
+    tailnetPeers.markCandidateEnumerationUnavailable();
+    if (retainedEntries) {
+      renderMachinesList();
+      scheduleTailnetPeerSessionRefresh(generation);
+    }
+    throw error;
+  }
+}
+
 (async () => {
   try {
-    const info = await fetchMachineInfo("");
+    const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
     state.selfName = info.name || "this machine";
     state.selfVersion = info.version || "";
-    // Show version in header
-    const vEl = document.getElementById("settings-version");
-    if (vEl && state.selfVersion) vEl.textContent = "wolfpack v" + state.selfVersion;
-  } catch { state.selfName = "this machine"; }
-  // Auto-discover wolfpack peers on tailnet
+    const version = document.getElementById("settings-version");
+    if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
+  } catch {
+    state.selfName = "this machine";
+  }
   try {
-    const d = await api<DiscoverResponse>("/discover");
-    const peers = d.peers || [];
-    if (peers.length) {
-      const peerUrls = new Set(peers.map(p => p.url));
-      // Start from peers as source of truth, preserve any non-tailnet manual entries
-      let machines = getMachines();
-      let changed = false;
-      // Prune stale tailnet machines no longer in peer list
-      const before = machines.length;
-      machines = machines.filter(m => peerUrls.has(m.url));
-      if (machines.length !== before) changed = true;
-      // Add/update from peer list
-      for (const p of peers) {
-        const existing = machines.find(m => m.url === p.url);
-        if (!existing) {
-          machines.push({ url: p.url, name: p.name || p.hostname });
-          changed = true;
-        } else if (existing.name !== (p.name || p.hostname)) {
-          existing.name = p.name || p.hostname;
-          changed = true;
-        }
-      }
-      if (changed) { saveMachines(machines); loadSessions(true); }
-    }
-  } catch {}
+    await refreshTailnetPeers();
+  } catch {
+    // Local sessions remain useful if Tailnet candidate enumeration is unavailable.
+  }
 })();
 
 function errorMessage(err: unknown): string {
@@ -2377,21 +2622,6 @@ function errorMessage(err: unknown): string {
     if (typeof msg === "string" && msg) return msg;
   }
   return String(err || "unknown error");
-}
-
-interface DiscoverPeer {
-  readonly url: string;
-  readonly name?: string;
-  readonly hostname?: string;
-}
-
-interface DiscoverResponse {
-  readonly peers?: readonly DiscoverPeer[];
-}
-
-interface InfoResponse {
-  readonly version?: string;
-  readonly name?: string;
 }
 
 interface SessionsResponse {
@@ -2450,8 +2680,10 @@ interface CreateSessionResponse {
   readonly session?: string;
 }
 
-async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineUrl?: string): Promise<TResponse> {
-  const base = machineUrl ? new URL("/api" + path, machineUrl).href : "/api" + path;
+async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
+  const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
   const res = await fetch(base, opts);
   const body = await res.text();
   let data: unknown = {};
@@ -2674,9 +2906,9 @@ function showView(name: string, skipAnimation?: boolean): void {
       chip.style.display = "flex";
       headerCenter.style.transform = "";
       const hml = document.getElementById("header-machine-label");
-      if (getMachines().length > 0) {
+      if (getWorkspaceMachines().length > 0) {
         const mName = state.currentMachine
-          ? (getMachines().find(m => m.url === state.currentMachine)?.name || "remote")
+          ? (getWorkspaceMachines().find(m => m.url === state.currentMachine)?.name || "remote")
           : (state.selfName || "local");
         hml.textContent = mName;
         hml.style.display = "block";
@@ -2757,7 +2989,7 @@ function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSes
 function renderSessionListFromState(): void {
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
-  const multiMachine = getMachines().length > 0;
+  const multiMachine = getWorkspaceMachines().length > 0;
   const html = multiMachine
     ? state.lastSessionGroups.map(group => renderMachineGroupHtml(group, true)).join("")
     : renderMachineGroupHtml(state.lastSessionGroups[0], false);
@@ -3045,7 +3277,7 @@ function exitDelegationWorkspace(): void {
     restorePreservedGrid();
     return;
   }
-  if (state.gridSessions.length >= 2) {
+  if (isGridActive()) {
     setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
     updateGridLayout();
     showView("terminal", true);
@@ -3077,49 +3309,46 @@ function machineFailureLabel(category: MachineFailureCategory): string {
   return "Connection failed";
 }
 
-function fetchMachine(machineUrl, machineMeta) {
-  // Timeout remote machines so one unreachable host can't block the entire UI.
-  // Peers that fail repeatedly get a shorter timeout — see WP.peerHealth* helpers.
-  const timeoutMs = machineUrl ? WP.peerHealthTimeoutMs(state.peerHealth, machineUrl) : 0;
-  const remoteOpts = machineUrl ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
-  return Promise.allSettled([
-    api<SessionsResponse>("/sessions", remoteOpts, machineUrl || undefined),
-    fetchMachineInfo(machineUrl, remoteOpts),
-  ]).then(([sessionsResult, infoResult]) => {
-    if (sessionsResult.status === "rejected") {
-      if (machineUrl) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineUrl);
-      return {
-        machine: { ...machineMeta, url: machineUrl, version: "" },
-        sessions: [], online: false, pending: false,
-        failure: classifyMachineFailure(sessionsResult.reason),
-      };
-    }
-    if (machineUrl) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineUrl);
-    const info = infoResult.status === "fulfilled" ? infoResult.value : null;
+function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
+  const isRemote = machineIdentity !== "";
+  if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
+    return Promise.resolve({
+      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      sessions: [], online: false, pending: false,
+      failure: "network" as const,
+    });
+  }
+  const timeoutMs = isRemote ? WP.peerHealthTimeoutMs(state.peerHealth, machineIdentity) : 0;
+  const options = isRemote ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
+  return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
+    if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     return {
-      machine: {
-        ...machineMeta,
-        url: machineUrl,
-        version: info?.version || "",
-        name: info?.name || machineMeta.name,
-      },
-      sessions: sessionsResult.value.sessions || [],
+      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      sessions: sessions.sessions || [],
       online: true,
       pending: false,
+    };
+  }).catch((error: unknown) => {
+    if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineIdentity);
+    return {
+      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      sessions: [], online: false, pending: false,
+      failure: classifyMachineFailure(error),
     };
   });
 }
 
 async function loadSessionsOnce() {
   const myEpoch = ++state.loadSessionsEpoch;
+  const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
-  const machines = getMachines();
+  const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
   // Single-machine: just fetch and render
   if (!multiMachine) {
-    const g = await fetchMachine("", { name: state.selfName || "this machine" });
-    if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
+    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad);
+    if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
     const html = renderMachineGroupHtml(g, false);
@@ -3127,7 +3356,7 @@ async function loadSessionsOnce() {
     syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
-    await openSessionFromNotificationRoute();
+    await openSessionFromNotificationRoute(myEpoch);
     return;
   }
 
@@ -3137,52 +3366,47 @@ async function loadSessionsOnce() {
     ...machines.map(m => ({ url: m.url, meta: m })),
   ];
 
-  // Show placeholders on first load
-  if (state.firstLoad) {
-    el.innerHTML = allMachines.map(m =>
-      renderMachineGroupHtml({ machine: { ...m.meta, url: m.url }, sessions: [], online: false, pending: true }, true)
-    ).join("");
-  }
-
   const groups = new Array(allMachines.length);
-  // Previous cycle's groups by url — used as fallback for unresolved slots
-  // during refresh so sidebar order stays stable (add-order) and peers don't
-  // flicker to "pending" each poll.
-  const prevByUrl = new Map((state.lastSessionGroups || []).map(g => [g.machine.url, g]));
-  const pendingPlaceholder = m => ({
-    machine: { ...m.meta, url: m.url, version: "" },
+  // Keep a previous successful peer group visible while its next session
+  // request is pending. New peers enter workspace navigation only after that
+  // request succeeds; failures remove their workspace group.
+  const prevByUrl = new Map((state.lastSessionGroups || [])
+    .filter(group => !group.machine.url || group.online)
+    .map(group => [group.machine.url, group]));
+  const localPending = {
+    machine: { ...allMachines[0].meta, url: "", version: "" },
     sessions: [], online: false, pending: true,
+  };
+  const visibleGroupsInOrder = () => allMachines.flatMap((machine, index) => {
+    const resolved = groups[index];
+    if (resolved) return !machine.url || resolved.online ? [resolved] : [];
+    const previous = prevByUrl.get(machine.url);
+    if (previous) return [previous];
+    return machine.url ? [] : [localPending];
   });
-  const groupsInOrder = () => allMachines.map((m, i) => groups[i] || prevByUrl.get(m.url) || pendingPlaceholder(m));
-
-  // Render each machine group as its fetch resolves — a slow/dead peer can't
-  // delay rendering of machines that responded quickly.
-  const renderGroup = (i, g) => {
-    const m = allMachines[i];
-    const existing = el.querySelector(`[data-machine="${escAttr(m.url)}"]`);
-    if (!existing) return;
-    const newHtml = renderMachineGroupHtml(g, true);
-    if (existing.outerHTML !== newHtml) {
-      const tmp = document.createElement("div");
-      tmp.innerHTML = newHtml;
-      existing.replaceWith(tmp.firstElementChild);
+  const renderVisibleGroups = () => {
+    const visible = visibleGroupsInOrder();
+    state.lastSessionGroups = visible;
+    const html = visible.map(group => renderMachineGroupHtml(group, true)).join("");
+    if (html !== state.lastSessionsHtml) {
+      el.innerHTML = html;
+      state.lastSessionsHtml = html;
     }
+    renderSidebar();
   };
 
+  renderVisibleGroups();
+
   const promises = allMachines.map((m, i) =>
-    fetchMachine(m.url, m.meta).then(g => {
-      if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
+    fetchMachine(m.url, m.meta, isCurrentLoad).then(g => {
+      if (!isCurrentLoad()) return; // stale call, discard
       groups[i] = g;
-      state.lastSessionGroups = groupsInOrder();
-      renderGroup(i, g);
-      // Sidebar reads from state.lastSessionGroups — refresh it now so the
-      // local machine's card appears without waiting for slow peers.
-      renderSidebar();
+      renderVisibleGroups();
     })
   );
 
   await Promise.all(promises);
-  if (myEpoch !== state.loadSessionsEpoch) return; // stale call, discard
+  if (!isCurrentLoad()) return; // stale call, discard
 
   // Version-outdated check requires all machines resolved. Re-render only
   // groups whose outdated flag actually changed — avoids flicker.
@@ -3195,22 +3419,22 @@ async function loadSessionsOnce() {
       const nowOutdated = g.online && g.machine.version !== newestVersion;
       if (nowOutdated !== !!g.outdated) {
         g.outdated = nowOutdated;
-        renderGroup(i, g);
+        renderVisibleGroups();
       }
     }
   }
 
   state.firstLoad = false;
-  state.lastSessionGroups = groupsInOrder();
+  const visibleGroups = visibleGroupsInOrder();
+  state.lastSessionGroups = visibleGroups;
   const out = [];
-  for (const g of groups) {
-    if (!g) continue;
+  for (const g of visibleGroups) {
     for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
   }
   state.allSessions = out;
   syncDelegationWorkspace();
-  checkStateTransitions(groups);
-  await openSessionFromNotificationRoute();
+  checkStateTransitions(visibleGroups);
+  await openSessionFromNotificationRoute(myEpoch);
 }
 
 let sessionRefreshPromise: Promise<void> | null = null;
@@ -3233,15 +3457,21 @@ function loadSessions(forceAfterCurrent = false): Promise<void> {
   return sessionRefreshPromise;
 }
 
-async function openSessionFromNotificationRoute(): Promise<void> {
+async function openSessionFromNotificationRoute(expectedLoadEpoch: number): Promise<void> {
+  if (expectedLoadEpoch !== state.loadSessionsEpoch) return;
   const route = parseSessionNotificationRoute(location.search);
   if (!route) return;
+  const machineIdentity = route.machineIdentity === LOCAL_MACHINE_IDENTITY ? "" : route.machineIdentity;
   const group = state.lastSessionGroups.find(candidate =>
-    (candidate.machine.url || "") === route.machineUrl && candidate.online);
+    (candidate.machine.url || "") === machineIdentity && candidate.online);
   const session = group?.sessions.find(candidate => sessionIdentityId(candidate) === route.sessionId);
-  if (!session) return;
+  if (!session) {
+    console.warn("notification target is unavailable; refresh Tailnet discovery and retry");
+    return;
+  }
+  if (expectedLoadEpoch !== state.loadSessionsEpoch) return;
 
-  await openSession(session.name, route.machineUrl || undefined);
+  await openSession(session.name, machineIdentity || undefined);
   const cleanUrl = new URL(location.href);
   cleanUrl.searchParams.delete("sessionId");
   cleanUrl.searchParams.delete("session");
@@ -3249,9 +3479,11 @@ async function openSessionFromNotificationRoute(): Promise<void> {
   history.replaceState(history.state, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
 }
 
-function retryMachine(_machineUrl: string, event?: Event): void {
+function retryMachine(_machineIdentity: string, event?: Event): void {
   event?.stopPropagation();
-  void loadSessions(true);
+  void refreshTailnetPeers()
+    .then((result) => result === "applied" ? loadSessions(true) : undefined)
+    .catch(() => undefined);
 }
 
 const SESSION_REFRESH_INTERVAL_MS = 5_000;
@@ -3290,6 +3522,10 @@ function collapseAutoExpandedSidebarImmediately(): void {
 
 async function openSession(name, machineUrl) {
   const targetMachine = machineUrl || "";
+  if (targetMachine && !resolveReadyMachineOrigin(targetMachine)) {
+    await showMachineUnavailable();
+    return;
+  }
   if (isDesktop()) {
     const delegation = delegationWorkspaceContext(name, targetMachine);
     if (delegation) {
@@ -4044,6 +4280,11 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       setTerminalLoadVisualState(container, "failed");
       setConnState("offline");
     },
+    onRouteUnavailable: () => {
+      slowLoad.stop();
+      setTerminalLoadVisualState(container, "failed");
+      setConnState("machine-unavailable");
+    },
     onHydrationStart: () => {
       setTerminalLoadVisualState(container, "hydrating");
       slowLoad.start("hydrating terminal");
@@ -4181,6 +4422,12 @@ function setConnState(connState: string): void {
     if (retryBtn) retryBtn.onclick = retryConnection;
     return;
   }
+  if (connState === "machine-unavailable") {
+    statusEl.style.display = "block";
+    statusEl.style.background = "#cc3333";
+    statusEl.textContent = "machine unavailable — refresh Tailnet discovery before reconnecting";
+    return;
+  }
   statusEl.style.display = "block";
   statusEl.style.background = "#cc3333";
   statusEl.textContent = "session ended \u2014 use \u2190 to go back";
@@ -4311,7 +4558,7 @@ async function killSession(name, e, machineUrl) {
 function renderDrawerList() {
   const groups = state.lastSessionGroups;
   const list = document.getElementById("drawer-list");
-  const multiMachine = getMachines().length > 0;
+  const multiMachine = getWorkspaceMachines().length > 0;
 
   const all = groups.flatMap(group => {
     const machineUrl = group.machine.url || "";
@@ -4565,6 +4812,10 @@ async function switchSession(val) {
     machineUrl = "";
     name = val;
   }
+  if (machineUrl && !resolveReadyMachineOrigin(machineUrl)) {
+    await showMachineUnavailable();
+    return;
+  }
   if (name === state.currentSession && machineUrl === state.currentMachine) {
     // Same session — reconnect or reinitialize if the terminal is not active.
     if (state.terminalController) {
@@ -4588,9 +4839,9 @@ async function switchSession(val) {
   loadSessionSwitcher();
   // Update machine label in header (showView sets it, but drawer bypasses showView)
   const hml = document.getElementById("header-machine-label");
-  if (getMachines().length > 0) {
+  if (getWorkspaceMachines().length > 0) {
     const mName = machineUrl
-      ? (getMachines().find(m => m.url === machineUrl)?.name || "remote")
+      ? (getWorkspaceMachines().find(m => m.url === machineUrl)?.name || "remote")
       : (state.selfName || "local");
     hml.textContent = mName;
     hml.style.display = "block";
@@ -5084,75 +5335,64 @@ async function showSettings() {
   toggleDebugPanel();
 }
 
-async function renderMachinesList() {
+function setPeerNotificationEnrollmentUnavailable(): void {
+  const status = document.getElementById("discover-status");
+  if (!status) return;
+  status.textContent = "This Tailnet machine is no longer ready for notification setup.";
+  status.style.color = "#cc3333";
+}
+
+function setUpPeerNotifications(machineIdentity: string): void {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (!origin) {
+    setPeerNotificationEnrollmentUnavailable();
+    return;
+  }
+  window.location.assign(new URL("/#settings-effects", origin).href);
+}
+
+function renderMachinesList(): void {
   const machines = getMachines();
   const el = document.getElementById("machines-list");
   if (!machines.length) {
-    el.innerHTML = '<div class="no-machines">No remote machines added</div>';
+    el.innerHTML = '<div class="no-machines">No Tailnet candidates found</div>';
     return;
   }
-  // Check status of each machine
-  const checks = await Promise.all(machines.map(m =>
-    fetch(new URL("/api/info", m.url).href, { signal: AbortSignal.timeout(3000) })
-      .then(() => true).catch(() => false)
-  ));
-  el.innerHTML = machines.map((m, i) => {
-    const dot = checks[i] ? "green" : "red";
-    const dotTitle = checks[i] ? "online" : "offline";
+  el.innerHTML = machines.map((machine) => {
+    const dot = machine.ready ? "green" : "red";
+    const status = machine.ready ? "online" : machine.diagnostic || "offline";
+    const notificationSetup = machine.ready
+      ? `<button class="machine-notification-setup" type="button" data-machine-identity="${escAttr(machine.url)}">Set up notifications on ${esc(machine.name)}</button>`
+      : "";
     return `<div class="machine-item">
-      <div class="dot ${dot}" title="${dotTitle}"></div>
-      <span class="machine-item-name">${esc(m.name)}<span class="machine-item-url">${esc(m.url)}</span></span>
-      <button class="machine-remove-btn" onclick="removeMachineUI('${escAttr(m.url)}')">&times;</button>
+      <div class="dot ${dot}" title="${escAttr(status)}"></div>
+      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span></span>
+      ${notificationSetup}
     </div>`;
   }).join("");
+  el.querySelectorAll<HTMLButtonElement>(".machine-notification-setup").forEach((button) => {
+    button.addEventListener("click", () => {
+      const machineIdentity = button.dataset.machineIdentity;
+      if (machineIdentity) setUpPeerNotifications(machineIdentity);
+    });
+  });
 }
 
-function removeMachineUI(url: string): void {
-  removeMachine(url);
-  renderMachinesList();
-}
-
-async function discoverMachines() {
+async function discoverMachines(): Promise<void> {
   const statusEl = document.getElementById("discover-status");
   statusEl.textContent = "Scanning tailnet...";
   statusEl.style.color = "#555";
   try {
-    const data = await api<DiscoverResponse>("/discover");
-    const peers = data.peers || [];
-    if (!peers.length) {
-      statusEl.textContent = "No wolfpack instances found on tailnet";
-      statusEl.style.color = "#555";
-      return;
-    }
-    const peerUrls = new Set(peers.map(p => p.url));
-    let machines = getMachines();
-    // Prune stale machines no longer in peer list
-    const before = machines.length;
-    machines = machines.filter(m => peerUrls.has(m.url));
-    const pruned = before - machines.length;
-    // Add new / update existing
-    let added = 0;
-    for (const p of peers) {
-      const existing = machines.find(m => m.url === p.url);
-      if (!existing) {
-        machines.push({ url: p.url, name: p.name || p.hostname });
-        added++;
-      } else if (existing.name !== (p.name || p.hostname)) {
-        existing.name = p.name || p.hostname;
-      }
-    }
-    if (added > 0 || pruned > 0) {
-      saveMachines(machines);
-      renderMachinesList();
-    }
-    const parts = [`Found ${peers.length}`];
-    if (added > 0) parts.push(`added ${added}`);
-    if (pruned > 0) parts.push(`pruned ${pruned} stale`);
-    if (!added && !pruned) parts.push("all up to date");
-    statusEl.textContent = parts.join(", ");
-    statusEl.style.color = "#00ff41";
-  } catch (e) {
-    statusEl.textContent = errorMessage(e);
+    const refreshResult = await refreshTailnetPeers();
+    if (refreshResult === "stale") return;
+    const machines = getMachines();
+    const ready = machines.filter((machine) => machine.ready).length;
+    renderMachinesList();
+    void loadSessions(true);
+    statusEl.textContent = ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet";
+    statusEl.style.color = ready ? "#00ff41" : "#555";
+  } catch (error) {
+    statusEl.textContent = errorMessage(error);
     statusEl.style.color = "#cc3333";
   }
 }
@@ -5303,7 +5543,10 @@ if (!isDesktop()) {
 let sidebarAutoCollapseTimer = null;
 let sidebarSessionOrderDragActive = false;
 let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 300;
+let sidebarLayoutTransitionId = 0;
+let sidebarLayoutSettlementTransitionId: number | null = null;
+// Mirrors #desktop-sidebar's 200ms margin-left transition when transitionend is unavailable.
+const SIDEBAR_LAYOUT_TRANSITION_FALLBACK_MS = 200;
 
 let sidebarInitialRender = false;
 let _sidebarRafId = null;
@@ -5326,7 +5569,7 @@ function _renderSidebarNow() {
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
   if (groups.length) sidebarInitialRender = true;
-  const machines = getMachines();
+  const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
   let html = "";
@@ -5527,17 +5770,48 @@ function initSidebar() {
       clearTimeout(sidebarLayoutTransitionFallbackTimer);
       sidebarLayoutTransitionFallbackTimer = null;
     }
-    state.sidebarLayoutTransitioning = false;
+    const transitionId = sidebarLayoutTransitionId;
+    if (sidebarLayoutSettlementTransitionId === transitionId) return;
+    sidebarLayoutSettlementTransitionId = transitionId;
+    const complete = (acknowledged = true) => {
+      if (transitionId !== sidebarLayoutTransitionId) return;
+      sidebarLayoutSettlementTransitionId = null;
+      state.sidebarLayoutTransitioning = false;
+      if (acknowledged) revealGridCellsWithoutResize();
+    };
     if (activeGridTerminalSessions() !== null) {
-      scheduleGridStabilizedFit();
-    } else {
-      state.terminalController?.resize();
-      revealGridCellsWithoutResize();
+      scheduleGridStabilizedFit(complete);
+      return;
     }
+    const controller = state.terminalController;
+    if (!controller) {
+      complete();
+      return;
+    }
+    const supportsOrderedResize = controller.supportsOrderedResize;
+    let settlement: void | Promise<OrderedResizeSettlement>;
+    try {
+      settlement = controller.resize();
+    } catch (error: unknown) {
+      console.warn("[sidebar] terminal resize failed:", error);
+      complete(false);
+      return;
+    }
+    if (!supportsOrderedResize) {
+      complete();
+      return;
+    }
+    void Promise.resolve(settlement).then((outcome) => {
+      complete(outcome === "acknowledged");
+    }, (error) => {
+      console.warn("[sidebar] terminal resize settlement failed:", error);
+      complete(false);
+    });
   }
 
   function beginSidebarLayoutTransition(): void {
     if (sidebarLayoutTransitionFallbackTimer) clearTimeout(sidebarLayoutTransitionFallbackTimer);
+    sidebarLayoutTransitionId += 1;
     state.sidebarTransitionIsHover = false;
     state.sidebarLayoutTransitioning = true;
     hideGridCellsForTransition();
@@ -5789,7 +6063,7 @@ Object.assign(window, {
   // session/project onclick handlers
   openSession, killSession, selectProject, showProjectPicker,
   sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
-  createSessionWithAgent, deleteCustomCmd, removeMachineUI, retryMachine,
+  createSessionWithAgent, deleteCustomCmd, retryMachine,
   // agent settings onclick handlers (inline in renderAgentsList)
   toggleAgentEnabled, removeAgent, addAgent,
   // grid + view (used by onclick and e2e page.evaluate)

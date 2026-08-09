@@ -73,9 +73,10 @@
           "patches/",
           "skills/",
           "plans/",
-          "edc-context/"
+          "edc-context/",
+          "site/"
         ],
-        "reason": "Documentation, CI policy, plans, patches, packaged skills, and legacy report material do not form an additional runtime authority boundary.",
+        "reason": "Documentation, CI policy, plans, patches, packaged skills, static marketing-site files, and legacy report material do not form an additional runtime authority boundary.",
         "reviewPolicy": "no-context-review"
       }
     ]
@@ -83,17 +84,17 @@
   "unmapped": {
     "allowedGlobs": []
   },
-  "generatedAt": "2026-07-27T18:44:58Z",
-  "sourceCommit": "99dd58ac039784b7c81920013ae0d3f14e2af14f",
+  "generatedAt": "2026-08-09T07:42:15Z",
+  "sourceCommit": "6b8cd4ddec9e813105fd7b81a4b7426a19fa5b66",
   "coverage": {
-    "contextMappedFileCount": 274,
-    "contextlessFileCount": 44,
+    "contextMappedFileCount": 363,
+    "contextlessFileCount": 64,
     "uncoveredFileCount": 0,
     "ambiguousPathCount": 0,
     "ignoredFileCount": 0,
     "ignoreSource": "none",
     "ignoreGlobs": [],
-    "mappedFileCount": 274,
-    "unmappedFileCount": 44
+    "mappedFileCount": 363,
+    "unmappedFileCount": 64
   }
 }

@@ -5,6 +5,11 @@ import type { AddressInfo } from "node:net";
 process.env.WOLFPACK_TEST = "1";
 // Disable JWT so we can hit API endpoints without auth tokens
 delete process.env.WOLFPACK_JWT_SECRET;
+const priorTailscaleStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
+process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
+  Self: { ID: "n-rate-test", DNSName: "rate-test.example.ts.net.", HostName: "rate-test" },
+  Peer: {},
+});
 
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
 const { __setTestBackend } = await import("../../src/server/backend.ts");
@@ -36,6 +41,11 @@ beforeAll(async () => {
 
 afterAll(() => {
   (server as Server).close();
+  // The limiter is process-global; do not leave this burst's exhausted bucket for later files.
+  __pollRateLimiter._map.clear();
+  __globalRateLimiter._map.clear();
+  if (priorTailscaleStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
+  else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = priorTailscaleStatus;
 });
 
 describe("HTTP rate limiting", () => {
@@ -57,6 +67,18 @@ describe("HTTP rate limiting", () => {
     expect(ok).toBeGreaterThanOrEqual(1);
     expect(ok).toBeLessThanOrEqual(12); // small margin for token refill
     expect(limited).toBeGreaterThanOrEqual(188);
+  });
+
+  test("Tailnet status routes return 429 after the expensive-route threshold", async () => {
+    for (const path of ["/api/machine", "/api/tailnet/v1/candidates", "/api/discover"]) {
+      __pollRateLimiter._map.clear();
+      __globalRateLimiter._map.clear();
+      const statuses = await Promise.all(
+        Array.from({ length: 30 }, () => fetch(`${baseUrl}${path}`).then((response) => response.status)),
+      );
+      expect(statuses.filter((status) => status === 200).length, path).toBeGreaterThan(0);
+      expect(statuses.filter((status) => status === 429).length, path).toBeGreaterThanOrEqual(18);
+    }
   });
 
   test("global limit applies to non-poll endpoints", async () => {

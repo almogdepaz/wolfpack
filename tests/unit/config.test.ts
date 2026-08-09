@@ -23,9 +23,11 @@ describe("remoteUrl", () => {
     expect(remoteUrl({ ...base, tailscaleHostname: "" })).toBeNull();
   });
 
-  test("preserves hostname exactly", () => {
+  test("returns only a canonical Tailnet origin", () => {
     expect(remoteUrl({ ...base, tailscaleHostname: "my-machine.tailnet.ts.net" }))
       .toBe("https://my-machine.tailnet.ts.net");
+    expect(remoteUrl({ ...base, tailscaleHostname: "https://evil.example" }))
+      .toBeNull();
   });
 });
 
