@@ -629,6 +629,9 @@ body.no-animations, body.no-animations * {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .session-name-input::placeholder { color: #707070; }
+.initial-prompt-label { margin-top: 14px; }
+.initial-task-input { resize: vertical; min-height: 72px; line-height: 1.45; }
+.field-description { margin-top: 5px; color: var(--text-dim); font-size: 10px; }
 .session-name-input:focus {
   border-color: var(--accent-border);
   box-shadow: 0 0 8px rgba(0,255,65,0.08), inset 0 0 12px rgba(0,255,65,0.03);

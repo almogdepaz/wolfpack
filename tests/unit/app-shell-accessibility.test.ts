@@ -16,10 +16,10 @@ describe("app shell accessibility contracts", () => {
     expect(app).toContain('chip.setAttribute("aria-expanded", "false")');
   });
 
-  test("labels the session name without exposing an initial-task field", () => {
+  test("labels session creation fields and forwards the optional task", () => {
     expect(html).toContain('for="session-name-input"');
-    expect(html).not.toContain('id="initial-task-input"');
-    expect(app).not.toContain('initialPrompt: initialPrompt || undefined');
+    expect(html).toContain('for="initial-task-input"');
+    expect(app).toContain('initialPrompt: initialPrompt || undefined');
   });
 
   test("loads the heavy terminal renderer lazily", () => {
