@@ -112,6 +112,16 @@ describe("BackendRouter", () => {
       expect(r2.isBrokerAvailable()).toBe(true);
     });
 
+    test("distinguishes configured broker availability from live transport readiness", () => {
+      const { router } = createTestRouter();
+      (router as any).brokerClient = { isConnected: () => false };
+      expect(router.isBrokerAvailable()).toBe(true);
+      expect(router.isBrokerReady()).toBe(false);
+
+      (router as any).brokerClient = { isConnected: () => true };
+      expect(router.isBrokerReady()).toBe(true);
+    });
+
     test("verifyBrokerHandshake returns false when no broker client", async () => {
       const router = new BackendRouter();
       expect(await router.verifyBrokerHandshake()).toBe(false);

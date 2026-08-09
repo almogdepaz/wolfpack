@@ -340,6 +340,9 @@ export class BackendRouter implements SessionBackend {
   }
 
   isBrokerAvailable(): boolean { return this._brokerAvailable; }
+  isBrokerReady(): boolean {
+    return this._brokerAvailable && this.brokerClient?.isConnected() === true;
+  }
   getBrokerSocketPath(): string { return this.brokerSocketPath; }
 
   /** Re-probe the broker socket. Starts the client if it appeared.
@@ -501,6 +504,12 @@ export class BackendRouter implements SessionBackend {
     // Cast through unknown — the test backends (MockBackend) implement enough
     // of the BrokerBackend surface for streaming-attach paths via duck typing.
     this.broker = backend as unknown as BrokerBackend;
+    this.brokerClient = {
+      close() {},
+      isConnected: () => true,
+      request: async () => ({ status: "ok" }),
+      start() {},
+    };
     this._brokerAvailable = true;
   }
 }

@@ -45,7 +45,7 @@ export class BrokerHealthMonitor {
 const brokerHealth = new BrokerHealthMonitor();
 
 export function operationalHealth(): Record<string, unknown> {
-  const broker = brokerHealth.observe(getRouter().isBrokerAvailable());
+  const broker = brokerHealth.observe(getRouter().isBrokerReady());
   return {
     status: broker === "ready" ? "ready" : "degraded",
     broker: brokerHealth.snapshot(),

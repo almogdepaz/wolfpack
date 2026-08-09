@@ -3,7 +3,9 @@ import {
   BrokerHealthMonitor,
   classifyRequestClient,
   isLoopbackAddress,
+  operationalHealth,
 } from "../../src/server/operability";
+import { __resetBackend, getRouter } from "../../src/server/backend";
 
 describe("operability contracts", () => {
   test("tracks explicit broker health transitions", () => {
@@ -12,6 +14,19 @@ describe("operability contracts", () => {
     expect(monitor.observe(true, 200)).toBe("ready");
     expect(monitor.snapshot(250).stateAgeMs).toBe(50);
     expect(monitor.observe(false, 300)).toBe("unavailable");
+  });
+
+  test("reports degraded while the configured broker transport is disconnected", () => {
+    process.env.WOLFPACK_TEST = "1";
+    __resetBackend();
+    const router = getRouter();
+    (router as any)._brokerAvailable = true;
+    (router as any).brokerClient = { isConnected: () => false };
+
+    expect(operationalHealth()).toMatchObject({
+      status: "degraded",
+      broker: { state: "unavailable" },
+    });
   });
 
   test("limits unauthenticated readiness to direct loopback addresses", () => {
