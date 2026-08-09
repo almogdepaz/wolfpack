@@ -4703,10 +4703,12 @@ function drawerItemHtml(item, multiMachine) {
     : row.role === "orphan"
       ? " drawer-orphan-item"
       : row.childSummary ? " drawer-parent-item" : "";
-  return `<div class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
-    <div class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></div>
-    <span class="drawer-item-name">${esc(session.name)}</span>
-    ${machineLbl}
+  return `<div class="drawer-item-row" role="listitem">
+    <button type="button" class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}"${isCurrent ? ' aria-current="page"' : ""}>
+      <span class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></span>
+      <span class="drawer-item-name">${esc(session.name)}</span>
+      ${machineLbl}
+    </button>
     ${sidebarDelegationToggleHtml(row, machineUrl)}
   </div>`;
 }
@@ -4791,6 +4793,7 @@ function closeDrawer(instant?: boolean): void {
   const hdr = document.querySelector("header");
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
+  const TAP_SLOP_PX = 15;
   let startY = 0, startX = 0, startTime = 0, dragging = false, maxDrag = 0;
   let touchTarget = null;
 
@@ -4808,7 +4811,7 @@ function closeDrawer(instant?: boolean): void {
     if (state.currentView !== "terminal") return;
     const dy = e.touches[0].clientY - startY;
     // opening: drag down when closed (header only)
-    if (!state.drawerOpen && dy > 5) {
+    if (!state.drawerOpen && dy > TAP_SLOP_PX) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating", "open");
@@ -4821,7 +4824,7 @@ function closeDrawer(instant?: boolean): void {
       backdrop.style.transition = "none";
     }
     // closing: drag up when open (header or drawer)
-    if (state.drawerOpen && dy < -5) {
+    if (state.drawerOpen && dy < -TAP_SLOP_PX) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating");
@@ -4839,7 +4842,7 @@ function closeDrawer(instant?: boolean): void {
       const dt = Date.now() - startTime;
       const ex = e.changedTouches[0].clientX, ey = e.changedTouches[0].clientY;
       const dist = Math.abs(ex - startX) + Math.abs(ey - startY);
-      if (dt < 300 && dist < 15 && touchTarget) {
+      if (dt < 300 && dist <= TAP_SLOP_PX && touchTarget) {
         const disclosure = touchTarget.closest(".delegation-sidebar-toggle");
         if (disclosure && drawer.contains(disclosure)) {
           e.preventDefault();
