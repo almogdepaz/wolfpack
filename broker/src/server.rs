@@ -674,24 +674,7 @@ async fn handle_subscribe(
     };
 
     let bus = session.output_bus();
-    let sub = match bus.subscribe(params.since_seq) {
-        Some(s) => s,
-        None => {
-            // Drainer already exited (PTY EOF). Surface this as
-            // session_not_alive — no live bytes will ever arrive.
-            return send_response(
-                writer_tx,
-                ControlResponse::err(
-                    id,
-                    ProtocolError {
-                        code: ErrorCode::SessionNotAlive,
-                        message: format!("session {} has no live output stream", params.session_id),
-                    },
-                ),
-            )
-            .await;
-        }
-    };
+    let sub = bus.subscribe(params.since_seq);
 
     // Re-subscribe is idempotent: drop the old forwarder so we don't
     // double-deliver bytes from two parallel attaches on one connection.
@@ -981,7 +964,7 @@ mod tests {
         const CHUNK_COUNT: u64 = 2_000;
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(CHUNK_COUNT as usize, 256);
-        let subscription = bus.subscribe(None).expect("subscribe");
+        let subscription = bus.subscribe(None);
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
         output_tx
@@ -1050,7 +1033,7 @@ mod tests {
                 data: Arc::new(vec![byte]),
             });
         }
-        let subscription = bus.subscribe(Some(0)).expect("subscribe");
+        let subscription = bus.subscribe(Some(0));
         let (output_tx, mut output_rx) = mpsc::channel(1);
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
@@ -1104,7 +1087,7 @@ mod tests {
         const CHUNKS_TO_CAP: u64 = (OUTPUT_FORWARD_BUFFER_MAX_BYTES / CHUNK_BYTES) as u64;
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(64, 64);
-        let subscription = bus.subscribe(None).expect("subscribe");
+        let subscription = bus.subscribe(None);
         let (output_tx, mut output_rx) = mpsc::channel(1);
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
@@ -1242,7 +1225,7 @@ mod tests {
         const OUTPUT_CHUNKS: u64 = 400;
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(512, 512);
-        let subscription = bus.subscribe(None).expect("subscribe");
+        let subscription = bus.subscribe(None);
         let (output_tx, _output_rx) = mpsc::channel(18);
         let (control_tx, mut control_rx) = mpsc::channel(18);
 

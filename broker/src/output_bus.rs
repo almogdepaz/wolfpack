@@ -127,7 +127,7 @@ impl OutputBus {
     /// receiver. A closed bus still returns its retained replay plus an
     /// already-closed receiver so bounded exited-session tombstones can drain
     /// their final output without pretending a live stream remains.
-    pub fn subscribe(&self, since_seq: Option<u64>) -> Option<Subscription> {
+    pub fn subscribe(&self, since_seq: Option<u64>) -> Subscription {
         let sender_guard = self.sender.lock().expect("output bus sender poisoned");
         let receiver = if let Some(tx) = sender_guard.as_ref() {
             tx.subscribe()
@@ -151,12 +151,12 @@ impl OutputBus {
             None => (Vec::new(), false),
         };
         let current_seq = self.last_seq.load(Ordering::SeqCst);
-        Some(Subscription {
+        Subscription {
             replay,
             receiver,
             current_seq,
             replay_truncated,
-        })
+        }
     }
 
     pub fn current_seq(&self) -> u64 {
@@ -216,7 +216,7 @@ mod tests {
         bus.publish(chunk(2, b"b"));
         bus.publish(chunk(3, b"c"));
 
-        let sub = bus.subscribe(Some(1)).expect("bus open");
+        let sub = bus.subscribe(Some(1));
         let replay_seqs: Vec<u64> = sub.replay.iter().map(|c| c.seq).collect();
         assert_eq!(replay_seqs, vec![2, 3]);
         assert_eq!(sub.current_seq, 3);
@@ -229,7 +229,7 @@ mod tests {
         bus.publish(chunk(2, b"b"));
         bus.publish(chunk(3, b"c"));
 
-        let sub = bus.subscribe(Some(0)).expect("bus open");
+        let sub = bus.subscribe(Some(0));
         let replay_seqs: Vec<u64> = sub.replay.iter().map(|chunk| chunk.seq).collect();
         assert!(sub.replay_truncated);
         assert_eq!(replay_seqs, vec![2, 3]);
@@ -239,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn live_publish_after_subscribe_arrives_on_receiver() {
         let bus = OutputBus::new(8, 8);
-        let sub = bus.subscribe(None).expect("bus open");
+        let sub = bus.subscribe(None);
         let mut rx = sub.receiver;
 
         bus.publish(chunk(1, b"hello"));
@@ -257,7 +257,7 @@ mod tests {
         let bus = OutputBus::new(4, 4);
         bus.publish(chunk(1, b"x"));
         bus.close();
-        let mut sub = bus.subscribe(Some(0)).expect("closed bus remains replayable");
+        let mut sub: Subscription = bus.subscribe(Some(0));
         assert_eq!(sub.replay.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(), vec![1]);
         assert!(sub.receiver.recv().await.is_err());
         assert!(bus.is_closed());
@@ -266,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn close_drops_sender_so_active_receivers_see_closed() {
         let bus = OutputBus::new(4, 4);
-        let mut rx = bus.subscribe(None).expect("bus open").receiver;
+        let mut rx = bus.subscribe(None).receiver;
         bus.close();
         let res = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await

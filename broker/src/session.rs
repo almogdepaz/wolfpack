@@ -510,8 +510,7 @@ impl Session {
             self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
             snapshot
         };
-        let subscription = self.bus.subscribe(Some(seq))
-            .expect("output bus subscriptions remain available for tombstone replay");
+        let subscription = self.bus.subscribe(Some(seq));
         Ok((snapshot, subscription))
     }
 
@@ -889,7 +888,7 @@ mod tests {
         let terminal = Arc::new(Mutex::new(TerminalFeedFailure));
         let seq = Arc::new(AtomicU64::new(0));
         let bus = OutputBus::new(4, 4);
-        let mut receiver = bus.subscribe(None).expect("bus open").receiver;
+        let mut receiver = bus.subscribe(None).receiver;
         let waiter_bus = Arc::clone(&bus);
         let waiter = thread::spawn(move || waiter_bus.wait_closed(Duration::from_millis(200)));
 
@@ -1479,8 +1478,7 @@ mod tests {
         // after completing its prefill paint.
         let sub = sess
             .output_bus()
-            .subscribe(Some(prefill_seq))
-            .expect("bus must still be open");
+            .subscribe(Some(prefill_seq));
 
         // Every replayed chunk must have seq > prefill_seq (the gate works).
         for chunk in &sub.replay {
