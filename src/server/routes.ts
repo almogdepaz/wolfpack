@@ -2,7 +2,6 @@
  * HTTP route handlers.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { composeRouteFamilies, splitRouteFamilies } from "./route-families.js";
 import {
   readFileSync,
   writeFileSync,
@@ -563,7 +562,7 @@ export function effectiveCmds(s: Settings): string[] {
   return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL];
 }
 
-const routeImplementations: Record<
+export const routes: Record<
   string,
   (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 > = {
@@ -1370,7 +1369,3 @@ const routeImplementations: Record<
     json(res, { ok: true, ...result });
   },
 };
-
-/** Stable facade retained for server/tests while implementations are grouped by authority boundary. */
-export const routeFamilies = splitRouteFamilies(routeImplementations);
-export const routes = composeRouteFamilies(routeFamilies);
