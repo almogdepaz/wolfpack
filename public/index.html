@@ -123,6 +123,21 @@
       </label>
       <div id="project-list" class="list"></div>
       <div class="new-project-row">
+        <label for="existing-project-dir">
+          <span>Open existing directory</span>
+          <input
+            id="existing-project-dir"
+            type="text"
+            placeholder="/absolute/path/to/project"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+        </label>
+        <button id="existing-project-open" type="button" aria-label="Open existing directory">Open</button>
+      </div>
+      <div class="new-project-row">
         <label for="new-project-create-name">
           <span>Create a project</span>
           <input
@@ -134,7 +149,7 @@
             autocapitalize="off"
           />
         </label>
-        <button type="button" aria-label="Create new project">Create</button>
+        <button id="new-project-create" type="button" aria-label="Create new project">Create</button>
       </div>
     </div>
 

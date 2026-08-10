@@ -16,6 +16,7 @@ import {
 } from "../tailnet-machine-contract.js";
 import type { MachineHandshake, TailnetMachineCandidate } from "../tailnet-machine-contract.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
+import { MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
 
 const log = createLogger("http");
 
@@ -78,15 +79,15 @@ export function createPerIpRateLimiter(rate: number, evictIntervalMs = 60_000) {
 // ── Session helpers ──
 
 export async function uniqueSessionName(base: string): Promise<string> {
-  // Project names allow dots (`my.app`); session names don't (see
-  // isValidSessionName — `^[a-zA-Z0-9_-]+$`). Replace upfront so a project
-  // like `foo.bar` produces a valid session name (`foo_bar`).
-  base = base.replace(/\./g, "_");
+  base = projectLabelToSessionName(base).slice(0, MAX_SESSION_NAME_LENGTH);
   const sessions = await getBackend().list();
   if (!sessions.includes(base)) return base;
   let i = 2;
-  while (sessions.includes(`${base}-${i}`)) i++;
-  return `${base}-${i}`;
+  while (true) {
+    const suffix = `-${i++}`;
+    const candidate = `${base.slice(0, MAX_SESSION_NAME_LENGTH - suffix.length)}${suffix}`;
+    if (!sessions.includes(candidate)) return candidate;
+  }
 }
 
 export async function isAllowedSession(session: string): Promise<boolean> {

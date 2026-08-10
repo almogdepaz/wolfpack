@@ -10,7 +10,7 @@ describe("session control cli parsing", () => {
     expect(parseSessionCommand(["open", "wolfpack", "--json"])).toEqual({
       ok: true,
       action: "open",
-      project: "wolfpack",
+      selector: { kind: "project", project: "wolfpack" },
       prompt: undefined,
       output: "json",
     });
@@ -26,7 +26,7 @@ describe("session control cli parsing", () => {
     ])).toEqual({
       ok: true,
       action: "open",
-      project: "wolfpack",
+      selector: { kind: "project", project: "wolfpack" },
       prompt: "perform differential review only",
       output: "json",
     });
@@ -36,14 +36,14 @@ describe("session control cli parsing", () => {
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", "--review-only"])).toEqual({
       ok: true,
       action: "open",
-      project: "wolfpack",
+      selector: { kind: "project", project: "wolfpack" },
       prompt: "--review-only",
       output: "plain",
     });
     expect(parseSessionCommand(["open", "wolfpack", "--prompt=--json"])).toEqual({
       ok: true,
       action: "open",
-      project: "wolfpack",
+      selector: { kind: "project", project: "wolfpack" },
       prompt: "--json",
       output: "plain",
     });

@@ -1,15 +1,18 @@
 # Session Control CLI/API
 
-Wolfpack exposes a scriptable session surface for agents and operators. The server remains authoritative for auth, project containment, session naming, stable broker identity, and PTY operations. Commands use Wolfpack's ordinary global API auth policy and add no inter-session authorization layer.
+Wolfpack exposes a scriptable session surface for agents and operators. The server remains authoritative for auth, project selection and path validation, session naming, stable broker identity, and PTY operations. Commands use Wolfpack's ordinary global API auth policy and add no inter-session authorization layer.
 
 ## Create a top-level session
 
 ```bash
 wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
 ```
 
 - performs one `POST /api/session-create` request.
-- requires an exact existing project under `WOLFPACK_DEV_DIR`.
+- accepts exactly one project selector: an exact direct-child name under `WOLFPACK_DEV_DIR`, or `--project-dir` for an existing directory anywhere on the server host.
+- resolves a relative CLI `--project-dir` against the CLI process working directory before sending it. The HTTP API accepts absolute paths only.
+- rejects missing paths, files, final-component symlinks, overlong paths, and ambiguous requests containing both selectors. The server canonicalizes accepted paths before launch.
 - selects the configured default command when `--harness` is omitted.
 - accepts `shell`, `pi`, `claude`, `codex`, `gemini`, or `cursor` as explicit harnesses.
 - allocates `<project>`, then `<project>-2`, `<project>-3`, and so on with bounded collision retries.
@@ -23,9 +26,11 @@ wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--
 
 ```bash
 wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
+- uses the same mutually exclusive name/`--project-dir` selection and server validation as top-level creation.
 - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND` from the current parent agent.
 - resolves the parent through structured broker identity and launches the same supported harness.
 - accepts `--name <session>` for meaningful child names such as `200-security-review`; if omitted, derives `<parent>-sub-agent`, then numbered names.
@@ -35,7 +40,9 @@ wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
 - json success has the same fields as top-level creation, including stable `sessionId`.
 
-`wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn`. It never means top-level creation.
+`wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors. It never means top-level creation.
+
+The browser project picker keeps the configured-root catalog as its default. **Open existing directory** accepts a server-local absolute path; it does not enumerate the filesystem or create directories outside `WOLFPACK_DEV_DIR`.
 
 ## Keep handoffs short
 

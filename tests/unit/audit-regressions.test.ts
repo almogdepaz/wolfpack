@@ -43,10 +43,10 @@ describe("isUnderDevDir — path containment boundary", () => {
 // from production. `isUnderDevDir` resolves DEV_DIR from process.env.WOLFPACK_DEV_DIR
 // at call time (set at top of file to /Users/home/Dev/).
 
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync } from "node:fs";
+import { lstatSync, mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-const { validateProjectDir } = await import("../../src/server/validate-project-dir.js");
+const { validateExplicitProjectDir, validateProjectDir } = await import("../../src/server/validate-project-dir.js");
 
 describe("validateProjectDir — realpath containment", () => {
   test("rejects directory whose realpath escapes DEV_DIR", () => {
@@ -80,6 +80,90 @@ describe("validateProjectDir — realpath containment", () => {
     const result = validateProjectDir("/nonexistent/path/xyz");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("not_found");
+  });
+});
+
+describe("validateExplicitProjectDir — explicit arbitrary directory boundary", () => {
+  test("accepts an existing directory outside DEV_DIR and returns its canonical path", () => {
+    const rawDir = mkdtempSync(join(tmpdir(), "wolfpack-explicit-project-"));
+    try {
+      expect(validateExplicitProjectDir(rawDir)).toEqual({
+        ok: true,
+        projectDir: realpathSync(rawDir),
+      });
+    } finally {
+      rmSync(rawDir, { recursive: true, force: true });
+    }
+  });
+
+  test("canonicalizes a directory reached through an intermediate symlink", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-canonical-"));
+    const targetParent = join(root, "target");
+    const projectDir = join(targetParent, "project");
+    const linkedParent = join(root, "linked-parent");
+    mkdirSync(projectDir, { recursive: true });
+    symlinkSync(targetParent, linkedParent);
+    try {
+      expect(validateExplicitProjectDir(join(linkedParent, "project"))).toEqual({
+        ok: true,
+        projectDir: realpathSync(projectDir),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects relative, NUL-containing, and overlong paths before filesystem access", () => {
+    for (const projectDir of ["relative/project", "/tmp/with\0nul", `/${"a".repeat(4_096)}`]) {
+      expect(validateExplicitProjectDir(projectDir)).toEqual({
+        ok: false,
+        code: "invalid",
+        error: "invalid project directory",
+      });
+    }
+  });
+
+  test("rejects final symlinks, files, and missing paths", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-invalid-"));
+    const directory = join(root, "directory");
+    const symlink = join(root, "symlink");
+    const file = join(root, "file");
+    mkdirSync(directory);
+    symlinkSync(directory, symlink);
+    writeFileSync(file, "not a directory");
+    try {
+      expect(validateExplicitProjectDir(symlink)).toMatchObject({ ok: false, code: "not_dir" });
+      expect(validateExplicitProjectDir(`${symlink}/`)).toMatchObject({ ok: false, code: "not_dir" });
+      expect(validateExplicitProjectDir(file)).toMatchObject({ ok: false, code: "not_dir" });
+      expect(validateExplicitProjectDir(join(file, "child"))).toMatchObject({ ok: false, code: "not_found" });
+      expect(validateExplicitProjectDir(join(root, "missing"))).toMatchObject({ ok: false, code: "not_found" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies structured ELOOP failures as unavailable without exposing OS details", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-unavailable-"));
+    const loop = join(root, "loop");
+    const projectDir = join(loop, "project");
+    symlinkSync("loop", loop);
+    try {
+      let filesystemError: unknown;
+      try {
+        lstatSync(projectDir);
+      } catch (error: unknown) {
+        filesystemError = error;
+      }
+      expect(filesystemError).toBeInstanceOf(Error);
+      expect((filesystemError as NodeJS.ErrnoException).code).toBe("ELOOP");
+      expect(validateExplicitProjectDir(projectDir)).toEqual({
+        ok: false,
+        code: "unavailable",
+        error: "project directory unavailable",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

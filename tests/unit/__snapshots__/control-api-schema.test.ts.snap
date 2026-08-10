@@ -30,7 +30,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
   },
   "trustBoundaries": [
     "schemas publish public client contracts; they do not replace route-side project/session/path validation",
-    "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
+    "named-project containment and explicit absolute-directory validation remain in src/server/project-selection.ts, src/server/validate-project-dir.ts, and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
@@ -1079,12 +1079,35 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "properties": {
           "project": {
             "$ref": "#/$defs/ProjectName"
+          },
+          "projectDir": {
+            "$ref": "#/$defs/ProjectDirectory"
           }
         },
-        "required": [
-          "project"
-        ],
-        "additionalProperties": false
+        "required": [],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "project"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "projectDir"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          }
+        ]
       },
       "response": {
         "$id": "wolfpack:control-api:http:nextSessionName:response",
@@ -1102,7 +1125,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "additionalProperties": false
       },
       "errors": [
-        "400 ErrorEnvelope"
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "503 ErrorEnvelope"
       ]
     },
     "createSession": {
@@ -1117,6 +1142,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "properties": {
           "project": {
             "$ref": "#/$defs/ProjectName"
+          },
+          "projectDir": {
+            "$ref": "#/$defs/ProjectDirectory"
           },
           "newProject": {
             "$ref": "#/$defs/ProjectName"
@@ -1138,22 +1166,38 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         },
         "required": [],
         "additionalProperties": false,
-        "anyOf": [
+        "allOf": [
           {
-            "type": "object",
-            "properties": {},
-            "required": [
-              "project"
-            ],
-            "additionalProperties": true
-          },
-          {
-            "type": "object",
-            "properties": {},
-            "required": [
-              "newProject"
-            ],
-            "additionalProperties": true
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "projectDir"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [
+                      "project"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [
+                      "newProject"
+                    ],
+                    "additionalProperties": true
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -1196,6 +1240,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "project": {
             "$ref": "#/$defs/ProjectName"
           },
+          "projectDir": {
+            "$ref": "#/$defs/ProjectDirectory"
+          },
           "harness": {
             "$ref": "#/$defs/CreatableHarness"
           },
@@ -1205,10 +1252,30 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             "maxLength": 32768
           }
         },
-        "required": [
-          "project"
-        ],
-        "additionalProperties": false
+        "required": [],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "project"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "projectDir"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          }
+        ]
       },
       "response": {
         "$id": "wolfpack:control-api:http:createTopLevelSession:response",
@@ -1226,7 +1293,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             "$ref": "#/$defs/SessionId"
           },
           "project": {
-            "$ref": "#/$defs/ProjectName"
+            "$ref": "#/$defs/ProjectLabel"
           },
           "harness": {
             "type": "string"
@@ -1261,6 +1328,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "project": {
             "$ref": "#/$defs/ProjectName"
           },
+          "projectDir": {
+            "$ref": "#/$defs/ProjectDirectory"
+          },
           "parentSession": {
             "$ref": "#/$defs/SessionName"
           },
@@ -1274,10 +1344,31 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           }
         },
         "required": [
-          "project",
           "parentSession"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "project"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "projectDir"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          }
+        ]
       },
       "response": {
         "$id": "wolfpack:control-api:http:openSession:response",
@@ -1295,7 +1386,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
             "$ref": "#/$defs/SessionId"
           },
           "project": {
-            "$ref": "#/$defs/ProjectName"
+            "$ref": "#/$defs/ProjectLabel"
           },
           "harness": {
             "$ref": "#/$defs/OpenableHarness"
@@ -2559,6 +2650,17 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     "ProjectName": {
       "type": "string",
       "pattern": "^[a-zA-Z0-9._-]+$"
+    },
+    "ProjectLabel": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ProjectDirectory": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Absolute server-local path to an existing directory; runtime canonicalizes and validates it before launch"
     },
     "Command": {
       "type": "string",

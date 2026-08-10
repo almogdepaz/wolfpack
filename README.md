@@ -50,7 +50,7 @@ Package runners use the same setup wizard but do not add `wolfpack` to `PATH`. U
 | Bunx | `bunx wolfpack-bridge@latest doctor` |
 | npm/npx | `npx --yes wolfpack-bridge@latest doctor` |
 
-Open the local URL on the host machine. For phone or remote access, scan only the verified Tailnet HTTPS QR code.
+Open the local URL on the host machine. The project picker lists projects under the configured directory by default; **Open existing directory** can launch an existing server-local absolute path elsewhere. For phone or remote access, scan only the verified Tailnet HTTPS QR code.
 
 To uninstall: `wolfpack uninstall --yes` (curl), `bunx wolfpack-bridge@latest uninstall --yes` (Bunx), or `npx --yes wolfpack-bridge@latest uninstall --yes` (npm).
 
@@ -100,7 +100,9 @@ Spawn a same-harness child agent:
 wolfpack agent spawn project-name --plan .plans/000-review.md --notify-parent --json
 ```
 
-Use `wolfpack session create <project>` for top-level work and `wolfpack agent spawn <project>` for a same-harness child. The CLI validates the project and command, allocates a stable broker session ID, and delivers the initial instruction directly to the harness. For the full command surface and automation contract, use [session control](docs/session-control.md) and [task gateway](docs/task-gateway.md).
+To select an existing directory outside the configured projects root, replace the project name with `--project-dir <path>` on either command. Relative CLI paths are resolved locally; the server accepts and canonicalizes only existing absolute directories.
+
+Use `wolfpack session create <project>` for top-level work and `wolfpack agent spawn <project>` for a same-harness child. The server validates the project selector and command, allocates a stable broker session ID, and delivers the initial instruction directly to the harness. For the full command surface and automation contract, use [session control](docs/session-control.md) and [task gateway](docs/task-gateway.md).
 
 ## contributing
 

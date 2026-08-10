@@ -3694,8 +3694,11 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   showView("projects");
   resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
+  const directoryInput = document.getElementById("existing-project-dir") as HTMLInputElement;
   const createProjectInput = document.getElementById("new-project-create-name") as HTMLInputElement;
+  state.selectedProjectDir = "";
   projectNameInput.value = "";
+  directoryInput.value = "";
   createProjectInput.value = "";
   projectNameInput.focus({ preventScroll: true });
   const list = document.getElementById("project-list");
@@ -3726,6 +3729,21 @@ function showTerminalLoading(label: string): void {
 function selectProject(project: string): void {
   recordProjectRecent(project);
   state.selectedProject = project;
+  state.selectedProjectDir = "";
+  state.isNewProject = false;
+  showAgentPicker();
+}
+
+function selectProjectDirectory(): void {
+  const input = document.getElementById("existing-project-dir") as HTMLInputElement;
+  const projectDir = input.value;
+  if (!projectDir.trim()) {
+    input.focus({ preventScroll: true });
+    return;
+  }
+  const withoutTrailingSlashes = projectDir.replace(/\/+$/, "");
+  state.selectedProject = withoutTrailingSlashes.split("/").pop() || projectDir;
+  state.selectedProjectDir = projectDir;
   state.isNewProject = false;
   showAgentPicker();
 }
@@ -3736,6 +3754,7 @@ function selectNewProject() {
   if (!name) return;
   recordProjectRecent(name);
   state.selectedProject = name;
+  state.selectedProjectDir = "";
   state.isNewProject = true;
   showAgentPicker();
 }
@@ -3755,27 +3774,44 @@ async function showAgentPicker() {
   createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
   nameError.classList.remove("visible");
+  const projectQuery = state.selectedProjectDir
+    ? "projectDir=" + encodeURIComponent(state.selectedProjectDir)
+    : "project=" + encodeURIComponent(state.selectedProject);
+  const settingsPromise = api<SettingsResponse>("/settings", undefined, state.projectMachine).then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    () => ({ status: "rejected" as const }),
+  );
+  const namePromise = api<NextSessionNameResponse>(
+    "/next-session-name?" + projectQuery,
+    undefined,
+    state.projectMachine,
+  );
+  let nameData: NextSessionNameResponse;
   try {
-    const [data, nameData] = await Promise.all([
-      api<SettingsResponse>("/settings", undefined, state.projectMachine),
-      api<NextSessionNameResponse>("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
-    ]);
-    if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
-    // /api/settings now returns { settings, effective } — effective.cmds is
-    // the list to render (already filtered to enabled, with ["shell"] fallback
-    // when nothing's on). Manage which cmds appear via the Settings page.
-    const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
-    const defaultCmd = data.effective?.agentCmd;
-    const html = cmds.map(cmd => `
-      <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
-        <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
-        <div class="card-name">${esc(cmd)}</div>
-      </button>
-    `).join("");
-    el.innerHTML = html;
-  } catch {
-    el.innerHTML = '<div class="empty">Failed to load agents</div>';
+    nameData = await namePromise;
+  } catch (error) {
+    el.innerHTML = `<div class="empty">${esc(errorMessage(error))}</div>`;
+    return;
   }
+  const settingsResult = await settingsPromise;
+  if (settingsResult.status === "rejected") {
+    el.innerHTML = '<div class="empty">Failed to load agents</div>';
+    return;
+  }
+  const data = settingsResult.value;
+  if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
+  // /api/settings now returns { settings, effective } — effective.cmds is
+  // the list to render (already filtered to enabled, with ["shell"] fallback
+  // when nothing's on). Manage which cmds appear via the Settings page.
+  const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
+  const defaultCmd = data.effective?.agentCmd;
+  const html = cmds.map(cmd => `
+    <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
+      <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
+      <div class="card-name">${esc(cmd)}</div>
+    </button>
+  `).join("");
+  el.innerHTML = html;
 }
 
 // Session name input validation
@@ -4010,7 +4046,9 @@ async function createSessionWithAgent(cmd) {
   try {
     const body = state.isNewProject
       ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined }
-      : { project: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined };
+      : state.selectedProjectDir
+        ? { projectDir: state.selectedProjectDir, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined }
+        : { project: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined };
     const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5306,6 +5344,12 @@ newProjectNameInput.addEventListener("keydown", (event) => {
   if (match) selectProject(match);
 });
 
+document.getElementById("existing-project-dir")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || state.currentView !== "projects") return;
+  event.preventDefault();
+  selectProjectDirectory();
+});
+
 document.getElementById("new-project-create-name")?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || state.currentView !== "projects") return;
   event.preventDefault();
@@ -5994,8 +6038,8 @@ function bindHtmlEventListeners(): void {
   document.addEventListener("keydown", handlePickerKeyboardNavigation);
   const pickerCancel = document.querySelector("#projects-view .picker-cancel-btn");
   if (pickerCancel) pickerCancel.addEventListener("click", () => { returnFromProjectPicker(); });
-  const createProjectBtn = document.querySelector("#projects-view .new-project-row button");
-  if (createProjectBtn) createProjectBtn.addEventListener("click", () => selectNewProject());
+  on("existing-project-open", "click", () => selectProjectDirectory());
+  on("new-project-create", "click", () => selectNewProject());
 
   // Agent picker (read-only — add/remove/toggle moved to Settings)
   const agentBackBtn = document.querySelector("#agent-view .picker-cancel-btn");
