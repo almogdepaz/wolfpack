@@ -347,8 +347,17 @@ export function sanitizePeerName(name: unknown): string {
 // (exit 0), which then fails JSON.parse. `/bin/sh -l -c` sources the user's
 // login profile so the bridge resolves. Revert warning: do NOT "simplify" to
 // a direct execFile — that silently breaks discovery on App Store installs.
+function buildTailscaleStatusCommandArgv(tsBin: string, selfOnly: boolean): { cmd: string; args: string[] } {
+  const selfFlag = selfOnly ? " --self" : "";
+  return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status${selfFlag} --json`] };
+}
+
 export function buildTailscaleStatusArgv(tsBin: string): { cmd: string; args: string[] } {
-  return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status --json`] };
+  return buildTailscaleStatusCommandArgv(tsBin, false);
+}
+
+export function buildTailscaleSelfStatusArgv(tsBin: string): { cmd: string; args: string[] } {
+  return buildTailscaleStatusCommandArgv(tsBin, true);
 }
 
 function findTailscaleBinary(): string | undefined {
@@ -398,8 +407,11 @@ export function createTailscaleStatusCache(
 export async function executeTailscaleStatus(
   binary: string,
   run: ExecFn = exec,
+  selfOnly = false,
 ): Promise<unknown> {
-  const { cmd, args } = buildTailscaleStatusArgv(binary);
+  const { cmd, args } = selfOnly
+    ? buildTailscaleSelfStatusArgv(binary)
+    : buildTailscaleStatusArgv(binary);
   const { stdout } = await run(cmd, args, {
     maxBuffer: TAILSCALE_MAX_BUFFER,
     timeout: TAILSCALE_STATUS_TIMEOUT_MS,
@@ -407,23 +419,27 @@ export async function executeTailscaleStatus(
   return JSON.parse(stdout) as unknown;
 }
 
-async function readLocalTailscaleStatusUncached(): Promise<unknown> {
+async function readLocalTailscaleStatusUncached(selfOnly = false): Promise<unknown> {
   const binary = findTailscaleBinary();
   if (!binary) throw new Error("tailscale not found");
-  return executeTailscaleStatus(binary);
+  return executeTailscaleStatus(binary, exec, selfOnly);
 }
 
-const localTailscaleStatusCache = createTailscaleStatusCache(readLocalTailscaleStatusUncached);
+const localTailscaleStatusCache = createTailscaleStatusCache(() => readLocalTailscaleStatusUncached());
+const localTailscaleSelfStatusCache = createTailscaleStatusCache(() => readLocalTailscaleStatusUncached(true));
 
-async function readLocalTailscaleStatus(): Promise<unknown> {
+async function readLocalTailscaleStatus(selfOnly = false): Promise<unknown> {
   const testStatus = process.env.WOLFPACK_TEST ? process.env.WOLFPACK_TAILSCALE_STATUS_JSON : undefined;
   if (testStatus !== undefined) return JSON.parse(testStatus) as unknown;
-  return localTailscaleStatusCache.read();
+  return selfOnly ? localTailscaleSelfStatusCache.read() : localTailscaleStatusCache.read();
 }
 
 export async function getLocalMachineHandshake(version: string): Promise<MachineHandshake | null> {
   try {
-    const status = await readLocalTailscaleStatus();
+    // The public handshake needs only this node's identity. Avoid waiting for
+    // a full peer network-map query, which can consume the endpoint's entire
+    // subprocess bound on an otherwise healthy Tailnet machine.
+    const status = await readLocalTailscaleStatus(true);
     return buildMachineHandshakeFromTailnetStatus({
       status,
       installationId: getInstallationId(),

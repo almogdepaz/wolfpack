@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   TAILSCALE_STATUS_CACHE_TTL_MS,
   TAILSCALE_STATUS_TIMEOUT_MS,
+  buildTailscaleSelfStatusArgv,
   buildTailscaleStatusArgv,
   createTailscaleStatusCache,
   executeTailscaleStatus,
@@ -24,6 +25,12 @@ describe("buildTailscaleStatusArgv", () => {
     const { args } = buildTailscaleStatusArgv("/opt/homebrew/bin/tailscale");
     expect(args[2]).toContain("status --json");
     expect(args[2]).toContain("/opt/homebrew/bin/tailscale");
+  });
+
+  test("uses the bounded self-only query for machine identity", () => {
+    const { cmd, args } = buildTailscaleSelfStatusArgv("/opt/homebrew/bin/tailscale");
+    expect(cmd).toBe("/bin/sh");
+    expect(args).toEqual(["-l", "-c", '"/opt/homebrew/bin/tailscale" status --self --json']);
   });
 
   test("quotes path with spaces (App Store bundle)", () => {
@@ -77,5 +84,14 @@ describe("Tailscale status execution bounds", () => {
       return { stdout: '{"Self":{}}', stderr: "" };
     })).resolves.toEqual({ Self: {} });
     expect(timeout).toBe(TAILSCALE_STATUS_TIMEOUT_MS);
+  });
+
+  test("executes the self-only status command when requested", async () => {
+    let command = "";
+    await expect(executeTailscaleStatus("/opt/homebrew/bin/tailscale", async (_file, args) => {
+      command = args[2] ?? "";
+      return { stdout: '{"Self":{}}', stderr: "" };
+    }, true)).resolves.toEqual({ Self: {} });
+    expect(command).toContain("status --self --json");
   });
 });
