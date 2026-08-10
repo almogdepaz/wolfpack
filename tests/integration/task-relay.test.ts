@@ -1,30 +1,25 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const originalTestMode = process.env.WOLFPACK_TEST;
 process.env.WOLFPACK_TEST = "1";
-const originalHome = process.env.HOME;
 const root = mkdtempSync(join(tmpdir(), "wolfpack-task-relay-http-"));
-process.env.HOME = root;
-process.env.WOLFPACK_TASK_RELAY_ROOT = join(root, "relay");
 mkdirSync(join(root, "project"), { recursive: true });
-mkdirSync(join(root, ".wolfpack"), { recursive: true });
-writeFileSync(join(root, ".wolfpack", "config.json"), JSON.stringify({
-  devDir: join(root, "project"),
-  port: 18790,
-  tailscaleHostname: "sender.example.ts.net",
-}));
 
 const { __setTestBackend } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/task-relay/gateway.ts");
+const {
+  TaskRelayGateway,
+  __resetTaskRelayGatewayForTests,
+  __setTaskRelayGatewayForTests,
+  getTaskRelayGateway,
+} = await import("../../src/task-relay/gateway.ts");
 const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
-if (originalHome === undefined) delete process.env.HOME;
-else process.env.HOME = originalHome;
 
 class PiBackend extends MockBackend {
   override async listIdentities() {
@@ -37,7 +32,11 @@ class PiBackend extends MockBackend {
 }
 
 __setTestBackend(new PiBackend({ sessions: ["sender", "receiver"] }));
-__resetTaskRelayGatewayForTests();
+__setTaskRelayGatewayForTests(new TaskRelayGateway({
+  root: join(root, "relay"),
+  peerOrigin: "https://sender.example.ts.net",
+  peerFetch: (input, init) => globalThis.fetch(input, init),
+}));
 const { server } = createServerInstance();
 let base = "";
 
@@ -48,9 +47,17 @@ beforeAll(async () => {
   }));
 });
 
-afterAll(() => {
-  (server as Server).close();
-  rmSync(root, { recursive: true, force: true });
+afterAll(async () => {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      (server as Server).close((error) => error ? reject(error) : resolve());
+    });
+  } finally {
+    __resetTaskRelayGatewayForTests();
+    rmSync(root, { recursive: true, force: true });
+    if (originalTestMode === undefined) delete process.env.WOLFPACK_TEST;
+    else process.env.WOLFPACK_TEST = originalTestMode;
+  }
 });
 
 async function post(path: string, body: unknown): Promise<Response> {
@@ -74,7 +81,6 @@ describe("task relay v2 routes", () => {
       ok: true,
       endpoint: body.endpoint,
     });
-    __resetTaskRelayGatewayForTests();
   });
 
   test("uses the production Tailnet origin for opaque remote forwarding", async () => {
