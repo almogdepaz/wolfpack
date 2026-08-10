@@ -3736,8 +3736,8 @@ function selectProject(project: string): void {
 
 function selectProjectDirectory(): void {
   const input = document.getElementById("existing-project-dir") as HTMLInputElement;
-  const projectDir = input.value.trim();
-  if (!projectDir) {
+  const projectDir = input.value;
+  if (!projectDir.trim()) {
     input.focus({ preventScroll: true });
     return;
   }

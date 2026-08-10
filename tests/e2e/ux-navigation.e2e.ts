@@ -658,8 +658,8 @@ test("project picker uses concise labels without repeating placeholders", async 
   await expect(page.getByRole("button", { name: "Create new project", exact: true })).toHaveText("Create");
 });
 
-test("project picker opens an explicit server directory without changing rooted project flows", async ({ page }) => {
-  const projectDir = "/srv/worktrees/path with spaces";
+test("project picker preserves exact explicit server directory text in browser requests", async ({ page }) => {
+  const projectDir = "/srv/worktrees/path with spaces ";
   const nextNameQueries: URL[] = [];
   const createRequests: Array<Record<string, unknown>> = [];
   await page.route("**/api/projects", async (route) => {
