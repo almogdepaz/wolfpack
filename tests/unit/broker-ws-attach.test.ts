@@ -328,7 +328,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     attachWs(ws);
     ws.pushJson({ type: "attach", cols: 100, rows: 30 });
-    await wait(350);
+    await waitFor(() => backend.attachLeaseCancelCount === 1);
 
     expect(backend.attachLeaseBeginCount).toBe(1);
     expect(backend.attachLeaseActivateCount).toBe(0);
