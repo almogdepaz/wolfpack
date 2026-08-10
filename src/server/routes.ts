@@ -318,7 +318,7 @@ function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]): 400 
 
 type DirectoryBrowseFailure = Extract<DirectoryBrowseResult, { readonly ok: false }>;
 
-type DirectoryBrowseHttpStatus = 400 | 404 | 413 | 503;
+type DirectoryBrowseHttpStatus = 400 | 404 | 422 | 503;
 
 const DIRECTORY_BROWSE_HTTP_STATUS: Readonly<Record<
   DirectoryBrowseFailure["code"],
@@ -326,7 +326,7 @@ const DIRECTORY_BROWSE_HTTP_STATUS: Readonly<Record<
 >> = {
   invalid: 400,
   not_found: 404,
-  too_many_entries: 413,
+  too_many_entries: 422,
   unavailable: 503,
 };
 

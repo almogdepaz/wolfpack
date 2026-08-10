@@ -321,7 +321,7 @@ describe("control api schema compatibility samples", () => {
     expect(operation.errors).toEqual([
       "400 DirectoryBrowseErrorEnvelope",
       "404 DirectoryBrowseErrorEnvelope",
-      "413 DirectoryBrowseErrorEnvelope",
+      "422 DirectoryBrowseErrorEnvelope",
       "503 DirectoryBrowseErrorEnvelope",
     ]);
     expect(validate(
