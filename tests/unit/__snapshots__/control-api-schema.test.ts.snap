@@ -1121,6 +1121,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       "errors": [
         "400 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
+        "413 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope"
       ]
     },
@@ -2699,6 +2700,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "enum": [
             "invalid directory",
             "directory not found",
+            "directory contains too many entries",
             "directory unavailable"
           ]
         },
@@ -2706,6 +2708,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "enum": [
             "invalid",
             "not_found",
+            "too_many_entries",
             "unavailable"
           ]
         }

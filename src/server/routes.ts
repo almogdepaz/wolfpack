@@ -318,10 +318,20 @@ function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]): 400 
 
 type DirectoryBrowseFailure = Extract<DirectoryBrowseResult, { readonly ok: false }>;
 
-function directoryBrowseHttpStatus(code: DirectoryBrowseFailure["code"]): 400 | 404 | 503 {
-  if (code === "not_found") return 404;
-  if (code === "unavailable") return 503;
-  return 400;
+type DirectoryBrowseHttpStatus = 400 | 404 | 413 | 503;
+
+const DIRECTORY_BROWSE_HTTP_STATUS: Readonly<Record<
+  DirectoryBrowseFailure["code"],
+  DirectoryBrowseHttpStatus
+>> = {
+  invalid: 400,
+  not_found: 404,
+  too_many_entries: 413,
+  unavailable: 503,
+};
+
+function directoryBrowseHttpStatus(code: DirectoryBrowseFailure["code"]): DirectoryBrowseHttpStatus {
+  return DIRECTORY_BROWSE_HTTP_STATUS[code];
 }
 
 /** Validate project name + directory in one call. Returns resolved path or sends error and returns null. */

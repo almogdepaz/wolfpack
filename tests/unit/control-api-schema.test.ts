@@ -321,8 +321,17 @@ describe("control api schema compatibility samples", () => {
     expect(operation.errors).toEqual([
       "400 DirectoryBrowseErrorEnvelope",
       "404 DirectoryBrowseErrorEnvelope",
+      "413 DirectoryBrowseErrorEnvelope",
       "503 DirectoryBrowseErrorEnvelope",
     ]);
+    expect(validate(
+      (artifact.$defs as JsonObject).DirectoryBrowseErrorEnvelope,
+      {
+        error: "directory contains too many entries",
+        code: "too_many_entries",
+      },
+      artifact,
+    )).toEqual([]);
     expect(validate(request, {}, artifact)).toEqual([]);
     expect(validate(request, { path: "/server/projects" }, artifact)).toEqual([]);
     expect(validate(request, { path: "relative/projects" }, artifact)).not.toEqual([]);

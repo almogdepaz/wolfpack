@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { MAX_PROJECT_DIR_LENGTH } from "./validate-project-dir.js";
 
 export const DIRECTORY_BROWSE_LIMIT = 200;
+export const DIRECTORY_BROWSE_SCAN_LIMIT = 1_000;
 
 const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
 
@@ -22,7 +23,7 @@ export type DirectoryBrowseResult =
   | { readonly ok: true; readonly value: DirectoryBrowseValue }
   | {
       readonly ok: false;
-      readonly code: "invalid" | "not_found" | "unavailable";
+      readonly code: "invalid" | "not_found" | "too_many_entries" | "unavailable";
       readonly error: string;
     };
 
@@ -45,8 +46,11 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
     const directories: DirectoryBrowseEntry[] = [];
     const directory = opendirSync(current);
     try {
+      let entriesInspected = 0;
       let entry = directory.readSync();
       while (entry) {
+        entriesInspected++;
+        if (entriesInspected > DIRECTORY_BROWSE_SCAN_LIMIT) return tooManyEntries();
         if (!entry.name.startsWith(".") && entry.isDirectory()) {
           const entryPath = join(current, entry.name);
           try {
@@ -99,6 +103,14 @@ function filesystemCode(error: unknown): string | undefined {
 
 function invalidDirectory(): DirectoryBrowseResult {
   return { ok: false, code: "invalid", error: "invalid directory" };
+}
+
+function tooManyEntries(): DirectoryBrowseResult {
+  return {
+    ok: false,
+    code: "too_many_entries",
+    error: "directory contains too many entries",
+  };
 }
 
 function unavailableDirectory(): DirectoryBrowseResult {
