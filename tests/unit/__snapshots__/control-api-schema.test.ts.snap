@@ -3311,7 +3311,6 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
                 "INVALID_REQUEST",
                 "CALLER_NOT_FOUND",
                 "CALLER_DEAD",
-                "CALLER_NOT_PI",
                 "INCOMPATIBLE_PROTOCOL",
                 "REGISTRATION_EXPIRED",
                 "SOURCE_MISMATCH",
