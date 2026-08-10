@@ -2614,6 +2614,17 @@ interface ProjectsResponse {
   readonly projects?: string[];
 }
 
+interface DirectoryBrowseEntry {
+  readonly name: string;
+  readonly path: string;
+}
+
+interface DirectoryBrowseResponse {
+  readonly current: string;
+  readonly parent: string | null;
+  readonly directories: readonly DirectoryBrowseEntry[];
+}
+
 interface AgentCommandSetting {
   readonly cmd: string;
   readonly enabled: boolean;
@@ -3694,8 +3705,12 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   showView("projects");
   resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
+  const directoryInput = document.getElementById("existing-project-dir") as HTMLInputElement;
   const createProjectInput = document.getElementById("new-project-create-name") as HTMLInputElement;
+  state.selectedProjectDir = "";
+  state.newProjectParent = "";
   projectNameInput.value = "";
+  directoryInput.value = "";
   createProjectInput.value = "";
   projectNameInput.focus({ preventScroll: true });
   const list = document.getElementById("project-list");
@@ -3715,6 +3730,125 @@ async function showProjectPicker(machineUrl?: string): Promise<void> {
   }
 }
 
+let directoryBrowserSelection: DirectoryBrowseResponse | null = null;
+let directoryBrowserTrigger: HTMLElement | null = null;
+let directoryBrowserRequest = 0;
+
+function isDirectoryBrowseResponse(value: unknown): value is DirectoryBrowseResponse {
+  if (!value || typeof value !== "object") return false;
+  const response = value as Record<string, unknown>;
+  if (
+    typeof response.current !== "string"
+    || (response.parent !== null && typeof response.parent !== "string")
+    || !Array.isArray(response.directories)
+  ) {
+    return false;
+  }
+  return response.directories.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const directory = entry as Record<string, unknown>;
+    return typeof directory.name === "string" && typeof directory.path === "string";
+  });
+}
+
+function setDirectoryBrowserSelection(selection: DirectoryBrowseResponse | null): void {
+  directoryBrowserSelection = selection;
+  const current = document.getElementById("directory-browser-current");
+  const parent = document.getElementById("directory-browser-parent") as HTMLButtonElement;
+  const list = document.getElementById("directory-browser-list");
+  const open = document.getElementById("directory-browser-open-folder") as HTMLButtonElement;
+  const create = document.getElementById("directory-browser-create-here") as HTMLButtonElement;
+  current.textContent = selection?.current ?? "";
+  parent.disabled = !selection?.parent;
+  parent.hidden = !selection?.parent;
+  open.disabled = !selection;
+  create.disabled = !selection;
+  list.replaceChildren();
+  if (!selection) return;
+  if (!selection.directories.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No child directories";
+    list.append(empty);
+    return;
+  }
+  for (const directory of selection.directories) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "directory-browser-entry";
+    button.textContent = directory.name;
+    button.setAttribute("aria-label", `Browse ${directory.name}`);
+    button.addEventListener("click", (event) => {
+      void loadDirectoryBrowser(directory.path, event.detail === 0);
+    });
+    list.append(button);
+  }
+}
+
+async function loadDirectoryBrowser(path?: string, preserveKeyboardFocus = false): Promise<void> {
+  const request = ++directoryBrowserRequest;
+  const list = document.getElementById("directory-browser-list");
+  const error = document.getElementById("directory-browser-error");
+  setDirectoryBrowserSelection(null);
+  error.textContent = "";
+  list.textContent = "Loading directories…";
+  list.setAttribute("aria-busy", "true");
+  if (preserveKeyboardFocus) list.focus({ preventScroll: true });
+  try {
+    const response = await api<unknown>(
+      "/directories" + (path === undefined ? "" : `?path=${encodeURIComponent(path)}`),
+      undefined,
+      state.projectMachine,
+    );
+    if (request !== directoryBrowserRequest) return;
+    if (!isDirectoryBrowseResponse(response)) throw new Error("invalid directory response");
+    setDirectoryBrowserSelection(response);
+    if (preserveKeyboardFocus) {
+      document.getElementById("directory-browser-current")?.focus({ preventScroll: true });
+    }
+  } catch (loadError: unknown) {
+    if (request !== directoryBrowserRequest) return;
+    list.replaceChildren();
+    error.textContent = errorMessage(loadError);
+    if (preserveKeyboardFocus) error.focus({ preventScroll: true });
+  } finally {
+    if (request === directoryBrowserRequest) list.removeAttribute("aria-busy");
+  }
+}
+
+function closeDirectoryBrowser(restoreFocus: boolean): void {
+  const dialog = document.getElementById("directory-browser-dialog") as HTMLDialogElement;
+  if (!restoreFocus) directoryBrowserTrigger = null;
+  if (dialog.open) dialog.close();
+}
+
+function openDirectoryBrowser(trigger: HTMLElement): void {
+  const dialog = document.getElementById("directory-browser-dialog") as HTMLDialogElement;
+  directoryBrowserTrigger = trigger;
+  setDirectoryBrowserSelection(null);
+  if (!dialog.open) dialog.showModal();
+  void loadDirectoryBrowser();
+}
+
+function openBrowsedDirectory(): void {
+  if (!directoryBrowserSelection) return;
+  state.selectedProject = directoryBrowserSelection.current;
+  state.selectedProjectDir = directoryBrowserSelection.current;
+  state.newProjectParent = "";
+  state.isNewProject = false;
+  closeDirectoryBrowser(false);
+  void showAgentPicker();
+}
+
+function selectBrowsedCreateParent(): void {
+  if (!directoryBrowserSelection) return;
+  state.selectedProjectDir = "";
+  state.newProjectParent = directoryBrowserSelection.current;
+  state.isNewProject = false;
+  closeDirectoryBrowser(false);
+  (document.getElementById("new-project-create-name") as HTMLInputElement).focus({ preventScroll: true });
+}
+
 function showTerminalLoading(label: string): void {
   clearPreservedGrid();
   showView("terminal");
@@ -3726,6 +3860,23 @@ function showTerminalLoading(label: string): void {
 function selectProject(project: string): void {
   recordProjectRecent(project);
   state.selectedProject = project;
+  state.selectedProjectDir = "";
+  state.newProjectParent = "";
+  state.isNewProject = false;
+  showAgentPicker();
+}
+
+function selectProjectDirectory(): void {
+  const input = document.getElementById("existing-project-dir") as HTMLInputElement;
+  const projectDir = input.value;
+  if (!projectDir.trim()) {
+    input.focus({ preventScroll: true });
+    return;
+  }
+  const withoutTrailingSlashes = projectDir.replace(/\/+$/, "");
+  state.selectedProject = withoutTrailingSlashes.split("/").pop() || projectDir;
+  state.selectedProjectDir = projectDir;
+  state.newProjectParent = "";
   state.isNewProject = false;
   showAgentPicker();
 }
@@ -3736,6 +3887,7 @@ function selectNewProject() {
   if (!name) return;
   recordProjectRecent(name);
   state.selectedProject = name;
+  state.selectedProjectDir = "";
   state.isNewProject = true;
   showAgentPicker();
 }
@@ -3753,27 +3905,44 @@ async function showAgentPicker() {
   createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
   nameError.classList.remove("visible");
+  const projectQuery = state.selectedProjectDir
+    ? "projectDir=" + encodeURIComponent(state.selectedProjectDir)
+    : (state.isNewProject ? "newProject=" : "project=") + encodeURIComponent(state.selectedProject);
+  const settingsPromise = api<SettingsResponse>("/settings", undefined, state.projectMachine).then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    () => ({ status: "rejected" as const }),
+  );
+  const namePromise = api<NextSessionNameResponse>(
+    "/next-session-name?" + projectQuery,
+    undefined,
+    state.projectMachine,
+  );
+  let nameData: NextSessionNameResponse;
   try {
-    const [data, nameData] = await Promise.all([
-      api<SettingsResponse>("/settings", undefined, state.projectMachine),
-      api<NextSessionNameResponse>("/next-session-name?project=" + encodeURIComponent(state.selectedProject), undefined, state.projectMachine),
-    ]);
-    if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
-    // /api/settings now returns { settings, effective } — effective.cmds is
-    // the list to render (already filtered to enabled, with ["shell"] fallback
-    // when nothing's on). Manage which cmds appear via the Settings page.
-    const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
-    const defaultCmd = data.effective?.agentCmd;
-    const html = cmds.map(cmd => `
-      <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
-        <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
-        <div class="card-name">${esc(cmd)}</div>
-      </button>
-    `).join("");
-    el.innerHTML = html;
-  } catch {
-    el.innerHTML = '<div class="empty">Failed to load agents</div>';
+    nameData = await namePromise;
+  } catch (error) {
+    el.innerHTML = `<div class="empty">${esc(errorMessage(error))}</div>`;
+    return;
   }
+  const settingsResult = await settingsPromise;
+  if (settingsResult.status === "rejected") {
+    el.innerHTML = '<div class="empty">Failed to load agents</div>';
+    return;
+  }
+  const data = settingsResult.value;
+  if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
+  // /api/settings now returns { settings, effective } — effective.cmds is
+  // the list to render (already filtered to enabled, with ["shell"] fallback
+  // when nothing's on). Manage which cmds appear via the Settings page.
+  const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
+  const defaultCmd = data.effective?.agentCmd;
+  const html = cmds.map(cmd => `
+    <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
+      <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
+      <div class="card-name">${esc(cmd)}</div>
+    </button>
+  `).join("");
+  el.innerHTML = html;
 }
 
 // Session name input validation
@@ -4006,8 +4175,15 @@ async function createSessionWithAgent(cmd) {
   createError.classList.remove("visible");
   try {
     const body = state.isNewProject
-      ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined }
-      : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
+      ? {
+          newProject: state.selectedProject,
+          ...(state.newProjectParent && { newProjectParent: state.newProjectParent }),
+          cmd,
+          sessionName: sessionName || undefined,
+        }
+      : state.selectedProjectDir
+        ? { projectDir: state.selectedProjectDir, cmd, sessionName: sessionName || undefined }
+        : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
     const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5202,6 +5378,8 @@ function backToSessions() {
 // Escape to back out of project/agent picker views
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  const directoryBrowser = document.getElementById("directory-browser-dialog") as HTMLDialogElement | null;
+  if (directoryBrowser?.open) return;
   if (state.focusedDelegationSession) {
     e.preventDefault();
     e.stopPropagation();
@@ -5301,6 +5479,12 @@ newProjectNameInput.addEventListener("keydown", (event) => {
   if (projectNames === null) return;
   const match = rankProjectNames(projectNames, newProjectNameInput.value, loadProjectRecents(), MAX_VISIBLE_PROJECTS)[0];
   if (match) selectProject(match);
+});
+
+document.getElementById("existing-project-dir")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || state.currentView !== "projects") return;
+  event.preventDefault();
+  selectProjectDirectory();
 });
 
 document.getElementById("new-project-create-name")?.addEventListener("keydown", (event) => {
@@ -5991,8 +6175,24 @@ function bindHtmlEventListeners(): void {
   document.addEventListener("keydown", handlePickerKeyboardNavigation);
   const pickerCancel = document.querySelector("#projects-view .picker-cancel-btn");
   if (pickerCancel) pickerCancel.addEventListener("click", () => { returnFromProjectPicker(); });
-  const createProjectBtn = document.querySelector("#projects-view .new-project-row button");
-  if (createProjectBtn) createProjectBtn.addEventListener("click", () => selectNewProject());
+  on("existing-project-open", "click", () => selectProjectDirectory());
+  on("new-project-create", "click", () => selectNewProject());
+  const browseDirectories = document.getElementById("directory-browser-browse");
+  if (browseDirectories) {
+    browseDirectories.addEventListener("click", () => openDirectoryBrowser(browseDirectories));
+  }
+  on("directory-browser-close", "click", () => closeDirectoryBrowser(true));
+  on("directory-browser-parent", "click", (event) => {
+    const parent = directoryBrowserSelection?.parent;
+    if (parent) void loadDirectoryBrowser(parent, event instanceof MouseEvent && event.detail === 0);
+  });
+  on("directory-browser-open-folder", "click", () => openBrowsedDirectory());
+  on("directory-browser-create-here", "click", () => selectBrowsedCreateParent());
+  document.getElementById("directory-browser-dialog")?.addEventListener("close", () => {
+    const trigger = directoryBrowserTrigger;
+    directoryBrowserTrigger = null;
+    trigger?.focus({ preventScroll: true });
+  });
 
   // Agent picker (read-only — add/remove/toggle moved to Settings)
   const agentBackBtn = document.querySelector("#agent-view .picker-cancel-btn");

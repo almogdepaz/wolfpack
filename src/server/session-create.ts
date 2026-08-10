@@ -1,4 +1,4 @@
-import { MAX_SESSION_NAME_LENGTH } from "../validation.js";
+import { MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
 import { DuplicateSessionError } from "./backend.js";
 import type { SessionLaunchOptions } from "./backend.js";
 import { inferAgentKind } from "./session-identity.js";
@@ -38,7 +38,7 @@ export function chooseTopLevelSessionName(
   project: string,
   existingNames: readonly string[],
 ): string {
-  const base = project.replaceAll(".", "_");
+  const base = projectLabelToSessionName(project);
   const existing = new Set(existingNames);
   for (let number = 1; ; number++) {
     const suffix = number === 1 ? "" : `-${number}`;

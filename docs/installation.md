@@ -31,13 +31,13 @@ These commands resolve the same matching prebuilt `wolfpack` and `wolfpack-broke
 
 Setup asks you to choose or confirm:
 
-- the projects directory that contains sessions you want to create;
+- the default projects directory used by the project catalog and name-based session creation;
 - the Wolfpack port;
 - Tailscale sign-in and private HTTPS remote access, when available;
 - optional Pi integration, when Pi is detected; and
 - whether Wolfpack should start automatically at login.
 
-On first setup, Wolfpack enables `shell` and supported agent CLIs detected on `PATH`; it does not overwrite existing agent settings. Tailscale is used for private phone and remote access. Without it, setup continues with local-only access.
+On first setup, Wolfpack enables `shell` and supported agent CLIs detected on `PATH`; it does not overwrite existing agent settings. The configured projects directory remains the default catalog and creation root. Existing directories elsewhere on the server can be opened later with the browser's **Open existing directory** field or CLI `--project-dir`; Wolfpack does not enumerate the filesystem or create arbitrary external directories. Tailscale is used for private phone and remote access. Without it, setup continues with local-only access.
 
 ## what success looks like
 

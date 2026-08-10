@@ -1664,16 +1664,18 @@ test("creates a remote session through a ready stable identity and fails closed 
   let candidateMode: "ready" | "revoked" = "ready";
   let sessionCreated = false;
   const remoteCreateRequests: unknown[] = [];
+  const remoteDirectoryRequests: string[] = [];
   const localCreateRequests: string[] = [];
+  const localDirectoryRequests: string[] = [];
   const pageErrors: Error[] = [];
 
   await installReplacementSocketHarness(page);
   page.on("pageerror", (error) => pageErrors.push(error));
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.origin === server.baseUrl && url.pathname === "/api/create") {
-      localCreateRequests.push(request.url());
-    }
+    if (url.origin !== server.baseUrl) return;
+    if (url.pathname === "/api/create") localCreateRequests.push(request.url());
+    if (url.pathname === "/api/directories") localDirectoryRequests.push(request.url());
   });
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
     await route.fulfill({
@@ -1717,6 +1719,10 @@ test("creates a remote session through a ready stable identity and fails closed 
       case "/api/settings":
         body = { settings: { cmds: [{ cmd: "shell", enabled: true }] }, effective: { cmds: ["shell"], agentCmd: "shell" } };
         break;
+      case "/api/directories":
+        remoteDirectoryRequests.push(request.url());
+        body = { current: "/remote/worktree", parent: "/remote", directories: [] };
+        break;
       case "/api/next-session-name":
         body = { name: "remote-created" };
         break;
@@ -1740,15 +1746,19 @@ test("creates a remote session through a ready stable identity and fails closed 
   const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
   await expect(peerGroup).toBeVisible();
   await peerGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
-  await page.getByRole("button", { name: "Open project remote-project" }).click();
+  await page.getByRole("button", { name: "Browse server directories" }).click();
+  const directoryDialog = page.getByRole("dialog", { name: "Browse server directories" });
+  await expect(directoryDialog.getByText("/remote/worktree", { exact: true })).toBeVisible();
+  await directoryDialog.getByRole("button", { name: "Open folder" }).click();
   await expect(page.locator("#session-name-input")).toHaveValue("remote-created");
   await page.getByRole("button", { name: "Start shell" }).click();
 
   await expect.poll(() => remoteCreateRequests).toEqual([{
-    project: "remote-project",
+    projectDir: "/remote/worktree",
     cmd: "shell",
     sessionName: "remote-created",
   }]);
+  expect(remoteDirectoryRequests).toEqual(["https://peer.example.ts.net/api/directories"]);
   await expect.poll(() => page.evaluate(() => {
     const app = window as unknown as {
       readonly state: { readonly currentSession: string | null; readonly currentMachine: string };
@@ -1760,6 +1770,7 @@ test("creates a remote session through a ready stable identity and fails closed 
   ));
   await expect.poll(ptyDestinations).toEqual(["wss://peer.example.ts.net/ws/pty?session=remote-created"]);
   expect(localCreateRequests).toEqual([]);
+  expect(localDirectoryRequests).toEqual([]);
 
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { showProjectPicker(machine?: string): void };

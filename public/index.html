@@ -89,6 +89,23 @@
       </form>
     </dialog>
 
+    <dialog id="directory-browser-dialog" class="directory-browser-dialog" aria-labelledby="directory-browser-title">
+      <div class="directory-browser-shell">
+        <div class="directory-browser-header">
+          <h2 id="directory-browser-title">Browse server directories</h2>
+          <button id="directory-browser-close" type="button" aria-label="Close directory browser">Close</button>
+        </div>
+        <div id="directory-browser-current" class="directory-browser-current" tabindex="-1"></div>
+        <div id="directory-browser-error" class="directory-browser-error" role="alert" aria-live="polite" tabindex="-1"></div>
+        <button id="directory-browser-parent" class="directory-browser-parent" type="button">↑ Parent directory</button>
+        <div id="directory-browser-list" class="directory-browser-list" aria-live="polite" tabindex="-1"></div>
+        <div class="directory-browser-actions">
+          <button id="directory-browser-open-folder" type="button" disabled>Open folder</button>
+          <button id="directory-browser-create-here" type="button" disabled>Create here</button>
+        </div>
+      </div>
+    </dialog>
+
     <main id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible" role="region" aria-label="Sessions">
@@ -123,6 +140,22 @@
       </label>
       <div id="project-list" class="list"></div>
       <div class="new-project-row">
+        <label for="existing-project-dir">
+          <span>Open existing directory</span>
+          <input
+            id="existing-project-dir"
+            type="text"
+            placeholder="/absolute/path/to/project"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+        </label>
+        <button id="existing-project-open" type="button" aria-label="Open existing directory">Open</button>
+        <button id="directory-browser-browse" type="button" aria-label="Browse server directories">Browse</button>
+      </div>
+      <div class="new-project-row">
         <label for="new-project-create-name">
           <span>Create a project</span>
           <input
@@ -134,7 +167,7 @@
             autocapitalize="off"
           />
         </label>
-        <button type="button" aria-label="Create new project">Create</button>
+        <button id="new-project-create" type="button" aria-label="Create new project">Create</button>
       </div>
     </div>
 

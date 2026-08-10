@@ -9,6 +9,7 @@ import {
   validateControlApiSchemaArtifact,
 } from "../../scripts/gen-control-api-schema.ts";
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
+import { DIRECTORY_BROWSE_LIMIT } from "../../src/server/directory-browser.ts";
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,
@@ -306,6 +307,51 @@ describe("control api schema compatibility samples", () => {
     expect(validate(response, { candidates: [] }, artifact)).not.toEqual([]);
   });
 
+  test("publishes the bounded authenticated server-directory browser contract", () => {
+    const operation = httpOperation("browseDirectories");
+    const request = httpRequest("browseDirectories");
+    const response = httpResponse("browseDirectories");
+    const directories = Array.from({ length: DIRECTORY_BROWSE_LIMIT }, (_, index) => ({
+      name: `directory-${index}`,
+      path: `/server/projects/directory-${index}`,
+    }));
+
+    expect(operation.route).toBe("GET /api/directories");
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(operation.errors).toEqual([
+      "400 DirectoryBrowseErrorEnvelope",
+      "404 DirectoryBrowseErrorEnvelope",
+      "422 DirectoryBrowseErrorEnvelope",
+      "503 DirectoryBrowseErrorEnvelope",
+    ]);
+    expect(validate(
+      (artifact.$defs as JsonObject).DirectoryBrowseErrorEnvelope,
+      {
+        error: "directory contains too many entries",
+        code: "too_many_entries",
+      },
+      artifact,
+    )).toEqual([]);
+    expect(validate(request, {}, artifact)).toEqual([]);
+    expect(validate(request, { path: "/server/projects" }, artifact)).toEqual([]);
+    expect(validate(request, { path: "relative/projects" }, artifact)).not.toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
+      directories,
+    }, artifact)).toEqual([]);
+    expect(validate(response, {
+      current: "/",
+      parent: null,
+      directories: [],
+    }, artifact)).toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
+      directories: [...directories, { name: "overflow", path: "/server/projects/overflow" }],
+    }, artifact)).not.toEqual([]);
+  });
+
   test("create-session request requires project or newProject", () => {
     const request = httpRequest("createSession");
 
@@ -325,6 +371,27 @@ describe("control api schema compatibility samples", () => {
       maxLength: 32768,
     });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      newProject: "fresh-app",
+      newProjectParent: "/srv/worktrees",
+    }, artifact)).toEqual([]);
+    expect((request as { readonly dependentRequired?: unknown }).dependentRequired).toEqual({
+      newProjectParent: ["newProject"],
+    });
+    expect(validate(request, {
+      project: "wolfpack",
+      newProject: "fresh-app",
+    }, artifact)).toEqual([]);
+    expect(validate(request, { projectDir: "/srv/worktrees/alpha", cmd: "pi" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      projectDir: "/srv/worktrees/alpha",
+      cmd: "pi",
+    }, artifact)).not.toEqual([]);
+    expect(validate(request, {
+      projectDir: "/srv/worktrees/alpha",
+      newProject: "fresh-app",
+    }, artifact)).not.toEqual([]);
   });
 
   test("atomic prompt wait publishes the output-only predicate and every phase-1 outcome", () => {
@@ -407,6 +474,49 @@ describe("control api schema compatibility samples", () => {
     expect((artifact.$defs as JsonObject).CreatableHarness).toEqual({
       enum: ["shell", "pi", "claude", "codex", "gemini", "cursor"],
     });
+  });
+
+  test("next-session-name publishes unavailable filesystem failures", () => {
+    expect(httpOperation("nextSessionName").errors).toEqual([
+      "400 ErrorEnvelope",
+      "404 ErrorEnvelope",
+      "503 ErrorEnvelope",
+    ]);
+  });
+
+  test("next-session-name accepts exactly one existing or future project selector", () => {
+    const request = httpRequest("nextSessionName");
+
+    expect(validate(request, { project: "wolfpack" }, artifact)).toEqual([]);
+    expect(validate(request, { projectDir: "/worktrees/wolfpack" }, artifact)).toEqual([]);
+    expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      newProject: "fresh-app",
+    }, artifact)).not.toEqual([]);
+    expect(validate(request, {
+      projectDir: "/worktrees/wolfpack",
+      newProject: "fresh-app",
+    }, artifact)).not.toEqual([]);
+  });
+
+  test("launch contracts accept one explicit absolute project directory selector", () => {
+    const explicit = { projectDir: "/worktrees/path with spaces" };
+
+    expect(validate(httpRequest("createTopLevelSession"), explicit, artifact)).toEqual([]);
+    expect(validate(httpRequest("openSession"), {
+      ...explicit,
+      parentSession: "pi-main",
+    }, artifact)).toEqual([]);
+    expect(validate(httpRequest("createSession"), explicit, artifact)).toEqual([]);
+    expect(validate(httpRequest("nextSessionName"), explicit, artifact)).toEqual([]);
+    expect(validate(httpRequest("createTopLevelSession"), {
+      project: "wolfpack",
+      projectDir: "/worktrees/wolfpack",
+    }, artifact)).not.toEqual([]);
+    expect(validate(httpRequest("createTopLevelSession"), {
+      projectDir: "relative/project",
+    }, artifact)).not.toEqual([]);
   });
 
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {

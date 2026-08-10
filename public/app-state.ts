@@ -409,6 +409,8 @@ export const state = {
   swipeNavigated: false,
   projectMachine: "",
   selectedProject: "",
+  selectedProjectDir: "",
+  newProjectParent: "",
   isNewProject: false,
   enterRetryTimer: null,
   drawerOpen: false,

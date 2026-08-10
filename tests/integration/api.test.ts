@@ -2,11 +2,12 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
+import { SESSION_CREATE_ERROR } from "../../src/session-create-contract.ts";
 import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
@@ -90,6 +91,14 @@ const TEST_PROJECTS = ["my-app", "wolf-1", "fresh-app"];
 
 // Track dirs we actually created so we only clean up what we own
 const createdDirs: string[] = [];
+
+function createExplicitProjectDir(name = "outside project"): string {
+  const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-api-"));
+  const projectDir = join(root, name);
+  mkdirSync(projectDir);
+  createdDirs.push(root);
+  return realpathSync(projectDir);
+}
 
 function ensureTestProjectDirs(): void {
   mkdirSync(TEST_DEV_DIR, { recursive: true });
@@ -808,6 +817,41 @@ describe("agent-native top-level session control", () => {
     });
   });
 
+  test("creates a top-level session in an explicitly selected directory outside DEV_DIR", async () => {
+    const projectDir = createExplicitProjectDir();
+    const res = await post("/api/session-create", {
+      projectDir,
+      harness: "pi",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      session: "outside_project",
+      sessionId: "mock:outside_project",
+      project: "outside project",
+      harness: "pi",
+    });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "outside_project",
+      cwd: projectDir,
+      cmd: "pi",
+    });
+  });
+
+  test("rejects unchecked or ambiguous explicit directory selectors before launch", async () => {
+    const projectDir = createExplicitProjectDir("ambiguous");
+    for (const body of [
+      { projectDir: "relative/project", harness: "pi" },
+      { project: "my-app", projectDir, harness: "pi" },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-create", body);
+      expect(res.status).toBe(400);
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
   test("creates a top-level shell session when explicitly selected", async () => {
     const res = await post("/api/session-create", {
       project: "my-app",
@@ -1135,11 +1179,48 @@ describe("POST /api/create", () => {
     expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
+  test("opens an explicitly selected existing directory without creating it", async () => {
+    const projectDir = createExplicitProjectDir("browser workspace");
+    const res = await post("/api/create", { projectDir, cmd: "claude" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, session: "browser_workspace" });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      name: "browser_workspace",
+      cwd: projectDir,
+      cmd: "claude",
+    });
+  });
+
+  test("rejects relative and ambiguous explicit directory selections before browser launch", async () => {
+    const projectDir = createExplicitProjectDir("browser ambiguous");
+    for (const body of [
+      { projectDir: "relative/project", cmd: "claude" },
+      { project: "my-app", projectDir, cmd: "claude" },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/create", body);
+      expect(res.status).toBe(400);
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
   test("uses newProject field when provided", async () => {
     const res = await post("/api/create", { newProject: "fresh-app" });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.session).toBe("fresh-app");
+  });
+
+  test("preserves newProject precedence when both legacy project fields are provided", async () => {
+    const res = await post("/api/create", {
+      project: "my-app",
+      newProject: "fresh-override",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, session: "fresh-override" });
+    expect(mockBackend.lastCreateArgs?.cwd).toBe(join(TEST_DEV_DIR, "fresh-override"));
   });
 
   test("creates session with cmd", async () => {
@@ -1275,6 +1356,35 @@ describe("POST /api/session-open", () => {
       parentSession: "wolf-1",
       session: "wolf-1-sub-agent",
     }]);
+  });
+
+  test("creates a child in an explicitly selected directory outside DEV_DIR", async () => {
+    const projectDir = createExplicitProjectDir("child workspace");
+    const res = await post("/api/session-open", {
+      projectDir,
+      parentSession: "wolf-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      project: "child workspace",
+      harness: "pi",
+    });
+    expect(mockBackend.lastCreateArgs?.cwd).toBe(projectDir);
+  });
+
+  test("rejects relative and ambiguous explicit directory selections before child launch", async () => {
+    const projectDir = createExplicitProjectDir("child ambiguous");
+    for (const body of [
+      { projectDir: "relative/project", parentSession: "wolf-1" },
+      { project: "my-app", projectDir, parentSession: "wolf-1" },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", body);
+      expect(res.status).toBe(400);
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
   });
 
   test("creates a child with a meaningful requested session name", async () => {
@@ -1884,6 +1994,92 @@ describe("session control API", () => {
 describe("GET /api/next-session-name", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
+  });
+
+  test("derives a safe name from an explicitly selected directory", async () => {
+    mockBackend.setSessions([]);
+    const projectDir = createExplicitProjectDir("path with spaces");
+    const res = await get(`/api/next-session-name?projectDir=${encodeURIComponent(projectDir)}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ name: "path_with_spaces" });
+  });
+
+  test("returns bounded unavailable diagnostics through explicit project route mappings", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-api-unavailable-"));
+    const loop = join(root, "loop");
+    symlinkSync("loop", loop);
+    createdDirs.push(root);
+
+    const projectDir = join(loop, "project");
+    const expectedError = { error: "project directory unavailable" };
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly request: () => Promise<Response>;
+      readonly expectedBody: Readonly<Record<string, string>>;
+    }> = [
+      {
+        name: "next-session-name",
+        request: () => get(`/api/next-session-name?projectDir=${encodeURIComponent(projectDir)}`),
+        expectedBody: expectedError,
+      },
+      {
+        name: "create",
+        request: () => post("/api/create", { projectDir }),
+        expectedBody: expectedError,
+      },
+      {
+        name: "session-create",
+        request: () => post("/api/session-create", { projectDir, harness: "pi" }),
+        expectedBody: { ...expectedError, code: SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE },
+      },
+      {
+        name: "session-open",
+        request: () => post("/api/session-open", { projectDir, parentSession: "wolf-1" }),
+        expectedBody: { ...expectedError, code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE },
+      },
+    ];
+
+    mockBackend.lastCreateArgs = null;
+    for (const routeCase of cases) {
+      const res = await routeCase.request();
+      expect(res.status, routeCase.name).toBe(503);
+      expect(await res.json(), routeCase.name).toEqual(routeCase.expectedBody);
+    }
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects relative and ambiguous explicit directory selections", async () => {
+    const projectDir = createExplicitProjectDir("name ambiguous");
+    for (const query of [
+      "projectDir=relative%2Fproject",
+      `project=my-app&projectDir=${encodeURIComponent(projectDir)}`,
+    ]) {
+      const res = await get(`/api/next-session-name?${query}`);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  test("allocates a future new-project name without requiring its directory to exist", async () => {
+    const newProject = "future-next-name";
+    expect(existsSync(join(TEST_DEV_DIR, newProject))).toBe(false);
+
+    const res = await get(`/api/next-session-name?newProject=${encodeURIComponent(newProject)}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ name: newProject });
+  });
+
+  test("rejects invalid or mixed future new-project selectors", async () => {
+    const projectDir = createExplicitProjectDir("future-name-mixed");
+    for (const query of [
+      `newProject=${encodeURIComponent("../etc")}`,
+      "project=my-app&newProject=future-next-name",
+      `projectDir=${encodeURIComponent(projectDir)}&newProject=future-next-name`,
+    ]) {
+      const res = await get(`/api/next-session-name?${query}`);
+      expect(res.status).toBe(400);
+    }
   });
 
   test("returns project name when not taken", async () => {

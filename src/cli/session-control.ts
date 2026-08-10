@@ -1,4 +1,5 @@
 import { access, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { isCreatableHarness } from "../agent-kind.js";
 import type { CreatableHarness } from "../agent-kind.js";
 import {
@@ -47,20 +48,28 @@ export const SESSION_EXIT = {
 } as const;
 
 type OutputMode = "plain" | "json" | "shell";
+
+export type ExistingProjectSelector =
+  | { readonly kind: "project"; readonly project: string; readonly projectDir?: never }
+  | { readonly kind: "projectDir"; readonly project?: never; readonly projectDir: string };
+
 type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "prompt" | "current-context";
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
   return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+       wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
 
-Creates a top-level session. The server owns validation, naming, identity, and launch.
-The optional prompt is passed to the agent harness at process startup.`;
+Creates a top-level session. A project name selects under WOLFPACK_DEV_DIR;
+--project-dir selects an existing directory and is resolved to an absolute path.
+The server owns validation, naming, identity, and launch.`;
 }
 
 export function sessionOpenUsage(): string {
   return `Usage: wolfpack session open <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+       wolfpack session open --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 
-Deprecated alias for: wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]`;
+Deprecated alias for: wolfpack agent spawn`;
 }
 
 export function agentUsage(): string {
@@ -68,6 +77,7 @@ export function agentUsage(): string {
 
 Commands:
   wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent spawn --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
 
 Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
@@ -93,7 +103,7 @@ export type ParsedSessionCommand =
   | {
     readonly ok: true;
     readonly action: "create";
-    readonly project: string;
+    readonly selector: ExistingProjectSelector;
     readonly harness: CreatableHarness | undefined;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
@@ -103,7 +113,7 @@ export type ParsedSessionCommand =
   | {
     readonly ok: true;
     readonly action: "open";
-    readonly project: string;
+    readonly selector: ExistingProjectSelector;
     readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
@@ -123,7 +133,7 @@ export type ParsedAgentCommand =
   | {
     readonly ok: true;
     readonly action: "spawn";
-    readonly project: string;
+    readonly selector: ExistingProjectSelector;
     readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
@@ -221,6 +231,7 @@ const LAUNCH_KNOWN_OPTIONS = new Set([
   "--notify-parent",
   "--harness",
   "--message",
+  "--project-dir",
 ]);
 
 function consumeLaunchValue(args: string[], flag: string): string | null {
@@ -249,6 +260,15 @@ function parseOutputMode(args: string[]): { mode: OutputMode; shellRequested: bo
   return { mode: shell ? "shell" : json ? "json" : "plain", shellRequested: shell };
 }
 
+function parseExistingProjectSelector(
+  project: string | undefined,
+  projectDir: string | undefined,
+): ExistingProjectSelector | null {
+  if (project && !projectDir?.trim()) return { kind: "project", project };
+  if (!project && projectDir?.trim()) return { kind: "projectDir", projectDir };
+  return null;
+}
+
 export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
   const args = [...argv];
   const action = args.shift() as SessionAction | undefined;
@@ -260,6 +280,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   const promptValue = isLaunch ? consumeLaunchValue(args, "--prompt") : null;
   const promptFileValue = isLaunch ? consumeLaunchValue(args, "--prompt-file") : null;
   const planValue = isLaunch ? consumeLaunchValue(args, "--plan") : null;
+  const projectDirValue = isLaunch ? consumeLaunchValue(args, "--project-dir") : null;
   const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
   const notifyParent = isLaunch ? consumeFlag(args, "--notify-parent") : false;
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
@@ -271,6 +292,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const plan = planValue ?? undefined;
     const sessionName = nameValue ?? undefined;
     const project = args.shift();
+    const projectDir = projectDirValue ?? undefined;
     const harness = harnessValue !== null && isCreatableHarness(harnessValue)
       ? harnessValue
       : undefined;
@@ -288,7 +310,8 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       || harnessValue === null
       || harness !== undefined;
     const validNotify = action !== "create" || !notifyParent;
-    if (!project || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validHarness || !validNotify) {
+    const selector = parseExistingProjectSelector(project, projectDir);
+    if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validHarness || !validNotify) {
       return {
         ok: false,
         message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -298,7 +321,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       return {
         ok: true,
         action,
-        project,
+        selector,
         harness,
         prompt,
         ...(promptFile !== undefined && { promptFile }),
@@ -309,7 +332,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     return {
       ok: true,
       action,
-      project,
+      selector,
       ...(sessionName !== undefined && { sessionName }),
       prompt,
       ...(promptFile !== undefined && { promptFile }),
@@ -400,7 +423,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
   return {
     ok: true,
     action: "spawn",
-    project: parsed.project,
+    selector: parsed.selector,
     ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
     prompt: parsed.prompt,
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
@@ -640,6 +663,18 @@ interface LaunchPromptSource {
   readonly output: OutputMode;
 }
 
+interface SessionOpenLaunchArgs extends LaunchPromptSource {
+  readonly selector: ExistingProjectSelector;
+  readonly sessionName?: string;
+}
+
+function projectSelectorRequest(selector: ExistingProjectSelector):
+  | { readonly project: string }
+  | { readonly projectDir: string } {
+  if (selector.kind === "project") return { project: selector.project };
+  return { projectDir: resolve(selector.projectDir) };
+}
+
 const NOTIFY_PARENT_PROMPT = "when done or blocked, run `wolfpack agent notify-parent` once, then summarize changes, verification, and concerns.";
 
 function compactPlanPrompt(plan: string, notifyParent?: true): string {
@@ -690,17 +725,7 @@ async function materializeInitialPrompt(source: LaunchPromptSource): Promise<str
   return prompt;
 }
 
-async function runSessionOpen(
-  parsed: {
-    readonly project: string;
-    readonly sessionName?: string;
-    readonly prompt: string | undefined;
-    readonly promptFile?: string;
-    readonly plan?: string;
-    readonly notifyParent?: true;
-    readonly output: OutputMode;
-  },
-): Promise<number> {
+async function runSessionOpen(parsed: SessionOpenLaunchArgs): Promise<number> {
   const context = resolveSessionOpenContext(process.env);
   if (!context.ok) {
     return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
@@ -712,7 +737,7 @@ async function runSessionOpen(
     const response = await call("/api/session-open", {
       method: "POST",
       body: JSON.stringify({
-        project: parsed.project,
+        ...projectSelectorRequest(parsed.selector),
         parentSession: context.parentSession,
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(initialPrompt !== undefined && { initialPrompt }),
@@ -736,7 +761,7 @@ async function runSessionCreate(
     const response = await call("/api/session-create", {
       method: "POST",
       body: JSON.stringify({
-        project: parsed.project,
+        ...projectSelectorRequest(parsed.selector),
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),

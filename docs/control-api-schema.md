@@ -15,7 +15,7 @@ bun run gen:schema
 The generated schema is a client integration contract. Runtime routes remain authoritative for validation and behavior. The schema must not replace the existing server trust boundaries:
 
 - project, session, branch, command, and plan validation stays in `src/validation.ts` and route-specific checks.
-- project directory containment stays in `src/server/validate-project-dir.ts`.
+- named-project containment and explicit-directory canonicalization stay in `src/server/validate-project-dir.ts`; selector exclusivity stays in `src/server/project-selection.ts`.
 - broker JSON/RPC wire compatibility stays covered by broker protocol/codec tests.
 
 Compatibility rules:

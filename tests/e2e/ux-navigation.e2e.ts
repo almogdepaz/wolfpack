@@ -650,9 +650,92 @@ test("project picker uses concise labels without repeating placeholders", async 
 
   await expect(page.getByText("Projects", { exact: true })).toBeVisible();
   await expect(page.locator("#new-project-name")).toHaveAttribute("placeholder", "Filter existing projects");
+  await expect(page.getByText("Open existing directory", { exact: true })).toBeVisible();
+  await expect(page.locator("#existing-project-dir")).toHaveAttribute("placeholder", "/absolute/path/to/project");
+  await expect(page.getByRole("button", { name: "Open existing directory", exact: true })).toHaveText("Open");
   await expect(page.getByText("Create a project", { exact: true })).toBeVisible();
   await expect(page.locator("#new-project-create-name")).toHaveAttribute("placeholder", "Project name");
   await expect(page.getByRole("button", { name: "Create new project", exact: true })).toHaveText("Create");
+});
+
+test("project picker preserves exact explicit server directory text in browser requests", async ({ page }) => {
+  const projectDir = "/srv/worktrees/path with spaces ";
+  const nextNameQueries: URL[] = [];
+  const createRequests: Array<Record<string, unknown>> = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ effective: { cmds: ["pi"], agentCmd: "pi" } }),
+    });
+  });
+  await page.route(/\/api\/next-session-name\?/, async (route) => {
+    nextNameQueries.push(new URL(route.request().url()));
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "path_with_spaces" }) });
+  });
+  await page.route("**/api/create", async (route) => {
+    createRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, session: "path_with_spaces" }) });
+  });
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.locator("#existing-project-dir").fill(projectDir);
+  await page.getByRole("button", { name: "Open existing directory", exact: true }).click();
+  await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+  await expect(page.locator("#session-name-input")).toHaveValue("path_with_spaces");
+  await page.getByRole("button", { name: "Start pi", exact: true }).click();
+
+  expect(nextNameQueries).toHaveLength(1);
+  expect(nextNameQueries[0].searchParams.get("projectDir")).toBe(projectDir);
+  expect(nextNameQueries[0].searchParams.has("project")).toBe(false);
+  await expect.poll(() => createRequests).toEqual([{
+    projectDir,
+    cmd: "pi",
+    sessionName: "path_with_spaces",
+  }]);
+});
+
+test("project picker promptly surfaces directory validation while agent settings remain pending", async ({ page }) => {
+  const validationError = "project directory not found";
+  let settingsRequested = false;
+  let releaseSettings: () => void = () => {};
+  const settingsPending = new Promise<void>((resolve) => {
+    releaseSettings = resolve;
+  });
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha"] }) });
+  });
+  await page.route("**/api/settings", async (route) => {
+    settingsRequested = true;
+    await settingsPending;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ effective: { cmds: ["pi"], agentCmd: "pi" } }),
+    });
+  });
+  await page.route(/\/api\/next-session-name\?/, async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: validationError }),
+    });
+  });
+
+  try {
+    await page.goto(srv.baseUrl);
+    await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+    await page.locator("#existing-project-dir").fill("/srv/worktrees/missing");
+    await page.getByRole("button", { name: "Open existing directory", exact: true }).click();
+
+    await expect.poll(() => settingsRequested, { timeout: 2_000 }).toBe(true);
+    await expect(page.locator("#agent-list")).toHaveText(validationError, { timeout: 2_000 });
+    await expect(page.locator("#agent-list")).not.toContainText("Failed to load agents");
+  } finally {
+    releaseSettings();
+  }
 });
 
 test("project creation input and action stay the same height", async ({ page }) => {

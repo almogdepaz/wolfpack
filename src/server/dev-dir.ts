@@ -1,6 +1,6 @@
 /**
- * Project-directory trust boundary. DEV_DIR is the root every wolfpack
- * session must live under.
+ * Project-directory authority. DEV_DIR roots named-project discovery and creation.
+ * Explicit existing paths use the separate canonicalizing validator.
  */
 import { join } from "node:path";
 import { homedir } from "node:os";
