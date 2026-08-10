@@ -846,7 +846,7 @@ test("desktop new-session pickers use arrow navigation only after it starts", as
   const agentCards = page.locator("#agent-list .card");
   await expect(agentCards).toHaveText(["shell", "pi"]);
   await expect(page.locator("#agent-list .card.keyboard-selected")).toHaveCount(0);
-  await page.getByLabel("initial task (optional)").fill("review the current branch");
+  await expect(page.locator("#initial-task-input")).toHaveCount(0);
   await page.keyboard.press("ArrowUp");
   await expect(agentCards.nth(1)).toHaveClass(/keyboard-selected/);
   await page.keyboard.press("Enter");
@@ -854,7 +854,6 @@ test("desktop new-session pickers use arrow navigation only after it starts", as
     project: "alpha",
     cmd: "pi",
     sessionName: "alpha-session",
-    initialPrompt: "review the current branch",
   }]);
 });
 
@@ -950,7 +949,7 @@ test("desktop enter selects the first filtered project without arrow navigation"
   await expect.poll(() => createRequests).toEqual([{ project: "wolfpack", cmd: "shell", sessionName: "wolfpack-session" }]);
 });
 
-test("create failure returns to the agent form with entered values and an inline error", async ({ page }) => {
+test("create failure returns to the agent form with the entered session name and an inline error", async ({ page }) => {
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["wolfpack"] }) });
   });
@@ -971,14 +970,11 @@ test("create failure returns to the agent form with entered values and an inline
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
   await page.getByRole("button", { name: "Open project wolfpack" }).click();
   const sessionName = page.locator("#session-name-input");
-  const initialTask = page.getByLabel("initial task (optional)");
   await sessionName.fill("my-session");
-  await initialTask.fill("inspect the failed build");
   await page.getByRole("button", { name: "Start shell" }).click();
 
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
   await expect(sessionName).toHaveValue("my-session");
-  await expect(initialTask).toHaveValue("inspect the failed build");
   await expect(page.locator("#agent-create-error")).toContainText("broker unavailable");
   await expect(sessionName).toBeFocused();
 });

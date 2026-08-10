@@ -3898,11 +3898,9 @@ async function showAgentPicker() {
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
-  const initialTaskInput = document.getElementById("initial-task-input") as HTMLTextAreaElement;
   const nameError = document.getElementById("session-name-error");
   const createError = document.getElementById("agent-create-error");
   nameInput.value = "";
-  initialTaskInput.value = "";
   createError.textContent = "";
   createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
@@ -4170,7 +4168,6 @@ async function deleteCustomCmd(cmd, e) {
 async function createSessionWithAgent(cmd) {
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const sessionName = (nameInput.value || "").trim();
-  const initialPrompt = (document.getElementById("initial-task-input") as HTMLTextAreaElement).value.trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
   const createError = document.getElementById("agent-create-error");
@@ -4183,11 +4180,10 @@ async function createSessionWithAgent(cmd) {
           ...(state.newProjectParent && { newProjectParent: state.newProjectParent }),
           cmd,
           sessionName: sessionName || undefined,
-          initialPrompt: initialPrompt || undefined,
         }
       : state.selectedProjectDir
-        ? { projectDir: state.selectedProjectDir, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined }
-        : { project: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined };
+        ? { projectDir: state.selectedProjectDir, cmd, sessionName: sessionName || undefined }
+        : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
     const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
