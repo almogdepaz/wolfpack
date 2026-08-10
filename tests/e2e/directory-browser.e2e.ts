@@ -8,10 +8,23 @@ interface TestWindow extends Window {
   showProjectPicker(machineUrl?: string): void;
 }
 
+const MACHINE_NAME = "studio-mac";
 const BASE_DIRECTORY = "/server/projects";
 const CHILD_DIRECTORY = "/server/projects/canonical-child";
 
+const BASE_BREADCRUMBS = [
+  { name: "/", path: "/" },
+  { name: "server", path: "/server" },
+  { name: "projects", path: BASE_DIRECTORY },
+] as const;
+
 async function openProjectPicker(page: Page): Promise<void> {
+  await page.route("**/api/info", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ name: MACHINE_NAME, version: "1.6.18" }),
+    });
+  });
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -20,6 +33,7 @@ async function openProjectPicker(page: Page): Promise<void> {
   });
   await page.goto(server.baseUrl);
   await page.evaluate(() => (window as unknown as TestWindow).showProjectPicker());
+  await expect(page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` })).toBeVisible();
 }
 
 async function routeAgentSelection(
@@ -49,6 +63,31 @@ async function routeAgentSelection(
   });
 }
 
+async function routeDirectoryTree(page: Page, directoryRequests: Array<string | null>): Promise<void> {
+  await page.route("**/api/directories**", async (route) => {
+    const requestedPath = new URL(route.request().url()).searchParams.get("path");
+    directoryRequests.push(requestedPath);
+    const body = requestedPath === CHILD_DIRECTORY
+      ? {
+          current: CHILD_DIRECTORY,
+          parent: BASE_DIRECTORY,
+          breadcrumbs: [...BASE_BREADCRUMBS, { name: "canonical-child", path: CHILD_DIRECTORY }],
+          directories: [],
+        }
+      : {
+          current: BASE_DIRECTORY,
+          parent: "/server",
+          breadcrumbs: BASE_BREADCRUMBS,
+          directories: [{ name: "canonical child", path: CHILD_DIRECTORY }],
+        };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  });
+}
+
+function folderBrowser(page: Page): ReturnType<Page["getByRole"]> {
+  return page.getByRole("region", { name: new RegExp(`folder on ${MACHINE_NAME}$`, "i") });
+}
+
 test.beforeAll(async () => {
   server = await startTestServer();
 });
@@ -57,32 +96,22 @@ test.afterAll(() => {
   server?.close();
 });
 
-test("opens a canonical browsed directory through the existing projectDir launch path", async ({ page }) => {
+test("opens a canonical server folder from a dedicated host-labelled picker", async ({ page }) => {
   const directoryRequests: Array<string | null> = [];
   const createRequests: unknown[] = [];
   const nextNameRequests: URL[] = [];
-  await page.route("**/api/directories**", async (route) => {
-    const requestedPath = new URL(route.request().url()).searchParams.get("path");
-    directoryRequests.push(requestedPath);
-    const body = requestedPath === CHILD_DIRECTORY
-      ? { current: CHILD_DIRECTORY, parent: BASE_DIRECTORY, directories: [] }
-      : {
-          current: BASE_DIRECTORY,
-          parent: "/server",
-          directories: [{ name: "canonical child", path: CHILD_DIRECTORY }],
-        };
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
-  });
+  await routeDirectoryTree(page, directoryRequests);
   await routeAgentSelection(page, createRequests, nextNameRequests);
   await openProjectPicker(page);
 
-  await page.getByRole("button", { name: "Browse server directories" }).click();
-  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(BASE_DIRECTORY, { exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: "Browse canonical child" }).click();
-  await expect(dialog.getByText(CHILD_DIRECTORY, { exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: "Open folder" }).click();
+  await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
+  const browser = folderBrowser(page);
+  await expect(browser).toBeVisible();
+  await expect(page.locator("#directory-browser-dialog")).toHaveCount(0);
+  await expect(browser.getByRole("navigation", { name: "Folder path" })).toContainText("projects");
+  await browser.getByRole("button", { name: "Open canonical child" }).click();
+  await expect(browser.locator("#directory-browser-current")).toHaveText(CHILD_DIRECTORY);
+  await browser.getByRole("button", { name: "Open canonical-child folder" }).click();
 
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
   await page.getByRole("button", { name: "Start shell" }).click();
@@ -98,121 +127,105 @@ test("opens a canonical browsed directory through the existing projectDir launch
   expect(nextNameRequests[0].searchParams.has("newProject")).toBe(false);
 });
 
-test("moves keyboard focus to the updated current location after child and parent navigation", async ({ page }) => {
-  await page.route("**/api/directories**", async (route) => {
-    const requestedPath = new URL(route.request().url()).searchParams.get("path");
-    const body = requestedPath === CHILD_DIRECTORY
-      ? { current: CHILD_DIRECTORY, parent: BASE_DIRECTORY, directories: [] }
-      : {
-          current: BASE_DIRECTORY,
-          parent: "/server",
-          directories: [{ name: "canonical child", path: CHILD_DIRECTORY }],
-        };
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
-  });
+test("jumps to an absolute server path without client-side path composition", async ({ page }) => {
+  const directoryRequests: Array<string | null> = [];
+  await routeDirectoryTree(page, directoryRequests);
   await openProjectPicker(page);
 
-  const browse = page.getByRole("button", { name: "Browse server directories" });
-  await browse.click();
-  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
-  const current = dialog.locator("#directory-browser-current");
-  await expect(current).toHaveText(BASE_DIRECTORY);
-  await expect(current).not.toBeFocused();
+  await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
+  const browser = folderBrowser(page);
+  await browser.getByLabel(`Path on ${MACHINE_NAME}`).fill(CHILD_DIRECTORY);
+  await browser.getByRole("button", { name: "Go to path" }).click();
 
-  const child = dialog.getByRole("button", { name: "Browse canonical child" });
+  await expect(browser.locator("#directory-browser-current")).toHaveText(CHILD_DIRECTORY);
+  expect(directoryRequests).toEqual([null, CHILD_DIRECTORY]);
+});
+
+test("restores project-picker focus after keyboard navigation and back", async ({ page }) => {
+  const directoryRequests: Array<string | null> = [];
+  await routeDirectoryTree(page, directoryRequests);
+  await openProjectPicker(page);
+
+  const openFolder = page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` });
+  await openFolder.focus();
+  await openFolder.press("Enter");
+  const browser = folderBrowser(page);
+  const current = browser.locator("#directory-browser-current");
+  const child = browser.getByRole("button", { name: "Open canonical child" });
   await child.focus();
   await child.press("Enter");
   await expect(current).toHaveText(CHILD_DIRECTORY);
   await expect(current).toBeFocused();
 
-  const parent = dialog.getByRole("button", { name: "Parent directory" });
-  await parent.focus();
-  await parent.press("Enter");
+  await browser.getByRole("button", { name: /^projects/ }).focus();
+  await page.keyboard.press("Enter");
   await expect(current).toHaveText(BASE_DIRECTORY);
   await expect(current).toBeFocused();
 
-  await dialog.getByRole("button", { name: "Browse canonical child" }).click();
-  await expect(current).toHaveText(CHILD_DIRECTORY);
-  await expect(current).not.toBeFocused();
-
   await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await expect(browse).toBeFocused();
+  await expect(browser).toBeHidden();
+  await expect(openFolder).toBeFocused();
 });
 
-test("preserves keyboard focus while child navigation fails", async ({ page }) => {
-  let markChildRequestStarted: () => void = () => {};
-  const childRequestStarted = new Promise<void>((resolve) => {
-    markChildRequestStarted = resolve;
-  });
-  let releaseChildResponse: () => void = () => {};
-  const childResponseReleased = new Promise<void>((resolve) => {
-    releaseChildResponse = resolve;
-  });
+test("preserves keyboard focus and explains remote permission failures inline", async ({ page }) => {
+  let requestCount = 0;
   await page.route("**/api/directories**", async (route) => {
-    const requestedPath = new URL(route.request().url()).searchParams.get("path");
-    if (requestedPath === CHILD_DIRECTORY) {
-      markChildRequestStarted();
-      await childResponseReleased;
+    requestCount++;
+    if (requestCount === 1) {
       await route.fulfill({
-        status: 503,
         contentType: "application/json",
-        body: JSON.stringify({ error: "directory unavailable", code: "unavailable" }),
+        body: JSON.stringify({
+          current: BASE_DIRECTORY,
+          parent: "/server",
+          breadcrumbs: BASE_BREADCRUMBS,
+          directories: [{ name: "protected", path: `${BASE_DIRECTORY}/protected` }],
+        }),
       });
       return;
     }
     await route.fulfill({
+      status: 403,
       contentType: "application/json",
-      body: JSON.stringify({
-        current: BASE_DIRECTORY,
-        parent: "/server",
-        directories: [{ name: "canonical child", path: CHILD_DIRECTORY }],
-      }),
+      body: JSON.stringify({ error: "directory permission denied", code: "permission_denied" }),
     });
   });
   await openProjectPicker(page);
 
-  const browse = page.getByRole("button", { name: "Browse server directories" });
-  await browse.click();
-  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
-  const child = dialog.getByRole("button", { name: "Browse canonical child" });
-  await child.focus();
-  await child.press("Enter");
-  await childRequestStarted;
+  await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
+  const browser = folderBrowser(page);
+  const protectedFolder = browser.getByRole("button", { name: "Open protected" });
+  await protectedFolder.focus();
+  await protectedFolder.press("Enter");
 
-  const list = dialog.locator("#directory-browser-list");
-  await expect(list).toHaveText("Loading directories…");
-  await expect(list).toBeFocused();
-
-  releaseChildResponse();
-  const alert = dialog.getByRole("alert");
-  await expect(alert).toHaveText("directory unavailable");
+  const alert = browser.getByRole("alert");
+  await expect(alert).toHaveText(
+    `Wolfpack can't read this folder on ${MACHINE_NAME}. Grant the Wolfpack server access on that machine or choose another folder.`,
+  );
   await expect(alert).toBeFocused();
-
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await expect(browse).toBeFocused();
+  await expect(browser.getByRole("button", { name: "Open projects folder" })).toBeEnabled();
 });
 
-test("records Create here as the parent for the existing project-name flow", async ({ page }) => {
+test("keeps project creation separate and returns only the selected parent", async ({ page }) => {
+  const directoryRequests: Array<string | null> = [];
   const createRequests: unknown[] = [];
   const nextNameRequests: URL[] = [];
-  await page.route("**/api/directories**", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ current: BASE_DIRECTORY, parent: "/server", directories: [] }),
-    });
-  });
+  await routeDirectoryTree(page, directoryRequests);
   await routeAgentSelection(page, createRequests, nextNameRequests);
   await openProjectPicker(page);
 
-  await page.getByRole("button", { name: "Browse server directories" }).click();
-  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
-  await dialog.getByRole("button", { name: "Create here" }).click();
-  await expect(dialog).toBeHidden();
-  await expect(page.locator("#new-project-create-name")).toBeFocused();
-  await page.locator("#new-project-create-name").fill("named-child");
-  await page.getByRole("button", { name: "Create new project" }).click();
+  await page.getByRole("button", { name: `Create project on ${MACHINE_NAME}` }).click();
+  const createProject = page.getByRole("region", { name: `Create project on ${MACHINE_NAME}` });
+  const projectName = createProject.getByLabel("Project name");
+  await projectName.fill("named-child");
+  await createProject.getByRole("button", { name: "Change parent folder" }).click();
+
+  const browser = folderBrowser(page);
+  await expect(browser).toHaveAccessibleName(`Choose a parent folder on ${MACHINE_NAME}`);
+  await browser.getByRole("button", { name: "Use projects as parent" }).click();
+  await expect(createProject).toBeVisible();
+  await expect(projectName).toHaveValue("named-child");
+  await expect(createProject.getByText(BASE_DIRECTORY, { exact: true })).toBeVisible();
+  await createProject.getByRole("button", { name: "Create project" }).click();
   await page.getByRole("button", { name: "Start shell" }).click();
 
   await expect.poll(() => createRequests).toEqual([{
@@ -227,20 +240,20 @@ test("records Create here as the parent for the existing project-name flow", asy
   expect(nextNameRequests[0].searchParams.has("projectDir")).toBe(false);
 });
 
-test("uses the newProject next-name selector for configured-base creation", async ({ page }) => {
+test("uses configured-base creation without forcing directory browsing", async ({ page }) => {
   const createRequests: unknown[] = [];
   const nextNameRequests: URL[] = [];
   await routeAgentSelection(page, createRequests, nextNameRequests);
   await openProjectPicker(page);
 
-  await page.locator("#new-project-create-name").fill("default-child");
-  await page.getByRole("button", { name: "Create new project" }).click();
+  await page.getByRole("button", { name: `Create project on ${MACHINE_NAME}` }).click();
+  const createProject = page.getByRole("region", { name: `Create project on ${MACHINE_NAME}` });
+  await createProject.getByLabel("Project name").fill("default-child");
+  await createProject.getByRole("button", { name: "Create project" }).click();
   await page.getByRole("button", { name: "Start shell" }).click();
 
   expect(nextNameRequests).toHaveLength(1);
   expect(nextNameRequests[0].searchParams.get("newProject")).toBe("default-child");
-  expect(nextNameRequests[0].searchParams.has("project")).toBe(false);
-  expect(nextNameRequests[0].searchParams.has("projectDir")).toBe(false);
   await expect.poll(() => createRequests).toEqual([{
     newProject: "default-child",
     cmd: "shell",
@@ -248,24 +261,34 @@ test("uses the newProject next-name selector for configured-base creation", asyn
   }]);
 });
 
-test("exposes bounded errors and restores Browse focus after keyboard dismissal", async ({ page }) => {
+test("keeps long remote paths and folder names inside the mobile viewport", async ({ page }) => {
+  const longName = "directory-" + "x".repeat(140);
+  const longPath = `${BASE_DIRECTORY}/${longName}`;
   await page.route("**/api/directories**", async (route) => {
     await route.fulfill({
-      status: 503,
       contentType: "application/json",
-      body: JSON.stringify({ error: "directory unavailable", code: "unavailable" }),
+      body: JSON.stringify({
+        current: longPath,
+        parent: BASE_DIRECTORY,
+        breadcrumbs: [...BASE_BREADCRUMBS, { name: longName, path: longPath }],
+        directories: [{ name: longName, path: `${longPath}/${longName}` }],
+      }),
     });
   });
   await openProjectPicker(page);
+  await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
 
-  const browse = page.getByRole("button", { name: "Browse server directories" });
-  await browse.focus();
-  await browse.press("Enter");
-  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("alert")).toHaveText("directory unavailable");
-  await page.keyboard.press("Escape");
+  const browser = folderBrowser(page);
+  const layout = await browser.evaluate((element) => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    panelClientWidth: element.clientWidth,
+    panelScrollWidth: element.scrollWidth,
+  }));
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.panelScrollWidth).toBeLessThanOrEqual(layout.panelClientWidth);
 
-  await expect(dialog).toBeHidden();
-  await expect(browse).toBeFocused();
+  const folderRow = browser.getByRole("button", { name: `Open ${longName}`, exact: true });
+  const rowBox = await folderRow.boundingBox();
+  expect(rowBox?.height).toBeGreaterThanOrEqual(44);
 });

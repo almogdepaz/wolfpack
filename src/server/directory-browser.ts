@@ -1,12 +1,14 @@
 import { lstatSync, opendirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 
 import { MAX_PROJECT_DIR_LENGTH } from "./validate-project-dir.js";
 
 export const DIRECTORY_BROWSE_LIMIT = 200;
 export const DIRECTORY_BROWSE_SCAN_LIMIT = 1_000;
+export const DIRECTORY_BREADCRUMB_LIMIT = 12;
 
 const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
+const PERMISSION_DENIED_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["EACCES", "EPERM"]);
 
 export interface DirectoryBrowseEntry {
   readonly name: string;
@@ -16,6 +18,7 @@ export interface DirectoryBrowseEntry {
 export interface DirectoryBrowseValue {
   readonly current: string;
   readonly parent: string | null;
+  readonly breadcrumbs: readonly DirectoryBrowseEntry[];
   readonly directories: readonly DirectoryBrowseEntry[];
 }
 
@@ -23,7 +26,7 @@ export type DirectoryBrowseResult =
   | { readonly ok: true; readonly value: DirectoryBrowseValue }
   | {
       readonly ok: false;
-      readonly code: "invalid" | "not_found" | "too_many_entries" | "unavailable";
+      readonly code: "invalid" | "not_found" | "permission_denied" | "too_many_entries" | "unavailable";
       readonly error: string;
     };
 
@@ -61,7 +64,11 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
               if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
             }
           } catch (error: unknown) {
-            if (filesystemCode(error) !== "ENOENT") return unavailableDirectory();
+            const code = filesystemCode(error);
+            if (code !== "ENOENT") {
+              if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
+              return unavailableDirectory();
+            }
           }
         }
         entry = directory.readSync();
@@ -75,6 +82,7 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
       value: {
         current,
         parent: parentCandidate === current ? null : realpathSync(parentCandidate),
+        breadcrumbs: directoryBreadcrumbs(current),
         directories,
       },
     };
@@ -83,6 +91,7 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
     if (code && NOT_FOUND_FILESYSTEM_CODES.has(code)) {
       return { ok: false, code: "not_found", error: "directory not found" };
     }
+    if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
     return unavailableDirectory();
   }
 }
@@ -91,6 +100,34 @@ function compareDirectoryEntries(left: DirectoryBrowseEntry, right: DirectoryBro
   if (left.name < right.name) return -1;
   if (left.name > right.name) return 1;
   return 0;
+}
+
+function directoryBreadcrumbs(current: string): readonly DirectoryBrowseEntry[] {
+  const root = parse(current).root;
+  const relativePath = relative(root, current);
+  if (!relativePath) return [{ name: root, path: root }];
+
+  const segments = relativePath.split(sep);
+  const truncated = segments.length > DIRECTORY_BREADCRUMB_LIMIT - 1;
+  const visibleSegmentCount = truncated ? DIRECTORY_BREADCRUMB_LIMIT - 2 : segments.length;
+  const firstVisibleIndex = segments.length - visibleSegmentCount;
+  const breadcrumbs: DirectoryBrowseEntry[] = [{ name: root, path: root }];
+
+  if (truncated) {
+    breadcrumbs.push({
+      name: "…",
+      path: join(root, ...segments.slice(0, firstVisibleIndex)),
+    });
+  }
+  for (let index = firstVisibleIndex; index < segments.length; index++) {
+    const name = segments[index];
+    if (!name) continue;
+    breadcrumbs.push({
+      name,
+      path: join(root, ...segments.slice(0, index + 1)),
+    });
+  }
+  return breadcrumbs;
 }
 
 function filesystemCode(error: unknown): string | undefined {
@@ -103,6 +140,10 @@ function filesystemCode(error: unknown): string | undefined {
 
 function invalidDirectory(): DirectoryBrowseResult {
   return { ok: false, code: "invalid", error: "invalid directory" };
+}
+
+function permissionDeniedDirectory(): DirectoryBrowseResult {
+  return { ok: false, code: "permission_denied", error: "directory permission denied" };
 }
 
 function tooManyEntries(): DirectoryBrowseResult {

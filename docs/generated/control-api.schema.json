@@ -1100,6 +1100,13 @@
               }
             ]
           },
+          "breadcrumbs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/DirectoryBrowseEntry"
+            },
+            "maxItems": 12
+          },
           "directories": {
             "type": "array",
             "items": {
@@ -1111,12 +1118,14 @@
         "required": [
           "current",
           "parent",
+          "breadcrumbs",
           "directories"
         ],
         "additionalProperties": false
       },
       "errors": [
         "400 DirectoryBrowseErrorEnvelope",
+        "403 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
         "422 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope"
@@ -2697,6 +2706,7 @@
           "enum": [
             "invalid directory",
             "directory not found",
+            "directory permission denied",
             "directory contains too many entries",
             "directory unavailable"
           ]
@@ -2705,6 +2715,7 @@
           "enum": [
             "invalid",
             "not_found",
+            "permission_denied",
             "too_many_entries",
             "unavailable"
           ]

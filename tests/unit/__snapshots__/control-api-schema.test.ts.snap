@@ -1103,6 +1103,13 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
               }
             ]
           },
+          "breadcrumbs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/DirectoryBrowseEntry"
+            },
+            "maxItems": 12
+          },
           "directories": {
             "type": "array",
             "items": {
@@ -1114,12 +1121,14 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "required": [
           "current",
           "parent",
+          "breadcrumbs",
           "directories"
         ],
         "additionalProperties": false
       },
       "errors": [
         "400 DirectoryBrowseErrorEnvelope",
+        "403 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
         "422 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope"
@@ -2700,6 +2709,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "enum": [
             "invalid directory",
             "directory not found",
+            "directory permission denied",
             "directory contains too many entries",
             "directory unavailable"
           ]
@@ -2708,6 +2718,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           "enum": [
             "invalid",
             "not_found",
+            "permission_denied",
             "too_many_entries",
             "unavailable"
           ]
