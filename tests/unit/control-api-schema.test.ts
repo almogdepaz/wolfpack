@@ -423,6 +423,14 @@ describe("control api schema compatibility samples", () => {
     });
   });
 
+  test("next-session-name publishes unavailable filesystem failures", () => {
+    expect(httpOperation("nextSessionName").errors).toEqual([
+      "400 ErrorEnvelope",
+      "404 ErrorEnvelope",
+      "503 ErrorEnvelope",
+    ]);
+  });
+
   test("launch contracts accept one explicit absolute project directory selector", () => {
     const explicit = { projectDir: "/worktrees/path with spaces" };
 

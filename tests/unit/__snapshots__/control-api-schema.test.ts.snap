@@ -1126,7 +1126,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       },
       "errors": [
         "400 ErrorEnvelope",
-        "404 ErrorEnvelope"
+        "404 ErrorEnvelope",
+        "503 ErrorEnvelope"
       ]
     },
     "createSession": {

@@ -905,7 +905,7 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       request: existingProjectSelectorSchema(),
       response: object({ name: ref("SessionName") }, ["name"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/create": {
       operationId: "createSession",

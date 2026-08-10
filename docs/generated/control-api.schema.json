@@ -1123,7 +1123,8 @@
       },
       "errors": [
         "400 ErrorEnvelope",
-        "404 ErrorEnvelope"
+        "404 ErrorEnvelope",
+        "503 ErrorEnvelope"
       ]
     },
     "createSession": {
