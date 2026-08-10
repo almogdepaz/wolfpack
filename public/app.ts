@@ -3774,30 +3774,36 @@ async function showAgentPicker() {
   createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
   nameError.classList.remove("visible");
-  try {
-    const projectQuery = state.selectedProjectDir
-      ? "projectDir=" + encodeURIComponent(state.selectedProjectDir)
-      : "project=" + encodeURIComponent(state.selectedProject);
-    const [data, nameData] = await Promise.all([
-      api<SettingsResponse>("/settings", undefined, state.projectMachine),
-      api<NextSessionNameResponse>("/next-session-name?" + projectQuery, undefined, state.projectMachine),
-    ]);
-    if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
-    // /api/settings now returns { settings, effective } — effective.cmds is
-    // the list to render (already filtered to enabled, with ["shell"] fallback
-    // when nothing's on). Manage which cmds appear via the Settings page.
-    const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
-    const defaultCmd = data.effective?.agentCmd;
-    const html = cmds.map(cmd => `
-      <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
-        <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
-        <div class="card-name">${esc(cmd)}</div>
-      </button>
-    `).join("");
-    el.innerHTML = html;
-  } catch {
-    el.innerHTML = '<div class="empty">Failed to load agents</div>';
+  const projectQuery = state.selectedProjectDir
+    ? "projectDir=" + encodeURIComponent(state.selectedProjectDir)
+    : "project=" + encodeURIComponent(state.selectedProject);
+  const [settingsResult, nameResult] = await Promise.allSettled([
+    api<SettingsResponse>("/settings", undefined, state.projectMachine),
+    api<NextSessionNameResponse>("/next-session-name?" + projectQuery, undefined, state.projectMachine),
+  ]);
+  if (nameResult.status === "rejected") {
+    el.innerHTML = `<div class="empty">${esc(errorMessage(nameResult.reason))}</div>`;
+    return;
   }
+  if (settingsResult.status === "rejected") {
+    el.innerHTML = '<div class="empty">Failed to load agents</div>';
+    return;
+  }
+  const data = settingsResult.value;
+  const nameData = nameResult.value;
+  if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
+  // /api/settings now returns { settings, effective } — effective.cmds is
+  // the list to render (already filtered to enabled, with ["shell"] fallback
+  // when nothing's on). Manage which cmds appear via the Settings page.
+  const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
+  const defaultCmd = data.effective?.agentCmd;
+  const html = cmds.map(cmd => `
+    <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
+      <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
+      <div class="card-name">${esc(cmd)}</div>
+    </button>
+  `).join("");
+  el.innerHTML = html;
 }
 
 // Session name input validation
