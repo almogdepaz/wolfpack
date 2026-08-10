@@ -917,9 +917,13 @@ export const controlApiSource: ControlApiSource = {
         }),
         allOf: [{
           oneOf: [
-            object({}, ["project"], { additionalProperties: true }),
             object({}, ["projectDir"], { additionalProperties: true }),
-            object({}, ["newProject"], { additionalProperties: true }),
+            {
+              anyOf: [
+                object({}, ["project"], { additionalProperties: true }),
+                object({}, ["newProject"], { additionalProperties: true }),
+              ],
+            },
           ],
         }],
       },

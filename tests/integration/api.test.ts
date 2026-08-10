@@ -1211,6 +1211,17 @@ describe("POST /api/create", () => {
     expect(data.session).toBe("fresh-app");
   });
 
+  test("preserves newProject precedence when both legacy project fields are provided", async () => {
+    const res = await post("/api/create", {
+      project: "my-app",
+      newProject: "fresh-override",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, session: "fresh-override" });
+    expect(mockBackend.lastCreateArgs?.cwd).toBe(join(TEST_DEV_DIR, "fresh-override"));
+  });
+
   test("creates session with cmd", async () => {
     mockBackend.lastCreateArgs = null;
     const res = await post("/api/create", {

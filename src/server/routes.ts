@@ -642,7 +642,7 @@ const routeImplementations: Record<
       }, 400);
     }
     const { project, projectDir: requestedProjectDir, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
-    if (newProject !== undefined && (project !== undefined || requestedProjectDir !== undefined)) {
+    if (requestedProjectDir !== undefined && (project !== undefined || newProject !== undefined)) {
       return json(res, { error: "invalid project selection" }, 400);
     }
     if (cmd && cmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(cmd)) {

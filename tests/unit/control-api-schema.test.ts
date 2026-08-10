@@ -325,6 +325,10 @@ describe("control api schema compatibility samples", () => {
       maxLength: 32768,
     });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      newProject: "fresh-app",
+    }, artifact)).toEqual([]);
     expect(validate(request, { projectDir: "/srv/worktrees/alpha", cmd: "pi" }, artifact)).toEqual([]);
     expect(validate(request, {
       project: "wolfpack",
