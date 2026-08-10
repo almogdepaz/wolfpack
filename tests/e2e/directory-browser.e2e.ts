@@ -22,14 +22,19 @@ async function openProjectPicker(page: Page): Promise<void> {
   await page.evaluate(() => (window as unknown as TestWindow).showProjectPicker());
 }
 
-async function routeAgentSelection(page: Page, createRequests: unknown[]): Promise<void> {
+async function routeAgentSelection(
+  page: Page,
+  createRequests: unknown[],
+  nextNameRequests: URL[],
+): Promise<void> {
   await page.route("**/api/settings", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ effective: { cmds: ["shell"], agentCmd: "shell" } }),
     });
   });
-  await page.route(/\/api\/next-session-name\?/, async (route) => {
+  await page.route("**/api/next-session-name**", async (route) => {
+    nextNameRequests.push(new URL(route.request().url()));
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ name: "directory-session" }),
@@ -55,6 +60,7 @@ test.afterAll(() => {
 test("opens a canonical browsed directory through the existing projectDir launch path", async ({ page }) => {
   const directoryRequests: Array<string | null> = [];
   const createRequests: unknown[] = [];
+  const nextNameRequests: URL[] = [];
   await page.route("**/api/directories**", async (route) => {
     const requestedPath = new URL(route.request().url()).searchParams.get("path");
     directoryRequests.push(requestedPath);
@@ -67,7 +73,7 @@ test("opens a canonical browsed directory through the existing projectDir launch
         };
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
   });
-  await routeAgentSelection(page, createRequests);
+  await routeAgentSelection(page, createRequests, nextNameRequests);
   await openProjectPicker(page);
 
   await page.getByRole("button", { name: "Browse server directories" }).click();
@@ -86,17 +92,22 @@ test("opens a canonical browsed directory through the existing projectDir launch
     sessionName: "directory-session",
   }]);
   expect(directoryRequests).toEqual([null, CHILD_DIRECTORY]);
+  expect(nextNameRequests).toHaveLength(1);
+  expect(nextNameRequests[0].searchParams.get("projectDir")).toBe(CHILD_DIRECTORY);
+  expect(nextNameRequests[0].searchParams.has("project")).toBe(false);
+  expect(nextNameRequests[0].searchParams.has("newProject")).toBe(false);
 });
 
 test("records Create here as the parent for the existing project-name flow", async ({ page }) => {
   const createRequests: unknown[] = [];
+  const nextNameRequests: URL[] = [];
   await page.route("**/api/directories**", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ current: BASE_DIRECTORY, parent: "/server", directories: [] }),
     });
   });
-  await routeAgentSelection(page, createRequests);
+  await routeAgentSelection(page, createRequests, nextNameRequests);
   await openProjectPicker(page);
 
   await page.getByRole("button", { name: "Browse server directories" }).click();
@@ -111,6 +122,31 @@ test("records Create here as the parent for the existing project-name flow", asy
   await expect.poll(() => createRequests).toEqual([{
     newProject: "named-child",
     newProjectParent: BASE_DIRECTORY,
+    cmd: "shell",
+    sessionName: "directory-session",
+  }]);
+  expect(nextNameRequests).toHaveLength(1);
+  expect(nextNameRequests[0].searchParams.get("newProject")).toBe("named-child");
+  expect(nextNameRequests[0].searchParams.has("project")).toBe(false);
+  expect(nextNameRequests[0].searchParams.has("projectDir")).toBe(false);
+});
+
+test("uses the newProject next-name selector for configured-base creation", async ({ page }) => {
+  const createRequests: unknown[] = [];
+  const nextNameRequests: URL[] = [];
+  await routeAgentSelection(page, createRequests, nextNameRequests);
+  await openProjectPicker(page);
+
+  await page.locator("#new-project-create-name").fill("default-child");
+  await page.getByRole("button", { name: "Create new project" }).click();
+  await page.getByRole("button", { name: "Start shell" }).click();
+
+  expect(nextNameRequests).toHaveLength(1);
+  expect(nextNameRequests[0].searchParams.get("newProject")).toBe("default-child");
+  expect(nextNameRequests[0].searchParams.has("project")).toBe(false);
+  expect(nextNameRequests[0].searchParams.has("projectDir")).toBe(false);
+  await expect.poll(() => createRequests).toEqual([{
+    newProject: "default-child",
     cmd: "shell",
     sessionName: "directory-session",
   }]);

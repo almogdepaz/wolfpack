@@ -2060,6 +2060,28 @@ describe("GET /api/next-session-name", () => {
     }
   });
 
+  test("allocates a future new-project name without requiring its directory to exist", async () => {
+    const newProject = "future-next-name";
+    expect(existsSync(join(TEST_DEV_DIR, newProject))).toBe(false);
+
+    const res = await get(`/api/next-session-name?newProject=${encodeURIComponent(newProject)}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ name: newProject });
+  });
+
+  test("rejects invalid or mixed future new-project selectors", async () => {
+    const projectDir = createExplicitProjectDir("future-name-mixed");
+    for (const query of [
+      `newProject=${encodeURIComponent("../etc")}`,
+      "project=my-app&newProject=future-next-name",
+      `projectDir=${encodeURIComponent(projectDir)}&newProject=future-next-name`,
+    ]) {
+      const res = await get(`/api/next-session-name?${query}`);
+      expect(res.status).toBe(400);
+    }
+  });
+
   test("returns project name when not taken", async () => {
     const res = await fetch(`${base}/api/next-session-name?project=my-app`);
     expect(res.status).toBe(200);

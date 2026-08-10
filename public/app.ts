@@ -3902,7 +3902,7 @@ async function showAgentPicker() {
   nameError.classList.remove("visible");
   const projectQuery = state.selectedProjectDir
     ? "projectDir=" + encodeURIComponent(state.selectedProjectDir)
-    : "project=" + encodeURIComponent(state.selectedProject);
+    : (state.isNewProject ? "newProject=" : "project=") + encodeURIComponent(state.selectedProject);
   const settingsPromise = api<SettingsResponse>("/settings", undefined, state.projectMachine).then(
     (value) => ({ status: "fulfilled" as const, value }),
     () => ({ status: "rejected" as const }),

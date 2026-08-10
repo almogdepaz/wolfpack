@@ -164,6 +164,21 @@ function existingProjectSelectorSchema(
   };
 }
 
+function nextSessionNameSelectorSchema(): JsonSchema {
+  return {
+    ...object({
+      project: ref("ProjectName"),
+      projectDir: ref("ProjectDirectory"),
+      newProject: ref("ProjectName"),
+    }),
+    allOf: [{
+      oneOf: ["project", "projectDir", "newProject"].map((selector) =>
+        object({}, [selector], { additionalProperties: true })
+      ),
+    }],
+  };
+}
+
 const ok = object({ ok: boolean() }, ["ok"]);
 const error = ref("ErrorEnvelope");
 const OPAQUE_RELAY_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -931,7 +946,7 @@ export const controlApiSource: ControlApiSource = {
       operationId: "nextSessionName",
       stable: true,
       auth: "jwt-when-configured",
-      request: existingProjectSelectorSchema(),
+      request: nextSessionNameSelectorSchema(),
       response: object({ name: ref("SessionName") }, ["name"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "503 ErrorEnvelope"],
     },

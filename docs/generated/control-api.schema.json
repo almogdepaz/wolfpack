@@ -1136,6 +1136,9 @@
           },
           "projectDir": {
             "$ref": "#/$defs/ProjectDirectory"
+          },
+          "newProject": {
+            "$ref": "#/$defs/ProjectName"
           }
         },
         "required": [],
@@ -1156,6 +1159,14 @@
                 "properties": {},
                 "required": [
                   "projectDir"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "newProject"
                 ],
                 "additionalProperties": true
               }
