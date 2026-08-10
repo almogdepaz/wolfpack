@@ -601,6 +601,33 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(received).toEqual([6n]);
   });
 
+  test("stale atomic snapshot lease cannot cancel its replacement", async () => {
+    const { server, client } = await bootClientToServer();
+    const methods: string[] = [];
+    server.onRequest = (req, sock) => {
+      methods.push(req.method);
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "ok",
+          payload: { kind: req.method, snapshot: { seq: 5 }, current_seq: 5 },
+        },
+      });
+    };
+
+    const stale = await client.snapshotSubscribe(SAMPLE_UUID);
+    const replacement = await client.snapshotSubscribe(SAMPLE_UUID);
+    await stale.cancel();
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe"]);
+
+    await replacement.cancel();
+    await replacement.cancel();
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe", "unsubscribe"]);
+  });
+
   test("unknown snapshot_subscribe leaves no active state for legacy fallback", async () => {
     const { server, client } = await bootClientToServer();
     server.onRequest = (req, sock) => {

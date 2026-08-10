@@ -12,7 +12,7 @@ import {
   BrokerNotConnectedError,
   BrokerSubscribeError,
 } from "../../src/broker/client";
-import type { OutputSubscriber } from "../../src/broker/client";
+import type { BrokerSnapshotSubscription, OutputSubscriber } from "../../src/broker/client";
 import {
   DuplicateSessionError,
   UnsupportedTerminalKeyError,
@@ -47,6 +47,7 @@ class FakeBrokerClient implements BrokerClientApi {
   unsubscribeCallCount = 0;
   /** Number of forced subscription cancellations observed. */
   cancelSubscriptionCallCount = 0;
+  snapshotSubscriptionOwners = new Map<string, symbol>();
   /** Models a client whose transport is disconnected before subscribe mutates state. */
   disconnected = false;
   /** When set, the next subscribe() call rejects with this error then resets to null. */
@@ -85,7 +86,9 @@ class FakeBrokerClient implements BrokerClientApi {
   async snapshotSubscribe(
     sessionId: string,
     params: { scrollbackLines?: number; targetCols?: number } = {},
-  ): Promise<ControlResponse> {
+  ): Promise<BrokerSnapshotSubscription> {
+    const owner = Symbol("snapshot subscription owner");
+    this.snapshotSubscriptionOwners.set(sessionId, owner);
     this.activeSubscriptions.add(sessionId);
     const rpcParams = {
       session_id: sessionId,
@@ -96,9 +99,20 @@ class FakeBrokerClient implements BrokerClientApi {
     try {
       if (this.requestError) throw this.requestError;
       const handler = this.handlers.get("snapshot_subscribe") ?? this.handlers.get("snapshot");
-      return handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+      const response = handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+      return {
+        response,
+        cancel: async () => {
+          if (this.snapshotSubscriptionOwners.get(sessionId) !== owner) return;
+          this.snapshotSubscriptionOwners.delete(sessionId);
+          await this.cancelSubscription(sessionId);
+        },
+      };
     } catch (error: unknown) {
-      this.activeSubscriptions.delete(sessionId);
+      if (this.snapshotSubscriptionOwners.get(sessionId) === owner) {
+        this.snapshotSubscriptionOwners.delete(sessionId);
+        this.activeSubscriptions.delete(sessionId);
+      }
       throw error;
     }
   }
@@ -133,6 +147,7 @@ class FakeBrokerClient implements BrokerClientApi {
 
   async subscribe(sessionId: string, opts?: { sinceSeq?: bigint }): Promise<ControlResponse> {
     if (this.disconnected) throw new BrokerNotConnectedError("broker disconnected");
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.subscribeCallCount++;
     this.subscribeSeqs.set(sessionId, opts?.sinceSeq);
     if (opts?.sinceSeq !== undefined) this.outputSeqs.set(sessionId, opts.sinceSeq);
@@ -156,12 +171,14 @@ class FakeBrokerClient implements BrokerClientApi {
   }
 
   async unsubscribe(sessionId: string): Promise<void> {
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.unsubscribeCallCount++;
     await this.unsubscribeGate;
     this.activeSubscriptions.delete(sessionId);
   }
 
   async cancelSubscription(sessionId: string): Promise<void> {
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.cancelSubscriptionCallCount++;
     this.activeSubscriptions.delete(sessionId);
   }
@@ -1509,6 +1526,68 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
     await expect(backend.getSessionPrefill("live")).rejects.toThrow("internal_error");
   });
 
+  test("snapshot-only prefill does not create a broker subscription", async () => {
+    client.setHandler("snapshot", () => okResp(styledSnapshot(["snapshot-only"])));
+
+    await backend.getSessionPrefill("live");
+
+    expect(client.requests.map(request => request.method)).toEqual([
+      "list_sessions",
+      "snapshot",
+    ]);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+
+  test("cancelled atomic attach releases its provisional broker subscription", async () => {
+    client.setHandler("snapshot_subscribe", () => okResp(styledSnapshot(["atomic"])));
+    const lease = await backend.beginSessionAttach("live");
+
+    await lease.cancel();
+    await lease.cancel();
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+
+  test("failed atomic prefill rendering releases its provisional subscription", async () => {
+    client.setHandler("snapshot_subscribe", () => okResp({
+      snapshot: { visible_screen: [], scrollback: 1, seq: 12 },
+      current_seq: 12,
+    }));
+
+    await expect(backend.beginSessionAttach("live")).rejects.toThrow();
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+
+  test("activating atomic attach adopts its stream without another subscribe RPC", async () => {
+    const snap = styledSnapshot(["atomic"]);
+    snap.snapshot.seq = 12;
+    client.setHandler("snapshot_subscribe", () => okResp({
+      ...snap,
+      current_seq: 12,
+    }));
+    const lease = await backend.beginSessionAttach("live");
+    const seen: number[] = [];
+
+    const unsubscribe = lease.activate(
+      data => seen.push(data[0]),
+      { onSubscribeError: () => {} },
+    );
+    expect(unsubscribe).not.toBeNull();
+    expect(await unsubscribe?.ready).toBe(true);
+    client.emit(SESSION_UUID_1, new Uint8Array([13]), 13n);
+    await lease.cancel();
+
+    expect(client.subscribeCallCount).toBe(0);
+    expect(client.cancelSubscriptionCallCount).toBe(0);
+    expect(seen).toEqual([13]);
+    unsubscribe?.();
+    await unsubscribe?.closed;
+    expect(client.unsubscribeCallCount).toBe(1);
+  });
+
   test("falls back to legacy snapshot and replay-safe subscribe for an older protocol-v2 broker", async () => {
     client.setHandler("snapshot_subscribe", () => {
       throw new BrokerSubscribeError("unknown_method", "unknown method: snapshot_subscribe");
@@ -1517,8 +1596,8 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
     snap.snapshot.seq = 42;
     client.setHandler("snapshot", () => okResp(snap));
 
-    const prefill = await backend.getSessionPrefill("live");
-    expect(prefill.seq).toBe(42n);
+    const lease = await backend.beginSessionAttach("live");
+    expect(lease.prefill.seq).toBe(42n);
     expect(client.requests.map(request => request.method)).toEqual([
       "list_sessions",
       "snapshot_subscribe",
@@ -1526,7 +1605,7 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
     ]);
     expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
 
-    const unsubscribe = backend.onSessionData("live", () => {}, { onSubscribeError: () => {}, sinceSeq: prefill.seq });
+    const unsubscribe = lease.activate(() => {}, { onSubscribeError: () => {} });
     expect(unsubscribe).not.toBeNull();
     await Promise.resolve();
     expect(client.subscribeCallCount).toBe(1);

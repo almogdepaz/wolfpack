@@ -26,6 +26,7 @@ import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend.js
 import type {
   CapturePaneOptions,
   PtyBackendMethods,
+  SessionAttachLease,
   SessionBackend,
   SessionDataUnsubscribe,
   SessionLaunchOptions,
@@ -49,7 +50,11 @@ import type {
 import {
   BrokerSubscribeError,
 } from "../broker/client.js";
-import type { BrokerClient, OutputSubscriber } from "../broker/client.js";
+import type {
+  BrokerClient,
+  BrokerSnapshotSubscription,
+  OutputSubscriber,
+} from "../broker/client.js";
 import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import {
@@ -103,7 +108,7 @@ export interface BrokerClientApi {
   snapshotSubscribe(
     sessionId: string,
     params?: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number },
-  ): Promise<ControlResponse>;
+  ): Promise<BrokerSnapshotSubscription>;
   writeInput(sessionId: string, data: Uint8Array): void;
   /** Register a per-session output callback; returns an unsubscribe fn. */
   subscribeOutput(sessionId: string, cb: OutputSubscriber): () => void;
@@ -173,6 +178,26 @@ interface SnapshotPayload extends SnapshotForRender {
   /** Final broker PTY-chunk seq covered at capture time. Present on all broker snapshots. */
   seq?: number;
 }
+
+type AttachCut =
+  | {
+      readonly kind: "atomic";
+      readonly snapshot: SnapshotPayload;
+      readonly outputBoundarySeq: bigint | undefined;
+      readonly cancel: () => Promise<void>;
+    }
+  | {
+      readonly kind: "legacy";
+      readonly snapshot: SnapshotPayload;
+    };
+
+type SubscriptionStart =
+  | { readonly kind: "subscribe"; readonly sinceSeq: bigint | undefined }
+  | {
+      readonly kind: "adopt";
+      readonly snapshotSeq: bigint | undefined;
+      readonly outputBoundarySeq: bigint | undefined;
+    };
 
 interface SubscriberRegistration {
   unsubscribeData: (() => void) | undefined;
@@ -684,7 +709,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       name,
       (frame) => cb(frame.data),
       opts.onSubscribeError,
-      opts.sinceSeq,
+      { kind: "subscribe", sinceSeq: opts.sinceSeq },
     );
     const unsubscribe = subscriber.unsubscribe as SessionDataUnsubscribe;
     unsubscribe.ready = subscriber.ready.then((result) => result.ok);
@@ -703,20 +728,76 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
   }
 
-  /**
-   * Fetch a fresh broker snapshot and render it to ANSI bytes for WS prefill.
-   * Returns `{ data: empty, seq: undefined }` when the session is unknown or
-   * the broker rejects the snapshot - callers treat empty data as "no prefill".
-   * `seq` is the final broker PTY-chunk watermark covered by the snapshot;
-   * pass it to `onSessionData` so the broker replays chunks emitted between
-   * snapshot and subscribe attach.
-   */
+  /** Fetch a side-effect-free snapshot for non-streaming callers. */
   async getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionPrefill> {
     const id = await this.resolveId(name);
     if (!id) throw new BrokerRpcError("unknown_session", `session not found: ${name}`);
-    const snap = await this.fetchSnapshotAndSubscribe(id, name, cols, options?.scrollbackLines);
-    const seq = typeof snap.seq === "number" ? BigInt(snap.seq) : undefined;
-    return { data: renderSnapshotToAnsi(snap), seq };
+    const snapshot = await this.fetchSnapshot(
+      id,
+      name,
+      "getSessionPrefill",
+      cols,
+      options?.scrollbackLines,
+    );
+    const seq = typeof snapshot.seq === "number" ? BigInt(snapshot.seq) : undefined;
+    return { data: renderSnapshotToAnsi(snapshot), seq };
+  }
+
+  async beginSessionAttach(
+    name: string,
+    cols?: number,
+    options?: SessionPrefillOptions,
+  ): Promise<SessionAttachLease> {
+    const id = await this.resolveId(name);
+    if (!id) throw new BrokerRpcError("unknown_session", `session not found: ${name}`);
+    const cut = await this.fetchSnapshotAndSubscribe(id, name, cols, options?.scrollbackLines);
+    const seq = typeof cut.snapshot.seq === "number" ? BigInt(cut.snapshot.seq) : undefined;
+    let data: Buffer;
+    try {
+      data = renderSnapshotToAnsi(cut.snapshot);
+    } catch (error: unknown) {
+      if (cut.kind === "atomic") {
+        await cut.cancel().catch((cleanupError: unknown) => {
+          log.debug("failed atomic prefill render cleanup failed", {
+            name,
+            id,
+            error: errMsg(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+    const prefill = { data, seq };
+    let state: "pending" | "active" | "cancelled" = "pending";
+
+    return {
+      prefill,
+      activate: (cb, opts) => {
+        if (state !== "pending") return null;
+        state = "active";
+        const subscriber = this.registerOutputSubscriber(
+          id,
+          name,
+          frame => cb(frame.data),
+          opts.onSubscribeError,
+          cut.kind === "atomic"
+            ? {
+                kind: "adopt",
+                snapshotSeq: seq,
+                outputBoundarySeq: cut.outputBoundarySeq,
+              }
+            : { kind: "subscribe", sinceSeq: seq },
+        );
+        const unsubscribe = subscriber.unsubscribe as SessionDataUnsubscribe;
+        unsubscribe.ready = subscriber.ready.then(result => result.ok);
+        return unsubscribe;
+      },
+      cancel: async () => {
+        if (state !== "pending") return;
+        state = "cancelled";
+        if (cut.kind === "atomic") await cut.cancel();
+      },
+    };
   }
 
   isSessionAlive(name: string): boolean {
@@ -824,10 +905,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     name: string,
     cb: OutputSubscriber,
     onSubscribeError: (error: unknown) => void,
-    sinceSeq?: bigint,
+    start: SubscriptionStart = { kind: "subscribe", sinceSeq: undefined },
   ): SubscriberHandle {
     const existingRef = this.subscriberRefs.get(id);
-    const outputBoundarySeq = existingRef ? this.client.outputSequence(id) : undefined;
+    const sinceSeq = start.kind === "adopt" ? start.snapshotSeq : start.sinceSeq;
+    const outputBoundarySeq = start.kind === "adopt"
+      ? start.outputBoundarySeq
+      : existingRef
+        ? this.client.outputSequence(id)
+        : undefined;
     let resolveReady!: (result: SubscriptionReady) => void;
     const ready = new Promise<SubscriptionReady>((resolve) => {
       resolveReady = resolve;
@@ -879,7 +965,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
     };
 
-    if (!existingRef) {
+    if (start.kind === "adopt") {
+      attachOutput();
+      resolveReady({ ok: true, outputBoundarySeq: start.outputBoundarySeq });
+    } else if (!existingRef) {
       const initial = activate();
       ref.replayQueue = initial.catch(() => undefined);
     } else if (sinceSeq !== undefined) {
@@ -948,26 +1037,48 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     name: string,
     targetCols?: number,
     scrollbackLines: number = SNAPSHOT_SCROLLBACK_LINES,
-  ): Promise<SnapshotPayload> {
-    let response: ControlResponse;
+  ): Promise<AttachCut> {
+    let subscription: BrokerSnapshotSubscription;
     try {
-      response = await this.client.snapshotSubscribe(id, { scrollbackLines, targetCols });
+      subscription = await this.client.snapshotSubscribe(id, { scrollbackLines, targetCols });
     } catch (error: unknown) {
       if (error instanceof BrokerSubscribeError && error.code === "unknown_method") {
-        // Older protocol-v2 brokers lack this atomic RPC. The subsequent
-        // subscribe(since_seq) preserves the replay-safe attach contract.
-        log.warn("getSessionPrefill: broker lacks atomic snapshot subscribe; using legacy replay-safe attach", { name });
-        return this.fetchSnapshot(id, name, "getSessionPrefill", targetCols, scrollbackLines);
+        // Older protocol-v2 brokers lack this atomic RPC. Activation performs
+        // the replay-safe subscribe from the snapshot sequence instead.
+        log.warn("beginSessionAttach: broker lacks atomic snapshot subscribe; using legacy replay-safe attach", { name });
+        return {
+          kind: "legacy",
+          snapshot: await this.fetchSnapshot(
+            id,
+            name,
+            "beginSessionAttach",
+            targetCols,
+            scrollbackLines,
+          ),
+        };
       }
-      log.warn("getSessionPrefill: atomic snapshot subscribe failed", { name, error: errMsg(error) });
+      log.warn("beginSessionAttach: atomic snapshot subscribe failed", { name, error: errMsg(error) });
       throw error;
     }
-    const payload = unwrap(response);
+    const payload = unwrap(subscription.response);
     const snapshot = payload.snapshot;
     if (!snapshot || typeof snapshot !== "object") {
+      await subscription.cancel().catch((error: unknown) => {
+        log.debug("invalid atomic snapshot cleanup failed", { name, id, error: errMsg(error) });
+      });
       throw new BrokerRpcError("invalid_snapshot", "broker returned no atomic snapshot payload");
     }
-    return snapshot as SnapshotPayload;
+    const currentSeq = payload.current_seq;
+    return {
+      kind: "atomic",
+      snapshot: snapshot as SnapshotPayload,
+      outputBoundarySeq: typeof currentSeq === "number"
+        && Number.isSafeInteger(currentSeq)
+        && currentSeq >= 0
+        ? BigInt(currentSeq)
+        : undefined,
+      cancel: subscription.cancel,
+    };
   }
 
   /** Issue a bounded `snapshot` RPC or reject with the typed broker failure. */

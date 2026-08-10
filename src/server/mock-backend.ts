@@ -5,6 +5,7 @@
  * __setTestBackend(). No real broker daemon needed.
  */
 import type {
+  SessionAttachLease,
   SessionBackend,
   SessionLaunchOptions,
   SessionListFact,
@@ -332,6 +333,24 @@ export class MockBackend implements SessionBackend {
     const data = Buffer.from(this._sessions.has(name) ? stripAnsi(await this._capturePane(name)) : "");
     this._onAfterPrefill?.(name, seq);
     return { data, seq };
+  }
+
+  async beginSessionAttach(
+    name: string,
+    cols?: number,
+    options?: { readonly scrollbackLines?: number },
+  ): Promise<SessionAttachLease> {
+    const prefill = await this.getSessionPrefill(name, cols, options);
+    let pending = true;
+    return {
+      prefill,
+      activate: (cb, opts) => {
+        if (!pending) return null;
+        pending = false;
+        return this.onSessionData(name, cb, { sinceSeq: prefill.seq, ...opts });
+      },
+      cancel: async () => { pending = false; },
+    };
   }
 
   onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {

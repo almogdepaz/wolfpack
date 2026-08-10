@@ -102,6 +102,9 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   resizeError: Error | null = null;
   resizeOutput: Uint8Array | null = null;
   prefillSeq: bigint | undefined;
+  attachLeaseBeginCount = 0;
+  attachLeaseActivateCount = 0;
+  attachLeaseCancelCount = 0;
   onResizeComplete: ((cols: number, rows: number) => void) | null = null;
   onLiveSubscribe: ((sinceSeq: bigint | undefined) => void) | null = null;
   onWrite: ((name: string, data: Uint8Array) => void) | null = null;
@@ -160,6 +163,25 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     this.prefillCalls.push({ name, cols, scrollbackLines: options?.scrollbackLines });
     const data = this.prefill.get(name) ?? Buffer.alloc(0);
     return { data, seq: this.prefillSeq };
+  }
+  async beginSessionAttach(name: string, cols?: number, options?: { scrollbackLines?: number }) {
+    this.attachLeaseBeginCount += 1;
+    const prefill = await this.getSessionPrefill(name, cols, options);
+    let state: "pending" | "active" | "cancelled" = "pending";
+    return {
+      prefill,
+      activate: (cb: (data: Uint8Array) => void, opts: { onSubscribeError: (err: unknown) => void }) => {
+        if (state !== "pending") return null;
+        state = "active";
+        this.attachLeaseActivateCount += 1;
+        return this.onSessionData(name, cb, { sinceSeq: prefill.seq, ...opts });
+      },
+      cancel: async () => {
+        if (state !== "pending") return;
+        state = "cancelled";
+        this.attachLeaseCancelCount += 1;
+      },
+    };
   }
   onSessionData(name: string, cb: (data: Uint8Array) => void, opts: { sinceSeq?: bigint; onSubscribeError: (err: unknown) => void }): (() => void) | null {
     if (!this.alive.has(name)) return null;
@@ -295,6 +317,23 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 100, rows: 30 }]);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
     expect(attachEvents).toEqual(["subscribe", "subscribe", "pty_ready"]);
+  });
+
+  test("aborted prefill releases its atomic attach lease before live activation", async () => {
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    const ws = new FakeWs();
+    ws.onSend = (data) => {
+      if (Buffer.isBuffer(data)) ws.close();
+    };
+
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 100, rows: 30 });
+    await wait(350);
+
+    expect(backend.attachLeaseBeginCount).toBe(1);
+    expect(backend.attachLeaseActivateCount).toBe(0);
+    expect(backend.attachLeaseCancelCount).toBe(1);
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
   });
 
   test("input accepted after attach_ack is forwarded once the replay-backed subscription confirms", async () => {

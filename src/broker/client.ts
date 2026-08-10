@@ -41,6 +41,11 @@ import {
 
 export type OutputSubscriber = (frame: OutputBinaryFrame) => void;
 export type EventSubscriber = (event: EventBody) => void;
+
+export interface BrokerSnapshotSubscription {
+  readonly response: ControlResponse;
+  cancel(): Promise<void>;
+}
 const PENDING_OUTPUT_MAX_BYTES_PER_SESSION = 1024 * 1024;
 
 export interface BrokerClientOptions {
@@ -187,6 +192,8 @@ export class BrokerClient {
   private readonly pendingUnsubscribes = new Map<string, Promise<void>>();
   /** Explicit failed-subscription teardowns, superseded by a replacement subscribe. */
   private readonly pendingSubscriptionCancellations = new Map<string, symbol>();
+  /** Identity of the latest provisional atomic snapshot owner per session. */
+  private readonly snapshotSubscriptionOwners = new Map<string, symbol>();
   /** Last observed output seq per active session (used for reconnect replay). */
   private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
   /** Exit events held until their final output watermark has been delivered. */
@@ -368,8 +375,12 @@ export class BrokerClient {
   async snapshotSubscribe(
     sessionId: string,
     params: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number } = {},
-  ): Promise<ControlResponse> {
+  ): Promise<BrokerSnapshotSubscription> {
     if (this.state !== "connected") throw new BrokerNotConnectedError();
+    const owner = Symbol("snapshot subscription owner");
+    this.pendingUnsubscribes.delete(sessionId);
+    this.pendingSubscriptionCancellations.delete(sessionId);
+    this.snapshotSubscriptionOwners.set(sessionId, owner);
     this.activeSubscriptions.add(sessionId);
     if (!this.activeSubscriptionSeq.has(sessionId)) this.activeSubscriptionSeq.set(sessionId, undefined);
     try {
@@ -389,9 +400,18 @@ export class BrokerClient {
         const observed = this.activeSubscriptionSeq.get(sessionId);
         this.activeSubscriptionSeq.set(sessionId, observed !== undefined && observed > snapshotSeq ? observed : snapshotSeq);
       }
-      return response;
+      return {
+        response,
+        cancel: async () => {
+          if (this.snapshotSubscriptionOwners.get(sessionId) !== owner) return;
+          this.snapshotSubscriptionOwners.delete(sessionId);
+          await this.cancelSubscription(sessionId);
+        },
+      };
     } catch (error: unknown) {
-      this.clearSubscriptionState(sessionId);
+      if (this.snapshotSubscriptionOwners.get(sessionId) === owner) {
+        this.clearSubscriptionState(sessionId);
+      }
       throw error;
     }
   }
@@ -421,6 +441,7 @@ export class BrokerClient {
     // the shared stream after this caller reuses the in-flight subscription.
     this.pendingUnsubscribes.delete(sessionId);
     this.pendingSubscriptionCancellations.delete(sessionId);
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.activeSubscriptions.add(sessionId);
     if (opts.sinceSeq !== undefined) {
       // Take max(prev, sinceSeq): never lower the floor below what we've
@@ -536,6 +557,7 @@ export class BrokerClient {
   }
 
   private clearSubscriptionState(sessionId: string): void {
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.activeSubscriptions.delete(sessionId);
     this.activeSubscriptionSeq.delete(sessionId);
     this.pendingOutput.delete(sessionId);
