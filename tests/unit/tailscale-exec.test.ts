@@ -30,7 +30,7 @@ describe("buildTailscaleStatusArgv", () => {
   test("uses the bounded self-only query for machine identity", () => {
     const { cmd, args } = buildTailscaleSelfStatusArgv("/opt/homebrew/bin/tailscale");
     expect(cmd).toBe("/bin/sh");
-    expect(args).toEqual(["-l", "-c", '"/opt/homebrew/bin/tailscale" status --self --json']);
+    expect(args).toEqual(["-l", "-c", '"/opt/homebrew/bin/tailscale" status --peers=false --json']);
   });
 
   test("quotes path with spaces (App Store bundle)", () => {
@@ -92,6 +92,6 @@ describe("Tailscale status execution bounds", () => {
       command = args[2] ?? "";
       return { stdout: '{"Self":{}}', stderr: "" };
     }, true)).resolves.toEqual({ Self: {} });
-    expect(command).toContain("status --self --json");
+    expect(command).toContain("status --peers=false --json");
   });
 });

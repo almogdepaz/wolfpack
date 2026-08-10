@@ -348,8 +348,10 @@ export function sanitizePeerName(name: unknown): string {
 // login profile so the bridge resolves. Revert warning: do NOT "simplify" to
 // a direct execFile — that silently breaks discovery on App Store installs.
 function buildTailscaleStatusCommandArgv(tsBin: string, selfOnly: boolean): { cmd: string; args: string[] } {
-  const selfFlag = selfOnly ? " --self" : "";
-  return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status${selfFlag} --json`] };
+  // --self only controls whether the local machine is displayed and defaults
+  // to true; --peers=false is what prevents the full peer map from loading.
+  const peersFlag = selfOnly ? " --peers=false" : "";
+  return { cmd: "/bin/sh", args: ["-l", "-c", `"${tsBin}" status${peersFlag} --json`] };
 }
 
 export function buildTailscaleStatusArgv(tsBin: string): { cmd: string; args: string[] } {
