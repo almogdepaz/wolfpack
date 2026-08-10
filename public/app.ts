@@ -3785,7 +3785,7 @@ function setDirectoryBrowserSelection(selection: DirectoryBrowseResponse | null)
   }
 }
 
-async function loadDirectoryBrowser(path?: string, focusCurrentAfterLoad = false): Promise<void> {
+async function loadDirectoryBrowser(path?: string, preserveKeyboardFocus = false): Promise<void> {
   const request = ++directoryBrowserRequest;
   const list = document.getElementById("directory-browser-list");
   const error = document.getElementById("directory-browser-error");
@@ -3793,6 +3793,7 @@ async function loadDirectoryBrowser(path?: string, focusCurrentAfterLoad = false
   error.textContent = "";
   list.textContent = "Loading directories…";
   list.setAttribute("aria-busy", "true");
+  if (preserveKeyboardFocus) list.focus({ preventScroll: true });
   try {
     const response = await api<unknown>(
       "/directories" + (path === undefined ? "" : `?path=${encodeURIComponent(path)}`),
@@ -3802,13 +3803,14 @@ async function loadDirectoryBrowser(path?: string, focusCurrentAfterLoad = false
     if (request !== directoryBrowserRequest) return;
     if (!isDirectoryBrowseResponse(response)) throw new Error("invalid directory response");
     setDirectoryBrowserSelection(response);
-    if (focusCurrentAfterLoad) {
+    if (preserveKeyboardFocus) {
       document.getElementById("directory-browser-current")?.focus({ preventScroll: true });
     }
   } catch (loadError: unknown) {
     if (request !== directoryBrowserRequest) return;
     list.replaceChildren();
     error.textContent = errorMessage(loadError);
+    if (preserveKeyboardFocus) error.focus({ preventScroll: true });
   } finally {
     if (request === directoryBrowserRequest) list.removeAttribute("aria-busy");
   }
