@@ -3777,20 +3777,28 @@ async function showAgentPicker() {
   const projectQuery = state.selectedProjectDir
     ? "projectDir=" + encodeURIComponent(state.selectedProjectDir)
     : "project=" + encodeURIComponent(state.selectedProject);
-  const [settingsResult, nameResult] = await Promise.allSettled([
-    api<SettingsResponse>("/settings", undefined, state.projectMachine),
-    api<NextSessionNameResponse>("/next-session-name?" + projectQuery, undefined, state.projectMachine),
-  ]);
-  if (nameResult.status === "rejected") {
-    el.innerHTML = `<div class="empty">${esc(errorMessage(nameResult.reason))}</div>`;
+  const settingsPromise = api<SettingsResponse>("/settings", undefined, state.projectMachine).then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    () => ({ status: "rejected" as const }),
+  );
+  const namePromise = api<NextSessionNameResponse>(
+    "/next-session-name?" + projectQuery,
+    undefined,
+    state.projectMachine,
+  );
+  let nameData: NextSessionNameResponse;
+  try {
+    nameData = await namePromise;
+  } catch (error) {
+    el.innerHTML = `<div class="empty">${esc(errorMessage(error))}</div>`;
     return;
   }
+  const settingsResult = await settingsPromise;
   if (settingsResult.status === "rejected") {
     el.innerHTML = '<div class="empty">Failed to load agents</div>';
     return;
   }
   const data = settingsResult.value;
-  const nameData = nameResult.value;
   if (!nameInput.value.trim()) nameInput.value = nameData.name || state.selectedProject;
   // /api/settings now returns { settings, effective } — effective.cmds is
   // the list to render (already filtered to enabled, with ["shell"] fallback

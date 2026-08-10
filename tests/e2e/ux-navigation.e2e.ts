@@ -698,12 +698,19 @@ test("project picker preserves exact explicit server directory text in browser r
   }]);
 });
 
-test("project picker surfaces explicit directory validation errors without blaming agent loading", async ({ page }) => {
+test("project picker promptly surfaces directory validation while agent settings remain pending", async ({ page }) => {
   const validationError = "project directory not found";
+  let settingsRequested = false;
+  let releaseSettings: () => void = () => {};
+  const settingsPending = new Promise<void>((resolve) => {
+    releaseSettings = resolve;
+  });
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha"] }) });
   });
   await page.route("**/api/settings", async (route) => {
+    settingsRequested = true;
+    await settingsPending;
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ effective: { cmds: ["pi"], agentCmd: "pi" } }),
@@ -717,13 +724,18 @@ test("project picker surfaces explicit directory validation errors without blami
     });
   });
 
-  await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
-  await page.locator("#existing-project-dir").fill("/srv/worktrees/missing");
-  await page.getByRole("button", { name: "Open existing directory", exact: true }).click();
+  try {
+    await page.goto(srv.baseUrl);
+    await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+    await page.locator("#existing-project-dir").fill("/srv/worktrees/missing");
+    await page.getByRole("button", { name: "Open existing directory", exact: true }).click();
 
-  await expect(page.locator("#agent-list")).toHaveText(validationError);
-  await expect(page.locator("#agent-list")).not.toContainText("Failed to load agents");
+    await expect.poll(() => settingsRequested, { timeout: 2_000 }).toBe(true);
+    await expect(page.locator("#agent-list")).toHaveText(validationError, { timeout: 2_000 });
+    await expect(page.locator("#agent-list")).not.toContainText("Failed to load agents");
+  } finally {
+    releaseSettings();
+  }
 });
 
 test("project creation input and action stay the same height", async ({ page }) => {
