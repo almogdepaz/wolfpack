@@ -410,6 +410,7 @@ export const state = {
   projectMachine: "",
   selectedProject: "",
   selectedProjectDir: "",
+  newProjectParent: "",
   isNewProject: false,
   enterRetryTimer: null,
   drawerOpen: false,

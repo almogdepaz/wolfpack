@@ -41,7 +41,12 @@ import {
 
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
-import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
+import { browseServerDirectory } from "./directory-browser.js";
+import type { DirectoryBrowseResult } from "./directory-browser.js";
+import {
+  validateExplicitProjectDir,
+  validateProjectDir as validateProjectDirPure,
+} from "./validate-project-dir.js";
 import { resolveExistingProjectSelection } from "./project-selection.js";
 import type { ResolveProjectSelectionResult } from "./project-selection.js";
 import {
@@ -179,6 +184,7 @@ interface CreateBody extends Record<string, unknown> {
   project?: string;
   projectDir?: string;
   newProject?: string;
+  newProjectParent?: string;
   cmd?: string;
   sessionName?: string;
   parentSession?: string;
@@ -186,9 +192,16 @@ interface CreateBody extends Record<string, unknown> {
 }
 
 function isCreateBody(body: Record<string, unknown>): body is CreateBody {
-  return ["project", "projectDir", "newProject", "cmd", "sessionName", "parentSession", "initialPrompt"].every(
-    key => hasOptionalType(body, key, "string"),
-  );
+  return [
+    "project",
+    "projectDir",
+    "newProject",
+    "newProjectParent",
+    "cmd",
+    "sessionName",
+    "parentSession",
+    "initialPrompt",
+  ].every(key => hasOptionalType(body, key, "string"));
 }
 
 interface SessionCreateBody extends Record<string, unknown> {
@@ -298,6 +311,14 @@ function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
 type ProjectSelectionFailure = Extract<ResolveProjectSelectionResult, { readonly ok: false }>;
 
 function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]): 400 | 404 | 503 {
+  if (code === "not_found") return 404;
+  if (code === "unavailable") return 503;
+  return 400;
+}
+
+type DirectoryBrowseFailure = Extract<DirectoryBrowseResult, { readonly ok: false }>;
+
+function directoryBrowseHttpStatus(code: DirectoryBrowseFailure["code"]): 400 | 404 | 503 {
   if (code === "not_found") return 404;
   if (code === "unavailable") return 503;
   return 400;
@@ -629,6 +650,16 @@ const routeImplementations: Record<
     json(res, { projects });
   },
 
+  "GET /api/directories": async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const result = browseServerDirectory(url.searchParams.get("path") ?? DEV_DIR);
+    if (!result.ok) {
+      json(res, { error: result.error, code: result.code }, directoryBrowseHttpStatus(result.code));
+      return;
+    }
+    json(res, result.value);
+  },
+
   "GET /api/next-session-name": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const project = url.searchParams.get("project") ?? undefined;
@@ -647,11 +678,24 @@ const routeImplementations: Record<
     if (!body) return;
     if (!isCreateBody(body)) {
       return json(res, {
-        error: "project, projectDir, newProject, cmd, sessionName, parentSession, and initialPrompt must be strings",
+        error: "project selectors, cmd, sessionName, parentSession, and initialPrompt must be strings",
       }, 400);
     }
-    const { project, projectDir: requestedProjectDir, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
-    if (requestedProjectDir !== undefined && (project !== undefined || newProject !== undefined)) {
+    const {
+      project,
+      projectDir: requestedProjectDir,
+      newProject,
+      newProjectParent,
+      cmd,
+      sessionName,
+      parentSession,
+      initialPrompt,
+    } = body;
+    if (
+      (requestedProjectDir !== undefined
+        && (project !== undefined || newProject !== undefined || newProjectParent !== undefined))
+      || (newProjectParent !== undefined && newProject === undefined)
+    ) {
       return json(res, { error: "invalid project selection" }, 400);
     }
     if (cmd && cmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(cmd)) {
@@ -704,11 +748,22 @@ const routeImplementations: Record<
     if (newProject !== undefined) {
       const folderName = newProject.trim();
       if (!validateProject(res, folderName)) return;
-      const rootedProjectDir = join(DEV_DIR, folderName);
+      let projectParent = DEV_DIR;
+      if (newProjectParent !== undefined) {
+        const parentValidation = validateExplicitProjectDir(newProjectParent);
+        if (!parentValidation.ok) {
+          json(res, { error: parentValidation.error }, projectDirectoryHttpStatus(parentValidation.code));
+          return;
+        }
+        projectParent = parentValidation.projectDir;
+      }
+      const rootedProjectDir = join(projectParent, folderName);
       try { mkdirSync(rootedProjectDir, { recursive: true }); } catch (e: unknown) {
         log.error("/api/create: failed to create project directory", { path: rootedProjectDir, error: errMsg(e) });
       }
-      const validation = validateProjectDirPure(rootedProjectDir);
+      const validation = newProjectParent === undefined
+        ? validateProjectDirPure(rootedProjectDir)
+        : validateExplicitProjectDir(rootedProjectDir);
       if (!validation.ok) {
         json(res, { error: validation.error }, projectDirectoryHttpStatus(validation.code));
         return;
