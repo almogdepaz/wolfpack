@@ -377,6 +377,12 @@ export function getTaskRelayGateway(): TaskRelayGateway {
   return singleton;
 }
 
+export function __setTaskRelayGatewayForTests(gateway: TaskRelayGateway): void {
+  if (!process.env.WOLFPACK_TEST) throw new Error("task relay gateway setup is test-only");
+  singleton?.close();
+  singleton = gateway;
+}
+
 export function __resetTaskRelayGatewayForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("task relay gateway reset is test-only");
   singleton?.close();
