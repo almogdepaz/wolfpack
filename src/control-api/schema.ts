@@ -278,8 +278,15 @@ export const controlApiSource: ControlApiSource = {
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
     DirectoryBrowseErrorEnvelope: object({
-      error: { enum: ["invalid directory", "directory not found", "directory unavailable"] },
-      code: { enum: ["invalid", "not_found", "unavailable"] },
+      error: {
+        enum: [
+          "invalid directory",
+          "directory not found",
+          "directory contains too many entries",
+          "directory unavailable",
+        ],
+      },
+      code: { enum: ["invalid", "not_found", "too_many_entries", "unavailable"] },
     }, ["error", "code"]),
     DirectoryBrowseEntry: object({
       name: string("Server-returned display label for the child directory"),
@@ -939,6 +946,7 @@ export const controlApiSource: ControlApiSource = {
       errors: [
         "400 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
+        "413 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope",
       ],
     },

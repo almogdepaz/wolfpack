@@ -13,6 +13,7 @@ import { join } from "node:path";
 
 import {
   DIRECTORY_BROWSE_LIMIT,
+  DIRECTORY_BROWSE_SCAN_LIMIT,
   browseServerDirectory,
 } from "../../src/server/directory-browser.ts";
 import { __setTestBackend } from "../../src/server/backend.js";
@@ -69,6 +70,21 @@ describe("browseServerDirectory", () => {
     expect(result.value.directories.map(directory => directory.name)).not.toContain(".hidden");
     expect(result.value.directories.map(directory => directory.name)).not.toContain("file.txt");
     expect(result.value.directories.map(directory => directory.name)).not.toContain("linked-directory");
+  });
+
+  test("fails after a finite raw-entry scan even when entries cannot be returned", () => {
+    const current = join(root, "scan-overflow");
+    mkdirSync(current);
+    for (let index = 0; index <= DIRECTORY_BROWSE_SCAN_LIMIT; index++) {
+      const prefix = index % 2 === 0 ? ".hidden-file" : "file";
+      writeFileSync(join(current, `${prefix}-${index}`), "not a directory");
+    }
+
+    expect(browseServerDirectory(current)).toEqual({
+      ok: false,
+      code: "too_many_entries",
+      error: "directory contains too many entries",
+    });
   });
 
   test("represents the filesystem root without a parent", () => {
@@ -155,6 +171,24 @@ describe("GET /api/directories", () => {
     const missing = await fetch(`${baseUrl}/api/directories?path=${encodeURIComponent(join(root, "absent"))}`);
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: "directory not found", code: "not_found" });
+  });
+
+  test("maps scan overflow to the exact bounded route failure", async () => {
+    const current = join(root, "route-scan-overflow");
+    mkdirSync(current);
+    for (let index = 0; index <= DIRECTORY_BROWSE_SCAN_LIMIT; index++) {
+      writeFileSync(join(current, `.hidden-file-${index}`), "not a directory");
+    }
+
+    const response = await fetch(
+      `${baseUrl}/api/directories?path=${encodeURIComponent(current)}`,
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "directory contains too many entries",
+      code: "too_many_entries",
+    });
   });
 
   test("creates a named project beneath a validated explicit parent", async () => {
