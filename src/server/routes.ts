@@ -43,6 +43,7 @@ const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
 import { resolveExistingProjectSelection } from "./project-selection.js";
+import type { ResolveProjectSelectionResult } from "./project-selection.js";
 import {
   getBackend,
   getRouter,
@@ -294,12 +295,20 @@ function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
   );
 }
 
+type ProjectSelectionFailure = Extract<ResolveProjectSelectionResult, { readonly ok: false }>;
+
+function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]): 400 | 404 | 503 {
+  if (code === "not_found") return 404;
+  if (code === "unavailable") return 503;
+  return 400;
+}
+
 /** Validate project name + directory in one call. Returns resolved path or sends error and returns null. */
 function resolveProjectDir(res: ServerResponse, project: string | null | undefined): string | null {
   if (!validateProject(res, project)) return null;
   const selection = resolveExistingProjectSelection({ project });
   if (selection.ok) return selection.value.projectDir;
-  json(res, { error: selection.error }, selection.code === "not_found" ? 404 : 400);
+  json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));
   return null;
 }
 
@@ -626,7 +635,7 @@ const routeImplementations: Record<
     const projectDir = url.searchParams.get("projectDir") ?? undefined;
     const selection = resolveExistingProjectSelection({ project, projectDir });
     if (!selection.ok) {
-      json(res, { error: selection.error }, selection.code === "not_found" ? 404 : 400);
+      json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));
       return;
     }
     const name = await uniqueSessionName(selection.value.project);
@@ -701,7 +710,7 @@ const routeImplementations: Record<
       }
       const validation = validateProjectDirPure(rootedProjectDir);
       if (!validation.ok) {
-        json(res, { error: validation.error }, validation.code === "not_found" ? 404 : 400);
+        json(res, { error: validation.error }, projectDirectoryHttpStatus(validation.code));
         return;
       }
       projectSelection = { project: folderName, projectDir: validation.projectDir };
@@ -711,7 +720,7 @@ const routeImplementations: Record<
         ...(requestedProjectDir !== undefined && { projectDir: requestedProjectDir }),
       });
       if (!selection.ok) {
-        json(res, { error: selection.error }, selection.code === "not_found" ? 404 : 400);
+        json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));
         return;
       }
       projectSelection = selection.value;
@@ -763,6 +772,12 @@ const routeImplementations: Record<
 
     const projectSelection = resolveExistingProjectSelection(body);
     if (!projectSelection.ok) {
+      if (projectSelection.code === "unavailable") {
+        return json(res, {
+          error: projectSelection.error,
+          code: SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE,
+        }, projectDirectoryHttpStatus(projectSelection.code));
+      }
       return json(
         res,
         {
@@ -771,7 +786,7 @@ const routeImplementations: Record<
             ? SESSION_CREATE_ERROR.PROJECT_NOT_FOUND
             : SESSION_CREATE_ERROR.INVALID_REQUEST,
         },
-        projectSelection.code === "not_found" ? 404 : 400,
+        projectDirectoryHttpStatus(projectSelection.code),
       );
     }
     const { project, projectDir } = projectSelection.value;
@@ -833,6 +848,12 @@ const routeImplementations: Record<
 
     const projectSelection = resolveExistingProjectSelection(body);
     if (!projectSelection.ok) {
+      if (projectSelection.code === "unavailable") {
+        return json(res, {
+          error: projectSelection.error,
+          code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE,
+        }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]);
+      }
       if (projectSelection.code === "not_found") {
         return json(res, {
           error: "project not found",

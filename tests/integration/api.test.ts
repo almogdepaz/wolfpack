@@ -2,11 +2,12 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
+import { SESSION_CREATE_ERROR } from "../../src/session-create-contract.ts";
 import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
@@ -2002,6 +2003,50 @@ describe("GET /api/next-session-name", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ name: "path_with_spaces" });
+  });
+
+  test("returns bounded unavailable diagnostics through explicit project route mappings", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-api-unavailable-"));
+    const loop = join(root, "loop");
+    symlinkSync("loop", loop);
+    createdDirs.push(root);
+
+    const projectDir = join(loop, "project");
+    const expectedError = { error: "project directory unavailable" };
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly request: () => Promise<Response>;
+      readonly expectedBody: Readonly<Record<string, string>>;
+    }> = [
+      {
+        name: "next-session-name",
+        request: () => get(`/api/next-session-name?projectDir=${encodeURIComponent(projectDir)}`),
+        expectedBody: expectedError,
+      },
+      {
+        name: "create",
+        request: () => post("/api/create", { projectDir }),
+        expectedBody: expectedError,
+      },
+      {
+        name: "session-create",
+        request: () => post("/api/session-create", { projectDir, harness: "pi" }),
+        expectedBody: { ...expectedError, code: SESSION_CREATE_ERROR.BACKEND_UNAVAILABLE },
+      },
+      {
+        name: "session-open",
+        request: () => post("/api/session-open", { projectDir, parentSession: "wolf-1" }),
+        expectedBody: { ...expectedError, code: SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE },
+      },
+    ];
+
+    mockBackend.lastCreateArgs = null;
+    for (const routeCase of cases) {
+      const res = await routeCase.request();
+      expect(res.status, routeCase.name).toBe(503);
+      expect(await res.json(), routeCase.name).toEqual(routeCase.expectedBody);
+    }
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test("rejects relative and ambiguous explicit directory selections", async () => {

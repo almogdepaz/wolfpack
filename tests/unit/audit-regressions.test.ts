@@ -43,7 +43,7 @@ describe("isUnderDevDir — path containment boundary", () => {
 // from production. `isUnderDevDir` resolves DEV_DIR from process.env.WOLFPACK_DEV_DIR
 // at call time (set at top of file to /Users/home/Dev/).
 
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 const { validateExplicitProjectDir, validateProjectDir } = await import("../../src/server/validate-project-dir.js");
@@ -135,7 +135,32 @@ describe("validateExplicitProjectDir — explicit arbitrary directory boundary",
       expect(validateExplicitProjectDir(symlink)).toMatchObject({ ok: false, code: "not_dir" });
       expect(validateExplicitProjectDir(`${symlink}/`)).toMatchObject({ ok: false, code: "not_dir" });
       expect(validateExplicitProjectDir(file)).toMatchObject({ ok: false, code: "not_dir" });
+      expect(validateExplicitProjectDir(join(file, "child"))).toMatchObject({ ok: false, code: "not_found" });
       expect(validateExplicitProjectDir(join(root, "missing"))).toMatchObject({ ok: false, code: "not_found" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies structured ELOOP failures as unavailable without exposing OS details", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-unavailable-"));
+    const loop = join(root, "loop");
+    const projectDir = join(loop, "project");
+    symlinkSync("loop", loop);
+    try {
+      let filesystemError: unknown;
+      try {
+        lstatSync(projectDir);
+      } catch (error: unknown) {
+        filesystemError = error;
+      }
+      expect(filesystemError).toBeInstanceOf(Error);
+      expect((filesystemError as NodeJS.ErrnoException).code).toBe("ELOOP");
+      expect(validateExplicitProjectDir(projectDir)).toEqual({
+        ok: false,
+        code: "unavailable",
+        error: "project directory unavailable",
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

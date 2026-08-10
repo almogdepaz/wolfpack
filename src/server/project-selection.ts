@@ -14,7 +14,7 @@ export interface ExistingProjectSelection {
 
 export type ResolveProjectSelectionResult =
   | { readonly ok: true; readonly value: ExistingProjectSelection }
-  | { readonly ok: false; readonly code: "invalid" | "not_dir" | "not_found"; readonly error: string };
+  | { readonly ok: false; readonly code: "invalid" | "not_dir" | "not_found" | "unavailable"; readonly error: string };
 
 export function resolveExistingProjectSelection(input: {
   readonly project?: string;

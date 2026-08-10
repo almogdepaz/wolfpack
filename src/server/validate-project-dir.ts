@@ -11,9 +11,11 @@ import { isUnderDevDir } from "./dev-dir.js";
 
 export const MAX_PROJECT_DIR_LENGTH = 4_096;
 
+const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
+
 export type ValidateProjectDirResult =
   | { ok: true; projectDir: string }
-  | { ok: false; code: "invalid" | "not_dir" | "not_found"; error: string };
+  | { ok: false; code: "invalid" | "not_dir" | "not_found" | "unavailable"; error: string };
 
 /**
  * Validate that `projectDir`:
@@ -60,7 +62,15 @@ function validateDirectory(projectDir: string): ValidateProjectDirResult {
       return { ok: false, code: "not_dir", error: "not a directory" };
     }
     return { ok: true, projectDir: realpathSync(pathToInspect) };
-  } catch {
-    return { ok: false, code: "not_found", error: "project directory not found" };
+  } catch (error: unknown) {
+    if (
+      error instanceof Error
+      && "code" in error
+      && typeof error.code === "string"
+      && NOT_FOUND_FILESYSTEM_CODES.has(error.code)
+    ) {
+      return { ok: false, code: "not_found", error: "project directory not found" };
+    }
+    return { ok: false, code: "unavailable", error: "project directory unavailable" };
   }
 }
