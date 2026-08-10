@@ -98,6 +98,48 @@ test("opens a canonical browsed directory through the existing projectDir launch
   expect(nextNameRequests[0].searchParams.has("newProject")).toBe(false);
 });
 
+test("moves keyboard focus to the updated current location after child and parent navigation", async ({ page }) => {
+  await page.route("**/api/directories**", async (route) => {
+    const requestedPath = new URL(route.request().url()).searchParams.get("path");
+    const body = requestedPath === CHILD_DIRECTORY
+      ? { current: CHILD_DIRECTORY, parent: BASE_DIRECTORY, directories: [] }
+      : {
+          current: BASE_DIRECTORY,
+          parent: "/server",
+          directories: [{ name: "canonical child", path: CHILD_DIRECTORY }],
+        };
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await openProjectPicker(page);
+
+  const browse = page.getByRole("button", { name: "Browse server directories" });
+  await browse.click();
+  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
+  const current = dialog.locator("#directory-browser-current");
+  await expect(current).toHaveText(BASE_DIRECTORY);
+  await expect(current).not.toBeFocused();
+
+  const child = dialog.getByRole("button", { name: "Browse canonical child" });
+  await child.focus();
+  await child.press("Enter");
+  await expect(current).toHaveText(CHILD_DIRECTORY);
+  await expect(current).toBeFocused();
+
+  const parent = dialog.getByRole("button", { name: "Parent directory" });
+  await parent.focus();
+  await parent.press("Enter");
+  await expect(current).toHaveText(BASE_DIRECTORY);
+  await expect(current).toBeFocused();
+
+  await dialog.getByRole("button", { name: "Browse canonical child" }).click();
+  await expect(current).toHaveText(CHILD_DIRECTORY);
+  await expect(current).not.toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(browse).toBeFocused();
+});
+
 test("records Create here as the parent for the existing project-name flow", async ({ page }) => {
   const createRequests: unknown[] = [];
   const nextNameRequests: URL[] = [];
