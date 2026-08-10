@@ -9,6 +9,7 @@ import {
   validateControlApiSchemaArtifact,
 } from "../../scripts/gen-control-api-schema.ts";
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
+import { DIRECTORY_BROWSE_LIMIT } from "../../src/server/directory-browser.ts";
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,
@@ -306,6 +307,42 @@ describe("control api schema compatibility samples", () => {
     expect(validate(response, { candidates: [] }, artifact)).not.toEqual([]);
   });
 
+  test("publishes the bounded authenticated server-directory browser contract", () => {
+    const operation = httpOperation("browseDirectories");
+    const request = httpRequest("browseDirectories");
+    const response = httpResponse("browseDirectories");
+    const directories = Array.from({ length: DIRECTORY_BROWSE_LIMIT }, (_, index) => ({
+      name: `directory-${index}`,
+      path: `/server/projects/directory-${index}`,
+    }));
+
+    expect(operation.route).toBe("GET /api/directories");
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(operation.errors).toEqual([
+      "400 DirectoryBrowseErrorEnvelope",
+      "404 DirectoryBrowseErrorEnvelope",
+      "503 DirectoryBrowseErrorEnvelope",
+    ]);
+    expect(validate(request, {}, artifact)).toEqual([]);
+    expect(validate(request, { path: "/server/projects" }, artifact)).toEqual([]);
+    expect(validate(request, { path: "relative/projects" }, artifact)).not.toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
+      directories,
+    }, artifact)).toEqual([]);
+    expect(validate(response, {
+      current: "/",
+      parent: null,
+      directories: [],
+    }, artifact)).toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
+      directories: [...directories, { name: "overflow", path: "/server/projects/overflow" }],
+    }, artifact)).not.toEqual([]);
+  });
+
   test("create-session request requires project or newProject", () => {
     const request = httpRequest("createSession");
 
@@ -325,6 +362,13 @@ describe("control api schema compatibility samples", () => {
       maxLength: 32768,
     });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      newProject: "fresh-app",
+      newProjectParent: "/srv/worktrees",
+    }, artifact)).toEqual([]);
+    expect((request as { readonly dependentRequired?: unknown }).dependentRequired).toEqual({
+      newProjectParent: ["newProject"],
+    });
     expect(validate(request, {
       project: "wolfpack",
       newProject: "fresh-app",

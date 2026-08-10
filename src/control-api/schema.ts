@@ -12,6 +12,7 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import { DIRECTORY_BROWSE_LIMIT } from "../server/directory-browser.ts";
 import { MAX_PROJECT_DIR_LENGTH } from "../server/validate-project-dir.ts";
 import {
   SESSION_PROMPT_MAX_TIMEOUT_MS,
@@ -261,6 +262,14 @@ export const controlApiSource: ControlApiSource = {
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    DirectoryBrowseErrorEnvelope: object({
+      error: { enum: ["invalid directory", "directory not found", "directory unavailable"] },
+      code: { enum: ["invalid", "not_found", "unavailable"] },
+    }, ["error", "code"]),
+    DirectoryBrowseEntry: object({
+      name: string("Server-returned display label for the child directory"),
+      path: ref("ProjectDirectory"),
+    }, ["name", "path"]),
     SessionName: { type: "string", pattern: "^[a-zA-Z0-9_-]+$" },
     SessionId: {
       ...string("Stable opaque broker session identifier"),
@@ -899,6 +908,25 @@ export const controlApiSource: ControlApiSource = {
       response: object({ projects: arrayOf(ref("ProjectName")) }, ["projects"]),
       errors: [],
     },
+    "GET /api/directories": {
+      operationId: "browseDirectories",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ path: ref("ProjectDirectory") }),
+      response: object({
+        current: ref("ProjectDirectory"),
+        parent: nullable(ref("ProjectDirectory")),
+        directories: {
+          ...arrayOf(ref("DirectoryBrowseEntry")),
+          maxItems: DIRECTORY_BROWSE_LIMIT,
+        },
+      }, ["current", "parent", "directories"]),
+      errors: [
+        "400 DirectoryBrowseErrorEnvelope",
+        "404 DirectoryBrowseErrorEnvelope",
+        "503 DirectoryBrowseErrorEnvelope",
+      ],
+    },
     "GET /api/next-session-name": {
       operationId: "nextSessionName",
       stable: true,
@@ -911,22 +939,26 @@ export const controlApiSource: ControlApiSource = {
       operationId: "createSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: existingProjectSelectorSchema({
-        newProject: ref("ProjectName"),
-        cmd: ref("Command"),
-        sessionName: ref("SessionName"),
-        parentSession: ref("SessionName"),
-        initialPrompt: {
-          type: "string",
-          minLength: 1,
-          maxLength: MAX_INITIAL_PROMPT_LENGTH,
-        },
-      }, [], {
-        anyOf: [
-          object({}, ["project"], { additionalProperties: true }),
-          object({}, ["newProject"], { additionalProperties: true }),
-        ],
-      }),
+      request: {
+        ...existingProjectSelectorSchema({
+          newProject: ref("ProjectName"),
+          newProjectParent: ref("ProjectDirectory"),
+          cmd: ref("Command"),
+          sessionName: ref("SessionName"),
+          parentSession: ref("SessionName"),
+          initialPrompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_INITIAL_PROMPT_LENGTH,
+          },
+        }, [], {
+          anyOf: [
+            object({}, ["project"], { additionalProperties: true }),
+            object({}, ["newProject"], { additionalProperties: true }),
+          ],
+        }),
+        dependentRequired: { newProjectParent: ["newProject"] },
+      },
       response: object({
         ok: boolean(),
         session: ref("SessionName"),
