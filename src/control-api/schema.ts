@@ -946,7 +946,7 @@ export const controlApiSource: ControlApiSource = {
       errors: [
         "400 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
-        "413 DirectoryBrowseErrorEnvelope",
+        "422 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope",
       ],
     },

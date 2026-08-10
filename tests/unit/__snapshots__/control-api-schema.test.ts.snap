@@ -1121,7 +1121,7 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       "errors": [
         "400 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
-        "413 DirectoryBrowseErrorEnvelope",
+        "422 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope"
       ]
     },

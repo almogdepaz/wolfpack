@@ -184,7 +184,7 @@ describe("GET /api/directories", () => {
       `${baseUrl}/api/directories?path=${encodeURIComponent(current)}`,
     );
 
-    expect(response.status).toBe(413);
+    expect(response.status).toBe(422);
     expect(await response.json()).toEqual({
       error: "directory contains too many entries",
       code: "too_many_entries",
