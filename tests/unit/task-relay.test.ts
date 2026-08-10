@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
 import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
-const session = (sessionId: string) => async (selector: string) => selector === sessionId
-  ? { ok: true as const, session: selector, sessionId, projectPath: "/tmp", harness: "pi", alive: true }
+const session = (sessionId: string, harness = "pi", alive = true) => async (selector: string) => selector === sessionId
+  ? { ok: true as const, session: selector, sessionId, projectPath: "/tmp", harness, alive }
   : { ok: false as const, code: "NOT_FOUND" as const };
 
 function root(): string {
@@ -69,6 +69,37 @@ describe("pi tasks relay v2", () => {
       await expect(gateway.send({ callerSession: "sender", envelope: { ...base, protocolVersion: 999 } })).resolves.toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL" } });
       await expect(gateway.send({ callerSession: "sender", envelope: { ...base, payload: "x".repeat(64 * 1024) } })).resolves.toMatchObject({ ok: false, error: { code: "PAYLOAD_TOO_LARGE" } });
       await expect(gateway.connect({ callerSession: "sender", generation: "process-2", protocolVersions: [99] })).resolves.toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL" } });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("registers any live local session without classifying its harness", async () => {
+    expect(Object.values(RELAY_ERROR)).not.toContain("CALLER_NOT_PI");
+    const directory = root();
+    try {
+      const shellGateway = new TaskRelayGateway({ root: directory, inspectSession: session("shell", "shell"), now: () => NOW });
+      await expect(shellGateway.connect({ callerSession: "shell", generation: "shell-process", protocolVersions: [RELAY_PROTOCOL_VERSION] })).resolves.toMatchObject({ ok: true });
+
+      const deadGateway = new TaskRelayGateway({ root: directory, inspectSession: session("dead", "pi", false), now: () => NOW });
+      await expect(deadGateway.connect({ callerSession: "dead", generation: "dead-process", protocolVersions: [RELAY_PROTOCOL_VERSION] })).resolves.toMatchObject({ ok: false, error: { code: "CALLER_DEAD" } });
+
+      const missingGateway = new TaskRelayGateway({ root: directory, inspectSession: session("known"), now: () => NOW });
+      await expect(missingGateway.connect({ callerSession: "missing", generation: "missing-process", protocolVersions: [RELAY_PROTOCOL_VERSION] })).resolves.toMatchObject({ ok: false, error: { code: "CALLER_NOT_FOUND" } });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves endpoint identity when the same generation renews an expired lease", async () => {
+    const directory = root();
+    let now = NOW;
+    try {
+      const gateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => now });
+      const original = await connect(gateway, "sender", "generation-1");
+      now = new Date(NOW.getTime() + RELAY_LIMITS.LEASE_MS + 1);
+      const renewed = await connect(gateway, "sender", "generation-1");
+      expect(renewed).toEqual(original);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

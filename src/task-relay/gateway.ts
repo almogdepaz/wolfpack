@@ -1,4 +1,3 @@
-import { AGENT_KIND } from "../agent-kind.ts";
 import { loadConfig, remoteUrl } from "../cli/config.ts";
 import { getBackend } from "../server/backend.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
@@ -151,8 +150,8 @@ export class TaskRelayGateway {
       protocolVersions: [...new Set(input.protocolVersions)].sort((left, right) => left - right),
       leaseExpiresAt: new Date(this.#now().getTime() + leaseMs).toISOString(),
     };
-    await this.#store.register(registration);
-    return { ok: true, endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt };
+    const persisted = await this.#store.register(registration);
+    return { ok: true, endpoint: persisted.endpoint, leaseExpiresAt: persisted.leaseExpiresAt };
   }
 
   async endpointForSession(sessionId: string): Promise<RelayEndpoint | undefined> {
@@ -361,7 +360,6 @@ export class TaskRelayGateway {
     try { inspected = await this.#inspectSession(selector); } catch { return relayFailure(RELAY_ERROR.STORE_UNAVAILABLE, "session inspection is unavailable", true); }
     if (!inspected.ok) return relayFailure(RELAY_ERROR.CALLER_NOT_FOUND, "caller session was not found");
     if (!inspected.alive) return relayFailure(RELAY_ERROR.CALLER_DEAD, "caller session is not alive");
-    if (inspected.harness !== AGENT_KIND.PI) return relayFailure(RELAY_ERROR.CALLER_NOT_PI, "caller session is not a Pi endpoint");
     return { ok: true, value: inspected };
   }
 }
