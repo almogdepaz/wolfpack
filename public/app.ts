@@ -3778,12 +3778,14 @@ function setDirectoryBrowserSelection(selection: DirectoryBrowseResponse | null)
     button.className = "directory-browser-entry";
     button.textContent = directory.name;
     button.setAttribute("aria-label", `Browse ${directory.name}`);
-    button.addEventListener("click", () => { void loadDirectoryBrowser(directory.path); });
+    button.addEventListener("click", (event) => {
+      void loadDirectoryBrowser(directory.path, event.detail === 0);
+    });
     list.append(button);
   }
 }
 
-async function loadDirectoryBrowser(path?: string): Promise<void> {
+async function loadDirectoryBrowser(path?: string, focusCurrentAfterLoad = false): Promise<void> {
   const request = ++directoryBrowserRequest;
   const list = document.getElementById("directory-browser-list");
   const error = document.getElementById("directory-browser-error");
@@ -3800,6 +3802,9 @@ async function loadDirectoryBrowser(path?: string): Promise<void> {
     if (request !== directoryBrowserRequest) return;
     if (!isDirectoryBrowseResponse(response)) throw new Error("invalid directory response");
     setDirectoryBrowserSelection(response);
+    if (focusCurrentAfterLoad) {
+      document.getElementById("directory-browser-current")?.focus({ preventScroll: true });
+    }
   } catch (loadError: unknown) {
     if (request !== directoryBrowserRequest) return;
     list.replaceChildren();
@@ -6179,9 +6184,9 @@ function bindHtmlEventListeners(): void {
     browseDirectories.addEventListener("click", () => openDirectoryBrowser(browseDirectories));
   }
   on("directory-browser-close", "click", () => closeDirectoryBrowser(true));
-  on("directory-browser-parent", "click", () => {
+  on("directory-browser-parent", "click", (event) => {
     const parent = directoryBrowserSelection?.parent;
-    if (parent) void loadDirectoryBrowser(parent);
+    if (parent) void loadDirectoryBrowser(parent, event instanceof MouseEvent && event.detail === 0);
   });
   on("directory-browser-open-folder", "click", () => openBrowsedDirectory());
   on("directory-browser-create-here", "click", () => selectBrowsedCreateParent());
