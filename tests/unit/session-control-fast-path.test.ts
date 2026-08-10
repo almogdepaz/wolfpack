@@ -21,7 +21,7 @@ describe("session control fast-path parsing", () => {
     ])).toEqual({
       ok: true,
       action: "create",
-      project: "branchout",
+      selector: { kind: "project", project: "branchout" },
       harness: "pi",
       prompt: "execute .plans/000-publish-branchout.md",
       output: "json",
@@ -38,7 +38,7 @@ describe("session control fast-path parsing", () => {
     ])).toEqual({
       ok: true,
       action: "create",
-      projectDir: ".",
+      selector: { kind: "projectDir", projectDir: "." },
       harness: "pi",
       prompt: undefined,
       output: "plain",
@@ -46,7 +46,7 @@ describe("session control fast-path parsing", () => {
     expect(parseAgentCommand(["spawn", "--project-dir", "../workspace"])).toMatchObject({
       ok: true,
       action: "spawn",
-      projectDir: "../workspace",
+      selector: { kind: "projectDir", projectDir: "../workspace" },
     });
   });
 
@@ -66,7 +66,7 @@ describe("session control fast-path parsing", () => {
     ])).toEqual({
       ok: true,
       action: "create",
-      project: "branchout",
+      selector: { kind: "project", project: "branchout" },
       harness: "shell",
       prompt: undefined,
       output: "json",
@@ -99,7 +99,7 @@ describe("session control fast-path parsing", () => {
     ])).toEqual({
       ok: true,
       action: "spawn",
-      project: "branchout",
+      selector: { kind: "project", project: "branchout" },
       prompt: "review the plan",
       output: "json",
     });
@@ -117,7 +117,7 @@ describe("session control fast-path parsing", () => {
     ])).toEqual({
       ok: true,
       action: "spawn",
-      project: "branchout",
+      selector: { kind: "project", project: "branchout" },
       sessionName: "issue-200-reviewer",
       prompt: "review the plan",
       output: "json",
@@ -135,7 +135,7 @@ describe("session control fast-path parsing", () => {
     ])).toEqual({
       ok: true,
       action: "spawn",
-      project: "branchout",
+      selector: { kind: "project", project: "branchout" },
       prompt: undefined,
       plan: ".plans/009-subagent-token-cost-optimizations.md",
       notifyParent: true,

@@ -48,6 +48,11 @@ export const SESSION_EXIT = {
 } as const;
 
 type OutputMode = "plain" | "json" | "shell";
+
+export type ExistingProjectSelector =
+  | { readonly kind: "project"; readonly project: string; readonly projectDir?: never }
+  | { readonly kind: "projectDir"; readonly project?: never; readonly projectDir: string };
+
 type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "prompt" | "current-context";
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
@@ -98,8 +103,7 @@ export type ParsedSessionCommand =
   | {
     readonly ok: true;
     readonly action: "create";
-    readonly project?: string;
-    readonly projectDir?: string;
+    readonly selector: ExistingProjectSelector;
     readonly harness: CreatableHarness | undefined;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
@@ -109,8 +113,7 @@ export type ParsedSessionCommand =
   | {
     readonly ok: true;
     readonly action: "open";
-    readonly project?: string;
-    readonly projectDir?: string;
+    readonly selector: ExistingProjectSelector;
     readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
@@ -130,8 +133,7 @@ export type ParsedAgentCommand =
   | {
     readonly ok: true;
     readonly action: "spawn";
-    readonly project?: string;
-    readonly projectDir?: string;
+    readonly selector: ExistingProjectSelector;
     readonly sessionName?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
@@ -258,6 +260,15 @@ function parseOutputMode(args: string[]): { mode: OutputMode; shellRequested: bo
   return { mode: shell ? "shell" : json ? "json" : "plain", shellRequested: shell };
 }
 
+function parseExistingProjectSelector(
+  project: string | undefined,
+  projectDir: string | undefined,
+): ExistingProjectSelector | null {
+  if (project && !projectDir?.trim()) return { kind: "project", project };
+  if (!project && projectDir?.trim()) return { kind: "projectDir", projectDir };
+  return null;
+}
+
 export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
   const args = [...argv];
   const action = args.shift() as SessionAction | undefined;
@@ -299,8 +310,8 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       || harnessValue === null
       || harness !== undefined;
     const validNotify = action !== "create" || !notifyParent;
-    const validProjectSelector = Boolean(project) !== Boolean(projectDir?.trim());
-    if (!validProjectSelector || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validHarness || !validNotify) {
+    const selector = parseExistingProjectSelector(project, projectDir);
+    if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validHarness || !validNotify) {
       return {
         ok: false,
         message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -310,8 +321,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       return {
         ok: true,
         action,
-        ...(project !== undefined && { project }),
-        ...(projectDir !== undefined && { projectDir }),
+        selector,
         harness,
         prompt,
         ...(promptFile !== undefined && { promptFile }),
@@ -322,8 +332,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     return {
       ok: true,
       action,
-      ...(project !== undefined && { project }),
-      ...(projectDir !== undefined && { projectDir }),
+      selector,
       ...(sessionName !== undefined && { sessionName }),
       prompt,
       ...(promptFile !== undefined && { promptFile }),
@@ -414,8 +423,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
   return {
     ok: true,
     action: "spawn",
-    ...(parsed.project !== undefined && { project: parsed.project }),
-    ...(parsed.projectDir !== undefined && { projectDir: parsed.projectDir }),
+    selector: parsed.selector,
     ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
     prompt: parsed.prompt,
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
@@ -655,6 +663,18 @@ interface LaunchPromptSource {
   readonly output: OutputMode;
 }
 
+interface SessionOpenLaunchArgs extends LaunchPromptSource {
+  readonly selector: ExistingProjectSelector;
+  readonly sessionName?: string;
+}
+
+function projectSelectorRequest(selector: ExistingProjectSelector):
+  | { readonly project: string }
+  | { readonly projectDir: string } {
+  if (selector.kind === "project") return { project: selector.project };
+  return { projectDir: resolve(selector.projectDir) };
+}
+
 const NOTIFY_PARENT_PROMPT = "when done or blocked, run `wolfpack agent notify-parent` once, then summarize changes, verification, and concerns.";
 
 function compactPlanPrompt(plan: string, notifyParent?: true): string {
@@ -705,18 +725,7 @@ async function materializeInitialPrompt(source: LaunchPromptSource): Promise<str
   return prompt;
 }
 
-async function runSessionOpen(
-  parsed: {
-    readonly project?: string;
-    readonly projectDir?: string;
-    readonly sessionName?: string;
-    readonly prompt: string | undefined;
-    readonly promptFile?: string;
-    readonly plan?: string;
-    readonly notifyParent?: true;
-    readonly output: OutputMode;
-  },
-): Promise<number> {
+async function runSessionOpen(parsed: SessionOpenLaunchArgs): Promise<number> {
   const context = resolveSessionOpenContext(process.env);
   if (!context.ok) {
     return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
@@ -728,8 +737,7 @@ async function runSessionOpen(
     const response = await call("/api/session-open", {
       method: "POST",
       body: JSON.stringify({
-        ...(parsed.project !== undefined && { project: parsed.project }),
-        ...(parsed.projectDir !== undefined && { projectDir: resolve(parsed.projectDir) }),
+        ...projectSelectorRequest(parsed.selector),
         parentSession: context.parentSession,
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(initialPrompt !== undefined && { initialPrompt }),
@@ -753,8 +761,7 @@ async function runSessionCreate(
     const response = await call("/api/session-create", {
       method: "POST",
       body: JSON.stringify({
-        ...(parsed.project !== undefined && { project: parsed.project }),
-        ...(parsed.projectDir !== undefined && { projectDir: resolve(parsed.projectDir) }),
+        ...projectSelectorRequest(parsed.selector),
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),

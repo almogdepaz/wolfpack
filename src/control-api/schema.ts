@@ -142,6 +142,27 @@ const object = (
   ...(extra.description ? { description: extra.description } : {}),
 });
 
+function existingProjectSelectorSchema(
+  extraProperties: Record<string, JsonSchema> = {},
+  required: readonly string[] = [],
+  legacyNamedProjectSelector: JsonSchema | undefined = undefined,
+): JsonSchema {
+  const namedProjectSelector = object({}, ["project"], { additionalProperties: true });
+  const projectDirectorySelector = object({}, ["projectDir"], { additionalProperties: true });
+  return {
+    ...object({
+      project: ref("ProjectName"),
+      projectDir: ref("ProjectDirectory"),
+      ...extraProperties,
+    }, required),
+    allOf: [{
+      oneOf: legacyNamedProjectSelector
+        ? [projectDirectorySelector, legacyNamedProjectSelector]
+        : [namedProjectSelector, projectDirectorySelector],
+    }],
+  };
+}
+
 const ok = object({ ok: boolean() }, ["ok"]);
 const error = ref("ErrorEnvelope");
 const OPAQUE_RELAY_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -882,18 +903,7 @@ export const controlApiSource: ControlApiSource = {
       operationId: "nextSessionName",
       stable: true,
       auth: "jwt-when-configured",
-      request: {
-        ...object({
-          project: ref("ProjectName"),
-          projectDir: ref("ProjectDirectory"),
-        }),
-        allOf: [{
-          oneOf: [
-            object({}, ["project"], { additionalProperties: true }),
-            object({}, ["projectDir"], { additionalProperties: true }),
-          ],
-        }],
-      },
+      request: existingProjectSelectorSchema(),
       response: object({ name: ref("SessionName") }, ["name"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
     },
@@ -901,32 +911,22 @@ export const controlApiSource: ControlApiSource = {
       operationId: "createSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: {
-        ...object({
-          project: ref("ProjectName"),
-          projectDir: ref("ProjectDirectory"),
-          newProject: ref("ProjectName"),
-          cmd: ref("Command"),
-          sessionName: ref("SessionName"),
-          parentSession: ref("SessionName"),
-          initialPrompt: {
-            type: "string",
-            minLength: 1,
-            maxLength: MAX_INITIAL_PROMPT_LENGTH,
-          },
-        }),
-        allOf: [{
-          oneOf: [
-            object({}, ["projectDir"], { additionalProperties: true }),
-            {
-              anyOf: [
-                object({}, ["project"], { additionalProperties: true }),
-                object({}, ["newProject"], { additionalProperties: true }),
-              ],
-            },
-          ],
-        }],
-      },
+      request: existingProjectSelectorSchema({
+        newProject: ref("ProjectName"),
+        cmd: ref("Command"),
+        sessionName: ref("SessionName"),
+        parentSession: ref("SessionName"),
+        initialPrompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+      }, [], {
+        anyOf: [
+          object({}, ["project"], { additionalProperties: true }),
+          object({}, ["newProject"], { additionalProperties: true }),
+        ],
+      }),
       response: object({
         ok: boolean(),
         session: ref("SessionName"),
@@ -937,24 +937,14 @@ export const controlApiSource: ControlApiSource = {
       operationId: "createTopLevelSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: {
-        ...object({
-          project: ref("ProjectName"),
-          projectDir: ref("ProjectDirectory"),
-          harness: ref("CreatableHarness"),
-          initialPrompt: {
-            type: "string",
-            minLength: 1,
-            maxLength: MAX_INITIAL_PROMPT_LENGTH,
-          },
-        }),
-        allOf: [{
-          oneOf: [
-            object({}, ["project"], { additionalProperties: true }),
-            object({}, ["projectDir"], { additionalProperties: true }),
-          ],
-        }],
-      },
+      request: existingProjectSelectorSchema({
+        harness: ref("CreatableHarness"),
+        initialPrompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+      }),
       response: object({
         ok: { const: true },
         session: ref("SessionName"),
@@ -968,25 +958,15 @@ export const controlApiSource: ControlApiSource = {
       operationId: "openSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: {
-        ...object({
-          project: ref("ProjectName"),
-          projectDir: ref("ProjectDirectory"),
-          parentSession: ref("SessionName"),
-          sessionName: ref("SessionName"),
-          initialPrompt: {
-            type: "string",
-            minLength: 1,
-            maxLength: MAX_INITIAL_PROMPT_LENGTH,
-          },
-        }, ["parentSession"]),
-        allOf: [{
-          oneOf: [
-            object({}, ["project"], { additionalProperties: true }),
-            object({}, ["projectDir"], { additionalProperties: true }),
-          ],
-        }],
-      },
+      request: existingProjectSelectorSchema({
+        parentSession: ref("SessionName"),
+        sessionName: ref("SessionName"),
+        initialPrompt: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_INITIAL_PROMPT_LENGTH,
+        },
+      }, ["parentSession"]),
       response: object({
         ok: { const: true },
         session: ref("SessionName"),
