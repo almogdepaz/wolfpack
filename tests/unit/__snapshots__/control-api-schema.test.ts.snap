@@ -33,7 +33,8 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
     "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
-    "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE"
+    "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
+    "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization"
   ],
   "http": {
     "getInfo": {
@@ -78,6 +79,311 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
       },
       "errors": [
         "503 ErrorEnvelope"
+      ]
+    },
+    "connectTaskRelay": {
+      "route": "POST /api/task-relay/v2/connect",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:connectTaskRelay:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "connectTaskRelay request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "generation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "protocolVersions": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "leaseMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300000
+          }
+        },
+        "required": [
+          "callerSession",
+          "generation",
+          "protocolVersions"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:connectTaskRelay:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "connectTaskRelay response",
+        "$ref": "#/$defs/RelayConnectResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "410 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "disconnectTaskRelay": {
+      "route": "POST /api/task-relay/v2/disconnect",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:disconnectTaskRelay:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "disconnectTaskRelay request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "endpoint": {
+            "$ref": "#/$defs/RelayEndpoint"
+          }
+        },
+        "required": [
+          "callerSession",
+          "endpoint"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:disconnectTaskRelay:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "disconnectTaskRelay response",
+        "$ref": "#/$defs/RelayEmptyResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "409 RelayErrorEnvelope",
+        "410 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "resolveTaskRelayEndpoint": {
+      "route": "POST /api/task-relay/v2/resolve",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:resolveTaskRelayEndpoint:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolveTaskRelayEndpoint request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "target": {
+            "$ref": "#/$defs/RelayEndpoint"
+          },
+          "protocolVersion": {
+            "const": 2
+          }
+        },
+        "required": [
+          "callerSession",
+          "target",
+          "protocolVersion"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:resolveTaskRelayEndpoint:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolveTaskRelayEndpoint response",
+        "$ref": "#/$defs/RelayResolveResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "410 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "resolvePeerTaskRelayTopology": {
+      "route": "POST /api/task-relay/v2/peer/resolve",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:resolvePeerTaskRelayTopology:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolvePeerTaskRelayTopology request",
+        "type": "object",
+        "properties": {
+          "origin": {
+            "$ref": "#/$defs/TailnetOrigin"
+          },
+          "endpoint": {
+            "$ref": "#/$defs/RelayEndpoint"
+          }
+        },
+        "required": [
+          "origin",
+          "endpoint"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:resolvePeerTaskRelayTopology:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolvePeerTaskRelayTopology response",
+        "$ref": "#/$defs/RelayResolveResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "sendTaskRelayEnvelope": {
+      "route": "POST /api/task-relay/v2/send",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:sendTaskRelayEnvelope:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTaskRelayEnvelope request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "envelope": {
+            "$ref": "#/$defs/RelayEnvelope"
+          }
+        },
+        "required": [
+          "callerSession",
+          "envelope"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:sendTaskRelayEnvelope:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTaskRelayEnvelope response",
+        "$ref": "#/$defs/RelaySendResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "409 RelayErrorEnvelope",
+        "410 RelayErrorEnvelope",
+        "413 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "receiveTaskRelayEnvelopes": {
+      "route": "GET /api/task-relay/v2/receive",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:receiveTaskRelayEnvelopes:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "receiveTaskRelayEnvelopes request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "cursor": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          }
+        },
+        "required": [
+          "callerSession",
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:receiveTaskRelayEnvelopes:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "receiveTaskRelayEnvelopes response",
+        "$ref": "#/$defs/RelayReceiveResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "410 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "acknowledgeTaskRelayDelivery": {
+      "route": "POST /api/task-relay/v2/delivery-ack",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:acknowledgeTaskRelayDelivery:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "acknowledgeTaskRelayDelivery request",
+        "type": "object",
+        "properties": {
+          "callerSession": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "envelopeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "callerSession",
+          "envelopeId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:acknowledgeTaskRelayDelivery:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "acknowledgeTaskRelayDelivery response",
+        "$ref": "#/$defs/RelayAcknowledgementResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "410 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
+      ]
+    },
+    "receivePeerTaskRelayEnvelope": {
+      "route": "POST /api/task-relay/v2/peer/receive",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:receivePeerTaskRelayEnvelope:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "receivePeerTaskRelayEnvelope request",
+        "$ref": "#/$defs/RelayEnvelope"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:receivePeerTaskRelayEnvelope:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "receivePeerTaskRelayEnvelope response",
+        "$ref": "#/$defs/RelayPeerReceiveResponse"
+      },
+      "errors": [
+        "400 RelayErrorEnvelope",
+        "404 RelayErrorEnvelope",
+        "409 RelayErrorEnvelope",
+        "413 RelayErrorEnvelope",
+        "503 RelayErrorEnvelope"
       ]
     },
     "sendTask": {
@@ -2773,6 +3079,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         },
         "parentSession": {
           "$ref": "#/$defs/SessionControlIdentity"
+        },
+        "taskEndpoint": {
+          "$ref": "#/$defs/RelayEndpoint"
         }
       },
       "required": [
@@ -2936,6 +3245,304 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "url"
       ],
       "additionalProperties": true
+    },
+    "RelayEndpoint": {
+      "type": "object",
+      "properties": {
+        "relay": {
+          "type": "string",
+          "pattern": "^wolfpack\\\\-pi\\\\-tasks\\\\-v2(?::peer:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?$"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "relay",
+        "id"
+      ],
+      "additionalProperties": false,
+      "description": "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin."
+    },
+    "RelayEnvelope": {
+      "type": "object",
+      "properties": {
+        "envelopeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "protocolVersion": {
+          "const": 2
+        },
+        "source": {
+          "$ref": "#/$defs/RelayEndpoint"
+        },
+        "target": {
+          "$ref": "#/$defs/RelayEndpoint"
+        },
+        "payload": {},
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "envelopeId",
+        "protocolVersion",
+        "source",
+        "target",
+        "payload",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "RelayErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "INVALID_REQUEST",
+                "CALLER_NOT_FOUND",
+                "CALLER_DEAD",
+                "CALLER_NOT_PI",
+                "INCOMPATIBLE_PROTOCOL",
+                "REGISTRATION_EXPIRED",
+                "SOURCE_MISMATCH",
+                "TARGET_NOT_REGISTERED",
+                "CROSS_RELAY_ENDPOINT",
+                "PAYLOAD_TOO_LARGE",
+                "ENVELOPE_CONFLICT",
+                "PEER_UNREACHABLE",
+                "STORE_UNAVAILABLE"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "RelayConnectResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "endpoint": {
+              "$ref": "#/$defs/RelayEndpoint"
+            },
+            "leaseExpiresAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "endpoint",
+            "leaseExpiresAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
+    },
+    "RelayResolveResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "endpoint": {
+              "$ref": "#/$defs/RelayEndpoint"
+            }
+          },
+          "required": [
+            "ok",
+            "endpoint"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
+    },
+    "RelaySendResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "kind": {
+              "enum": [
+                "accepted",
+                "duplicate"
+              ]
+            },
+            "acceptanceId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "forwarding": {
+              "enum": [
+                "local",
+                "forwarded",
+                "pending"
+              ]
+            }
+          },
+          "required": [
+            "ok",
+            "kind",
+            "acceptanceId",
+            "forwarding"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
+    },
+    "RelayReceiveResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "envelopes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RelayEnvelope"
+              }
+            },
+            "nextCursor": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "hasMore": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "envelopes",
+            "nextCursor",
+            "hasMore"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
+    },
+    "RelayAcknowledgementResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "kind": {
+              "enum": [
+                "acknowledged",
+                "duplicate"
+              ]
+            }
+          },
+          "required": [
+            "ok",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
+    },
+    "RelayPeerReceiveResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "kind": {
+              "enum": [
+                "accepted",
+                "duplicate"
+              ]
+            },
+            "acceptanceId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "ok",
+            "kind",
+            "acceptanceId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
+    },
+    "RelayEmptyResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/RelayErrorEnvelope"
+        }
+      ]
     },
     "TaskId": {
       "type": "string",

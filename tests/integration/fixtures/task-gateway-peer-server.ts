@@ -17,6 +17,7 @@ const crashAfterPeerEvent = process.env.WOLFPACK_TEST_CRASH_AFTER_PEER_EVENT;
 const crashBeforePeerEvent = process.env.WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT;
 const crashBeforePeerEventAttempt = Number(process.env.WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT_ATTEMPT ?? "0");
 const peerEventResponseDelayMs = Number(process.env.WOLFPACK_TEST_PEER_EVENT_RESPONSE_DELAY_MS ?? "0");
+const taskRelay = process.env.WOLFPACK_TEST_TASK_RELAY === "1";
 if (!Number.isInteger(crashBeforePeerEventAttempt) || crashBeforePeerEventAttempt < 0) throw new Error("peer event crash attempt must be a non-negative integer");
 if (!Number.isInteger(peerEventResponseDelayMs) || peerEventResponseDelayMs < 0) throw new Error("peer event response delay must be a non-negative integer");
 let crashBeforePeerEventCount = 0;
@@ -48,7 +49,10 @@ process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_TAILNET_SUFFIX = "example.ts.net";
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(join(process.env.HOME ?? "", ".wolfpack"), { recursive: true });
-writeFileSync(join(process.env.HOME ?? "", ".wolfpack", "config.json"), JSON.stringify({ tailscaleHostname: new URL(peerOrigin).hostname }));
+writeFileSync(join(process.env.HOME ?? "", ".wolfpack", "config.json"), JSON.stringify({
+  ...(taskRelay ? { devDir: projectRoot, port: listenPort } : {}),
+  tailscaleHostname: new URL(peerOrigin).hostname,
+}));
 
 const NativeDate = Date;
 if (clockPath) {

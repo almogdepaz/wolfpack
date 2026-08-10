@@ -23,6 +23,7 @@ const { __setTestBackend } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("../../src/tasks/domain.ts");
+const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
 const { TaskGateway, __resetTaskGatewayForTests } = await import("../../src/tasks/gateway.ts");
 
@@ -93,6 +94,7 @@ interface PeerServerOptions {
   readonly crashBeforePeerEvent?: string;
   readonly crashBeforePeerEventAttempt?: number;
   readonly fastRetry?: boolean;
+  readonly taskRelay?: boolean;
 }
 
 async function reservePort(): Promise<number> {
@@ -144,6 +146,7 @@ async function spawnPeerServer(options: PeerServerOptions): Promise<PeerServer> 
       WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT: options.crashBeforePeerEvent ?? "",
       WOLFPACK_TEST_CRASH_BEFORE_PEER_EVENT_ATTEMPT: String(options.crashBeforePeerEventAttempt ?? 0),
       WOLFPACK_TEST_FAST_RETRY: options.fastRetry ? "1" : "",
+      WOLFPACK_TEST_TASK_RELAY: options.taskRelay ? "1" : "",
       WOLFPACK_TEST_LISTEN_PORT: String(options.port),
       WOLFPACK_TEST_PEER_MAP: options.peerMapPath,
       WOLFPACK_TEST_PEER_ORIGIN: options.peerOrigin,
@@ -356,6 +359,10 @@ function peerServerOptions(
   };
 }
 
+function taskRelayPeerServerOptions(fixture: HttpPeerFixture, role: "sender" | "receiver"): PeerServerOptions {
+  return { ...peerServerOptions(fixture, role), taskRelay: true };
+}
+
 function peerDispatches(fixture: HttpPeerFixture): readonly Record<string, unknown>[] {
   if (!existsSync(fixture.dispatchLogPath)) return [];
   const text = readFileSync(fixture.dispatchLogPath, "utf8").trim();
@@ -395,6 +402,64 @@ function remoteSendInput(task: string, timeoutMs: number | undefined = undefined
 }
 
 describe("cross-process peer task gateway", () => {
+  test("resolves and forwards opaque relay endpoints through two isolated HTTP servers", async () => {
+    const fixture = await createHttpPeerFixture("relay-topology");
+    let sender: PeerServer | undefined;
+    let receiver: PeerServer | undefined;
+    try {
+      receiver = await spawnPeerServer(taskRelayPeerServerOptions(fixture, "receiver"));
+      sender = await spawnPeerServer(taskRelayPeerServerOptions(fixture, "sender"));
+      const receiverConnect = await postPeerRequest(receiver.base, "/api/task-relay/v2/connect", {
+        callerSession: "receiver",
+        generation: "receiver-process",
+        protocolVersions: [RELAY_PROTOCOL_VERSION],
+      });
+      const receiverEndpoint = await receiverConnect.json() as { readonly endpoint: { readonly relay: string; readonly id: string } };
+      const senderConnect = await postPeerRequest(sender.base, "/api/task-relay/v2/connect", {
+        callerSession: "parent",
+        generation: "sender-process",
+        protocolVersions: [RELAY_PROTOCOL_VERSION],
+      });
+      const senderEndpoint = await senderConnect.json() as { readonly endpoint: { readonly relay: string; readonly id: string } };
+      const topology = await postPeerRequest(sender.base, "/api/task-relay/v2/peer/resolve", {
+        origin: fixture.receiverOrigin,
+        endpoint: receiverEndpoint.endpoint,
+      });
+      const target = await topology.json() as { readonly endpoint: { readonly relay: string; readonly id: string } };
+
+      expect(receiverConnect.status).toBe(200);
+      expect(senderConnect.status).toBe(200);
+      expect(topology.status).toBe(200);
+      expect(target.endpoint).toMatchObject({ id: receiverEndpoint.endpoint.id });
+      expect(target.endpoint.relay).toMatch(/^wolfpack-pi-tasks-v2:peer:[0-9a-f-]{36}$/);
+      expect(JSON.stringify(target)).not.toContain(fixture.receiverOrigin);
+      const accepted = await postPeerRequest(sender.base, "/api/task-relay/v2/send", {
+        callerSession: "parent",
+        envelope: {
+          envelopeId: "two-server-relay-envelope",
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          source: senderEndpoint.endpoint,
+          target: target.endpoint,
+          payload: { opaque: true },
+          createdAt: new Date(0).toISOString(),
+        },
+      });
+      expect(await accepted.json()).toMatchObject({ ok: true, forwarding: "forwarded" });
+      const inbox = await fetch(`${receiver.base}/api/task-relay/v2/receive?callerSession=receiver&cursor=0`);
+      const inboxBody = await inbox.json() as { readonly ok: boolean; readonly envelopes: readonly { readonly envelopeId: string; readonly source: { readonly relay: string }; readonly target: { readonly relay: string; readonly id: string } }[] };
+      expect(inboxBody.ok).toBe(true);
+      expect(inboxBody.envelopes).toHaveLength(1);
+      expect(inboxBody.envelopes[0]).toMatchObject({
+        envelopeId: "two-server-relay-envelope",
+        source: { relay: RELAY_ID },
+        target: receiverEndpoint.endpoint,
+      });
+    } finally {
+      await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("routes a canonical remote task lifecycle through two isolated HTTP servers", async () => {
     const fixtureRoot = join(tmpdir(), `wolfpack-task-peer-http-${process.pid}-${Date.now()}`);
     const senderPort = await reservePort();
@@ -632,6 +697,7 @@ describe("cross-process peer task gateway", () => {
     }
   });
 
+  // This lifecycle starts six peer-server processes across crash recovery; keep the deadline above Bun's 5s default.
   test("recovers a pending canonical sender intent after a crash before peer delivery", async () => {
     const fixture = await createHttpPeerFixture("sender-recovery");
     let sender: PeerServer | undefined;
@@ -689,7 +755,7 @@ describe("cross-process peer task gateway", () => {
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       rmSync(fixture.root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   test("finalizes a four-attempt sender intent after a crash before the delivery failure record", async () => {
     const fixture = await createHttpPeerFixture("sender-exhaustion-finalization");

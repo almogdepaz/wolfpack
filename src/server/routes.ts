@@ -132,6 +132,9 @@ import { createTopLevelSession } from "./session-create.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import { taskRoutes } from "./task-routes.ts";
+import { taskRelayRoutes } from "./task-relay-routes.ts";
+import { getTaskRelayGateway } from "../task-relay/gateway.ts";
+import type { RelayEndpoint } from "../task-relay/domain.ts";
 import { getTaskGateway } from "../tasks/gateway.ts";
 
 const SESSION_OPEN_INVALID_BODY_RESPONSE = {
@@ -347,7 +350,7 @@ function sessionTerminalLiveness(name: string): SessionTerminalLiveness {
   };
 }
 
-function sessionStatusPayload(name: string, identity: PublicSessionIdentity, selector: string = name) {
+function sessionStatusPayload(name: string, identity: PublicSessionIdentity, taskEndpoint: RelayEndpoint | undefined, selector: string = name) {
   const terminal = sessionTerminalLiveness(name);
   return {
     ok: true as const,
@@ -366,12 +369,13 @@ function sessionStatusPayload(name: string, identity: PublicSessionIdentity, sel
         sessionId: identity.parentSession.wolfpackSessionId,
       },
     }),
+    ...(taskEndpoint && { taskEndpoint }),
   };
 }
 
 type SuccessfulSessionInspection = Extract<SessionInspectionResult, { readonly ok: true }>;
 
-function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection) {
+function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection, taskEndpoint: RelayEndpoint | undefined) {
   const terminal: SessionTerminalLiveness = {
     exists: true,
     alive: inspection.alive,
@@ -389,6 +393,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     harness: inspection.harness,
     terminal,
     ...(inspection.parentSession && { parentSession: inspection.parentSession }),
+    ...(taskEndpoint && { taskEndpoint }),
   };
 }
 
@@ -978,9 +983,10 @@ export const routes: Record<
       if (!identities || names.some(name => !identities[name])) {
         return json(res, { error: "session identity unavailable" }, 503);
       }
-      const sessions = names
-        .map(name => sessionStatusPayload(name, identities[name]!))
-        .sort((left, right) => left.session.localeCompare(right.session));
+      const sessions = (await Promise.all(names.map(async (name) => {
+        const identity = identities[name]!;
+        return sessionStatusPayload(name, identity, await getTaskRelayGateway().endpointForSession(identity.wolfpackSessionId));
+      }))).sort((left, right) => left.session.localeCompare(right.session));
       json(res, { sessions });
     } catch (error: unknown) {
       log.warn("session-control list failed", { error: errMsg(error) });
@@ -1021,7 +1027,7 @@ export const routes: Record<
           ambiguous ? 409 : 404,
         );
       }
-      const status = inspectedSessionStatusPayload(selector, inspection);
+      const status = inspectedSessionStatusPayload(selector, inspection, await getTaskRelayGateway().endpointForSession(inspection.sessionId));
       if (!inspection.alive) {
         return json(
           res,
@@ -1303,6 +1309,7 @@ export const routes: Record<
   // ── Agent-triggered notifications ──
 
   ...taskRoutes,
+  ...taskRelayRoutes,
 
   "POST /api/notify": async (req, res) => {
     const body = await parseObjectBody(req, res);
