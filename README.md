@@ -15,6 +15,12 @@ Sessions live in a Rust PTY broker, not the web server, so server restarts and u
   <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack usage demo showing real broker-backed terminal sessions" />
 </p>
 
+<p align="center">
+  <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile sessions dashboard showing agent status across three machines" />
+  <img src="docs/mobile-terminal.png" width="220" alt="Wolfpack mobile terminal showing an Opus coding-agent session with touch controls" />
+  <img src="docs/mobile-ghostty.png" width="220" alt="Wolfpack mobile Ghostty terminal showing colorized coding-agent output" />
+</p>
+
 > **security:** wolfpack gives browser users shell-level control over configured projects. Keep it private to a trusted Tailnet. If other people share the Tailnet, configure device/user ACLs and consider JWT. Session control follows the ordinary global API auth policy when configured and has no inter-session authorization layer; read the [full trust model](docs/installation.md#security-and-trust).
 
 ## quickstart
