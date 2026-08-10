@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  Dirent,
   mkdtempSync,
   mkdirSync,
   realpathSync,
@@ -70,6 +71,30 @@ describe("browseServerDirectory", () => {
     expect(result.value.directories.map(directory => directory.name)).not.toContain(".hidden");
     expect(result.value.directories.map(directory => directory.name)).not.toContain("file.txt");
     expect(result.value.directories.map(directory => directory.name)).not.toContain("linked-directory");
+  });
+
+  test("uses lstat when directory entry type metadata is unknown", () => {
+    const current = join(root, "unknown-entry-type");
+    const child = join(current, "real-directory");
+    mkdirSync(child, { recursive: true });
+    const originalIsDirectory = Dirent.prototype.isDirectory;
+
+    try {
+      Dirent.prototype.isDirectory = () => false;
+      expect(browseServerDirectory(current)).toEqual({
+        ok: true,
+        value: {
+          current: realpathSync(current),
+          parent: realpathSync(root),
+          directories: [{
+            name: "real-directory",
+            path: realpathSync(child),
+          }],
+        },
+      });
+    } finally {
+      Dirent.prototype.isDirectory = originalIsDirectory;
+    }
   });
 
   test("fails after a finite raw-entry scan even when entries cannot be returned", () => {
