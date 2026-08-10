@@ -42,6 +42,7 @@ import {
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
 import { validateProjectDir as validateProjectDirPure } from "./validate-project-dir.js";
+import { resolveExistingProjectSelection } from "./project-selection.js";
 import {
   getBackend,
   getRouter,
@@ -68,16 +69,6 @@ function validateProject(res: ServerResponse, project: string | null | undefined
     return false;
   }
   return true;
-}
-
-/** Validate project directory exists, is not a symlink, and resolves under DEV_DIR.
- *  Thin HTTP wrapper around the pure `validateProjectDirPure` so the security-sensitive
- *  containment logic lives in one tested place. */
-function validateProjectDir(res: ServerResponse, projectDir: string): boolean {
-  const result = validateProjectDirPure(projectDir);
-  if (result.ok) return true;
-  json(res, { error: result.error }, result.code === "not_found" ? 404 : 400);
-  return false;
 }
 
 function listDevProjects(): string[] {
@@ -185,6 +176,7 @@ function hasOptionalType(
 
 interface CreateBody extends Record<string, unknown> {
   project?: string;
+  projectDir?: string;
   newProject?: string;
   cmd?: string;
   sessionName?: string;
@@ -193,36 +185,40 @@ interface CreateBody extends Record<string, unknown> {
 }
 
 function isCreateBody(body: Record<string, unknown>): body is CreateBody {
-  return ["project", "newProject", "cmd", "sessionName", "parentSession", "initialPrompt"].every(
+  return ["project", "projectDir", "newProject", "cmd", "sessionName", "parentSession", "initialPrompt"].every(
     key => hasOptionalType(body, key, "string"),
   );
 }
 
 interface SessionCreateBody extends Record<string, unknown> {
-  project: string;
+  project?: string;
+  projectDir?: string;
   harness?: string;
   initialPrompt?: string;
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "harness", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
-    && typeof body.project === "string"
+    && hasOptionalType(body, "project", "string")
+    && hasOptionalType(body, "projectDir", "string")
     && hasOptionalType(body, "harness", "string")
     && hasOptionalType(body, "initialPrompt", "string");
 }
 
 interface SessionOpenBody extends Record<string, unknown> {
-  project: string;
+  project?: string;
+  projectDir?: string;
   parentSession: string;
   sessionName?: string;
   initialPrompt?: string;
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "parentSession", "sessionName", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "initialPrompt"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
-    && typeof body.project === "string"
+    && hasOptionalType(body, "project", "string")
+    && hasOptionalType(body, "projectDir", "string")
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "sessionName", "string")
     && hasOptionalType(body, "initialPrompt", "string");
@@ -301,9 +297,10 @@ function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
 /** Validate project name + directory in one call. Returns resolved path or sends error and returns null. */
 function resolveProjectDir(res: ServerResponse, project: string | null | undefined): string | null {
   if (!validateProject(res, project)) return null;
-  const dir = join(DEV_DIR, project);
-  if (!validateProjectDir(res, dir)) return null;
-  return dir;
+  const selection = resolveExistingProjectSelection({ project });
+  if (selection.ok) return selection.value.projectDir;
+  json(res, { error: selection.error }, selection.code === "not_found" ? 404 : 400);
+  return null;
 }
 
 function parseTimeoutMs(value: unknown): number | null {
@@ -625,9 +622,14 @@ const routeImplementations: Record<
 
   "GET /api/next-session-name": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const project = url.searchParams.get("project");
-    if (!validateProject(res, project)) return;
-    const name = await uniqueSessionName(project);
+    const project = url.searchParams.get("project") ?? undefined;
+    const projectDir = url.searchParams.get("projectDir") ?? undefined;
+    const selection = resolveExistingProjectSelection({ project, projectDir });
+    if (!selection.ok) {
+      json(res, { error: selection.error }, selection.code === "not_found" ? 404 : 400);
+      return;
+    }
+    const name = await uniqueSessionName(selection.value.project);
     json(res, { name });
   },
 
@@ -636,12 +638,13 @@ const routeImplementations: Record<
     if (!body) return;
     if (!isCreateBody(body)) {
       return json(res, {
-        error: "project, newProject, cmd, sessionName, parentSession, and initialPrompt must be strings",
+        error: "project, projectDir, newProject, cmd, sessionName, parentSession, and initialPrompt must be strings",
       }, 400);
     }
-    const { project, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
-    const folderName = newProject?.trim() || project?.trim();
-    if (!validateProject(res, folderName)) return;
+    const { project, projectDir: requestedProjectDir, newProject, cmd, sessionName, parentSession, initialPrompt } = body;
+    if (newProject !== undefined && (project !== undefined || requestedProjectDir !== undefined)) {
+      return json(res, { error: "invalid project selection" }, 400);
+    }
     if (cmd && cmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
     }
@@ -688,14 +691,33 @@ const routeImplementations: Record<
         return json(res, { error: "session name already taken" }, 409);
       }
     }
-    const projectDir = join(DEV_DIR, folderName);
-    if (newProject) {
-      try { mkdirSync(projectDir, { recursive: true }); } catch (e: unknown) {
-        log.error("/api/create: failed to create project directory", { path: projectDir, error: errMsg(e) });
+    let projectSelection: { readonly project: string; readonly projectDir: string };
+    if (newProject !== undefined) {
+      const folderName = newProject.trim();
+      if (!validateProject(res, folderName)) return;
+      const rootedProjectDir = join(DEV_DIR, folderName);
+      try { mkdirSync(rootedProjectDir, { recursive: true }); } catch (e: unknown) {
+        log.error("/api/create: failed to create project directory", { path: rootedProjectDir, error: errMsg(e) });
       }
+      const validation = validateProjectDirPure(rootedProjectDir);
+      if (!validation.ok) {
+        json(res, { error: validation.error }, validation.code === "not_found" ? 404 : 400);
+        return;
+      }
+      projectSelection = { project: folderName, projectDir: validation.projectDir };
+    } else {
+      const selection = resolveExistingProjectSelection({
+        ...(project !== undefined && { project: project.trim() }),
+        ...(requestedProjectDir !== undefined && { projectDir: requestedProjectDir }),
+      });
+      if (!selection.ok) {
+        json(res, { error: selection.error }, selection.code === "not_found" ? 404 : 400);
+        return;
+      }
+      projectSelection = selection.value;
     }
-    if (!validateProjectDir(res, projectDir)) return;
-    const finalName = customName || await uniqueSessionName(folderName);
+    const { project: projectLabel, projectDir } = projectSelection;
+    const finalName = customName || await uniqueSessionName(projectLabel);
     try {
       // Backends accept a `loadSettings` thunk that returns the agent to spawn.
       // Resolve the effective agent (respecting enabled-state + fallbacks) here
@@ -725,7 +747,6 @@ const routeImplementations: Record<
     if (
       !body
       || !isSessionCreateBody(body)
-      || !isValidProjectName(body.project)
       || (body.harness !== undefined && !isCreatableHarness(body.harness))
       || (
         body.initialPrompt !== undefined
@@ -740,20 +761,20 @@ const routeImplementations: Record<
       return;
     }
 
-    const projectDir = join(DEV_DIR, body.project);
-    const projectValidation = validateProjectDirPure(projectDir);
-    if (!projectValidation.ok) {
+    const projectSelection = resolveExistingProjectSelection(body);
+    if (!projectSelection.ok) {
       return json(
         res,
         {
-          error: projectValidation.code === "not_found" ? "project not found" : "invalid project",
-          code: projectValidation.code === "not_found"
+          error: projectSelection.code === "not_found" ? "project not found" : "invalid session-create request",
+          code: projectSelection.code === "not_found"
             ? SESSION_CREATE_ERROR.PROJECT_NOT_FOUND
             : SESSION_CREATE_ERROR.INVALID_REQUEST,
         },
-        projectValidation.code === "not_found" ? 404 : 400,
+        projectSelection.code === "not_found" ? 404 : 400,
       );
     }
+    const { project, projectDir } = projectSelection.value;
 
     const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
     if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL) {
@@ -766,7 +787,7 @@ const routeImplementations: Record<
     try {
       const result = await createTopLevelSession({
         backend: getBackend(),
-        project: body.project,
+        project,
         projectDir,
         command: configuredCommand,
         initialPrompt: body.initialPrompt,
@@ -795,7 +816,6 @@ const routeImplementations: Record<
     if (!body) return;
     if (
       !isSessionOpenBody(body)
-      || !isValidProjectName(body.project)
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
       || (
@@ -811,20 +831,20 @@ const routeImplementations: Record<
       );
     }
 
-    const projectDir = join(DEV_DIR, body.project);
-    const projectValidation = validateProjectDirPure(projectDir);
-    if (!projectValidation.ok) {
-      if (projectValidation.code === "not_found") {
+    const projectSelection = resolveExistingProjectSelection(body);
+    if (!projectSelection.ok) {
+      if (projectSelection.code === "not_found") {
         return json(res, {
           error: "project not found",
           code: SESSION_OPEN_ERROR.PROJECT_NOT_FOUND,
         }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.PROJECT_NOT_FOUND]);
       }
       return json(res, {
-        error: "invalid project",
+        error: "invalid session-open request",
         code: SESSION_OPEN_ERROR.INVALID_REQUEST,
       }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
     }
+    const { project, projectDir } = projectSelection.value;
 
     const backend = getBackend();
     if (!backend.listIdentities) {
@@ -844,7 +864,7 @@ const routeImplementations: Record<
           ),
         },
         parentSession: body.parentSession,
-        project: body.project,
+        project,
         projectDir,
         sessionName: body.sessionName,
         initialPrompt: body.initialPrompt,

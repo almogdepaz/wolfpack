@@ -22,6 +22,7 @@ describe("top-level session creation", () => {
     expect(chooseTopLevelSessionName("branchout", [])).toBe("branchout");
     expect(chooseTopLevelSessionName("branchout", ["branchout", "branchout-2"])).toBe("branchout-3");
     expect(chooseTopLevelSessionName("my.project", [])).toBe("my_project");
+    expect(chooseTopLevelSessionName("my project!", [])).toBe("my_project_");
   });
 
   test("creates with an opaque initial prompt and returns stable identity", async () => {

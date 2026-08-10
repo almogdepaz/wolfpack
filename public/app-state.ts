@@ -409,6 +409,7 @@ export const state = {
   swipeNavigated: false,
   projectMachine: "",
   selectedProject: "",
+  selectedProjectDir: "",
   isNewProject: false,
   enterRetryTimer: null,
   drawerOpen: false,

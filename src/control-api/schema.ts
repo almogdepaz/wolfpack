@@ -12,6 +12,7 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import { MAX_PROJECT_DIR_LENGTH } from "../server/validate-project-dir.ts";
 import {
   SESSION_PROMPT_MAX_TIMEOUT_MS,
   SESSION_PROMPT_OUTCOME,
@@ -231,7 +232,7 @@ export const controlApiSource: ControlApiSource = {
   },
   trustBoundaries: [
     "schemas publish public client contracts; they do not replace route-side project/session/path validation",
-    "filesystem containment remains in src/server/validate-project-dir.ts and src/validation.ts",
+    "named-project containment and explicit absolute-directory validation remain in src/server/project-selection.ts, src/server/validate-project-dir.ts, and src/validation.ts",
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
@@ -255,6 +256,14 @@ export const controlApiSource: ControlApiSource = {
     },
     SessionPromptOutcome: { enum: Object.values(SESSION_PROMPT_OUTCOME) },
     ProjectName: { type: "string", pattern: "^[a-zA-Z0-9._-]+$" },
+    ProjectLabel: { type: "string", minLength: 1 },
+    ProjectDirectory: {
+      type: "string",
+      pattern: "^/",
+      minLength: 1,
+      maxLength: MAX_PROJECT_DIR_LENGTH,
+      description: "Absolute server-local path to an existing directory; runtime canonicalizes and validates it before launch",
+    },
     Command: { type: "string", minLength: 1 },
     BrokerOutputSequence: {
       type: "string",
@@ -873,9 +882,20 @@ export const controlApiSource: ControlApiSource = {
       operationId: "nextSessionName",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({ project: ref("ProjectName") }, ["project"]),
+      request: {
+        ...object({
+          project: ref("ProjectName"),
+          projectDir: ref("ProjectDirectory"),
+        }),
+        allOf: [{
+          oneOf: [
+            object({}, ["project"], { additionalProperties: true }),
+            object({}, ["projectDir"], { additionalProperties: true }),
+          ],
+        }],
+      },
       response: object({ name: ref("SessionName") }, ["name"]),
-      errors: ["400 ErrorEnvelope"],
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope"],
     },
     "POST /api/create": {
       operationId: "createSession",
@@ -884,6 +904,7 @@ export const controlApiSource: ControlApiSource = {
       request: {
         ...object({
           project: ref("ProjectName"),
+          projectDir: ref("ProjectDirectory"),
           newProject: ref("ProjectName"),
           cmd: ref("Command"),
           sessionName: ref("SessionName"),
@@ -894,10 +915,13 @@ export const controlApiSource: ControlApiSource = {
             maxLength: MAX_INITIAL_PROMPT_LENGTH,
           },
         }),
-        anyOf: [
-          object({}, ["project"], { additionalProperties: true }),
-          object({}, ["newProject"], { additionalProperties: true }),
-        ],
+        allOf: [{
+          oneOf: [
+            object({}, ["project"], { additionalProperties: true }),
+            object({}, ["projectDir"], { additionalProperties: true }),
+            object({}, ["newProject"], { additionalProperties: true }),
+          ],
+        }],
       },
       response: object({
         ok: boolean(),
@@ -909,20 +933,29 @@ export const controlApiSource: ControlApiSource = {
       operationId: "createTopLevelSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({
-        project: ref("ProjectName"),
-        harness: ref("CreatableHarness"),
-        initialPrompt: {
-          type: "string",
-          minLength: 1,
-          maxLength: MAX_INITIAL_PROMPT_LENGTH,
-        },
-      }, ["project"]),
+      request: {
+        ...object({
+          project: ref("ProjectName"),
+          projectDir: ref("ProjectDirectory"),
+          harness: ref("CreatableHarness"),
+          initialPrompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_INITIAL_PROMPT_LENGTH,
+          },
+        }),
+        allOf: [{
+          oneOf: [
+            object({}, ["project"], { additionalProperties: true }),
+            object({}, ["projectDir"], { additionalProperties: true }),
+          ],
+        }],
+      },
       response: object({
         ok: { const: true },
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
-        project: ref("ProjectName"),
+        project: ref("ProjectLabel"),
         harness: string(),
       }, ["ok", "session", "sessionId", "project", "harness"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
@@ -931,21 +964,30 @@ export const controlApiSource: ControlApiSource = {
       operationId: "openSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({
-        project: ref("ProjectName"),
-        parentSession: ref("SessionName"),
-        sessionName: ref("SessionName"),
-        initialPrompt: {
-          type: "string",
-          minLength: 1,
-          maxLength: MAX_INITIAL_PROMPT_LENGTH,
-        },
-      }, ["project", "parentSession"]),
+      request: {
+        ...object({
+          project: ref("ProjectName"),
+          projectDir: ref("ProjectDirectory"),
+          parentSession: ref("SessionName"),
+          sessionName: ref("SessionName"),
+          initialPrompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_INITIAL_PROMPT_LENGTH,
+          },
+        }, ["parentSession"]),
+        allOf: [{
+          oneOf: [
+            object({}, ["project"], { additionalProperties: true }),
+            object({}, ["projectDir"], { additionalProperties: true }),
+          ],
+        }],
+      },
       response: object({
         ok: { const: true },
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
-        project: ref("ProjectName"),
+        project: ref("ProjectLabel"),
         harness: ref("OpenableHarness"),
       }, ["ok", "session", "sessionId", "project", "harness"]),
       errors: sessionOpenErrorLines(),

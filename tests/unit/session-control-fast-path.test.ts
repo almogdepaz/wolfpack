@@ -28,6 +28,34 @@ describe("session control fast-path parsing", () => {
     });
   });
 
+  test("parses an explicit project directory without a positional project", () => {
+    expect(parseSessionCommand([
+      "create",
+      "--project-dir",
+      ".",
+      "--harness",
+      "pi",
+    ])).toEqual({
+      ok: true,
+      action: "create",
+      projectDir: ".",
+      harness: "pi",
+      prompt: undefined,
+      output: "plain",
+    });
+    expect(parseAgentCommand(["spawn", "--project-dir", "../workspace"])).toMatchObject({
+      ok: true,
+      action: "spawn",
+      projectDir: "../workspace",
+    });
+  });
+
+  test("rejects missing or ambiguous project selectors", () => {
+    expect(parseSessionCommand(["create"]).ok).toBe(false);
+    expect(parseSessionCommand(["create", "branchout", "--project-dir", "."]).ok).toBe(false);
+    expect(parseAgentCommand(["spawn", "branchout", "--project-dir", "."]).ok).toBe(false);
+  });
+
   test("parses explicit shell selection for a top-level session", () => {
     expect(parseSessionCommand([
       "create",
@@ -168,6 +196,39 @@ describe("session control fast-path requests", () => {
     });
   });
 
+  test("create resolves an explicit project directory before the atomic request", () => {
+    const script = `
+      const calls = [];
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return Response.json({
+          ok: true,
+          session: "wolfpack-any-directory",
+          sessionId: "id-explicit",
+          project: "wolfpack-any-directory",
+          harness: "pi",
+        });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      const code = await runSessionCommand(["create", "--project-dir", ".", "--harness", "pi", "--json"]);
+      const expected = [{
+        url: "http://127.0.0.1:18790/api/session-create",
+        method: "POST",
+        body: { projectDir: ${JSON.stringify(process.cwd())}, harness: "pi" },
+      }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+  });
+
   test("create reports create-specific structured failures", () => {
     const script = `
       globalThis.fetch = async () => Response.json({
@@ -227,6 +288,35 @@ describe("session control fast-path requests", () => {
     expect(child.stderr.toString()).toBe("");
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(child.stdout.toString()).sessionId).toBe("id-child");
+  });
+
+  test("agent spawn resolves an explicit project directory before the child request", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "wolfpack";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      const calls = [];
+      globalThis.fetch = async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+        return Response.json({ ok: true, session: "child", sessionId: "id-child", project: "wolfpack-any-directory", harness: "pi" });
+      };
+      const { runAgentCommand } = await import("./src/cli/session-control.ts");
+      const code = await runAgentCommand(["spawn", "--project-dir", ".", "--json"]);
+      const expected = [{
+        url: "http://127.0.0.1:18790/api/session-open",
+        method: "POST",
+        body: { projectDir: ${JSON.stringify(process.cwd())}, parentSession: "wolfpack" },
+      }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
   });
 
   test("agent spawn plan mode sends a compact prompt, not the plan contents", () => {

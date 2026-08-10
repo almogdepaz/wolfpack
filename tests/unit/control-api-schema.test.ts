@@ -325,6 +325,16 @@ describe("control api schema compatibility samples", () => {
       maxLength: 32768,
     });
     expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+    expect(validate(request, { projectDir: "/srv/worktrees/alpha", cmd: "pi" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      projectDir: "/srv/worktrees/alpha",
+      cmd: "pi",
+    }, artifact)).not.toEqual([]);
+    expect(validate(request, {
+      projectDir: "/srv/worktrees/alpha",
+      newProject: "fresh-app",
+    }, artifact)).not.toEqual([]);
   });
 
   test("atomic prompt wait publishes the output-only predicate and every phase-1 outcome", () => {
@@ -407,6 +417,25 @@ describe("control api schema compatibility samples", () => {
     expect((artifact.$defs as JsonObject).CreatableHarness).toEqual({
       enum: ["shell", "pi", "claude", "codex", "gemini", "cursor"],
     });
+  });
+
+  test("launch contracts accept one explicit absolute project directory selector", () => {
+    const explicit = { projectDir: "/worktrees/path with spaces" };
+
+    expect(validate(httpRequest("createTopLevelSession"), explicit, artifact)).toEqual([]);
+    expect(validate(httpRequest("openSession"), {
+      ...explicit,
+      parentSession: "pi-main",
+    }, artifact)).toEqual([]);
+    expect(validate(httpRequest("createSession"), explicit, artifact)).toEqual([]);
+    expect(validate(httpRequest("nextSessionName"), explicit, artifact)).toEqual([]);
+    expect(validate(httpRequest("createTopLevelSession"), {
+      project: "wolfpack",
+      projectDir: "/worktrees/wolfpack",
+    }, artifact)).not.toEqual([]);
+    expect(validate(httpRequest("createTopLevelSession"), {
+      projectDir: "relative/project",
+    }, artifact)).not.toEqual([]);
   });
 
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {

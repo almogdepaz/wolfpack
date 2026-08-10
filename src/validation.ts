@@ -13,6 +13,10 @@ export function isValidProjectName(name: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(name) && name !== "." && name !== "..";
 }
 
+export function projectLabelToSessionName(label: string): string {
+  return label.replace(/[^a-zA-Z0-9_-]/g, "_") || "project";
+}
+
 export const MAX_SESSION_NAME_LENGTH = 100;
 export const MAX_INITIAL_PROMPT_LENGTH = 32_768;
 
