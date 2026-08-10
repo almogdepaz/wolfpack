@@ -140,6 +140,60 @@ test("moves keyboard focus to the updated current location after child and paren
   await expect(browse).toBeFocused();
 });
 
+test("preserves keyboard focus while child navigation fails", async ({ page }) => {
+  let markChildRequestStarted: () => void = () => {};
+  const childRequestStarted = new Promise<void>((resolve) => {
+    markChildRequestStarted = resolve;
+  });
+  let releaseChildResponse: () => void = () => {};
+  const childResponseReleased = new Promise<void>((resolve) => {
+    releaseChildResponse = resolve;
+  });
+  await page.route("**/api/directories**", async (route) => {
+    const requestedPath = new URL(route.request().url()).searchParams.get("path");
+    if (requestedPath === CHILD_DIRECTORY) {
+      markChildRequestStarted();
+      await childResponseReleased;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "directory unavailable", code: "unavailable" }),
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        current: BASE_DIRECTORY,
+        parent: "/server",
+        directories: [{ name: "canonical child", path: CHILD_DIRECTORY }],
+      }),
+    });
+  });
+  await openProjectPicker(page);
+
+  const browse = page.getByRole("button", { name: "Browse server directories" });
+  await browse.click();
+  const dialog = page.getByRole("dialog", { name: "Browse server directories" });
+  const child = dialog.getByRole("button", { name: "Browse canonical child" });
+  await child.focus();
+  await child.press("Enter");
+  await childRequestStarted;
+
+  const list = dialog.locator("#directory-browser-list");
+  await expect(list).toHaveText("Loading directories…");
+  await expect(list).toBeFocused();
+
+  releaseChildResponse();
+  const alert = dialog.getByRole("alert");
+  await expect(alert).toHaveText("directory unavailable");
+  await expect(alert).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(browse).toBeFocused();
+});
+
 test("records Create here as the parent for the existing project-name flow", async ({ page }) => {
   const createRequests: unknown[] = [];
   const nextNameRequests: URL[] = [];
