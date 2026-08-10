@@ -1139,6 +1139,9 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
           },
           "projectDir": {
             "$ref": "#/$defs/ProjectDirectory"
+          },
+          "newProject": {
+            "$ref": "#/$defs/ProjectName"
           }
         },
         "required": [],
@@ -1159,6 +1162,14 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
                 "properties": {},
                 "required": [
                   "projectDir"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "newProject"
                 ],
                 "additionalProperties": true
               }

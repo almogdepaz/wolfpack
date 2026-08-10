@@ -664,6 +664,15 @@ const routeImplementations: Record<
     const url = new URL(req.url ?? "/", "http://localhost");
     const project = url.searchParams.get("project") ?? undefined;
     const projectDir = url.searchParams.get("projectDir") ?? undefined;
+    const newProject = url.searchParams.get("newProject") ?? undefined;
+    if (newProject !== undefined) {
+      if (project !== undefined || projectDir !== undefined || !isValidProjectName(newProject)) {
+        json(res, { error: "invalid project selection" }, 400);
+        return;
+      }
+      json(res, { name: await uniqueSessionName(newProject) });
+      return;
+    }
     const selection = resolveExistingProjectSelection({ project, projectDir });
     if (!selection.ok) {
       json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));

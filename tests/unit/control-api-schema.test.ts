@@ -475,6 +475,22 @@ describe("control api schema compatibility samples", () => {
     ]);
   });
 
+  test("next-session-name accepts exactly one existing or future project selector", () => {
+    const request = httpRequest("nextSessionName");
+
+    expect(validate(request, { project: "wolfpack" }, artifact)).toEqual([]);
+    expect(validate(request, { projectDir: "/worktrees/wolfpack" }, artifact)).toEqual([]);
+    expect(validate(request, { newProject: "fresh-app" }, artifact)).toEqual([]);
+    expect(validate(request, {
+      project: "wolfpack",
+      newProject: "fresh-app",
+    }, artifact)).not.toEqual([]);
+    expect(validate(request, {
+      projectDir: "/worktrees/wolfpack",
+      newProject: "fresh-app",
+    }, artifact)).not.toEqual([]);
+  });
+
   test("launch contracts accept one explicit absolute project directory selector", () => {
     const explicit = { projectDir: "/worktrees/path with spaces" };
 
