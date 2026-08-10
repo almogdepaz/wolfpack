@@ -51,7 +51,7 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
       while (entry) {
         entriesInspected++;
         if (entriesInspected > DIRECTORY_BROWSE_SCAN_LIMIT) return tooManyEntries();
-        if (!entry.name.startsWith(".") && entry.isDirectory()) {
+        if (!entry.name.startsWith(".")) {
           const entryPath = join(current, entry.name);
           try {
             const entryStat = lstatSync(entryPath);
