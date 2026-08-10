@@ -39,6 +39,37 @@ test("open session drawer from terminal view", async ({ page }, testInfo) => {
   await expect(drawer).toHaveClass(/open/);
 });
 
+test("mobile drawer session tap includes the exact touch-slop boundary", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile-only viewport tests");
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.locator(".card", { hasText: "test-project" }).first().click();
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  await page.locator("#session-chip").click();
+
+  const item = page.locator('.drawer-item[data-val="another-project"]');
+  await expect(item).toBeVisible();
+  await item.evaluate((target) => {
+    const dispatchTouch = (type: string, clientY: number): void => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", {
+        value: type === "touchend" ? [] : [{ clientX: 100, clientY }],
+      });
+      Object.defineProperty(event, "changedTouches", {
+        value: [{ clientX: 100, clientY }],
+      });
+      target.dispatchEvent(event);
+    };
+    dispatchTouch("touchstart", 220);
+    dispatchTouch("touchmove", 205);
+    dispatchTouch("touchend", 205);
+  });
+
+  await expect(page.locator("#chip-label")).toHaveText("another-project");
+  await expect(page.locator("#session-drawer")).not.toHaveClass(/open/);
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+});
+
 test("mobile keyboard viewport shift does not take over terminal view transform", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only keyboard viewport path");
 

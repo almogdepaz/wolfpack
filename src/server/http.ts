@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
-import { ASSET_VERSION, assets } from "../public-assets.js";
+import { ASSET_VERSIONS, assets } from "../public-assets.js";
 import { exec } from "./shell.js";
 import type { ExecFn } from "./shell.js";
 import { getBackend } from "./backend.js";
@@ -221,6 +221,17 @@ function buildCsp(nonce: string): string {
   ].join("; ");
 }
 
+/** Serve an HTML document with a per-response CSP nonce on every script tag. */
+export function serveHtml(res: ServerResponse, html: string): void {
+  const nonce = generateCspNonce();
+  res.writeHead(200, {
+    "Content-Type": "text/html",
+    "Cache-Control": "no-cache",
+    "Content-Security-Policy": buildCsp(nonce),
+  });
+  res.end(html.replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`));
+}
+
 interface CachedAsset {
   readonly content: Buffer;
   readonly etag: string;
@@ -280,20 +291,13 @@ export function serveFile(
     headers["Service-Worker-Allowed"] = "/";
   }
   if (asset.mime === "text/html") {
-    headers["Cache-Control"] = "no-cache";
-    const nonce = generateCspNonce();
-    headers["Content-Security-Policy"] = buildCsp(nonce);
-    // Inject nonce into all <script> tags
-    const html = (typeof asset.content === "string" ? asset.content : asset.content.toString())
-      .replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`);
-    res.writeHead(200, headers);
-    res.end(html);
+    serveHtml(res, typeof asset.content === "string" ? asset.content : asset.content.toString());
     return;
   }
 
   const cached = getCachedAsset(filename);
   const version = req?.url ? new URL(req.url, "http://localhost").searchParams.get("v") : null;
-  headers["Cache-Control"] = version === ASSET_VERSION
+  headers["Cache-Control"] = version === ASSET_VERSIONS[filename]
     ? "public, max-age=31536000, immutable"
     : "public, max-age=0, must-revalidate";
   headers.ETag = cached.etag;

@@ -7,19 +7,21 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: 1.3.9
 
       - name: Install Rust toolchain (for wolfpack-broker)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-12
+        with:
+          toolchain: 1.89.0
 
-      - name: Install dependencies
-        run: bun install
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Setup pinned Zig
         run: scripts/setup-zig-0.16.0.sh
@@ -54,11 +56,43 @@ jobs:
       - name: Typecheck (root + public/)
         run: bun run typecheck
 
-      - name: Run tests
-        run: bun test tests/unit/ tests/snapshot/ tests/integration/api.test.ts tests/integration/ralph-api.test.ts tests/integration/ralph-aggregation.test.ts tests/integration/ws-dispatch.test.ts tests/integration/pty-takeover.test.ts tests/integration/prompt-reconnect.test.ts
+      - name: Run all unit and snapshot tests
+        run: bun test tests/unit/ tests/snapshot/
+
+      - name: Run every integration test except auth in one explicit shard
+        run: |
+          mapfile -d '' files < <(find tests/integration -name '*.test.ts' ! -name 'auth-middleware.test.ts' -print0 | sort -z)
+          test "${#files[@]}" -gt 0
+          bun test "${files[@]}"
 
       - name: Run auth tests (isolated — sets JWT env vars that contaminate shared module cache)
         run: bun test tests/integration/auth-middleware.test.ts
+
+      - name: Enforce browser bundle budgets
+        run: bun run check:bundle-budgets
+
+      - name: Install critical Playwright browsers
+        run: bunx playwright install --with-deps chromium webkit
+
+      - name: Run critical Chromium desktop and mobile E2E
+        run: bunx playwright test tests/e2e/accessibility-navigation.e2e.ts tests/e2e/axe-accessibility.e2e.ts tests/e2e/smoke.e2e.ts tests/e2e/terminal.e2e.ts tests/e2e/reconnect.e2e.ts --project=desktop --project=iphone-se
+
+      - name: Run critical mobile WebKit E2E shard
+        run: bunx playwright test --project=mobile-webkit
+
+      - name: Enforce desktop terminal-load budgets
+        env:
+          WOLFPACK_PERF_RUNS: "3"
+          WOLFPACK_PERF_DEVICE: desktop
+          WOLFPACK_PERF_ENFORCE_BUDGETS: "1"
+        run: bun run perf:terminal-load
+
+      - name: Enforce mobile terminal-load budgets
+        env:
+          WOLFPACK_PERF_RUNS: "3"
+          WOLFPACK_PERF_DEVICE: mobile
+          WOLFPACK_PERF_ENFORCE_BUDGETS: "1"
+        run: bun run perf:terminal-load
 
   ghostty-vt-behavior:
     runs-on: ubuntu-24.04

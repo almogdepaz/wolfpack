@@ -48,8 +48,55 @@ async function routeNotificationClick(windowClients, url, origin, openWindow) {
 // Exposed for unit tests (Node `vm` context). No-op in browsers where
 // `module` is undefined.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { sanitizeNotificationUrl, routeNotificationClick };
+  module.exports = { sanitizeNotificationUrl, routeNotificationClick, shouldBypassAuthorityRequest };
 }
+
+
+const SHELL_CACHE = "wolfpack-shell-v1";
+const SHELL_ASSETS = [
+  "/",
+  "/styles.css?v=__WOLFPACK_ASSET_VERSION__",
+  "/wolfpack-lib.js?v=__WOLFPACK_ASSET_VERSION__",
+  "/app.bundle.js?v=__WOLFPACK_ASSET_VERSION__",
+  "/manifest.json",
+  "/wolfpack-icon.svg",
+];
+
+function shouldBypassAuthorityRequest(requestUrl, method = "GET") {
+  if (method !== "GET") return true;
+  const path = new URL(requestUrl, self.location.origin).pathname;
+  return path.startsWith("/api/") || path === "/api" || path.startsWith("/ws/") || path === "/ws";
+}
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_ASSETS)));
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(caches.keys().then((keys) => Promise.all(
+    keys.filter((key) => key.startsWith("wolfpack-shell-") && key !== SHELL_CACHE)
+      .map((key) => caches.delete(key)),
+  )).then(() => self.clients.claim()));
+});
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (shouldBypassAuthorityRequest(request.url, request.method)) return;
+  if (request.mode === "navigate") {
+    event.respondWith(fetch(request).catch(() => caches.match("/").then((response) => response || Response.error())));
+    return;
+  }
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
+    if (response.ok && ["script", "style", "image", "font", "manifest"].includes(request.destination)) {
+      const copy = response.clone();
+      void caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
+    }
+    return response;
+  })));
+});
 
 self.addEventListener("push", (event) => {
   const data = event.data?.json() || {};

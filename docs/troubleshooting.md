@@ -57,6 +57,19 @@ tailscale serve status
 
 If your tailnet policy blocks serve, fix that in Tailscale admin settings or use local-only access.
 
+## A Tailnet machine does not appear in the dashboard or sidebar
+
+This is expected for offline devices and devices that are not running a compatible, reachable Wolfpack instance. Tailnet membership alone never creates a machine card.
+
+For a peer that should be available:
+
+1. run `tailscale status` on both machines and confirm the peer is online;
+2. run `wolfpack doctor` on the peer;
+3. open the peer's canonical Tailnet HTTPS Wolfpack URL and resolve any authentication or ACL failure; and
+4. use **Settings → Machines → Discover Tailnet** to inspect its bounded diagnostic.
+
+The peer appears automatically only after its Wolfpack handshake and sessions request both succeed. Do not add an arbitrary URL or use a Tailnet node ID as a workaround. See [multi-machine control room](multi-machine-control-room.md) for the full visibility and identity boundary.
+
 ## Port is already in use
 
 Pick another port:

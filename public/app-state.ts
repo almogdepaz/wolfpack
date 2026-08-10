@@ -12,6 +12,7 @@ import type {
 } from "../src/notification-preference";
 import { unsubscribePushNotifications } from "../src/push-unsubscribe";
 import { sameOriginPushUrl } from "../src/push-subscription-origin";
+import { authenticatedFetchWithTimeout } from "./browser-auth";
 
 export { esc, escAttr } from "../src/html-escape";
 
@@ -40,7 +41,7 @@ export function getTerminalFontFamily() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, recoveryCache:true, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false};
 
 function loadWpSettings() {
   const stored = loadStoredJson("wp-effects", {});
@@ -160,12 +161,20 @@ export function applySetting(key, val) {
   if (key === "termFontSize") {
     document.body.classList.remove("term-size-small", "term-size-medium", "term-size-large", "term-size-xlarge");
     document.body.classList.add("term-size-" + val);
-    document.querySelectorAll(".term-size-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.size === val));
+    document.querySelectorAll(".term-size-btn").forEach(b => {
+      const selected = (b as HTMLElement).dataset.size === val;
+      b.classList.toggle("active", selected);
+      b.setAttribute("aria-pressed", String(selected));
+    });
     applyTermToXterm();
   }
   if (key === "termFont") {
     document.body.classList.toggle("term-font-alt", val === "alt");
-    document.querySelectorAll(".term-font-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.font === val));
+    document.querySelectorAll(".term-font-btn").forEach(b => {
+      const selected = (b as HTMLElement).dataset.font === val;
+      b.classList.toggle("active", selected);
+      b.setAttribute("aria-pressed", String(selected));
+    });
     applyTermToXterm();
   }
 }
@@ -243,7 +252,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
 
   let publicKey: string;
   try {
-    const response = await fetch(sameOriginPushUrl(location.origin, "/api/push/vapid-key"));
+    const response = await authenticatedFetchWithTimeout(sameOriginPushUrl(location.origin, "/api/push/vapid-key"));
     if (!response.ok) throw new Error(`VAPID key request failed: ${response.status}`);
     const body: unknown = await response.json();
     if (typeof body !== "object" || body === null || !("publicKey" in body)
@@ -277,7 +286,7 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
   }
 
   try {
-    const response = await fetch(sameOriginPushUrl(location.origin, "/api/push/subscribe"), {
+    const response = await authenticatedFetchWithTimeout(sameOriginPushUrl(location.origin, "/api/push/subscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(subscription.toJSON()),
@@ -299,7 +308,7 @@ export async function unsubscribeNotifications(): Promise<NotificationChangeResu
       const registration = await navigator.serviceWorker.getRegistration();
       return registration?.pushManager.getSubscription() ?? null;
     },
-    endpoint => fetch(sameOriginPushUrl(location.origin, "/api/push/unsubscribe"), {
+    endpoint => authenticatedFetchWithTimeout(sameOriginPushUrl(location.origin, "/api/push/unsubscribe"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ endpoint }),
@@ -453,5 +462,6 @@ if (typeof document !== "undefined") {
 export const SNAPSHOT_KEY_PREFIX = "wp-snap|";
 export const SNAPSHOT_MAX_BYTES = 16384;
 export const SNAPSHOT_SAVE_INTERVAL = 2000;
+export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 export const DESKTOP_TERMINAL_SCROLLBACK = 2000;
-export const GRID_TERMINAL_SCROLLBACK = 2000;
+export const GRID_TERMINAL_SCROLLBACK = 1000;

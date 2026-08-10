@@ -30,7 +30,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::output_bus::OutputBus;
+use crate::output_bus::{OutputBus, Subscription};
 use crate::protocol::{Event, SessionInfo, Snapshot};
 use crate::ring_buffer::OutputChunk;
 use crate::terminal_state::{TerminalState, TerminalStateError};
@@ -39,6 +39,7 @@ use crate::terminal_state::{TerminalState, TerminalStateError};
 /// `session_exited`, `session_resized`, `snapshot_invalidated`) is published
 /// here so per-connection forwarders can fan events out to clients.
 pub type EventSender = broadcast::Sender<Event>;
+const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct SpawnOptions {
@@ -188,6 +189,14 @@ impl Drop for SpawnedChildGuard {
     }
 }
 
+#[derive(Clone)]
+struct CachedSnapshot {
+    seq: u64,
+    scrollback_lines: Option<u32>,
+    target_cols: Option<u16>,
+    snapshot: Snapshot,
+}
+
 pub struct Session {
     inner: Arc<Inner>,
     /// Held only for `resize` — the write half was taken out at spawn time
@@ -207,6 +216,10 @@ pub struct Session {
     /// Live-output fanout. Drainer publishes here; subscribe RPC handlers
     /// attach to it for replay + live streaming.
     bus: Arc<OutputBus>,
+    /// Most recent materialized snapshot. JSON encoding happens later on the
+    /// connection writer, outside the terminal lock; identical sequence/key
+    /// requests reuse this immutable protocol value.
+    snapshot_cache: Mutex<Option<CachedSnapshot>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -301,13 +314,13 @@ impl Session {
         let drain_events = events.clone();
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
-            if let Err(error) = drain_reader(reader, drain_terminal, drain_seq, drain_bus) {
+            if let Err(error) = drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus) {
                 tracing::error!(
                     session_id = %drain_id,
                     error = %error,
                     "PTY reader failed; terminating session"
                 );
-                mark_pty_read_failed(&drain_inner, drain_id, &error, &drain_events);
+                mark_pty_read_failed(&drain_inner, drain_id, &error, &drain_events, drain_seq.load(Ordering::SeqCst));
                 if let Err(kill_error) = drain_child_killer.kill() {
                     tracing::error!(
                         session_id = %drain_id,
@@ -321,10 +334,12 @@ impl Session {
         }
 
         let reaper_inner = Arc::clone(&inner);
+        let reaper_bus = Arc::clone(&bus);
+        let reaper_seq = Arc::clone(&seq);
         let reap_id = id;
         let reaper_events = events.clone();
         spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
-            reap(child.into_child(), reaper_inner, reap_id, reaper_events)
+            reap(child.into_child(), reaper_inner, reaper_bus, reaper_seq, reap_id, reaper_events)
         })
         .map_err(|e| SpawnError::ThreadSpawn(e.to_string()))?;
 
@@ -335,6 +350,7 @@ impl Session {
             terminal,
             seq,
             bus,
+            snapshot_cache: Mutex::new(None),
         })
     }
 
@@ -423,7 +439,7 @@ impl Session {
     pub fn resize(&self, cols: u16, rows: u16, events: &EventSender) -> Result<(), ResizeError> {
         let id = self.id();
         let mut master = self.master.lock().expect("master poisoned");
-        resize_terminal_pty_and_state(
+        let result = resize_terminal_pty_and_state(
             &self.inner,
             id,
             master.as_mut(),
@@ -431,7 +447,9 @@ impl Session {
             cols,
             rows,
             events,
-        )
+            || *self.snapshot_cache.lock().expect("snapshot cache poisoned") = None,
+        );
+        result
     }
 
     /// Write raw bytes to the PTY master's stdin (e.g. keyboard input from a client).
@@ -456,13 +474,75 @@ impl Session {
         // Read seq under the same lock the drainer holds while bumping it,
         // so the returned (state, seq) pair is consistent.
         let seq = self.seq.load(Ordering::SeqCst);
-        term.try_snapshot_with_reflow(
+        if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
+            return Ok(cached);
+        }
+        let snapshot = term.try_snapshot_with_reflow(
             id,
             seq,
             now_ms(),
             scrollback_lines.map(|n| n as usize),
             target_cols.map(|c| c as usize),
-        )
+        )?;
+        self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
+        Ok(snapshot)
+    }
+
+    /// Atomically capture terminal state and establish the replay/live cut.
+    pub fn snapshot_and_subscribe(
+        &self,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+    ) -> Result<(Snapshot, Subscription), TerminalStateError> {
+        let id = self.id();
+        let term = self.terminal.lock().expect("terminal poisoned");
+        let seq = self.seq.load(Ordering::SeqCst);
+        let snapshot = if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
+            cached
+        } else {
+            let snapshot = term.try_snapshot_with_reflow(
+                id,
+                seq,
+                now_ms(),
+                scrollback_lines.map(|n| n as usize),
+                target_cols.map(|c| c as usize),
+            )?;
+            self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
+            snapshot
+        };
+        let subscription = self.bus.subscribe(Some(seq));
+        Ok((snapshot, subscription))
+    }
+
+    fn cached_snapshot(
+        &self,
+        seq: u64,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+    ) -> Option<Snapshot> {
+        self.snapshot_cache
+            .lock()
+            .expect("snapshot cache poisoned")
+            .as_ref()
+            .filter(|cached| cached.seq == seq
+                && cached.scrollback_lines == scrollback_lines
+                && cached.target_cols == target_cols)
+            .map(|cached| cached.snapshot.clone())
+    }
+
+    fn cache_snapshot(
+        &self,
+        seq: u64,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+        snapshot: &Snapshot,
+    ) {
+        *self.snapshot_cache.lock().expect("snapshot cache poisoned") = Some(CachedSnapshot {
+            seq,
+            scrollback_lines,
+            target_cols,
+            snapshot: snapshot.clone(),
+        });
     }
 
     /// Block (up to `timeout`) until the reaper marks this session not-alive.
@@ -512,6 +592,7 @@ fn resize_terminal_pty_and_state<P, T>(
     cols: u16,
     rows: u16,
     events: &EventSender,
+    invalidate_snapshot_cache: impl FnOnce(),
 ) -> Result<(), ResizeError>
 where
     P: PtyResize + ?Sized,
@@ -530,6 +611,7 @@ where
             }
             return Err(ResizeError::Pty(pty));
         }
+        invalidate_snapshot_cache();
     }
 
     state.cols = cols;
@@ -580,14 +662,17 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                 // reflects only N-1 chunks (or vice versa). The new seq
                 // (post-bump) is the chunk's own seq — i.e. snapshot.seq
                 // and OutputChunk.seq use the same monotonic numbering.
-                let new_seq = {
+                {
                     let mut term = terminal.lock().expect("terminal poisoned");
-                    match term.try_feed_chunk(&data) {
+                    let new_seq = match term.try_feed_chunk(&data) {
                         Ok(()) => seq.fetch_add(1, Ordering::SeqCst) + 1,
                         Err(error) => break Err(io::Error::other(error)),
-                    }
-                };
-                bus.publish(OutputChunk { seq: new_seq, data });
+                    };
+                    // Publish before releasing the terminal lock. Atomic
+                    // snapshot+subscribe takes the same terminal→bus order,
+                    // so a chunk cannot be included in both snapshot and live.
+                    bus.publish(OutputChunk { seq: new_seq, data });
+                }
             }
             Err(error) => break Err(error),
         }
@@ -603,6 +688,7 @@ fn mark_pty_read_failed(
     session_id: Uuid,
     error: &io::Error,
     events: &EventSender,
+    final_seq: u64,
 ) -> bool {
     let transitioned = {
         let mut state = inner.state.lock().expect("session state poisoned");
@@ -620,6 +706,7 @@ fn mark_pty_read_failed(
             session_id,
             exit_code: None,
             signal: None,
+            final_seq: Some(final_seq.to_string()),
         });
     }
     transitioned
@@ -645,7 +732,7 @@ where
             ));
         }
     }
-    thread::Builder::new().name(name).spawn(f)
+    thread::Builder::new().name(name).stack_size(512 * 1024).spawn(f)
 }
 
 #[cfg(test)]
@@ -698,10 +785,20 @@ fn take_cleanup_observation_for_test() -> (Option<u32>, Option<u32>) {
 fn reap(
     mut child: Box<dyn Child + Send + Sync>,
     inner: Arc<Inner>,
+    output_bus: Arc<OutputBus>,
+    seq: Arc<AtomicU64>,
     session_id: Uuid,
     events: EventSender,
 ) {
     let exit = child.wait();
+    if !output_bus.wait_closed(EXIT_DRAIN_BARRIER_TIMEOUT) {
+        tracing::warn!(
+            %session_id,
+            "PTY output drainer did not close before exit barrier timeout; closing output bus"
+        );
+        output_bus.close();
+    }
+    let final_seq = seq.load(Ordering::SeqCst);
     let (exit_code, transitioned) = {
         let mut st = inner.state.lock().expect("session state poisoned");
         let transitioned = st.alive;
@@ -718,6 +815,7 @@ fn reap(
             session_id,
             exit_code,
             signal: None,
+            final_seq: Some(final_seq.to_string()),
         });
     }
 }
@@ -790,7 +888,7 @@ mod tests {
         let terminal = Arc::new(Mutex::new(TerminalFeedFailure));
         let seq = Arc::new(AtomicU64::new(0));
         let bus = OutputBus::new(4, 4);
-        let mut receiver = bus.subscribe(None).expect("bus open").receiver;
+        let mut receiver = bus.subscribe(None).receiver;
         let waiter_bus = Arc::clone(&bus);
         let waiter = thread::spawn(move || waiter_bus.wait_closed(Duration::from_millis(200)));
 
@@ -860,8 +958,8 @@ mod tests {
         let (events, mut receiver) = broadcast::channel(4);
         let error = io::Error::new(io::ErrorKind::BrokenPipe, "forced PTY read failure");
 
-        assert!(mark_pty_read_failed(&inner, id, &error, &events));
-        assert!(!mark_pty_read_failed(&inner, id, &error, &events));
+        assert!(mark_pty_read_failed(&inner, id, &error, &events, 7));
+        assert!(!mark_pty_read_failed(&inner, id, &error, &events, 7));
 
         let state = inner.state.lock().expect("session state poisoned");
         assert!(!state.alive);
@@ -876,7 +974,8 @@ mod tests {
                 session_id,
                 exit_code: None,
                 signal: None,
-            }) if session_id == id
+                final_seq: Some(final_seq),
+            }) if session_id == id && final_seq == "7"
         ));
         assert!(
             receiver.try_recv().is_err(),
@@ -1013,6 +1112,20 @@ mod tests {
                 .map(line_text)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn repeated_snapshot_key_reuses_sequence_cache() {
+        let sess = spawn_session(opts(vec!["printf", "cached"])).expect("spawn");
+        assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
+        let first = sess.snapshot_terminal(Some(10), Some(80)).expect("snapshot");
+        let second = sess.snapshot_terminal(Some(10), Some(80)).expect("cached snapshot");
+        assert_eq!(first, second);
+        let cache = sess.snapshot_cache.lock().expect("snapshot cache poisoned");
+        let cached = cache.as_ref().expect("snapshot should be cached");
+        assert_eq!(cached.seq, first.seq);
+        assert_eq!(cached.scrollback_lines, Some(10));
+        assert_eq!(cached.target_cols, Some(80));
     }
 
     #[test]
@@ -1161,7 +1274,7 @@ mod tests {
         let terminal = Mutex::new(terminal);
 
         let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
                 .expect_err("terminal resize failure must abort transaction");
 
         assert!(matches!(error, ResizeError::Terminal(_)));
@@ -1186,7 +1299,7 @@ mod tests {
         let terminal = Mutex::new(RecordingTerminalResize::new(80, 24));
 
         let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
                 .expect_err("PTY resize failure must abort transaction");
 
         assert!(matches!(error, ResizeError::Pty(_)));
@@ -1214,7 +1327,7 @@ mod tests {
         let terminal = Mutex::new(terminal);
 
         let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events)
+            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
                 .expect_err("rollback failure must be represented");
 
         assert!(matches!(error, ResizeError::PtyWithTerminalRollback { .. }));
@@ -1365,8 +1478,7 @@ mod tests {
         // after completing its prefill paint.
         let sub = sess
             .output_bus()
-            .subscribe(Some(prefill_seq))
-            .expect("bus must still be open");
+            .subscribe(Some(prefill_seq));
 
         // Every replayed chunk must have seq > prefill_seq (the gate works).
         for chunk in &sub.replay {

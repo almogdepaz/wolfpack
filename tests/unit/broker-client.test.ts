@@ -575,6 +575,76 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(captured!.since_seq).toBe(1234);
   });
 
+  test("atomic snapshot subscription buffers live output until the renderer attaches", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (req, sock) => {
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "ok",
+          payload: { kind: "snapshot_subscribe", snapshot: { seq: 5 }, current_seq: 5, replay_truncated: false },
+        },
+      });
+      server.send(sock, {
+        kind: FRAME_KIND_OUTPUT_BINARY,
+        value: { sessionId: SAMPLE_UUID, seq: 6n, data: new Uint8Array([6]) },
+      });
+    };
+
+    await client.snapshotSubscribe(SAMPLE_UUID);
+    const received: bigint[] = [];
+    client.subscribeOutput(SAMPLE_UUID, (frame) => received.push(frame.seq));
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(6n);
+    expect(received).toEqual([6n]);
+  });
+
+  test("stale atomic snapshot lease cannot cancel its replacement", async () => {
+    const { server, client } = await bootClientToServer();
+    const methods: string[] = [];
+    server.onRequest = (req, sock) => {
+      methods.push(req.method);
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "ok",
+          payload: { kind: req.method, snapshot: { seq: 5 }, current_seq: 5 },
+        },
+      });
+    };
+
+    const stale = await client.snapshotSubscribe(SAMPLE_UUID);
+    const replacement = await client.snapshotSubscribe(SAMPLE_UUID);
+    await stale.cancel();
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe"]);
+
+    await replacement.cancel();
+    await replacement.cancel();
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe", "unsubscribe"]);
+  });
+
+  test("unknown snapshot_subscribe leaves no active state for legacy fallback", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (req, sock) => {
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "error",
+          error: { code: "unknown_method", message: "unknown method: snapshot_subscribe" },
+        },
+      });
+    };
+
+    await expect(client.snapshotSubscribe(SAMPLE_UUID)).rejects.toThrow("unknown_method");
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+  });
+
   test("subscription_dropped resumes after the last output delivered before the barrier", async () => {
     const { server, client } = await bootClientToServer();
     const sinceSeqs: Array<number | undefined> = [];
@@ -600,6 +670,38 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
 
     await waitFor(() => sinceSeqs.length === 2);
     expect(sinceSeqs).toEqual([undefined, 42]);
+  });
+
+  test("session exit waits for its final output sequence barrier", async () => {
+    const observed: string[] = [];
+    const { server, client } = await bootClientToServer({
+      onEvent: (event) => observed.push(event.event),
+    });
+    server.onRequest = (req, sock) => server.send(sock, {
+      kind: FRAME_KIND_CONTROL_RESPONSE,
+      value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true, current_seq: 0 } },
+    });
+    await client.subscribe(SAMPLE_UUID);
+    client.subscribeOutput(SAMPLE_UUID, (frame) => observed.push(`output:${frame.seq}`));
+
+    // Control/event traffic may overtake the output queue on the broker writer.
+    server.broadcast({
+      kind: FRAME_KIND_EVENT,
+      value: { event: "session_exited", session_id: SAMPLE_UUID, final_seq: "2", exit_code: 0 },
+    });
+    server.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 1n, data: new Uint8Array([1]) },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(observed).toEqual(["output:1"]);
+
+    server.broadcast({
+      kind: FRAME_KIND_OUTPUT_BINARY,
+      value: { sessionId: SAMPLE_UUID, seq: 2n, data: new Uint8Array([2]) },
+    });
+    await waitFor(() => observed.includes("session_exited"));
+    expect(observed).toEqual(["output:1", "output:2", "session_exited"]);
   });
 
   test("subscribe clamps since_seq above Number.MAX_SAFE_INTEGER", async () => {

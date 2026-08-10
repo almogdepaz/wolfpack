@@ -497,11 +497,13 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid ux");
 
   const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  const sockets = await routeHydratedPty(page);
   await page.route("**/api/sessions", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         sessions: [
+          { name: "solo", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "solo-id", wolfpackSessionName: "solo" } },
           { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
           { name: "child", triage: "idle", runtimeState: { state: "idle" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
         ],
@@ -510,6 +512,12 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   });
   await page.goto(srv.baseUrl);
   await page.evaluate(() => {
+    (window as unknown as WolfpackTestWindow).openSession("solo", "");
+  });
+  await expect.poll(() => sockets.has("solo")).toBe(true);
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await page.evaluate(() => {
+    (window as unknown as Window & { backToSessions(): void }).backToSessions();
     (window as unknown as Window & { createIsolatedGhostty?: unknown }).createIsolatedGhostty = undefined;
   });
 
@@ -755,10 +763,16 @@ test("desktop new-session pickers use arrow navigation only after it starts", as
   const agentCards = page.locator("#agent-list .card");
   await expect(agentCards).toHaveText(["shell", "pi"]);
   await expect(page.locator("#agent-list .card.keyboard-selected")).toHaveCount(0);
+  await page.getByLabel("initial task (optional)").fill("review the current branch");
   await page.keyboard.press("ArrowUp");
   await expect(agentCards.nth(1)).toHaveClass(/keyboard-selected/);
   await page.keyboard.press("Enter");
-  await expect.poll(() => createRequests).toEqual([{ project: "alpha", cmd: "pi", sessionName: "alpha-session" }]);
+  await expect.poll(() => createRequests).toEqual([{
+    project: "alpha",
+    cmd: "pi",
+    sessionName: "alpha-session",
+    initialPrompt: "review the current branch",
+  }]);
 });
 
 test("desktop selects a filtered project instead of creating its typed prefix", async ({ page }, testInfo) => {
@@ -874,11 +888,14 @@ test("create failure returns to the agent form with entered values and an inline
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
   await page.getByRole("button", { name: "Open project wolfpack" }).click();
   const sessionName = page.locator("#session-name-input");
+  const initialTask = page.getByLabel("initial task (optional)");
   await sessionName.fill("my-session");
+  await initialTask.fill("inspect the failed build");
   await page.getByRole("button", { name: "Start shell" }).click();
 
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
   await expect(sessionName).toHaveValue("my-session");
+  await expect(initialTask).toHaveValue("inspect the failed build");
   await expect(page.locator("#agent-create-error")).toContainText("broker unavailable");
   await expect(sessionName).toBeFocused();
 });

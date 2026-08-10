@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -362,6 +362,27 @@ describe("agent runtime state persistence and acknowledgement", () => {
   test("migrates absent persistence file to empty schema v1 store", () => {
     const store = new AgentRuntimeStateStore(path);
     expect(store.snapshot()).toEqual({ schemaVersion: 1, sessions: {} });
+  });
+
+  test("batches observation reductions into one explicit persistence flush", () => {
+    const store = new AgentRuntimeStateStore(path);
+    for (const sessionKey of ["s1", "s2"]) {
+      store.reduce({
+        sessionKey,
+        broker: { state: "alive", observedAt: OBSERVED_AT },
+        sources: [],
+        fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+        currentRun: { runId: sessionKey, runOrder: 1 },
+      }, { persist: false });
+    }
+    store.prune(new Set(["s1", "s2"]), { persist: false });
+    expect(existsSync(path)).toBe(false);
+
+    store.flush();
+
+    expect(existsSync(path)).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(Object.keys(new AgentRuntimeStateStore(path).snapshot().sessions).sort()).toEqual(["s1", "s2"]);
   });
 });
 

@@ -5,8 +5,8 @@ import {
   applyTermToXterm, initSettings, haptic, requestNotifications,
   QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
   state, setState,
-  SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL,
-  DESKTOP_TERMINAL_SCROLLBACK, GRID_TERMINAL_SCROLLBACK,
+  SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL, SNAPSHOT_TTL_MS,
+  DESKTOP_TERMINAL_SCROLLBACK,
 } from "./app-state";
 
 import {
@@ -23,9 +23,12 @@ import {
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
 
+import { bindDelegatedAppActions } from "./app-action-controller";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
+import { authenticatedFetchWithTimeout, getBrowserAuthToken } from "./browser-auth";
+import { keyboardOcclusionHeight } from "./viewport-geometry";
 import {
   OrderedResizeTracker,
   shouldSendResizeRequest,
@@ -51,6 +54,7 @@ import {
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
+import { createReconnector } from "./reconnector";
 import { resolveHydrationDebugTiming } from "../src/terminal-hydration-debug";
 import {
   resolveGhosttyPrewarmDebugPoolSize,
@@ -202,36 +206,67 @@ const ghosttyPrewarmPool = new GhosttyPrewarmPool<unknown>({
   },
 });
 
+let ghosttyLoadPromise: Promise<void> | null = null;
+let ghosttyRendererReady = false;
+
+function ensureGhosttyLoaded(): Promise<void> {
+  if (typeof window.Terminal === "function" && typeof window.FitAddon === "function") {
+    return (window.ghosttyReady ?? Promise.resolve()).then(() => {
+      ghosttyRendererReady = true;
+    });
+  }
+  if (ghosttyLoadPromise) return ghosttyLoadPromise;
+  ghosttyLoadPromise = new Promise<void>((resolve, reject) => {
+    const source = document.querySelector<HTMLMetaElement>('meta[name="wolfpack-ghostty-src"]')?.content;
+    if (!source) return reject(new Error("Ghostty asset URL is unavailable"));
+    const script = document.createElement("script");
+    script.src = source;
+    script.async = true;
+    script.onload = () => {
+      const ready = window.ghosttyReady ?? Promise.resolve();
+      ready.then(() => {
+        ghosttyRendererReady = true;
+        resolve();
+      }, reject);
+    };
+    script.onerror = () => reject(new Error("Failed to load terminal renderer"));
+    document.head.appendChild(script);
+  }).catch((error: unknown) => {
+    ghosttyLoadPromise = null;
+    throw error;
+  });
+  return ghosttyLoadPromise;
+}
+
 function canUseWasmTerminal(): boolean {
   return !window.wasmFailed;
 }
 
+function ensureGridIsolation(): Promise<boolean> {
+  return ensureGhosttyLoaded().then(() => typeof window.createIsolatedGhostty === "function");
+}
+
 function scheduleGhosttyPrewarm(): void {
-  if (typeof window.createIsolatedGhostty !== "function") return;
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  if (connection?.saveData || (deviceMemory !== undefined && deviceMemory < 4)) return;
   const timing = resolveGhosttyPrewarmDebugTiming({
     debugEnabled: wfTraceEnabled,
     storage: safeLocalStorage(),
     defaults: { delayMs: GHOSTTY_PREWARM_DELAY_MS },
   });
-  recordGhosttyPrewarmEvent("schedule", {
-    delayMs: timing.delayMs,
-    poolSize: GHOSTTY_PREWARM_POOL_SIZE,
-  });
-  window.setTimeout(() => {
-    recordGhosttyPrewarmEvent("ghostty_ready.wait");
-    void window.ghosttyReady
-      ?.then(() => {
-        recordGhosttyPrewarmEvent("ghostty_ready.done");
-        for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) {
-          const task = ghosttyPrewarmPool.prewarm();
-          recordGhosttyPrewarmEvent(task ? "prewarm.start" : "prewarm.skip", { slot: i + 1 });
-        }
-      })
-      .catch((error) => {
-        recordGhosttyPrewarmEvent("ghostty_ready.error");
-        console.debug("[wf] ghostty prewarm skipped:", error);
-      });
-  }, timing.delayMs);
+  const warm = (): void => {
+    recordGhosttyPrewarmEvent("schedule", { delayMs: timing.delayMs, poolSize: GHOSTTY_PREWARM_POOL_SIZE });
+    void ensureGhosttyLoaded().then(() => {
+      for (let i = 0; i < GHOSTTY_PREWARM_POOL_SIZE; i++) {
+        const task = ghosttyPrewarmPool.prewarm();
+        recordGhosttyPrewarmEvent(task ? "prewarm.start" : "prewarm.skip", { slot: i + 1 });
+      }
+    }).catch((error: unknown) => console.debug("[wf] ghostty prewarm skipped:", error));
+  };
+  const idle = window.requestIdleCallback;
+  if (idle) window.setTimeout(() => idle(warm, { timeout: 2_000 }), timing.delayMs);
+  else window.setTimeout(warm, timing.delayMs);
 }
 
 function scheduleGhosttyPrewarmRefillForConsumedInstance(): void {
@@ -338,7 +373,7 @@ function renderCmdPalette() {
     return;
   }
   el.innerHTML = state.quickCmds.map((c, i) =>
-    `<button class="cmd-chip" onclick="sendQuickCmd(${i})">${esc(c.label)}</button>`
+    `<button type="button" class="cmd-chip" data-action="quick-send" data-index="${i}">${esc(c.label)}</button>`
   ).join("");
   el.classList.toggle("visible", state.kbAccessoryOpen);
 }
@@ -360,10 +395,10 @@ function renderQuickCmdSettings() {
     <div class="qc-item">
       <span class="qc-label">${esc(c.label)}</span>
       <span class="qc-cmd">${esc(c.cmd)}</span>
-      ${i > 0 ? `<button onclick="moveQuickCmd(${i},-1)" class="qc-btn move" title="Move up">&#9650;</button>` : '<span class="qc-spacer"></span>'}
-      ${i < state.quickCmds.length - 1 ? `<button onclick="moveQuickCmd(${i},1)" class="qc-btn move" title="Move down">&#9660;</button>` : '<span class="qc-spacer"></span>'}
-      <button onclick="editQuickCmd(${i})" class="qc-btn edit" title="Edit">&#9998;</button>
-      <button onclick="deleteQuickCmd(${i})" class="qc-btn delete" title="Delete">&#10005;</button>
+      ${i > 0 ? `<button type="button" data-action="quick-move" data-index="${i}" data-offset="-1" class="qc-btn move" title="Move up">&#9650;</button>` : '<span class="qc-spacer"></span>'}
+      ${i < state.quickCmds.length - 1 ? `<button type="button" data-action="quick-move" data-index="${i}" data-offset="1" class="qc-btn move" title="Move down">&#9660;</button>` : '<span class="qc-spacer"></span>'}
+      <button type="button" data-action="quick-edit" data-index="${i}" class="qc-btn edit" title="Edit">&#9998;</button>
+      <button type="button" data-action="quick-delete" data-index="${i}" class="qc-btn delete" title="Delete">&#10005;</button>
     </div>
   `).join("");
 }
@@ -426,6 +461,8 @@ async function showGitStatus(): Promise<void> {
   const overlay = document.getElementById("git-status-overlay");
   overlay.innerHTML = '<pre>loading...</pre>';
   overlay.classList.add("visible");
+  overlay.setAttribute("aria-hidden", "false");
+  overlay.focus({ preventScroll: true });
   try {
     const data = await api<{ readonly status?: string }>("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
     overlay.innerHTML = `<div><pre>${esc(data.status || "(clean)")}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
@@ -435,18 +472,17 @@ async function showGitStatus(): Promise<void> {
 }
 
 function dismissGitStatus() {
-  document.getElementById("git-status-overlay").classList.remove("visible");
+  const overlay = document.getElementById("git-status-overlay");
+  overlay.classList.remove("visible");
+  overlay.setAttribute("aria-hidden", "true");
 }
 
 async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && !origin) throw new Error("selected peer is not ready");
-  const headers: Record<string, string> = {};
-  const jwt = localStorage.getItem("wpJwt");
-  if (jwt) headers.Authorization = "Bearer " + jwt;
-  const response = await fetch(origin
+  const response = await authenticatedFetchWithTimeout(origin
     ? new URL("/api/copy-text?session=" + encodeURIComponent(session), origin)
-    : "/api/copy-text?session=" + encodeURIComponent(session), { headers });
+    : "/api/copy-text?session=" + encodeURIComponent(session));
   if (!response.ok) throw new Error("HTTP " + response.status);
   return response.text();
 }
@@ -457,6 +493,8 @@ async function copySessionToClipboard(): Promise<void> {
   const overlay = document.getElementById("git-status-overlay");
   overlay.innerHTML = '<pre>copying...</pre>';
   overlay.classList.add("visible");
+  overlay.setAttribute("aria-hidden", "false");
+  overlay.focus({ preventScroll: true });
   try {
     const text = await fetchSessionText(state.currentSession, state.currentMachine || "");
     await navigator.clipboard.writeText(text);
@@ -506,96 +544,6 @@ function recordRecent(machine: string | null | undefined, name: string): void {
   if (state.sessionRecents.length > MAX_RECENTS) state.sessionRecents.length = MAX_RECENTS;
   saveRecents();
 }
-const RECONNECT_BUDGET_MS = 2 * 60 * 1000;
-const RECONNECT_BASE_DELAY_MS = 500;
-const RECONNECT_MAX_DELAY_MS = 5000;
-
-/**
- * Shared reconnect backoff engine used by both desktop PTY and mobile WS paths.
- * @param {object} opts
- * @param {() => boolean} [opts.shouldReconnect] - guard; returning false skips scheduling
- * @param {() => void} [opts.onReconnecting] - called when a reconnect attempt is scheduled
- * @param {() => void} [opts.onExhausted] - called when the retry budget is spent
- * @returns {{ schedule, cancel, reset, block, connected, isBlocked: boolean, pending: boolean }}
- */
-interface ReconnectorOpts {
-  shouldReconnect?: () => boolean;
-  onReconnecting?: () => void;
-  onExhausted?: () => void;
-}
-
-interface Reconnector {
-  schedule(connectFn: () => void): void;
-  cancel(): void;
-  reset(): void;
-  block(): void;
-  connected(): void;
-  readonly isBlocked: boolean;
-  readonly pending: boolean;
-}
-
-function createReconnector(opts: ReconnectorOpts = {}): Reconnector {
-  let _timer: ReturnType<typeof setTimeout> | null = null;
-  let _delay = RECONNECT_BASE_DELAY_MS;
-  let _startedAt = 0;
-  let _blocked = false;
-
-  function schedule(connectFn: () => void): void {
-    if (_timer) return;
-    if (_blocked) return;
-    if (opts.shouldReconnect && !opts.shouldReconnect()) return;
-    const now = Date.now();
-    if (!_startedAt) _startedAt = now;
-    const elapsed = now - _startedAt;
-    const remaining = RECONNECT_BUDGET_MS - elapsed;
-    if (remaining <= 0) {
-      _blocked = true;
-      if (opts.onExhausted) opts.onExhausted();
-      return;
-    }
-    if (opts.onReconnecting) opts.onReconnecting();
-    const jitterMs = Math.floor(Math.random() * 200);
-    const delayMs = Math.min(_delay + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
-    _timer = setTimeout(() => {
-      _timer = null;
-      if (opts.shouldReconnect && !opts.shouldReconnect()) return;
-      connectFn();
-    }, delayMs);
-    _delay = Math.min(Math.floor(_delay * 1.8), RECONNECT_MAX_DELAY_MS);
-  }
-
-  function cancel() {
-    if (_timer) { clearTimeout(_timer); _timer = null; }
-  }
-
-  function reset() {
-    _blocked = false;
-    _startedAt = 0;
-    _delay = RECONNECT_BASE_DELAY_MS;
-  }
-
-  function block() { _blocked = true; }
-
-  /** Call on successful connect. Returns true if this was a reconnect (budget was active). */
-  function connected() {
-    const wasReconnecting = _startedAt > 0;
-    _delay = RECONNECT_BASE_DELAY_MS;
-    _startedAt = 0;
-    _blocked = false;
-    return wasReconnecting;
-  }
-
-  return {
-    schedule,
-    cancel,
-    reset,
-    block,
-    connected,
-    get isBlocked() { return _blocked; },
-    get pending() { return !!_timer; },
-  };
-}
-
 /**
  * Creates a configured ghostty-web Terminal with addons, copy/paste, and stdin wired up.
  * @param {object} opts
@@ -668,6 +616,7 @@ function installTerminalTextareaInputBridge(
 }
 
 async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true, disableStdin = false, sendInput, sendMessage, canAcceptInput, canSendResize, forwardResizeEvents = true, onWheelScroll = null, alwaysForwardWheel = false, trace = null }) {
+  await ensureGhosttyLoaded();
   const shouldSendResize = canSendResize || canAcceptInput;
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const termFontFamily = wpSettings.termFont === "alt"
@@ -946,7 +895,7 @@ interface PtySocketClient {
   sendResize(cols: number, rows: number): Promise<OrderedResizeSettlement>;
   readonly supportsOrderedResize: boolean;
   sendTakeControl(): void;
-  send(data: string | Blob | BufferSource): void;
+  send(data: string | Blob | BufferSource): boolean;
   close(): void;
   resetRetry(): void;
   readonly ws: WebSocket | null;
@@ -962,6 +911,8 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     onExhausted: opts.onReconnectExhausted,
   });
   let hasConnected = false;
+  let connectGeneration = 0;
+  let connectPending = false;
   let consumeReset = !!opts.resetPty;
   let _initialPrefillMode = opts.prefillMode || TERMINAL_PREFILL_MODE.FULL;
   let _attachAckTimer = null;
@@ -991,20 +942,22 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     | { readonly kind: "available"; readonly url: string }
     | { readonly kind: "unavailable" };
 
-  function buildUrl(): PtySocketRoute {
-    const session = encodeURIComponent(opts.session);
-    let baseUrl: string;
-    if (opts.machine) {
-      const origin = resolveReadyMachineOrigin(opts.machine);
-      if (!origin) return { kind: "unavailable" };
-      baseUrl = "wss://" + new URL(origin).host + "/ws/pty?session=" + session;
-    } else {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      baseUrl = proto + "//" + location.host + "/ws/pty?session=" + session;
-    }
-    const resetSuffix = consumeReset ? "&reset=1" : "";
+  function buildUrl(ticket: string | undefined): PtySocketRoute {
+    const origin = opts.machine ? resolveReadyMachineOrigin(opts.machine) : location.origin;
+    if (!origin) return { kind: "unavailable" };
+    const target = new URL("/ws/pty", origin);
+    target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+    target.searchParams.set("session", opts.session);
+    if (ticket) target.searchParams.set("ticket", ticket);
+    if (consumeReset) target.searchParams.set("reset", "1");
     consumeReset = false;
-    return { kind: "available", url: baseUrl + resetSuffix };
+    return { kind: "available", url: target.href };
+  }
+
+  async function requestWebSocketTicket(): Promise<string> {
+    const response = await api<{ readonly ticket?: string }>("/auth/ws-ticket", { method: "POST" }, opts.machine);
+    if (!response.ticket) throw new Error("server did not issue a WebSocket ticket");
+    return response.ticket;
   }
 
   /** Send one attach handshake to bootstrap PTY spawn on fresh WS open. */
@@ -1278,6 +1231,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function handlePtyReady(): void {
     __wfTraceEvent(_trace, "pty_ready");
+    _rc.connected();
     if (opts.onPtyReady) opts.onPtyReady();
   }
 
@@ -1407,49 +1361,60 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   function connect(): void {
     _rc.cancel();
     if (ws && ws.readyState <= WebSocket.OPEN) return;
+    if (connectPending) return;
 
-    const route = buildUrl();
-    if (route.kind === "unavailable") {
-      _rc.block();
-      if (opts.onRouteUnavailable) opts.onRouteUnavailable();
-      return;
-    }
-    const sock = new WebSocket(route.url);
-    sock.binaryType = "arraybuffer";
-    ws = sock;
-
-    sock.onopen = () => {
-      if (ws !== sock) return;
-      console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
-      const wasReconnect = hasConnected;
-      hasConnected = true;
-      _rc.connected();
-      sendAttachHandshake();
-      // attach trace was created inside sendAttachHandshake above
-      __wfTraceEvent(_trace, "ws.open", { wasReconnect });
-      if (opts.onOpen) opts.onOpen(wasReconnect);
-    };
-
-    sock.onmessage = (event) => {
-      if (ws !== sock) return;
-      if (typeof event.data === "string") {
-        handleTextFrame(event.data);
+    const generation = ++connectGeneration;
+    connectPending = true;
+    const origin = opts.machine ? resolveReadyMachineOrigin(opts.machine) : location.origin;
+    void (origin && getBrowserAuthToken(origin) ? requestWebSocketTicket() : Promise.resolve(undefined)).then((ticket) => {
+      if (generation !== connectGeneration) return;
+      const route = buildUrl(ticket);
+      if (route.kind === "unavailable") {
+        _rc.block();
+        if (opts.onRouteUnavailable) opts.onRouteUnavailable();
         return;
       }
-      handleBinaryFrame(event.data as ArrayBuffer);
-    };
+      const sock = new WebSocket(route.url);
+      sock.binaryType = "arraybuffer";
+      ws = sock;
 
-    sock.onclose = (ev) => {
-      // Ignore stale close events from sockets replaced by reconnect().
-      if (ws !== sock) return;
-      __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
-      __wfTraceRafStop(_trace);
-      ws = null;
-      resetAttachLifecycle();
-      if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
-    };
+      sock.onopen = () => {
+        if (ws !== sock) return;
+        console.log("[pty-ws]", opts.session, "ws.onopen, readyState=", sock.readyState);
+        const wasReconnect = hasConnected;
+        hasConnected = true;
+        sendAttachHandshake();
+        __wfTraceEvent(_trace, "ws.open", { wasReconnect });
+        if (opts.onOpen) opts.onOpen(wasReconnect);
+      };
 
-    sock.onerror = () => {};
+      sock.onmessage = (event) => {
+        if (ws !== sock) return;
+        if (typeof event.data === "string") {
+          handleTextFrame(event.data);
+          return;
+        }
+        handleBinaryFrame(event.data as ArrayBuffer);
+      };
+
+      sock.onclose = (ev) => {
+        if (ws !== sock) return;
+        __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
+        __wfTraceRafStop(_trace);
+        ws = null;
+        resetAttachLifecycle();
+        if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
+      };
+
+      sock.onerror = () => {};
+    }).catch((error: unknown) => {
+      if (generation === connectGeneration) {
+        console.warn("[pty-ws] ticket request failed:", error);
+        scheduleReconnect();
+      }
+    }).finally(() => {
+      if (generation === connectGeneration) connectPending = false;
+    });
   }
 
   function scheduleReconnect() {
@@ -1468,20 +1433,25 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }
   }
 
-  function send(data: string | Blob | BufferSource): void {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (typeof data === "string" || data instanceof Blob) {
-      ws.send(data);
-      return;
-    }
+  function send(data: string | Blob | BufferSource): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    const maxBufferedBytes = 256 * 1024;
+    const sendBounded = (frame: string | Blob | ArrayBuffer, byteLength: number): boolean => {
+      if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + byteLength > maxBufferedBytes) return false;
+      ws.send(frame);
+      return true;
+    };
+    if (typeof data === "string") return sendBounded(data, new TextEncoder().encode(data).byteLength);
+    if (data instanceof Blob) return sendBounded(data, data.size);
     const bytes = data instanceof ArrayBuffer
       ? new Uint8Array(data)
       : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     for (const frame of WP.splitTerminalInputBytes(bytes)) {
       const copy = new ArrayBuffer(frame.byteLength);
       new Uint8Array(copy).set(frame);
-      ws.send(copy);
+      if (!sendBounded(copy, copy.byteLength)) return false;
     }
+    return true;
   }
 
   function retireSocket(socket: WebSocket): void {
@@ -1498,6 +1468,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   }
 
   function close() {
+    connectGeneration++;
     _rc.cancel();
     _rc.block();
     resetAttachLifecycle();
@@ -1512,6 +1483,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
   // tabs kill TCP silently while readyState still reports OPEN — connect() guards
   // against this and bails. reconnect() bypasses that guard. See PR #89 review / df4180c.
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
+    connectGeneration++;
     _rc.cancel();
     resetAttachLifecycle();
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
@@ -1602,7 +1574,7 @@ interface PtyTerminalController {
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
   syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
-  send(data: string | Blob | BufferSource): void;
+  send(data: string | Blob | BufferSource): boolean;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
   readonly term: GhosttyTerminal | null;
@@ -2231,13 +2203,13 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
     forceRepaint,
     syncLayout,
     send: (data) => {
-      if (_ptyClient && _ptyClient.isOpen) {
-        if (!_firstInputAccepted) {
-          _firstInputAccepted = true;
-          __wfTraceEvent(__wfTraceGet(opts.session, opts.machine || ""), "first.input.accepted", { source: "controller.send" });
-        }
-        _ptyClient.send(data);
+      if (!_ptyClient || !_ptyClient.isOpen) return false;
+      const accepted = _ptyClient.send(data);
+      if (accepted && !_firstInputAccepted) {
+        _firstInputAccepted = true;
+        __wfTraceEvent(__wfTraceGet(opts.session, opts.machine || ""), "first.input.accepted", { source: "controller.send" });
       }
+      return accepted;
     },
     resetRetry: () => { if (_ptyClient) _ptyClient.resetRetry(); },
     reconnect: (reconnectOpts?: { takeControl?: boolean }) => { if (_ptyClient) _ptyClient.reconnect(reconnectOpts); },
@@ -2270,16 +2242,10 @@ function _sendTerminalInput(bytes) {
   // In grid mode, route to the focused grid cell's controller
   if (isGridActive()) {
     const gs = state.gridSessions[state.gridFocusIndex];
-    if (gs?.controller?.isConnected) {
-      gs.controller.send(bytes);
-      return true;
-    }
+    if (gs?.controller?.isConnected) return gs.controller.send(bytes);
     return false;
   }
-  if (state.terminalController?.isConnected) {
-    state.terminalController.send(bytes);
-    return true;
-  }
+  if (state.terminalController?.isConnected) return state.terminalController.send(bytes);
   return false;
 }
 
@@ -2318,6 +2284,9 @@ function setMobileGhosttyKeyboardOpen(open: boolean): boolean {
 function createConflictOverlay(message, buttonLabel, onClick) {
   const overlay = document.createElement("div");
   overlay.className = "viewer-conflict-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", message);
   overlay.innerHTML = '<div class="conflict-msg">' + esc(message) + '</div><button class="conflict-btn" type="button">' + esc(buttonLabel) + "</button>";
   overlay.querySelector(".conflict-btn").addEventListener("click", onClick);
   overlay.addEventListener("click", (e) => e.stopPropagation());
@@ -2370,6 +2339,11 @@ function snapshotEntries() {
     try {
       const snapshot = JSON.parse(localStorage.getItem(key));
       if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+      const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
+      if (typeof savedAt !== "number" || Date.now() - savedAt > SNAPSHOT_TTL_MS) {
+        localStorage.removeItem(key);
+        continue;
+      }
       entries.push({
         key,
         machine: snapshotMachineFromKey(key),
@@ -2387,15 +2361,16 @@ function enforceSnapshotCache() {
   snapshotKeysToEvict(snapshotEntries()).forEach(key => localStorage.removeItem(key));
 }
 function saveSnapshot(machine, session, text) {
-  if (!session || !text) return;
+  if (!wpSettings.recoveryCache || !session || !text) return;
   const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
   try {
-    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, lastUsedAt: Date.now() }));
+    const now = Date.now();
+    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, savedAt: now, lastUsedAt: now }));
     enforceSnapshotCache();
   } catch { /* quota/private-mode */ }
 }
 function loadSnapshot(machine, session) {
-  if (!session) return null;
+  if (!wpSettings.recoveryCache || !session) return null;
   const key = snapshotKey(machine, session);
   let snapshot;
   try {
@@ -2403,14 +2378,21 @@ function loadSnapshot(machine, session) {
     if (!raw) return null;
     snapshot = JSON.parse(raw);
     if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
+    const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
+    if (typeof savedAt !== "number" || Date.now() - savedAt > SNAPSHOT_TTL_MS) throw new Error("expired snapshot");
   } catch {
     localStorage.removeItem(key);
     return null;
   }
   try {
-    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, lastUsedAt: Date.now() }));
+    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, savedAt: snapshot.savedAt ?? snapshot.ts, lastUsedAt: Date.now() }));
   } catch { /* preserve a readable snapshot when localStorage is full */ }
   return snapshot.d;
+}
+function clearRecoverySnapshots(): void {
+  for (const entry of snapshotEntries()) localStorage.removeItem(entry.key);
+  const status = document.getElementById("recovery-cache-status");
+  if (status) status.textContent = "Cached terminal recovery output cleared.";
 }
 function cleanSnapshots() {
   enforceSnapshotCache();
@@ -2684,7 +2666,7 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
   const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
-  const res = await fetch(base, opts);
+  const res = await authenticatedFetchWithTimeout(base, opts);
   const body = await res.text();
   let data: unknown = {};
   if (body) {
@@ -2961,7 +2943,7 @@ function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSession
   const count = row.childSummary.total;
   const accessibleLabel = `${count} child ${count === 1 ? "agent" : "agents"}`;
   const visibleLabel = `${count} ${count === 1 ? "agent" : "agents"}`;
-  return `<button type="button" class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" onclick="toggleSidebarDelegationChildren('${escAttr(key)}', event)" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(accessibleLabel)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
+  return `<button type="button" class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" data-action="delegation-toggle" data-delegation-key="${escAttr(key)}" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(accessibleLabel)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
 }
 
 function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
@@ -3079,7 +3061,7 @@ function renderMachineGroupHtml(g, multiMachine) {
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
   const createDisabled = multiMachine && !g.online ? " disabled" : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${mUrlAttr}')"${createDisabled}>+</button></div></div>`;
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -3097,7 +3079,7 @@ function renderMachineGroupHtml(g, multiMachine) {
         const grouping = delegationCardAttributes(row);
         const ordering = sessionOrderCardHtml(row, machineKey);
         return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
-          <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes} onclick="openSession('${escAttr(s.name)}'${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})"></button>
+          <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
             <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
@@ -3105,13 +3087,13 @@ function renderMachineGroupHtml(g, multiMachine) {
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
           </div>
-          <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${mUrlAttr ? ", '" + mUrlAttr + "'" : ''})">&times;</button>
+          <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
         </div>`;
       }).join("");
     }
   } else if (multiMachine) {
     const failure = machineFailureLabel(g.failure || "unknown");
-    html += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect. <button type="button" class="machine-retry-btn" aria-label="Retry ${escAttr(g.machine.name)}" onclick="retryMachine('${mUrlAttr}', event)">Retry</button></div>`;
+    html += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect. <button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${mUrlAttr}" aria-label="Retry ${escAttr(g.machine.name)}">Retry</button></div>`;
   }
   html += `</div>`;
   return html;
@@ -3309,7 +3291,7 @@ function machineFailureLabel(category: MachineFailureCategory): string {
   return "Connection failed";
 }
 
-function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
+function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal: AbortSignal) {
   const isRemote = machineIdentity !== "";
   if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
     return Promise.resolve({
@@ -3319,7 +3301,10 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
     });
   }
   const timeoutMs = isRemote ? WP.peerHealthTimeoutMs(state.peerHealth, machineIdentity) : 0;
-  const options = isRemote ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
+  const signal = isRemote
+    ? AbortSignal.any([refreshSignal, AbortSignal.timeout(timeoutMs)])
+    : refreshSignal;
+  const options = { signal };
   return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     return {
@@ -3338,7 +3323,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad) {
   });
 }
 
-async function loadSessionsOnce() {
+async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const myEpoch = ++state.loadSessionsEpoch;
   const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
   const el = document.getElementById("session-list");
@@ -3347,7 +3332,7 @@ async function loadSessionsOnce() {
 
   // Single-machine: just fetch and render
   if (!multiMachine) {
-    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad);
+    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad, refreshSignal);
     if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
@@ -3398,7 +3383,7 @@ async function loadSessionsOnce() {
   renderVisibleGroups();
 
   const promises = allMachines.map((m, i) =>
-    fetchMachine(m.url, m.meta, isCurrentLoad).then(g => {
+    fetchMachine(m.url, m.meta, isCurrentLoad, refreshSignal).then(g => {
       if (!isCurrentLoad()) return; // stale call, discard
       groups[i] = g;
       renderVisibleGroups();
@@ -3438,20 +3423,29 @@ async function loadSessionsOnce() {
 }
 
 let sessionRefreshPromise: Promise<void> | null = null;
+let sessionRefreshAbort: AbortController | null = null;
 let forceSessionRefreshAfterCurrent = false;
 
 function loadSessions(forceAfterCurrent = false): Promise<void> {
   if (sessionRefreshPromise) {
-    if (forceAfterCurrent) forceSessionRefreshAfterCurrent = true;
+    if (forceAfterCurrent) {
+      forceSessionRefreshAfterCurrent = true;
+      // Invalidate immediately so stale catch/render continuations cannot update
+      // peer health or the dashboard while their requests are being aborted.
+      state.loadSessionsEpoch += 1;
+      sessionRefreshAbort?.abort(new DOMException("superseded", "AbortError"));
+    }
     return sessionRefreshPromise;
   }
   sessionRefreshPromise = (async () => {
     do {
       forceSessionRefreshAfterCurrent = false;
-      await loadSessionsOnce();
+      sessionRefreshAbort = new AbortController();
+      await loadSessionsOnce(sessionRefreshAbort.signal);
       renderSidebar();
     } while (forceSessionRefreshAfterCurrent);
   })().finally(() => {
+    sessionRefreshAbort = null;
     sessionRefreshPromise = null;
   });
   return sessionRefreshPromise;
@@ -3670,7 +3664,7 @@ function renderProjectNames(projects: readonly string[]): void {
   list.innerHTML = projects
     .map(
       (project) => `
-<button type="button" class="card" aria-label="Open project ${escAttr(project)}" onclick="selectProject('${escAttr(project)}')">
+<button type="button" class="card" data-action="select-project" data-project="${escAttr(project)}" aria-label="Open project ${escAttr(project)}">
   <div class="dot brand" title="project"></div>
   <div class="card-name">${esc(project)}</div>
 </button>
@@ -3752,9 +3746,11 @@ async function showAgentPicker() {
   const el = document.getElementById("agent-list");
   el.innerHTML = '<div class="empty">Loading...</div>';
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
+  const initialTaskInput = document.getElementById("initial-task-input") as HTMLTextAreaElement;
   const nameError = document.getElementById("session-name-error");
   const createError = document.getElementById("agent-create-error");
   nameInput.value = "";
+  initialTaskInput.value = "";
   createError.textContent = "";
   createError.classList.remove("visible");
   nameInput.classList.remove("invalid");
@@ -3771,7 +3767,7 @@ async function showAgentPicker() {
     const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
     const defaultCmd = data.effective?.agentCmd;
     const html = cmds.map(cmd => `
-      <button type="button" class="card" aria-label="Start ${escAttr(cmd)}" onclick="createSessionWithAgent('${escAttr(cmd)}')">
+      <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
         <div class="dot ${cmd === defaultCmd ? "brand" : "green"}" title="${cmd === defaultCmd ? "default" : "agent"}"></div>
         <div class="card-name">${esc(cmd)}</div>
       </button>
@@ -3856,14 +3852,12 @@ function renderAgentsList(data: SettingsResponse): void {
   list.innerHTML = cmds.map(c => {
     const isDefault = c.cmd === defaultCmd && c.enabled;
     return `<div class="agent-row${c.enabled ? "" : " disabled"}">
-      <input type="checkbox" class="agent-row-checkbox"
+      <input type="checkbox" class="agent-row-checkbox" data-action="agent-toggle" data-command="${escAttr(c.cmd)}"
         ${c.enabled ? "checked" : ""}
-        onchange="toggleAgentEnabled('${escAttr(c.cmd)}', this.checked)"
         aria-label="Enable ${escAttr(c.cmd)}">
       <span class="agent-row-cmd">${esc(c.cmd)}</span>
       ${isDefault ? '<span class="agent-row-default">default</span>' : ""}
-      <button class="agent-row-delete"
-        onclick="removeAgent('${escAttr(c.cmd)}')"
+      <button type="button" class="agent-row-delete" data-action="agent-remove" data-command="${escAttr(c.cmd)}"
         title="Remove" aria-label="Remove ${escAttr(c.cmd)}">&times;</button>
     </div>`;
   }).join("");
@@ -4007,6 +4001,7 @@ async function deleteCustomCmd(cmd, e) {
 async function createSessionWithAgent(cmd) {
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const sessionName = (nameInput.value || "").trim();
+  const initialPrompt = (document.getElementById("initial-task-input") as HTMLTextAreaElement).value.trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
   const createError = document.getElementById("agent-create-error");
@@ -4014,8 +4009,8 @@ async function createSessionWithAgent(cmd) {
   createError.classList.remove("visible");
   try {
     const body = state.isNewProject
-      ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined }
-      : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
+      ? { newProject: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined }
+      : { project: state.selectedProject, cmd, sessionName: sessionName || undefined, initialPrompt: initialPrompt || undefined };
     const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4159,6 +4154,16 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
   document.getElementById("msg-preview").style.display = "none";
 
   _tcState = { displaced: false, autoTakeControl: false };
+  let hydrated = false;
+  let mobilePostMountReady = !isMobile;
+  let terminalMarkedLive = false;
+  const markTerminalLive = () => {
+    if (!hydrated || !mobilePostMountReady || terminalMarkedLive) return;
+    terminalMarkedLive = true;
+    slowLoad.stop();
+    setTerminalLoadVisualState(container, "live");
+    scheduleGhosttyPrewarm();
+  };
   let _cachedPendingReset = showCachedPlaceholder;
   // Cached placeholders are currently disabled for solo full because stale
   // plaintext can flash at the wrong width before broker prefill hydrates.
@@ -4286,13 +4291,16 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       setConnState("machine-unavailable");
     },
     onHydrationStart: () => {
+      // A controller survives reconnects, but each hydration cycle needs its
+      // own final live transition after the mobile post-mount gate is ready.
+      hydrated = false;
+      terminalMarkedLive = false;
       setTerminalLoadVisualState(container, "hydrating");
       slowLoad.start("hydrating terminal");
     },
     onHydrated: () => {
-      slowLoad.stop();
-      setTerminalLoadVisualState(container, "live");
-      scheduleGhosttyPrewarm();
+      hydrated = true;
+      markTerminalLive();
     },
   });
 
@@ -4323,7 +4331,13 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
 
   if (window.visualViewport && isMobile) {
     const vvHandler = () => {
-      const kbHeight = window.innerHeight - window.visualViewport.height;
+      if (!window.visualViewport) return;
+      const kbHeight = keyboardOcclusionHeight(window.innerHeight, {
+        height: window.visualViewport.height,
+        // Browsers always provide offsetTop; use zero for incomplete viewport
+        // implementations so keyboard resize handling still fails safely.
+        offsetTop: window.visualViewport.offsetTop ?? 0,
+      });
       const kbOpen = kbHeight > 150;
       // Shift terminal sub-elements without changing their layout height.
       // ghostty-web sees no container resize → no reflow → no scroll-through.
@@ -4334,11 +4348,16 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
     };
     window.visualViewport.addEventListener("resize", vvHandler);
+    window.visualViewport.addEventListener("scroll", vvHandler);
     state.visualViewportHandler = vvHandler;
     // Fire once to catch keyboard already open from previous session
     vvHandler();
   }
 
+  // Hydration can complete while mount awaits Ghostty. Do not expose a live
+  // terminal on mobile until its visual viewport handlers are ready.
+  mobilePostMountReady = true;
+  markTerminalLive();
   connectDesktopWs();
 }
 
@@ -4377,6 +4396,7 @@ function destroyTerminal() {
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
+    window.visualViewport.removeEventListener("scroll", state.visualViewportHandler);
     state.visualViewportHandler = null;
   }
   // Reset terminal positioning
@@ -4598,10 +4618,12 @@ function drawerItemHtml(item, multiMachine) {
     : row.role === "orphan"
       ? " drawer-orphan-item"
       : row.childSummary ? " drawer-parent-item" : "";
-  return `<div class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}">
-    <div class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></div>
-    <span class="drawer-item-name">${esc(session.name)}</span>
-    ${machineLbl}
+  return `<div class="drawer-item-row" role="listitem">
+    <button type="button" class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}"${isCurrent ? ' aria-current="page"' : ""}>
+      <span class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></span>
+      <span class="drawer-item-name">${esc(session.name)}</span>
+      ${machineLbl}
+    </button>
     ${sidebarDelegationToggleHtml(row, machineUrl)}
   </div>`;
 }
@@ -4630,6 +4652,8 @@ function openDrawer() {
   const chip = document.getElementById("session-chip");
   // remove transition for instant position, then add for animation
   drawer.classList.remove("animating");
+  drawer.removeAttribute("inert");
+  drawer.setAttribute("aria-hidden", "false");
   drawer.style.transform = "translate3d(0, -100%, 0)";
   backdrop.classList.add("visible");
   backdrop.style.opacity = "0";
@@ -4640,6 +4664,8 @@ function openDrawer() {
   backdrop.style.transition = "opacity 0.25s ease";
   backdrop.style.opacity = "1";
   chip.classList.add("open");
+  chip.setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => drawer.querySelector<HTMLElement>("button")?.focus({ preventScroll: true }));
   haptic(5);
 }
 
@@ -4650,6 +4676,9 @@ function closeDrawer(instant?: boolean): void {
   const backdrop = document.getElementById("drawer-backdrop");
   const chip = document.getElementById("session-chip");
   chip.classList.remove("open");
+  chip.setAttribute("aria-expanded", "false");
+  drawer.setAttribute("aria-hidden", "true");
+  drawer.setAttribute("inert", "");
   if (instant) {
     drawer.classList.remove("animating", "open");
     drawer.style.transform = "";
@@ -4679,6 +4708,7 @@ function closeDrawer(instant?: boolean): void {
   const hdr = document.querySelector("header");
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
+  const TAP_SLOP_PX = 15;
   let startY = 0, startX = 0, startTime = 0, dragging = false, maxDrag = 0;
   let touchTarget = null;
 
@@ -4696,7 +4726,7 @@ function closeDrawer(instant?: boolean): void {
     if (state.currentView !== "terminal") return;
     const dy = e.touches[0].clientY - startY;
     // opening: drag down when closed (header only)
-    if (!state.drawerOpen && dy > 5) {
+    if (!state.drawerOpen && dy > TAP_SLOP_PX) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating", "open");
@@ -4709,7 +4739,7 @@ function closeDrawer(instant?: boolean): void {
       backdrop.style.transition = "none";
     }
     // closing: drag up when open (header or drawer)
-    if (state.drawerOpen && dy < -5) {
+    if (state.drawerOpen && dy < -TAP_SLOP_PX) {
       if (!dragging) {
         dragging = true;
         drawer.classList.remove("animating");
@@ -4727,7 +4757,7 @@ function closeDrawer(instant?: boolean): void {
       const dt = Date.now() - startTime;
       const ex = e.changedTouches[0].clientX, ey = e.changedTouches[0].clientY;
       const dist = Math.abs(ex - startX) + Math.abs(ey - startY);
-      if (dt < 300 && dist < 15 && touchTarget) {
+      if (dt < 300 && dist <= TAP_SLOP_PX && touchTarget) {
         const disclosure = touchTarget.closest(".delegation-sidebar-toggle");
         if (disclosure && drawer.contains(disclosure)) {
           e.preventDefault();
@@ -5304,6 +5334,10 @@ function revealSettingsSection(sectionId: string, updateLocation = true): void {
   const disclosure = section.closest<HTMLDetailsElement>("details");
   if (disclosure) disclosure.open = true;
   if (updateLocation) history.replaceState(history.state, "", `#${sectionId}`);
+  document.querySelectorAll<HTMLAnchorElement>("#settings-section-nav a").forEach((link) => {
+    if (link.hash === `#${sectionId}`) link.setAttribute("aria-current", "location");
+    else link.removeAttribute("aria-current");
+  });
   requestAnimationFrame(() => section.scrollIntoView({ block: "start", behavior: "smooth" }));
 }
 
@@ -5576,7 +5610,7 @@ function _renderSidebarNow() {
   if (!multiMachine) {
     // Single machine — simple list with + New
     const g = groups[0];
-    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" aria-label="Start a session on this machine" onclick="showProjectPicker()"><span aria-hidden="true">+</span> New session</button>${sessionOrderResetButtonHtml("")}</div>`;
+    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine"><span aria-hidden="true">+</span> New session</button>${sessionOrderResetButtonHtml("")}</div>`;
     if (g && g.online && g.sessions.length) {
       html += sidebarBtns;
       html += visibleDelegationRows(sessionOrderRows(g.sessions, ""), "").map(row => sidebarCardHtml(row, "")).join("");
@@ -5593,13 +5627,13 @@ function _renderSidebarNow() {
       const offlineClass = !g.online && !g.pending ? " offline" : "";
       const createDisabled = !g.online ? " disabled" : "";
       html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session" onclick="showProjectPicker('${escAttr(g.machine.url)}')"${createDisabled}>+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(g.machine.url)}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
       if (g.online && g.sessions.length) {
         html += visibleDelegationRows(sessionOrderRows(g.sessions, g.machine.url), g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
       } else if (g.pending) {
         html += '<div class="sidebar-conn-status">Connecting...</div>';
       } else if (!g.online) {
-        html += `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))} <button type="button" class="machine-retry-btn" aria-label="Retry ${escAttr(g.machine.name)}" onclick="retryMachine('${mUrl}', event)">Retry</button></div>`;
+        html += `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))} <button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${mUrl}" aria-label="Retry ${escAttr(g.machine.name)}">Retry</button></div>`;
       }
       html += '</div>';
     }
@@ -5618,18 +5652,12 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
-  const onclick = machineUrl
-    ? `openSession('${escAttr(s.name)}', '${machineUrlAttr}')`
-    : `openSession('${escAttr(s.name)}')`;
-  const gridBtnOnclick = machineUrl
-    ? `toggleGrid('${escAttr(s.name)}', '${machineUrlAttr}', event)`
-    : `toggleGrid('${escAttr(s.name)}', '', event)`;
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
-  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" onclick="${gridBtnOnclick}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}">${inGrid ? '⊠' : '+'}</button>`;
+  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${inGrid ? '⊠' : '+'}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
-    <button type="button" class="card-open" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes} onclick="${onclick}"></button>
+    <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
@@ -5638,7 +5666,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-preview">${esc(lastLine)}</div>
     </div>
     ${gridBtn}
-    <button type="button" class="kill-btn" aria-label="Stop ${escAttr(s.name)}" title="Stop session" onclick="killSession('${escAttr(s.name)}', event${machineUrl ? ", '" + machineUrlAttr + "'" : ''})">&times;</button>
+    <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
   </div>`;
 }
 
@@ -5924,6 +5952,23 @@ function bindHtmlEventListeners(): void {
     if (el) el.addEventListener(event, fn);
   };
 
+  bindDelegatedAppActions(document, {
+    quickSend: sendQuickCmd,
+    quickMove: moveQuickCmd,
+    quickEdit: index => { void editQuickCmd(index); },
+    quickDelete: deleteQuickCmd,
+    delegationToggle: toggleSidebarDelegationChildren,
+    newSession: machine => { void showProjectPicker(machine); },
+    openSession: (session, machine) => { void openSession(session, machine); },
+    killSession: (session, event, machine) => { void killSession(session, event, machine); },
+    retryMachine,
+    selectProject,
+    agentRemove: command => { void removeAgent(command); },
+    createAgentSession: command => { void createSessionWithAgent(command); },
+    agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
+    toggleGrid,
+  });
+
   // Header
   on("session-chip", "click", () => toggleDrawer());
   on("gear-btn", "click", () => showSettings());
@@ -5965,6 +6010,11 @@ function bindHtmlEventListeners(): void {
   on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });
   on("setting-haptics", "change", function(this: HTMLInputElement) { toggleSetting("haptics", this.checked); });
   on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
+  on("setting-recoveryCache", "change", function(this: HTMLInputElement) {
+    toggleSetting("recoveryCache", this.checked);
+    if (!this.checked) clearRecoverySnapshots();
+  });
+  on("clear-recovery-cache-btn", "click", () => clearRecoverySnapshots());
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
@@ -6021,6 +6071,8 @@ initGridDeps({
   createPtyTerminalController, createConflictOverlay,
   showNotice: (title, message) => { void showAppDialog({ title, message, confirmLabel: "Close", cancelLabel: null }); },
   canUseWasmTerminal,
+  isGhosttyRendererReady: () => ghosttyRendererReady,
+  ensureGridIsolation,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });

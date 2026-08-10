@@ -36,7 +36,7 @@ use crate::protocol::{
     KillSessionParams, ListSessionsParams, ProtocolError, ResizeParams, ResponsePayload,
     SessionInfoParams, SnapshotParams,
 };
-use crate::registry::{CreateError, CreateOptions, Registry};
+use crate::registry::{CreateError, CreateOptions, Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::router::Router;
 use crate::session::{EventSender, KillError, KillOutcome, ResizeError, SpawnError};
 use crate::terminal_state::TerminalStateError;
@@ -92,7 +92,7 @@ impl Router for SessionRouter {
                 Ok(p) => self.resize(id, p),
                 Err(e) => invalid_request(id, format!("resize params: {e}")),
             },
-            methods::SUBSCRIBE | methods::UNSUBSCRIBE => ControlResponse::err(
+            methods::SNAPSHOT_SUBSCRIBE | methods::SUBSCRIBE | methods::UNSUBSCRIBE => ControlResponse::err(
                 id,
                 ProtocolError {
                     code: ErrorCode::InternalError,
@@ -217,6 +217,16 @@ impl SessionRouter {
         if let Err(message) = validate_snapshot_target_cols(p.target_cols) {
             return invalid_request(id, format!("snapshot params: {message}"));
         }
+        let _permit = match self.registry.try_acquire_snapshot() {
+            Some(permit) => permit,
+            None => return ControlResponse::err(
+                id,
+                ProtocolError {
+                    code: ErrorCode::InternalError,
+                    message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
+                },
+            ),
+        };
         match self.registry.get(p.session_id) {
             Some(s) => match s.snapshot_terminal(p.scrollback_lines, p.target_cols) {
                 Ok(snapshot) => ControlResponse::ok(id, ResponsePayload::Snapshot { snapshot }),

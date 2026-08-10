@@ -25,7 +25,7 @@ const result = await Bun.build({
   entrypoints: [ENTRY],
   target: "browser",
   format: "esm",
-  minify: false,
+  minify: { whitespace: true, syntax: true, identifiers: false },
 });
 
 if (!result.success) {

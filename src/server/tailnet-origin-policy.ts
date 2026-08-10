@@ -6,9 +6,15 @@ export interface TailnetOriginPolicyOptions {
   readonly testMode: boolean;
 }
 
-interface TailnetServeHeaders {
-  readonly referer?: string | string[];
-  readonly "tailscale-user-login"?: string | string[];
+export interface TailscaleServeOriginInput {
+  readonly fromLoopback: boolean;
+  readonly tailscaleUserLogin: string | readonly string[] | undefined;
+  readonly referer: string | undefined;
+}
+
+export interface TailnetOriginPolicy {
+  isAllowed(origin: string): boolean;
+  recoverTailscaleServeOrigin(input: TailscaleServeOriginInput): string | undefined;
 }
 
 function canonicalBrowserTailnetOrigin(origin: string): string | null {
@@ -23,14 +29,11 @@ function canonicalBrowserTailnetOrigin(origin: string): string | null {
 
 /**
  * Limits browser cross-origin access to canonical Tailnet machine origins
- * derived from setup's verified local identity. Tailscale's injected login
- * header only authorizes recovery after Serve strips Origin; it never supplies
- * origin authority.
+ * derived from setup's verified local identity. No request header supplies
+ * authority; recovery from a stripped Origin requires local Tailscale Serve
+ * identity headers plus a canonical sibling Referer.
  */
-export function createTailnetOriginPolicy(options: TailnetOriginPolicyOptions): {
-  isAllowed(origin: string): boolean;
-  recoverServeOrigin(headers: TailnetServeHeaders): string | undefined;
-} {
+export function createTailnetOriginPolicy(options: TailnetOriginPolicyOptions): TailnetOriginPolicy {
   const localOrigins = new Set([
     `http://localhost:${options.port}`,
     `http://127.0.0.1:${options.port}`,
@@ -55,13 +58,15 @@ export function createTailnetOriginPolicy(options: TailnetOriginPolicyOptions): 
 
   return {
     isAllowed,
-    recoverServeOrigin(headers: TailnetServeHeaders): string | undefined {
-      const login = headers["tailscale-user-login"];
-      const referer = headers.referer;
-      if (typeof login !== "string" || login.trim().length === 0 || typeof referer !== "string") return undefined;
+    recoverTailscaleServeOrigin(input: TailscaleServeOriginInput): string | undefined {
+      if (!input.fromLoopback) return undefined;
+      if (typeof input.tailscaleUserLogin !== "string" || input.tailscaleUserLogin.trim().length === 0) return undefined;
+      if (!input.referer || !tailnetSuffix) return undefined;
       try {
-        const origin = new URL(referer).origin;
-        return isAllowed(origin) ? origin : undefined;
+        const refererOrigin = new URL(input.referer).origin;
+        // Recovery is Tailnet-only: local/test origins never become Serve authority.
+        if (!canonicalBrowserTailnetOrigin(refererOrigin)) return undefined;
+        return isAllowed(refererOrigin) ? refererOrigin : undefined;
       } catch {
         return undefined;
       }

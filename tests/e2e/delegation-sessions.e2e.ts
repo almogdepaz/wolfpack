@@ -121,6 +121,52 @@ test("desktop parent grid opens every child session expanded", async ({ page }, 
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(0);
 });
 
+test("collapsed delegation child remounts once when expanded", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation grid behavior only");
+
+  const attachCounts = new Map<string, number>();
+  const closeCounts = new Map<string, number>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onClose(() => closeCounts.set(session, (closeCounts.get(session) ?? 0) + 1));
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      attachCounts.set(session, (attachCounts.get(session) ?? 0) + 1);
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await routeDelegationSessions(page, [
+    fakeSession("parent", "parent-id"),
+    fakeSession("child", "child-id", { id: "parent-id", name: "parent" }),
+  ]);
+
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => {
+    (window as unknown as { openSession(session: string, machine?: string): void }).openSession("parent", "");
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const appState = (window as unknown as { state: { delegationGridSessions: Array<{ session: string; controller?: { isConnected: boolean } }> } }).state;
+    return appState.delegationGridSessions.find((entry) => entry.session === "child")?.controller?.isConnected;
+  })).toBe(true);
+
+  await page.getByRole("button", { name: "Collapse child" }).click();
+  await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
+  await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
+  await page.getByRole("button", { name: "Expand child" }).click();
+
+  await expect.poll(() => page.evaluate(() => {
+    const appState = (window as unknown as { state: { delegationGridSessions: Array<{ session: string; controller?: { isConnected: boolean } }> } }).state;
+    return appState.delegationGridSessions.find((entry) => entry.session === "child")?.controller?.isConnected;
+  })).toBe(true);
+  expect(attachCounts.get("child")).toBe(2);
+});
+
 test("manual card order persists by stable identity and resets to server order", async ({ page }, testInfo) => {
   let sessions = [
     fakeSession("one", "one-id"),
@@ -426,12 +472,12 @@ test("mobile drawer groups child sessions directly under their parent", async ({
   await expect.poll(localNames).toEqual(["parent", "solo"]);
 
   const parentItem = drawer.locator('.drawer-item[data-val="parent"]');
-  const toggle = parentItem.locator(".delegation-sidebar-toggle");
+  const toggle = parentItem.locator("..").locator(".delegation-sidebar-toggle");
   await expect(toggle).toHaveAttribute("aria-label", "Expand 1 child agent");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   const toggleBox = await toggle.boundingBox();
   expect(toggleBox).not.toBeNull();
-  const toggleSelector = '#drawer-list .drawer-item[data-val="parent"] .delegation-sidebar-toggle';
+  const toggleSelector = '#drawer-list .drawer-item[data-val="parent"] + .delegation-sidebar-toggle';
   await dispatchSyntheticTouch(page, toggleSelector, "touchstart", 11, toggleBox!.x + 4, toggleBox!.y + 4);
   await dispatchSyntheticTouch(page, toggleSelector, "touchend", 11, toggleBox!.x + 4, toggleBox!.y + 4);
   await expect(drawer).toHaveClass(/open/);

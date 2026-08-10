@@ -5,12 +5,15 @@
 //! exists purely so `create_session` can reject duplicate names and so the
 //! anonymous-name generator can skip collisions.
 //!
-//! The registry locks across `Session::spawn` so a name reservation and the
-//! actual spawn happen atomically — no second caller can grab the same name
-//! between resolve and insert.
+//! Session creation reserves the name under the registry mutex, releases the
+//! mutex while `Session::spawn` performs PTY/process setup, then replaces the
+//! reservation with the live session id. Concurrent creators observe the
+//! reservation as occupied without serializing unrelated process creation.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -37,9 +40,29 @@ pub enum CreateError {
     Spawn(#[from] SpawnError),
 }
 
+const EXITED_TOMBSTONE_TTL: Duration = Duration::from_secs(30);
+const MAX_EXITED_TOMBSTONES: usize = 64;
+pub(crate) const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
+pub(crate) const SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE: &str =
+    "snapshot concurrency limit reached; retry";
+
+pub(crate) struct SnapshotPermit<'a>(&'a AtomicUsize);
+
+impl Drop for SnapshotPermit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+struct Tombstone {
+    session: Arc<Session>,
+    expires_at: Instant,
+}
+
 #[derive(Default)]
 struct Inner {
     sessions: BTreeMap<Uuid, Arc<Session>>,
+    tombstones: BTreeMap<Uuid, Tombstone>,
     names: BTreeMap<String, Uuid>,
     /// Monotonic counter for anonymous "session-N" names. Never decrements,
     /// even when collisions skip values, so a killed session's slot is not
@@ -47,9 +70,25 @@ struct Inner {
     next_anon: u64,
 }
 
+impl Inner {
+    fn purge_expired_tombstones(&mut self) {
+        let now = Instant::now();
+        self.tombstones.retain(|_, tombstone| tombstone.expires_at > now);
+        while self.tombstones.len() > MAX_EXITED_TOMBSTONES {
+            let Some(oldest) = self.tombstones
+                .iter()
+                .min_by_key(|(_, tombstone)| tombstone.expires_at)
+                .map(|(id, _)| *id)
+            else { break };
+            self.tombstones.remove(&oldest);
+        }
+    }
+}
+
 pub struct Registry {
     inner: Mutex<Inner>,
     events: EventSender,
+    snapshots_in_flight: AtomicUsize,
 }
 
 impl Registry {
@@ -57,32 +96,57 @@ impl Registry {
         Self {
             inner: Mutex::new(Inner::default()),
             events,
+            snapshots_in_flight: AtomicUsize::new(0),
         }
     }
 
-    pub fn create(&self, opts: CreateOptions) -> Result<Arc<Session>, CreateError> {
-        let session = {
-            let mut guard = self.inner.lock().expect("registry poisoned");
-            // Reborrow once so split-borrowing distinct fields of `Inner` is
-            // visible to the compiler (without this, the MutexGuard's Deref
-            // and DerefMut paths produce overlapping borrows).
-            let inner = &mut *guard;
-            let name = resolve_name(opts.name.as_deref(), &inner.names, &mut inner.next_anon)?;
+    pub(crate) fn try_acquire_snapshot(&self) -> Option<SnapshotPermit<'_>> {
+        let previous = self.snapshots_in_flight.fetch_add(1, Ordering::Acquire);
+        if previous >= MAX_CONCURRENT_SNAPSHOTS {
+            self.snapshots_in_flight.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        Some(SnapshotPermit(&self.snapshots_in_flight))
+    }
 
-            let spawn_opts = SpawnOptions {
-                name: name.clone(),
-                cwd: opts.cwd,
-                command: opts.command,
-                env: opts.env,
-                cols: opts.cols,
-                rows: opts.rows,
-            };
-            let session = Arc::new(Session::spawn(spawn_opts, self.events.clone())?);
-            let id = session.id();
+    pub fn create(&self, opts: CreateOptions) -> Result<Arc<Session>, CreateError> {
+        // Reserve the name atomically, then release the registry lock before
+        // openpty/spawn/thread setup. Concurrent creates see the reservation
+        // as occupied without serialising unrelated process creation.
+        let (name, reservation_id) = {
+            let mut guard = self.inner.lock().expect("registry poisoned");
+            let inner = &mut *guard;
+            inner.purge_expired_tombstones();
+            let name = resolve_name(opts.name.as_deref(), &inner.names, &mut inner.next_anon)?;
+            let reservation_id = Uuid::new_v4();
+            inner.names.insert(name.clone(), reservation_id);
+            (name, reservation_id)
+        };
+        let spawn_opts = SpawnOptions {
+            name: name.clone(),
+            cwd: opts.cwd,
+            command: opts.command,
+            env: opts.env,
+            cols: opts.cols,
+            rows: opts.rows,
+        };
+        let session = match Session::spawn(spawn_opts, self.events.clone()) {
+            Ok(session) => Arc::new(session),
+            Err(error) => {
+                let mut inner = self.inner.lock().expect("registry poisoned");
+                if inner.names.get(&name) == Some(&reservation_id) {
+                    inner.names.remove(&name);
+                }
+                return Err(CreateError::Spawn(error));
+            }
+        };
+        let id = session.id();
+        {
+            let mut inner = self.inner.lock().expect("registry poisoned");
+            debug_assert_eq!(inner.names.get(&name), Some(&reservation_id));
             inner.sessions.insert(id, Arc::clone(&session));
             inner.names.insert(name, id);
-            session
-        };
+        }
         // Publish AFTER releasing the registry lock so a slow subscriber can
         // never stall registry mutations. Best-effort: an Err means no one
         // is currently subscribed.
@@ -93,8 +157,10 @@ impl Registry {
     }
 
     pub fn get(&self, id: Uuid) -> Option<Arc<Session>> {
-        let inner = self.inner.lock().expect("registry poisoned");
+        let mut inner = self.inner.lock().expect("registry poisoned");
+        inner.purge_expired_tombstones();
         inner.sessions.get(&id).cloned()
+            .or_else(|| inner.tombstones.get(&id).map(|tombstone| Arc::clone(&tombstone.session)))
     }
 
     pub fn list(&self) -> Vec<Arc<Session>> {
@@ -124,6 +190,11 @@ impl Registry {
         if inner.names.get(&name) == Some(&id) {
             inner.names.remove(&name);
         }
+        inner.tombstones.insert(id, Tombstone {
+            session,
+            expires_at: Instant::now() + EXITED_TOMBSTONE_TTL,
+        });
+        inner.purge_expired_tombstones();
     }
 }
 
@@ -361,16 +432,17 @@ mod tests {
         assert!(sess.wait_for_exit(Duration::from_secs(5)), "child must exit");
         drop(sess);
 
-        // The reaper runs on the runtime; yield until the registry observes
-        // the removal. Bounded retry so a regression of this fix fails fast.
+        // The reaper removes the session from the live list and name map but
+        // retains a bounded by-id tombstone for final output replay.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            if reg.get(id).is_none() {
+            if reg.list().iter().all(|session| session.id() != id) {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "reaper did not drop exited session");
+            assert!(std::time::Instant::now() < deadline, "reaper did not tombstone exited session");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert!(reg.get(id).is_some(), "exited session should remain replayable by id");
 
         // Name slot must be free — recreating with the same name must succeed.
         let sess2 = reg

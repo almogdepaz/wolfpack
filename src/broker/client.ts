@@ -42,6 +42,12 @@ import {
 export type OutputSubscriber = (frame: OutputBinaryFrame) => void;
 export type EventSubscriber = (event: EventBody) => void;
 
+export interface BrokerSnapshotSubscription {
+  readonly response: ControlResponse;
+  cancel(): Promise<void>;
+}
+const PENDING_OUTPUT_MAX_BYTES_PER_SESSION = 1024 * 1024;
+
 export interface BrokerClientOptions {
   /** Absolute path to broker Unix socket. Defaults to `defaultBrokerSocketPath()`. */
   socketPath?: string;
@@ -176,6 +182,8 @@ export class BrokerClient {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRpc>();
   private readonly outputSubs = new Map<string, Set<OutputSubscriber>>();
+  private readonly pendingOutput = new Map<string, OutputBinaryFrame[]>();
+  private readonly pendingOutputBytes = new Map<string, number>();
   /** Sessions the caller has asked us to subscribe to. Re-issued on reconnect. */
   private readonly activeSubscriptions = new Set<string>();
   private readonly pendingSubscriptions = new Map<string, Promise<ControlResponse>>();
@@ -184,8 +192,12 @@ export class BrokerClient {
   private readonly pendingUnsubscribes = new Map<string, Promise<void>>();
   /** Explicit failed-subscription teardowns, superseded by a replacement subscribe. */
   private readonly pendingSubscriptionCancellations = new Map<string, symbol>();
+  /** Identity of the latest provisional atomic snapshot owner per session. */
+  private readonly snapshotSubscriptionOwners = new Map<string, symbol>();
   /** Last observed output seq per active session (used for reconnect replay). */
   private readonly activeSubscriptionSeq = new Map<string, bigint | undefined>();
+  /** Exit events held until their final output watermark has been delivered. */
+  private readonly pendingExitEvents = new Map<string, { event: EventBody; finalSeq: bigint }>();
 
   private state: "idle" | "connecting" | "connected" | "closed" = "idle";
 
@@ -338,6 +350,14 @@ export class BrokerClient {
       this.outputSubs.set(sessionId, set);
     }
     set.add(cb);
+    const buffered = this.pendingOutput.get(sessionId);
+    if (buffered) {
+      this.pendingOutput.delete(sessionId);
+      this.pendingOutputBytes.delete(sessionId);
+      for (const frame of buffered) {
+        try { cb(frame); } catch { /* subscriber errors are isolated */ }
+      }
+    }
     return () => {
       const s = this.outputSubs.get(sessionId);
       if (!s) return;
@@ -349,6 +369,51 @@ export class BrokerClient {
   /** Number of distinct sessions with at least one output subscriber. */
   outputSubscriptionCount(): number {
     return this.outputSubs.size;
+  }
+
+  /** Atomically snapshot and establish replay/live output on this connection. */
+  async snapshotSubscribe(
+    sessionId: string,
+    params: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number } = {},
+  ): Promise<BrokerSnapshotSubscription> {
+    if (this.state !== "connected") throw new BrokerNotConnectedError();
+    const owner = Symbol("snapshot subscription owner");
+    this.pendingUnsubscribes.delete(sessionId);
+    this.pendingSubscriptionCancellations.delete(sessionId);
+    this.snapshotSubscriptionOwners.set(sessionId, owner);
+    this.activeSubscriptions.add(sessionId);
+    if (!this.activeSubscriptionSeq.has(sessionId)) this.activeSubscriptionSeq.set(sessionId, undefined);
+    try {
+      const response = await this.request("snapshot_subscribe", {
+        session_id: sessionId,
+        ...(params.scrollbackLines !== undefined && { scrollback_lines: params.scrollbackLines }),
+        ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
+      }, { timeoutMs: params.timeoutMs });
+      if (response.status !== "ok") {
+        const code = response.error?.code ?? "internal_error";
+        throw new BrokerSubscribeError(code, response.error?.message ?? "snapshot subscribe failed");
+      }
+      const snapshot = (response.payload as Record<string, unknown> | undefined)?.snapshot as Record<string, unknown> | undefined;
+      const seq = snapshot?.seq;
+      if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
+        const snapshotSeq = BigInt(seq);
+        const observed = this.activeSubscriptionSeq.get(sessionId);
+        this.activeSubscriptionSeq.set(sessionId, observed !== undefined && observed > snapshotSeq ? observed : snapshotSeq);
+      }
+      return {
+        response,
+        cancel: async () => {
+          if (this.snapshotSubscriptionOwners.get(sessionId) !== owner) return;
+          this.snapshotSubscriptionOwners.delete(sessionId);
+          await this.cancelSubscription(sessionId);
+        },
+      };
+    } catch (error: unknown) {
+      if (this.snapshotSubscriptionOwners.get(sessionId) === owner) {
+        this.clearSubscriptionState(sessionId);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -376,6 +441,7 @@ export class BrokerClient {
     // the shared stream after this caller reuses the in-flight subscription.
     this.pendingUnsubscribes.delete(sessionId);
     this.pendingSubscriptionCancellations.delete(sessionId);
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.activeSubscriptions.add(sessionId);
     if (opts.sinceSeq !== undefined) {
       // Take max(prev, sinceSeq): never lower the floor below what we've
@@ -491,8 +557,11 @@ export class BrokerClient {
   }
 
   private clearSubscriptionState(sessionId: string): void {
+    this.snapshotSubscriptionOwners.delete(sessionId);
     this.activeSubscriptions.delete(sessionId);
     this.activeSubscriptionSeq.delete(sessionId);
+    this.pendingOutput.delete(sessionId);
+    this.pendingOutputBytes.delete(sessionId);
   }
 
   // ── Internals ──
@@ -617,6 +686,20 @@ export class BrokerClient {
     if (this.state !== "closed") this.scheduleReconnect();
   }
 
+  private emitEvent(event: EventBody): void {
+    if (!this.onEventCb) return;
+    try { this.onEventCb(event); } catch { /* subscriber errors are isolated */ }
+  }
+
+  private releaseExitIfComplete(sessionId: string): void {
+    const pending = this.pendingExitEvents.get(sessionId);
+    if (!pending) return;
+    const delivered = this.activeSubscriptionSeq.get(sessionId) ?? 0n;
+    if (delivered < pending.finalSeq) return;
+    this.pendingExitEvents.delete(sessionId);
+    this.emitEvent(pending.event);
+  }
+
   private dispatch(frame: Frame): void {
     switch (frame.kind) {
       case FRAME_KIND_CONTROL_RESPONSE: {
@@ -641,7 +724,22 @@ export class BrokerClient {
           }
         }
         const subs = this.outputSubs.get(sessionId);
-        if (!subs) return;
+        if (!subs) {
+          if (this.activeSubscriptions.has(sessionId)) {
+            const bytes = this.pendingOutputBytes.get(sessionId) ?? 0;
+            if (bytes + frame.value.data.byteLength <= PENDING_OUTPUT_MAX_BYTES_PER_SESSION) {
+              const buffered = this.pendingOutput.get(sessionId) ?? [];
+              buffered.push(frame.value);
+              this.pendingOutput.set(sessionId, buffered);
+              this.pendingOutputBytes.set(sessionId, bytes + frame.value.data.byteLength);
+            } else {
+              this.clearSubscriptionState(sessionId);
+              this.onReplayTruncatedCb?.(sessionId);
+            }
+          }
+          this.releaseExitIfComplete(sessionId);
+          return;
+        }
         for (const cb of subs) {
           try {
             cb(frame.value);
@@ -649,6 +747,7 @@ export class BrokerClient {
             // subscriber errors are isolated; transport stays up
           }
         }
+        this.releaseExitIfComplete(sessionId);
         return;
       }
       case FRAME_KIND_EVENT: {
@@ -672,12 +771,19 @@ export class BrokerClient {
           }
           return;
         }
-        if (!this.onEventCb) return;
-        try {
-          this.onEventCb(ev);
-        } catch {
-          // swallow
+        if (ev.event === "session_exited" && typeof ev.session_id === "string" && typeof ev.final_seq === "string") {
+          try {
+            const finalSeq = BigInt(ev.final_seq);
+            if (this.activeSubscriptions.has(ev.session_id)) {
+              this.pendingExitEvents.set(ev.session_id, { event: ev, finalSeq });
+              this.releaseExitIfComplete(ev.session_id);
+              return;
+            }
+          } catch {
+            // Older/malformed final_seq values fall through to compatibility delivery.
+          }
         }
+        this.emitEvent(ev);
         return;
       }
       case FRAME_KIND_CONTROL_REQUEST:

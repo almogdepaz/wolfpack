@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   SessionIdentityStore,
@@ -154,6 +154,32 @@ describe("session identity metadata", () => {
     const docs = readFileSync(join(process.cwd(), "docs/session-identity.md"), "utf-8");
 
     expect(docs).toContain("Public session APIs intentionally expose `projectPath`");
+  });
+
+
+  test("supports tab-private memory mode without writing identity metadata", () => {
+    const devDir = tmpDevDir();
+    const store = new SessionIdentityStore(devDir, "memory");
+    store.capture({
+      wolfpackSessionId: "broker-memory",
+      wolfpackSessionName: "private",
+      projectPath: join(devDir, "private"),
+      agentKind: "shell",
+    });
+    expect(store.getByName("private")?.wolfpackSessionId).toBe("broker-memory");
+    expect(existsSync(sessionIdentityStorePath(devDir))).toBe(false);
+  });
+
+  test("writes durable identity files owner-only", () => {
+    const devDir = tmpDevDir();
+    const store = new SessionIdentityStore(devDir, "private");
+    store.capture({
+      wolfpackSessionId: "broker-private",
+      wolfpackSessionName: "private",
+      projectPath: join(devDir, "private"),
+      agentKind: "shell",
+    });
+    expect(statSync(sessionIdentityStorePath(devDir)).mode & 0o777).toBe(0o600);
   });
 
   test("exposes context and parent env vars for launched agents", () => {

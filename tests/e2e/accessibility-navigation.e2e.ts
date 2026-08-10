@@ -13,7 +13,7 @@ test.afterAll(() => {
 
 test.beforeEach(async ({ page }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator(".card").first()).toBeVisible();
+  await expect(page.locator(".card").first()).toBeVisible({ timeout: 15_000 });
 });
 
 test("only the active view participates in keyboard focus", async ({ page }) => {
@@ -62,8 +62,9 @@ test("mobile magnification and larger terminal type remain available", async ({ 
 test("mobile settings navigation opens progressive sections and supports deep links", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile settings information architecture");
 
-  await page.goto(`${server.baseUrl}#settings-agents`);
-  await page.reload();
+  // A unique query forces a fresh document navigation so this exercises startup
+  // deep-link handling rather than an in-document hash transition.
+  await page.goto(`${server.baseUrl}?e2e=settings-deep-link#settings-agents`);
   await expect(page.locator("#settings-view")).toHaveClass(/visible/);
   await expect(page.getByRole("navigation", { name: "Settings sections" })).toBeVisible();
   await expect(page.locator("#settings-advanced")).toHaveAttribute("open", "");

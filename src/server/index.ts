@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import pkg from "../../package.json";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
@@ -32,8 +33,12 @@ import {
 import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
-import { loadConfig } from "../cli/config.js";
+import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
+import { loadConfig, WOLFPACK_DIR } from "../cli/config.js";
+import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
+import { consumeWebSocketTicket } from "./ws-ticket.js";
+import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
 
 const log = createLogger("server");
 
@@ -87,23 +92,58 @@ const pollRateLimiter = createPerIpRateLimiter(10);
 
 /** Global limit for all routes (120 req/s per IP). */
 const globalRateLimiter = createPerIpRateLimiter(120);
+/** WebSocket upgrade attempts per second per IP, before auth/backend work. */
+const wsUpgradeRateLimiter = createPerIpRateLimiter(20);
+const MAX_WS_CONNECTIONS_PER_IP = 32;
+const wsConnectionsByIp = new Map<string, number>();
 
-export { pollRateLimiter as __pollRateLimiter, globalRateLimiter as __globalRateLimiter };
+function reserveWsConnection(ip: string): boolean {
+  const current = wsConnectionsByIp.get(ip) ?? 0;
+  if (current >= MAX_WS_CONNECTIONS_PER_IP) return false;
+  wsConnectionsByIp.set(ip, current + 1);
+  return true;
+}
+
+function releaseWsConnection(ip: string): void {
+  const current = wsConnectionsByIp.get(ip) ?? 0;
+  if (current <= 1) wsConnectionsByIp.delete(ip);
+  else wsConnectionsByIp.set(ip, current - 1);
+}
+
+export {
+  pollRateLimiter as __pollRateLimiter,
+  globalRateLimiter as __globalRateLimiter,
+  wsUpgradeRateLimiter as __wsUpgradeRateLimiter,
+  wsConnectionsByIp as __wsConnectionsByIp,
+  reserveWsConnection as __reserveWsConnection,
+  MAX_WS_CONNECTIONS_PER_IP,
+};
 
 // ── Server factory ──
 
 /** Create an isolated server + WebSocketServer pair. Used by tests for parallel isolation. */
 export function createServerInstance(): { server: ReturnType<typeof createServer>; wss: InstanceType<typeof WebSocketServer> } {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: PTY_WEBSOCKET_MAX_PAYLOAD_BYTES,
+  });
 
   const server = createServer(async (req, res) => {
-    const origin = req.headers.origin ?? originPolicy.recoverServeOrigin(req.headers);
+    const directOrigin = req.headers.origin;
+    const recoveredServeOrigin = directOrigin
+      ? undefined
+      : originPolicy.recoverTailscaleServeOrigin({
+          fromLoopback: isLoopbackAddress(req.socket.remoteAddress),
+          tailscaleUserLogin: req.headers["tailscale-user-login"],
+          referer: req.headers.referer,
+        });
+    const origin = directOrigin ?? recoveredServeOrigin;
+    res.setHeader("Vary", directOrigin ? "Origin" : "Origin, Referer, Tailscale-User-Login");
     if (origin) {
       if (isAllowedOrigin(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-        res.setHeader("Vary", "Origin");
       } else {
         res.writeHead(403, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "origin not allowed" }));
@@ -118,7 +158,13 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (shouldAuthenticateApiPath(url.pathname)) {
+    const client = classifyRequestClient({
+      remoteAddress: req.socket.remoteAddress,
+      tailscaleUserLogin: req.headers["tailscale-user-login"],
+    });
+    const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
+    const localOperationalRequest = operationalPath && client.isDirectLoopback;
+    if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
       const auth = validateRequestJwt(req.headers, url, false);
       if (!auth.ok) {
         log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
@@ -128,12 +174,11 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     // Rate limiting — per-IP, checked before route dispatch
-    const clientIp = req.socket.remoteAddress ?? "unknown";
-    if (!globalRateLimiter.allow(clientIp)) {
+    if (!globalRateLimiter.allow(client.clientKey)) {
       json(res, { error: "rate limit exceeded" }, 429);
       return;
     }
-    if (POLL_HEAVY_PATHS.has(url.pathname) && !pollRateLimiter.allow(clientIp)) {
+    if (POLL_HEAVY_PATHS.has(url.pathname) && !pollRateLimiter.allow(client.clientKey)) {
       json(res, { error: "rate limit exceeded" }, 429);
       return;
     }
@@ -159,7 +204,21 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   });
 
   server.on("upgrade", async (req, socket, head) => {
+    let reservedIp: string | null = null;
     try {
+      const client = classifyRequestClient({
+        remoteAddress: req.socket.remoteAddress,
+        tailscaleUserLogin: req.headers["tailscale-user-login"],
+      });
+      if (!wsUpgradeRateLimiter.allow(client.clientKey)) {
+        socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      if (!reserveWsConnection(client.clientKey)) {
+        socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      reservedIp = client.clientKey;
       const origin = req.headers.origin;
       if (origin && !isAllowedOrigin(origin)) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
@@ -167,7 +226,9 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       }
       const url = new URL(req.url ?? "/", "http://localhost");
 
-      const auth = validateRequestJwt(req.headers, url, true);
+      const ticket = url.searchParams.get("ticket");
+      const ticketOk = ticket ? consumeWebSocketTicket(ticket, client.clientKey) : false;
+      const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true);
       if (!auth.ok) {
         log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -189,13 +250,20 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       }
 
       const reset = url.searchParams.get("reset") === "1";
-      wss.handleUpgrade(req, socket, head, (ws) => handlePtyWs(ws, session, reset));
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const activeClientKey = client.clientKey;
+        reservedIp = null;
+        ws.once("close", () => releaseWsConnection(activeClientKey));
+        handlePtyWs(ws, session, reset);
+      });
     } catch (e: unknown) {
       log.error("ws upgrade error", { error: errMsg(e) });
       if (!socket.destroyed) {
         try { socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n"); } catch { /* socket already unusable */ }
         socket.destroy();
       }
+    } finally {
+      if (reservedIp) releaseWsConnection(reservedIp);
     }
   });
 
@@ -242,6 +310,14 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
     } else {
       log.info("broker reachable", { socketPath: router.getBrokerSocketPath() });
     }
+  }
+
+  if (process.platform === "darwin" && process.env.WOLFPACK_SERVICE === "1") {
+    const stopLogRotation = startLogRotationMonitor(
+      [join(WOLFPACK_DIR, "wolfpack.log"), join(WOLFPACK_DIR, "broker.log")],
+      { onError: (path, error) => log.warn("service log rotation failed", { path, error: errMsg(error) }) },
+    );
+    server.once("close", stopLogRotation);
   }
 
   await getTaskGateway().initialize();

@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
   HYDRATION_DEBUG_SILENCE_KEY,
@@ -174,6 +174,7 @@ const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_ONLY_PAGE_LOAD: set to 1 to skip single/grid terminal scenarios",
   "WOLFPACK_PERF_PAGE_LOAD_WAIT_MS: extra post-load wait before page-load trace capture",
   "WOLFPACK_PERF_SLOW_PREFILL_MS: inject server-side prefill delay for slow-path measurements",
+  "WOLFPACK_PERF_ENFORCE_BUDGETS: set to 1 to fail on cold/warm p95, heap, long-task, or console budgets",
 ] as const;
 
 function resolveBrokerBin(): string | null {
@@ -189,6 +190,12 @@ function resolveBrokerBin(): string | null {
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+let sharedPerfBrowser: Browser | null = null;
+
+async function getPerfBrowser(): Promise<Browser> {
+  if (!sharedPerfBrowser) sharedPerfBrowser = await chromium.launch();
+  return sharedPerfBrowser;
+}
 
 async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -314,6 +321,7 @@ async function createSession(baseUrl: string, name: string, project: string): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ project, cmd: "shell", sessionName: name }),
+    signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) throw new Error(`create ${name} failed: ${res.status} ${await res.text()}`);
 }
@@ -330,24 +338,29 @@ export async function cleanupCreatedSessions(
   sessions: readonly string[],
   fetcher: SessionCleanupFetch = fetch,
 ): Promise<SessionCleanupFailure[]> {
-  const failures: SessionCleanupFailure[] = [];
-  for (const session of [...sessions].reverse()) {
+  const results = await Promise.all([...sessions].reverse().map(async (session): Promise<SessionCleanupFailure | null> => {
     try {
-      const res = await fetcher(`${baseUrl}/api/kill`, {
+      const request = fetcher(`${baseUrl}/api/kill`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ session }),
+        signal: AbortSignal.timeout(3_000),
       });
-      if (!res.ok && res.status !== 404) failures.push({ session, error: `${res.status} ${await res.text()}` });
+      const res = await Promise.race([
+        request,
+        wait(3_000).then(() => { throw new Error("cleanup request timed out"); }),
+      ]);
+      if (!res.ok && res.status !== 404) return { session, error: `${res.status} ${await res.text()}` };
+      return null;
     } catch (error) {
-      failures.push({ session, error: error instanceof Error ? error.message : String(error) });
+      return { session, error: error instanceof Error ? error.message : String(error) };
     }
-  }
-  return failures;
+  }));
+  return results.filter((result): result is SessionCleanupFailure => result !== null);
 }
 
 async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
-  const browser = await chromium.launch();
+  const browser = await getPerfBrowser();
   const deviceMode = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
   const page = await browser.newPage(deviceMode === "mobile" ? {
     viewport: { width: 390, height: 844 },
@@ -405,9 +418,20 @@ async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageL
   });
   const startedAt = performance.now();
   await page.goto(baseUrl);
-  await page.waitForSelector(".card", { timeout: 10_000 });
+  try {
+    await page.waitForSelector(".card", { timeout: 15_000 });
+  } catch (error) {
+    const diagnostic = await page.locator("body").innerText().catch(() => "<body unavailable>");
+    throw new Error(`dashboard cards did not load; console=${consoleErrors.join(" | ")}; body=${diagnostic.slice(0, 500)}`, { cause: error });
+  }
   const cardVisibleMs = +(performance.now() - startedAt).toFixed(3);
-  return { page, pageLoad: { cardVisibleMs, consoleErrors }, close: () => browser.close() };
+  return {
+    page,
+    pageLoad: { cardVisibleMs, consoleErrors },
+    close: async () => {
+      await Promise.race([page.context().close(), wait(5_000)]);
+    },
+  };
 }
 
 async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: number): Promise<PageLoadSummary> {
@@ -710,7 +734,7 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
       };
       w.openSession(names[0]);
     }, sessions);
-    await page.waitForSelector("#desktop-terminal-container canvas", { timeout: 10_000 });
+    await page.waitForSelector("#desktop-terminal-container canvas", { state: "attached", timeout: 10_000 });
     const addDelayMs = gridAddDelayMs();
     if (addDelayMs > 0) await page.waitForTimeout(addDelayMs);
     for (const session of sessions.slice(1)) {
@@ -1031,6 +1055,23 @@ async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>
   }
 }
 
+export function perfBudgetFailures(summary: PerfRunsSummary, device: PerfDeviceMode): string[] {
+  const limits = device === "mobile"
+    ? { coldP95: 3_000, warmP95: 3_500, heap: 128 * 1024 * 1024, longTasks: 8, longTaskMs: 750 }
+    : { coldP95: 2_000, warmP95: 2_500, heap: 192 * 1024 * 1024, longTasks: 6, longTaskMs: 500 };
+  const failures: string[] = [];
+  const check = (label: string, value: number | null, limit: number) => {
+    if (value !== null && value > limit) failures.push(`${label} ${value.toFixed(1)} exceeds ${limit}`);
+  };
+  check("cold dashboard p95 ms", summary.page.cardVisibleMs.p95, limits.coldP95);
+  check("warm terminal reveal p95 ms", summary.single.setupToRevealMs.p95, limits.warmP95);
+  check("JS heap p95 bytes", summary.page.jsHeapUsedBytes.p95, limits.heap);
+  check("long-task count p95", summary.page.longTaskCount.p95, limits.longTasks);
+  check("long-task total p95 ms", summary.page.longTaskTotalMs.p95, limits.longTaskMs);
+  if (summary.pageConsoleErrorsTotal > 0) failures.push(`console errors ${summary.pageConsoleErrorsTotal} exceeds 0`);
+  return failures;
+}
+
 async function main(): Promise<void> {
   if (process.env.WOLFPACK_PERF_HELP === "1") {
     console.log("terminal-load perf environment:");
@@ -1070,9 +1111,18 @@ async function main(): Promise<void> {
       ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, ...runs[0], summary }
       : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, runs, summary };
     console.log(`\n${formatPerfRunsSummary(summary)}`);
+    if (process.env.WOLFPACK_PERF_ENFORCE_BUDGETS === "1") {
+      const failures = perfBudgetFailures(summary, device);
+      if (failures.length > 0) throw new Error(`terminal performance budgets failed:\n- ${failures.join("\n- ")}`);
+      console.log(`terminal performance budgets passed (${device})`);
+    }
     console.log("\njson:");
     console.log(JSON.stringify(report, null, 2));
   } finally {
+    if (sharedPerfBrowser) {
+      await Promise.race([sharedPerfBrowser.close(), wait(5_000)]);
+      sharedPerfBrowser = null;
+    }
     if (server) server.proc.kill("SIGTERM");
     if (broker.proc) {
       broker.proc.kill("SIGTERM");

@@ -30,9 +30,10 @@ const sandbox: Record<string, unknown> = {
   console,
 };
 runInContext(swSource, createContext(sandbox), { filename: "sw.js" });
-const { sanitizeNotificationUrl, routeNotificationClick } = (sandbox.module as {
+const { sanitizeNotificationUrl, routeNotificationClick, shouldBypassAuthorityRequest } = (sandbox.module as {
   exports: {
     sanitizeNotificationUrl: (u: string, o: string) => string;
+    shouldBypassAuthorityRequest: (url: string, method?: string) => boolean;
     routeNotificationClick: (
       clients: readonly { url: string; navigate?: (url: string) => Promise<unknown>; focus?: () => Promise<unknown> }[],
       url: string,
@@ -43,6 +44,15 @@ const { sanitizeNotificationUrl, routeNotificationClick } = (sandbox.module as {
 }).exports;
 
 const ORIGIN = "https://wolfpack.example.com";
+
+describe("service-worker authority bypass", () => {
+  test("never caches API, WebSocket, or mutation requests", () => {
+    expect(shouldBypassAuthorityRequest(`${ORIGIN}/api/sessions`)).toBe(true);
+    expect(shouldBypassAuthorityRequest(`${ORIGIN}/ws/pty`)).toBe(true);
+    expect(shouldBypassAuthorityRequest(`${ORIGIN}/styles.css`)).toBe(false);
+    expect(shouldBypassAuthorityRequest(`${ORIGIN}/`, "POST")).toBe(true);
+  });
+});
 
 describe("sanitizeNotificationUrl — open-redirect protection", () => {
   // ── Same-origin happy paths ───────────────────────────────────────────

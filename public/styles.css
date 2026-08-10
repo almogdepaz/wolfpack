@@ -628,7 +628,10 @@ body.no-animations, body.no-animations * {
   text-shadow: 0 0 4px var(--accent-muted);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.session-name-input::placeholder { color: #2a2a2a; }
+.session-name-input::placeholder { color: #707070; }
+.initial-prompt-label { margin-top: 14px; }
+.initial-task-input { resize: vertical; min-height: 72px; line-height: 1.45; }
+.field-description { margin-top: 5px; color: var(--text-dim); font-size: 10px; }
 .session-name-input:focus {
   border-color: var(--accent-border);
   box-shadow: 0 0 8px rgba(0,255,65,0.08), inset 0 0 12px rgba(0,255,65,0.03);
@@ -1213,6 +1216,17 @@ body.no-animations, body.no-animations * {
   border-bottom: 1px solid #151515;
 }
 .machine-header .dot { width: 6px; height: 6px; }
+.machine-header-identity { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.machine-header-hostname {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .machine-add-btn {
   background: var(--bg-elevated);
   border: 1px solid var(--accent-border);
@@ -1889,6 +1903,7 @@ body.no-animations, body.no-animations * {
   transform: translate3d(0, 0, 0);
   pointer-events: auto;
 }
+.drawer-item-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
 .drawer-item {
   box-sizing: border-box;
   display: flex;
@@ -1896,12 +1911,17 @@ body.no-animations, body.no-animations * {
   gap: 12px;
   padding: 14px 16px;
   min-height: 50px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: background 0.1s ease;
-  border-bottom: 1px solid var(--border);
 }
-.drawer-item:last-child { border-bottom: none; }
+.drawer-item-row:last-child { border-bottom: none; }
 .drawer-item.drawer-parent-item {
   border-left: 2px solid rgba(0, 255, 65, 0.22);
 }
@@ -1932,7 +1952,7 @@ body.no-animations, body.no-animations * {
   font-size: 12px;
   letter-spacing: 1px;
 }
-.drawer-item .delegation-sidebar-toggle {
+.drawer-item-row > .delegation-sidebar-toggle {
   flex-shrink: 0;
   min-height: 28px;
   margin-left: 2px;

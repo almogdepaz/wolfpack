@@ -2,6 +2,7 @@
  * HTTP route handlers.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { composeRouteFamilies, splitRouteFamilies } from "./route-families.js";
 import {
   readFileSync,
   writeFileSync,
@@ -30,6 +31,13 @@ import { assets } from "../public-assets.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { getVapidPublicKey, addSubscription, removeSubscription, sendPush, validateSubscription, checkNotifyRateLimit, getSubscriptionCount, buildAgentNotificationPayload, type PushSubscription } from "./push.js";
 import pkg from "../../package.json";
+import { issueWebSocketTicket } from "./ws-ticket.js";
+import {
+  boundedMetrics,
+  classifyRequestClient,
+  operationalHealth,
+  prometheusMetrics,
+} from "./operability.js";
 
 const log = createLogger("routes");
 import { DEV_DIR } from "./dev-dir.js";
@@ -555,7 +563,7 @@ export function effectiveCmds(s: Settings): string[] {
   return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL];
 }
 
-export const routes: Record<
+const routeImplementations: Record<
   string,
   (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 > = {
@@ -1269,6 +1277,30 @@ export const routes: Record<
     }
   },
 
+  // ── Readiness and bounded operational metrics ──
+
+  "GET /api/health": (_req, res) => {
+    const health = operationalHealth();
+    json(res, health, health.status === "ready" ? 200 : 503);
+  },
+
+  "GET /api/metrics": (_req, res) => json(res, boundedMetrics()),
+
+  "GET /metrics": (_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+    res.end(prometheusMetrics());
+  },
+
+  // ── Browser authentication ──
+
+  "POST /api/auth/ws-ticket": (req, res) => {
+    const client = classifyRequestClient({
+      remoteAddress: req.socket.remoteAddress,
+      tailscaleUserLogin: req.headers["tailscale-user-login"],
+    });
+    json(res, issueWebSocketTicket(client.clientKey));
+  },
+
   // ── Push notifications ──
 
   "GET /api/push/vapid-key": (_req, res) => {
@@ -1338,3 +1370,7 @@ export const routes: Record<
     json(res, { ok: true, ...result });
   },
 };
+
+/** Stable facade retained for server/tests while implementations are grouped by authority boundary. */
+export const routeFamilies = splitRouteFamilies(routeImplementations);
+export const routes = composeRouteFamilies(routeFamilies);

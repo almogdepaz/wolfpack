@@ -462,20 +462,17 @@ describe("take-control: pending viewer message filtering", () => {
     await wait(100);
   });
 
-  test("binary frames from pending viewer are ignored", async () => {
+  test("binary frames from pending viewer are rejected without affecting the active viewer", async () => {
     const ws1 = await connectPty(session);
     const ws2 = await connectPending(session);
+    const pendingClose = waitForClose(ws2);
 
-    // Send binary data — should be silently ignored
-    ws2.send(new TextEncoder().encode("hello\n").buffer);
     ws2.send(new Uint8Array([0x00, 0x01, 0x02]).buffer);
-    await wait(100);
+    const closeEvent = await pendingClose;
 
-    // Both connections survive
+    expect(closeEvent.code).toBe(1008);
     expect(ws1.readyState).toBe(WebSocket.OPEN);
-    expect(ws2.readyState).toBe(WebSocket.OPEN);
 
-    await closeWs(ws2);
     await closeWs(ws1);
     await wait(100);
   });

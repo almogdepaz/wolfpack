@@ -115,28 +115,26 @@ describe("doctor result rendering", () => {
   });
 });
 
-describe("doctor() integration", () => {
-  test("returns 0 or 1 without throwing (no --fix)", async () => {
+describe("doctor() hermetic runner", () => {
+  const checks = [() => [
+    { name: "fixture", group: "Fixture", status: "pass" as const, detail: "isolated" },
+    { name: "warning", group: "Fixture", status: "warn" as const, detail: "expected" },
+  ]];
+
+  test("runs only injected checks and returns success", async () => {
     const { doctor } = await import("../../src/cli/doctor.ts");
-    const code = await doctor();
-    expect(code === 0 || code === 1).toBe(true);
+    expect(await doctor({ checkGroups: checks, fix: false })).toBe(0);
   });
 
-  test("returns number type", async () => {
+  test("supports machine-readable results without host inspection", async () => {
     const { doctor } = await import("../../src/cli/doctor.ts");
-    expect(typeof await doctor()).toBe("number");
+    expect(await doctor({ checkGroups: checks, json: true, fix: false })).toBe(0);
   });
 
-  test("accepts { fix: true } without throwing", async () => {
+  test("returns failure for an injected failing check", async () => {
     const { doctor } = await import("../../src/cli/doctor.ts");
-    const code = await doctor({ fix: true });
-    expect(code === 0 || code === 1).toBe(true);
-  });
-
-  test("accepts { fix: false } explicitly", async () => {
-    const { doctor } = await import("../../src/cli/doctor.ts");
-    const code = await doctor({ fix: false });
-    expect(code === 0 || code === 1).toBe(true);
+    const failing = [() => [{ name: "fixture", group: "Fixture", status: "fail" as const, detail: "broken" }]];
+    expect(await doctor({ checkGroups: failing, fix: false })).toBe(1);
   });
 });
 

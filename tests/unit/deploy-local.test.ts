@@ -1,4 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+
+// These tests exercise the full deploy shell script repeatedly. Parallel CI load can
+// push otherwise healthy 2–5 second cases beyond Bun's 5 second default.
+setDefaultTimeout(15_000);
 import { execFileSync, type ExecFileSyncOptions, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -64,7 +68,16 @@ mkdir -p "$STATE_DIR"
 case "$*" in
   "list")
     SERVER_PID="$DEPLOY_TEST_SERVER_OLD_PID"
-    if { [ -f "$STATE_DIR/server-kicked" ] || [ -f "$STATE_DIR/server-bootstrapped" ]; } && [ "$DEPLOY_TEST_SERVER_PID_STAYS" != "1" ]; then SERVER_PID="$DEPLOY_TEST_SERVER_NEW_PID"; fi
+    if { [ -f "$STATE_DIR/server-kicked" ] || [ -f "$STATE_DIR/server-bootstrapped" ]; } && [ "$DEPLOY_TEST_SERVER_PID_STAYS" != "1" ]; then
+      SERVER_PID="$DEPLOY_TEST_SERVER_NEW_PID"
+      if [ -n "$DEPLOY_TEST_SERVER_REPLACEMENT_PID" ]; then
+        if [ -f "$STATE_DIR/server-first-pid-reported" ]; then
+          SERVER_PID="$DEPLOY_TEST_SERVER_REPLACEMENT_PID"
+        else
+          touch "$STATE_DIR/server-first-pid-reported"
+        fi
+      fi
+    fi
     BROKER_PID="$DEPLOY_TEST_BROKER_OLD_PID"
     if { [ -f "$STATE_DIR/broker-kicked" ] || [ -f "$STATE_DIR/broker-bootstrapped" ]; } && [ "$DEPLOY_TEST_BROKER_PID_STAYS" != "1" ]; then BROKER_PID="$DEPLOY_TEST_BROKER_NEW_PID"; fi
     if [ -f "$STATE_DIR/server-kicked" ] && [ "$DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART" = "1" ]; then BROKER_PID="$DEPLOY_TEST_BROKER_NEW_PID"; fi
@@ -80,10 +93,40 @@ case "$*" in
     if [ "$DEPLOY_TEST_SERVER_KICKSTART_FAIL" = "1" ]; then exit 1; fi
     touch "$STATE_DIR/server-kicked"
     ;;
+  *"bootout"*"com.wolfpack.broker"*)
+    rm -f "$STATE_DIR/broker-kicked" "$STATE_DIR/broker-bootstrapped"
+    touch "$STATE_DIR/broker-bootout-pending"
+    ;;
+  *"bootout"*"com.wolfpack.server"*)
+    rm -f "$STATE_DIR/server-kicked" "$STATE_DIR/server-bootstrapped"
+    touch "$STATE_DIR/server-bootout-pending"
+    ;;
+  *"print"*"com.wolfpack.broker"*)
+    if [ -f "$STATE_DIR/broker-bootout-pending" ]; then
+      if [ ! -f "$STATE_DIR/broker-bootout-observed" ]; then
+        touch "$STATE_DIR/broker-bootout-observed"
+        exit 0
+      fi
+      rm -f "$STATE_DIR/broker-bootout-pending"
+      exit 1
+    fi
+    ;;
+  *"print"*"com.wolfpack.server"*)
+    if [ -f "$STATE_DIR/server-bootout-pending" ]; then
+      if [ ! -f "$STATE_DIR/server-bootout-observed" ]; then
+        touch "$STATE_DIR/server-bootout-observed"
+        exit 0
+      fi
+      rm -f "$STATE_DIR/server-bootout-pending"
+      exit 1
+    fi
+    ;;
   *"bootstrap"*"com.wolfpack.broker.plist"*)
+    if [ -f "$STATE_DIR/broker-bootout-pending" ]; then exit 37; fi
     touch "$STATE_DIR/broker-bootstrapped"
     ;;
   *"bootstrap"*"com.wolfpack.server.plist"*)
+    if [ -f "$STATE_DIR/server-bootout-pending" ]; then exit 37; fi
     touch "$STATE_DIR/server-bootstrapped"
     ;;
 esac
@@ -135,6 +178,7 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_STALE_ASSET: "0",
     DEPLOY_TEST_BROKER_PID_STAYS: "0",
     DEPLOY_TEST_SERVER_PID_STAYS: "0",
+    DEPLOY_TEST_SERVER_REPLACEMENT_PID: "",
     DEPLOY_TEST_BROKER_KICKSTART_FAIL: "0",
     DEPLOY_TEST_SERVER_KICKSTART_FAIL: "0",
     DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "0",
@@ -288,18 +332,19 @@ describe("scripts/deploy-local.sh", () => {
     expect(commands.indexOf("com.wolfpack.broker")).toBeLessThan(commands.indexOf("com.wolfpack.server"));
   });
 
-  test("bootstraps broker when kickstart fails and broker plist exists", () => {
+  test("reloads an installed broker to refresh launch constraints", () => {
     const fixture = prepareFixture();
     const launchAgents = join(fixture.home, "Library", "LaunchAgents");
     mkdirSync(launchAgents, { recursive: true });
     writeFileSync(join(launchAgents, "com.wolfpack.broker.plist"), "plist\n");
 
-    const output = runDeploy(fixture, "yes", { DEPLOY_TEST_BROKER_KICKSTART_FAIL: "1" });
+    const output = runDeploy(fixture, "yes");
     const commands = readFileSync(fixture.log, "utf-8");
 
-    expect(output).toContain("broker bootstrapped");
-    expect(commands).toContain("launchctl kickstart -k");
+    expect(output).toContain("broker reloaded");
+    expect(commands).toContain("launchctl bootout");
     expect(commands).toContain("launchctl bootstrap");
+    expect(commands).not.toMatch(/launchctl kickstart -k .*com\.wolfpack\.broker/);
     expect(commands).toContain("com.wolfpack.broker.plist");
   });
 
@@ -339,6 +384,14 @@ describe("scripts/deploy-local.sh", () => {
     expect(readFileSync(fixture.log, "utf-8")).toBe("");
   });
 
+  test("fails when the first replacement server dies before verification completes", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "no", {
+      DEPLOY_TEST_SERVER_REPLACEMENT_PID: "555",
+    })).toThrow();
+  });
+
   test("fails when restarted server still serves stale app bundle", () => {
     const fixture = prepareFixture();
 
@@ -360,17 +413,19 @@ describe("scripts/deploy-local.sh", () => {
     expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
   });
 
-  test("verifies fresh app bundle after bootstrapping server", () => {
+  test("reloads an installed server before verifying fresh assets", () => {
     const fixture = prepareFixture();
     const launchAgents = join(fixture.home, "Library", "LaunchAgents");
     mkdirSync(launchAgents, { recursive: true });
     writeFileSync(join(launchAgents, "com.wolfpack.server.plist"), "plist\n");
 
-    const output = runDeploy(fixture, "yes", { DEPLOY_TEST_SERVER_KICKSTART_FAIL: "1" });
+    const output = runDeploy(fixture, "yes");
     const commands = readFileSync(fixture.log, "utf-8");
 
-    expect(output).toContain("server bootstrapped");
+    expect(output).toContain("server reloaded");
+    expect(commands).toContain("launchctl bootout");
     expect(commands).toContain("launchctl bootstrap");
+    expect(commands).not.toMatch(/launchctl kickstart -k .*com\.wolfpack\.server/);
     expect(commands).toContain("com.wolfpack.server.plist");
     expect(commands).toContain("curl --connect-timeout 1 --max-time 2 --fail --silent --show-error http://127.0.0.1:18790/app.bundle.js");
   });

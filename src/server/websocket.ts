@@ -21,7 +21,7 @@ import {
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
 import { getBackend, getRouter } from "./backend.js";
-import type { SessionBackend, PtyBackendMethods } from "./backend.js";
+import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter, isAllowedSession } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
 import { shouldFlushCoalescedOutput } from "../output-coalescing.js";
@@ -93,6 +93,9 @@ interface PtyEntry {
 }
 
 type PrefillMode = TerminalPrefillMode;
+type LiveSubscriptionSource =
+  | { readonly kind: "attach-lease"; readonly lease: SessionAttachLease }
+  | { readonly kind: "replay"; readonly sinceSeq: bigint | undefined };
 
 /** Shared state for a single attach lifecycle. `requestedSize.current` is
  *  mutated by the outer ws message handler (resize/attach frames) and read
@@ -128,6 +131,36 @@ const POLL_INTERVAL_MS = 50;
 const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
+
+function startViewerHeartbeat(ws: WebSocket, session: string, kind: "pending" | "active"): () => void {
+  let awaitingPong = false;
+  const onPong = () => { awaitingPong = false; };
+  ws.on("pong", onPong);
+  const timer = setInterval(() => {
+    if (ws.readyState !== 1) {
+      cleanup();
+      return;
+    }
+    if (awaitingPong) {
+      log.warn("terminal viewer missed pong deadline", { session, kind });
+      try { ws.terminate(); } catch (error: unknown) {
+        log.debug("terminal viewer terminate failed", { session, kind, error: errMsg(error) });
+      }
+      cleanup();
+      return;
+    }
+    awaitingPong = true;
+    try { ws.ping(); } catch (error: unknown) {
+      log.debug("terminal viewer ping failed", { session, kind, error: errMsg(error) });
+    }
+  }, PING_INTERVAL_MS);
+  timer.unref?.();
+  function cleanup(): void {
+    clearInterval(timer);
+    ws.removeListener("pong", onPong);
+  }
+  return cleanup;
+}
 const RATE_LIMIT_PER_SEC = 60;
 const RESIZE_DEBOUNCE_MS = 80;
 const RAPID_EXIT_THRESHOLD_MS = 3_000;
@@ -480,15 +513,13 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     }
     existing.pendingViewer = ws;
 
-    const pingTimer = setInterval(() => {
-      if (ws.readyState === 1) { try { ws.ping(); } catch (e: unknown) { log.debug(`pending ws ping failed`, { session, error: errMsg(e) }); } }
-      else clearInterval(pingTimer);
-    }, PING_INTERVAL_MS);
+    const stopHeartbeat = startViewerHeartbeat(ws, session, "pending");
+    const pendingRateLimiter = createRateLimiter(RATE_LIMIT_PER_SEC);
 
     let pendingAttachDims: { cols: number; rows: number; prefillMode?: string } | null = null;
 
     function cleanupPending() {
-      clearInterval(pingTimer);
+      stopHeartbeat();
       if (existing.pendingViewer && existing.pendingViewer !== ws) {
         tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "cleanupPending: displaced other pending", session);
       }
@@ -498,8 +529,18 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
       existing.pendingViewer = null;
     }
 
-    function pendingMessage(raw: Buffer | string) {
+    function pendingMessage(raw: Buffer | string, isBinary = false) {
       try {
+        if (isBinary || raw.length > MAX_WS_MESSAGE_BYTES || !pendingRateLimiter.allow()) {
+          tryWsClose(
+            ws,
+            CLOSE_CODE_POLICY_VIOLATION,
+            WS_CLOSE_REASONS.INVALID_MESSAGE,
+            "invalid pending viewer message close failed",
+            session,
+          );
+          return;
+        }
         const str = String(raw);
         const msg = JSON.parse(str);
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
@@ -534,7 +575,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     }
 
     function cleanup() {
-      clearInterval(pingTimer);
+      stopHeartbeat();
       ws.removeListener("message", pendingMessage);
       ws.removeListener("close", cleanup);
       ws.removeListener("error", cleanup);
@@ -819,18 +860,13 @@ async function waitForSettledResizeAndOutputQuiescence(
 async function sendSnapshotPrefill(
   ctx: PtyEntryContext,
   appliedSize: { cols: number; rows: number },
-  prefillMode: PrefillMode,
-): Promise<bigint | undefined> {
-  if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
-    ctx.timing?.mark("prefill_send.start", { bytes: 0, prefillMode });
-    ctx.timing?.mark("prefill_send.end", { bytes: 0, prefillMode });
-    return undefined;
-  }
+  prefillMode: Exclude<PrefillMode, "none">,
+): Promise<SessionAttachLease> {
   const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? GRID_PREFILL_SCROLLBACK_LINES : undefined;
   ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
-  const prefill = await ctx.backend.getSessionPrefill(ctx.session, appliedSize.cols, { scrollbackLines });
+  const lease = await ctx.backend.beginSessionAttach(ctx.session, appliedSize.cols, { scrollbackLines });
+  const { prefill } = lease;
   ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
-  const prefillSeq = prefill.seq;
   ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });
   const delayMs = testPrefillDelayMs();
   if (delayMs > 0) {
@@ -850,9 +886,9 @@ async function sendSnapshotPrefill(
     }
 
     if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
-      if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return prefillSeq;
+      if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return lease;
       ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });
-      if (!safeViewerSend(ctx.entry, ctx.session, JSON.stringify({ type: "prefill_viewport" }))) return prefillSeq;
+      if (!safeViewerSend(ctx.entry, ctx.session, JSON.stringify({ type: "prefill_viewport" }))) return lease;
       sendPrefillDone(ctx.entry, ctx.session);
     } else {
       await sendPrefillChunked(ctx.entry, sendBuf, ctx.session, ctx.timing);
@@ -861,7 +897,7 @@ async function sendSnapshotPrefill(
     sendPrefillDone(ctx.entry, ctx.session);
   }
   ctx.timing?.mark("prefill_send.end", { bytes: prefill.data.length, prefillMode });
-  return prefillSeq;
+  return lease;
 }
 
 /** Subscribe to the broker's live output stream and wire it to the viewer
@@ -872,9 +908,12 @@ async function sendSnapshotPrefill(
  *  closed. */
 async function subscribeWithCoalescing(
   ctx: PtyEntryContext,
-  prefillSeq: bigint | undefined,
+  source: LiveSubscriptionSource,
 ): Promise<boolean> {
   const { entry, session, backend } = ctx;
+  const prefillSeq = source.kind === "attach-lease"
+    ? source.lease.prefill.seq
+    : source.sinceSeq;
 
   // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
   // (e.g. post-resize redraws) that arrived after the snapshot was taken.
@@ -919,7 +958,7 @@ async function subscribeWithCoalescing(
     sendOutputBuffer(merged);
   };
   ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
-  const unsub = backend.onSessionData(session, (data: Uint8Array) => {
+  const handleOutput = (data: Uint8Array): void => {
     if (!entry.alive) return;
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
     const now = Date.now();
@@ -943,22 +982,20 @@ async function subscribeWithCoalescing(
     _coalesceBytes += next.length;
     if (_coalesceTimer) clearTimeout(_coalesceTimer);
     _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
-  }, {
-    sinceSeq: prefillSeq,
-    // When the broker `subscribe` RPC fails after onSessionData
-    // returns, the backend unwinds locally but the WS would otherwise
-    // stay open with no data stream. Tear down so the client gets a
-    // 1011 close and can surface an error / retry, instead of staring
-    // at a dead viewer.
-    onSubscribeError: (err: unknown) => {
-      log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
-      if (!entry.alive) return;
-      if (entry.viewer && entry.viewer.readyState === 1) {
-        tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "subscribe-error: viewer close failed", session);
-      }
-      teardownPty(session);
-    },
-  });
+  };
+  // When the broker `subscribe` RPC fails after onSessionData returns, the
+  // backend unwinds locally but the WS would otherwise stay open with no data.
+  const onSubscribeError = (err: unknown): void => {
+    log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
+    if (!entry.alive) return;
+    if (entry.viewer && entry.viewer.readyState === 1) {
+      tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "subscribe-error: viewer close failed", session);
+    }
+    teardownPty(session);
+  };
+  const unsub = source.kind === "attach-lease"
+    ? source.lease.activate(handleOutput, { onSubscribeError })
+    : backend.onSessionData(session, handleOutput, { sinceSeq: prefillSeq, onSubscribeError });
   if (!unsub) {
     log.warn("onSessionData returned null — session vanished", { session });
     entry.alive = false;
@@ -1122,6 +1159,7 @@ function setupNewPtyEntry(
     requestedSize.current = { cols, rows };
     if (entry.unsubscribe || spawning) return;
     spawning = true;
+    let attachLease: SessionAttachLease | null = null;
     if (process.env.WOLFPACK_TEST) {
       ptySpawnAttempts.set(session, (ptySpawnAttempts.get(session) || 0) + 1);
     }
@@ -1160,7 +1198,7 @@ function setupNewPtyEntry(
         attachFinalizing = true;
         const initialAppliedSize = requestedSize.current ?? { cols, rows };
         attachFinalizationRequest = { resizeId: undefined, ...initialAppliedSize };
-        if (!await subscribeWithCoalescing(ctx, undefined)) return;
+        if (!await subscribeWithCoalescing(ctx, { kind: "replay", sinceSeq: undefined })) return;
         if (!flushPendingInput()) return;
         timing?.mark("resize_apply.start", { cols: initialAppliedSize.cols, rows: initialAppliedSize.rows, prefillMode });
         const finalAppliedSize = await finalizeAttachResizes(ctx, initialAppliedSize, false);
@@ -1198,10 +1236,10 @@ function setupNewPtyEntry(
       // requests. It coalesces them instead of also scheduling a post-attach
       // debounce, so the newest request has one authoritative application.
       attachFinalizing = true;
-      const prefillSeq = await sendSnapshotPrefill(ctx, appliedSize, prefillMode);
+      attachLease = await sendSnapshotPrefill(ctx, appliedSize, prefillMode);
 
       if (!entryStillCurrent(entry, session, ws)) return;
-      if (!await subscribeWithCoalescing(ctx, prefillSeq)) return;
+      if (!await subscribeWithCoalescing(ctx, { kind: "attach-lease", lease: attachLease })) return;
       if (!flushPendingInput()) return;
 
       if (await finalizeAttachResizes(ctx, appliedSize, true) === null) return;
@@ -1209,6 +1247,13 @@ function setupNewPtyEntry(
       timing?.mark("pty_ready.send");
       sendPtyReady(entry, session);
     } finally {
+      if (attachLease) {
+        try {
+          await attachLease.cancel();
+        } catch (error: unknown) {
+          log.warn("atomic attach lease cancellation failed", { session, error: errMsg(error) });
+        }
+      }
       spawning = false;
       attachFinalizing = false;
       attachFinalizationRequest = null;
@@ -1245,6 +1290,23 @@ function setupNewPtyEntry(
     let prefillMode: PrefillMode | undefined = options?.prefillMode;
     if (!prefillMode && options?.skipPrefill === true) prefillMode = TERMINAL_PREFILL_MODE.NONE;
     return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
+  };
+  const startPtyAttach = (
+    cols: number,
+    rows: number,
+    options?: { prefillMode?: PrefillMode; skipPrefill?: boolean },
+  ): void => {
+    void spawnPty(cols, rows, options).catch((error: unknown) => {
+      if (!entryStillCurrent(entry, session, ws)) return;
+      log.warn("terminal attach failed", { session, error: errMsg(error) });
+      tryWsClose(
+        ws,
+        CLOSE_CODE_SERVER_ERROR,
+        WS_CLOSE_REASONS.ATTACH_FAILED,
+        "attach failure viewer close failed",
+        session,
+      );
+    });
   };
 
   const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
@@ -1284,7 +1346,7 @@ function setupNewPtyEntry(
           }
           if (!isAttached) {
             inputGateActive = true;
-            spawnPty(requestedSize.current.cols, requestedSize.current.rows, {
+            startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, {
               prefillMode,
             });
           } else if (!attachFinalizing) {
@@ -1312,7 +1374,7 @@ function setupNewPtyEntry(
           const isAttached = !!entry.unsubscribe;
           if (!isAttached) {
             if (resizeId !== undefined) pendingAttachResizeAck = { resizeId, cols, rows };
-            spawnPty(cols, rows);
+            startPtyAttach(cols, rows);
           } else {
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
@@ -1357,13 +1419,10 @@ function setupNewPtyEntry(
     }
   });
 
-  const pingTimer = setInterval(() => {
-    if (ws.readyState === 1) { try { ws.ping(); } catch (e: unknown) { log.debug(`pty ws ping failed`, { session, error: errMsg(e) }); } }
-    else clearInterval(pingTimer);
-  }, PING_INTERVAL_MS);
+  const stopHeartbeat = startViewerHeartbeat(ws, session, "active");
 
   function detach() {
-    clearInterval(pingTimer);
+    stopHeartbeat();
     discardPendingInput();
     if (entryStillCurrent(entry, session, ws)) {
       entry.viewer = null;
@@ -1390,7 +1449,7 @@ function setupNewPtyEntry(
       });
     }
     inputGateActive = true;
-    spawnPty(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
+    startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
     sendAttachAck(entry, session);
   }
 }

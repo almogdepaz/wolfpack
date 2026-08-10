@@ -117,7 +117,7 @@ export interface SessionPrefill {
 
 export interface SessionPrefillOptions {
   /** Limit broker scrollback rows before rendering; omit for backend default. */
-  scrollbackLines?: number;
+  readonly scrollbackLines?: number;
 }
 
 export type SessionDataUnsubscribe = (() => void) & {
@@ -126,6 +126,17 @@ export type SessionDataUnsubscribe = (() => void) & {
   /** Resolves after this subscriber's final detach reaches the broker. */
   closed?: Promise<void>;
 };
+
+export interface SessionAttachLease {
+  readonly prefill: SessionPrefill;
+  /** Consume the lease by transferring its live stream to this subscriber. */
+  activate(
+    cb: (data: Uint8Array) => void,
+    opts: { readonly onSubscribeError: (err: unknown) => void },
+  ): SessionDataUnsubscribe | null;
+  /** Release an unactivated lease. Idempotent; a consumed lease is unchanged. */
+  cancel(): Promise<void>;
+}
 
 export interface PtyBackendMethods {
   onSessionData(
@@ -153,6 +164,8 @@ export interface PtyBackendMethods {
    * Async because the broker sources prefill from a snapshot RPC.
    */
   getSessionPrefill(name: string, cols?: number, options?: SessionPrefillOptions): SessionPrefill | Promise<SessionPrefill>;
+  /** Own an atomic snapshot/live cut until the caller activates or cancels it. */
+  beginSessionAttach(name: string, cols?: number, options?: SessionPrefillOptions): Promise<SessionAttachLease>;
   isSessionAlive(name: string): boolean;
   /**
    * Register a lifecycle callback for a session (currently: exit only).
@@ -340,6 +353,9 @@ export class BackendRouter implements SessionBackend {
   }
 
   isBrokerAvailable(): boolean { return this._brokerAvailable; }
+  isBrokerReady(): boolean {
+    return this._brokerAvailable && this.brokerClient?.isConnected() === true;
+  }
   getBrokerSocketPath(): string { return this.brokerSocketPath; }
 
   /** Re-probe the broker socket. Starts the client if it appeared.
@@ -501,6 +517,12 @@ export class BackendRouter implements SessionBackend {
     // Cast through unknown — the test backends (MockBackend) implement enough
     // of the BrokerBackend surface for streaming-attach paths via duck typing.
     this.broker = backend as unknown as BrokerBackend;
+    this.brokerClient = {
+      close() {},
+      isConnected: () => true,
+      request: async () => ({ status: "ok" }),
+      start() {},
+    };
     this._brokerAvailable = true;
   }
 }

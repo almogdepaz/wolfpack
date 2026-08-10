@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { ASSET_VERSION } from "../../src/public-assets";
+import { ASSET_VERSIONS } from "../../src/public-assets";
 import { serveFile } from "../../src/server/http";
 
 let server: ReturnType<typeof createServer>;
@@ -48,12 +48,15 @@ describe("static asset delivery", () => {
   test("serves generated version URLs as immutable", async () => {
     const page = await fetch(`${baseUrl}/`);
     const html = await page.text();
-    expect(ASSET_VERSION).toMatch(/^[a-f0-9]{16}$/);
-    expect(html).toContain(`/app.bundle.js?v=${ASSET_VERSION}`);
-    expect(html).toContain(`<script defer src="/ghostty-web.bundle.js?v=${ASSET_VERSION}"></script>`);
+    const appVersion = ASSET_VERSIONS["app.bundle.js"];
+    const ghosttyVersion = ASSET_VERSIONS["ghostty-web.bundle.js"];
+    expect(appVersion).toMatch(/^[a-f0-9]{16}$/);
+    expect(ghosttyVersion).toMatch(/^[a-f0-9]{16}$/);
+    expect(html).toContain(`/app.bundle.js?v=${appVersion}`);
+    expect(html).toContain(`/ghostty-web.bundle.js?v=${ghosttyVersion}`);
     expect(html).not.toContain("__WOLFPACK_ASSET_VERSION__");
 
-    const asset = await fetch(`${baseUrl}/app.bundle.js?v=${ASSET_VERSION}`);
+    const asset = await fetch(`${baseUrl}/app.bundle.js?v=${appVersion}`);
     expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
   });
 });

@@ -62,6 +62,25 @@ describe("agent status authority model", () => {
     });
   });
 
+  test("falls back when a live session's project directory was removed", () => {
+    const removedProjectDir = join(projectDir, "removed-project");
+
+    expect(readLocalStatusManifest(removedProjectDir)).toMatchObject({
+      freshness: "missing",
+      source: "local-manifest",
+    });
+    expect(collectAgentStatusSources(removedProjectDir, { state: "idle" })).toContainEqual(expect.objectContaining({
+      authority: "manifest",
+      freshness: "missing",
+      source: "local-manifest",
+    }));
+    expect(collectAgentStatus(removedProjectDir, { state: "idle" })).toMatchObject({
+      state: "idle",
+      authority: "fallback",
+      freshness: "fresh",
+    });
+  });
+
   test("distinguishes malformed manifest and falls back", () => {
     writeManifest("{ nope");
 

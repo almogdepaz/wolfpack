@@ -31,22 +31,38 @@ pub struct OutputChunk {
 #[derive(Debug)]
 pub struct RingBuffer {
     cap: usize,
+    max_bytes: usize,
+    retained_bytes: usize,
     chunks: VecDeque<OutputChunk>,
 }
 
 impl RingBuffer {
     pub fn new(cap: usize) -> Self {
+        Self::with_limits(cap, cap.saturating_mul(8 * 1024))
+    }
+
+    pub fn with_limits(cap: usize, max_bytes: usize) -> Self {
         assert!(cap > 0, "ring buffer capacity must be > 0");
+        assert!(max_bytes > 0, "ring buffer byte capacity must be > 0");
         Self {
             cap,
+            max_bytes,
+            retained_bytes: 0,
             chunks: VecDeque::with_capacity(cap),
         }
     }
 
     pub fn push(&mut self, chunk: OutputChunk) {
-        if self.chunks.len() == self.cap {
-            self.chunks.pop_front();
+        let incoming = chunk.data.len();
+        while !self.chunks.is_empty()
+            && (self.chunks.len() >= self.cap || self.retained_bytes.saturating_add(incoming) > self.max_bytes)
+        {
+            if let Some(evicted) = self.chunks.pop_front() {
+                self.retained_bytes = self.retained_bytes.saturating_sub(evicted.data.len());
+            }
         }
+        if incoming > self.max_bytes { return; }
+        self.retained_bytes += incoming;
         self.chunks.push_back(chunk);
     }
 
@@ -73,6 +89,14 @@ impl RingBuffer {
 
     pub fn capacity(&self) -> usize {
         self.cap
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
+    pub fn byte_capacity(&self) -> usize {
+        self.max_bytes
     }
 }
 
@@ -107,6 +131,17 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_eq!(r.earliest_seq(), Some(2));
         assert_eq!(r.latest_seq(), Some(3));
+    }
+
+    #[test]
+    fn byte_limit_evicts_even_before_chunk_limit() {
+        let mut r = RingBuffer::with_limits(10, 5);
+        r.push(chunk(1, b"abc"));
+        r.push(chunk(2, b"def"));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.earliest_seq(), Some(2));
+        assert_eq!(r.retained_bytes(), 3);
+        assert_eq!(r.byte_capacity(), 5);
     }
 
     #[test]

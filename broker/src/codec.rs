@@ -1,5 +1,6 @@
 use crate::protocol::{ControlRequest, ControlResponse, Event};
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -9,7 +10,29 @@ pub const FRAME_KIND_OUTPUT_BINARY: u8 = 0x03;
 pub const FRAME_KIND_INPUT_BINARY: u8 = 0x04;
 pub const FRAME_KIND_EVENT: u8 = 0x05;
 
-pub const MAX_FRAME_PAYLOAD: u32 = 64 * 1024 * 1024;
+pub const MAX_FRAME_PAYLOAD: u32 = 16 * 1024 * 1024;
+pub const MAX_CONTROL_REQUEST_PAYLOAD: u32 = 1024 * 1024;
+pub const MAX_CONTROL_RESPONSE_PAYLOAD: u32 = MAX_FRAME_PAYLOAD;
+pub const MAX_OUTPUT_BINARY_PAYLOAD: u32 = 1024 * 1024;
+pub const MAX_INPUT_BINARY_PAYLOAD: u32 = 256 * 1024;
+pub const MAX_EVENT_PAYLOAD: u32 = 256 * 1024;
+
+fn max_payload_for_kind(kind: u8) -> Option<u32> {
+    match kind {
+        FRAME_KIND_CONTROL_REQUEST => Some(MAX_CONTROL_REQUEST_PAYLOAD),
+        FRAME_KIND_CONTROL_RESPONSE => Some(MAX_CONTROL_RESPONSE_PAYLOAD),
+        FRAME_KIND_OUTPUT_BINARY => Some(MAX_OUTPUT_BINARY_PAYLOAD),
+        FRAME_KIND_INPUT_BINARY => Some(MAX_INPUT_BINARY_PAYLOAD),
+        FRAME_KIND_EVENT => Some(MAX_EVENT_PAYLOAD),
+        _ => None,
+    }
+}
+
+fn validate_payload_len(kind: u8, len: u32) -> Result<()> {
+    let max = max_payload_for_kind(kind).ok_or(CodecError::UnknownKind(kind))?;
+    if len > max { return Err(CodecError::FrameTooLarge(len)); }
+    Ok(())
+}
 
 #[derive(Debug, Error)]
 pub enum CodecError {
@@ -31,7 +54,7 @@ pub type Result<T> = std::result::Result<T, CodecError>;
 pub struct OutputFrame {
     pub session_id: Uuid,
     pub seq: u64,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,11 +72,50 @@ pub enum Frame {
     Event(Event),
 }
 
-pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<()> {
-    let (kind, payload) = encode_payload(frame)?;
-    if payload.len() > MAX_FRAME_PAYLOAD as usize {
-        return Err(CodecError::FrameTooLarge(payload.len() as u32));
+fn output_frame_header(out: &OutputFrame) -> Result<[u8; 29]> {
+    let payload_len = 24usize.saturating_add(out.data.len());
+    let payload_len = u32::try_from(payload_len).unwrap_or(u32::MAX);
+    validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len)?;
+    let mut header = [0u8; 29];
+    header[0] = FRAME_KIND_OUTPUT_BINARY;
+    header[1..5].copy_from_slice(&payload_len.to_be_bytes());
+    header[5..21].copy_from_slice(out.session_id.as_bytes());
+    header[21..29].copy_from_slice(&out.seq.to_be_bytes());
+    Ok(header)
+}
+
+async fn write_all_vectored_async<W>(w: &mut W, bufs: &mut [IoSlice<'_>]) -> io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    let mut remaining = bufs;
+    while !remaining.is_empty() {
+        let written = w.write_vectored(remaining).await?;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write frame",
+            ));
+        }
+        IoSlice::advance_slices(&mut remaining, written);
     }
+    Ok(())
+}
+
+pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<()> {
+    if let Frame::OutputBinary(out) = frame {
+        let payload_len = 24usize.saturating_add(out.data.len());
+        validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len as u32)?;
+        w.write_all(&[FRAME_KIND_OUTPUT_BINARY])?;
+        w.write_all(&(payload_len as u32).to_be_bytes())?;
+        w.write_all(out.session_id.as_bytes())?;
+        w.write_all(&out.seq.to_be_bytes())?;
+        w.write_all(out.data.as_slice())?;
+        return Ok(());
+    }
+    let (kind, payload) = encode_payload(frame)?;
+    validate_payload_len(kind, payload.len() as u32)?;
     let len = (payload.len() as u32).to_be_bytes();
     w.write_all(&[kind])?;
     w.write_all(&len)?;
@@ -66,9 +128,7 @@ pub fn read_frame<R: Read>(r: &mut R) -> Result<Frame> {
     r.read_exact(&mut header)?;
     let kind = header[0];
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
-    if len > MAX_FRAME_PAYLOAD {
-        return Err(CodecError::FrameTooLarge(len));
-    }
+    validate_payload_len(kind, len)?;
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)?;
     decode_payload(kind, &payload)
@@ -83,9 +143,7 @@ where
     r.read_exact(&mut header).await?;
     let kind = header[0];
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
-    if len > MAX_FRAME_PAYLOAD {
-        return Err(CodecError::FrameTooLarge(len));
-    }
+    validate_payload_len(kind, len)?;
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload).await?;
     decode_payload(kind, &payload)
@@ -96,10 +154,18 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
-    let (kind, payload) = encode_payload(frame)?;
-    if payload.len() > MAX_FRAME_PAYLOAD as usize {
-        return Err(CodecError::FrameTooLarge(payload.len() as u32));
+    if let Frame::OutputBinary(out) = frame {
+        let header = output_frame_header(out)?;
+        write_all_vectored_async(
+            w,
+            &mut [IoSlice::new(&header), IoSlice::new(out.data.as_slice())],
+        )
+        .await?;
+        w.flush().await?;
+        return Ok(());
     }
+    let (kind, payload) = encode_payload(frame)?;
+    validate_payload_len(kind, payload.len() as u32)?;
     let len = (payload.len() as u32).to_be_bytes();
     w.write_all(&[kind]).await?;
     w.write_all(&len).await?;
@@ -145,7 +211,7 @@ fn decode_payload(kind: u8, payload: &[u8]) -> Result<Frame> {
             Frame::OutputBinary(OutputFrame {
                 session_id: Uuid::from_bytes(id),
                 seq: u64::from_be_bytes(seq),
-                data: payload[24..].to_vec(),
+                data: Arc::new(payload[24..].to_vec()),
             })
         }
         FRAME_KIND_INPUT_BINARY => {
@@ -169,6 +235,51 @@ mod tests {
     use crate::protocol::{methods, ControlResponse, Event, ProtocolError, ErrorCode, ResponsePayload};
     use serde_json::json;
     use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    #[derive(Default)]
+    struct AsyncVectoredOnlyWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl tokio::io::AsyncWrite for AsyncVectoredOnlyWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::other("scalar async write used")))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            let limit = 7;
+            let mut written = 0;
+            for buf in bufs {
+                let take = (limit - written).min(buf.len());
+                self.bytes.extend_from_slice(&buf[..take]);
+                written += take;
+                if written == limit {
+                    break;
+                }
+            }
+            Poll::Ready(Ok(written))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     fn nil() -> Uuid {
         Uuid::nil()
@@ -213,7 +324,7 @@ mod tests {
         let out = OutputFrame {
             session_id: id,
             seq: 0xCAFEBABE,
-            data: b"hello\x1b[Hworld".to_vec(),
+            data: Arc::new(b"hello\x1b[Hworld".to_vec()),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &Frame::OutputBinary(out.clone())).unwrap();
@@ -223,6 +334,22 @@ mod tests {
             Frame::OutputBinary(b) => assert_eq!(b, out),
             other => panic!("wrong kind: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn async_output_binary_uses_partial_safe_scatter_gather_writes() {
+        let frame = Frame::OutputBinary(OutputFrame {
+            session_id: nil(),
+            seq: 42,
+            data: Arc::new(b"shared-output".to_vec()),
+        });
+        let mut writer = AsyncVectoredOnlyWriter::default();
+
+        write_frame_async(&mut writer, &frame)
+            .await
+            .expect("vectored frame write");
+
+        assert_eq!(read_frame(&mut Cursor::new(writer.bytes)).unwrap(), frame);
     }
 
     #[test]
@@ -295,6 +422,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_payloads_above_their_frame_kind_budget_before_allocation() {
+        for (kind, length) in [
+            (FRAME_KIND_INPUT_BINARY, MAX_INPUT_BINARY_PAYLOAD + 1),
+            (FRAME_KIND_CONTROL_REQUEST, MAX_CONTROL_REQUEST_PAYLOAD + 1),
+            (FRAME_KIND_OUTPUT_BINARY, MAX_OUTPUT_BINARY_PAYLOAD + 1),
+            (FRAME_KIND_EVENT, MAX_EVENT_PAYLOAD + 1),
+        ] {
+            let mut buf = vec![kind];
+            buf.extend_from_slice(&length.to_be_bytes());
+            let mut cur = Cursor::new(buf);
+            assert!(matches!(read_frame(&mut cur), Err(CodecError::FrameTooLarge(n)) if n == length));
+        }
+    }
+
+    #[test]
     fn frames_can_be_streamed_back_to_back() {
         let req = ControlRequest {
             id: 1,
@@ -302,7 +444,7 @@ mod tests {
             params: json!({ "session_id": Uuid::nil() }),
         };
         let resp = ControlResponse::ok(1, ResponsePayload::Subscribe { ok: true, current_seq: 0, replay_truncated: false });
-        let out = OutputFrame { session_id: nil(), seq: 1, data: b"abc".to_vec() };
+        let out = OutputFrame { session_id: nil(), seq: 1, data: Arc::new(b"abc".to_vec()) };
         let inp = InputFrame { session_id: nil(), data: b"\r".to_vec() };
         let ev = Event::SnapshotInvalidated { session_id: nil() };
 

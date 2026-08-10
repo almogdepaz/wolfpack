@@ -1,11 +1,17 @@
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 import {
@@ -121,23 +127,64 @@ const AUTHORITY_RANK: Record<AgentStatusAuthority, number> = {
   [AGENT_STATUS_AUTHORITY.IDENTITY]: 1,
 };
 
+const RESOLVE_UNDER_KIND = {
+  RESOLVED: "resolved",
+  BASE_MISSING: "base-missing",
+  INVALID: "invalid",
+} as const;
+
+type ResolveUnderResult =
+  | { readonly kind: typeof RESOLVE_UNDER_KIND.RESOLVED; readonly path: string }
+  | { readonly kind: typeof RESOLVE_UNDER_KIND.BASE_MISSING }
+  | { readonly kind: typeof RESOLVE_UNDER_KIND.INVALID; readonly message: string };
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
 function isSafeRelativePath(path: string): boolean {
   if (!path || path.includes("\0")) return false;
   const normalized = normalize(path);
   return !isAbsolute(normalized) && normalized !== ".." && !normalized.startsWith("../");
 }
 
-function resolveUnder(baseDir: string, relativePath: string): string | null {
-  if (!isSafeRelativePath(relativePath)) return null;
-  const baseReal = realpathSync(baseDir);
-  const candidate = resolve(baseReal, relativePath);
-  if (existsSync(candidate)) {
-    const candidateReal = realpathSync(candidate);
-    return candidateReal === baseReal || candidateReal.startsWith(baseReal + "/") ? candidateReal : null;
+function resolveUnder(baseDir: string, relativePath: string): ResolveUnderResult {
+  if (!isSafeRelativePath(relativePath)) {
+    return {
+      kind: RESOLVE_UNDER_KIND.INVALID,
+      message: "status path must be a safe relative path",
+    };
   }
-  const parent = resolve(baseReal, relativePath, "..");
-  if (parent === baseReal || parent.startsWith(baseReal + "/")) return candidate;
-  return null;
+
+  try {
+    const baseReal = realpathSync(baseDir);
+    const candidate = resolve(baseReal, relativePath);
+    if (existsSync(candidate)) {
+      const candidateReal = realpathSync(candidate);
+      return candidateReal === baseReal || candidateReal.startsWith(baseReal + "/")
+        ? { kind: RESOLVE_UNDER_KIND.RESOLVED, path: candidateReal }
+        : {
+            kind: RESOLVE_UNDER_KIND.INVALID,
+            message: "status path does not resolve under project directory",
+          };
+    }
+    const parent = resolve(baseReal, relativePath, "..");
+    return parent === baseReal || parent.startsWith(baseReal + "/")
+      ? { kind: RESOLVE_UNDER_KIND.RESOLVED, path: candidate }
+      : {
+          kind: RESOLVE_UNDER_KIND.INVALID,
+          message: "status path does not resolve under project directory",
+        };
+  } catch (error) {
+    if (isErrnoException(error) && error.code === "ENOENT") {
+      return { kind: RESOLVE_UNDER_KIND.BASE_MISSING };
+    }
+    const detail = isErrnoException(error) && error.code ? `: ${error.code}` : "";
+    return {
+      kind: RESOLVE_UNDER_KIND.INVALID,
+      message: `status path could not be resolved${detail}`,
+    };
+  }
 }
 
 function normalizeCandidate(candidate: CandidateStatus): AgentStatusSource {
@@ -228,8 +275,8 @@ function readStructuredStatusFile(
   label: string,
   nowMs = Date.now(),
 ): CandidateStatus {
-  const statusPath = resolveUnder(projectDir, relativePath);
-  if (!statusPath) {
+  const statusLocation = resolveUnder(projectDir, relativePath);
+  if (statusLocation.kind === RESOLVE_UNDER_KIND.INVALID) {
     return {
       state: AGENT_STATUS_STATE.UNKNOWN,
       authority,
@@ -237,10 +284,10 @@ function readStructuredStatusFile(
       source,
       label: `${label} invalid path`,
       path: relativePath,
-      message: `${label} path does not resolve under project directory`,
+      message: statusLocation.message,
     };
   }
-  if (!existsSync(statusPath)) {
+  if (statusLocation.kind === RESOLVE_UNDER_KIND.BASE_MISSING || !existsSync(statusLocation.path)) {
     return {
       state: AGENT_STATUS_STATE.UNKNOWN,
       authority,
@@ -252,7 +299,7 @@ function readStructuredStatusFile(
   }
 
   try {
-    const parsed = statusFromObject(JSON.parse(readFileSync(statusPath, "utf-8")));
+    const parsed = statusFromObject(JSON.parse(readFileSync(statusLocation.path, "utf-8")));
     if (!parsed) {
       return {
         state: AGENT_STATUS_STATE.UNKNOWN,
@@ -263,7 +310,7 @@ function readStructuredStatusFile(
         path: relativePath,
       };
     }
-    const stat = statSync(statusPath);
+    const stat = statSync(statusLocation.path);
     const stale = nowMs - stat.mtimeMs > AGENT_STATUS_TTL_MS;
     return {
       state: parsed.state,
@@ -502,7 +549,10 @@ export class AgentRuntimeStateStore {
     return this.file.sessions[sessionKey];
   }
 
-  reduce(input: Omit<AgentRuntimeStateInput, "previous">): AgentRuntimeState {
+  reduce(
+    input: Omit<AgentRuntimeStateInput, "previous">,
+    options: { readonly persist?: boolean } = {},
+  ): AgentRuntimeState {
     const next = deriveAgentRuntimeState({
       ...input,
       previous: this.file.sessions[input.sessionKey],
@@ -514,7 +564,7 @@ export class AgentRuntimeStateStore {
         [input.sessionKey]: next,
       },
     };
-    this.write();
+    if (options.persist !== false) this.write();
     return next;
   }
 
@@ -539,11 +589,19 @@ export class AgentRuntimeStateStore {
     return next;
   }
 
-  prune(activeSessionKeys: ReadonlySet<string>): void {
+  prune(
+    activeSessionKeys: ReadonlySet<string>,
+    options: { readonly persist?: boolean } = {},
+  ): void {
     const sessions = Object.fromEntries(
       Object.entries(this.file.sessions).filter(([key]) => activeSessionKeys.has(key)),
     );
     this.file = { schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION, sessions };
+    if (options.persist !== false) this.write();
+  }
+
+  /** Persist a group of in-memory reductions with one full-file write. */
+  flush(): void {
     this.write();
   }
 
@@ -555,8 +613,27 @@ export class AgentRuntimeStateStore {
   }
 
   private write(): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, `${JSON.stringify(this.file, null, 2)}\n`);
+    const directory = dirname(this.path);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+    let fd: number | undefined;
+    try {
+      fd = openSync(tmp, "wx", 0o600);
+      writeFileSync(fd, `${JSON.stringify(this.file, null, 2)}\n`);
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(tmp, this.path);
+      // Best-effort directory durability. APFS can reject directory fsync;
+      // the atomic rename is still complete in that case.
+      try {
+        const dirFd = openSync(directory, "r");
+        try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+      } catch { /* platform does not support directory fsync */ }
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      rmSync(tmp, { force: true });
+    }
   }
 }
 

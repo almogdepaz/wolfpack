@@ -305,6 +305,7 @@ describe("GET /api/sessions", () => {
     await get("/api/sessions");
 
     mockBackend.setCapturePane(async () => "step two\nseparator\nstatus\nagents\n");
+    mockBackend.setOutputSequence("wolf-1", "2");
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions[0].triage).toBe("running");
@@ -316,6 +317,7 @@ describe("GET /api/sessions", () => {
     await get("/api/sessions");
 
     mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
+    mockBackend.setOutputSequence("wolf-1", "1");
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions[0].triage).toBe("idle");
@@ -334,6 +336,8 @@ describe("GET /api/sessions", () => {
       mockBackend.setCapturePane(async () => "baseline\n");
       await __runSessionNotificationObservationForTests();
       mockBackend.setCapturePane(async () => "changed\n");
+      mockBackend.setOutputSequence("wolf-1", "1");
+      mockBackend.setOutputSequence("wolf-2", "1");
       await __runSessionNotificationObservationForTests();
       await __runSessionNotificationObservationForTests();
 
@@ -359,8 +363,12 @@ describe("GET /api/sessions", () => {
       mockBackend.setCapturePane(async () => "baseline\n");
       await __runSessionNotificationObservationForTests();
       mockBackend.setCapturePane(async () => "changed\n");
+      mockBackend.setOutputSequence("wolf-1", "1");
+      mockBackend.setOutputSequence("wolf-2", "1");
       await __runSessionNotificationObservationForTests();
       mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
+      mockBackend.setOutputSequence("wolf-1", "2");
+      mockBackend.setOutputSequence("wolf-2", "2");
       await __runSessionNotificationObservationForTests();
 
       expect(pushes).toEqual([]);
@@ -386,11 +394,11 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[0].triage).toBe("idle");
   });
 
-  test("keeps dashboard previews empty and snapshots only for explicit reads", async () => {
+  test("derives dashboard previews from the already-sampled rendered fingerprint", async () => {
     mockBackend.setCapturePane(async () => "real output here\n─────────────\n$ \n\n");
 
     const listed = await (await get("/api/sessions")).json();
-    expect(listed.sessions[0].lastLine).toBe("");
+    expect(listed.sessions[0].lastLine).toBe("$");
 
     const read = await (await get("/api/session-control/read?session=wolf-1")).json();
     expect(read.output).toBe("real output here\n─────────────\n$ \n\n");
@@ -401,6 +409,7 @@ describe("GET /api/sessions", () => {
     mockBackend.setCapturePane(async (session: string) => session === "running-sess" ? "step one\n" : "quiet\n");
     await get("/api/sessions");
     mockBackend.setCapturePane(async (session: string) => session === "running-sess" ? "step two\n" : "quiet\n");
+    mockBackend.setOutputSequence("running-sess", "1");
     const res = await get("/api/sessions");
     const data = await res.json();
     // Sessions sorted alphabetically (5cf260d), triage is per-session metadata
@@ -425,6 +434,7 @@ describe("GET /api/sessions", () => {
     });
 
     mockBackend.setCapturePane(async () => "compiling step 2...\n");
+    mockBackend.setOutputSequence("wolf-1", "1");
     const second = await (await get("/api/sessions")).json();
     expect(second.sessions[0].triage).toBe("running");
     expect(second.sessions[0].runtimeState).toMatchObject({
@@ -434,7 +444,7 @@ describe("GET /api/sessions", () => {
     });
   });
 
-  test("uses rendered pane changes for activity while preserving the output sequence", async () => {
+  test("uses output watermarks to skip stable snapshots while preserving rendered activity", async () => {
     const sessionName = "rendered-activity";
     const sessionId = "rendered-activity-id";
     const factBackend = new FactBackend([
@@ -446,7 +456,7 @@ describe("GET /api/sessions", () => {
       const initial = await (await get("/api/sessions")).json();
       expect(initial.sessions[0]).toMatchObject({
         name: sessionName,
-        lastLine: "",
+        lastLine: "stable rendered tui",
         triage: "idle",
         outputSequence: "41",
         runtimeState: { state: "idle" },
@@ -457,16 +467,25 @@ describe("GET /api/sessions", () => {
       ]);
       const redraw = await (await get("/api/sessions")).json();
       expect(redraw.sessions[0]).toMatchObject({
+        lastLine: "stable rendered tui",
         triage: "idle",
         outputSequence: "42",
         runtimeState: { state: "idle" },
       });
 
+      const stable = await (await get("/api/sessions")).json();
+      expect(stable.sessions[0]).toMatchObject({ triage: "idle", outputSequence: "42" });
+      expect(factBackend.capturePaneCalls).toBe(2);
+
       factBackend.setPane(sessionName, "updated rendered tui\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "43", identity: testIdentity(sessionName, sessionId) },
+      ]);
       const renderedOutput = await (await get("/api/sessions")).json();
       expect(renderedOutput.sessions[0]).toMatchObject({
+        lastLine: "updated rendered tui",
         triage: "running",
-        outputSequence: "42",
+        outputSequence: "43",
         runtimeState: {
           state: "output",
           label: "rendered output activity",
@@ -747,6 +766,7 @@ describe("GET /api/sessions", () => {
     expect(acked.runtimeState.acknowledgedSequence).toBe(runtimeState.transitionSequence);
 
     mockBackend.setCapturePane(async () => "new output\n");
+    mockBackend.setOutputSequence("wolf-1", "1");
     const next = await (await get("/api/sessions")).json();
     expect(next.sessions[0].runtimeState.transitionSequence).toBeGreaterThan(runtimeState.transitionSequence);
     expect(next.sessions[0].runtimeState.unseen).toBe(true);
@@ -2387,17 +2407,6 @@ describe("CORS", () => {
     expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
   });
 
-  test("Tailscale Serve recovery reflects a canonical sibling Referer for GET", async () => {
-    const res = await fetch(`${tailnetServer.base}/api/info`, {
-      headers: {
-        "Tailscale-User-Login": "user@example.com",
-        Referer: `${TAILNET_SIBLING_ORIGIN}/control`,
-      },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
-  });
-
   test("foreign and lookalike origins get 403", async () => {
     for (const origin of TAILNET_REJECTED_ORIGINS) {
       const res = await fetch(`${tailnetServer.base}/api/info`, { headers: { Origin: origin } });
@@ -2408,6 +2417,48 @@ describe("CORS", () => {
 
   test("no origin header → no CORS headers, request proceeds", async () => {
     const res = await get("/api/info");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    expect(res.headers.get("vary")).toBe("Origin, Referer, Tailscale-User-Login");
+  });
+
+  test("recovers a stripped Origin only for a local Tailscale Serve request", async () => {
+    for (const method of ["GET", "OPTIONS"] as const) {
+      const res = await fetch(`${tailnetServer.base}/api/info`, {
+        method,
+        headers: {
+          Referer: `${TAILNET_SIBLING_ORIGIN}/control-room`,
+          "Tailscale-User-Login": "user@example.com",
+        },
+      });
+      expect(res.status).toBe(method === "OPTIONS" ? 204 : 200);
+      expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
+      expect(res.headers.get("vary")).toBe("Origin, Referer, Tailscale-User-Login");
+    }
+  });
+
+  test("an explicit disallowed Origin remains authoritative over valid Serve recovery headers", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      headers: {
+        Origin: "https://evil.example",
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control-room`,
+        "Tailscale-User-Login": "user@example.com",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  test("generic forwarding headers cannot recover a stripped Origin", async () => {
+    const res = await fetch(`${tailnetServer.base}/api/info`, {
+      headers: {
+        Referer: `${TAILNET_SIBLING_ORIGIN}/control-room`,
+        Forwarded: "for=203.0.113.1;proto=https;host=phone.tailnet.ts.net",
+        "X-Forwarded-For": "203.0.113.1",
+        "X-Forwarded-Host": "phone.tailnet.ts.net",
+        "X-Forwarded-Proto": "https",
+      },
+    });
     expect(res.status).toBe(200);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
@@ -2431,33 +2482,6 @@ describe("CORS", () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
-  });
-
-  test("Tailscale Serve recovery reflects a canonical sibling Referer for OPTIONS", async () => {
-    const res = await fetch(`${tailnetServer.base}/api/info`, {
-      method: "OPTIONS",
-      headers: {
-        "Tailscale-User-Login": "user@example.com",
-        Referer: `${TAILNET_SIBLING_ORIGIN}/control`,
-      },
-    });
-    expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-origin")).toBe(TAILNET_SIBLING_ORIGIN);
-  });
-
-  test("Tailscale Serve recovery ignores missing login, forwarded, foreign, and lookalike headers", async () => {
-    const rejectedHeaders: readonly Record<string, string>[] = [
-      { Referer: `${TAILNET_SIBLING_ORIGIN}/control` },
-      { "Tailscale-User-Login": "", Referer: `${TAILNET_SIBLING_ORIGIN}/control` },
-      { "Tailscale-User-Login": "user@example.com", Referer: "https://evil.example/control" },
-      { "Tailscale-User-Login": "user@example.com", Referer: "https://phone.tailnet.ts.net.evil.example/control" },
-      { "Tailscale-User-Login": "user@example.com", "X-Forwarded-Host": "phone.tailnet.ts.net" },
-    ];
-    for (const headers of rejectedHeaders) {
-      const res = await fetch(`${tailnetServer.base}/api/info`, { headers });
-      expect(res.status, JSON.stringify(headers)).toBe(200);
-      expect(res.headers.get("access-control-allow-origin"), JSON.stringify(headers)).toBeNull();
-    }
   });
 
   test("OPTIONS preflight with rejected origin → 403", async () => {

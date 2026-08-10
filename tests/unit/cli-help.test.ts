@@ -282,3 +282,15 @@ describe("cli help dispatch", () => {
     expect(cli.shouldStartDashboard(["unknown"])).toBe(false);
   });
 });
+
+
+describe("setup option parsing", () => {
+  test("requires explicit non-interactive mode for unattended overrides", async () => {
+    const { parseSetupOptions } = await import("../../src/cli/index.ts");
+    expect(parseSetupOptions(["--dev-dir", "/tmp/projects"])).toBeNull();
+    expect(parseSetupOptions(["--non-interactive", "--dev-dir", "/tmp/projects", "--port", "19000"])).toEqual({
+      nonInteractive: true, devDir: "/tmp/projects", port: 19000,
+    });
+    expect(parseSetupOptions(["--non-interactive", "--port", "80"])).toBeNull();
+  });
+});

@@ -179,6 +179,17 @@ Returns a self-contained reconnect snapshot for one session. Detail in the
   ```
 - ok payload: `{ "kind": "snapshot", "snapshot": Snapshot }`
 
+#### `snapshot_subscribe`
+
+Connection-local atomic attach operation. It accepts the same params as
+`snapshot`, captures the snapshot sequence and installs the replay/live
+subscription under the terminal ordering lock, then queues the response before
+any replay/output frames.
+
+- ok payload: `{ "kind": "snapshot_subscribe", "snapshot": Snapshot, "current_seq": 12345, "replay_truncated": false }`
+- All following `output_binary` frames have `seq > snapshot.seq`; no output can
+  be duplicated or lost between two separate RPCs.
+
 #### `resize`
 
 Resizes the PTY. Idempotent for `cols`/`rows` already in effect.
@@ -286,7 +297,7 @@ are not tied to any request `id`.
 | Event                 | Body fields                                      |
 |-----------------------|--------------------------------------------------|
 | `session_started`     | `session: SessionInfo`                           |
-| `session_exited`      | `session_id, exit_code?, signal?`                |
+| `session_exited`      | `session_id, exit_code?, signal?, final_seq?`    |
 | `session_resized`     | `session_id, cols, rows`                         |
 | `snapshot_invalidated`| `session_id` — clients SHOULD re-`snapshot`      |
 | `subscription_dropped`| `session_id, lagged` — re-subscribe from the last delivered `seq` |
@@ -449,3 +460,7 @@ The `wolfpack-broker` crate carries unit tests for:
 - Back-to-back frame streaming on a single buffer.
 
 Run with `cargo test --manifest-path broker/Cargo.toml`.
+
+## Resource limits
+
+The broker accepts at most 128 simultaneous Unix-socket connections and 32 distinct output subscriptions per connection. Production input, control, output, replay, and subscription-forwarding queues are bounded by conservative byte envelopes; snapshots have a global concurrency cap. Queue depth high-water increases are emitted as structured `broker_queue_high_water` debug events (`queue`, `depth`) for capacity analysis without session-name labels.

@@ -58,7 +58,9 @@ var WS_CLOSE_REASONS = {
   PENDING_INPUT_LIMITED: "pending input limit exceeded",
   PREFILL_TIMEOUT: "prefill timeout",
   RESIZE_FAILED: "resize failed",
-  SLOW_VIEWER: "slow viewer"
+  SLOW_VIEWER: "slow viewer",
+  INVALID_MESSAGE: "invalid message",
+  ATTACH_FAILED: "attach failed"
 };
 
 // src/terminal-input.ts

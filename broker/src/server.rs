@@ -2,20 +2,24 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::codec::{read_frame_async, write_frame_async, CodecError, Frame, OutputFrame};
+use crate::codec::{
+    read_frame_async, write_frame_async, CodecError, Frame, InputFrame, OutputFrame,
+    MAX_INPUT_BINARY_PAYLOAD,
+};
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
-    SubscribeParams, UnsubscribeParams,
+    SnapshotParams, SubscribeParams, UnsubscribeParams,
 };
-use crate::registry::Registry;
+use crate::registry::{Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::ring_buffer::OutputChunk;
 use crate::router::Router;
 use crate::session::EventSender;
@@ -23,7 +27,15 @@ use crate::session::EventSender;
 /// Per-connection queue depth. Control/global lifecycle and output use separate
 /// queues so PTY traffic cannot starve request responses; the socket writer
 /// prioritises control while preserving order within each queue.
-const WRITER_QUEUE_CAPACITY: usize = 1024;
+const CONTROL_QUEUE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const OUTPUT_QUEUE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const WRITER_QUEUE_CAPACITY: usize = OUTPUT_QUEUE_MAX_BYTES / OUTPUT_FRAME_COALESCE_MAX_BYTES;
+const CONTROL_QUEUE_CAPACITY: usize =
+    CONTROL_QUEUE_MAX_BYTES / crate::codec::MAX_CONTROL_RESPONSE_PAYLOAD as usize;
+const MAX_CONNECTIONS: usize = 128;
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 32;
+static CONTROL_QUEUE_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+static OUTPUT_QUEUE_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 /// Merge adjacent PTY reads before crossing the broker socket without raising
 /// the writer queue's pre-coalescing memory envelope (1,024 × 8 KiB).
 const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 8 * 1024;
@@ -31,6 +43,10 @@ const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 8 * 1024;
 /// but bound per-subscription memory. At the cap we drain queued frames first;
 /// sustained producers then hit the existing broadcast-lag recovery contract.
 const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Input is ordered per connection and bounded by bytes: the codec caps each
+/// frame and this depth caps queued data before socket backpressure applies.
+const INPUT_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const INPUT_QUEUE_CAPACITY: usize = INPUT_QUEUE_MAX_BYTES / MAX_INPUT_BINARY_PAYLOAD as usize;
 
 pub struct ServerConfig {
     pub socket_path: PathBuf,
@@ -96,7 +112,7 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
         events,
         writer_queue_capacity,
     } = config;
-    let writer_queue_capacity = writer_queue_capacity.unwrap_or(WRITER_QUEUE_CAPACITY);
+    let writer_queue_capacity_override = writer_queue_capacity;
 
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -129,7 +145,7 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
         router,
         registry,
         events,
-        writer_queue_capacity,
+        writer_queue_capacity_override,
         shutdown_rx,
     ));
 
@@ -185,9 +201,10 @@ async fn accept_loop(
     router: Arc<dyn Router + Send + Sync>,
     registry: Arc<Registry>,
     events: EventSender,
-    writer_queue_capacity: usize,
+    writer_queue_capacity: Option<usize>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         tokio::select! {
             biased;
@@ -199,6 +216,14 @@ async fn accept_loop(
             }
             accept = listener.accept() => match accept {
                 Ok((stream, _)) => {
+                    let connection_permit = match Arc::clone(&connection_slots).try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            warn!(max_connections = MAX_CONNECTIONS, "broker connection cap reached; rejecting peer");
+                            drop(stream);
+                            continue;
+                        }
+                    };
                     let r = router.clone();
                     let reg = Arc::clone(&registry);
                     // Subscribe to events SYNCHRONOUSLY here, before the
@@ -215,6 +240,7 @@ async fn accept_loop(
                         event_rx,
                         writer_queue_capacity,
                         conn_shutdown,
+                        connection_permit,
                     ));
                 }
                 Err(e) => {
@@ -230,17 +256,42 @@ async fn handle_connection(
     router: Arc<dyn Router + Send + Sync>,
     registry: Arc<Registry>,
     event_rx: broadcast::Receiver<Event>,
-    writer_queue_cap: usize,
+    writer_queue_cap: Option<usize>,
     mut shutdown: watch::Receiver<bool>,
+    _connection_permit: OwnedSemaphorePermit,
 ) {
     debug!("broker connection opened");
     let (mut read_half, write_half) = stream.into_split();
 
     // Control responses/global lifecycle events must not queue behind a PTY
     // redraw burst. The socket writer prioritises this queue over output.
-    let (writer_tx, writer_rx) = mpsc::channel::<Frame>(writer_queue_cap);
-    let (output_tx, output_rx) = mpsc::channel::<Frame>(writer_queue_cap);
-    let writer_task = tokio::spawn(connection_writer(write_half, writer_rx, output_rx));
+    let control_queue_cap = writer_queue_cap.unwrap_or(CONTROL_QUEUE_CAPACITY);
+    let output_queue_cap = writer_queue_cap.unwrap_or(WRITER_QUEUE_CAPACITY);
+    let (writer_tx, writer_rx) = mpsc::channel::<Frame>(control_queue_cap);
+    let (output_tx, output_rx) = mpsc::channel::<Frame>(output_queue_cap);
+    let writer_task = tokio::spawn(connection_writer(
+        write_half,
+        writer_rx,
+        output_rx,
+        control_queue_cap,
+        output_queue_cap,
+    ));
+    let (input_tx, mut input_rx) = mpsc::channel::<InputFrame>(INPUT_QUEUE_CAPACITY);
+    let input_registry = Arc::clone(&registry);
+    let input_task = tokio::spawn(async move {
+        while let Some(inp) = input_rx.recv().await {
+            match input_registry.get(inp.session_id) {
+                Some(session) => {
+                    if let Err(error) = session.write_stdin(&inp.data) {
+                        warn!(session_id = %inp.session_id, %error, "write_stdin failed");
+                    }
+                }
+                None => {
+                    debug!(session_id = %inp.session_id, "input_binary for unknown session; ignoring")
+                }
+            }
+        }
+    });
 
     // Drain async lifecycle events into this connection's writer queue.
     // Started here (not inside `accept_loop`) so the receiver was already
@@ -270,6 +321,7 @@ async fn handle_connection(
                         &registry,
                         &writer_tx,
                         &output_tx,
+                        &input_tx,
                         &mut subs,
                     )
                     .await
@@ -303,6 +355,12 @@ async fn handle_connection(
         h.abort();
     }
     event_task.abort();
+    drop(input_tx);
+    if let Err(error) = input_task.await {
+        if !error.is_cancelled() {
+            warn!(%error, "broker input task join error");
+        }
+    }
     drop(writer_tx);
     drop(output_tx);
     if let Err(e) = writer_task.await {
@@ -334,22 +392,69 @@ async fn forward_events(mut rx: broadcast::Receiver<Event>, writer_tx: mpsc::Sen
     }
 }
 
+fn record_queue_high_water(queue: &'static str, depth: usize) {
+    let metric = if queue == "control" {
+        &CONTROL_QUEUE_HIGH_WATER
+    } else {
+        &OUTPUT_QUEUE_HIGH_WATER
+    };
+    let mut previous = metric.load(Ordering::Relaxed);
+    while depth > previous {
+        match metric.compare_exchange_weak(previous, depth, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => {
+                debug!(
+                    metric = "broker_queue_high_water",
+                    queue, depth, "broker queue high-water increased"
+                );
+                break;
+            }
+            Err(actual) => previous = actual,
+        }
+    }
+}
+
 async fn connection_writer(
     mut w: tokio::net::unix::OwnedWriteHalf,
     mut control_rx: mpsc::Receiver<Frame>,
     mut output_rx: mpsc::Receiver<Frame>,
+    control_queue_cap: usize,
+    output_queue_cap: usize,
 ) {
+    const MAX_CONTROL_BURST: usize = 8;
+    let mut control_streak = 0usize;
     loop {
-        let frame = tokio::select! {
+        // Control remains prioritised, but a sustained event/response stream
+        // yields after a bounded burst so terminal output cannot starve.
+        if control_streak >= MAX_CONTROL_BURST {
+            if let Ok(frame) = output_rx.try_recv() {
+                record_queue_high_water("output", output_queue_cap - output_rx.capacity() + 1);
+                if let Err(error) = write_frame_async(&mut w, &frame).await {
+                    warn!(%error, "broker writer failed; closing connection");
+                    return;
+                }
+                control_streak = 0;
+                continue;
+            }
+        }
+        let (is_control, frame) = tokio::select! {
             biased;
-            Some(frame) = control_rx.recv() => frame,
-            Some(frame) = output_rx.recv() => frame,
+            Some(frame) = control_rx.recv() => (true, frame),
+            Some(frame) = output_rx.recv() => (false, frame),
             else => return,
         };
-        if let Err(e) = write_frame_async(&mut w, &frame).await {
-            warn!(error = %e, "broker writer failed; closing connection");
+        record_queue_high_water(
+            if is_control { "control" } else { "output" },
+            if is_control {
+                control_queue_cap - control_rx.capacity() + 1
+            } else {
+                output_queue_cap - output_rx.capacity() + 1
+            },
+        );
+        if let Err(error) = write_frame_async(&mut w, &frame).await {
+            warn!(%error, "broker writer failed; closing connection");
             return;
         }
+        control_streak = if is_control { control_streak + 1 } else { 0 };
     }
 }
 
@@ -361,10 +466,14 @@ async fn dispatch_frame(
     registry: &Arc<Registry>,
     writer_tx: &mpsc::Sender<Frame>,
     output_tx: &mpsc::Sender<Frame>,
+    input_tx: &mpsc::Sender<InputFrame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
     match frame {
         Frame::ControlRequest(req) => match req.method.as_str() {
+            methods::SNAPSHOT_SUBSCRIBE => {
+                handle_snapshot_subscribe(req, registry, writer_tx, output_tx, subs).await
+            }
             methods::SUBSCRIBE => handle_subscribe(req, registry, writer_tx, output_tx, subs).await,
             methods::UNSUBSCRIBE => handle_unsubscribe(req, writer_tx, subs).await,
             _ => {
@@ -372,19 +481,7 @@ async fn dispatch_frame(
                 writer_tx.send(Frame::ControlResponse(resp)).await.is_ok()
             }
         },
-        Frame::InputBinary(inp) => {
-            match registry.get(inp.session_id) {
-                Some(session) => {
-                    if let Err(e) = session.write_stdin(&inp.data) {
-                        warn!(session_id = %inp.session_id, error = %e, "write_stdin failed");
-                    }
-                }
-                None => {
-                    debug!(session_id = %inp.session_id, "input_binary for unknown session; ignoring");
-                }
-            }
-            true
-        }
+        Frame::InputBinary(inp) => input_tx.send(inp).await.is_ok(),
         Frame::ControlResponse(_) | Frame::OutputBinary(_) | Frame::Event(_) => {
             // Spec: these flow broker→client only. Receiving one from a client
             // is a protocol violation. Match the symmetric TS-side behavior
@@ -394,6 +491,130 @@ async fn dispatch_frame(
             false
         }
     }
+}
+
+/// Atomically snapshot terminal state and establish the connection-local
+/// replay/live subscription before releasing the terminal ordering lock.
+async fn handle_snapshot_subscribe(
+    req: ControlRequest,
+    registry: &Arc<Registry>,
+    writer_tx: &mpsc::Sender<Frame>,
+    output_tx: &mpsc::Sender<Frame>,
+    subs: &mut HashMap<Uuid, JoinHandle<()>>,
+) -> bool {
+    let id = req.id;
+    let params: SnapshotParams = match req.parse_params() {
+        Ok(params) => params,
+        Err(error) => {
+            return send_response(
+                writer_tx,
+                ControlResponse::err(
+                    id,
+                    ProtocolError {
+                        code: ErrorCode::InvalidRequest,
+                        message: format!("snapshot_subscribe params: {error}"),
+                    },
+                ),
+            )
+            .await;
+        }
+    };
+    if params
+        .target_cols
+        .is_some_and(|cols| !(20..=300).contains(&cols))
+    {
+        return send_response(
+            writer_tx,
+            ControlResponse::err(
+                id,
+                ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "snapshot_subscribe target_cols must be between 20 and 300".into(),
+                },
+            ),
+        )
+        .await;
+    }
+    if !subs.contains_key(&params.session_id) && subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        return send_response(
+            writer_tx,
+            ControlResponse::err(
+                id,
+                ProtocolError {
+                    code: ErrorCode::InternalError,
+                    message: format!(
+                        "connection subscription cap ({MAX_SUBSCRIPTIONS_PER_CONNECTION}) reached"
+                    ),
+                },
+            ),
+        )
+        .await;
+    }
+    let session = match registry.get(params.session_id) {
+        Some(session) => session,
+        None => return send_response(writer_tx, unknown_session(id, params.session_id)).await,
+    };
+    let snapshot_permit = match registry.try_acquire_snapshot() {
+        Some(permit) => permit,
+        None => {
+            return send_response(
+                writer_tx,
+                ControlResponse::err(
+                    id,
+                    ProtocolError {
+                        code: ErrorCode::InternalError,
+                        message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
+                    },
+                ),
+            )
+            .await;
+        }
+    };
+    let (snapshot, sub) =
+        match session.snapshot_and_subscribe(params.scrollback_lines, params.target_cols) {
+            Ok(result) => result,
+            Err(error) => {
+                return send_response(
+                    writer_tx,
+                    ControlResponse::err(
+                        id,
+                        ProtocolError {
+                            code: ErrorCode::InternalError,
+                            message: format!("terminal snapshot failed: {error}"),
+                        },
+                    ),
+                )
+                .await;
+            }
+        };
+    drop(snapshot_permit);
+    if let Some(previous) = subs.remove(&params.session_id) {
+        previous.abort();
+    }
+    if !send_response(
+        writer_tx,
+        ControlResponse::ok(
+            id,
+            ResponsePayload::SnapshotSubscribe {
+                snapshot,
+                current_seq: sub.current_seq,
+                replay_truncated: sub.replay_truncated,
+            },
+        ),
+    )
+    .await
+    {
+        return false;
+    }
+    let session_id = params.session_id;
+    let handle = tokio::spawn(forward_output(
+        session_id,
+        sub.replay,
+        sub.receiver,
+        output_tx.clone(),
+    ));
+    subs.insert(session_id, handle);
+    true
 }
 
 /// Subscribe to a session's live output. The protocol contract is:
@@ -430,6 +651,21 @@ async fn handle_subscribe(
             .await;
         }
     };
+    if !subs.contains_key(&params.session_id) && subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        return send_response(
+            writer_tx,
+            ControlResponse::err(
+                id,
+                ProtocolError {
+                    code: ErrorCode::InternalError,
+                    message: format!(
+                        "connection subscription cap ({MAX_SUBSCRIPTIONS_PER_CONNECTION}) reached"
+                    ),
+                },
+            ),
+        )
+        .await;
+    }
     let session = match registry.get(params.session_id) {
         Some(s) => s,
         None => {
@@ -438,24 +674,7 @@ async fn handle_subscribe(
     };
 
     let bus = session.output_bus();
-    let sub = match bus.subscribe(params.since_seq) {
-        Some(s) => s,
-        None => {
-            // Drainer already exited (PTY EOF). Surface this as
-            // session_not_alive — no live bytes will ever arrive.
-            return send_response(
-                writer_tx,
-                ControlResponse::err(
-                    id,
-                    ProtocolError {
-                        code: ErrorCode::SessionNotAlive,
-                        message: format!("session {} has no live output stream", params.session_id),
-                    },
-                ),
-            )
-            .await;
-        }
-    };
+    let sub = bus.subscribe(params.since_seq);
 
     // Re-subscribe is idempotent: drop the old forwarder so we don't
     // double-deliver bytes from two parallel attaches on one connection.
@@ -541,7 +760,7 @@ fn enqueue_output_chunk(
             && last.data.len() + chunk.data.len() <= OUTPUT_FRAME_COALESCE_MAX_BYTES
         {
             last.seq = chunk.seq;
-            last.data.extend_from_slice(&chunk.data);
+            Arc::make_mut(&mut last.data).extend_from_slice(&chunk.data);
             return;
         }
     }
@@ -643,15 +862,12 @@ async fn forward_output(
 }
 
 fn chunk_to_frame(session_id: Uuid, chunk: OutputChunk) -> OutputFrame {
-    // The ring stores `Arc<Vec<u8>>` to share between live + replay; the
-    // codec frame owns its bytes, so we materialise here. With one
-    // outstanding subscriber per session this is just a take; with
-    // multiple subscribers each pays the clone cost separately, which is
-    // an explicit tradeoff for not coupling subscribers to each other.
+    // Ring, replay, broadcast, connection queue and codec framing all retain
+    // the same immutable allocation; fanout clones only the Arc.
     OutputFrame {
         session_id,
         seq: chunk.seq,
-        data: chunk.data.as_ref().clone(),
+        data: chunk.data,
     }
 }
 
@@ -672,13 +888,83 @@ fn unknown_session(id: u64, session_id: Uuid) -> ControlResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Status;
+    use crate::registry::{CreateOptions, MAX_CONCURRENT_SNAPSHOTS};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn snapshot_subscribe_shares_the_process_snapshot_limit() {
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events));
+        let session = registry
+            .create(CreateOptions {
+                name: Some("snapshot-limit".into()),
+                cwd: "/tmp".into(),
+                command: vec!["sleep".into(), "30".into()],
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            })
+            .expect("create session");
+        let permits: Vec<_> = (0..MAX_CONCURRENT_SNAPSHOTS)
+            .map(|_| registry.try_acquire_snapshot().expect("snapshot permit"))
+            .collect();
+        let (writer_tx, mut writer_rx) = mpsc::channel(1);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let mut subscriptions = HashMap::new();
+
+        assert!(
+            handle_snapshot_subscribe(
+                ControlRequest {
+                    id: 7,
+                    method: methods::SNAPSHOT_SUBSCRIBE.into(),
+                    params: json!({ "session_id": session.id() }),
+                },
+                &registry,
+                &writer_tx,
+                &output_tx,
+                &mut subscriptions,
+            )
+            .await
+        );
+
+        let response = match writer_rx.recv().await.expect("snapshot response") {
+            Frame::ControlResponse(response) => response,
+            frame => panic!("unexpected frame: {frame:?}"),
+        };
+        assert_eq!(response.status, Status::Error);
+        assert_eq!(
+            response.error.expect("error").message,
+            "snapshot concurrency limit reached; retry"
+        );
+
+        drop(permits);
+        let _ = session.kill(libc::SIGKILL);
+        let _ = session.wait_for_exit(std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn production_queue_capacities_are_byte_bounded() {
+        assert_eq!(
+            CONTROL_QUEUE_CAPACITY * crate::codec::MAX_CONTROL_RESPONSE_PAYLOAD as usize,
+            CONTROL_QUEUE_MAX_BYTES
+        );
+        assert_eq!(
+            WRITER_QUEUE_CAPACITY * OUTPUT_FRAME_COALESCE_MAX_BYTES,
+            OUTPUT_QUEUE_MAX_BYTES
+        );
+        CONTROL_QUEUE_HIGH_WATER.store(0, Ordering::Relaxed);
+        record_queue_high_water("control", 3);
+        record_queue_high_water("control", 2);
+        assert_eq!(CONTROL_QUEUE_HIGH_WATER.load(Ordering::Relaxed), 3);
+    }
 
     #[tokio::test]
     async fn slow_output_forwarder_preserves_burst_during_writer_backpressure() {
         const CHUNK_COUNT: u64 = 2_000;
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(CHUNK_COUNT as usize, 256);
-        let subscription = bus.subscribe(None).expect("subscribe");
+        let subscription = bus.subscribe(None);
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
         output_tx
@@ -747,7 +1033,7 @@ mod tests {
                 data: Arc::new(vec![byte]),
             });
         }
-        let subscription = bus.subscribe(Some(0)).expect("subscribe");
+        let subscription = bus.subscribe(Some(0));
         let (output_tx, mut output_rx) = mpsc::channel(1);
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
@@ -801,7 +1087,7 @@ mod tests {
         const CHUNKS_TO_CAP: u64 = (OUTPUT_FORWARD_BUFFER_MAX_BYTES / CHUNK_BYTES) as u64;
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(64, 64);
-        let subscription = bus.subscribe(None).expect("subscribe");
+        let subscription = bus.subscribe(None);
         let (output_tx, mut output_rx) = mpsc::channel(1);
         output_tx
             .send(Frame::Event(Event::SnapshotInvalidated {
@@ -866,7 +1152,7 @@ mod tests {
             .send(Frame::OutputBinary(OutputFrame {
                 session_id,
                 seq: 1,
-                data: vec![b'x'],
+                data: Arc::new(vec![b'x']),
             }))
             .await
             .expect("queue output");
@@ -877,7 +1163,7 @@ mod tests {
         drop(control_tx);
         drop(output_tx);
 
-        let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx));
+        let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx, 16, 16));
         assert!(matches!(
             read_frame_async(&mut client_stream)
                 .await
@@ -896,11 +1182,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sustained_control_burst_yields_to_queued_output() {
+        let session_id = Uuid::new_v4();
+        let (broker_stream, mut client_stream) = UnixStream::pair().expect("socket pair");
+        let (_read_half, write_half) = broker_stream.into_split();
+        let (control_tx, control_rx) = mpsc::channel(16);
+        let (output_tx, output_rx) = mpsc::channel(16);
+        for id in 0..12 {
+            control_tx
+                .send(Frame::ControlResponse(unknown_session(id, Uuid::nil())))
+                .await
+                .unwrap();
+        }
+        output_tx
+            .send(Frame::OutputBinary(OutputFrame {
+                session_id,
+                seq: 1,
+                data: Arc::new(vec![b'x']),
+            }))
+            .await
+            .unwrap();
+        drop(control_tx);
+        drop(output_tx);
+        let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx, 16, 16));
+        let mut output_index = None;
+        for index in 0..13 {
+            if matches!(
+                read_frame_async(&mut client_stream).await.unwrap(),
+                Frame::OutputBinary(_)
+            ) {
+                output_index = Some(index);
+                break;
+            }
+        }
+        assert_eq!(output_index, Some(8));
+        drop(client_stream);
+        writer.await.expect("writer task failed");
+    }
+
+    #[tokio::test]
     async fn output_burst_leaves_writer_capacity_for_control_response() {
         const OUTPUT_CHUNKS: u64 = 400;
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(512, 512);
-        let subscription = bus.subscribe(None).expect("subscribe");
+        let subscription = bus.subscribe(None);
         let (output_tx, _output_rx) = mpsc::channel(18);
         let (control_tx, mut control_rx) = mpsc::channel(18);
 

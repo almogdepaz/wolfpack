@@ -1,11 +1,8 @@
 import {
   existsSync,
-  mkdirSync,
-  renameSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   AGENT_KIND,
   inferAgentKindFromCommand,
@@ -13,9 +10,14 @@ import {
 import type { AgentKind } from "../agent-kind.js";
 export type { AgentKind } from "../agent-kind.js";
 import { DEV_DIR } from "./dev-dir.js";
-import { readValidatedJsonFile } from "./persistence.js";
+import { readValidatedJsonFile, writePrivateJsonFile } from "./persistence.js";
 
 export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
+export type SessionIdentityPersistenceMode = "private" | "memory";
+
+export function sessionIdentityPersistenceMode(env: NodeJS.ProcessEnv = process.env): SessionIdentityPersistenceMode {
+  return env.WOLFPACK_SESSION_IDENTITY_MODE?.trim().toLowerCase() === "memory" ? "memory" : "private";
+}
 const EXTERNAL_ID_VISIBLE_PREFIX = 6;
 const EXTERNAL_ID_VISIBLE_SUFFIX = 4;
 
@@ -164,9 +166,12 @@ export function toPublicSessionIdentity(identity: SessionIdentity): PublicSessio
 
 export class SessionIdentityStore {
   readonly path: string;
+  readonly mode: SessionIdentityPersistenceMode;
+  private memory: IdentityStoreFile = emptyStore();
 
-  constructor(devDir?: string) {
+  constructor(devDir?: string, mode: SessionIdentityPersistenceMode = sessionIdentityPersistenceMode()) {
     this.path = sessionIdentityStorePath(devDir);
+    this.mode = mode;
   }
 
   list(): SessionIdentity[] {
@@ -259,18 +264,21 @@ export class SessionIdentityStore {
   }
 
   deleteAll(): void {
-    rmSync(this.path, { force: true });
+    this.memory = emptyStore();
+    if (this.mode === "private") rmSync(this.path, { force: true });
   }
 
   private read(): IdentityStoreFile {
+    if (this.mode === "memory") return structuredClone(this.memory);
     return readValidatedJsonFile(this.path, "session identity", isStoreFile) ?? emptyStore();
   }
 
   private write(file: IdentityStoreFile): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp`;
-    writeFileSync(tmp, JSON.stringify(file, null, 2));
-    renameSync(tmp, this.path);
+    if (this.mode === "memory") {
+      this.memory = structuredClone(file);
+      return;
+    }
+    writePrivateJsonFile(this.path, file);
   }
 }
 

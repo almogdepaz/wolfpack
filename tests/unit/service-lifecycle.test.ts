@@ -1,18 +1,21 @@
 import { execFileSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 
 const innerTestPath = join(process.cwd(), "tests", "unit", ".tmp-service-lifecycle-inner.test.ts");
 
 const innerTest = String.raw`import { describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 const execCommands: string[] = [];
 const askPrompts: string[] = [];
 let curlBackendResponse = JSON.stringify({ counts: { broker: 3 } });
+let serviceActive = false;
+let currentConfig = { devDir: "/tmp/old-dev", port: 18790 };
 
 await mock.module("node:child_process", () => ({
   execFile: mock(() => undefined),
@@ -22,6 +25,7 @@ await mock.module("node:child_process", () => ({
   }),
   execSync: mock((command: string) => {
     execCommands.push(command);
+    if (command === "systemctl --user is-active wolfpack 2>&1") return serviceActive ? "active\n" : "inactive\n";
     if (command === "systemctl --user stop wolfpack") {
       throw new Error("server unit missing");
     }
@@ -41,12 +45,12 @@ await mock.module("../../src/cli/config.js", () => ({
   }),
   isPortInUse: mock(() => true),
   killPortHolder: mock(() => undefined),
-  loadConfig: mock(() => ({ port: 18790 })),
+  loadConfig: mock(() => currentConfig),
   sleepSync: mock(() => undefined),
   waitForPortFree: mock(() => undefined),
 }));
 
-const { removeManagedEntrypoints, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
+const { refreshInstalledServerService, removeManagedEntrypoints, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
 
 describe("removeManagedEntrypoints", () => {
   test("removes only symlinks resolving to the managed binary", () => {
@@ -71,6 +75,29 @@ describe("removeManagedEntrypoints", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("refreshInstalledServerService", () => {
+  test("rewrites and restarts only the running server unit", () => {
+    execCommands.length = 0;
+    askPrompts.length = 0;
+    serviceActive = true;
+    currentConfig = { devDir: "/tmp/new dev", port: 24444 };
+    const unitDir = join(homedir(), ".config", "systemd", "user");
+    const unitPath = join(unitDir, "wolfpack.service");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(unitPath, "old unit\n");
+
+    refreshInstalledServerService();
+
+    const unit = readFileSync(unitPath, "utf-8");
+    expect(unit).toContain('Environment="WOLFPACK_PORT=24444"');
+    expect(unit).toContain('Environment="WOLFPACK_DEV_DIR=/tmp/new dev"');
+    expect(execCommands).toContain("systemctl --user daemon-reload");
+    expect(execCommands).toContain("systemctl --user restart wolfpack");
+    expect(execCommands.some(command => command.includes("wolfpack-broker"))).toBe(false);
+    expect(askPrompts).toEqual([]);
   });
 });
 
@@ -113,18 +140,79 @@ describe("serviceRestart", () => {
 });
 `;
 
+const macInnerTest = String.raw`import { expect, mock, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const execCommands: string[] = [];
+await mock.module("node:child_process", () => ({
+  execFile: mock(() => undefined),
+  execFileSync: mock(() => ""),
+  execSync: mock((command: string) => {
+    execCommands.push(command);
+    // A loaded KeepAlive launchd job can legitimately be between process
+    // instances and therefore have no pid in launchctl's output.
+    if (command.includes("launchctl print gui/")) return "state = waiting\n";
+    return "";
+  }),
+  spawn: mock(() => undefined),
+  spawnSync: mock(() => ({ status: 0, stdout: "", stderr: "" })),
+}));
+
+await mock.module("../../src/cli/config.js", () => ({
+  WOLFPACK_DIR: "/tmp/wolfpack-service-lifecycle-mac-test",
+  IS_MACOS: true,
+  IS_LINUX: false,
+  ask: mock(() => "y"),
+  isPortInUse: mock(() => true),
+  killPortHolder: mock(() => undefined),
+  loadConfig: mock(() => ({ devDir: "/tmp/new dev", port: 24444 })),
+  sleepSync: mock(() => undefined),
+  waitForPortFree: mock(() => undefined),
+}));
+
+const { refreshInstalledServerService } = await import("../../src/cli/service.ts");
+
+test("re-bootstraps a loaded launchd KeepAlive job even when it has no pid", () => {
+  const plistDir = join(homedir(), "Library", "LaunchAgents");
+  const plistPath = join(plistDir, "com.wolfpack.server.plist");
+  mkdirSync(plistDir, { recursive: true });
+  writeFileSync(plistPath, "old plist\n");
+
+  refreshInstalledServerService();
+
+  expect(readFileSync(plistPath, "utf-8")).toContain("24444");
+  expect(execCommands.some(command => command.includes("launchctl bootout gui/") && command.includes("com.wolfpack.server"))).toBe(true);
+  expect(execCommands.some(command => command.includes("launchctl bootstrap gui/") && command.includes("com.wolfpack.server.plist"))).toBe(true);
+  expect(execCommands.some(command => command.includes("launchctl kickstart gui/") && command.includes("com.wolfpack.server"))).toBe(true);
+  expect(execCommands.some(command => command.includes("com.wolfpack.broker"))).toBe(false);
+});
+`;
+
 describe("service lifecycle", () => {
-  test("broker-inclusive stop attempts broker shutdown even when server stop fails", () => {
+  test("isolates broker shutdown and refreshes Linux and launchd server descriptors", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-service-home-"));
     writeFileSync(innerTestPath, innerTest);
     try {
       const output = execFileSync(process.execPath, ["test", innerTestPath], {
         cwd: process.cwd(),
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, HOME: home },
       });
       expect(output).toContain("Wolfpack broker stopped");
+
+      writeFileSync(innerTestPath, macInnerTest);
+      execFileSync(process.execPath, ["test", innerTestPath], {
+        cwd: process.cwd(),
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, HOME: home },
+      });
     } finally {
       rmSync(innerTestPath, { force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

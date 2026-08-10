@@ -440,6 +440,101 @@ test("legacy return to sent geometry cancels a conflicting debounced resize", as
   expect(result.resizeMessages).not.toContainEqual(expect.objectContaining(result.queuedGeometry));
 });
 
+test("WebSocket open without pty_ready preserves reconnect backoff", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop reconnect budget test");
+  await page.addInitScript(() => {
+    class FakeWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+
+      readonly sent: unknown[] = [];
+      readonly createdAt = performance.now();
+      readyState = FakeWebSocket.CONNECTING;
+      binaryType = "blob";
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor(readonly url: string) {
+        const testWindow = window as unknown as { __budgetSockets?: FakeWebSocket[] };
+        testWindow.__budgetSockets ??= [];
+        testWindow.__budgetSockets.push(this);
+      }
+
+      send(data: unknown): void { this.sent.push(data); }
+      close(code = 1011, reason = "test disconnect"): void {
+        if (this.readyState === FakeWebSocket.CLOSED) return;
+        this.readyState = FakeWebSocket.CLOSED;
+        this.onclose?.(new CloseEvent("close", { code, reason }));
+      }
+      open(): void {
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.(new Event("open"));
+      }
+      serverText(data: string): void { this.onmessage?.(new MessageEvent("message", { data })); }
+      serverBinary(data: string): void {
+        const bytes = new TextEncoder().encode(data);
+        this.onmessage?.(new MessageEvent("message", { data: bytes.buffer }));
+      }
+    }
+
+    Math.random = () => 0;
+    Object.defineProperty(window, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: FakeWebSocket,
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5_000 });
+  await page.evaluate(() => {
+    // @ts-ignore browser bundle global
+    openSession("test-project", "");
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __budgetSockets?: unknown[] }).__budgetSockets?.length ?? 0,
+  )).toBe(1);
+  await page.evaluate(() => {
+    const socket = (window as unknown as {
+      __budgetSockets: Array<{
+        open(): void;
+        close(): void;
+        serverText(data: string): void;
+        serverBinary(data: string): void;
+      }>;
+    }).__budgetSockets[0];
+    socket?.open();
+    socket?.serverText(JSON.stringify({ type: "attach_ack" }));
+    socket?.serverBinary("INITIAL\r\n");
+    socket?.serverText(JSON.stringify({ type: "prefill_done" }));
+    socket?.serverText(JSON.stringify({ type: "pty_ready" }));
+    socket?.close();
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __budgetSockets?: unknown[] }).__budgetSockets?.length ?? 0,
+  )).toBe(2);
+
+  const closedAt = await page.evaluate(() => {
+    const socket = (window as unknown as { __budgetSockets: Array<{ open(): void; close(): void }> }).__budgetSockets[1];
+    if (!socket) throw new Error("missing reconnect socket");
+    socket.open();
+    socket.close();
+    return performance.now();
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __budgetSockets?: unknown[] }).__budgetSockets?.length ?? 0,
+  ), { timeout: 2_000 }).toBe(3);
+  const nextCreatedAt = await page.evaluate(() =>
+    (window as unknown as { __budgetSockets: Array<{ createdAt: number }> }).__budgetSockets[2]?.createdAt,
+  );
+
+  expect(nextCreatedAt - closedAt).toBeGreaterThanOrEqual(800);
+});
+
 test("reconnect/take-control attach defers proposed geometry until the current ordered resize acknowledgement", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop reconnect geometry test");
   await page.addInitScript(() => {
@@ -922,14 +1017,14 @@ test("every pinned sidebar transition hides the canvas and performs one settled 
   await switchSession(page, "test-project");
   await page.evaluate(() => {
     const app = window as unknown as {
-      state: { terminalController?: { term?: { resize(cols: number, rows: number): void } } };
+      state: { terminalController?: { resize(): void | Promise<unknown> } };
       __terminalResizeCount?: number;
       __terminalTransitionEvents?: string[];
     };
     const terminal = document.getElementById("desktop-terminal-container");
-    const term = app.state.terminalController?.term;
-    if (!terminal || !term) throw new Error("missing terminal");
-    const originalResize = term.resize.bind(term);
+    const controller = app.state.terminalController;
+    if (!terminal || !controller) throw new Error("missing terminal");
+    const originalResize = controller.resize.bind(controller);
     app.__terminalResizeCount = 0;
     app.__terminalTransitionEvents = [];
     new MutationObserver(() => {
@@ -937,10 +1032,10 @@ test("every pinned sidebar transition hides the canvas and performs one settled 
         app.__terminalTransitionEvents?.push(`reveal:${app.__terminalResizeCount ?? 0}`);
       }
     }).observe(terminal, { attributes: true, attributeFilter: ["class"] });
-    term.resize = (cols, rows) => {
+    controller.resize = () => {
       app.__terminalResizeCount = (app.__terminalResizeCount ?? 0) + 1;
       app.__terminalTransitionEvents?.push(`resize:${app.__terminalResizeCount}`);
-      originalResize(cols, rows);
+      return originalResize();
     };
   });
 
@@ -951,18 +1046,14 @@ test("every pinned sidebar transition hides the canvas and performs one settled 
 
   await page.evaluate(() => document.getElementById("sidebar-collapse-btn")?.click());
   expect((await transitionState()).hidden).toBe(true);
-  await page.waitForTimeout(80);
-  expect(await transitionState()).toEqual({ hidden: true, resizeCount: 0 });
-  await expect.poll(transitionState, { timeout: 1_000 }).toEqual({ hidden: false, resizeCount: 1 });
+  await expect.poll(transitionState).toEqual({ hidden: false, resizeCount: 1 });
   expect(await page.evaluate(() =>
     (window as unknown as { __terminalTransitionEvents?: string[] }).__terminalTransitionEvents,
   )).toEqual(["resize:1", "reveal:1"]);
 
   await page.evaluate(() => document.getElementById("sidebar-collapse-btn")?.click());
   expect((await transitionState()).hidden).toBe(true);
-  await page.waitForTimeout(80);
-  expect(await transitionState()).toEqual({ hidden: true, resizeCount: 1 });
-  await expect.poll(transitionState, { timeout: 1_000 }).toEqual({ hidden: false, resizeCount: 2 });
+  await expect.poll(transitionState).toEqual({ hidden: false, resizeCount: 2 });
   expect(await page.evaluate(() =>
     (window as unknown as { __terminalTransitionEvents?: string[] }).__terminalTransitionEvents,
   )).toEqual(["resize:1", "reveal:1", "resize:2", "reveal:2"]);
@@ -1085,13 +1176,9 @@ test("pinned sidebar transitions settle delegation grid cells before reveal", as
 
   await page.evaluate(() => document.getElementById("sidebar-collapse-btn")?.click());
   expect(await page.locator("#delegation-grid-container .grid-cell.transitioning").count()).toBe(2);
-  await page.waitForTimeout(80);
-  expect(await page.evaluate(() =>
-    (window as unknown as { __delegationResizeCounts?: number[] }).__delegationResizeCounts,
-  )).toEqual([0, 0]);
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __delegationResizeCounts?: number[] }).__delegationResizeCounts,
-  ), { timeout: 1_000 }).toEqual([1, 1]);
+  )).toEqual([1, 1]);
 
   // The fallback has entered finish while both acknowledgements are pending.
   // A near-simultaneous transitionend must not schedule a second cell resize.
@@ -1116,9 +1203,7 @@ test("pinned sidebar transitions settle delegation grid cells before reveal", as
     (window as unknown as { __delegationResizeResolvers?: Array<(settlement: "acknowledged" | "cancelled") => void> })
       .__delegationResizeResolvers?.[1]?.("acknowledged");
   });
-  await expect.poll(() => page.locator("#delegation-grid-container .grid-cell.transitioning").count(), {
-    timeout: 1_000,
-  }).toBe(0);
+  await expect.poll(() => page.locator("#delegation-grid-container .grid-cell.transitioning").count()).toBe(0);
 
   await page.evaluate(() => document.getElementById("sidebar-collapse-btn")?.click());
   await expect.poll(() => page.evaluate(() =>

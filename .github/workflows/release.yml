@@ -188,6 +188,9 @@ jobs:
             THIRD_PARTY_NOTICES \
             > checksums-sha256.txt
 
+      - name: Smoke installed package and native release artifacts
+        run: bun run scripts/smoke-release-artifacts.ts linux-x64
+
       # package.json may be version-synchronized by scripts/build.ts. Ship the
       # exact built manifest with dist so the isolated npm job publishes what
       # this build produced rather than regenerating package metadata.

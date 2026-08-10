@@ -63,14 +63,37 @@ execSync("bun run scripts/bundle-app.ts", {
 
 const files = readdirSync(PUBLIC_DIR).sort();
 const versionHash = createHash("sha256");
+const assetVersions = new Map<string, string>();
 for (const file of files) {
   if (extname(file).toLowerCase() === ".ts") continue;
+  const bytes = readFileSync(join(PUBLIC_DIR, file));
   versionHash.update(file);
   versionHash.update("\0");
-  versionHash.update(readFileSync(join(PUBLIC_DIR, file)));
+  versionHash.update(bytes);
+  assetVersions.set(file, createHash("sha256").update(bytes).digest("hex").slice(0, 16));
 }
 const assetVersion = versionHash.digest("hex").slice(0, 16);
 const entries: string[] = [];
+
+function versionIndexAssetUrls(source: string): string {
+  return source.replace(
+    /(src|href|content)="\/([^"?]+)\?v=__WOLFPACK_ASSET_VERSION__"/g,
+    (match, attribute: string, file: string) => {
+      const version = assetVersions.get(file);
+      return version ? `${attribute}="/${file}?v=${version}"` : match;
+    },
+  );
+}
+
+function versionServiceWorkerAssetUrls(source: string): string {
+  return source.replace(
+    /"\/([^"?]+)\?v=__WOLFPACK_ASSET_VERSION__"/g,
+    (match, file: string) => {
+      const version = assetVersions.get(file);
+      return version ? `"/${file}?v=${version}"` : match;
+    },
+  );
+}
 
 for (const file of files) {
   const ext = extname(file).toLowerCase();
@@ -81,9 +104,12 @@ for (const file of files) {
 
   if (isText(ext)) {
     const source = readFileSync(filePath, "utf-8");
-    const content = file === "index.html"
-      ? source.replaceAll(ASSET_VERSION_TOKEN, assetVersion)
-      : source;
+    let content = source;
+    if (file === "index.html") {
+      content = versionIndexAssetUrls(source).replaceAll(ASSET_VERSION_TOKEN, assetVersion);
+    } else if (file === "sw.js") {
+      content = versionServiceWorkerAssetUrls(source);
+    }
     // Use JSON.stringify to safely embed the string
     entries.push(
       `  [${JSON.stringify(file)}, { content: ${JSON.stringify(content)}, mime: ${JSON.stringify(mime)} }]`,
@@ -106,6 +132,7 @@ function _b64(s: string): Uint8Array {
 }
 
 export const ASSET_VERSION = ${JSON.stringify(assetVersion)};
+export const ASSET_VERSIONS: Readonly<Record<string, string>> = Object.freeze(${JSON.stringify(Object.fromEntries(assetVersions))});
 
 export const assets = new Map<string, { content: string | Uint8Array; mime: string }>([
 ${entries.join(",\n")},

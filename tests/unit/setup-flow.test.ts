@@ -17,6 +17,9 @@ interface SetupFlowFixture {
   readonly tailscale?: TailscaleFixture;
   readonly failsTailscaleInstallation?: boolean;
   readonly serviceRunning?: boolean;
+  readonly serviceInstalled?: boolean;
+  readonly setupOptions?: { readonly devDir?: string; readonly port?: number };
+  readonly existingConfig?: { readonly devDir: string; readonly port: number; readonly tailscaleHostname?: string };
 }
 
 interface SetupFlowResult {
@@ -54,7 +57,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
         },
       }));
     }
-    if (fixture?.failsTailscaleInstallation) {
+    if (fixture?.failsTailscaleInstallation || fixture?.tailscale) {
       Object.defineProperty(process.stdin, "isTTY", { value: true });
       Object.defineProperty(process.stdout, "isTTY", { value: true });
     }
@@ -64,15 +67,17 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       WOLFPACK_DIR: join(home, ".wolfpack"),
       IS_MACOS: fixture?.failsTailscaleInstallation ?? false,
       IS_LINUX: false,
-      ask: (() => {
-        const answers = ["", "", "y", "", "n"];
-        return () => fixture?.failsTailscaleInstallation
-          ? (answers.shift() ?? "")
-          : (() => { throw new Error("noninteractive setup must not prompt"); })();
-      })(),
-      loadConfig: () => fixture?.tailscale?.previousHostname
+      ask: (prompt) => {
+        if (!fixture?.failsTailscaleInstallation && !fixture?.tailscale) throw new Error("noninteractive setup must not prompt");
+        if (prompt.includes("Install it now")) return "y";
+        if (prompt.includes("doesn't exist")) return "y";
+        if (prompt.includes("press Enter to retry")) return "skip";
+        if (prompt.includes("Projects directory") || prompt.includes("Server port")) return "";
+        return "n";
+      },
+      loadConfig: () => fixture?.existingConfig ?? (fixture?.tailscale?.previousHostname
         ? { devDir: home, port: 18790, tailscaleHostname: fixture.tailscale.previousHostname }
-        : null,
+        : null),
       saveConfig: (nextConfig) => {
         mkdirSync(join(home, ".wolfpack"), { recursive: true });
         writeFileSync(configPath, JSON.stringify(nextConfig));
@@ -80,17 +85,22 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
       tailscaleBin: () => fixture?.tailscale ? "tailscale" : null,
     }));
-    if (fixture?.serviceRunning) {
+    if (fixture?.serviceRunning || fixture?.serviceInstalled) {
       const service = await import("./src/cli/service.ts");
       await mock.module("./src/cli/service.js", () => ({
         ...service,
-        isServiceRunning: () => true,
+        isServiceInstalled: () => fixture?.serviceInstalled ?? false,
+        isServiceRunning: () => fixture?.serviceRunning ?? false,
+        refreshInstalledServerService: () => console.log("SERVICE_REFRESH=server-only"),
         serviceRestart: (options) => console.log("SERVICE_RESTART=" + JSON.stringify(options)),
       }));
     }
 
     const { setup } = await import("./src/cli/setup.ts");
-    await setup();
+    await setup({
+      nonInteractive: !fixture?.failsTailscaleInstallation && !fixture?.tailscale,
+      ...(fixture?.setupOptions ?? {}),
+    });
   `;
 
   const child = Bun.spawnSync([process.execPath, "-e", script], {
@@ -144,6 +154,23 @@ describe("first-run setup", () => {
     expect(result.stdout).toContain("wolfpack doctor");
     expect(result.stdout).toContain("Create a session and run codex or claude.");
     expect(result.stdout).not.toContain("JWT Authentication");
+  });
+
+  test("explicit noninteractive setup preserves every unspecified existing field", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const projectDir = join(home, "existing-projects");
+    const result = runSetupFlow(home, { existingConfig: {
+      devDir: projectDir,
+      port: 24444,
+      tailscaleHostname: "preserved.tailnet.ts.net",
+    } });
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({
+      devDir: projectDir,
+      port: 24444,
+      tailscaleHostname: "preserved.tailnet.ts.net",
+    });
   });
 
   test("persists and presents the verified remote URL when Tailscale is installed", () => {
@@ -206,6 +233,36 @@ describe("first-run setup", () => {
     }
   });
 
+  test("refreshes an installed server descriptor when its port changes", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      existingConfig: { devDir: join(home, "Dev"), port: 18790 },
+      setupOptions: { port: 24444 },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
+
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({ port: 24444 });
+    expect(result.stdout).toContain("SERVICE_REFRESH=server-only");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
+  test("does not refresh an installed descriptor when embedded settings are unchanged", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      existingConfig: { devDir: join(home, "Dev"), port: 18790 },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
+
+    expectSuccessfulSetup(result);
+    expect(result.stdout).not.toContain("SERVICE_REFRESH=");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
   test("refreshes only the running server after verified remote readiness changes", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
     temporaryHomes.push(home);
@@ -233,7 +290,7 @@ describe("first-run setup", () => {
 
     expectSuccessfulSetup(result);
     expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
-      devDir: join(home, "Dev"),
+      devDir: home,
       port: 18790,
     });
     expect(result.stdout).toContain("Tailscale Serve could not be structurally verified");

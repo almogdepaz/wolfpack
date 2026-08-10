@@ -40,6 +40,7 @@ const WP_ERR_NO_SPACE: i32 = -3;
 const WP_ERR_OOM: i32 = -4;
 const WP_ERR_LIMIT: i32 = -5;
 const MAX_EXTRACT_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EXTRACT_CELLS: usize = 2_000_000;
 const MAX_TITLE_BYTES: usize = 1024 * 1024;
 
 const _: () = assert!(MAX_EXTRACT_TEXT_BYTES < MAX_FRAME_PAYLOAD as usize);
@@ -219,12 +220,12 @@ impl GhosttyTerminal {
         }
         let row_count_usize = usize::from(row_count);
         let cols_usize = usize::from(cols);
-        let cell_count =
-            row_count_usize
-                .checked_mul(cols_usize)
-                .ok_or(TerminalStateError::GhosttyLimit {
-                    operation: "row cell allocation",
-                })?;
+        let cell_count = row_count_usize
+            .checked_mul(cols_usize)
+            .filter(|count| *count <= MAX_EXTRACT_CELLS)
+            .ok_or(TerminalStateError::GhosttyLimit {
+                operation: "row cell allocation",
+            })?;
         let mut rows = vec![WpGhosttyRow::default(); row_count_usize];
         let mut cells = vec![WpGhosttyCell::default(); cell_count];
         let initial_text_capacity = cell_count

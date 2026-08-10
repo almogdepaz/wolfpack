@@ -91,7 +91,9 @@ acquire_deploy_lock() {
 acquire_deploy_lock
 
 service_pid() {
-  launchctl list | awk -v label="$1" '$3 == label && $1 ~ /^[0-9]+$/ { print $1; exit }'
+  # Consume the complete launchctl stream. Exiting awk after the first match
+  # makes launchctl receive SIGPIPE under `set -o pipefail` on larger lists.
+  launchctl list | awk -v label="$1" '$3 == label && $1 ~ /^[0-9]+$/ { print $1 }'
 }
 
 wait_for_pid_change() {
@@ -112,6 +114,49 @@ wait_for_pid_change() {
   done
   echo "ERROR: $name did not restart (old pid: ${old_pid:-none}, current pid: ${pid:-none})" >&2
   return 1
+}
+
+# bootout returns before launchd necessarily finishes unregistering the job.
+# Bootstrap during that window fails with "operation already in progress".
+wait_for_service_unloaded() {
+  local label="$1"
+  local name="$2"
+  local attempts=$((VERIFY_TIMEOUT_SECS * 5))
+  local i=0
+  while [ "$i" -le "$attempts" ]; do
+    if ! launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  echo "ERROR: $name did not finish unloading" >&2
+  return 1
+}
+
+start_replacement_service() {
+  local label="$1"
+  local plist="$2"
+  local old_pid="$3"
+  local name="$4"
+  local pid_variable="$5"
+  local new_pid
+
+  if [ -f "$plist" ]; then
+    if [ -n "$old_pid" ]; then
+      launchctl bootout "$DOMAIN/$label"
+    else
+      launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
+    fi
+    wait_for_service_unloaded "$label" "$name"
+    launchctl bootstrap "$DOMAIN" "$plist"
+  elif ! launchctl kickstart -k "$DOMAIN/$label" 2>/dev/null; then
+    echo "ERROR: $name service is not installed; run 'wolfpack service install' first" >&2
+    return 1
+  fi
+
+  new_pid="$(wait_for_pid_change "$label" "$old_pid" "$name")"
+  printf -v "$pid_variable" '%s' "$new_pid"
 }
 
 config_port() {
@@ -246,6 +291,18 @@ verify_preserved_sessions() {
   fi
 }
 
+verify_service_pid() {
+  local label="$1"
+  local expected_pid="$2"
+  local name="$3"
+  local current_pid
+  current_pid="$(service_pid "$label")"
+  if [ -z "$current_pid" ] || [ "$current_pid" != "$expected_pid" ]; then
+    echo "ERROR: $name pid changed before deployment verification completed (${expected_pid:-none} -> ${current_pid:-none})" >&2
+    return 1
+  fi
+}
+
 bun run scripts/build.ts
 
 ARCH="$(uname -m)"
@@ -279,37 +336,25 @@ install_signed "$SERVER_SOURCE" "$SERVER_INSTALL" SERVER_HASH
 NEW_BROKER_PID="$OLD_BROKER_PID"
 if [ "$DEPLOY_BROKER" = "1" ]; then
   install_signed "$BROKER_SOURCE" "$BROKER_INSTALL" BROKER_HASH
-  if launchctl kickstart -k "$DOMAIN/$BROKER_SERVICE" 2>/dev/null; then
-    NEW_BROKER_PID="$(wait_for_pid_change "$BROKER_SERVICE" "$OLD_BROKER_PID" "broker")"
-    echo "broker restarted (pid ${OLD_BROKER_PID:-none} -> $NEW_BROKER_PID)"
-  elif [ -f "$BROKER_PLIST" ]; then
-    launchctl bootstrap "$DOMAIN" "$BROKER_PLIST"
-    NEW_BROKER_PID="$(wait_for_pid_change "$BROKER_SERVICE" "$OLD_BROKER_PID" "broker")"
-    echo "broker bootstrapped (pid ${OLD_BROKER_PID:-none} -> $NEW_BROKER_PID)"
-  else
-    echo "ERROR: broker service is not installed; run 'wolfpack service install' first" >&2
-    exit 1
-  fi
+  start_replacement_service "$BROKER_SERVICE" "$BROKER_PLIST" "$OLD_BROKER_PID" "broker" NEW_BROKER_PID
+  BROKER_RESTART_ACTION="$([ -f "$BROKER_PLIST" ] && echo reloaded || echo restarted)"
+  echo "broker $BROKER_RESTART_ACTION (pid ${OLD_BROKER_PID:-none} -> $NEW_BROKER_PID)"
 fi
 
 NEW_SERVER_PID=""
-if launchctl kickstart -k "$DOMAIN/$SERVER_SERVICE" 2>/dev/null; then
-  NEW_SERVER_PID="$(wait_for_pid_change "$SERVER_SERVICE" "$OLD_SERVER_PID" "server")"
-  echo "server restarted (pid ${OLD_SERVER_PID:-none} -> $NEW_SERVER_PID)"
-elif [ -f "$SERVER_PLIST" ]; then
-  launchctl bootstrap "$DOMAIN" "$SERVER_PLIST"
-  NEW_SERVER_PID="$(wait_for_pid_change "$SERVER_SERVICE" "$OLD_SERVER_PID" "server")"
-  echo "server bootstrapped (pid ${OLD_SERVER_PID:-none} -> $NEW_SERVER_PID)"
-else
-  echo "ERROR: server service is not installed; run 'wolfpack service install' first" >&2
-  exit 1
-fi
+start_replacement_service "$SERVER_SERVICE" "$SERVER_PLIST" "$OLD_SERVER_PID" "server" NEW_SERVER_PID
+SERVER_RESTART_ACTION="$([ -f "$SERVER_PLIST" ] && echo reloaded || echo restarted)"
+echo "server $SERVER_RESTART_ACTION (pid ${OLD_SERVER_PID:-none} -> $NEW_SERVER_PID)"
 
 SERVED_BUNDLE_HASH=""
 SERVER_VERSION=""
 verify_served_app_bundle "$PORT"
 verify_api_info "$PORT"
 verify_cli_help
+verify_service_pid "$SERVER_SERVICE" "$NEW_SERVER_PID" "server"
+if [ "$DEPLOY_BROKER" = "1" ]; then
+  verify_service_pid "$BROKER_SERVICE" "$NEW_BROKER_PID" "broker"
+fi
 
 PRESERVED_SESSIONS="null"
 if [ "$DEPLOY_BROKER" = "0" ]; then
