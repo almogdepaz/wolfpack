@@ -205,6 +205,27 @@ test("preserves keyboard focus and explains remote permission failures inline", 
   await expect(browser.getByRole("button", { name: "Open projects folder" })).toBeEnabled();
 });
 
+test("explains that a timed-out folder request may be waiting for macos authorization", async ({ page }) => {
+  const stalledRequest = Promise.withResolvers<void>();
+  await page.route("**/api/directories**", async (route) => {
+    await stalledRequest.promise;
+    await route.abort();
+  });
+  await openProjectPicker(page);
+  await page.clock.install();
+
+  try {
+    await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
+    await page.clock.fastForward(15_001);
+
+    await expect(folderBrowser(page).getByRole("alert")).toHaveText(
+      `The folder request timed out on ${MACHINE_NAME}. Wolfpack may be waiting for macOS folder authorization on that machine. Approve or deny the host prompt, or choose another folder.`,
+    );
+  } finally {
+    stalledRequest.resolve();
+  }
+});
+
 test("keeps project creation separate and returns only the selected parent", async ({ page }) => {
   const directoryRequests: Array<string | null> = [];
   const createRequests: unknown[] = [];

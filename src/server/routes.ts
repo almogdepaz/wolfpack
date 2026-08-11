@@ -662,7 +662,7 @@ export const routes: Record<
 
   "GET /api/directories": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const result = browseServerDirectory(url.searchParams.get("path") ?? DEV_DIR);
+    const result = await browseServerDirectory(url.searchParams.get("path") ?? DEV_DIR);
     if (!result.ok) {
       json(res, { error: result.error, code: result.code }, directoryBrowseHttpStatus(result.code));
       return;

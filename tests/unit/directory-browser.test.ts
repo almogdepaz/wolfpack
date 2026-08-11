@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { PathLike } from "node:fs";
 import {
   Dirent,
   chmodSync,
@@ -9,6 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,14 +31,14 @@ afterAll(() => {
 });
 
 describe("browseServerDirectory", () => {
-  test("canonicalizes the current directory and returns its canonical parent", () => {
+  test("canonicalizes the current directory and returns its canonical parent", async () => {
     const parent = join(root, "canonical-parent");
     const current = join(parent, "current");
     const linkedParent = join(root, "linked-parent");
     mkdirSync(current, { recursive: true });
     symlinkSync(parent, linkedParent);
 
-    expect(browseServerDirectory(join(linkedParent, "current"))).toEqual({
+    expect(await browseServerDirectory(join(linkedParent, "current"))).toEqual({
       ok: true,
       value: {
         current: realpathSync(current),
@@ -47,7 +49,7 @@ describe("browseServerDirectory", () => {
     });
   });
 
-  test("returns only sorted non-hidden real child directories and bounds the response", () => {
+  test("returns only sorted non-hidden real child directories and bounds the response", async () => {
     const current = join(root, "listing");
     const linkedTarget = join(root, "linked-target");
     mkdirSync(current);
@@ -59,7 +61,7 @@ describe("browseServerDirectory", () => {
       mkdirSync(join(current, `directory-${String(index).padStart(3, "0")}`));
     }
 
-    const result = browseServerDirectory(current);
+    const result = await browseServerDirectory(current);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -80,14 +82,14 @@ describe("browseServerDirectory", () => {
     expect(result.value.directories.map(directory => directory.name)).not.toContain("linked-directory");
   });
 
-  test("bounds canonical breadcrumbs while preserving root, an ancestor jump, and the current directory", () => {
+  test("bounds canonical breadcrumbs while preserving root, an ancestor jump, and the current directory", async () => {
     let current = join(root, "deep-breadcrumbs");
     for (let index = 0; index < DIRECTORY_BREADCRUMB_LIMIT + 5; index++) {
       current = join(current, `level-${index}`);
     }
     mkdirSync(current, { recursive: true });
 
-    const result = browseServerDirectory(current);
+    const result = await browseServerDirectory(current);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -101,7 +103,7 @@ describe("browseServerDirectory", () => {
     });
   });
 
-  test("uses lstat when directory entry type metadata is unknown", () => {
+  test("omits unknown directory entry types without probing child metadata", async () => {
     const current = join(root, "unknown-entry-type");
     const child = join(current, "real-directory");
     mkdirSync(child, { recursive: true });
@@ -109,16 +111,13 @@ describe("browseServerDirectory", () => {
 
     try {
       Dirent.prototype.isDirectory = () => false;
-      expect(browseServerDirectory(current)).toEqual({
+      expect(await browseServerDirectory(current)).toEqual({
         ok: true,
         value: {
           current: realpathSync(current),
           parent: realpathSync(root),
           breadcrumbs: expect.any(Array),
-          directories: [{
-            name: "real-directory",
-            path: realpathSync(child),
-          }],
+          directories: [],
         },
       });
     } finally {
@@ -126,7 +125,79 @@ describe("browseServerDirectory", () => {
     }
   });
 
-  test("fails after a finite raw-entry scan even when entries cannot be returned", () => {
+  test("does not request metadata for known child directories", async () => {
+    const current = join(root, "no-child-metadata");
+    const child = join(current, "child");
+    mkdirSync(child, { recursive: true });
+    const inspectedPaths: string[] = [];
+
+    const result = await browseServerDirectory(current, {
+      lstat: async (path: PathLike) => {
+        inspectedPaths.push(String(path));
+        return lstat(path);
+      },
+      opendir,
+      realpath,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(inspectedPaths).toEqual([current]);
+  });
+
+  test("yields the event loop while requested-directory access is delayed", async () => {
+    const current = join(root, "delayed-access");
+    mkdirSync(current);
+    const accessGate = Promise.withResolvers<void>();
+    let accessStarted = false;
+    let browseSettled = false;
+
+    const browsePromise = Promise.resolve(browseServerDirectory(current, {
+      lstat: async (path: PathLike) => {
+        accessStarted = true;
+        await accessGate.promise;
+        return lstat(path);
+      },
+      opendir,
+      realpath,
+    })).finally(() => { browseSettled = true; });
+
+    await Bun.sleep(0);
+    expect(accessStarted).toBe(true);
+    expect(browseSettled).toBe(false);
+    accessGate.resolve();
+    expect((await browsePromise).ok).toBe(true);
+  });
+
+  test("bounds concurrent requested-directory access", async () => {
+    const current = join(root, "bounded-concurrency");
+    mkdirSync(current);
+    const accessGate = Promise.withResolvers<void>();
+    let accessStarted = false;
+    const firstBrowse = browseServerDirectory(current, {
+      lstat: async (path: PathLike) => {
+        accessStarted = true;
+        await accessGate.promise;
+        return lstat(path);
+      },
+      opendir,
+      realpath,
+    });
+
+    try {
+      await Bun.sleep(0);
+      expect(accessStarted).toBe(true);
+      expect(await browseServerDirectory(current)).toEqual({
+        ok: false,
+        code: "unavailable",
+        error: "directory unavailable",
+      });
+    } finally {
+      accessGate.resolve();
+      await firstBrowse;
+    }
+  });
+
+  test("fails after a finite raw-entry scan even when entries cannot be returned", async () => {
     const current = join(root, "scan-overflow");
     mkdirSync(current);
     for (let index = 0; index <= DIRECTORY_BROWSE_SCAN_LIMIT; index++) {
@@ -134,15 +205,15 @@ describe("browseServerDirectory", () => {
       writeFileSync(join(current, `${prefix}-${index}`), "not a directory");
     }
 
-    expect(browseServerDirectory(current)).toEqual({
+    expect(await browseServerDirectory(current)).toEqual({
       ok: false,
       code: "too_many_entries",
       error: "directory contains too many entries",
     });
   });
 
-  test("represents the filesystem root without a parent", () => {
-    const result = browseServerDirectory("/");
+  test("represents the filesystem root without a parent", async () => {
+    const result = await browseServerDirectory("/");
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -152,30 +223,30 @@ describe("browseServerDirectory", () => {
     expect(result.value.directories.length).toBeLessThanOrEqual(DIRECTORY_BROWSE_LIMIT);
   });
 
-  test("returns bounded structured failures for invalid, missing, permission-denied, and unavailable directories", () => {
+  test("returns bounded structured failures for invalid, missing, permission-denied, and unavailable directories", async () => {
     const loop = join(root, "loop");
     const denied = join(root, "permission-denied");
     symlinkSync("loop", loop);
     mkdirSync(denied);
     chmodSync(denied, 0);
 
-    expect(browseServerDirectory("relative/path")).toEqual({
+    expect(await browseServerDirectory("relative/path")).toEqual({
       ok: false,
       code: "invalid",
       error: "invalid directory",
     });
-    expect(browseServerDirectory(join(root, "missing"))).toEqual({
+    expect(await browseServerDirectory(join(root, "missing"))).toEqual({
       ok: false,
       code: "not_found",
       error: "directory not found",
     });
-    expect(browseServerDirectory(join(loop, "child"))).toEqual({
+    expect(await browseServerDirectory(join(loop, "child"))).toEqual({
       ok: false,
       code: "unavailable",
       error: "directory unavailable",
     });
     try {
-      expect(browseServerDirectory(denied)).toEqual({
+      expect(await browseServerDirectory(denied)).toEqual({
         ok: false,
         code: "permission_denied",
         error: "directory permission denied",

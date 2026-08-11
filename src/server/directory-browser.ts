@@ -1,4 +1,5 @@
-import { lstatSync, opendirSync, realpathSync } from "node:fs";
+import type { Dir, PathLike, Stats } from "node:fs";
+import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 
 import { MAX_PROJECT_DIR_LENGTH } from "./validate-project-dir.js";
@@ -7,6 +8,7 @@ export const DIRECTORY_BROWSE_LIMIT = 200;
 export const DIRECTORY_BROWSE_SCAN_LIMIT = 1_000;
 export const DIRECTORY_BREADCRUMB_LIMIT = 12;
 
+const DIRECTORY_BROWSE_CONCURRENCY_LIMIT = 1;
 const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
 const PERMISSION_DENIED_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["EACCES", "EPERM"]);
 
@@ -30,7 +32,24 @@ export type DirectoryBrowseResult =
       readonly error: string;
     };
 
-export function browseServerDirectory(requestedDirectory: string): DirectoryBrowseResult {
+interface DirectoryBrowserFilesystem {
+  readonly lstat: (path: PathLike) => Promise<Stats>;
+  readonly opendir: (path: PathLike) => Promise<Dir>;
+  readonly realpath: (path: PathLike) => Promise<string>;
+}
+
+const NODE_DIRECTORY_BROWSER_FILESYSTEM: DirectoryBrowserFilesystem = {
+  lstat,
+  opendir,
+  realpath,
+};
+
+let activeDirectoryBrowses = 0;
+
+export async function browseServerDirectory(
+  requestedDirectory: string,
+  filesystem: DirectoryBrowserFilesystem = NODE_DIRECTORY_BROWSER_FILESYSTEM,
+): Promise<DirectoryBrowseResult> {
   if (
     !requestedDirectory
     || requestedDirectory.length > MAX_PROJECT_DIR_LENGTH
@@ -40,48 +59,39 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
     return invalidDirectory();
   }
 
+  if (activeDirectoryBrowses >= DIRECTORY_BROWSE_CONCURRENCY_LIMIT) return unavailableDirectory();
+  activeDirectoryBrowses++;
+
   try {
-    const requestedStat = lstatSync(requestedDirectory);
+    const requestedStat = await filesystem.lstat(requestedDirectory);
     if (requestedStat.isSymbolicLink() || !requestedStat.isDirectory()) return invalidDirectory();
 
-    const current = realpathSync(requestedDirectory);
+    const current = await filesystem.realpath(requestedDirectory);
     const parentCandidate = dirname(current);
     const directories: DirectoryBrowseEntry[] = [];
-    const directory = opendirSync(current);
+    const directory = await filesystem.opendir(current);
     try {
       let entriesInspected = 0;
-      let entry = directory.readSync();
+      let entry = await directory.read();
       while (entry) {
         entriesInspected++;
         if (entriesInspected > DIRECTORY_BROWSE_SCAN_LIMIT) return tooManyEntries();
-        if (!entry.name.startsWith(".")) {
-          const entryPath = join(current, entry.name);
-          try {
-            const entryStat = lstatSync(entryPath);
-            if (!entryStat.isSymbolicLink() && entryStat.isDirectory()) {
-              directories.push({ name: entry.name, path: realpathSync(entryPath) });
-              directories.sort(compareDirectoryEntries);
-              if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
-            }
-          } catch (error: unknown) {
-            const code = filesystemCode(error);
-            if (code !== "ENOENT") {
-              if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
-              return unavailableDirectory();
-            }
-          }
+        if (!entry.name.startsWith(".") && entry.isDirectory()) {
+          directories.push({ name: entry.name, path: join(current, entry.name) });
+          directories.sort(compareDirectoryEntries);
+          if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
         }
-        entry = directory.readSync();
+        entry = await directory.read();
       }
     } finally {
-      directory.closeSync();
+      await directory.close();
     }
 
     return {
       ok: true,
       value: {
         current,
-        parent: parentCandidate === current ? null : realpathSync(parentCandidate),
+        parent: parentCandidate === current ? null : parentCandidate,
         breadcrumbs: directoryBreadcrumbs(current),
         directories,
       },
@@ -93,6 +103,8 @@ export function browseServerDirectory(requestedDirectory: string): DirectoryBrow
     }
     if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
     return unavailableDirectory();
+  } finally {
+    activeDirectoryBrowses--;
   }
 }
 

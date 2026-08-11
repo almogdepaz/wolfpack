@@ -28,6 +28,7 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { rankProjectNames } from "./project-picker";
 import { authenticatedFetchWithTimeout, getBrowserAuthToken } from "./browser-auth";
+import { RequestTimeoutError } from "./fetch-timeout";
 import { keyboardOcclusionHeight } from "./viewport-geometry";
 import {
   OrderedResizeTracker,
@@ -3915,8 +3916,11 @@ function directoryBrowseErrorCode(error: unknown): string | undefined {
 }
 
 function directoryBrowseErrorMessage(error: unknown): string {
-  if (directoryBrowseErrorCode(error) !== "permission_denied") return errorMessage(error);
   const machineName = projectMachineName();
+  if (error instanceof RequestTimeoutError) {
+    return `The folder request timed out on ${machineName}. Wolfpack may be waiting for macOS folder authorization on that machine. Approve or deny the host prompt, or choose another folder.`;
+  }
+  if (directoryBrowseErrorCode(error) !== "permission_denied") return errorMessage(error);
   return `Wolfpack can't read this folder on ${machineName}. Grant the Wolfpack server access on that machine or choose another folder.`;
 }
 
