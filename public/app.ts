@@ -3623,7 +3623,7 @@ function handlePickerKeyboardNavigation(event: KeyboardEvent): void {
   const view = state.currentView === "projects" || state.currentView === "agent"
     ? state.currentView
     : null;
-  if (!view) return;
+  if (!view || (view === "projects" && projectPickerPanel !== "projects")) return;
   const cards = pickerMenuCards(view);
   const selectedIndex = keyboardMenuSelection?.view === view
     ? keyboardMenuSelection.index

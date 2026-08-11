@@ -162,6 +162,29 @@ test("jumps to an absolute server path without client-side path composition", as
   expect(directoryRequests).toEqual([null, CHILD_DIRECTORY]);
 });
 
+test("submits a folder path after project-card keyboard navigation", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "project-card arrow navigation is desktop-only");
+  const directoryRequests: Array<string | null> = [];
+  await routeDirectoryTree(page, directoryRequests);
+  await openProjectPicker(page);
+
+  const projectSearch = page.locator("#new-project-name");
+  await projectSearch.focus();
+  await projectSearch.press("ArrowDown");
+  await expect(page.locator("#project-list .keyboard-selected")).toHaveCount(1);
+
+  await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
+  const browser = folderBrowser(page);
+  const pathInput = browser.getByLabel(`Path on ${MACHINE_NAME}`);
+  await pathInput.fill(CHILD_DIRECTORY);
+  await pathInput.press("Enter");
+
+  await expect(browser.locator("#directory-browser-current")).toHaveText(CHILD_DIRECTORY);
+  await expect(page.locator("#projects-view")).toHaveClass(/visible/);
+  await expect(page.locator("#agent-view")).not.toHaveClass(/visible/);
+  expect(directoryRequests).toEqual([null, CHILD_DIRECTORY]);
+});
+
 test("restores project-picker focus after keyboard navigation and back", async ({ page }) => {
   const directoryRequests: Array<string | null> = [];
   await routeDirectoryTree(page, directoryRequests);
