@@ -103,7 +103,7 @@ describe("browseServerDirectory", () => {
     });
   });
 
-  test("omits unknown directory entry types without probing child metadata", async () => {
+  test("uses lstat when directory entry type metadata is unknown", async () => {
     const current = join(root, "unknown-entry-type");
     const child = join(current, "real-directory");
     mkdirSync(child, { recursive: true });
@@ -117,7 +117,10 @@ describe("browseServerDirectory", () => {
           current: realpathSync(current),
           parent: realpathSync(root),
           breadcrumbs: expect.any(Array),
-          directories: [],
+          directories: [{
+            name: "real-directory",
+            path: realpathSync(child),
+          }],
         },
       });
     } finally {

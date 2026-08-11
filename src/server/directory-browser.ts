@@ -1,4 +1,4 @@
-import type { Dir, PathLike, Stats } from "node:fs";
+import type { Dir, Dirent, PathLike, Stats } from "node:fs";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 
@@ -77,10 +77,26 @@ export async function browseServerDirectory(
       while (entry) {
         entriesInspected++;
         if (entriesInspected > DIRECTORY_BROWSE_SCAN_LIMIT) return tooManyEntries();
-        if (!entry.name.startsWith(".") && entry.isDirectory()) {
-          directories.push({ name: entry.name, path: join(current, entry.name) });
-          directories.sort(compareDirectoryEntries);
-          if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
+        if (!entry.name.startsWith(".")) {
+          const entryPath = join(current, entry.name);
+          let isDirectory = entry.isDirectory();
+          if (!isDirectory && directoryEntryTypeIsUnknown(entry)) {
+            try {
+              const entryStat = await filesystem.lstat(entryPath);
+              isDirectory = !entryStat.isSymbolicLink() && entryStat.isDirectory();
+            } catch (error: unknown) {
+              const code = filesystemCode(error);
+              if (!code || !NOT_FOUND_FILESYSTEM_CODES.has(code)) {
+                if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
+                return unavailableDirectory();
+              }
+            }
+          }
+          if (isDirectory) {
+            directories.push({ name: entry.name, path: entryPath });
+            directories.sort(compareDirectoryEntries);
+            if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
+          }
         }
         entry = await directory.read();
       }
@@ -107,6 +123,16 @@ export async function browseServerDirectory(
   } finally {
     activeDirectoryBrowses--;
   }
+}
+
+function directoryEntryTypeIsUnknown(entry: Dirent): boolean {
+  return !entry.isFile()
+    && !entry.isDirectory()
+    && !entry.isBlockDevice()
+    && !entry.isCharacterDevice()
+    && !entry.isSymbolicLink()
+    && !entry.isFIFO()
+    && !entry.isSocket();
 }
 
 function compareDirectoryEntries(left: DirectoryBrowseEntry, right: DirectoryBrowseEntry): number {
