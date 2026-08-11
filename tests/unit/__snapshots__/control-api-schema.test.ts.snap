@@ -1121,7 +1121,6 @@ exports[`control api schema generation schema source emits a stable snapshot 1`]
         "required": [
           "current",
           "parent",
-          "breadcrumbs",
           "directories"
         ],
         "additionalProperties": false
