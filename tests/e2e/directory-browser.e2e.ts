@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { API_REQUEST_TIMEOUT_MS } from "../../public/fetch-timeout.ts";
 import { startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
@@ -216,7 +217,7 @@ test("explains that a timed-out folder request may be waiting for macos authoriz
 
   try {
     await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
-    await page.clock.fastForward(15_001);
+    await page.clock.fastForward(API_REQUEST_TIMEOUT_MS + 1);
 
     await expect(folderBrowser(page).getByRole("alert")).toHaveText(
       `The folder request timed out on ${MACHINE_NAME}. Wolfpack may be waiting for macOS folder authorization on that machine. Approve or deny the host prompt, or choose another folder.`,

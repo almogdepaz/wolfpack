@@ -151,7 +151,7 @@ describe("browseServerDirectory", () => {
     let accessStarted = false;
     let browseSettled = false;
 
-    const browsePromise = Promise.resolve(browseServerDirectory(current, {
+    const browsePromise = browseServerDirectory(current, {
       lstat: async (path: PathLike) => {
         accessStarted = true;
         await accessGate.promise;
@@ -159,7 +159,7 @@ describe("browseServerDirectory", () => {
       },
       opendir,
       realpath,
-    })).finally(() => { browseSettled = true; });
+    }).finally(() => { browseSettled = true; });
 
     await Bun.sleep(0);
     expect(accessStarted).toBe(true);
