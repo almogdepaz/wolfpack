@@ -128,6 +128,26 @@ test("opens a canonical server folder from a dedicated host-labelled picker", as
   expect(nextNameRequests[0].searchParams.has("newProject")).toBe(false);
 });
 
+test("accepts a pre-breadcrumb response from an older same-major host", async ({ page }) => {
+  await page.route("**/api/directories**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        current: BASE_DIRECTORY,
+        parent: "/server",
+        directories: [],
+      }),
+    });
+  });
+  await openProjectPicker(page);
+
+  await page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` }).click();
+  const browser = folderBrowser(page);
+  await expect(browser.locator("#directory-browser-current")).toHaveText(BASE_DIRECTORY);
+  await expect(browser.getByRole("alert")).toBeEmpty();
+  await expect(browser.getByRole("button", { name: `Open ${BASE_DIRECTORY} folder` })).toBeEnabled();
+});
+
 test("jumps to an absolute server path without client-side path composition", async ({ page }) => {
   const directoryRequests: Array<string | null> = [];
   await routeDirectoryTree(page, directoryRequests);

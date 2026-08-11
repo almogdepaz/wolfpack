@@ -950,7 +950,7 @@ export const controlApiSource: ControlApiSource = {
           ...arrayOf(ref("DirectoryBrowseEntry")),
           maxItems: DIRECTORY_BROWSE_LIMIT,
         },
-      }, ["current", "parent", "breadcrumbs", "directories"]),
+      }, ["current", "parent", "directories"]),
       errors: [
         "400 DirectoryBrowseErrorEnvelope",
         "403 DirectoryBrowseErrorEnvelope",

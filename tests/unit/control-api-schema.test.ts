@@ -366,6 +366,11 @@ describe("control api schema compatibility samples", () => {
     expect(validate(response, {
       current: "/server/projects",
       parent: "/server",
+      directories: [],
+    }, artifact)).toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
       breadcrumbs: [{ name: "/", path: "/" }],
       directories: [...directories, { name: "overflow", path: "/server/projects/overflow" }],
     }, artifact)).not.toEqual([]);

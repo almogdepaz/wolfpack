@@ -2625,7 +2625,7 @@ interface DirectoryBrowseEntry {
 interface DirectoryBrowseResponse {
   readonly current: string;
   readonly parent: string | null;
-  readonly breadcrumbs: readonly DirectoryBrowseEntry[];
+  readonly breadcrumbs?: readonly DirectoryBrowseEntry[];
   readonly directories: readonly DirectoryBrowseEntry[];
 }
 
@@ -3835,14 +3835,18 @@ function isDirectoryBrowseResponse(value: unknown): value is DirectoryBrowseResp
   const response = value as Record<string, unknown>;
   return typeof response.current === "string"
     && (response.parent === null || typeof response.parent === "string")
-    && Array.isArray(response.breadcrumbs)
-    && response.breadcrumbs.every(isDirectoryBrowseEntry)
+    && (response.breadcrumbs === undefined
+      || (Array.isArray(response.breadcrumbs) && response.breadcrumbs.every(isDirectoryBrowseEntry)))
     && Array.isArray(response.directories)
     && response.directories.every(isDirectoryBrowseEntry);
 }
 
+function directoryBrowseBreadcrumbs(selection: DirectoryBrowseResponse): readonly DirectoryBrowseEntry[] {
+  return selection.breadcrumbs ?? [{ name: selection.current, path: selection.current }];
+}
+
 function currentDirectoryName(selection: DirectoryBrowseResponse): string {
-  return selection.breadcrumbs.at(-1)?.name || selection.current;
+  return directoryBrowseBreadcrumbs(selection).at(-1)?.name || selection.current;
 }
 
 function setDirectoryBrowserSelection(selection: DirectoryBrowseResponse | null): void {
@@ -3870,7 +3874,7 @@ function setDirectoryBrowserSelection(selection: DirectoryBrowseResponse | null)
       : `Use ${directoryName} as parent`,
   );
 
-  for (const breadcrumb of selection.breadcrumbs) {
+  for (const breadcrumb of directoryBrowseBreadcrumbs(selection)) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = breadcrumb.name;

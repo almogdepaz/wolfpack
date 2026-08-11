@@ -1118,7 +1118,6 @@
         "required": [
           "current",
           "parent",
-          "breadcrumbs",
           "directories"
         ],
         "additionalProperties": false
