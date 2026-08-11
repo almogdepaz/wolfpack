@@ -168,15 +168,26 @@ describe("browseServerDirectory", () => {
     expect((await browsePromise).ok).toBe(true);
   });
 
-  test("bounds concurrent requested-directory access", async () => {
+  test("allows one independent browse while bounding concurrent filesystem access", async () => {
     const current = join(root, "bounded-concurrency");
     mkdirSync(current);
-    const accessGate = Promise.withResolvers<void>();
-    let accessStarted = false;
+    const firstGate = Promise.withResolvers<void>();
+    const secondGate = Promise.withResolvers<void>();
+    let firstStarted = false;
+    let secondStarted = false;
     const firstBrowse = browseServerDirectory(current, {
       lstat: async (path: PathLike) => {
-        accessStarted = true;
-        await accessGate.promise;
+        firstStarted = true;
+        await firstGate.promise;
+        return lstat(path);
+      },
+      opendir,
+      realpath,
+    });
+    const secondBrowse = browseServerDirectory(current, {
+      lstat: async (path: PathLike) => {
+        secondStarted = true;
+        await secondGate.promise;
         return lstat(path);
       },
       opendir,
@@ -185,15 +196,20 @@ describe("browseServerDirectory", () => {
 
     try {
       await Bun.sleep(0);
-      expect(accessStarted).toBe(true);
+      expect(firstStarted).toBe(true);
+      expect(secondStarted).toBe(true);
       expect(await browseServerDirectory(current)).toEqual({
         ok: false,
         code: "unavailable",
         error: "directory unavailable",
       });
+      firstGate.resolve();
+      expect((await firstBrowse).ok).toBe(true);
+      expect((await browseServerDirectory(current)).ok).toBe(true);
     } finally {
-      accessGate.resolve();
-      await firstBrowse;
+      firstGate.resolve();
+      secondGate.resolve();
+      await Promise.all([firstBrowse, secondBrowse]);
     }
   });
 

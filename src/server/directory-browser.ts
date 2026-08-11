@@ -8,7 +8,8 @@ export const DIRECTORY_BROWSE_LIMIT = 200;
 export const DIRECTORY_BROWSE_SCAN_LIMIT = 1_000;
 export const DIRECTORY_BREADCRUMB_LIMIT = 12;
 
-const DIRECTORY_BROWSE_CONCURRENCY_LIMIT = 1;
+// One stalled authorization still leaves capacity for an independent browse.
+const DIRECTORY_BROWSE_CONCURRENCY_LIMIT = 2;
 const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
 const PERMISSION_DENIED_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["EACCES", "EPERM"]);
 
