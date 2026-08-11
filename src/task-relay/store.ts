@@ -133,11 +133,13 @@ export class TaskRelayStore {
     return this.#read().registrations.find((item) => item.endpoint.id === endpointId && Date.parse(item.leaseExpiresAt) > now.getTime());
   }
 
-  async unregister(sessionId: string, endpointId: string): Promise<boolean> {
+  async deactivateRegistration(sessionId: string, endpointId: string, leaseExpiresAt: string): Promise<boolean> {
     return this.#mutate((state) => {
       const registration = state.registrations.find((item) => item.sessionId === sessionId && item.endpoint.id === endpointId);
       return {
-        state: registration ? { ...state, registrations: state.registrations.filter((item) => item !== registration) } : state,
+        state: registration
+          ? { ...state, registrations: state.registrations.map((item) => item === registration ? { ...item, leaseExpiresAt } : item) }
+          : state,
         value: registration !== undefined,
       };
     });

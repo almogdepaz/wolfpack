@@ -166,7 +166,7 @@ export class TaskRelayGateway {
     if (!registration || registration.sessionId !== caller.value.sessionId || !isLocalRelay(input.endpoint)) {
       return relayFailure(RELAY_ERROR.SOURCE_MISMATCH, "caller does not own relay endpoint");
     }
-    await this.#store.unregister(caller.value.sessionId, input.endpoint.id);
+    await this.#store.deactivateRegistration(caller.value.sessionId, input.endpoint.id, this.#now().toISOString());
     return { ok: true };
   }
 
