@@ -644,18 +644,26 @@ test("project picker filters fetched projects by typed prefix without refetching
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
 });
 
-test("project picker uses concise labels without repeating placeholders", async ({ page }) => {
+test("project picker separates known projects, folder opening, and project creation", async ({ page }) => {
   await page.goto(srv.baseUrl);
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
 
   await expect(page.getByText("Projects", { exact: true })).toBeVisible();
   await expect(page.locator("#new-project-name")).toHaveAttribute("placeholder", "Filter existing projects");
-  await expect(page.getByText("Open existing directory", { exact: true })).toBeVisible();
-  await expect(page.locator("#existing-project-dir")).toHaveAttribute("placeholder", "/absolute/path/to/project");
-  await expect(page.getByRole("button", { name: "Open existing directory", exact: true })).toHaveText("Open");
-  await expect(page.getByText("Create a project", { exact: true })).toBeVisible();
-  await expect(page.locator("#new-project-create-name")).toHaveAttribute("placeholder", "Project name");
-  await expect(page.getByRole("button", { name: "Create new project", exact: true })).toHaveText("Create");
+  await expect(page.locator("#open-folder-action")).toContainText("Open a folder");
+  await expect(page.locator("#create-project-action")).toContainText("Create a project");
+
+  await page.locator("#open-folder-action").click();
+  await expect(page.locator("#directory-browser-path")).toHaveAttribute("placeholder", "/absolute/path/to/project");
+  await expect(page.getByRole("button", { name: "Go to path" })).toHaveText("Go");
+  const directoryBack = page.locator("#directory-browser-back");
+  if (await directoryBack.isVisible()) await directoryBack.click();
+  else await page.locator("#back-btn").click();
+
+  await page.locator("#create-project-action").click();
+  await expect(page.locator("#new-project-create-name")).toHaveAttribute("placeholder", "my-project");
+  await expect(page.getByRole("button", { name: "Change parent folder" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create project", exact: true })).toBeVisible();
 });
 
 test("project picker preserves exact explicit server directory text in browser requests", async ({ page }) => {
@@ -675,6 +683,20 @@ test("project picker preserves exact explicit server directory text in browser r
     nextNameQueries.push(new URL(route.request().url()));
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "path_with_spaces" }) });
   });
+  const directoryQueries: Array<string | null> = [];
+  await page.route("**/api/directories**", async (route) => {
+    const requestedPath = new URL(route.request().url()).searchParams.get("path");
+    directoryQueries.push(requestedPath);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        current: projectDir,
+        parent: "/srv/worktrees",
+        breadcrumbs: [{ name: "/", path: "/" }, { name: "path with spaces ", path: projectDir }],
+        directories: [],
+      }),
+    });
+  });
   await page.route("**/api/create", async (route) => {
     createRequests.push(route.request().postDataJSON() as Record<string, unknown>);
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, session: "path_with_spaces" }) });
@@ -682,12 +704,15 @@ test("project picker preserves exact explicit server directory text in browser r
 
   await page.goto(srv.baseUrl);
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
-  await page.locator("#existing-project-dir").fill(projectDir);
-  await page.getByRole("button", { name: "Open existing directory", exact: true }).click();
+  await page.locator("#open-folder-action").click();
+  await page.locator("#directory-browser-path").fill(projectDir);
+  await page.getByRole("button", { name: "Go to path" }).click();
+  await page.locator("#directory-browser-select").click();
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
   await expect(page.locator("#session-name-input")).toHaveValue("path_with_spaces");
   await page.getByRole("button", { name: "Start pi", exact: true }).click();
 
+  expect(directoryQueries).toEqual([null, projectDir]);
   expect(nextNameQueries).toHaveLength(1);
   expect(nextNameQueries[0].searchParams.get("projectDir")).toBe(projectDir);
   expect(nextNameQueries[0].searchParams.has("project")).toBe(false);
@@ -698,55 +723,55 @@ test("project picker preserves exact explicit server directory text in browser r
   }]);
 });
 
-test("project picker promptly surfaces directory validation while agent settings remain pending", async ({ page }) => {
-  const validationError = "project directory not found";
+test("project picker surfaces directory validation before entering agent selection", async ({ page }) => {
+  const validationError = "directory not found";
   let settingsRequested = false;
-  let releaseSettings: () => void = () => {};
-  const settingsPending = new Promise<void>((resolve) => {
-    releaseSettings = resolve;
-  });
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha"] }) });
   });
   await page.route("**/api/settings", async (route) => {
     settingsRequested = true;
-    await settingsPending;
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ effective: { cmds: ["pi"], agentCmd: "pi" } }),
     });
   });
-  await page.route(/\/api\/next-session-name\?/, async (route) => {
+  await page.route("**/api/directories**", async (route) => {
+    const requestedPath = new URL(route.request().url()).searchParams.get("path");
+    if (requestedPath === null) {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ current: "/srv/worktrees", parent: "/srv", breadcrumbs: [], directories: [] }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 404,
       contentType: "application/json",
-      body: JSON.stringify({ error: validationError }),
+      body: JSON.stringify({ error: validationError, code: "not_found" }),
     });
   });
 
-  try {
-    await page.goto(srv.baseUrl);
-    await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
-    await page.locator("#existing-project-dir").fill("/srv/worktrees/missing");
-    await page.getByRole("button", { name: "Open existing directory", exact: true }).click();
-
-    await expect.poll(() => settingsRequested, { timeout: 2_000 }).toBe(true);
-    await expect(page.locator("#agent-list")).toHaveText(validationError, { timeout: 2_000 });
-    await expect(page.locator("#agent-list")).not.toContainText("Failed to load agents");
-  } finally {
-    releaseSettings();
-  }
-});
-
-test("project creation input and action stay the same height", async ({ page }) => {
   await page.goto(srv.baseUrl);
   await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.locator("#open-folder-action").click();
+  await page.locator("#directory-browser-path").fill("/srv/worktrees/missing");
+  await page.getByRole("button", { name: "Go to path" }).click();
+
+  await expect(page.locator("#directory-browser-error")).toHaveText(validationError);
+  expect(settingsRequested).toBe(false);
+  await expect(page.locator("#projects-view")).toHaveClass(/visible/);
+});
+
+test("project creation controls retain practical target sizes", async ({ page }) => {
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await page.locator("#create-project-action").click();
 
   const inputBox = await page.locator("#new-project-create-name").boundingBox();
-  const buttonBox = await page.getByRole("button", { name: "Create new project", exact: true }).boundingBox();
-  expect(inputBox).not.toBeNull();
-  expect(buttonBox).not.toBeNull();
-  expect(Math.abs((inputBox?.height ?? 0) - (buttonBox?.height ?? 0))).toBeLessThanOrEqual(1);
+  const buttonBox = await page.getByRole("button", { name: "Create project", exact: true }).boundingBox();
+  expect(inputBox?.height).toBeGreaterThanOrEqual(44);
+  expect(buttonBox?.height).toBeGreaterThanOrEqual(44);
 });
 
 test("desktop project picker keeps a large catalog scrollable", async ({ page }, testInfo) => {
@@ -783,12 +808,16 @@ test("desktop project picker cards retain a practical target size", async ({ pag
 
 test("enter in project search never creates a directory", async ({ page }) => {
   const selectedProjects: string[] = [];
+  const newProjects: string[] = [];
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["alpha"] }) });
   });
-  await page.route(/\/api\/next-session-name\?project=/, async (route) => {
-    const project = new URL(route.request().url()).searchParams.get("project");
+  await page.route("**/api/next-session-name**", async (route) => {
+    const url = new URL(route.request().url());
+    const project = url.searchParams.get("project");
+    const newProject = url.searchParams.get("newProject");
     if (project) selectedProjects.push(project);
+    if (newProject) newProjects.push(newProject);
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "brand-new" }) });
   });
   await page.route("**/api/settings", async (route) => {
@@ -803,10 +832,12 @@ test("enter in project search never creates a directory", async ({ page }) => {
 
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
   expect(selectedProjects).toEqual([]);
-  await page.getByLabel("Create a project").fill("brand-new");
-  await page.getByRole("button", { name: "Create new project" }).click();
+  await page.locator("#create-project-action").click();
+  await page.getByLabel("Project name").fill("brand-new");
+  await page.getByRole("button", { name: "Create project", exact: true }).click();
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);
-  expect(selectedProjects).toEqual(["brand-new"]);
+  expect(selectedProjects).toEqual([]);
+  expect(newProjects).toEqual(["brand-new"]);
 });
 
 test("desktop new-session pickers use arrow navigation only after it starts", async ({ page }, testInfo) => {

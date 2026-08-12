@@ -317,7 +317,7 @@ function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]): 400 
 
 type DirectoryBrowseFailure = Extract<DirectoryBrowseResult, { readonly ok: false }>;
 
-type DirectoryBrowseHttpStatus = 400 | 404 | 422 | 503;
+type DirectoryBrowseHttpStatus = 400 | 403 | 404 | 422 | 503;
 
 const DIRECTORY_BROWSE_HTTP_STATUS: Readonly<Record<
   DirectoryBrowseFailure["code"],
@@ -325,6 +325,7 @@ const DIRECTORY_BROWSE_HTTP_STATUS: Readonly<Record<
 >> = {
   invalid: 400,
   not_found: 404,
+  permission_denied: 403,
   too_many_entries: 422,
   unavailable: 503,
 };
@@ -661,7 +662,7 @@ export const routes: Record<
 
   "GET /api/directories": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const result = browseServerDirectory(url.searchParams.get("path") ?? DEV_DIR);
+    const result = await browseServerDirectory(url.searchParams.get("path") ?? DEV_DIR);
     if (!result.ok) {
       json(res, { error: result.error, code: result.code }, directoryBrowseHttpStatus(result.code));
       return;

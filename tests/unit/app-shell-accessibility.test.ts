@@ -24,6 +24,14 @@ describe("app shell accessibility contracts", () => {
     expect(app).not.toContain("initialPrompt:");
   });
 
+  test("uses an in-app server folder view without native directory pickers", () => {
+    expect(html).toContain('id="directory-browser-panel"');
+    expect(html).not.toContain('id="directory-browser-dialog"');
+    expect(app).not.toContain("showDirectoryPicker");
+    expect(html).not.toContain("webkitdirectory");
+    expect(app).not.toContain("NSOpenPanel");
+  });
+
   test("loads the heavy terminal renderer lazily", () => {
     expect(html).not.toContain('<script defer src="/ghostty-web.bundle.js');
     expect(html).toContain('name="wolfpack-ghostty-src"');

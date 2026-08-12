@@ -9,7 +9,10 @@ import {
   validateControlApiSchemaArtifact,
 } from "../../scripts/gen-control-api-schema.ts";
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
-import { DIRECTORY_BROWSE_LIMIT } from "../../src/server/directory-browser.ts";
+import {
+  DIRECTORY_BREADCRUMB_LIMIT,
+  DIRECTORY_BROWSE_LIMIT,
+} from "../../src/server/directory-browser.ts";
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,
@@ -320,6 +323,7 @@ describe("control api schema compatibility samples", () => {
     expect(operation.auth).toBe("jwt-when-configured");
     expect(operation.errors).toEqual([
       "400 DirectoryBrowseErrorEnvelope",
+      "403 DirectoryBrowseErrorEnvelope",
       "404 DirectoryBrowseErrorEnvelope",
       "422 DirectoryBrowseErrorEnvelope",
       "503 DirectoryBrowseErrorEnvelope",
@@ -332,23 +336,52 @@ describe("control api schema compatibility samples", () => {
       },
       artifact,
     )).toEqual([]);
+    expect(validate(
+      (artifact.$defs as JsonObject).DirectoryBrowseErrorEnvelope,
+      {
+        error: "directory permission denied",
+        code: "permission_denied",
+      },
+      artifact,
+    )).toEqual([]);
     expect(validate(request, {}, artifact)).toEqual([]);
     expect(validate(request, { path: "/server/projects" }, artifact)).toEqual([]);
     expect(validate(request, { path: "relative/projects" }, artifact)).not.toEqual([]);
     expect(validate(response, {
       current: "/server/projects",
       parent: "/server",
+      breadcrumbs: [
+        { name: "/", path: "/" },
+        { name: "server", path: "/server" },
+        { name: "projects", path: "/server/projects" },
+      ],
       directories,
     }, artifact)).toEqual([]);
     expect(validate(response, {
       current: "/",
       parent: null,
+      breadcrumbs: [{ name: "/", path: "/" }],
       directories: [],
     }, artifact)).toEqual([]);
     expect(validate(response, {
       current: "/server/projects",
       parent: "/server",
+      directories: [],
+    }, artifact)).toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
+      breadcrumbs: [{ name: "/", path: "/" }],
       directories: [...directories, { name: "overflow", path: "/server/projects/overflow" }],
+    }, artifact)).not.toEqual([]);
+    expect(validate(response, {
+      current: "/server/projects",
+      parent: "/server",
+      breadcrumbs: Array.from({ length: DIRECTORY_BREADCRUMB_LIMIT + 1 }, (_, index) => ({
+        name: `level-${index}`,
+        path: `/level-${index}`,
+      })),
+      directories: [],
     }, artifact)).not.toEqual([]);
   });
 
