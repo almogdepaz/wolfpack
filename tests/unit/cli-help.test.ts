@@ -150,6 +150,41 @@ describe("cli help dispatch", () => {
     });
   }
 
+  test("global machine help is side-effect-free and documents the selector", () => {
+    for (const args of [
+      ["--machine", "peer", "--help"],
+      ["--machine", "peer", "session", "--help"],
+      ["--machine", "peer", "session", "status", "--help"],
+      ["--machine", "peer", "session", "prompt", "--help"],
+      ["--machine", "peer", "agent", "spawn", "--help"],
+      ["--machine", "peer", "list", "--help"],
+    ]) {
+      const child = runCli(args);
+      expect(child.exitCode, args.join(" ")).toBe(0);
+      expect(child.stdout).toContain("--machine <short-name-or-fqdn>");
+      expect(child.stderr).toBe("");
+    }
+  });
+
+  test("rejects malformed and unsupported global machine combinations before any probe", () => {
+    for (const args of [
+      ["--machine"],
+      ["--machine", "peer", "--machine", "other", "list"],
+      ["list", "--machine", "peer"],
+      ["session", "send", "local-session", "--machine", "peer"],
+      ["session", "send", "local-session", "--machine=peer"],
+      ["--machine", "peer", "session", "send", "remote-session", "--machine", "other"],
+      ["--machine", "peer", "session", "send", "remote-session", "--machine=other"],
+      ["--machine", "peer", "doctor", "--json"],
+      ["--machine", "peer", "agent", "notify-parent", "--json"],
+      ["--machine", "peer", "session", "current-context", "--json"],
+    ]) {
+      const child = runCli(args);
+      expect(child.exitCode, args.join(" ")).toBe(2);
+      expect(child.stderr, args.join(" ")).not.toContain("No valid config found");
+    }
+  });
+
   test("session open help needs no parent context and performs no HTTP request", async () => {
     let requestCount = 0;
     const server = Bun.serve({

@@ -201,37 +201,41 @@ export function enumerateTailnetCandidates(status: unknown): TailnetCandidateEnu
   };
 }
 
-function hasRequiredCapabilities(value: unknown): value is readonly string[] {
+function hasRequiredCapabilities(
+  value: unknown,
+  requiredCapabilities: readonly MachineCapability[],
+): value is readonly string[] {
   return Array.isArray(value)
     && value.length <= MACHINE_MAX_CAPABILITIES
     && value.every((capability) => typeof capability === "string" && capability.length > 0)
     && new Set(value).size === value.length
-    && MACHINE_CAPABILITIES.every((capability) => value.includes(capability));
+    && requiredCapabilities.every((capability) => value.includes(capability));
 }
 
-/** Strictly classifies a peer's handshake against the candidate facts that authorized its origin. */
-export function classifyMachineHandshake(
-  candidate: TailnetMachineCandidate,
+function classifyHandshakeForExpectedMachine(
+  origin: string,
+  tailnetNodeId: string | undefined,
+  requiredCapabilities: readonly MachineCapability[],
   value: unknown,
 ): MachineHandshakeClassification {
   if (!isRecord(value) || !isRecord(value.protocol) || value.protocol.name !== MACHINE_PROTOCOL.NAME) {
     return { kind: "non-wolfpack" };
   }
   if (
-    value.protocol.major !== MACHINE_PROTOCOL.MAJOR
+    !TAILNET_ORIGIN_REGEXP.test(origin)
+    || value.protocol.major !== MACHINE_PROTOCOL.MAJOR
     || !Number.isInteger(value.protocol.minor)
     || (value.protocol.minor as number) < 0
     || !isRecord(value.machine)
-    || value.machine.tailnetNodeId !== candidate.tailnetNodeId
-    || value.machine.origin !== candidate.origin
+    || (tailnetNodeId !== undefined && value.machine.tailnetNodeId !== tailnetNodeId)
+    || value.machine.origin !== origin
     || !isTailnetNodeId(value.machine.tailnetNodeId)
-    || canonicalTailnetOrigin(candidate.hostname) !== candidate.origin
     || typeof value.machine.installationId !== "string"
     || !UUID_PATTERN.test(value.machine.installationId)
     || !isBoundedVisibleString(value.machine.displayName, MAX_DISPLAY_NAME_LENGTH)
     || !isRecord(value.wolfpack)
     || !isBoundedVisibleString(value.wolfpack.version, MAX_VERSION_LENGTH)
-    || !hasRequiredCapabilities(value.capabilities)
+    || !hasRequiredCapabilities(value.capabilities, requiredCapabilities)
   ) {
     return { kind: "incompatible" };
   }
@@ -254,4 +258,26 @@ export function classifyMachineHandshake(
       capabilities: value.capabilities.filter((capability): capability is MachineCapability => MACHINE_CAPABILITY_SET.has(capability)),
     },
   };
+}
+
+/** Strictly classifies a peer's handshake against one explicitly selected canonical origin. */
+export function classifyMachineHandshakeForOrigin(
+  origin: string,
+  value: unknown,
+): MachineHandshakeClassification {
+  return classifyHandshakeForExpectedMachine(origin, undefined, [MACHINE_CAPABILITY.SESSIONS], value);
+}
+
+/** Strictly classifies a peer's handshake against the candidate facts that authorized its origin. */
+export function classifyMachineHandshake(
+  candidate: TailnetMachineCandidate,
+  value: unknown,
+): MachineHandshakeClassification {
+  if (canonicalTailnetOrigin(candidate.hostname) !== candidate.origin) return { kind: "incompatible" };
+  return classifyHandshakeForExpectedMachine(
+    candidate.origin,
+    candidate.tailnetNodeId,
+    MACHINE_CAPABILITIES,
+    value,
+  );
 }

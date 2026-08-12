@@ -1,6 +1,7 @@
 /**
  * Terminal formatting helpers — WOLF ascii art, color functions, and output policy.
  */
+import type { VerifiedMachineTarget } from "./machine-target.js";
 
 interface CliWritable {
   readonly isTTY?: boolean;
@@ -35,6 +36,14 @@ export function printError(message: string): void {
 
 export function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+export function printApiJson(value: unknown, target?: VerifiedMachineTarget): void {
+  if (target && value && typeof value === "object" && !Array.isArray(value)) {
+    printJson({ ...value, machine: target.machine });
+    return;
+  }
+  printJson(value);
 }
 
 export const WOLF = `

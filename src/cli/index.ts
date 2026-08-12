@@ -3,7 +3,7 @@
  * CLI dispatch entry point.
  */
 import { printQR } from "../qr.js";
-import { print, printError, bold, dim, red, yellow, WOLF } from "./formatting.js";
+import { print, printError, printJson, bold, dim, red, yellow, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
 import {
   loadConfig,
@@ -29,6 +29,15 @@ import { attachCommand } from "./attach.js";
 import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
+import { issueJwt } from "./api.js";
+import {
+  extractMachineSelector,
+  verifyMachineTarget,
+} from "./machine-target.js";
+import type {
+  MachineTargetFailure,
+  VerifiedMachineTarget,
+} from "./machine-target.js";
 
 export {
   loadConfig,
@@ -63,7 +72,10 @@ export function hasUninstallConfirmationFlag(argv: string[]): boolean {
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function topLevelUsage(): string {
-  return `Usage: wolfpack [command]
+  return `Usage: wolfpack [--machine <short-name-or-fqdn>] [command]
+
+Global selector:
+  --machine <short-name-or-fqdn>    Target a verified peer for supported session control commands
 
 Commands:
   wolfpack                         Start the dashboard/server
@@ -200,9 +212,62 @@ async function start() {
   print("");
 }
 
+function isMachineHelpRequest(argv: readonly string[]): boolean {
+  const help = argv.at(-1);
+  if (!help || !HELP_ALIASES.has(help)) return false;
+  const command = argv.slice(0, -1);
+  if (command.length === 0) return true;
+  const [family, action] = command;
+  if (["list", "ls", "kill"].includes(family ?? "")) return command.length === 1;
+  if (family === "session") {
+    return command.length === 1 || (command.length === 2 && [
+      "create", "open", "status", "read", "send", "wait", "prompt",
+    ].includes(action ?? ""));
+  }
+  return family === "agent"
+    && (command.length === 1 || (command.length === 2 && action === "spawn"));
+}
+
+function isMachineCommandSupported(argv: readonly string[]): boolean {
+  const [family, action] = argv;
+  if (["list", "ls", "kill"].includes(family ?? "")) return true;
+  if (family === "session") {
+    return ["create", "open", "status", "read", "send", "wait", "prompt"].includes(action ?? "");
+  }
+  return family === "agent" && action === "spawn";
+}
+
+function emitMachineFailure(
+  failure: MachineTargetFailure,
+  jsonOutput: boolean,
+): never {
+  if (jsonOutput) printJson({ ok: false, error: { code: failure.code, message: failure.message } });
+  else printError(red(`  ${failure.message}`));
+  process.exit(failure.exitCode);
+}
+
 async function main() {
-  const argv = process.argv.slice(2);
+  const rawArgv = process.argv.slice(2);
+  const extracted = extractMachineSelector(rawArgv);
+  if (!extracted.ok) emitMachineFailure(extracted.error, rawArgv.includes("--json"));
+  const argv = [...extracted.argv];
   const [cmd] = argv;
+  let target: VerifiedMachineTarget | undefined;
+  if (extracted.selector !== undefined && !isMachineHelpRequest(argv)) {
+    if (!isMachineCommandSupported(argv)) {
+      emitMachineFailure({
+        code: "INVALID_MACHINE_SELECTOR",
+        message: "--machine is not supported for this command",
+        exitCode: 2,
+      }, argv.includes("--json"));
+    }
+    const verified = await verifyMachineTarget(extracted.selector, {
+      tailscaleHostname: loadConfig()?.tailscaleHostname,
+      jwt: issueJwt(),
+    });
+    if (!verified.ok) emitMachineFailure(verified.error, argv.includes("--json"));
+    target = verified.target;
+  }
 
   if (argv.length === 1 && HELP_ALIASES.has(cmd)) {
     print(topLevelUsage());
@@ -235,13 +300,13 @@ async function main() {
     if (flags.some(flag => flag !== "--json" && flag !== "--fix")) throw new Error("Usage: wolfpack doctor [--json] [--fix]");
     process.exit(await doctor({ fix: flags.includes("--fix"), json: flags.includes("--json") }));
   } else if (cmd === "ls" || cmd === "list") {
-    process.exit(await lsSessions(argv.slice(1)));
+    process.exit(await lsSessions(argv.slice(1), target));
   } else if (cmd === "session") {
-    process.exit(await runSessionCommand(argv.slice(1)));
+    process.exit(await runSessionCommand(argv.slice(1), target));
   } else if (cmd === "agent") {
-    process.exit(await runAgentCommand(argv.slice(1)));
+    process.exit(await runAgentCommand(argv.slice(1), target));
   } else if (cmd === "kill") {
-    process.exit(await killSession(argv.slice(1)));
+    process.exit(await killSession(argv.slice(1), target));
   } else if (cmd === "logs" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
     print("Usage: wolfpack logs [--follow] [--json] [--broker]");
   } else if (cmd === "logs") {

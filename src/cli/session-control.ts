@@ -35,7 +35,8 @@ import type {
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
 import { call as callApi } from "./api.js";
-import { print, printError, printJson, red, yellow } from "./formatting.js";
+import type { VerifiedMachineTarget } from "./machine-target.js";
+import { print, printApiJson, printError, printJson, red, yellow } from "./formatting.js";
 
 export const SESSION_EXIT = {
   OK: 0,
@@ -60,6 +61,8 @@ export function sessionCreateUsage(): string {
   return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
        wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
 
+Global selector: wolfpack --machine <short-name-or-fqdn> session create ...
+
 Creates a top-level session. A project name selects under WOLFPACK_DEV_DIR;
 --project-dir selects an existing directory and is resolved to an absolute path.
 The server owns validation, naming, identity, and launch.`;
@@ -69,11 +72,15 @@ export function sessionOpenUsage(): string {
   return `Usage: wolfpack session open <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
        wolfpack session open --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 
+Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
+
 Deprecated alias for: wolfpack agent spawn`;
 }
 
 export function agentUsage(): string {
   return `Usage: wolfpack agent <command> [options]
+
+Global selector: wolfpack --machine <short-name-or-fqdn> agent spawn ...
 
 Commands:
   wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
@@ -85,6 +92,8 @@ Spawns a same-harness child of the current Wolfpack agent session or sends a use
 
 export function sessionUsage(): string {
   return `Usage: wolfpack session <command> [options]
+
+Global selector: wolfpack --machine <short-name-or-fqdn> session <supported-command> ...
 
 Commands:
   wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
@@ -190,10 +199,14 @@ function structuredErrorCode(body: string): string | undefined {
   }
 }
 
-async function call(path: string, init: RequestInit = {}): Promise<unknown> {
+async function call(
+  path: string,
+  init: RequestInit = {},
+  target?: VerifiedMachineTarget,
+): Promise<unknown> {
   let resp: Response;
   try {
-    resp = await callApi(path, init);
+    resp = await callApi(path, init, target);
   } catch (e: unknown) {
     throw { status: 0, body: e instanceof Error ? e.message : String(e) } satisfies ApiError;
   }
@@ -433,8 +446,9 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
   };
 }
 
-function jsonOut(value: unknown): void {
-  printJson(value);
+function jsonOut(value: unknown, target?: VerifiedMachineTarget): void {
+  if (target) printApiJson(value, target);
+  else printJson(value);
 }
 
 function shellQuote(value: string): string {
@@ -725,7 +739,10 @@ async function materializeInitialPrompt(source: LaunchPromptSource): Promise<str
   return prompt;
 }
 
-async function runSessionOpen(parsed: SessionOpenLaunchArgs): Promise<number> {
+async function runSessionOpen(
+  parsed: SessionOpenLaunchArgs,
+  target?: VerifiedMachineTarget,
+): Promise<number> {
   const context = resolveSessionOpenContext(process.env);
   if (!context.ok) {
     return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
@@ -742,8 +759,8 @@ async function runSessionOpen(parsed: SessionOpenLaunchArgs): Promise<number> {
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
-    }) as SessionLaunchResponse;
-    if (parsed.output === "json") jsonOut(response);
+    }, target) as SessionLaunchResponse;
+    if (parsed.output === "json") jsonOut(response, target);
     else print(response.session);
     return SESSION_EXIT.OK;
   } catch (error: unknown) {
@@ -753,6 +770,7 @@ async function runSessionOpen(parsed: SessionOpenLaunchArgs): Promise<number> {
 
 async function runSessionCreate(
   parsed: Extract<ParsedSessionCommand, { readonly action: "create" }>,
+  target?: VerifiedMachineTarget,
 ): Promise<number> {
   const initialPrompt = await materializeInitialPrompt(parsed);
   if (typeof initialPrompt === "number") return initialPrompt;
@@ -765,8 +783,8 @@ async function runSessionCreate(
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
-    }) as SessionLaunchResponse;
-    if (parsed.output === "json") jsonOut(response);
+    }, target) as SessionLaunchResponse;
+    if (parsed.output === "json") jsonOut(response, target);
     else print(response.session);
     return SESSION_EXIT.OK;
   } catch (error: unknown) {
@@ -804,7 +822,10 @@ async function runNotifyParent(
   }
 }
 
-export async function runAgentCommand(argv: readonly string[]): Promise<number> {
+export async function runAgentCommand(
+  argv: readonly string[],
+  target?: VerifiedMachineTarget,
+): Promise<number> {
   if (argv.length === 1 && HELP_ALIASES.has(argv[0])) {
     print(agentUsage());
     return SESSION_EXIT.OK;
@@ -822,11 +843,20 @@ export async function runAgentCommand(argv: readonly string[]): Promise<number> 
     printError(red(parsed.message));
     return SESSION_EXIT.USAGE;
   }
-  if (parsed.action === "notify-parent") return runNotifyParent(parsed);
-  return runSessionOpen(parsed);
+  if (parsed.action === "notify-parent") {
+    if (target) {
+      printError(red("--machine is not supported for agent notify-parent"));
+      return SESSION_EXIT.USAGE;
+    }
+    return runNotifyParent(parsed);
+  }
+  return runSessionOpen(parsed, target);
 }
 
-export async function runSessionCommand(argv: readonly string[]): Promise<number> {
+export async function runSessionCommand(
+  argv: readonly string[],
+  target?: VerifiedMachineTarget,
+): Promise<number> {
   if (argv.length === 1 && HELP_ALIASES.has(argv[0])) {
     print(sessionUsage());
     return SESSION_EXIT.OK;
@@ -839,6 +869,14 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
     print(sessionOpenUsage());
     return SESSION_EXIT.OK;
   }
+  if (
+    argv.length === 2
+    && ["status", "read", "send", "wait", "prompt"].includes(argv[0] ?? "")
+    && HELP_ALIASES.has(argv[1] ?? "")
+  ) {
+    print(sessionUsage());
+    return SESSION_EXIT.OK;
+  }
 
   const parsed = parseSessionCommand(argv);
   if (!parsed.ok) {
@@ -846,10 +884,14 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
     return SESSION_EXIT.USAGE;
   }
 
-  if (parsed.action === "create") return runSessionCreate(parsed);
-  if (parsed.action === "open") return runSessionOpen(parsed);
+  if (parsed.action === "create") return runSessionCreate(parsed, target);
+  if (parsed.action === "open") return runSessionOpen(parsed, target);
 
   if (parsed.action === "current-context") {
+    if (target) {
+      printError(red("--machine is not supported for session current-context"));
+      return SESSION_EXIT.USAGE;
+    }
     const context = {
       session: process.env.WOLFPACK_SESSION_NAME || "",
       projectDir: process.env.WOLFPACK_PROJECT_DIR || "",
@@ -874,8 +916,10 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
     if (parsed.action === "status") {
       const data = await call(
         `/api/session-control/status?session=${encodeURIComponent(parsed.session)}`,
+        {},
+        target,
       ) as SessionStatusResponse;
-      if (parsed.output === "json") jsonOut(data);
+      if (parsed.output === "json") jsonOut(data, target);
       else {
         print(`${data.session} (${data.sessionId})`);
         print(`${data.state} ${data.harness} ${data.projectPath}`);
@@ -883,12 +927,12 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
       return SESSION_EXIT.OK;
     }
     if (parsed.action === "read") {
-      const data = await call(`/api/session-control/read?session=${encodeURIComponent(parsed.session)}`) as {
+      const data = await call(`/api/session-control/read?session=${encodeURIComponent(parsed.session)}`, {}, target) as {
         session: string;
         sessionId: string;
         output: string;
       };
-      if (parsed.output === "json") jsonOut(data);
+      if (parsed.output === "json") jsonOut(data, target);
       else process.stdout.write(data.output);
       return SESSION_EXIT.OK;
     }
@@ -896,8 +940,8 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
       const data = await call("/api/session-control/send", {
         method: "POST",
         body: JSON.stringify({ session: parsed.session, text: parsed.text, noEnter: parsed.noEnter }),
-      });
-      if (parsed.output === "json") jsonOut(data);
+      }, target);
+      if (parsed.output === "json") jsonOut(data, target);
       return SESSION_EXIT.OK;
     }
     if (parsed.action === "prompt") {
@@ -910,16 +954,16 @@ export async function runSessionCommand(argv: readonly string[]): Promise<number
           noEnter: parsed.noEnter,
           timeoutMs: parsed.timeoutMs,
         }),
-      }) as SessionPromptResponse;
-      if (parsed.output === "json") jsonOut(data);
+      }, target) as SessionPromptResponse;
+      if (parsed.output === "json") jsonOut(data, target);
       else if (data.outcome !== SESSION_PROMPT_OUTCOME.MATCHED) print(yellow(data.outcome));
       return SESSION_PROMPT_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;
     }
     const data = await call("/api/session-control/wait", {
       method: "POST",
       body: JSON.stringify({ session: parsed.session, text: parsed.text, timeoutMs: parsed.timeoutMs }),
-    });
-    if (parsed.output === "json") jsonOut(data);
+    }, target);
+    if (parsed.output === "json") jsonOut(data, target);
     return SESSION_EXIT.OK;
   } catch (e: unknown) {
     return mapApiError(e, parsed.output);
