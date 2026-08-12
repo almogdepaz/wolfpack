@@ -2,6 +2,20 @@
 
 Wolfpack exposes a scriptable session surface for agents and operators. The server remains authoritative for auth, project selection and path validation, session naming, stable broker identity, and PTY operations. Commands use Wolfpack's ordinary global API auth policy and add no inter-session authorization layer.
 
+## Target a configured Tailnet machine
+
+```bash
+wolfpack --machine <short-name-or-fqdn> <control-command> ...
+```
+
+The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `session status`, `session read`, `session send`, `session wait`, `session prompt`, and `kill`. Other commands reject it.
+
+A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
+
+Subsequent requests go directly to that verified HTTPS origin. Remote JSON successes retain every server field and add the verified identity as `"machine": { "tailnetNodeId": string, "installationId": string, "displayName": string, "origin": string }`; server-owned `sessionId` values are unchanged. Without `--machine`, request routing and JSON output remain local and unchanged.
+
+`agent spawn` still uses `POST /api/session-open` and resolves its parent on the selected machine. It does not create cross-machine lineage: a parent absent from the selected machine fails through the existing structured response.
+
 ## Create a top-level session
 
 ```bash

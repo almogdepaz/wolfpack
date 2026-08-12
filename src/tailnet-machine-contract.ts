@@ -255,3 +255,58 @@ export function classifyMachineHandshake(
     },
   };
 }
+
+// Keep CLI-only validation separate: classifyMachineHandshake is browser-bundled.
+function hasRequiredCapabilitiesForOrigin(value: unknown): value is readonly string[] {
+  return Array.isArray(value)
+    && value.length <= MACHINE_MAX_CAPABILITIES
+    && value.every((capability) => typeof capability === "string" && capability.length > 0)
+    && new Set(value).size === value.length
+    && value.includes(MACHINE_CAPABILITY.SESSIONS);
+}
+
+/** Strictly classifies a peer's handshake against one explicitly selected canonical origin. */
+export function classifyMachineHandshakeForOrigin(
+  origin: string,
+  value: unknown,
+): MachineHandshakeClassification {
+  if (!isRecord(value) || !isRecord(value.protocol) || value.protocol.name !== MACHINE_PROTOCOL.NAME) {
+    return { kind: "non-wolfpack" };
+  }
+  if (
+    !TAILNET_ORIGIN_REGEXP.test(origin)
+    || value.protocol.major !== MACHINE_PROTOCOL.MAJOR
+    || !Number.isInteger(value.protocol.minor)
+    || (value.protocol.minor as number) < 0
+    || !isRecord(value.machine)
+    || value.machine.origin !== origin
+    || !isTailnetNodeId(value.machine.tailnetNodeId)
+    || typeof value.machine.installationId !== "string"
+    || !UUID_PATTERN.test(value.machine.installationId)
+    || !isBoundedVisibleString(value.machine.displayName, MAX_DISPLAY_NAME_LENGTH)
+    || !isRecord(value.wolfpack)
+    || !isBoundedVisibleString(value.wolfpack.version, MAX_VERSION_LENGTH)
+    || !hasRequiredCapabilitiesForOrigin(value.capabilities)
+  ) {
+    return { kind: "incompatible" };
+  }
+
+  return {
+    kind: "ready",
+    handshake: {
+      protocol: {
+        name: MACHINE_PROTOCOL.NAME,
+        major: MACHINE_PROTOCOL.MAJOR,
+        minor: value.protocol.minor as number,
+      },
+      machine: {
+        tailnetNodeId: value.machine.tailnetNodeId,
+        installationId: value.machine.installationId,
+        displayName: value.machine.displayName,
+        origin: value.machine.origin,
+      },
+      wolfpack: { version: value.wolfpack.version },
+      capabilities: value.capabilities.filter((capability): capability is MachineCapability => MACHINE_CAPABILITY_SET.has(capability)),
+    },
+  };
+}

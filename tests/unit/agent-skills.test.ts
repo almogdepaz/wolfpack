@@ -93,6 +93,22 @@ describe("agent skills", () => {
     expect(identityDocs).toContain("server derives the child harness");
   });
 
+  test("documents explicit fail-closed remote machine control", () => {
+    const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
+    const readme = readRepoFile("README.md");
+    const controlDocs = readRepoFile("docs/session-control.md");
+
+    for (const content of [skill, readme, controlDocs]) {
+      expect(content).toContain("wolfpack --machine <short-name-or-fqdn>");
+      expect(content).toContain("tailscaleHostname");
+      expect(content.toLowerCase()).toContain("fail closed");
+    }
+    expect(controlDocs).toContain("GET /api/machine");
+    expect(controlDocs).toContain("JWT");
+    expect(controlDocs).toContain('"machine"');
+    expect(controlDocs).toContain("selected machine");
+  });
+
   test("skill docs point at existing repo references", () => {
     const skill = readRepoFile("skills/wolfpack-tailnet-control/SKILL.md");
     const references = [

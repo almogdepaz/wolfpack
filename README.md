@@ -88,6 +88,15 @@ For a manual audited install, clone or update `https://github.com/almogdepaz/wol
 
 ## advanced automation
 
+Target the supported session-control surface on a configured Tailnet peer with the global selector:
+
+```bash
+wolfpack --machine <short-name-or-fqdn> list --json
+wolfpack --machine <short-name-or-fqdn> session status <session-or-id> --json
+```
+
+Short names use the exact suffix from configured `tailscaleHostname`; full names must be canonical hostnames in that same suffix. Wolfpack sends the normal JWT authorization on a bounded `GET /api/machine` handshake and subsequent requests. Invalid, incompatible, redirected, timed-out, or unreachable targets fail closed without localhost fallback. Remote JSON successes add verified `"machine"` identity while retaining server-owned `sessionId` values. `agent spawn` still resolves its parent on the selected machine and does not invent cross-machine lineage.
+
 Create a top-level project session with an initial instruction:
 
 ```bash

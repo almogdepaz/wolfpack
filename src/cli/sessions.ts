@@ -2,7 +2,8 @@
  * `wolfpack ls` and `wolfpack kill <name>` — talk to the local server's
  * HTTP API. JWT auth is honored when WOLFPACK_JWT_SECRET is set.
  */
-import { print, printError, printJson, bold, dim, red, green, yellow } from "./formatting.js";
+import type { VerifiedMachineTarget } from "./machine-target.js";
+import { print, printError, printApiJson, printJson, bold, dim, red, green, yellow } from "./formatting.js";
 import { baseUrl, call } from "./api.js";
 
 interface SessionRow {
@@ -30,9 +31,12 @@ function emitFailure(jsonOutput: boolean, failure: CliFailure): number {
   return failure.exitCode;
 }
 
-export async function lsSessions(argv: readonly string[] = []): Promise<number> {
+export async function lsSessions(
+  argv: readonly string[] = [],
+  target?: VerifiedMachineTarget,
+): Promise<number> {
   if (argv.length === 1 && ["--help", "-h", "help"].includes(argv[0])) {
-    print("Usage: wolfpack list [--json]");
+    print("Usage: wolfpack list [--json]\nGlobal selector: wolfpack --machine <short-name-or-fqdn> list [--json]");
     return 0;
   }
   const jsonOutput = argv.includes("--json");
@@ -48,13 +52,13 @@ export async function lsSessions(argv: readonly string[] = []): Promise<number> 
   let resp: Response;
   const apiPath = jsonOutput ? "/api/session-control/list" : "/api/sessions";
   try {
-    resp = await call(apiPath);
+    resp = await call(apiPath, {}, target);
   } catch (error: unknown) {
     return emitFailure(jsonOutput, {
       code: "SERVER_UNREACHABLE",
       message: "could not reach the wolfpack server",
       human: [
-        red(`  Could not reach the wolfpack server at ${baseUrl()}.`),
+        red(`  Could not reach the wolfpack server at ${baseUrl(target)}.`),
         dim("  Is it running? Try: wolfpack service status"),
         dim(`  Error: ${error instanceof Error ? error.message : String(error)}`),
       ],
@@ -92,7 +96,7 @@ export async function lsSessions(argv: readonly string[] = []): Promise<number> 
   }
   const sessions = data.sessions ?? [];
   if (jsonOutput) {
-    printJson({ sessions });
+    printApiJson({ sessions }, target);
     return 0;
   }
   if (sessions.length === 0) {
@@ -112,12 +116,15 @@ export async function lsSessions(argv: readonly string[] = []): Promise<number> 
   return 0;
 }
 
-export async function killSession(argv: readonly string[]): Promise<number> {
+export async function killSession(
+  argv: readonly string[],
+  target?: VerifiedMachineTarget,
+): Promise<number> {
   const args = [...argv];
   const jsonOutput = args.includes("--json");
   if (jsonOutput) args.splice(args.indexOf("--json"), 1);
   if (args.length === 1 && ["--help", "-h", "help"].includes(args[0])) {
-    print("Usage: wolfpack kill <session-or-id> [--json]");
+    print("Usage: wolfpack kill <session-or-id> [--json]\nGlobal selector: wolfpack --machine <short-name-or-fqdn> kill <session-or-id> [--json]");
     return 0;
   }
   const name = args[0];
@@ -132,13 +139,13 @@ export async function killSession(argv: readonly string[]): Promise<number> {
 
   let resp: Response;
   try {
-    resp = await call("/api/kill", { method: "POST", body: JSON.stringify({ session: name }) });
+    resp = await call("/api/kill", { method: "POST", body: JSON.stringify({ session: name }) }, target);
   } catch (error: unknown) {
     return emitFailure(jsonOutput, {
       code: "SERVER_UNREACHABLE",
       message: "could not reach the wolfpack server",
       human: [
-        red(`  Could not reach the wolfpack server at ${baseUrl()}.`),
+        red(`  Could not reach the wolfpack server at ${baseUrl(target)}.`),
         dim(`  Error: ${error instanceof Error ? error.message : String(error)}`),
       ],
       exitCode: 1,
@@ -181,7 +188,7 @@ export async function killSession(argv: readonly string[]): Promise<number> {
       exitCode: 1,
     });
   }
-  if (jsonOutput) printJson(data);
+  if (jsonOutput) printApiJson(data, target);
   else print(green(`  Killed session "${data.session}".`));
   return 0;
 }

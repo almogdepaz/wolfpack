@@ -3,9 +3,11 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { loadConfig } from "./config.js";
+import type { VerifiedMachineTarget } from "./machine-target.js";
 import { printError, yellow } from "./formatting.js";
 
-export function baseUrl(): string {
+export function baseUrl(target?: VerifiedMachineTarget): string {
+  if (target) return target.origin;
   const config = loadConfig();
   const port = config?.port ?? 18790;
   return `http://127.0.0.1:${port}`;
@@ -41,10 +43,14 @@ export function issueJwt(): string | null {
   return `${data}.${sig}`;
 }
 
-export async function call(path: string, init: RequestInit = {}): Promise<Response> {
+export async function call(
+  path: string,
+  init: RequestInit = {},
+  target?: VerifiedMachineTarget,
+): Promise<Response> {
   const headers = new Headers(init.headers);
   const jwt = issueJwt();
   if (jwt) headers.set("Authorization", `Bearer ${jwt}`);
   if (!headers.has("Content-Type") && init.body) headers.set("Content-Type", "application/json");
-  return fetch(`${baseUrl()}${path}`, { ...init, headers });
+  return fetch(`${baseUrl(target)}${path}`, { ...init, headers });
 }

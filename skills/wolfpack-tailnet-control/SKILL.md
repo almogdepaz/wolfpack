@@ -30,6 +30,14 @@ Use `--name <session>` for child agents and choose a short meaningful issue/role
 
 ## Structured inspection and control
 
+To explicitly target a configured Tailnet peer, prefix only supported control commands:
+
+```bash
+wolfpack --machine <short-name-or-fqdn> list --json
+```
+
+Short names use the exact suffix from configured `tailscaleHostname`; full names must be canonical hostnames in that suffix. The CLI verifies bounded structured `GET /api/machine` identity, uses normal JWT auth, and makes invalid targets fail closed without localhost fallback. Remote JSON success adds verified `machine` identity and preserves server-owned `sessionId`. Remote `agent spawn` resolves the parent on the selected machine; no cross-machine parent lineage is created. Unsupported commands reject `--machine`.
+
 ```bash
 wolfpack list --json
 wolfpack session status <session-or-id> --json
