@@ -7,7 +7,9 @@ import type {
   TailnetMachineCandidate,
 } from "./tailnet-machine-contract.ts";
 
-const DEFAULT_PROBE_TIMEOUT_MS = 3_000;
+// The peer endpoint performs its own bounded Tailscale identity lookup. Keep
+// the browser's outer bound above that server-side work plus Tailnet latency.
+export const TAILNET_PROBE_TIMEOUT_MS = 8_000;
 const MAX_CONCURRENT_PROBES = 8;
 const DEFAULT_MAX_CONCURRENT_PROBES = MAX_CONCURRENT_PROBES;
 const MAX_MACHINE_HANDSHAKE_RESPONSE_BYTES = 32 * 1024;
@@ -221,7 +223,7 @@ export async function probeTailnetCandidates(
   fetcher: TailnetProbeFetch = fetch,
   options: TailnetProbeOptions = {},
 ): Promise<readonly TailnetPeerProbe[]> {
-  const timeoutMs = boundedProbeOption(options.timeoutMs, DEFAULT_PROBE_TIMEOUT_MS, 30_000);
+  const timeoutMs = boundedProbeOption(options.timeoutMs, TAILNET_PROBE_TIMEOUT_MS, 30_000);
   const maxConcurrent = boundedProbeOption(options.maxConcurrent, DEFAULT_MAX_CONCURRENT_PROBES, MAX_CONCURRENT_PROBES);
   const outcomes = new Array<TailnetPeerProbe>(candidates.length);
   let next = 0;
