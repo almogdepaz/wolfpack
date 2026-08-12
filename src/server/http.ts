@@ -436,12 +436,15 @@ async function readLocalTailscaleStatus(selfOnly = false): Promise<unknown> {
   return selfOnly ? localTailscaleSelfStatusCache.read() : localTailscaleStatusCache.read();
 }
 
-export async function getLocalMachineHandshake(version: string): Promise<MachineHandshake | null> {
+export async function getLocalMachineHandshake(
+  version: string,
+  readStatus: (selfOnly: boolean) => Promise<unknown> = readLocalTailscaleStatus,
+): Promise<MachineHandshake | null> {
   try {
     // The public handshake needs only this node's identity. Avoid waiting for
     // a full peer network-map query, which can consume the endpoint's entire
     // subprocess bound on an otherwise healthy Tailnet machine.
-    const status = await readLocalTailscaleStatus(true);
+    const status = await readStatus(true);
     return buildMachineHandshakeFromTailnetStatus({
       status,
       installationId: getInstallationId(),
