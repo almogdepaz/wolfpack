@@ -201,41 +201,37 @@ export function enumerateTailnetCandidates(status: unknown): TailnetCandidateEnu
   };
 }
 
-function hasRequiredCapabilities(
-  value: unknown,
-  requiredCapabilities: readonly MachineCapability[],
-): value is readonly string[] {
+function hasRequiredCapabilities(value: unknown): value is readonly string[] {
   return Array.isArray(value)
     && value.length <= MACHINE_MAX_CAPABILITIES
     && value.every((capability) => typeof capability === "string" && capability.length > 0)
     && new Set(value).size === value.length
-    && requiredCapabilities.every((capability) => value.includes(capability));
+    && MACHINE_CAPABILITIES.every((capability) => value.includes(capability));
 }
 
-function classifyHandshakeForExpectedMachine(
-  origin: string,
-  tailnetNodeId: string | undefined,
-  requiredCapabilities: readonly MachineCapability[],
+/** Strictly classifies a peer's handshake against the candidate facts that authorized its origin. */
+export function classifyMachineHandshake(
+  candidate: TailnetMachineCandidate,
   value: unknown,
 ): MachineHandshakeClassification {
   if (!isRecord(value) || !isRecord(value.protocol) || value.protocol.name !== MACHINE_PROTOCOL.NAME) {
     return { kind: "non-wolfpack" };
   }
   if (
-    !TAILNET_ORIGIN_REGEXP.test(origin)
-    || value.protocol.major !== MACHINE_PROTOCOL.MAJOR
+    value.protocol.major !== MACHINE_PROTOCOL.MAJOR
     || !Number.isInteger(value.protocol.minor)
     || (value.protocol.minor as number) < 0
     || !isRecord(value.machine)
-    || (tailnetNodeId !== undefined && value.machine.tailnetNodeId !== tailnetNodeId)
-    || value.machine.origin !== origin
+    || value.machine.tailnetNodeId !== candidate.tailnetNodeId
+    || value.machine.origin !== candidate.origin
     || !isTailnetNodeId(value.machine.tailnetNodeId)
+    || canonicalTailnetOrigin(candidate.hostname) !== candidate.origin
     || typeof value.machine.installationId !== "string"
     || !UUID_PATTERN.test(value.machine.installationId)
     || !isBoundedVisibleString(value.machine.displayName, MAX_DISPLAY_NAME_LENGTH)
     || !isRecord(value.wolfpack)
     || !isBoundedVisibleString(value.wolfpack.version, MAX_VERSION_LENGTH)
-    || !hasRequiredCapabilities(value.capabilities, requiredCapabilities)
+    || !hasRequiredCapabilities(value.capabilities)
   ) {
     return { kind: "incompatible" };
   }
@@ -260,24 +256,57 @@ function classifyHandshakeForExpectedMachine(
   };
 }
 
+// Keep CLI-only validation separate: classifyMachineHandshake is browser-bundled.
+function hasRequiredCapabilitiesForOrigin(value: unknown): value is readonly string[] {
+  return Array.isArray(value)
+    && value.length <= MACHINE_MAX_CAPABILITIES
+    && value.every((capability) => typeof capability === "string" && capability.length > 0)
+    && new Set(value).size === value.length
+    && value.includes(MACHINE_CAPABILITY.SESSIONS);
+}
+
 /** Strictly classifies a peer's handshake against one explicitly selected canonical origin. */
 export function classifyMachineHandshakeForOrigin(
   origin: string,
   value: unknown,
 ): MachineHandshakeClassification {
-  return classifyHandshakeForExpectedMachine(origin, undefined, [MACHINE_CAPABILITY.SESSIONS], value);
-}
+  if (!isRecord(value) || !isRecord(value.protocol) || value.protocol.name !== MACHINE_PROTOCOL.NAME) {
+    return { kind: "non-wolfpack" };
+  }
+  if (
+    !TAILNET_ORIGIN_REGEXP.test(origin)
+    || value.protocol.major !== MACHINE_PROTOCOL.MAJOR
+    || !Number.isInteger(value.protocol.minor)
+    || (value.protocol.minor as number) < 0
+    || !isRecord(value.machine)
+    || value.machine.origin !== origin
+    || !isTailnetNodeId(value.machine.tailnetNodeId)
+    || typeof value.machine.installationId !== "string"
+    || !UUID_PATTERN.test(value.machine.installationId)
+    || !isBoundedVisibleString(value.machine.displayName, MAX_DISPLAY_NAME_LENGTH)
+    || !isRecord(value.wolfpack)
+    || !isBoundedVisibleString(value.wolfpack.version, MAX_VERSION_LENGTH)
+    || !hasRequiredCapabilitiesForOrigin(value.capabilities)
+  ) {
+    return { kind: "incompatible" };
+  }
 
-/** Strictly classifies a peer's handshake against the candidate facts that authorized its origin. */
-export function classifyMachineHandshake(
-  candidate: TailnetMachineCandidate,
-  value: unknown,
-): MachineHandshakeClassification {
-  if (canonicalTailnetOrigin(candidate.hostname) !== candidate.origin) return { kind: "incompatible" };
-  return classifyHandshakeForExpectedMachine(
-    candidate.origin,
-    candidate.tailnetNodeId,
-    MACHINE_CAPABILITIES,
-    value,
-  );
+  return {
+    kind: "ready",
+    handshake: {
+      protocol: {
+        name: MACHINE_PROTOCOL.NAME,
+        major: MACHINE_PROTOCOL.MAJOR,
+        minor: value.protocol.minor as number,
+      },
+      machine: {
+        tailnetNodeId: value.machine.tailnetNodeId,
+        installationId: value.machine.installationId,
+        displayName: value.machine.displayName,
+        origin: value.machine.origin,
+      },
+      wolfpack: { version: value.wolfpack.version },
+      capabilities: value.capabilities.filter((capability): capability is MachineCapability => MACHINE_CAPABILITY_SET.has(capability)),
+    },
+  };
 }
