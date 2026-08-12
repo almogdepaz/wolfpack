@@ -12,7 +12,10 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
-import { DIRECTORY_BROWSE_LIMIT } from "../server/directory-browser.ts";
+import {
+  DIRECTORY_BREADCRUMB_LIMIT,
+  DIRECTORY_BROWSE_LIMIT,
+} from "../server/directory-browser.ts";
 import { MAX_PROJECT_DIR_LENGTH } from "../server/validate-project-dir.ts";
 import {
   SESSION_PROMPT_MAX_TIMEOUT_MS,
@@ -282,11 +285,12 @@ export const controlApiSource: ControlApiSource = {
         enum: [
           "invalid directory",
           "directory not found",
+          "directory permission denied",
           "directory contains too many entries",
           "directory unavailable",
         ],
       },
-      code: { enum: ["invalid", "not_found", "too_many_entries", "unavailable"] },
+      code: { enum: ["invalid", "not_found", "permission_denied", "too_many_entries", "unavailable"] },
     }, ["error", "code"]),
     DirectoryBrowseEntry: object({
       name: string("Server-returned display label for the child directory"),
@@ -938,6 +942,10 @@ export const controlApiSource: ControlApiSource = {
       response: object({
         current: ref("ProjectDirectory"),
         parent: nullable(ref("ProjectDirectory")),
+        breadcrumbs: {
+          ...arrayOf(ref("DirectoryBrowseEntry")),
+          maxItems: DIRECTORY_BREADCRUMB_LIMIT,
+        },
         directories: {
           ...arrayOf(ref("DirectoryBrowseEntry")),
           maxItems: DIRECTORY_BROWSE_LIMIT,
@@ -945,6 +953,7 @@ export const controlApiSource: ControlApiSource = {
       }, ["current", "parent", "directories"]),
       errors: [
         "400 DirectoryBrowseErrorEnvelope",
+        "403 DirectoryBrowseErrorEnvelope",
         "404 DirectoryBrowseErrorEnvelope",
         "422 DirectoryBrowseErrorEnvelope",
         "503 DirectoryBrowseErrorEnvelope",
