@@ -105,6 +105,74 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("continues mailbox cursors when the same generation reconnects after lease expiry", async () => {
+    const directory = root();
+    let now = NOW;
+    try {
+      const senderGateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => now });
+      const receiverGateway = new TaskRelayGateway({ root: directory, inspectSession: session("receiver"), now: () => now });
+      const sender = await connect(senderGateway, "sender", "sender-generation");
+      const receiver = await connect(receiverGateway, "receiver", "receiver-generation");
+      const firstEnvelope = { envelopeId: "before-expiry", protocolVersion: RELAY_PROTOCOL_VERSION, source: sender, target: receiver, payload: { order: 1 }, createdAt: now.toISOString() };
+      await expect(senderGateway.send({ callerSession: "sender", envelope: firstEnvelope })).resolves.toMatchObject({ ok: true });
+      await expect(receiverGateway.receive({ callerSession: "receiver", cursor: "0" })).resolves.toMatchObject({
+        ok: true,
+        envelopes: [expect.objectContaining({ envelopeId: "before-expiry" })],
+        nextCursor: "1",
+      });
+
+      now = new Date(NOW.getTime() + RELAY_LIMITS.LEASE_MS + 1);
+      const renewedSender = await connect(senderGateway, "sender", "sender-generation");
+      const renewedReceiver = await connect(receiverGateway, "receiver", "receiver-generation");
+      const secondEnvelope = { envelopeId: "after-expiry", protocolVersion: RELAY_PROTOCOL_VERSION, source: renewedSender, target: renewedReceiver, payload: { order: 2 }, createdAt: now.toISOString() };
+      await expect(senderGateway.send({ callerSession: "sender", envelope: secondEnvelope })).resolves.toMatchObject({ ok: true });
+      await expect(receiverGateway.receive({ callerSession: "receiver", cursor: "1" })).resolves.toMatchObject({
+        ok: true,
+        envelopes: [expect.objectContaining({ envelopeId: "after-expiry" })],
+        nextCursor: "2",
+      });
+      expect(renewedSender).toEqual(sender);
+      expect(renewedReceiver).toEqual(receiver);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("continues mailbox cursors when the same generation reconnects after disconnect", async () => {
+    const directory = root();
+    try {
+      const senderGateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => NOW });
+      const receiverGateway = new TaskRelayGateway({ root: directory, inspectSession: session("receiver"), now: () => NOW });
+      const sender = await connect(senderGateway, "sender", "sender-generation");
+      const receiver = await connect(receiverGateway, "receiver", "receiver-generation");
+      const firstEnvelope = { envelopeId: "before-disconnect", protocolVersion: RELAY_PROTOCOL_VERSION, source: sender, target: receiver, payload: { order: 1 }, createdAt: NOW.toISOString() };
+      await expect(senderGateway.send({ callerSession: "sender", envelope: firstEnvelope })).resolves.toMatchObject({ ok: true });
+      await expect(receiverGateway.receive({ callerSession: "receiver", cursor: "0" })).resolves.toMatchObject({
+        ok: true,
+        envelopes: [expect.objectContaining({ envelopeId: "before-disconnect" })],
+        nextCursor: "1",
+      });
+
+      await expect(receiverGateway.disconnect({ callerSession: "receiver", endpoint: receiver })).resolves.toEqual({ ok: true });
+      await expect(senderGateway.resolve({ callerSession: "sender", target: receiver, protocolVersion: RELAY_PROTOCOL_VERSION })).resolves.toMatchObject({
+        ok: false,
+        error: { code: "TARGET_NOT_REGISTERED" },
+      });
+      const reconnectedReceiver = await connect(receiverGateway, "receiver", "receiver-generation");
+      expect(reconnectedReceiver).toEqual(receiver);
+
+      const secondEnvelope = { envelopeId: "after-disconnect", protocolVersion: RELAY_PROTOCOL_VERSION, source: sender, target: reconnectedReceiver, payload: { order: 2 }, createdAt: NOW.toISOString() };
+      await expect(senderGateway.send({ callerSession: "sender", envelope: secondEnvelope })).resolves.toMatchObject({ ok: true });
+      await expect(receiverGateway.receive({ callerSession: "receiver", cursor: "1" })).resolves.toMatchObject({
+        ok: true,
+        envelopes: [expect.objectContaining({ envelopeId: "after-disconnect" })],
+        nextCursor: "2",
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("expires leases and invalidates the prior endpoint when a process generation reconnects", async () => {
     const directory = root();
     let now = NOW;
