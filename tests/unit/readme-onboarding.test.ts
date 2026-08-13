@@ -42,10 +42,14 @@ describe("README onboarding", () => {
     const readme = readFileSync(README_PATH, "utf-8");
     const demoPosition = readme.indexOf("docs/assets/wolfpack-usage-demo.gif");
 
-    expect(demoPosition).toBeGreaterThan(-1);
+    const desktopHeadingPosition = readme.indexOf("### desktop demo");
+    expect(desktopHeadingPosition).toBeGreaterThan(-1);
+    expect(demoPosition).toBeGreaterThan(desktopHeadingPosition);
+    const mobileHeadingPosition = readme.indexOf("### mobile views");
+    expect(mobileHeadingPosition).toBeGreaterThan(demoPosition);
     for (const screenshot of MOBILE_SCREENSHOTS) {
       expect(existsSync(screenshot)).toBe(true);
-      expect(readme.indexOf(screenshot)).toBeGreaterThan(demoPosition);
+      expect(readme.indexOf(screenshot)).toBeGreaterThan(mobileHeadingPosition);
     }
   });
 

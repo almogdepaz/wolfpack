@@ -11,9 +11,13 @@ Sessions live in a Rust PTY broker, not the web server, so server restarts and u
 
 **Homepage:** [get-wolfpack.netlify.app](https://get-wolfpack.netlify.app/) · **Agent-readable overview:** [llms.txt](https://get-wolfpack.netlify.app/llms.txt)
 
+### desktop demo
+
 <p align="center">
   <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack usage demo showing real broker-backed terminal sessions" />
 </p>
+
+### mobile views
 
 <p align="center">
   <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile sessions dashboard showing real broker-backed sessions" />
