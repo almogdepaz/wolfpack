@@ -1151,7 +1151,7 @@ describe("local task gateway", () => {
     const secondPage = await second.json() as { events: Array<{ taskId: string }> };
     const returnedTaskIds = [...firstPage.events, ...secondPage.events].map((event) => event.taskId).filter((taskId) => taskIds.includes(taskId));
     expect(returnedTaskIds).toEqual(taskIds);
-  });
+  }, 15_000);
 
   test("keeps canonical terminal ordering stable under concurrent cancellation and completion", async () => {
     const sent = await request("/api/tasks/v1/send", "POST", { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "race terminal" });

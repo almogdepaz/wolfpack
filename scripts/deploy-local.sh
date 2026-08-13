@@ -303,7 +303,11 @@ verify_service_pid() {
   fi
 }
 
-bun run scripts/build.ts
+if [ "$DEPLOY_BROKER" = "0" ]; then
+  WOLFPACK_BUILD_SERVER_ONLY=1 bun run scripts/build.ts
+else
+  WOLFPACK_BUILD_SERVER_ONLY=0 bun run scripts/build.ts
+fi
 
 ARCH="$(uname -m)"
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
