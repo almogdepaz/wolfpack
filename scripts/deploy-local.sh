@@ -306,7 +306,7 @@ verify_service_pid() {
 if [ "$DEPLOY_BROKER" = "0" ]; then
   WOLFPACK_BUILD_SERVER_ONLY=1 bun run scripts/build.ts
 else
-  bun run scripts/build.ts
+  WOLFPACK_BUILD_SERVER_ONLY=0 bun run scripts/build.ts
 fi
 
 ARCH="$(uname -m)"
