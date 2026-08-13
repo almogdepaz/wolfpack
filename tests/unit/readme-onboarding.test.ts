@@ -4,6 +4,13 @@ import pkg from "../../package.json";
 
 const README_PATH = "README.md";
 const INSTALLATION_GUIDE_PATH = "docs/installation.md";
+const SITE_PATH = "site/index.html";
+const SITE_DEMO_PATH = "site/assets/wolfpack-usage-demo.gif";
+const MOBILE_SCREENSHOTS = [
+  "docs/mobile-sessions.png",
+  "docs/mobile-terminal.png",
+  "docs/mobile-settings.png",
+] as const;
 
 describe("README onboarding", () => {
   test("gives curl, Bunx, and npm users executable diagnosis and uninstall commands", () => {
@@ -30,5 +37,25 @@ describe("README onboarding", () => {
 
     const readme = readFileSync(README_PATH, "utf-8");
     expect(readme).toContain(INSTALLATION_GUIDE_PATH);
+  });
+
+  test("shows representative mobile UI captures after the interactive demo", () => {
+    const readme = readFileSync(README_PATH, "utf-8");
+    const demoPosition = readme.indexOf("docs/assets/wolfpack-usage-demo.gif");
+
+    expect(demoPosition).toBeGreaterThan(-1);
+    for (const screenshot of MOBILE_SCREENSHOTS) {
+      expect(existsSync(screenshot)).toBe(true);
+      expect(readme.indexOf(screenshot)).toBeGreaterThan(demoPosition);
+    }
+  });
+
+  test("uses the interactive demo as the homepage's first product preview", () => {
+    const site = readFileSync(SITE_PATH, "utf-8");
+    const hero = site.match(/<div class="hero-visual">([\s\S]*?)<\/section>/)?.[1];
+
+    expect(hero).toBeDefined();
+    expect(existsSync(SITE_DEMO_PATH)).toBe(true);
+    expect(hero?.match(/<img src="([^"]+)"/)?.[1]).toBe("assets/wolfpack-usage-demo.gif");
   });
 });
