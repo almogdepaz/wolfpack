@@ -9,7 +9,6 @@ const SITE_DEMO_PATH = "site/assets/wolfpack-usage-demo.gif";
 const MOBILE_SCREENSHOTS = [
   "docs/mobile-sessions.png",
   "docs/mobile-terminal.png",
-  "docs/mobile-settings.png",
 ] as const;
 
 describe("README onboarding", () => {
