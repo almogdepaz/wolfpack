@@ -4,6 +4,16 @@ import pkg from "../../package.json";
 
 const README_PATH = "README.md";
 const INSTALLATION_GUIDE_PATH = "docs/installation.md";
+const SITE_PATH = "site/index.html";
+const SITE_DEMO_PATH = "site/assets/wolfpack-usage-demo.gif";
+const MOBILE_SCREENSHOTS = [
+  "docs/mobile-sessions.png",
+  "docs/mobile-ghostty.png",
+] as const;
+const SITE_MOBILE_SCREENSHOTS = [
+  "site/assets/mobile-sessions.png",
+  "site/assets/mobile-terminal.png",
+] as const;
 
 describe("README onboarding", () => {
   test("gives curl, Bunx, and npm users executable diagnosis and uninstall commands", () => {
@@ -30,5 +40,45 @@ describe("README onboarding", () => {
 
     const readme = readFileSync(README_PATH, "utf-8");
     expect(readme).toContain(INSTALLATION_GUIDE_PATH);
+  });
+
+  test("shows representative mobile UI captures after the interactive demo", () => {
+    const readme = readFileSync(README_PATH, "utf-8");
+    const demoPosition = readme.indexOf("docs/assets/wolfpack-usage-demo.gif");
+
+    const desktopHeadingPosition = readme.indexOf("### desktop demo");
+    expect(desktopHeadingPosition).toBeGreaterThan(-1);
+    expect(demoPosition).toBeGreaterThan(desktopHeadingPosition);
+    const mobileHeadingPosition = readme.indexOf("### mobile views");
+    expect(mobileHeadingPosition).toBeGreaterThan(demoPosition);
+    for (const screenshot of MOBILE_SCREENSHOTS) {
+      expect(existsSync(screenshot)).toBe(true);
+      expect(readme.indexOf(screenshot)).toBeGreaterThan(mobileHeadingPosition);
+    }
+  });
+
+  test("uses the interactive demo as the homepage's first product preview", () => {
+    const site = readFileSync(SITE_PATH, "utf-8");
+    const hero = site.match(/<div class="hero-visual">([\s\S]*?)<\/section>/)?.[1];
+
+    expect(hero).toBeDefined();
+    expect(existsSync(SITE_DEMO_PATH)).toBe(true);
+    expect(hero?.match(/<img src="([^"]+)"/)?.[1]).toBe("assets/wolfpack-usage-demo.gif");
+  });
+
+  test("explains the mobile dashboard-to-terminal workflow without displacing later previews", () => {
+    const site = readFileSync(SITE_PATH, "utf-8");
+    const workflowPosition = site.indexOf('id="how"');
+    const mobilePosition = site.indexOf('id="mobile"');
+    const privacyPosition = site.indexOf('id="privacy"');
+
+    expect(mobilePosition).toBeGreaterThan(workflowPosition);
+    expect(privacyPosition).toBeGreaterThan(mobilePosition);
+    for (const screenshot of SITE_MOBILE_SCREENSHOTS) {
+      expect(existsSync(screenshot)).toBe(true);
+      expect(site).toContain(screenshot.replace("site/", ""));
+    }
+    expect(site).toContain("Scan the dashboard");
+    expect(site).toContain("Open the live terminal");
   });
 });
