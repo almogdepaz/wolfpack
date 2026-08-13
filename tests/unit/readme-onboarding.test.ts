@@ -10,6 +10,10 @@ const MOBILE_SCREENSHOTS = [
   "docs/mobile-sessions.png",
   "docs/mobile-ghostty.png",
 ] as const;
+const SITE_MOBILE_SCREENSHOTS = [
+  "site/assets/mobile-sessions.png",
+  "site/assets/mobile-terminal.png",
+] as const;
 
 describe("README onboarding", () => {
   test("gives curl, Bunx, and npm users executable diagnosis and uninstall commands", () => {
@@ -60,5 +64,21 @@ describe("README onboarding", () => {
     expect(hero).toBeDefined();
     expect(existsSync(SITE_DEMO_PATH)).toBe(true);
     expect(hero?.match(/<img src="([^"]+)"/)?.[1]).toBe("assets/wolfpack-usage-demo.gif");
+  });
+
+  test("explains the mobile dashboard-to-terminal workflow without displacing later previews", () => {
+    const site = readFileSync(SITE_PATH, "utf-8");
+    const workflowPosition = site.indexOf('id="how"');
+    const mobilePosition = site.indexOf('id="mobile"');
+    const privacyPosition = site.indexOf('id="privacy"');
+
+    expect(mobilePosition).toBeGreaterThan(workflowPosition);
+    expect(privacyPosition).toBeGreaterThan(mobilePosition);
+    for (const screenshot of SITE_MOBILE_SCREENSHOTS) {
+      expect(existsSync(screenshot)).toBe(true);
+      expect(site).toContain(screenshot.replace("site/", ""));
+    }
+    expect(site).toContain("Scan the dashboard");
+    expect(site).toContain("Open the live terminal");
   });
 });
