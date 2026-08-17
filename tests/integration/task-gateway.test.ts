@@ -27,6 +27,8 @@ const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
 const { TaskGateway, __resetTaskGatewayForTests } = await import("../../src/tasks/gateway.ts");
 
+__resetTaskGatewayForTests();
+
 class PiBackend extends MockBackend {
   override async listIdentities() {
     const now = new Date(0).toISOString();

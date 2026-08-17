@@ -66,17 +66,23 @@ describe("README onboarding", () => {
     expect(hero?.match(/<img src="([^"]+)"/)?.[1]).toBe("assets/wolfpack-usage-demo.gif");
   });
 
-  test("explains the mobile dashboard-to-terminal workflow without displacing later previews", () => {
+  test("places the mobile dashboard and terminal directly after the homepage demo", () => {
     const site = readFileSync(SITE_PATH, "utf-8");
-    const workflowPosition = site.indexOf('id="how"');
+    const demoPosition = site.indexOf("assets/wolfpack-usage-demo.gif");
     const mobilePosition = site.indexOf('id="mobile"');
+    const proofPosition = site.indexOf("BUILT FOR THE MOMENT BETWEEN MACHINES");
+    const workflowPosition = site.indexOf('id="how"');
     const privacyPosition = site.indexOf('id="privacy"');
+    const desktopPosition = site.indexOf("assets/desktop-terminal.png");
 
-    expect(mobilePosition).toBeGreaterThan(workflowPosition);
+    expect(mobilePosition).toBeGreaterThan(demoPosition);
+    expect(proofPosition).toBeGreaterThan(mobilePosition);
+    expect(workflowPosition).toBeGreaterThan(mobilePosition);
     expect(privacyPosition).toBeGreaterThan(mobilePosition);
+    expect(desktopPosition).toBeGreaterThan(mobilePosition);
     for (const screenshot of SITE_MOBILE_SCREENSHOTS) {
       expect(existsSync(screenshot)).toBe(true);
-      expect(site).toContain(screenshot.replace("site/", ""));
+      expect(site.indexOf(screenshot.replace("site/", ""))).toBeGreaterThan(mobilePosition);
     }
     expect(site).toContain("Scan the dashboard");
     expect(site).toContain("Open the live terminal");
