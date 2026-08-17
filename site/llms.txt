@@ -15,7 +15,7 @@
 - Sessions are owned by a local Rust PTY broker and survive web-server restarts.
 
 ## Start here
-- Homepage: https://get-wolfpack.netlify.app/
+- Homepage: https://almogdepaz.github.io/wolfpack/
 - Source and documentation: https://github.com/almogdepaz/wolfpack
 - Quickstart: https://github.com/almogdepaz/wolfpack#quickstart
-- Full agent-readable summary: https://get-wolfpack.netlify.app/llms-full.txt
+- Full agent-readable summary: https://almogdepaz.github.io/wolfpack/llms-full.txt

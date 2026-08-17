@@ -3,13 +3,13 @@
 [![CI](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml/badge.svg)](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://get-wolfpack.netlify.app/)
+[![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://almogdepaz.github.io/wolfpack/)
 
 Run Claude Code, Codex, Gemini, and shell sessions on machines you control. Reach them locally in a browser, or remotely from a browser or phone over Tailscale, without a Wolfpack-hosted relay or account.
 
 Sessions live in a Rust PTY broker, not the web server, so server restarts and upgrades do not kill your agents.
 
-**Homepage:** [get-wolfpack.netlify.app](https://get-wolfpack.netlify.app/) · **Agent-readable overview:** [llms.txt](https://get-wolfpack.netlify.app/llms.txt)
+**Homepage:** [almogdepaz.github.io/wolfpack](https://almogdepaz.github.io/wolfpack/) · **Agent-readable overview:** [llms.txt](https://almogdepaz.github.io/wolfpack/llms.txt)
 
 ### desktop demo
 
