@@ -1212,6 +1212,13 @@ describe("local task gateway", () => {
     expect(deliveryEvents[0]).toMatchObject({ id: receipt.eventId, payload: { injectedEventId: assignment.eventId } });
 
     const receiverLedger = (await new TaskStore({ root: join(root, "tasks") }).ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === assignment.taskId);
+    if (!receiverLedger) {
+      const taskRoot = join(root, "tasks");
+      console.error("[missing-receiver-ledger-ci-diagnostic]", JSON.stringify({
+        taskId: assignment.taskId,
+        files: [...new Bun.Glob("**/*").scanSync({ cwd: taskRoot, onlyFiles: true })].map((path) => ({ path, contents: readFileSync(join(taskRoot, path), "utf-8") })),
+      }));
+    }
     expect(receiverLedger?.records).toContainEqual(expect.objectContaining({ kind: "outbox.intent", event: expect.objectContaining({ id: receipt.eventId, type: "task.delivered" }) }));
   });
 
@@ -1378,6 +1385,13 @@ describe("local task gateway", () => {
     expect(deliveryEvents[0]).toMatchObject({ id: deliveryReceipt.eventId, payload: { injectedEventId: assignment.eventId } });
 
     const receiverLedger = (await new TaskStore({ root: join(root, "tasks") }).ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === assignment.taskId);
+    if (!receiverLedger) {
+      const taskRoot = join(root, "tasks");
+      console.error("[missing-receiver-ledger-ci-diagnostic]", JSON.stringify({
+        taskId: assignment.taskId,
+        files: [...new Bun.Glob("**/*").scanSync({ cwd: taskRoot, onlyFiles: true })].map((path) => ({ path, contents: readFileSync(join(taskRoot, path), "utf-8") })),
+      }));
+    }
     expect(receiverLedger?.records.some((record) => record.kind === "acknowledgment" && record.eventId === assignment.eventId)).toBe(true);
     expect(receiverLedger?.records.some((record) => record.kind === "cleanup.eligible")).toBe(true);
   });
