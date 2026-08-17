@@ -924,6 +924,11 @@ export class TaskStore {
       this.#setLedger(ledger);
       this.#rebuiltLedgerKeys.add(keyString(ledger.key));
     } catch (error: unknown) {
+      console.error("[task-store-ci-diagnostic]", JSON.stringify({
+        path,
+        error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+        contents: existsSync(path) ? readFileSync(path, "utf-8") : "<missing>",
+      }));
       for (const [key, ledger] of this.#ledgers) {
         if (ledger.paths.ledgerPath === path) {
           this.#ledgers.delete(key);
