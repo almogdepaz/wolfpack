@@ -1,8 +1,12 @@
 # Wolfpack
 
-> Self-hosted browser terminal manager for AI coding agents running on your own macOS/Linux machines.
+> Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.
 
-Wolfpack is a PWA and CLI for controlling long-running terminal sessions from a phone or browser. It is built for AI coding agents such as Claude Code, Codex, Gemini, shell commands, and custom agent wrappers. Sessions run locally through a Rust PTY broker; Wolfpack does not provide a hosted relay or account service. Remote access is typically handled through Tailscale.
+Wolfpack provides PWA and CLI control of long-running terminal sessions from a phone or browser.
+
+Built-in coding-agent provider choices: Claude Code, Codex, Gemini CLI, Cursor, Pi.
+
+Shell is the always-available fallback. Custom commands and wrappers on PATH are supported separately. Sessions run locally through a Rust PTY broker; Wolfpack does not provide a hosted relay or account service. Remote access is typically handled through Tailscale.
 
 ## Primary links
 
@@ -15,9 +19,9 @@ Wolfpack is a PWA and CLI for controlling long-running terminal sessions from a 
 
 ## Core topics
 
-- AI agent terminal orchestrator
+- Persistent coding-agent terminals on operator-controlled machines
 - Browser terminal dashboard
-- Mobile control for Claude Code, Codex, Gemini, and shell sessions
+- Mobile control for persistent terminal sessions
 - Self-hosted remote development over Tailscale
 - Persistent PTY sessions owned by a local broker
 - Multi-machine session list and desktop terminal grid
@@ -34,15 +38,20 @@ Wolfpack is a PWA and CLI for controlling long-running terminal sessions from a 
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
-wolfpack
 ```
 
-npm alternatives:
+The installer immediately launches setup. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
+
+Package runners:
 
 ```bash
-bunx wolfpack-bridge
-npx wolfpack-bridge
+bunx wolfpack-bridge@latest
+npx --yes wolfpack-bridge@latest
 ```
+
+Package runners do not add `wolfpack` to `PATH`; repeat the runner prefix for every later command.
+
+See [installation details](https://github.com/almogdepaz/wolfpack/blob/main/docs/installation.md) for the complete installation procedure.
 
 ## Security model summary
 

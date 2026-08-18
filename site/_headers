@@ -1,0 +1,17 @@
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'sha256-z2XQUH1Fq1NVZ2/m73BPp01fn7G9sXWECfYvjGZlpSU='; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://fonts.googleapis.com https://fonts.gstatic.com; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: clipboard-write=(self), camera=(), geolocation=(), microphone=(), payment=(), usb=()
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=0, must-revalidate
+
+/styles.22d86b641f7a46fa.css
+  Cache-Control: public, max-age=31536000, immutable
+/homepage.451e47b996713fc4.js
+  Cache-Control: public, max-age=31536000, immutable
+/assets/wolfpack-icon.a7c43b6bdecac5a6.svg
+  Cache-Control: public, max-age=31536000, immutable
+/assets/desktop-sessions.ad6240b90974061a.png
+  Cache-Control: public, max-age=31536000, immutable
+/assets/desktop-terminal.efc351dcb92f63c7.png
+  Cache-Control: public, max-age=31536000, immutable

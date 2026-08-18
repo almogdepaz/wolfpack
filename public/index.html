@@ -9,11 +9,11 @@
     <meta name="theme-color" content="#0a0a0a" />
     <meta
       name="description"
-      content="Wolfpack is a self-hosted browser terminal manager for AI coding agents: Claude Code, Codex, Gemini, shell commands, and custom agent wrappers."
+      content="Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines."
     />
     <meta
       name="keywords"
-      content="AI agents, AI coding agents, Claude Code, Codex, Gemini, browser terminal, web terminal, remote terminal, self-hosted developer tools, Tailscale, terminal dashboard"
+      content="AI agents, AI coding agents, Claude Code, Codex, Gemini CLI, Cursor, Pi, Shell fallback, custom commands, browser terminal, web terminal, remote terminal, self-hosted developer tools, Tailscale, terminal dashboard"
     />
     <meta name="application-name" content="Wolfpack" />
     <link rel="canonical" href="https://get-wolfpack.netlify.app/" />
@@ -27,14 +27,14 @@
     <link rel="icon" type="image/svg+xml" href="/wolfpack-icon.svg" />
     <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
     <meta property="og:title" content="Wolfpack — browser terminal manager for AI coding agents" />
-    <meta property="og:description" content="Self-hosted PWA command center for Claude Code, Codex, Gemini, shell commands, and persistent agent terminal sessions over Tailscale." />
+    <meta property="og:description" content="Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines." />
     <meta property="og:url" content="https://get-wolfpack.netlify.app/" />
     <meta property="og:image" content="https://get-wolfpack.netlify.app/assets/wolfpack-icon.svg" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Wolfpack" />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="Wolfpack — browser terminal manager for AI coding agents" />
-    <meta name="twitter:description" content="Self-hosted PWA command center for persistent Claude Code, Codex, Gemini, and shell terminal sessions." />
+    <meta name="twitter:description" content="Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines." />
     <title>Wolfpack — AI agent terminal dashboard</title>
     <link rel="stylesheet" href="/styles.css?v=__WOLFPACK_ASSET_VERSION__" />
     <script defer src="/wolfpack-lib.js?v=__WOLFPACK_ASSET_VERSION__"></script>
@@ -246,9 +246,12 @@
             <input type="checkbox" id="setting-haptics" checked> Haptic feedback
           </label>
           <div class="notification-setting">
-            <label class="settings-toggle">
-              <input type="checkbox" id="setting-notifications"> Notifications
-            </label>
+            <div class="notification-setting-row">
+              <label class="settings-toggle">
+                <input type="checkbox" id="setting-notifications"> Notifications
+              </label>
+              <a id="phone-pwa-notifications-guide-link" class="notification-setting-help" target="_blank" rel="noopener noreferrer">Phone, PWA, and notification help</a>
+            </div>
             <div id="notification-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
           </div>
         </div>

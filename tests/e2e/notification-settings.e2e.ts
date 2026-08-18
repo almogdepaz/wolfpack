@@ -11,6 +11,23 @@ test.afterAll(() => {
   server?.close();
 });
 
+test("serves the canonical phone and notification help link in Settings", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.getByRole("button", { name: "Settings" }).first().click();
+
+  const helpLink = page.getByRole("link", {
+    name: "Phone, PWA, and notification help",
+  });
+  await expect(helpLink).toBeVisible();
+  await expect(helpLink).toHaveAttribute(
+    "href",
+    "https://github.com/almogdepaz/wolfpack/blob/main/docs/phone-pwa-notifications.md",
+  );
+  await expect(helpLink).toHaveAttribute("target", "_blank");
+  await expect(helpLink).toHaveAttribute("rel", /\bnoopener\b/);
+  await expect(helpLink).toHaveAttribute("rel", /\bnoreferrer\b/);
+});
+
 test("startup clears a persisted notification preference when push is unsupported", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("wp-effects", JSON.stringify({ notifications: true }));

@@ -76,8 +76,8 @@ cat << 'WOLF'
          ...::::-=+*#%%############*+-----===+****+=:.
 
 WOLF
-echo "  $(bold 'WOLFPACK') — AI Agent Bridge"
-echo "  $(dim 'Deploy your pack. Command from anywhere.')"
+echo "  $(bold 'WOLFPACK')"
+echo "  $(dim 'Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.')"
 echo ""
 
 # ── Phone and remote access ──

@@ -74,6 +74,17 @@ jobs:
       - name: Install critical Playwright browsers
         run: bunx playwright install --with-deps chromium webkit
 
+      - name: Run homepage quality and resilience QA
+        run: bunx playwright test tests/e2e/homepage-install.e2e.ts --project=desktop --project=iphone-se --project=iphone-14
+
+      - name: Upload homepage QA diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: homepage-quality-diagnostics
+          path: artifacts/homepage-quality
+          if-no-files-found: error
+
       - name: Run critical Chromium desktop and mobile E2E
         run: bunx playwright test tests/e2e/accessibility-navigation.e2e.ts tests/e2e/axe-accessibility.e2e.ts tests/e2e/smoke.e2e.ts tests/e2e/terminal.e2e.ts tests/e2e/reconnect.e2e.ts --project=desktop --project=iphone-se
 

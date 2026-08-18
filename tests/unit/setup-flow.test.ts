@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pkg from "../../package.json";
 
 const root = process.cwd();
 const temporaryHomes: string[] = [];
@@ -18,6 +19,7 @@ interface SetupFlowFixture {
   readonly failsTailscaleInstallation?: boolean;
   readonly serviceRunning?: boolean;
   readonly serviceInstalled?: boolean;
+  readonly providerCommands?: readonly string[];
   readonly setupOptions?: { readonly devDir?: string; readonly port?: number };
   readonly existingConfig?: { readonly devDir: string; readonly port: number; readonly tailscaleHostname?: string };
 }
@@ -28,7 +30,19 @@ interface SetupFlowResult {
   readonly stderr: string;
 }
 
+function createProviderPath(home: string, commands: readonly string[]): string {
+  const providerBin = join(home, "provider-bin");
+  mkdirSync(providerBin, { recursive: true });
+  for (const command of commands) {
+    const executable = join(providerBin, command);
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+  }
+  return providerBin;
+}
+
 function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult {
+  const providerPath = createProviderPath(home, fixture?.providerCommands ?? []);
   const serializedFixture = JSON.stringify(fixture ?? null);
   const script = String.raw`
     import { mock } from "bun:test";
@@ -109,7 +123,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       ...process.env,
       HOME: home,
       NO_COLOR: "1",
-      PATH: "/usr/bin:/bin",
+      PATH: providerPath,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -129,6 +143,14 @@ function expectSuccessfulSetup(result: SetupFlowResult): void {
   expect(result.stderr).toBe("");
 }
 
+function expectLocalOnlyActivation(result: SetupFlowResult, port = 18790): void {
+  expect(result.stdout).toContain(`Local: http://localhost:${port}/`);
+  expect(result.stdout).not.toContain("Remote:");
+  expect(result.stdout).not.toContain(
+    "Scan the verified remote URL to open Wolfpack on your phone:",
+  );
+}
+
 afterEach(() => {
   for (const home of temporaryHomes.splice(0)) {
     rmSync(home, { recursive: true, force: true });
@@ -136,6 +158,19 @@ afterEach(() => {
 });
 
 describe("first-run setup", () => {
+  test("prints the canonical positioning in the actual setup banner", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+
+    const result = runSetupFlow(home);
+
+    expectSuccessfulSetup(result);
+    expect(result.stdout).toContain("WOLFPACK");
+    expect(result.stdout).toContain(pkg.description);
+    expect(result.stdout).not.toContain("AI Agent Bridge");
+    expect(result.stdout).not.toContain("Deploy your pack. Command from anywhere.");
+  });
+
   test("uses a local-only default in a clean noninteractive home", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
     temporaryHomes.push(home);
@@ -150,10 +185,35 @@ describe("first-run setup", () => {
     });
     expect(result.stdout).toContain("Phone and remote access stay unavailable");
     expect(result.stdout).toContain("Setup complete — next steps:");
-    expect(result.stdout).toContain("Local: http://localhost:18790/");
-    expect(result.stdout).toContain("wolfpack doctor");
-    expect(result.stdout).toContain("Create a session and run codex or claude.");
+    expectLocalOnlyActivation(result);
+    const startIndex = result.stdout.indexOf("Start: 'wolfpack' now");
+    const doctorIndex = result.stdout.indexOf("Check: 'wolfpack doctor'");
+    const nextAction = "Next: select Create your first session and choose Shell. Add an agent later in Settings → Agents.";
+    const nextActionIndex = result.stdout.indexOf(nextAction);
+    const guide = "First session: https://github.com/almogdepaz/wolfpack/blob/main/docs/first-session.md";
+    const guideIndex = result.stdout.indexOf(guide);
+    expect(startIndex).toBeGreaterThan(-1);
+    expect(doctorIndex).toBeGreaterThan(startIndex);
+    expect(nextActionIndex).toBeGreaterThan(doctorIndex);
+    expect(guideIndex).toBeGreaterThan(nextActionIndex);
+    expect(result.stdout.slice(nextActionIndex + nextAction.length, guideIndex).trim()).toBe("");
+    expect(result.stdout).not.toContain("Create a session and run codex or claude.");
     expect(result.stdout).not.toContain("JWT Authentication");
+  });
+
+  test("recommends the first detected provider in canonical order by display name", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+
+    const result = runSetupFlow(home, { providerCommands: ["gemini", "claude"] });
+
+    expectSuccessfulSetup(result);
+    expect(result.stdout).toContain("Detected coding-agent CLIs: claude, gemini");
+    expect(result.stdout).toContain(
+      "Next: select Create your first session and choose Claude Code, or choose Shell.",
+    );
+    expect(result.stdout).not.toContain("choose Gemini CLI");
+    expect(result.stdout).not.toContain("Create a session and run codex or claude.");
   });
 
   test("explicit noninteractive setup preserves every unspecified existing field", () => {
@@ -214,6 +274,7 @@ describe("first-run setup", () => {
     });
     expect(result.stdout).toContain("Tailscale installation failed; continuing with local-only access.");
     expect(result.stdout).toContain("Phone and remote access stay unavailable");
+    expectLocalOnlyActivation(result);
   });
 
   test("keeps setup local-only for logged-out or malformed Tailscale identity states", () => {
@@ -229,7 +290,7 @@ describe("first-run setup", () => {
       expectSuccessfulSetup(result);
       expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({ devDir: join(home, "Dev"), port: 18790 });
       expect(result.stdout).toContain(message);
-      expect(result.stdout).not.toContain("Remote:");
+      expectLocalOnlyActivation(result);
     }
   });
 
@@ -294,6 +355,6 @@ describe("first-run setup", () => {
       port: 18790,
     });
     expect(result.stdout).toContain("Tailscale Serve could not be structurally verified");
-    expect(result.stdout).not.toContain("Remote: https://stale.tailnet.ts.net");
+    expectLocalOnlyActivation(result);
   });
 });

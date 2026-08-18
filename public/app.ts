@@ -68,6 +68,12 @@ import {
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
 import { AGENT_KIND } from "../src/agent-kind";
+import {
+  FIRST_SESSION_GUIDE_URL,
+  PHONE_PWA_NOTIFICATIONS_GUIDE_URL,
+  SECURITY_AND_TRUST_URL,
+  SESSION_CONTROL_CREATE_URL,
+} from "../src/documentation-links";
 import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
 import {
   delegationChildSummaryText,
@@ -3066,6 +3072,24 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
   return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(machineUrl)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
 }
 
+function zeroSessionOnboardingHtml(machineUrl: string): string {
+  return `<section class="zero-session-card" aria-label="No sessions yet">
+    <h2>No sessions yet</h2>
+    <p>A session runs an installed agent or Shell inside a project on this machine.</p>
+    <button type="button" class="zero-session-primary" data-action="new-session" data-machine="${escAttr(machineUrl)}">Create your first session</button>
+    <ol class="zero-session-steps" aria-label="Session creation steps">
+      <li>Choose project</li>
+      <li>Choose agent</li>
+      <li>Open persistent terminal</li>
+    </ol>
+    <div class="zero-session-links">
+      <a href="${escAttr(FIRST_SESSION_GUIDE_URL)}" target="_blank" rel="noopener noreferrer">First session guide</a>
+      <a href="${escAttr(SESSION_CONTROL_CREATE_URL)}" target="_blank" rel="noopener noreferrer">Use the CLI instead</a>
+      <a href="${escAttr(SECURITY_AND_TRUST_URL)}" target="_blank" rel="noopener noreferrer">Why Tailnet access is shell access</a>
+    </div>
+  </section>`;
+}
+
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
@@ -3078,7 +3102,10 @@ function renderMachineGroupHtml(g, multiMachine) {
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
   const createDisabled = multiMachine && !g.online ? " disabled" : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
+  const compactCreateButton = g.online && g.sessions.length === 0
+    ? ""
+    : `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button>`;
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}${compactCreateButton}</div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -3107,6 +3134,8 @@ function renderMachineGroupHtml(g, multiMachine) {
           <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
         </div>`;
       }).join("");
+    } else {
+      html += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
     }
   } else if (multiMachine) {
     const failure = machineFailureLabel(g.failure || "unknown");
@@ -6272,6 +6301,12 @@ function initSidebar() {
 
 function bindHtmlEventListeners(): void {
   const $ = (id: string) => document.getElementById(id);
+  const phonePwaNotificationsGuideLink = $(
+    "phone-pwa-notifications-guide-link",
+  ) as HTMLAnchorElement | null;
+  if (phonePwaNotificationsGuideLink) {
+    phonePwaNotificationsGuideLink.href = PHONE_PWA_NOTIFICATIONS_GUIDE_URL;
+  }
   const on = (id: string, event: string, fn: EventListener) => {
     const el = $(id);
     if (el) el.addEventListener(event, fn);

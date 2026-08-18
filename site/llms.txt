@@ -1,12 +1,13 @@
 # Wolfpack
 
-> Wolfpack is a self-hosted control room for persistent coding-agent terminal sessions across your machines.
+> Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.
 
 ## What it does
 - Runs beside coding agents on macOS or Linux.
 - Provides browser/PWA access to persistent PTY sessions from a laptop, workstation, or phone.
 - Lets developers view and control sessions across machines on a Tailscale tailnet.
-- Supports Claude Code, Codex CLI, Gemini CLI, shell commands, and custom wrappers.
+- Built-in coding-agent provider choices: Claude Code, Codex, Gemini CLI, Cursor, Pi.
+- Shell is the always-available fallback. Custom commands and wrappers on PATH are supported separately.
 
 ## Privacy and architecture
 - Open source under the MIT license.

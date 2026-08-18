@@ -18,12 +18,15 @@ CLAUDE.md
 !public/icon-512.png
 !public/icon-maskable-192.png
 !public/icon-maskable-512.png
+!site/assets/desktop-sessions.ad6240b90974061a.png
+!site/assets/desktop-terminal.efc351dcb92f63c7.png
 *.jpeg
 *.jpg
 *.svg
 !public/wolfpack-icon.svg
 !public/wolfpack-icon-maskable.svg
 !docs/wolfpack-icon.svg
+!site/assets/wolfpack-icon.a7c43b6bdecac5a6.svg
 src/public-assets.ts
 public/app.bundle.js
 dist/
@@ -34,6 +37,7 @@ bin/wolfpack
 progress.txt
 tests/e2e/test-results/
 playwright-report/
+/artifacts/homepage-quality/
 PLAN*.md
 .wolfpack/
 .pi/

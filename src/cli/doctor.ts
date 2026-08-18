@@ -27,12 +27,24 @@ import {
   killPortHolder,
   tailscaleBin,
 } from "./config.js";
+import type { Config } from "./config.js";
 import {
   isServiceInstalled,
   isServiceRunning,
   serviceStart,
   updateStableBinary,
 } from "./service.js";
+
+type DoctorFact =
+  | "tailscale-unavailable"
+  | "tailscale-disconnected"
+  | "service-absent"
+  | "service-installed"
+  | "service-running"
+  | "service-stopped"
+  | "localhost-healthy"
+  | "localhost-unhealthy"
+  | "broker-healthy";
 
 export interface CheckResult {
   name: string;
@@ -41,6 +53,8 @@ export interface CheckResult {
   detail: string;
   fixHint?: string;
   fix?: () => void;
+  /** Structured state used to classify supported operating modes. Not rendered. */
+  fact?: DoctorFact;
 }
 
 export type DoctorCheckFn = () => CheckResult[] | Promise<CheckResult[]>;
@@ -49,53 +63,76 @@ export type DoctorCheckFn = () => CheckResult[] | Promise<CheckResult[]>;
 // Check group 1: Dependencies
 // ---------------------------------------------------------------------------
 
-function checkDeps(): CheckResult[] {
-  const results: CheckResult[] = [];
+interface DoctorDependencyProbes {
+  readonly config: Pick<Config, "tailscaleHostname"> | null;
+  readonly tailscaleBinary: string | null;
+  readonly readTailscaleVersion: (binary: string) => string;
+  readonly readTailscaleStatus: (binary: string) => string;
+  readonly shellPath: string | undefined;
+  readonly pathExists: (path: string) => boolean;
+}
 
-  // tailscale
-  const tsBin = tailscaleBin();
+function defaultDependencyProbes(): DoctorDependencyProbes {
+  return {
+    config: loadConfig(),
+    tailscaleBinary: tailscaleBin(),
+    readTailscaleVersion: binary => execFileSync(
+      binary,
+      ["version"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ),
+    readTailscaleStatus: binary => execFileSync(
+      IS_LINUX ? "sudo" : binary,
+      IS_LINUX ? [binary, "status", "--self", "--json"] : ["status", "--self", "--json"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ),
+    shellPath: process.env.SHELL,
+    pathExists: existsSync,
+  };
+}
+
+export function checkDoctorDependencies(probes: DoctorDependencyProbes): CheckResult[] {
+  const results: CheckResult[] = [];
+  const remoteExpected = Boolean(probes.config?.tailscaleHostname);
+  const tailscaleFailureStatus: CheckResult["status"] = remoteExpected ? "fail" : "warn";
+  const tsBin = probes.tailscaleBinary;
+
   if (tsBin) {
     try {
-      const ver = execFileSync(tsBin, ["version"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] })
-        .trim().split("\n")[0];
-      results.push({ name: "tailscale", group: "Dependencies", status: "pass", detail: ver });
+      const version = probes.readTailscaleVersion(tsBin).trim().split("\n")[0];
+      results.push({ name: "tailscale", group: "Dependencies", status: "pass", detail: version });
     } catch {
       results.push({ name: "tailscale", group: "Dependencies", status: "warn", detail: "installed (version unreadable)" });
     }
 
-    // tailscale connected?
     try {
-      const status = execFileSync(
-        IS_LINUX ? "sudo" : tsBin,
-        IS_LINUX ? [tsBin, "status", "--self", "--json"] : ["status", "--self", "--json"],
-        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-      );
-      const parsed = JSON.parse(status);
+      const parsed = JSON.parse(probes.readTailscaleStatus(tsBin));
       const hostname = parsed.Self?.DNSName?.replace(/\.$/, "");
       if (hostname) {
         results.push({ name: "tailscale connected", group: "Dependencies", status: "pass", detail: hostname });
       } else {
         results.push({
-          name: "tailscale connected", group: "Dependencies", status: "warn",
-          detail: "not connected", fixHint: "tailscale up",
+          name: "tailscale connected", group: "Dependencies", status: tailscaleFailureStatus,
+          detail: "not connected", fixHint: "tailscale up", fact: "tailscale-disconnected",
         });
       }
     } catch {
       results.push({
-        name: "tailscale connected", group: "Dependencies", status: "warn",
-        detail: "unable to query status", fixHint: "tailscale up",
+        name: "tailscale connected", group: "Dependencies", status: tailscaleFailureStatus,
+        detail: "unable to query status", fixHint: "tailscale up", fact: "tailscale-disconnected",
       });
     }
   } else {
     results.push({
-      name: "tailscale", group: "Dependencies", status: "fail", detail: "not found",
+      name: "tailscale", group: "Dependencies", status: tailscaleFailureStatus,
+      detail: remoteExpected ? "not found" : "not found (optional for local-only use)",
       fixHint: IS_MACOS ? "brew install --cask tailscale" : "curl -fsSL https://tailscale.com/install.sh | sh",
+      fact: "tailscale-unavailable",
     });
   }
 
-  // SHELL
-  const shell = process.env.SHELL;
-  if (shell && existsSync(shell)) {
+  const shell = probes.shellPath;
+  if (shell && probes.pathExists(shell)) {
     results.push({ name: "shell", group: "Dependencies", status: "pass", detail: shell });
   } else {
     results.push({
@@ -105,6 +142,10 @@ function checkDeps(): CheckResult[] {
   }
 
   return results;
+}
+
+function checkDeps(): CheckResult[] {
+  return checkDoctorDependencies(defaultDependencyProbes());
 }
 
 // ---------------------------------------------------------------------------
@@ -173,22 +214,28 @@ function checkService(): CheckResult[] {
 
   // installed
   if (isServiceInstalled()) {
-    results.push({ name: "service installed", group: "Service", status: "pass", detail: IS_MACOS ? "launchd" : "systemd" });
+    results.push({
+      name: "service installed", group: "Service", status: "pass",
+      detail: IS_MACOS ? "launchd" : "systemd", fact: "service-installed",
+    });
   } else {
     results.push({
-      name: "service installed", group: "Service", status: "fail",
-      detail: "not installed", fixHint: "wolfpack service install",
+      name: "service installed", group: "Service", status: "warn",
+      detail: "not installed (foreground mode supported)", fact: "service-absent",
     });
     return results;
   }
 
   // running
   if (isServiceRunning()) {
-    results.push({ name: "service running", group: "Service", status: "pass", detail: "active" });
+    results.push({
+      name: "service running", group: "Service", status: "pass",
+      detail: "active", fact: "service-running",
+    });
   } else {
     results.push({
       name: "service running", group: "Service", status: "fail",
-      detail: "not running",
+      detail: "not running", fact: "service-stopped",
       fix: () => serviceStart(),
     });
   }
@@ -239,12 +286,12 @@ async function checkConnectivity(): Promise<CheckResult[]> {
     const parsed = JSON.parse(resp);
     results.push({
       name: "localhost", group: "Connectivity", status: "pass",
-      detail: `v${parsed.version || "?"}`,
+      detail: `v${parsed.version || "?"}`, fact: "localhost-healthy",
     });
   } catch {
     results.push({
       name: "localhost", group: "Connectivity", status: "fail",
-      detail: `localhost:${config.port} not responding`,
+      detail: `localhost:${config.port} not responding`, fact: "localhost-unhealthy",
     });
   }
 
@@ -365,7 +412,7 @@ async function checkBroker(): Promise<CheckResult[]> {
   if (handshake.ok) {
     results.push({
       name: "broker handshake", group: "Broker", status: "pass",
-      detail: `list_sessions ok (${handshake.elapsedMs}ms)`,
+      detail: `list_sessions ok (${handshake.elapsedMs}ms)`, fact: "broker-healthy",
     });
   } else {
     results.push({
@@ -562,7 +609,33 @@ async function runCheckGroups(groups: DoctorCheckFn[]): Promise<CheckResult[]> {
   for (const group of groups) {
     results.push(...await group());
   }
-  return results;
+  return classifyOperatingMode(results);
+}
+
+function classifyOperatingMode(results: CheckResult[]): CheckResult[] {
+  const facts = new Set(results.map(result => result.fact));
+  const foreground = facts.has("service-absent");
+  const healthyForeground = foreground
+    && facts.has("localhost-healthy")
+    && facts.has("broker-healthy");
+
+  return results.map((result) => {
+    if (result.fact === "service-absent") {
+      return {
+        ...result,
+        status: "warn",
+        detail: healthyForeground
+          ? "not installed (foreground mode supported)"
+          : "not installed (optional; foreground mode supported)",
+        fixHint: undefined,
+        fix: undefined,
+      };
+    }
+    if (result.fact === "localhost-unhealthy" && foreground) {
+      return { ...result, fixHint: "start the foreground server: wolfpack" };
+    }
+    return result;
+  });
 }
 
 /** Run fix functions on failed results. Returns count of fix attempts. */
@@ -613,7 +686,7 @@ export async function doctor({
     print(JSON.stringify({
       ok: counts.fail === 0,
       counts,
-      checks: allResults.map(({ fix: _fix, ...result }) => result),
+      checks: allResults.map(({ fix: _fix, fact: _fact, ...result }) => result),
     }));
     return counts.fail > 0 ? 1 : 0;
   }
