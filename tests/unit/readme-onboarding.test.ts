@@ -6,6 +6,16 @@ const README_PATH = "README.md";
 const INSTALLATION_GUIDE_PATH = "docs/installation.md";
 const ROOT_LLMS_PATH = "llms.txt";
 const PUBLIC_LLMS_PATH = "public/llms.txt";
+const SITE_PATH = "site/index.html";
+const SITE_DEMO_PATH = "site/assets/wolfpack-usage-demo.d331794bfd000e0e.mp4";
+const MOBILE_SCREENSHOTS = [
+  "docs/mobile-sessions.png",
+  "docs/mobile-ghostty.png",
+] as const;
+const SITE_MOBILE_SCREENSHOTS = [
+  "site/assets/mobile-sessions.c3bba982771177b1.webp",
+  "site/assets/mobile-terminal.7b1d31b4155c4e26.webp",
+] as const;
 const CURL_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash";
 const BUNX_COMMAND = "bunx wolfpack-bridge@latest";
@@ -192,5 +202,53 @@ describe("README onboarding", () => {
 
     const readme = readFileSync(README_PATH, "utf-8");
     expect(readme).toContain(INSTALLATION_GUIDE_PATH);
+  });
+
+  test("shows representative mobile UI captures after the interactive demo", () => {
+    const readme = readFileSync(README_PATH, "utf-8");
+    const demoPosition = readme.indexOf("docs/assets/wolfpack-usage-demo.gif");
+
+    const desktopHeadingPosition = readme.indexOf("### desktop demo");
+    expect(desktopHeadingPosition).toBeGreaterThan(-1);
+    expect(demoPosition).toBeGreaterThan(desktopHeadingPosition);
+    const mobileHeadingPosition = readme.indexOf("### mobile views");
+    expect(mobileHeadingPosition).toBeGreaterThan(demoPosition);
+    for (const screenshot of MOBILE_SCREENSHOTS) {
+      expect(existsSync(screenshot)).toBe(true);
+      expect(readme.indexOf(screenshot)).toBeGreaterThan(mobileHeadingPosition);
+    }
+  });
+
+  test("uses the interactive demo as the homepage's first product preview", () => {
+    const site = readFileSync(SITE_PATH, "utf-8");
+    const hero = site.match(/<div class="hero-visual">([\s\S]*?)<\/section>/)?.[1];
+
+    expect(hero).toBeDefined();
+    expect(existsSync(SITE_DEMO_PATH)).toBe(true);
+    expect(hero?.match(/<source src="([^"]+)"/)?.[1]).toBe(
+      SITE_DEMO_PATH.replace("site/", ""),
+    );
+  });
+
+  test("places the mobile dashboard and terminal directly after the homepage demo", () => {
+    const site = readFileSync(SITE_PATH, "utf-8");
+    const demoPosition = site.indexOf(SITE_DEMO_PATH.replace("site/", ""));
+    const mobilePosition = site.indexOf('id="mobile"');
+    const proofPosition = site.indexOf("BUILT FOR THE MOMENT BETWEEN MACHINES");
+    const workflowPosition = site.indexOf('id="how"');
+    const privacyPosition = site.indexOf('id="privacy"');
+    const desktopPosition = site.indexOf("assets/desktop-terminal.efc351dcb92f63c7.png");
+
+    expect(mobilePosition).toBeGreaterThan(demoPosition);
+    expect(proofPosition).toBeGreaterThan(mobilePosition);
+    expect(workflowPosition).toBeGreaterThan(mobilePosition);
+    expect(privacyPosition).toBeGreaterThan(mobilePosition);
+    expect(desktopPosition).toBeGreaterThan(mobilePosition);
+    for (const screenshot of SITE_MOBILE_SCREENSHOTS) {
+      expect(existsSync(screenshot)).toBe(true);
+      expect(site.indexOf(screenshot.replace("site/", ""))).toBeGreaterThan(mobilePosition);
+    }
+    expect(site).toContain("Scan the dashboard");
+    expect(site).toContain("Open the live terminal");
   });
 });

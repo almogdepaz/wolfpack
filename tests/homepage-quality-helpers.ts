@@ -16,7 +16,7 @@ export const HOMEPAGE_SCREENSHOT_PROJECTS = [
   "iphone-se",
   "iphone-14",
 ] as const;
-export const CANONICAL_HOMEPAGE_URL = "https://get-wolfpack.netlify.app/";
+export const CANONICAL_HOMEPAGE_URL = "https://almogdepaz.github.io/wolfpack/";
 
 const SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9";
 

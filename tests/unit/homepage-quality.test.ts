@@ -45,6 +45,24 @@ const RENDER_ASSET_SPECS = [
     extension: ".png",
     compatibilityFileName: undefined,
   },
+  {
+    directory: "assets",
+    stem: "mobile-sessions",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
+    stem: "mobile-terminal",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
+    stem: "wolfpack-usage-demo",
+    extension: ".mp4",
+    compatibilityFileName: undefined,
+  },
 ] as const;
 const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const REVALIDATED_CACHE_CONTROL = "public, max-age=0, must-revalidate";
@@ -126,11 +144,24 @@ function unhashedAssetPath(assetPath: string): string {
   return assetPath.replace(/\.[0-9a-f]{16}(?=\.[^.]+$)/, "");
 }
 
+function deployedSitePath(relativePath: string): string {
+  return `${new URL(CANONICAL_HOMEPAGE_URL).pathname}${relativePath}`;
+}
+
+function siteRelativePath(url: URL): string {
+  const siteRoot = new URL(CANONICAL_HOMEPAGE_URL).pathname;
+  if (!url.pathname.startsWith(siteRoot)) {
+    throw new Error(`homepage asset is outside ${siteRoot}: ${url.pathname}`);
+  }
+  return decodeURIComponent(url.pathname.slice(siteRoot.length));
+}
+
 function firstPartyRenderUrls(): URL[] {
   const values = [
     ...attributesFor('link[rel="icon"]').map(({ href }) => href),
     ...attributesFor('link[rel="stylesheet"]').map(({ href }) => href),
     ...attributesFor("script[src]").map(({ src }) => src),
+    ...attributesFor("source[src]").map(({ src }) => src),
     ...attributesFor("img[src]").map(({ src }) => src),
     ...attributesFor('meta[property="og:image"]').map(({ content }) => content),
     ...attributesFor('meta[name="twitter:image"]').map(({ content }) => content),
@@ -146,7 +177,7 @@ describe("homepage quality contract", () => {
     const referencedPaths = new Set<string>();
 
     for (const url of firstPartyRenderUrls()) {
-      const relativePath = decodeURIComponent(url.pathname.slice(1));
+      const relativePath = siteRelativePath(url);
       expect(renderAssets).toContain(relativePath);
       expect(existsSync(join(SITE_ROOT, relativePath))).toBe(true);
       expect(url.search).toBe("");
@@ -162,7 +193,7 @@ describe("homepage quality contract", () => {
 
   test("keeps every referenced first-party render file visible to git", () => {
     const referencedFiles = new Set(firstPartyRenderUrls().map((url) =>
-      `site/${decodeURIComponent(url.pathname.slice(1))}`
+      `site/${siteRelativePath(url)}`
     ));
     const ignoredFiles = [...referencedFiles].filter((relativePath) => {
       const check = spawnSync(
@@ -185,14 +216,18 @@ describe("homepage quality contract", () => {
       ...attributesForDocument(APP_DOCUMENT, "meta[content]").map(({ content }) => content),
       ...attributesForDocument(APP_DOCUMENT, "link[href]").map(({ href }) => href),
       ...attributesForDocument(APP_DOCUMENT, "script[src]").map(({ src }) => src),
+      ...attributesForDocument(APP_DOCUMENT, "source[src]").map(({ src }) => src),
       ...attributesForDocument(APP_DOCUMENT, "img[src]").map(({ src }) => src),
     ].filter((value): value is string => value !== undefined);
     const canonicalAssetUrls = consumerValues
       .map((value) => new URL(value, CANONICAL_HOMEPAGE_URL))
-      .filter((url) => url.origin === canonicalOrigin && url.pathname.startsWith("/assets/"));
+      .filter((url) =>
+        url.origin === canonicalOrigin &&
+        url.pathname.startsWith(deployedSitePath("assets/"))
+      );
 
     expect(canonicalAssetUrls.map(({ href }) => href)).toEqual([
-      "https://get-wolfpack.netlify.app/assets/wolfpack-icon.svg",
+      "https://almogdepaz.github.io/wolfpack/assets/wolfpack-icon.svg",
     ]);
     const compatibilityUrl = canonicalAssetUrls[0];
     expect(compatibilityUrl).toBeDefined();
@@ -210,7 +245,7 @@ describe("homepage quality contract", () => {
       expect(cacheControl).not.toContain("immutable");
     }
 
-    const sitePath = decodeURIComponent(compatibilityUrl.pathname.slice(1));
+    const sitePath = siteRelativePath(compatibilityUrl);
     expect(existsSync(join(SITE_ROOT, sitePath))).toBe(true);
     const hashedIconPath = renderAssetPaths().find((path) =>
       /^assets\/wolfpack-icon\.[0-9a-f]{16}\.svg$/.test(path)
@@ -227,8 +262,9 @@ describe("homepage quality contract", () => {
     const inlineScripts = scripts.filter(({ src }) => !src);
 
     expect(externalScripts).toHaveLength(1);
-    expect(new URL(externalScripts[0]?.src ?? "", CANONICAL_HOMEPAGE_URL).pathname)
-      .toMatch(/^\/homepage\.[0-9a-f]{16}\.js$/);
+    expect(siteRelativePath(
+      new URL(externalScripts[0]?.src ?? "", CANONICAL_HOMEPAGE_URL),
+    )).toMatch(/^homepage\.[0-9a-f]{16}\.js$/);
     expect(inlineScripts).toEqual([{ type: "application/ld+json" }]);
     expect(HOMEPAGE).not.toContain("navigator.clipboard");
   });
@@ -252,6 +288,7 @@ describe("homepage quality contract", () => {
       ...attributesFor("link[href]").map(({ href }) => href),
       ...attributesFor("img[src]").map(({ src }) => src),
       ...attributesFor("script[src]").map(({ src }) => src),
+      ...attributesFor("source[src]").map(({ src }) => src),
       ...attributesFor('meta[property="og:image"]').map(({ content }) => content),
       ...attributesFor('meta[name="twitter:image"]').map(({ content }) => content),
     ].filter((value): value is string => value?.startsWith("http") === true);
@@ -341,6 +378,7 @@ describe("homepage quality contract", () => {
     );
     expect(directives.get("font-src")).toEqual(["https://fonts.gstatic.com"]);
     expect(new Set(directives.get("img-src"))).toEqual(new Set(["'self'", "data:"]));
+    expect(directives.get("media-src")).toEqual(["'self'"]);
     expect(new Set(directives.get("connect-src"))).toEqual(
       new Set(["https://fonts.googleapis.com", "https://fonts.gstatic.com"]),
     );
@@ -362,11 +400,11 @@ describe("homepage quality contract", () => {
     }
   });
 
-  test("matches Netlify header rules by pathname and caches only exact hashed assets", () => {
+  test("matches static header rules by pathname and caches only exact hashed assets", () => {
     const rules = readHeaderRules();
     const global = headerRule("/*");
     const renderAssets = renderAssetPaths();
-    const expectedPaths = new Set(renderAssets.map((asset) => `/${asset}`));
+    const expectedPaths = new Set(renderAssets.map(deployedSitePath));
     const immutableRules = rules.filter((rule) =>
       rule.headers.get("cache-control")?.includes("immutable") === true
     );
@@ -374,7 +412,7 @@ describe("homepage quality contract", () => {
     expect(global.headers.get("cache-control")).toBe(REVALIDATED_CACHE_CONTROL);
     expect(new Set(immutableRules.map(({ path }) => path))).toEqual(expectedPaths);
     for (const asset of renderAssets) {
-      const pathname = `/${asset}`;
+      const pathname = deployedSitePath(asset);
       const exactHeaders = headersForSiteRequest(
         new URL(pathname, CANONICAL_HOMEPAGE_URL),
       );
@@ -407,7 +445,7 @@ describe("homepage quality contract", () => {
       "/unknown",
     ]) {
       expect(headersForSiteRequest(
-        new URL(`${path}?query=cannot-match-a-rule`, CANONICAL_HOMEPAGE_URL),
+        new URL(`${path.slice(1)}?query=cannot-match-a-rule`, CANONICAL_HOMEPAGE_URL),
       ).get("cache-control")).toBe(REVALIDATED_CACHE_CONTROL);
     }
   });

@@ -26,7 +26,7 @@ The local Rust broker owns PTY sessions, so browser-server restarts do not kill 
 Treat the generated local or tailnet URL as sensitive. Use a trusted tailnet and follow the repository's security model before exposing Wolfpack beyond that boundary. JWT authentication is not assumed by the Tailscale-first setup; review current security guidance before public exposure.
 
 ## Links
-- Homepage: https://get-wolfpack.netlify.app/
+- Homepage: https://almogdepaz.github.io/wolfpack/
 - Repository: https://github.com/almogdepaz/wolfpack
 - First session: https://github.com/almogdepaz/wolfpack/blob/main/docs/first-session.md
 - Security model: https://github.com/almogdepaz/wolfpack/blob/main/docs/installation.md#security-and-trust

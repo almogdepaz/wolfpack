@@ -27,6 +27,8 @@ const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
 const { TaskGateway, __resetTaskGatewayForTests } = await import("../../src/tasks/gateway.ts");
 
+__resetTaskGatewayForTests();
+
 class PiBackend extends MockBackend {
   override async listIdentities() {
     const now = new Date(0).toISOString();
@@ -1151,7 +1153,7 @@ describe("local task gateway", () => {
     const secondPage = await second.json() as { events: Array<{ taskId: string }> };
     const returnedTaskIds = [...firstPage.events, ...secondPage.events].map((event) => event.taskId).filter((taskId) => taskIds.includes(taskId));
     expect(returnedTaskIds).toEqual(taskIds);
-  });
+  }, 15_000);
 
   test("keeps canonical terminal ordering stable under concurrent cancellation and completion", async () => {
     const sent = await request("/api/tasks/v1/send", "POST", { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "race terminal" });

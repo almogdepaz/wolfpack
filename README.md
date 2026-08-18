@@ -3,7 +3,7 @@
 [![CI](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml/badge.svg)](https://github.com/almogdepaz/wolfpack/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://get-wolfpack.netlify.app/)
+[![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://almogdepaz.github.io/wolfpack/)
 
 Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.
 
@@ -13,10 +13,19 @@ Shell is the always-available fallback. Custom commands and wrappers on PATH are
 
 Sessions live in a Rust PTY broker, not the web server, so server-only restarts preserve them; a broker restart or login-service reinstallation can terminate them.
 
-**Homepage:** [get-wolfpack.netlify.app](https://get-wolfpack.netlify.app/) · **Agent-readable overview:** [llms.txt](https://get-wolfpack.netlify.app/llms.txt)
+**Homepage:** [almogdepaz.github.io/wolfpack](https://almogdepaz.github.io/wolfpack/) · **Agent-readable overview:** [llms.txt](https://almogdepaz.github.io/wolfpack/llms.txt)
+
+### desktop demo
 
 <p align="center">
   <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack usage demo showing real broker-backed terminal sessions" />
+</p>
+
+### mobile views
+
+<p align="center">
+  <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile sessions dashboard showing real broker-backed sessions" />
+  <img src="docs/mobile-ghostty.png" width="220" alt="Wolfpack mobile Ghostty terminal showing colorized coding-agent output and touch controls" />
 </p>
 
 > **security:** wolfpack gives browser users shell-level control over configured projects. Keep it private to a trusted Tailnet. If other people share the Tailnet, configure device/user ACLs and consider JWT. Session control follows the ordinary global API auth policy when configured and has no inter-session authorization layer; read the [full trust model](docs/installation.md#security-and-trust).

@@ -1,9 +1,9 @@
 {
   "name": "wolfpack-bridge",
-  "version": "1.6.18",
+  "version": "1.6.19",
   "type": "module",
   "description": "Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.",
-  "homepage": "https://get-wolfpack.netlify.app/",
+  "homepage": "https://almogdepaz.github.io/wolfpack/",
   "bugs": {
     "url": "https://github.com/almogdepaz/wolfpack/issues"
   },
@@ -53,10 +53,10 @@
     "smoke:release": "bun run scripts/smoke-release-artifacts.ts"
   },
   "optionalDependencies": {
-    "wolfpack-bridge-darwin-arm64": "1.6.18",
-    "wolfpack-bridge-darwin-x64": "1.6.18",
-    "wolfpack-bridge-linux-arm64": "1.6.18",
-    "wolfpack-bridge-linux-x64": "1.6.18"
+    "wolfpack-bridge-darwin-arm64": "1.6.19",
+    "wolfpack-bridge-darwin-x64": "1.6.19",
+    "wolfpack-bridge-linux-arm64": "1.6.19",
+    "wolfpack-bridge-linux-x64": "1.6.19"
   },
   "keywords": [
     "ai-agent-terminal",

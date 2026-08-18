@@ -23,14 +23,17 @@ const BUNX_COMMAND = "bunx wolfpack-bridge@latest";
 const NPX_COMMAND = "npx --yes wolfpack-bridge@latest";
 const LOCAL_FCP_BUDGET_MS = 5_000;
 const FIRST_PARTY_TRANSFER_BUDGET_BYTES = 1_000_000;
+const HAVE_METADATA_READY_STATE = 1;
 const GOOGLE_FONTS_URL = /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\//;
 const CONTENT_TYPES_BY_EXTENSION: Readonly<Record<string, string>> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
+  ".mp4": "video/mp4",
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".txt": "text/plain; charset=utf-8",
+  ".webp": "image/webp",
   ".xml": "application/xml; charset=utf-8",
 };
 const FALLBACK_CONTENT_TYPE = "application/octet-stream";
@@ -224,8 +227,14 @@ test("captures a full-page diagnostic and stays within generous local budgets", 
       (element) => (element as HTMLImageElement).naturalWidth,
     )).toBeGreaterThan(0);
   }
+  for (const video of await page.locator("video").all()) {
+    await video.scrollIntoViewIfNeeded();
+    await expect.poll(() => video.evaluate(
+      (element) => (element as HTMLVideoElement).readyState,
+    )).toBeGreaterThanOrEqual(HAVE_METADATA_READY_STATE);
+  }
   const dependencyUrls = await page.locator(
-    'link[rel="icon"][href], link[rel="stylesheet"][href], script[src], img[src]',
+    'link[rel="icon"][href], link[rel="stylesheet"][href], script[src], source[src], img[src]',
   ).evaluateAll((elements) => elements.map((element) =>
     (element as HTMLLinkElement).href || (element as HTMLScriptElement).src
   ));
@@ -239,7 +248,7 @@ test("captures a full-page diagnostic and stays within generous local budgets", 
   expect(successfulPaths).toContain(HOMEPAGE_PREFIX);
   for (const expectedPath of expectedPaths) expect(successfulPaths).toContain(expectedPath);
   expect(new Set([...expectedPaths].map((path) => extname(path)))).toEqual(
-    new Set([".css", ".js", ".png", ".svg"]),
+    new Set([".css", ".js", ".mp4", ".png", ".svg", ".webp"]),
   );
 
   const diagnosticPath = homepageScreenshotPath(testInfo.project.name);

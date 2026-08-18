@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const CANONICAL_URL = "https://get-wolfpack.netlify.app/";
+const CANONICAL_URL = "https://almogdepaz.github.io/wolfpack/";
 
 function readRepoFile(path: string): string {
   return readFileSync(path, "utf-8");
@@ -14,7 +14,7 @@ function jsonLdFrom(html: string): Record<string, unknown> {
 }
 
 describe("discovery assets", () => {
-  test("uses Netlify as the canonical public URL", () => {
+  test("uses GitHub Pages as the canonical public URL", () => {
     const homepage = readRepoFile("site/index.html");
     const app = readRepoFile("public/index.html");
     const readme = readRepoFile("README.md");
@@ -34,8 +34,9 @@ describe("discovery assets", () => {
     expect(embeddedLlms).toContain(`Canonical homepage: ${CANONICAL_URL}`);
     expect(embeddedLlms).not.toContain("Repository and README");
     expect(fullLlms).not.toContain("github.com/almogdepaz/wolfpack#readme");
-    expect(pagesWorkflow).toContain("Generate Netlify redirect");
-    expect(pagesWorkflow).toContain("path: pages-redirect");
+    expect(pagesWorkflow).not.toContain("Generate Netlify redirect");
+    expect(pagesWorkflow).toContain("'site/**'");
+    expect(pagesWorkflow).toContain("path: site");
 
     const jsonLd = jsonLdFrom(homepage);
     expect(jsonLd["@type"]).toBe("SoftwareApplication");

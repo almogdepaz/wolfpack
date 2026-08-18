@@ -10,7 +10,7 @@ Shell is the always-available fallback. Custom commands and wrappers on PATH are
 
 ## Primary links
 
-- Canonical homepage: https://get-wolfpack.netlify.app/
+- Canonical homepage: https://almogdepaz.github.io/wolfpack/
 - Repository: https://github.com/almogdepaz/wolfpack
 - Install script: https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
 - npm package: https://www.npmjs.com/package/wolfpack-bridge
