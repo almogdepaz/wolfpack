@@ -1,6 +1,6 @@
 {
   "name": "wolfpack-bridge",
-  "version": "1.6.19",
+  "version": "1.6.20-rc.1",
   "type": "module",
   "description": "Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.",
   "homepage": "https://almogdepaz.github.io/wolfpack/",
