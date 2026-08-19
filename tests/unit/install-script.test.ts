@@ -86,7 +86,7 @@ function installerEnvironment(
   fixture: ReturnType<typeof prepareFixture>,
   extraEnv: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
-  return {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: fixture.home,
     OSTYPE: "linux-gnu",
@@ -99,6 +99,8 @@ function installerEnvironment(
     WOLFPACK_INSTALL_SKIP_SETUP: "1",
     ...extraEnv,
   };
+  if (!("WOLFPACK_RELEASE_TAG" in extraEnv)) delete environment.WOLFPACK_RELEASE_TAG;
+  return environment;
 }
 
 function runInstaller(
@@ -336,21 +338,52 @@ describe("install.sh release binary staging", () => {
     expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service restart");
   });
 
-  test("downloads and installs the matching wolfpack and broker assets", () => {
+  test("downloads and installs the matching wolfpack and broker assets from latest by default", () => {
     const fixture = prepareFixture();
     const result = runInstaller(fixture);
 
     expect(result.status).toBe(0);
-    expect(readFileSync(fixture.log, "utf-8")).toContain(
-      "/releases/latest/download/wolfpack-linux-x64",
-    );
-    expect(readFileSync(fixture.log, "utf-8")).toContain(
-      "/releases/latest/download/wolfpack-broker-linux-x64",
-    );
+    expect(readFileSync(fixture.log, "utf-8").trim().split("\n")).toEqual([
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/checksums-sha256.txt",
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/wolfpack-linux-x64",
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/wolfpack-broker-linux-x64",
+    ]);
     expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("new server\n");
     expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("new broker\n");
     expect(statSync(join(fixture.installDir, "wolfpack")).mode & 0o111).not.toBe(0);
     expect(statSync(join(fixture.installDir, "wolfpack-broker")).mode & 0o111).not.toBe(0);
+  });
+
+  test("downloads checksums and both binaries from one validated release tag", () => {
+    const fixture = prepareFixture();
+    const result = runInstaller(fixture, { WOLFPACK_RELEASE_TAG: "v1.6.20-rc.1" });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(fixture.log, "utf-8").trim().split("\n")).toEqual([
+      "https://github.com/almogdepaz/wolfpack/releases/download/v1.6.20-rc.1/checksums-sha256.txt",
+      "https://github.com/almogdepaz/wolfpack/releases/download/v1.6.20-rc.1/wolfpack-linux-x64",
+      "https://github.com/almogdepaz/wolfpack/releases/download/v1.6.20-rc.1/wolfpack-broker-linux-x64",
+    ]);
+  });
+
+  test.each([
+    "",
+    "1.6.20",
+    "v1..20",
+    "v1.6.20-rc..1",
+    "v1.6.20-01",
+    "../v1.6.20",
+    "https://example.com/v1.6.20",
+  ])("rejects invalid release tag %p before downloads or installed-state mutation", (releaseTag) => {
+    const fixture = prepareFixture();
+    const result = runInstaller(fixture, { WOLFPACK_RELEASE_TAG: releaseTag });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("Invalid WOLFPACK_RELEASE_TAG");
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
   test("rejects a checksum mismatch before either binary is replaced", () => {

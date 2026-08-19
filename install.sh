@@ -23,6 +23,23 @@ green() { printf "\033[32m%s\033[0m" "$1"; }
 red() { printf "\033[31m%s\033[0m" "$1"; }
 dim() { printf "\033[2m%s\033[0m" "$1"; }
 
+SEMVER_CORE_IDENTIFIER='(0|[1-9][0-9]*)'
+SEMVER_PRERELEASE_IDENTIFIER='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+SEMVER_BUILD_IDENTIFIER='[0-9A-Za-z-]+'
+SEMVER_RELEASE_TAG_PATTERN="^v${SEMVER_CORE_IDENTIFIER}\\.${SEMVER_CORE_IDENTIFIER}\\.${SEMVER_CORE_IDENTIFIER}(-${SEMVER_PRERELEASE_IDENTIFIER}(\\.${SEMVER_PRERELEASE_IDENTIFIER})*)?(\\+${SEMVER_BUILD_IDENTIFIER}(\\.${SEMVER_BUILD_IDENTIFIER})*)?$"
+
+if [ "${WOLFPACK_RELEASE_TAG+x}" = "x" ]; then
+  if [[ ! "$WOLFPACK_RELEASE_TAG" =~ $SEMVER_RELEASE_TAG_PATTERN ]]; then
+    echo "  $(red 'Invalid WOLFPACK_RELEASE_TAG. Expected a semantic release tag such as v1.6.20-rc.1.')"
+    exit 1
+  fi
+  RELEASE_DOWNLOAD_PATH="releases/download/${WOLFPACK_RELEASE_TAG}"
+  RELEASE_PAGE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/tag/${WOLFPACK_RELEASE_TAG}"
+else
+  RELEASE_DOWNLOAD_PATH="releases/latest/download"
+  RELEASE_PAGE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+fi
+
 # Detect OS
 IS_MACOS=false
 IS_LINUX=false
@@ -96,7 +113,7 @@ TARGET=$(detect_target)
 PLATFORM_TARGET="${TARGET#${BINARY_NAME}-}"
 BROKER_BINARY_NAME="wolfpack-broker"
 BROKER_TARGET="${BROKER_BINARY_NAME}-${PLATFORM_TARGET}"
-RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"
+RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/${RELEASE_DOWNLOAD_PATH}"
 DOWNLOAD_URL="${RELEASE_BASE_URL}/${TARGET}"
 BROKER_DOWNLOAD_URL="${RELEASE_BASE_URL}/${BROKER_TARGET}"
 CHECKSUMS_DOWNLOAD_URL="${RELEASE_BASE_URL}/checksums-sha256.txt"
@@ -139,7 +156,7 @@ if ! download_asset "$DOWNLOAD_URL" "$STAGED_WOLFPACK"; then
   echo "  $(red 'Download failed.')"
   echo "  URL: $DOWNLOAD_URL"
   echo "  Check that a release exists at:"
-  echo "    https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+  echo "    $RELEASE_PAGE_URL"
   exit 1
 fi
 if ! download_asset "$BROKER_DOWNLOAD_URL" "$STAGED_BROKER"; then

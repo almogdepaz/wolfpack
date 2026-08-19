@@ -18,6 +18,7 @@ const INSTALLER_PATH = "install.sh";
 const RELEASE_WORKFLOW_PATH = ".github/workflows/release.yml";
 const WHAT_INSTALLER_DOES_HEADING = "## What the installer does";
 const MANUAL_INSTALL_HEADING = "## Manual/audited install";
+const AUDITED_RELEASE_TAG = "v1.6.20-rc.1";
 
 type ManualPlatform = "linux" | "macos";
 type ChecksumFixture =
@@ -79,6 +80,20 @@ function shellBlocks(markdown: string): readonly string[] {
     },
   });
   return blocks;
+}
+
+function documentedVersionValidationStatus(version: string): number | null {
+  const manual = h2Section(readRepositoryFile(INSTALLATION_PATH), MANUAL_INSTALL_HEADING);
+  const firstFence = shellBlocks(manual)[0] ?? "";
+  const platformDetection = firstFence.indexOf('\ncase "$(uname -s)" in');
+  expect(platformDetection).toBeGreaterThan(-1);
+  const validation = firstFence
+    .slice(0, platformDetection)
+    .replace("VERSION='vX.Y.Z'", 'VERSION="$TEST_VERSION"');
+  return spawnSync("/bin/sh", ["-c", validation], {
+    encoding: "utf-8",
+    env: { ...process.env, TEST_VERSION: version },
+  }).status;
 }
 
 function sha256(content: string): string {
@@ -194,7 +209,7 @@ printf '${command}:%s\\n' "$*" >> "$ACTION_LOG"
     const fencePaths = shellBlocks(manual).map((fence, index) => {
       const placeholder = "VERSION='vX.Y.Z'";
       const executableFence = fence.includes(placeholder)
-        ? fence.replace(placeholder, "VERSION='v1.2.3'")
+        ? fence.replace(placeholder, `VERSION='${AUDITED_RELEASE_TAG}'`)
         : fence;
       if (executableFence !== fence) versionSubstitutions++;
       const fencePath = join(root, `manual-install-fence-${index + 1}.sh`);
@@ -285,7 +300,9 @@ describe("installer verification and provenance guidance", () => {
     const actions = h2Section(installation, WHAT_INSTALLER_DOES_HEADING);
 
     for (const sourceFact of [
-      'RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download"',
+      'RELEASE_DOWNLOAD_PATH="releases/latest/download"',
+      'RELEASE_DOWNLOAD_PATH="releases/download/${WOLFPACK_RELEASE_TAG}"',
+      'RELEASE_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/${RELEASE_DOWNLOAD_PATH}"',
       'STAGING_DIR=$(mktemp -d "${INSTALL_DIR}/.install.XXXXXX")',
       'verify_checksum "$STAGED_WOLFPACK" "$TARGET" || exit 1',
       'verify_checksum "$STAGED_BROKER" "$BROKER_TARGET" || exit 1',
@@ -300,6 +317,8 @@ describe("installer verification and provenance guidance", () => {
     for (const documentedFact of [
       "raw `main`",
       "latest GitHub Release",
+      "WOLFPACK_RELEASE_TAG",
+      "same tag",
       "~/.wolfpack/bin",
       "checksums-sha256.txt",
       "wolfpack-broker",
@@ -392,7 +411,10 @@ describe("installer verification and provenance guidance", () => {
       expect(syntax.status, syntax.stderr).toBe(0);
     }
     expect(commands).toContain("VERSION='vX.Y.Z'");
-    expect(commands).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
+    expect(commands).toContain("SEMVER_CORE_IDENTIFIER=");
+    expect(commands).toContain("SEMVER_PRERELEASE_IDENTIFIER=");
+    expect(commands).toContain("SEMVER_BUILD_IDENTIFIER=");
+    expect(commands).toContain('grep -Eq "$SEMVER_RELEASE_TAG_PATTERN"');
     expect(commands).toContain("releases/download/$VERSION");
     expect(commands).not.toContain("releases/latest");
     expect(commands).toContain('SERVER_ASSET="wolfpack-$TARGET"');
@@ -422,6 +444,23 @@ describe("installer verification and provenance guidance", () => {
     expect(commands).not.toContain('./$BROKER_ASSET');
   });
 
+  test("validates stable, prerelease, and build-metadata tags while rejecting malformed tags", () => {
+    for (const version of [
+      "v1.6.20",
+      AUDITED_RELEASE_TAG,
+      "v1.6.20+build-1",
+      "v1.6.20-rc.1+build-1",
+    ]) expect(documentedVersionValidationStatus(version)).toBe(0);
+
+    for (const version of [
+      "v1.6",
+      "v01.6.20",
+      "v1.6.20-rc..1",
+      "v1.6.20-01",
+      "v1.6.20+build..1",
+    ]) expect(documentedVersionValidationStatus(version)).not.toBe(0);
+  });
+
   for (const platform of ["linux", "macos"] as const) {
     test(`executes exact manual install entries on ${platform}`, () => {
       const run = runManualInstallFixture(platform, "exact");
@@ -436,6 +475,15 @@ describe("installer verification and provenance guidance", () => {
         `gh:attestation verify ${run.brokerAsset} --repo almogdepaz/wolfpack`,
       ]);
       expect(run.actions).toContain("setup:setup");
+      const releaseBaseUrl = `https://github.com/almogdepaz/wolfpack/releases/download/${AUDITED_RELEASE_TAG}`;
+      const sourceBaseUrl = `https://raw.githubusercontent.com/almogdepaz/wolfpack/${AUDITED_RELEASE_TAG}`;
+      expect(run.actions.split("\n").filter(action => action.startsWith("curl:"))).toEqual([
+        `curl:${releaseBaseUrl}/${run.serverAsset}`,
+        `curl:${releaseBaseUrl}/${run.brokerAsset}`,
+        `curl:${releaseBaseUrl}/checksums-sha256.txt`,
+        `curl:${sourceBaseUrl}/install.sh`,
+        `curl:${sourceBaseUrl}/.github/workflows/release.yml`,
+      ]);
       expect(run.fenceDispatches).toEqual([
         "FENCE_START:1",
         "FENCE_END:1",

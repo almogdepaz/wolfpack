@@ -12,6 +12,16 @@ Use curl when you want `wolfpack` available on your `PATH`. Before running it, r
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
 ```
 
+To install one explicitly selected GitHub release instead, keep the bootstrap source, checksum list, server, and broker on the same tag:
+
+```bash
+WOLFPACK_RELEASE_TAG='v1.6.20-rc.1'
+curl -fsSL "https://raw.githubusercontent.com/almogdepaz/wolfpack/${WOLFPACK_RELEASE_TAG}/install.sh" \
+  | WOLFPACK_RELEASE_TAG="${WOLFPACK_RELEASE_TAG}" bash
+```
+
+`WOLFPACK_RELEASE_TAG` is an opt-in: the installer validates it as a semantic release tag before downloads or installed-state changes, then uses that tag for all three release asset URLs. Use only a tag you have selected and reviewed. The checksum list establishes consistency within that release but is distributed with the binaries; use the [manual/audited path](#manualaudited-install) for independent inspection and optional provenance verification.
+
 The installer downloads and verifies the matching `wolfpack` and `wolfpack-broker` releases, then immediately launches setup. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
 
 On later runs, `wolfpack` stages the current server binary, ensures the managed server is running, and prints the local URL, verified remote URL when available, and a QR code. The file moves alone do not restart a running process. When an existing configured service is detected, the script then invokes an unqualified `wolfpack service restart`, which asks whether to restart the broker; answering yes can terminate broker-owned sessions.
@@ -30,7 +40,7 @@ These commands resolve the same matching prebuilt `wolfpack` and `wolfpack-broke
 
 ## What the installer does
 
-The curl command retrieves the [bootstrap installer source](https://github.com/almogdepaz/wolfpack/blob/main/install.sh) from raw `main`; that script then retrieves binaries and the [release checksum asset](https://github.com/almogdepaz/wolfpack/releases/latest/download/checksums-sha256.txt) from the latest GitHub Release on the [Wolfpack releases page](https://github.com/almogdepaz/wolfpack/releases). The bootstrap source and release assets therefore have different network/version boundaries. Use the pinned manual path below when you need to inspect one immutable release tag before running downloaded code.
+The normal curl command retrieves the [bootstrap installer source](https://github.com/almogdepaz/wolfpack/blob/main/install.sh) from raw `main`; that script then retrieves binaries and the [release checksum asset](https://github.com/almogdepaz/wolfpack/releases/latest/download/checksums-sha256.txt) from the latest GitHub Release on the [Wolfpack releases page](https://github.com/almogdepaz/wolfpack/releases). The normal bootstrap source and release assets therefore have different network/version boundaries. The tagged `WOLFPACK_RELEASE_TAG` opt-in above keeps those sources on the same tag, but still executes downloaded bootstrap code and trusts a checksum list co-distributed with the binaries. Use the pinned manual path below when you need to inspect one immutable release tag before running downloaded code.
 
 In execution order, the installer:
 
@@ -58,8 +68,12 @@ set -eu
 umask 077
 
 VERSION='vX.Y.Z'
-if ! printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-  echo "Set VERSION to an explicit numeric release tag such as v1.2.3" >&2
+SEMVER_CORE_IDENTIFIER='(0|[1-9][0-9]*)'
+SEMVER_PRERELEASE_IDENTIFIER='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+SEMVER_BUILD_IDENTIFIER='[0-9A-Za-z-]+'
+SEMVER_RELEASE_TAG_PATTERN="^v${SEMVER_CORE_IDENTIFIER}\.${SEMVER_CORE_IDENTIFIER}\.${SEMVER_CORE_IDENTIFIER}(-${SEMVER_PRERELEASE_IDENTIFIER}(\.${SEMVER_PRERELEASE_IDENTIFIER})*)?(\+${SEMVER_BUILD_IDENTIFIER}(\.${SEMVER_BUILD_IDENTIFIER})*)?$"
+if ! printf '%s\n' "$VERSION" | grep -Eq "$SEMVER_RELEASE_TAG_PATTERN"; then
+  echo "Set VERSION to an explicit semantic release tag such as v1.6.20-rc.1" >&2
   exit 1
 fi
 
