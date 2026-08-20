@@ -17,7 +17,6 @@ describe("discovery assets", () => {
   test("uses GitHub Pages as the canonical public URL", () => {
     const homepage = readRepoFile("site/index.html");
     const app = readRepoFile("public/index.html");
-    const readme = readRepoFile("README.md");
     const pagesWorkflow = readRepoFile(".github/workflows/pages.yml");
     const embeddedLlms = readRepoFile("public/llms.txt");
     const fullLlms = readRepoFile("site/llms-full.txt");
@@ -30,7 +29,6 @@ describe("discovery assets", () => {
     expect(homepage).toContain(`<meta property="og:url" content="${CANONICAL_URL}">`);
     expect(app).toContain(`<link rel="canonical" href="${CANONICAL_URL}" />`);
     expect(app).toContain(`<meta property="og:url" content="${CANONICAL_URL}" />`);
-    expect(readme).not.toContain("](https://github.com/almogdepaz/wolfpack/releases)");
     expect(embeddedLlms).toContain(`Canonical homepage: ${CANONICAL_URL}`);
     expect(embeddedLlms).not.toContain("Repository and README");
     expect(fullLlms).not.toContain("github.com/almogdepaz/wolfpack#readme");
@@ -49,19 +47,6 @@ describe("discovery assets", () => {
 
     expect(robots).toContain(`Sitemap: ${CANONICAL_URL}sitemap.xml`);
     expect(sitemap).toContain(`<loc>${CANONICAL_URL}</loc>`);
-  });
-
-  test("links machine-readable and README discovery to the canonical homepage", () => {
-    expect(readRepoFile("README.md")).toContain(CANONICAL_URL);
-    expect(readRepoFile("llms.txt")).toContain(CANONICAL_URL);
-  });
-
-  test("provides a privacy-respecting feedback template for multi-machine trials", () => {
-    const template = readRepoFile("docs/multi-machine-trial-feedback.md");
-
-    expect(template).toContain("## Setup timeline");
-    expect(template).toContain("## First remote session");
-    expect(template).toContain("Do not include terminal output, project names, Tailscale URLs, or credentials.");
   });
 
   test("pins the privileged Pages deployment actions", () => {

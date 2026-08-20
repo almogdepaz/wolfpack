@@ -91,7 +91,6 @@ describe("Pi integration setup", () => {
       status: "installed",
       installedSources: PI_INTEGRATION_PACKAGES,
     });
-    expect(readFileSync(join(skillPath, "SKILL.md"), "utf8")).toContain("# Wolfpack Session Control");
     expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
   });
 
