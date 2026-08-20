@@ -59,6 +59,12 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   },
 ] as const;
 
+export function getProviderDisplayName(providerId: OpenableHarness): string {
+  const provider = PROVIDER_DEFINITIONS.find(({ id }) => id === providerId);
+  if (!provider) throw new Error(`Missing provider definition for ${providerId}`);
+  return provider.displayName;
+}
+
 export interface InstalledProviderReadiness {
   readonly id: OpenableHarness;
   readonly displayName: string;

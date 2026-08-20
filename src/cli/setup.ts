@@ -27,7 +27,12 @@ import {
 } from "./service.js";
 import { createLogger } from "../log.js";
 import { initializeProviderSettingsFile } from "../initial-provider-settings.js";
-import { detectInstalledProviderCommands } from "../provider-readiness.js";
+import { FIRST_SESSION_GUIDE_URL } from "../documentation-links.js";
+import {
+  detectInstalledProviderCommands,
+  getProviderDisplayName,
+} from "../provider-readiness.js";
+import type { OpenableHarness } from "../agent-kind.js";
 import {
   acceptsPiIntegrationInstall,
   installPiIntegration,
@@ -35,6 +40,7 @@ import {
   planPiIntegrationSetup,
 } from "./pi-integration.js";
 import { configureTailscaleRemoteAccess, inspectTailscaleSelf } from "./tailscale-remote-setup.js";
+import pkg from "../../package.json";
 
 const log = createLogger("setup");
 
@@ -53,8 +59,10 @@ function printSetupCompletion(options: {
   readonly port: number;
   readonly remoteUrl: string | null;
   readonly serviceInstalled: boolean;
+  readonly detectedProviders: readonly OpenableHarness[];
 }): void {
   const localUrl = `http://localhost:${options.port}/`;
+  const firstProvider = options.detectedProviders[0];
 
   print("");
   print(green("  Setup complete — next steps:"));
@@ -70,7 +78,10 @@ function printSetupCompletion(options: {
     ? dim("  Service: running (check with 'wolfpack service status').")
     : dim("  Start: 'wolfpack' now, or 'wolfpack service install' at login."));
   print(dim("  Check: 'wolfpack doctor'"));
-  print(dim("  Create a session and run codex or claude."));
+  print(dim(firstProvider
+    ? `  Next: select Create your first session and choose ${getProviderDisplayName(firstProvider)}, or choose Shell.`
+    : "  Next: select Create your first session and choose Shell. Add an agent later in Settings → Agents."));
+  print(dim(`  First session: ${FIRST_SESSION_GUIDE_URL}`));
   print("");
 }
 
@@ -126,8 +137,8 @@ export interface SetupOptions {
 
 export async function setup(options: SetupOptions = {}) {
   print(dim(WOLF));
-  print(bold("  WOLFPACK — AI Agent Bridge"));
-  print(dim("  Deploy your pack. Command from anywhere."));
+  print(bold("  WOLFPACK"));
+  print(dim(`  ${pkg.description}`));
   print("");
 
   // Detect non-interactive shells (CI, piped stdin, redirected stdout) so
@@ -344,5 +355,6 @@ export async function setup(options: SetupOptions = {}) {
     port: config.port,
     remoteUrl: verifiedRemoteHostname ? remoteUrl(config) : null,
     serviceInstalled,
+    detectedProviders,
   });
 }

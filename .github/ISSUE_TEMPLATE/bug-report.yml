@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a reproducible Wolfpack defect
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Wolfpack. Keep the report minimal and reproducible.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and impact
+      description: Concisely describe the problem and how it affects your use of Wolfpack.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the exact minimal steps that reproduce the defect with non-sensitive test data.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect Wolfpack to do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Summarize the result without pasting terminal or session content.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Wolfpack version
+      description: Provide the release version or source commit you tested.
+      placeholder: v1.6.18
+    validations:
+      required: true
+  - type: input
+    id: os_arch
+    attributes:
+      label: Operating system and architecture
+      description: Provide the OS version and architecture, without a machine name.
+      placeholder: macOS 15 arm64 or Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      description: How did you install or run Wolfpack?
+      options:
+        - curl installer
+        - Bunx
+        - npm or npx
+        - source checkout
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: access_path
+    attributes:
+      label: Access path
+      description: Where did the problem occur?
+      options:
+        - local browser or CLI
+        - Tailnet browser or CLI
+        - both local and Tailnet
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ### Privacy warning
+        Diagnostic context is optional. Inspect and sanitize it before sharing. Do not include secrets or tokens, raw config files, complete logs, terminal transcripts or session content, private Tailnet device names or URLs, repository or project names, home paths, private machine or network identifiers, or unrelated artifacts.
+  - type: textarea
+    id: diagnostic_context
+    attributes:
+      label: Optional sanitized diagnostic context
+      description: If useful, include only the smallest relevant, inspected, and redacted excerpt from `wolfpack doctor --json`.
+      placeholder: Sanitized relevant fields only; omit this field if none are safe or useful.
+    validations:
+      required: false

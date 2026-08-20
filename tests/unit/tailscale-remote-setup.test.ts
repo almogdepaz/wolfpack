@@ -47,15 +47,37 @@ describe("tailscale remote setup", () => {
     ]);
   });
 
-  test("distinguishes logged-out, malformed, and unavailable Tailscale states", () => {
-    const configure = (run: (_file: string, args: readonly string[]) => string) => configureTailscaleRemoteAccess({
-      binary: "tailscale", port: 18790, run,
-    });
+  test("stops before Serve configuration for unusable identity states", () => {
+    for (const [statusOutput, expected] of [
+      [JSON.stringify({}), { status: "logged-out" }],
+      [JSON.stringify({ Self: {} }), { status: "logged-out" }],
+      ["not json", { status: "malformed-status" }],
+    ] as const) {
+      const calls: (readonly string[])[] = [];
+      const result = configureTailscaleRemoteAccess({
+        binary: "tailscale",
+        port: 18790,
+        run: (_file, args) => {
+          calls.push(args);
+          return statusOutput;
+        },
+      });
 
-    expect(configure(() => JSON.stringify({}))).toEqual({ status: "logged-out" });
-    expect(configure(() => JSON.stringify({ Self: {} }))).toEqual({ status: "logged-out" });
-    expect(configure(() => "not json")).toEqual({ status: "malformed-status" });
-    expect(configure(() => { throw new Error("tailscaled unavailable"); })).toEqual({ status: "unavailable" });
+      expect(result).toEqual(expected);
+      expect(calls).toEqual([["status", "--self", "--json"]]);
+    }
+
+    const calls: (readonly string[])[] = [];
+    const unavailable = configureTailscaleRemoteAccess({
+      binary: "tailscale",
+      port: 18790,
+      run: (_file, args) => {
+        calls.push(args);
+        throw new Error("tailscaled unavailable");
+      },
+    });
+    expect(unavailable).toEqual({ status: "unavailable" });
+    expect(calls).toEqual([["status", "--self", "--json"]]);
   });
 
   test("does not report readiness for malformed or mismatched serve status", () => {

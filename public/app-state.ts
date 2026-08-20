@@ -401,7 +401,7 @@ export const state = {
   sidebarAutoExpanded: false,
   sidebarTransitionIsHover: false,
   sidebarLayoutTransitioning: false,
-  sessionsExpanded: true,
+  sessionsExpanded: false,
   // connection state
   sessionRefreshTimer: null,
   // UI interaction state

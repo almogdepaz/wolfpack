@@ -36,7 +36,7 @@ await mock.module("node:child_process", () => ({
 }));
 
 await mock.module("../../src/cli/config.js", () => ({
-  WOLFPACK_DIR: "/tmp/wolfpack-service-lifecycle-test",
+  WOLFPACK_DIR: join(homedir(), ".wolfpack"),
   IS_MACOS: false,
   IS_LINUX: true,
   ask: mock((prompt: string) => {
@@ -50,7 +50,42 @@ await mock.module("../../src/cli/config.js", () => ({
   waitForPortFree: mock(() => undefined),
 }));
 
-const { refreshInstalledServerService, removeManagedEntrypoints, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
+const { refreshInstalledServerService, removeManagedEntrypoints, serviceInstall, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
+
+function systemdLifecycleCommands(): readonly string[] {
+  return execCommands.filter(command =>
+    command === "systemctl --user daemon-reload"
+      || command.startsWith("systemctl --user enable ")
+      || command.startsWith("systemctl --user start ")
+  );
+}
+
+describe("serviceInstall", () => {
+  test("writes and starts the broker before the server on Linux", () => {
+    execCommands.length = 0;
+    serviceActive = false;
+    currentConfig = { devDir: "/tmp/new dev", port: 24444 };
+    const serviceDir = join(homedir(), ".config", "systemd", "user");
+    const brokerBin = join(homedir(), ".wolfpack", "bin", "wolfpack-broker");
+    mkdirSync(join(homedir(), ".wolfpack", "bin"), { recursive: true });
+    writeFileSync(brokerBin, "broker\n");
+
+    serviceInstall();
+
+    const brokerUnit = readFileSync(join(serviceDir, "wolfpack-broker.service"), "utf-8");
+    const serverUnit = readFileSync(join(serviceDir, "wolfpack.service"), "utf-8");
+    expect(brokerUnit).toContain("ExecStart=\"" + brokerBin + "\"");
+    expect(serverUnit).toContain("Requires=wolfpack-broker.service");
+    expect(systemdLifecycleCommands()).toEqual([
+      "systemctl --user daemon-reload",
+      "systemctl --user enable wolfpack-broker",
+      "systemctl --user start wolfpack-broker",
+      "systemctl --user daemon-reload",
+      "systemctl --user enable wolfpack",
+      "systemctl --user start wolfpack",
+    ]);
+  });
+});
 
 describe("removeManagedEntrypoints", () => {
   test("removes only symlinks resolving to the managed binary", () => {
@@ -161,7 +196,7 @@ await mock.module("node:child_process", () => ({
 }));
 
 await mock.module("../../src/cli/config.js", () => ({
-  WOLFPACK_DIR: "/tmp/wolfpack-service-lifecycle-mac-test",
+  WOLFPACK_DIR: join(homedir(), ".wolfpack"),
   IS_MACOS: true,
   IS_LINUX: false,
   ask: mock(() => "y"),
@@ -172,9 +207,45 @@ await mock.module("../../src/cli/config.js", () => ({
   waitForPortFree: mock(() => undefined),
 }));
 
-const { refreshInstalledServerService } = await import("../../src/cli/service.ts");
+const { refreshInstalledServerService, serviceInstall } = await import("../../src/cli/service.ts");
+
+function launchdLifecycleCommands(): readonly string[] {
+  return execCommands.filter(command =>
+    command.startsWith("launchctl bootout ")
+      || command.startsWith("launchctl bootstrap ")
+      || command.startsWith("launchctl kickstart ")
+  );
+}
+
+test("writes and starts the broker before the server on macOS", () => {
+  execCommands.length = 0;
+  const plistDir = join(homedir(), "Library", "LaunchAgents");
+  const brokerBin = join(homedir(), ".wolfpack", "bin", "wolfpack-broker");
+  mkdirSync(join(homedir(), ".wolfpack", "bin"), { recursive: true });
+  writeFileSync(brokerBin, "broker\n");
+
+  serviceInstall();
+
+  const brokerPlistPath = join(plistDir, "com.wolfpack.broker.plist");
+  const serverPlistPath = join(plistDir, "com.wolfpack.server.plist");
+  const brokerPlist = readFileSync(brokerPlistPath, "utf-8");
+  const serverPlist = readFileSync(serverPlistPath, "utf-8");
+  const domain = "gui/" + process.getuid!();
+  expect(brokerPlist).toContain("<string>com.wolfpack.broker</string>");
+  expect(brokerPlist).toContain("<string>" + brokerBin + "</string>");
+  expect(serverPlist).toContain("<string>com.wolfpack.server</string>");
+  expect(launchdLifecycleCommands()).toEqual([
+    "launchctl bootout " + domain + "/com.wolfpack.broker 2>/dev/null",
+    "launchctl bootstrap " + domain + " \"" + brokerPlistPath + "\"",
+    "launchctl kickstart " + domain + "/com.wolfpack.broker",
+    "launchctl bootout " + domain + "/com.wolfpack.server 2>/dev/null",
+    "launchctl bootstrap " + domain + " \"" + serverPlistPath + "\"",
+    "launchctl kickstart " + domain + "/com.wolfpack.server",
+  ]);
+});
 
 test("re-bootstraps a loaded launchd KeepAlive job even when it has no pid", () => {
+  execCommands.length = 0;
   const plistDir = join(homedir(), "Library", "LaunchAgents");
   const plistPath = join(plistDir, "com.wolfpack.server.plist");
   mkdirSync(plistDir, { recursive: true });
@@ -191,7 +262,7 @@ test("re-bootstraps a loaded launchd KeepAlive job even when it has no pid", () 
 `;
 
 describe("service lifecycle", () => {
-  test("isolates broker shutdown and refreshes Linux and launchd server descriptors", () => {
+  test("covers service installation, isolated broker shutdown, and server refresh", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-service-home-"));
     writeFileSync(innerTestPath, innerTest);
     try {

@@ -13,14 +13,17 @@ test.afterAll(() => {
 
 test.beforeEach(async ({ page }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator("#session-list .card").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open another-project" }).first()).toBeVisible();
 });
 
 test("desktop session shell uses named controls and bounded content", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop shell contract");
 
   await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
+  await page.getByRole("button", { name: "Expand sessions" }).click();
   await expect(page.getByRole("button", { name: "Collapse sessions" })).toBeVisible();
+  await expect(page.locator("body")).toHaveClass(/sessions-expanded/);
+  await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
   await expect(page.getByRole("button", { name: /Start a session on/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop another-project" })).toBeVisible();
 
@@ -29,13 +32,47 @@ test("desktop session shell uses named controls and bounded content", async ({ p
   expect((await sessionGroup.boundingBox())?.width).toBeLessThanOrEqual(960);
 });
 
-test("desktop sidebar defaults open and remembers collapse without a persistent tab", async ({ page }, testInfo) => {
+test("desktop first load shows the sessions overview beside a default-pinned sidebar", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop sidebar contract");
 
-  await page.locator("#session-list .card").first().click();
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBeNull();
   const sidebar = page.locator("#desktop-sidebar");
+  const sessionsView = page.locator("#sessions-view");
+  await expect(page.locator("body")).not.toHaveClass(/sessions-expanded/);
+  await expect(sidebar).toBeVisible();
   await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect(sidebar).toHaveAttribute("aria-hidden", "false");
+  await expect(page.getByRole("button", { name: "Unpin sidebar" })).toBeVisible();
+  await expect(sessionsView).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open another-project" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /Start a session on/ })).toHaveCount(1);
+  await expect(page.locator("#session-list .card").first()).toBeHidden();
+  await expect(page.locator("#sidebar-session-list .card").first()).toBeVisible();
 
+  const layout = await page.evaluate(() => {
+    const sidebarElement = document.getElementById("desktop-sidebar");
+    const sessionsElement = document.getElementById("sessions-view");
+    if (!sidebarElement || !sessionsElement) throw new Error("desktop sessions layout is incomplete");
+    const sidebarBox = sidebarElement.getBoundingClientRect();
+    const sessionsBox = sessionsElement.getBoundingClientRect();
+    return {
+      scrollWidth: document.documentElement.scrollWidth,
+      sidebarRight: sidebarBox.right,
+      sessionsLeft: sessionsBox.left,
+      sessionsRight: sessionsBox.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(layout.sidebarRight).toBeLessThanOrEqual(layout.sessionsLeft);
+  expect(layout.sessionsRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.scrollWidth).toBe(layout.viewportWidth);
+});
+
+test("desktop sidebar restores saved unpin and pin choices after reload", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop sidebar contract");
+
+  const sidebar = page.locator("#desktop-sidebar");
+  await expect(page.getByRole("button", { name: "Unpin sidebar" })).toBeVisible();
   await page.getByRole("button", { name: "Unpin sidebar" }).click();
   await expect(sidebar).toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("0");
@@ -46,18 +83,29 @@ test("desktop sidebar defaults open and remembers collapse without a persistent 
 
   await page.reload();
   await expect(page.locator("#session-list .card").first()).toBeVisible();
-  await page.locator("#session-list .card").first().click();
+  await expect(page.getByRole("button", { name: "Open another-project" })).toHaveCount(1);
+  await expect(page.locator("body")).not.toHaveClass(/sessions-expanded/);
   await expect(sidebar).toHaveClass(/collapsed/);
-
-  await page.keyboard.press("Control+b");
+  await page.mouse.move(1, 100);
+  await expect(page.getByRole("button", { name: "Pin sidebar" })).toBeVisible();
+  await page.getByRole("button", { name: "Pin sidebar" }).click();
   await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect(page.getByRole("button", { name: "Open another-project" })).toHaveCount(1);
+  await expect(page.locator("#session-list .card").first()).toBeHidden();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("1");
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Open another-project" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open another-project" })).toHaveCount(1);
+  await expect(page.locator("#session-list .card").first()).toBeHidden();
+  await expect(page.locator("body")).not.toHaveClass(/sessions-expanded/);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect(page.getByRole("button", { name: "Unpin sidebar" })).toBeVisible();
 });
 
 test("desktop grid actions expose intent", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop grid contract");
 
-  await page.getByRole("button", { name: "Collapse sessions" }).click();
   await page.getByRole("button", { name: "Add to grid: another-project" }).click();
   await page.getByRole("button", { name: "Add to grid: error-project" }).click();
   await expect(page.getByRole("button", { name: "Remove another-project from grid" })).toBeVisible();

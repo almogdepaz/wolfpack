@@ -42,6 +42,25 @@ interface ReplacementFocusedDelegationWindow extends ReplacementSocketWindow {
   };
 }
 
+function visibleSessionList(page: Page) {
+  return page.locator([
+    "#session-list:not([hidden])",
+    "body:has(#session-list[hidden]) #sidebar-session-list",
+  ].join(", "));
+}
+
+function visibleSessionGroups(page: Page) {
+  return page.locator([
+    "#session-list:not([hidden]) > .machine-group",
+    "body:has(#session-list[hidden]) #sidebar-session-list > .machine-group",
+    "body:has(#session-list[hidden]) #sidebar-session-list:has(> .card)",
+  ].join(", "));
+}
+
+function visibleMachineGroup(page: Page, machine: string) {
+  return visibleSessionList(page).locator(`.machine-group[data-machine="${machine}"]`);
+}
+
 async function installReplacementSocketHarness(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class FakeWebSocket {
@@ -181,7 +200,7 @@ test("isolates inherited config from the shared Tailnet test server", async ({ p
   await page.goto(server.baseUrl);
 
   await expect(page.getByRole("button", { name: "Open test-project" })).toBeVisible();
-  await expect(page.locator("#session-list .machine-group")).toHaveCount(1);
+  await expect(visibleSessionGroups(page)).toHaveCount(1);
 });
 
 test("loads a verified peer before an unrelated candidate machine request times out", async ({ page }) => {
@@ -230,7 +249,7 @@ test("loads a verified peer before an unrelated candidate machine request times 
   await page.goto(server.baseUrl);
 
   await expect.poll(() => healthySessionsRequested, { timeout: 2_000 }).toBe(true);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
 });
 
 test("does not route REST or WebSocket traffic to a former origin while its replacement probe is pending", async ({ page }) => {
@@ -302,7 +321,7 @@ test("does not route REST or WebSocket traffic to a former origin while its repl
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { openSession(name: string, machine?: string): void };
     app.openSession("peer-session", machineIdentity);
@@ -385,15 +404,12 @@ test("removes a ready peer from workspace navigation when its sessions request f
 
   await page.goto(server.baseUrl);
 
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  if (testInfo.project.name === "desktop") {
-    await expect(page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  }
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator("#machines-list .machine-item")).toHaveCount(1);
   await expect(page.locator("#machines-list .machine-item .dot")).toHaveAttribute("title", "online");
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
-  await expect(page.locator("#session-list .machine-group")).toHaveCount(1);
+  await expect(visibleSessionGroups(page)).toHaveCount(1);
   const localSession = page.getByRole("button", { name: "Open test-project" });
   await expect(localSession).toBeVisible();
   await localSession.click();
@@ -453,7 +469,7 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
@@ -471,9 +487,6 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
     await expect(page.locator("#discover-status")).toContainText(failure.status);
     await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
     await expect(peerGroup).toHaveCount(0);
-    if (testInfo.project.name === "desktop") {
-      await expect(page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-    }
     await page.waitForTimeout(100);
     // The generation-start replacement may capture the formerly-ready peer
     // before the failed enumeration revokes its route; its stale result cannot apply.
@@ -547,7 +560,7 @@ test("does not let an older delayed probe restore authority after a newer enumer
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
@@ -633,7 +646,7 @@ test("does not let a stale session response restore a peer revoked by a newer re
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
 
@@ -647,7 +660,10 @@ test("does not let a stale session response restore a peer revoked by a newer re
   await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
   await page.evaluate((machineIdentity) => {
     const testWindow = window as unknown as { staleSessionWasActionable: boolean };
-    const sessionList = document.getElementById("session-list");
+    const mainSessionList = document.getElementById("session-list");
+    const sessionList = mainSessionList?.hidden
+      ? document.getElementById("sidebar-session-list")
+      : mainSessionList;
     testWindow.staleSessionWasActionable = false;
     new MutationObserver(() => {
       const staleSession = sessionList?.querySelector(`[data-machine="${machineIdentity}"] [aria-label="Open stale peer session"]`);
@@ -657,7 +673,7 @@ test("does not let a stale session response restore a peer revoked by a newer re
 
   releaseStaleSessionResponse();
   await expect(peerGroup).toHaveCount(0);
-  await expect(page.locator("#session-list")).not.toContainText("stale peer session");
+  await expect(visibleSessionList(page)).not.toContainText("stale peer session");
   await expect.poll(() => page.evaluate(() => (
     (window as unknown as { staleSessionWasActionable: boolean }).staleSessionWasActionable
   ))).toBe(false);
@@ -718,7 +734,7 @@ test("does not let an older probe failure overwrite a newer ready peer", async (
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
 
@@ -811,9 +827,9 @@ test("renders local and a verified peer while a malformed candidate stays non-ro
     (window as unknown as { state: { lastSessionGroups: Array<{ machine: { url: string } }> } }).state
       .lastSessionGroups.map((group) => group.machine.url)
   ))).toContain(peerIdentity);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
-  await expect(page.locator("#session-list")).toContainText("test-project");
-  await expect(page.locator('#session-list .machine-group[data-machine="candidate:n-bad"]')).toHaveCount(0);
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
+  await expect(visibleSessionList(page)).toContainText("test-project");
+  await expect(visibleMachineGroup(page, "candidate:n-bad")).toHaveCount(0);
   expect(malformedSessionsRequested).toBe(false);
   expect(legacyUrlFetched).toBe(false);
 });
@@ -915,7 +931,7 @@ test("enrolls notifications only after navigating to a currently ready verified 
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await page.getByRole("button", { name: "Settings" }).click();
 
   const readyAction = page.getByRole("button", { name: "Set up notifications on verified peer" });
@@ -1029,9 +1045,10 @@ test("replacement filters a mixed suspended grid without disrupting an unrelated
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
-  await expect(page.locator(`#session-list .machine-group[data-machine="${otherIdentity}"]`)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open local-child" })).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
+  await expect(visibleMachineGroup(page, otherIdentity)).toBeVisible();
+  await visibleSessionList(page).getByRole("button", { name: "Expand 1 child agent" }).click();
+  await expect(visibleSessionList(page).getByRole("button", { name: "Open local-child" })).toBeVisible();
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { openSession(name: string, machine?: string): void };
     app.openSession("old-manual-one", machineIdentity);
@@ -1131,8 +1148,8 @@ test("replacement filters a mixed suspended grid without disrupting an unrelated
     closeCounts: socketsBeforeReplacement.closeCounts,
   });
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
 });
 
 test("replacement retires only old-peer members from a mixed active manual grid", async ({ page }, testInfo) => {
@@ -1193,8 +1210,8 @@ test("replacement retires only old-peer members from a mixed active manual grid"
 
   await page.goto(server.baseUrl);
   await expect(page.getByRole("button", { name: "Open local-session" })).toBeVisible();
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
-  await expect(page.locator(`#session-list .machine-group[data-machine="${otherIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
+  await expect(visibleMachineGroup(page, otherIdentity)).toBeVisible();
   await page.evaluate(() => {
     const app = window as unknown as { openSession(name: string): void };
     app.openSession("local-session");
@@ -1270,8 +1287,8 @@ test("replacement retires only old-peer members from a mixed active manual grid"
       closeCount: socket.closeCount + (socket.url.includes("old-peer-session") ? 1 : 0),
     })),
   });
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
 });
 
 test("replacement keeps a sole healthy grid survivor connected and focused", async ({ page }, testInfo) => {
@@ -1307,7 +1324,7 @@ test("replacement keeps a sole healthy grid survivor connected and focused", asy
 
   await page.goto(server.baseUrl);
   await expect(page.getByRole("button", { name: "Open local-session" })).toBeVisible();
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await page.evaluate(() => {
     const app = window as unknown as { openSession(name: string): void };
     app.openSession("local-session");
@@ -1407,8 +1424,8 @@ test("replacement keeps a sole healthy grid survivor connected and focused", asy
       ?.find(candidate => candidate.url.includes("local-session&reset=1"));
     return socket?.sent.length ?? 0;
   })).toBeGreaterThan(sentBeforeInput);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
 });
 
 test("replacement clears an all-old active grid and returns to sessions", async ({ page }, testInfo) => {
@@ -1447,7 +1464,7 @@ test("replacement clears an all-old active grid and returns to sessions", async 
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { openSession(name: string, machine?: string): void };
     app.openSession("old-peer-one", machineIdentity);
@@ -1519,8 +1536,8 @@ test("replacement clears an all-old active grid and returns to sessions", async 
       closeCount: socket.closeCount + (socket.url.includes("reset=1") || socket.url.includes("old-peer-two") ? 1 : 0),
     })),
   });
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
 });
 
 test("retires an active terminal when a verified peer installation is replaced", async ({ page }) => {
@@ -1565,7 +1582,7 @@ test("retires an active terminal when a verified peer installation is replaced",
   });
 
   await page.goto(server.baseUrl);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await page.evaluate((machineIdentity) => {
     const app = window as unknown as { openSession(name: string, machine?: string): void };
     app.openSession("peer-session", machineIdentity);
@@ -1601,9 +1618,9 @@ test("retires an active terminal when a verified peer installation is replaced",
       && app.state.terminalController === null
       && app.__replacementSockets[0]?.closeCount === 1;
   })).toBe(true);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`)).toHaveCount(0);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toHaveCount(1);
-  await expect(page.locator(`#session-list .machine-group[data-machine="${replacementIdentity}"]`)).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toBeVisible();
 
   await page.evaluate(() => {
     const socket = (window as unknown as {
@@ -1743,7 +1760,7 @@ test("creates a remote session through a ready stable identity and fails closed 
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
   await peerGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
   await page.getByRole("button", { name: "Browse server directories" }).click();
@@ -1868,7 +1885,7 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   });
 
   await page.goto(server.baseUrl);
-  const peerGroup = page.locator(`#session-list .machine-group[data-machine="${peerIdentity}"]`);
+  const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
 
   await peerGroup.getByRole("button", { name: "Stop peer-session" }).click();

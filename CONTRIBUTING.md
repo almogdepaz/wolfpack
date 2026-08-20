@@ -52,6 +52,8 @@ bun run scripts/build.ts
 
 Produces `wolfpack` for linux-x64, linux-arm64, darwin-x64, darwin-arm64 plus per-platform npm package directories in `dist/`. Also stages `wolfpack-broker` per platform — in CI it expects pre-built broker binaries under `dist/broker/<target>/`; locally it falls back to a host-arch-only `cargo build --release`.
 
+**Tailnet release gate:** Before a Tailnet release, complete the [physical-device release matrix](docs/tailnet-release-matrix.md); physical-device evidence is required, and automated checks do not substitute for it.
+
 Before local release-style builds that compile the broker, run:
 
 ```bash
@@ -60,6 +62,14 @@ bun run scripts/build-ghostty-vt.ts --target "$(rustc -vV | awk '/host:/ {print 
 ```
 
 Without the verified Ghostty VT bundle, Cargo fails closed instead of downloading or selecting native code during `build.rs`.
+
+## Support and reporting
+
+- Setup or runtime recovery: [troubleshooting](docs/troubleshooting.md).
+- Questions and usage help: [GitHub Discussions](https://github.com/almogdepaz/wolfpack/discussions).
+- Reproducible defects: [bug-report form](https://github.com/almogdepaz/wolfpack/issues/new?template=bug-report.yml).
+- Product proposals: [feature-request form](https://github.com/almogdepaz/wolfpack/issues/new?template=feature-request.yml).
+- Suspected vulnerabilities: [private security reporting](SECURITY.md), never a public issue or discussion.
 
 ## PR Conventions
 

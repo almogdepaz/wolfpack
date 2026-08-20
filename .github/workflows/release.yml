@@ -9,6 +9,31 @@ permissions:
   contents: read
 
 jobs:
+  classify-release:
+    runs-on: ubuntu-24.04
+    outputs:
+      prerelease: ${{ steps.classify.outputs.prerelease }}
+    steps:
+      - name: Validate and classify release tag
+        id: classify
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          core_identifier='(0|[1-9][0-9]*)'
+          prerelease_identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          build_identifier='[0-9A-Za-z-]+'
+          tag_pattern="^v${core_identifier}\.${core_identifier}\.${core_identifier}(-${prerelease_identifier}(\.${prerelease_identifier})*)?(\+${build_identifier}(\.${build_identifier})*)?$"
+          if [[ ! "$RELEASE_TAG" =~ $tag_pattern ]]; then
+            echo "Invalid semantic release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          version_without_build="${RELEASE_TAG%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # ── Broker cross-builds ────────────────────────────────────────────────
   #
   # The wolfpack-broker is a rust binary that owns every PTY session in
@@ -205,7 +230,7 @@ jobs:
           retention-days: 7
 
   release:
-    needs: build
+    needs: [build, classify-release]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -237,6 +262,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
+          prerelease: ${{ needs.classify-release.outputs.prerelease }}
           files: |
             dist/wolfpack-linux-x64
             dist/wolfpack-linux-arm64
@@ -250,7 +276,8 @@ jobs:
             dist/checksums-sha256.txt
 
   publish-npm:
-    needs: [build, release]
+    if: ${{ needs.classify-release.outputs.prerelease == 'false' }}
+    needs: [build, classify-release, release]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

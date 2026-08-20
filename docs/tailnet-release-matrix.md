@@ -1,6 +1,6 @@
 # Tailnet physical-device release matrix
 
-This operator ledger supplies the physical-device release proof required by the [direct Tailnet control-room plan](../.plans/002-tailnet-control-room.md#4c-physical-device-matrix-and-release-gate). It is not automated-test evidence and does not change Wolfpack's trust boundary or control contract.
+This operator ledger supplies the physical-device release proof required by the [direct Tailnet control-room plan](multi-machine-control-room.md). It is not automated-test evidence and does not change Wolfpack's trust boundary or control contract.
 
 ## release gate
 

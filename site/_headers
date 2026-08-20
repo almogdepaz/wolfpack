@@ -1,0 +1,23 @@
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'sha256-2yUNhjW97cH4ISYu609Q0cecZlb+CArJ4FkmuR8Bojo='; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self'; connect-src https://fonts.googleapis.com https://fonts.gstatic.com; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: clipboard-write=(self), camera=(), geolocation=(), microphone=(), payment=(), usb=()
+  X-Content-Type-Options: nosniff
+  Cache-Control: public, max-age=0, must-revalidate
+
+/wolfpack/styles.16690e0d10a2e4a8.css
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/homepage.451e47b996713fc4.js
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/assets/wolfpack-icon.a7c43b6bdecac5a6.svg
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/assets/desktop-sessions.ad6240b90974061a.png
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/assets/desktop-terminal.efc351dcb92f63c7.png
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/assets/mobile-sessions.c3bba982771177b1.webp
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/assets/mobile-terminal.7b1d31b4155c4e26.webp
+  Cache-Control: public, max-age=31536000, immutable
+/wolfpack/assets/wolfpack-usage-demo.d331794bfd000e0e.mp4
+  Cache-Control: public, max-age=31536000, immutable

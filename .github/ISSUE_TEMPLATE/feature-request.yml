@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose an outcome for a documented Wolfpack use case
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem and desired outcome. A proposal is input for evaluation, not a commitment to a particular solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem or use case
+      description: What concrete problem or workflow should improve?
+    validations:
+      required: true
+  - type: textarea
+    id: audience
+    attributes:
+      label: Intended audience
+      description: Who needs this and in what environment?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable result, without prescribing unnecessary implementation detail.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How do users handle the problem today? Write "none" if no workaround exists.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches or narrower options did you consider?
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility_security
+    attributes:
+      label: Compatibility and security implications
+      description: Note effects on supported platforms, existing workflows, privacy, trust boundaries, or shell-level access. Write "none known" when appropriate.
+    validations:
+      required: true

@@ -1,7 +1,7 @@
 # Wolfpack — agent-readable overview
 
 ## Summary
-Wolfpack is a self-hosted browser terminal manager and multi-machine control room for AI coding agents. It runs on the machines the operator controls and exposes persistent terminal sessions through a browser/PWA. The intended network path for remote use is a private Tailscale tailnet.
+Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines. It exposes those terminal sessions through a browser/PWA. The intended network path for remote use is a private Tailscale tailnet.
 
 ## Activation use case
 Install Wolfpack on two machines, connect both to the same tailnet, start an agent session on one machine, and open Wolfpack from another machine or phone. The operator can inspect output, send input, and continue long-running work without juggling SSH windows or tmux panes.
@@ -9,14 +9,15 @@ Install Wolfpack on two machines, connect both to the same tailnet, start an age
 ## Supported environments
 - macOS arm64 and x64
 - Linux x64 and arm64
-- Claude Code, Codex CLI, Gemini CLI, shell, Cursor, Pi, and custom commands when installed on PATH
+- Built-in coding-agent provider choices: Claude Code, Codex, Gemini CLI, Cursor, Pi.
+- Shell is the always-available fallback. Custom commands and wrappers on PATH are supported separately.
 
 ## Install
 ```bash
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
 ```
 
-Then run `wolfpack`, complete setup, and use `wolfpack doctor` for diagnostics. The installer provides matching prebuilt `wolfpack` and `wolfpack-broker` binaries.
+The installer immediately launches guided setup. Setup prints a local URL usable without Tailscale. Only after Tailscale sign-in and `tailscale serve` are verified does setup also print a private Tailnet HTTPS URL and QR code. If you decline the login service, run `wolfpack` before opening the printed URL. Use `wolfpack doctor` for diagnostics. The installer provides matching prebuilt `wolfpack` and `wolfpack-broker` binaries.
 
 ## Architecture
 The local Rust broker owns PTY sessions, so browser-server restarts do not kill agents. Wolfpack is not a hosted orchestration service. It does not require a Wolfpack account, and there is no Wolfpack-hosted relay or prompt-upload service. Tailscale provides the private route for normal remote access.
@@ -27,5 +28,6 @@ Treat the generated local or tailnet URL as sensitive. Use a trusted tailnet and
 ## Links
 - Homepage: https://almogdepaz.github.io/wolfpack/
 - Repository: https://github.com/almogdepaz/wolfpack
-- Security model: https://github.com/almogdepaz/wolfpack#trust-and-security-model
+- First session: https://github.com/almogdepaz/wolfpack/blob/main/docs/first-session.md
+- Security model: https://github.com/almogdepaz/wolfpack/blob/main/docs/installation.md#security-and-trust
 - Tester discussion: https://github.com/almogdepaz/wolfpack/discussions/262

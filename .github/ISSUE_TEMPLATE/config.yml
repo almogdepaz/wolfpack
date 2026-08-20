@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/almogdepaz/wolfpack/discussions
+    about: Ask open-ended questions and get help from the community.
+  - name: Report a suspected vulnerability privately
+    url: https://github.com/almogdepaz/wolfpack/security/advisories/new
+    about: Send security-sensitive reports through a private GitHub security advisory, not a public issue.

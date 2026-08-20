@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
@@ -10,6 +10,13 @@ test.beforeAll(async () => {
 test.afterAll(() => {
   server?.close();
 });
+
+function visibleSessionList(page: Page) {
+  return page.locator([
+    "#session-list:not([hidden])",
+    "body:has(#session-list[hidden]) #sidebar-session-list",
+  ].join(", "));
+}
 
 // Peer enumeration reflects the test runner's real Tailnet unless isolated.
 // These cadence tests exercise only local session refreshes.
@@ -38,7 +45,7 @@ test("local info metadata survives an unavailable Tailnet handshake", async ({ p
 
 test("concurrent refresh requests share one in-flight capture", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator("#session-list .card").first()).toBeVisible();
+  await expect(visibleSessionList(page).locator(".card").first()).toBeVisible();
 
   let activeRequests = 0;
   let maxActiveRequests = 0;
@@ -63,7 +70,7 @@ test("concurrent refresh requests share one in-flight capture", async ({ page })
 
 test("machine metadata is cached across session refreshes", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator("#session-list .card").first()).toBeVisible();
+  await expect(visibleSessionList(page).locator(".card").first()).toBeVisible();
 
   let infoRequests = 0;
   page.on("request", (request) => {
@@ -78,7 +85,7 @@ test("machine metadata is cached across session refreshes", async ({ page }) => 
 
 test("visibility resume keeps one session refresh cadence", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator("#session-list .card").first()).toBeVisible();
+  await expect(visibleSessionList(page).locator(".card").first()).toBeVisible();
 
   let sessionRequests = 0;
   page.on("request", (request) => {

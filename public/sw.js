@@ -57,6 +57,7 @@ const SHELL_ASSETS = [
   "/",
   "/styles.css?v=__WOLFPACK_ASSET_VERSION__",
   "/wolfpack-lib.js?v=__WOLFPACK_ASSET_VERSION__",
+  "/sidebar-bootstrap.js?v=__WOLFPACK_ASSET_VERSION__",
   "/app.bundle.js?v=__WOLFPACK_ASSET_VERSION__",
   "/manifest.json",
   "/wolfpack-icon.svg",

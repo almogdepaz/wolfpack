@@ -5,9 +5,13 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://almogdepaz.github.io/wolfpack/)
 
-Run Claude Code, Codex, Gemini, and shell sessions on machines you control. Reach them locally in a browser, or remotely from a browser or phone over Tailscale, without a Wolfpack-hosted relay or account.
+Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.
 
-Sessions live in a Rust PTY broker, not the web server, so server restarts and upgrades do not kill your agents.
+Built-in coding-agent provider choices: Claude Code, Codex, Gemini CLI, Cursor, Pi.
+
+Shell is the always-available fallback. Custom commands and wrappers on PATH are supported separately. Reach sessions locally in a browser, or remotely from a browser or phone over Tailscale, without a Wolfpack-hosted relay or account.
+
+Sessions live in a Rust PTY broker, not the web server, so server-only restarts preserve them; a broker restart or login-service reinstallation can terminate them.
 
 **Homepage:** [almogdepaz.github.io/wolfpack](https://almogdepaz.github.io/wolfpack/) · **Agent-readable overview:** [llms.txt](https://almogdepaz.github.io/wolfpack/llms.txt)
 
@@ -32,10 +36,11 @@ Sessions live in a Rust PTY broker, not the web server, so server restarts and u
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
-wolfpack
 ```
 
-A bare `wolfpack` runs setup on first launch. Later, it ensures the managed server is current/running and prints local and verified remote URLs plus a QR code.
+The installer immediately launches setup. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
+
+On later runs, `wolfpack` ensures the managed server is current and running, then prints the local and verified remote URLs plus a QR code. File replacement alone does not restart the running broker, but an existing configured service triggers an interactive restart; decline the broker restart while active sessions matter. See [what the installer does](docs/installation.md#what-the-installer-does) for the full lifecycle boundary.
 
 ### Bunx or npm: package runner
 
@@ -59,6 +64,8 @@ Package runners use the same setup wizard but do not add `wolfpack` to `PATH`. U
 | Bunx | `bunx wolfpack-bridge@latest doctor` |
 | npm/npx | `npx --yes wolfpack-bridge@latest doctor` |
 
+Next, follow the [first-session guide](docs/first-session.md) to create a terminal, run a harmless command or task, and reopen the same session.
+
 Open the local URL on the host machine. The project picker lists projects under the configured directory by default; **Open existing directory** can launch an existing server-local absolute path elsewhere. For phone or remote access, scan only the verified Tailnet HTTPS QR code.
 
 To uninstall: `wolfpack uninstall --yes` (curl), `bunx wolfpack-bridge@latest uninstall --yes` (Bunx), or `npx --yes wolfpack-bridge@latest uninstall --yes` (npm).
@@ -80,14 +87,11 @@ The multi-machine dashboard and desktop sidebar show only local sessions and cur
 
 ## docs
 
-- [installation and first success](docs/installation.md) — install methods, service behavior, platform detail, verification, and uninstall.
+- [installation and first success](docs/installation.md) — install Wolfpack and verify the first working URL.
+- [first session](docs/first-session.md) — create, use, and reopen a persistent browser terminal.
+- [phone, PWA, and notifications](docs/phone-pwa-notifications.md) — install the app route and recover mobile notification issues.
 - [troubleshooting](docs/troubleshooting.md) — recover from setup, service, broker, and remote-access failures.
-- [terminal attach](docs/cli-attach.md) — attach a local terminal with `wolfpack attach [name]`.
-- [session control](docs/session-control.md) — scriptable session-control API.
-- [multi-machine control room](docs/multi-machine-control-room.md) — peer readiness, visibility, diagnostics, and identity privacy.
-- [agent skills](docs/agent-skills.md) — install the Wolfpack control skill for supported agent harnesses.
-- [task gateway](docs/task-gateway.md) — durable Pi Task routing, retention, and federation limits.
-- [broker protocol](docs/broker-protocol.md) — broker wire protocol and terminal-state boundary.
+- [complete documentation router](docs/README.md) — choose canonical guides by audience and task.
 
 ## agent skills
 
@@ -126,7 +130,7 @@ Use `wolfpack session create <project>` for top-level work and `wolfpack agent s
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the asset pipeline, and PR conventions.
 
-Bugs and feature requests: [GitHub Issues](https://github.com/almogdepaz/wolfpack/issues). Questions and ideas: [Discussions](https://github.com/almogdepaz/wolfpack/discussions).
+For bugs, feature requests, questions, and usage help, use [support and reporting](SUPPORT.md). Report suspected vulnerabilities through [private security reporting](SECURITY.md), never a public issue or discussion.
 
 ## license
 

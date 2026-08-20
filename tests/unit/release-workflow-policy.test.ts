@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 type WorkflowStep = {
+  readonly id?: string;
   readonly name?: string;
   readonly uses?: string;
   readonly with?: Record<string, unknown>;
@@ -11,7 +14,9 @@ type WorkflowStep = {
 };
 
 type WorkflowJob = {
+  readonly if?: string;
   readonly needs?: string | string[];
+  readonly outputs?: Record<string, unknown>;
   readonly permissions?: Record<string, string>;
   readonly env?: Record<string, unknown>;
   readonly steps?: WorkflowStep[];
@@ -36,7 +41,84 @@ function jobSource(name: string): string {
   return JSON.stringify(jobs[name] ?? {});
 }
 
+function jobNeeds(jobName: string, dependency: string): boolean {
+  const needs = jobs[jobName]?.needs;
+  return Array.isArray(needs) ? needs.includes(dependency) : needs === dependency;
+}
+
+interface TagClassification {
+  readonly status: number | null;
+  readonly prerelease: string | undefined;
+  readonly stderr: string;
+}
+
+function classifyTag(tag: string): TagClassification {
+  const classificationStep = jobs["classify-release"]?.steps?.find(step => step.id === "classify");
+  const root = mkdtempSync(join(tmpdir(), "wolfpack-release-tag-"));
+  const outputPath = join(root, "github-output");
+  try {
+    const execution = spawnSync("bash", ["-c", `set -euo pipefail\n${classificationStep?.run ?? ""}`], {
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        RELEASE_TAG: tag,
+      },
+    });
+    const output = existsSync(outputPath) ? readFileSync(outputPath, "utf-8").trim() : "";
+    const prerelease = output
+      .split("\n")
+      .find(line => line.startsWith("prerelease="))
+      ?.slice("prerelease=".length);
+    return { status: execution.status, prerelease, stderr: execution.stderr };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe("release workflow security policy", () => {
+  test("classifies stable, build-metadata, and prerelease tags behaviorally", () => {
+    const cases = [
+      { tag: "v1.6.20", prerelease: "false", npmEligible: true },
+      { tag: "v1.6.20+build-1", prerelease: "false", npmEligible: true },
+      { tag: "v1.6.20-rc.1", prerelease: "true", npmEligible: false },
+      { tag: "v1.6.20-rc.1+build-1", prerelease: "true", npmEligible: false },
+    ] as const;
+
+    for (const expected of cases) {
+      const classification = classifyTag(expected.tag);
+
+      expect(classification.status, classification.stderr).toBe(0);
+      expect(classification.prerelease).toBe(expected.prerelease);
+      expect(classification.prerelease === "false").toBe(expected.npmEligible);
+    }
+  });
+
+  test("rejects invalid tags before release jobs can mutate state", () => {
+    for (const tag of ["v1.6", "v1.6.20-rc..1", "not-a-tag"]) {
+      const classification = classifyTag(tag);
+
+      expect(classification.status).not.toBe(0);
+      expect(classification.prerelease).toBeUndefined();
+    }
+  });
+
+  test("reuses one validated classification for GitHub release and npm eligibility", () => {
+    const classifier = jobs["classify-release"];
+    const releaseSteps = stepsUsing("softprops/action-gh-release");
+
+    expect(classifier?.outputs?.prerelease).toBe("${{ steps.classify.outputs.prerelease }}");
+    expect(releaseSteps).toHaveLength(1);
+    expect(releaseSteps[0].with?.prerelease).toBe(
+      "${{ needs.classify-release.outputs.prerelease }}",
+    );
+    expect(jobs["publish-npm"]?.if).toBe(
+      "${{ needs.classify-release.outputs.prerelease == 'false' }}",
+    );
+    expect(jobNeeds("release", "classify-release")).toBe(true);
+    expect(jobNeeds("publish-npm", "classify-release")).toBe(true);
+  });
+
   test("pins every action and release toolchain to an immutable version", () => {
     const actionReferences = allSteps.flatMap(step => step.uses ? [step.uses] : []);
     expect(actionReferences.length).toBeGreaterThan(0);

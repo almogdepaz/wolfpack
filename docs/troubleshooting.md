@@ -171,3 +171,7 @@ Then reinstall:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash
 ```
+
+## Reporting an unresolved problem
+
+Use [support and reporting](../SUPPORT.md) to choose the appropriate public or private route and follow the canonical diagnostic privacy guidance.

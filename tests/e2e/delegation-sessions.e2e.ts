@@ -147,6 +147,7 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   ]);
 
   await page.goto(srv.baseUrl);
+  await expect(page.locator("#sidebar-session-list .delegation-parent-card")).toBeVisible();
   await page.evaluate(() => {
     (window as unknown as { openSession(session: string, machine?: string): void }).openSession("parent", "");
   });
@@ -181,10 +182,6 @@ test("manual card order persists by stable identity and resets to server order",
   });
 
   await page.goto(srv.baseUrl);
-  if (testInfo.project.name === "desktop") {
-    await page.locator("#expanded-collapse-btn").click();
-    await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
-  }
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const names = list.locator('.card[data-session-order-machine=""] .card-name');
   const cardNames = () => names.evaluateAll(elements => elements.map(element => element.firstChild?.textContent));
@@ -226,9 +223,6 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await page.reload();
-  if (testInfo.project.name === "desktop") {
-    await page.locator("#expanded-collapse-btn").click();
-  }
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await list.getByRole("button", { name: "Reset session order" }).click();
@@ -283,9 +277,6 @@ test("direct card drag previews live movement and keeps delegation children atta
   ]);
 
   await page.goto(srv.baseUrl);
-  if (testInfo.project.name === "desktop") {
-    await page.locator("#expanded-collapse-btn").click();
-  }
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
   const soloCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="solo-id"]');
@@ -390,7 +381,6 @@ test("expanded child cards stay compact and inside the session list", async ({ p
 
   await page.goto(srv.baseUrl);
   if (testInfo.project.name === "desktop") {
-    await page.locator("#expanded-collapse-btn").click();
     await expect.poll(async () => (await page.locator('#sidebar-session-list .delegation-parent-card[data-session-order-machine=""]').boundingBox())?.x ?? -1)
       .toBeGreaterThanOrEqual(0);
   }

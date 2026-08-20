@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -82,30 +82,66 @@ esac
   return { home, bin, systemBin, log, commandLog, installDir, checksums };
 }
 
+function installerEnvironment(
+  fixture: ReturnType<typeof prepareFixture>,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: fixture.home,
+    OSTYPE: "linux-gnu",
+    PATH: `${fixture.installDir}:${fixture.bin}:/usr/bin:/bin`,
+    INSTALL_TEST_LOG: fixture.log,
+    INSTALL_TEST_COMMAND_LOG: fixture.commandLog,
+    INSTALL_TEST_CHECKSUMS: fixture.checksums,
+    INSTALL_TEST_CORRUPT_CHECKSUM: "0",
+    WOLFPACK_SYMLINK_DIR: fixture.systemBin,
+    WOLFPACK_INSTALL_SKIP_SETUP: "1",
+    ...extraEnv,
+  };
+  if (!("WOLFPACK_RELEASE_TAG" in extraEnv)) delete environment.WOLFPACK_RELEASE_TAG;
+  return environment;
+}
+
 function runInstaller(
   fixture: ReturnType<typeof prepareFixture>,
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
   return spawnSync("bash", [join(process.cwd(), "install.sh")], {
     encoding: "utf-8",
-    env: {
-      ...process.env,
-      HOME: fixture.home,
-      OSTYPE: "linux-gnu",
-      PATH: `${fixture.installDir}:${fixture.bin}:/usr/bin:/bin`,
-      INSTALL_TEST_LOG: fixture.log,
-      INSTALL_TEST_COMMAND_LOG: fixture.commandLog,
-      INSTALL_TEST_CHECKSUMS: fixture.checksums,
-      INSTALL_TEST_CORRUPT_CHECKSUM: "0",
-      WOLFPACK_SYMLINK_DIR: fixture.systemBin,
-      WOLFPACK_INSTALL_SKIP_SETUP: "1",
-      ...extraEnv,
-    },
+    env: installerEnvironment(fixture, extraEnv),
+  });
+}
+
+interface ScriptInvocation {
+  readonly args: readonly string[];
+  readonly cwd: string;
+}
+
+function scriptInvocation(platform: NodeJS.Platform, repositoryCwd: string): ScriptInvocation {
+  const args = platform === "darwin"
+    ? ["-q", "/dev/null", "bash", join(repositoryCwd, "install.sh")]
+    : ["-q", "-e", "-c", "bash install.sh", "/dev/null"];
+  return { args, cwd: repositoryCwd };
+}
+
+function runInstallerWithSetup(
+  fixture: ReturnType<typeof prepareFixture>,
+): ReturnType<typeof spawnSync> {
+  const invocation = scriptInvocation(process.platform, process.cwd());
+  return spawnSync("script", invocation.args, {
+    cwd: invocation.cwd,
+    encoding: "utf-8",
+    env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0" }),
   });
 }
 
 function installedOutput(path: string): string {
   return spawnSync(path, [], { encoding: "utf-8" }).stdout;
+}
+
+function installerStagingDirectories(installDir: string): readonly string[] {
+  return readdirSync(installDir).filter((entry) => entry.startsWith(".install."));
 }
 
 afterEach(() => {
@@ -266,7 +302,30 @@ describe("install entrypoint parity", () => {
 });
 
 describe("install.sh release binary staging", () => {
-  test("an upgrade restarts only the server service", () => {
+  test("Linux pseudo-tty invocation keeps spaced repository paths out of the shell command", () => {
+    const repositoryCwd = "/tmp/wolfpack checkout with spaces";
+    const invocation = scriptInvocation("linux", repositoryCwd);
+
+    expect(invocation.cwd).toBe(repositoryCwd);
+    expect(invocation.args).toEqual(["-q", "-e", "-c", "bash install.sh", "/dev/null"]);
+  });
+
+  test("normal completion hands setup to the newly installed managed binary", () => {
+    const fixture = prepareFixture();
+    const result = runInstallerWithSetup(fixture);
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8")).toBe("setup\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("new server\n");
+    const retainedStagingDirectories = installerStagingDirectories(fixture.installDir);
+    expect(retainedStagingDirectories).toHaveLength(1);
+    expect(readdirSync(join(
+      fixture.installDir,
+      retainedStagingDirectories[0] ?? "missing-staging-directory",
+    ))).toEqual(["checksums-sha256.txt"]);
+  });
+
+  test("an upgrade passes an unqualified service restart to the managed binary", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -279,21 +338,52 @@ describe("install.sh release binary staging", () => {
     expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service restart");
   });
 
-  test("downloads and installs the matching wolfpack and broker assets", () => {
+  test("downloads and installs the matching wolfpack and broker assets from latest by default", () => {
     const fixture = prepareFixture();
     const result = runInstaller(fixture);
 
     expect(result.status).toBe(0);
-    expect(readFileSync(fixture.log, "utf-8")).toContain(
-      "/releases/latest/download/wolfpack-linux-x64",
-    );
-    expect(readFileSync(fixture.log, "utf-8")).toContain(
-      "/releases/latest/download/wolfpack-broker-linux-x64",
-    );
+    expect(readFileSync(fixture.log, "utf-8").trim().split("\n")).toEqual([
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/checksums-sha256.txt",
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/wolfpack-linux-x64",
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/wolfpack-broker-linux-x64",
+    ]);
     expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("new server\n");
     expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("new broker\n");
     expect(statSync(join(fixture.installDir, "wolfpack")).mode & 0o111).not.toBe(0);
     expect(statSync(join(fixture.installDir, "wolfpack-broker")).mode & 0o111).not.toBe(0);
+  });
+
+  test("downloads checksums and both binaries from one validated release tag", () => {
+    const fixture = prepareFixture();
+    const result = runInstaller(fixture, { WOLFPACK_RELEASE_TAG: "v1.6.20-rc.1" });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(fixture.log, "utf-8").trim().split("\n")).toEqual([
+      "https://github.com/almogdepaz/wolfpack/releases/download/v1.6.20-rc.1/checksums-sha256.txt",
+      "https://github.com/almogdepaz/wolfpack/releases/download/v1.6.20-rc.1/wolfpack-linux-x64",
+      "https://github.com/almogdepaz/wolfpack/releases/download/v1.6.20-rc.1/wolfpack-broker-linux-x64",
+    ]);
+  });
+
+  test.each([
+    "",
+    "1.6.20",
+    "v1..20",
+    "v1.6.20-rc..1",
+    "v1.6.20-01",
+    "../v1.6.20",
+    "https://example.com/v1.6.20",
+  ])("rejects invalid release tag %p before downloads or installed-state mutation", (releaseTag) => {
+    const fixture = prepareFixture();
+    const result = runInstaller(fixture, { WOLFPACK_RELEASE_TAG: releaseTag });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("Invalid WOLFPACK_RELEASE_TAG");
+    expect(readFileSync(fixture.log, "utf-8")).toBe("");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
   test("rejects a checksum mismatch before either binary is replaced", () => {
@@ -304,6 +394,7 @@ describe("install.sh release binary staging", () => {
     expect(result.stdout).toContain("Checksum verification failed");
     expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
     expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
   test("preserves a foreign wolfpack command and never invokes it for setup", () => {
