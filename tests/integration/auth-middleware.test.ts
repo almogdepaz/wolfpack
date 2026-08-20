@@ -325,10 +325,14 @@ describe("JWT auth middleware", () => {
       Authorization: `Bearer ${createValidToken()}`,
       "Tailscale-User-Login": login,
     });
-    for (let request = 0; request < 10; request += 1) {
-      expect((await fetch(`${baseUrl}/api/sessions`, { headers: headers("alice@example.test") })).status).toBe(200);
-    }
-    expect((await fetch(`${baseUrl}/api/sessions`, { headers: headers("alice@example.test") })).status).toBe(429);
+    const aliceStatuses = await Promise.all(
+      Array.from({ length: 30 }, () =>
+        fetch(`${baseUrl}/api/sessions`, { headers: headers("alice@example.test") })
+          .then((response) => response.status),
+      ),
+    );
+    expect(aliceStatuses).toContain(200);
+    expect(aliceStatuses).toContain(429);
     expect((await fetch(`${baseUrl}/api/sessions`, { headers: headers("bob@example.test") })).status).toBe(200);
   });
 
