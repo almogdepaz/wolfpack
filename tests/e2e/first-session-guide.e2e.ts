@@ -46,6 +46,101 @@ async function expectSafeDocumentationLink(
   expect(rel).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
 }
 
+async function expectPreInitSidebarState(page: Page, pinned: boolean): Promise<void> {
+  const sidebar = page.locator("#desktop-sidebar");
+  if (pinned) {
+    await expect(sidebar).not.toHaveClass(/collapsed/);
+    await expect(sidebar).not.toHaveAttribute("inert", "");
+    await expect(sidebar).toHaveAttribute("aria-hidden", "false");
+    await expect(page.locator("body")).toHaveClass(/sidebar-pinned/);
+  } else {
+    await expect(sidebar).toHaveClass(/collapsed/);
+    await expect(sidebar).toHaveAttribute("inert", "");
+    await expect(sidebar).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator("body")).not.toHaveClass(/sidebar-pinned/);
+  }
+  const layout = await page.evaluate(() => {
+    const sidebarElement = document.getElementById("desktop-sidebar");
+    const mainElement = document.getElementById("view-container");
+    if (!sidebarElement || !mainElement) throw new Error("pre-init desktop layout is incomplete");
+    const sidebarBox = sidebarElement.getBoundingClientRect();
+    const mainBox = mainElement.getBoundingClientRect();
+    return {
+      mainLeft: mainBox.left,
+      sidebarLeft: sidebarBox.left,
+      sidebarRight: sidebarBox.right,
+      sidebarWidth: sidebarBox.width,
+    };
+  });
+  if (pinned) {
+    expect(layout.sidebarLeft).toBe(0);
+    expect(layout.sidebarWidth).toBeGreaterThan(0);
+    expect(layout.sidebarRight).toBeLessThanOrEqual(layout.mainLeft);
+  } else {
+    expect(layout.sidebarRight).toBeLessThanOrEqual(layout.mainLeft);
+  }
+  expect(await page.evaluate(() => "state" in window)).toBe(false);
+}
+
+test("desktop cold load restores sidebar state before the deferred app bundle", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop pre-init sidebar contract");
+  await page.route("**/app.bundle.js*", (route) => route.abort());
+
+  await page.goto(server.baseUrl);
+  await expectPreInitSidebarState(page, true);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBeNull();
+  await expect(page.locator("script:not([src])")).toHaveCount(0);
+  const bootstrap = page.locator('script[src*="sidebar-bootstrap.js"]');
+  await expect(bootstrap).toHaveCount(1);
+  await expect(bootstrap).toHaveAttribute("src", /^\/sidebar-bootstrap\.js\?v=[0-9a-f]{16}$/);
+  await expect(bootstrap).not.toHaveAttribute("nonce", /.+/);
+  const bootstrapLoading = await bootstrap.evaluate((script) => {
+    const element = script as HTMLScriptElement;
+    return {
+      async: element.async,
+      defer: element.defer,
+      origin: new URL(element.src).origin,
+    };
+  });
+  expect(bootstrapLoading).toEqual({
+    async: false,
+    defer: false,
+    origin: new URL(server.baseUrl).origin,
+  });
+
+  await page.evaluate(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await page.reload();
+  await expectPreInitSidebarState(page, true);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("1");
+
+  await page.evaluate(() => localStorage.setItem("wolfpack-sidebar-pinned", "0"));
+  await page.reload();
+  await expectPreInitSidebarState(page, false);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("0");
+
+  await page.evaluate(() => {
+    localStorage.removeItem("wolfpack-sidebar-pinned");
+    localStorage.setItem("wolfpack-sidebar-collapsed", "1");
+  });
+  await page.reload();
+  await expectPreInitSidebarState(page, false);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBeNull();
+});
+
+test("mobile cold load keeps the desktop sidebar collapsed", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile pre-init sidebar contract");
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await page.route("**/app.bundle.js*", (route) => route.abort());
+  await page.goto(server.baseUrl);
+
+  const sidebar = page.locator("#desktop-sidebar");
+  await expect(sidebar).toHaveClass(/collapsed/);
+  await expect(sidebar).toHaveAttribute("inert", "");
+  await expect(sidebar).toHaveAttribute("aria-hidden", "true");
+  await expect(page.locator("body")).not.toHaveClass(/sidebar-pinned/);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-sidebar-pinned"))).toBe("1");
+});
+
 test("authoritative empty sessions render one accessible first-session path that disappears after refresh", async ({ page }) => {
   let sessions: readonly Record<string, unknown>[] = [];
   let releaseSessionAuthority: () => void = () => {};
@@ -88,11 +183,30 @@ test("authoritative empty sessions render one accessible first-session path that
   await expect(onboarding).toContainText(
     "A session runs an installed agent or Shell inside a project on this machine.",
   );
-  await expect(onboarding.getByRole("listitem")).toHaveText([
+  const steps = onboarding.getByRole("list", { name: "Session creation steps" });
+  const stepItems = steps.getByRole("listitem");
+  await expect(steps).toHaveJSProperty("tagName", "OL");
+  await expect(stepItems).toHaveText([
     "Choose project",
     "Choose agent",
     "Open persistent terminal",
   ]);
+  await expect(steps.locator("a, button, input, select, textarea, [tabindex]")).toHaveCount(0);
+  const stepPresentation = await stepItems.evaluateAll((items) => items.map((item) => {
+    const style = getComputedStyle(item);
+    return {
+      backgroundColor: style.backgroundColor,
+      borderRadius: style.borderRadius,
+      borderWidth: style.borderWidth,
+      listStyleType: style.listStyleType,
+    };
+  }));
+  for (const presentation of stepPresentation) {
+    expect.soft(presentation.listStyleType).toBe("decimal");
+    expect.soft(presentation.borderWidth).toBe("0px");
+    expect.soft(presentation.borderRadius).toBe("0px");
+    expect.soft(presentation.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  }
 
   await expectSafeDocumentationLink(page, "First session guide", FIRST_SESSION_GUIDE_URL);
   await expectSafeDocumentationLink(page, "Use the CLI instead", SESSION_CONTROL_CREATE_URL);
@@ -104,6 +218,14 @@ test("authoritative empty sessions render one accessible first-session path that
 
   const primary = onboarding.getByRole("button", { name: "Create your first session" });
   await expect(primary).toBeVisible();
+  if ((page.viewportSize()?.width ?? 0) > 768) {
+    await expect(page.getByRole("button", {
+      name: /Create your first session|Start a session on this machine/,
+    })).toHaveCount(1);
+    await expect(page.locator("#sidebar-session-list").getByRole("button", {
+      name: "Start a session on this machine",
+    })).toHaveCount(0);
+  }
   await primary.focus();
   await expect(primary).toBeFocused();
   const primaryStyle = await primary.evaluate((element) => {
@@ -144,6 +266,30 @@ test("authoritative empty sessions render one accessible first-session path that
     expect(responsiveLayout.stepColumns).toBe(1);
     expect(responsiveLayout.primaryWidth).toBeGreaterThan(responsiveLayout.cardWidth * 0.75);
     expect(responsiveLayout.linksDisplay).toBe("grid");
+    const mobileConnectors = await stepItems.evaluateAll((items) => items.slice(0, -1).map((item, index) => {
+      const connector = getComputedStyle(item, "::after");
+      const itemBox = item.getBoundingClientRect();
+      const nextBox = items[index + 1]?.getBoundingClientRect();
+      if (!nextBox) throw new Error("next session step is missing");
+      return {
+        content: connector.content,
+        float: connector.float,
+        left: Number.parseFloat(connector.left),
+        position: connector.position,
+        rowGap: nextBox.top - itemBox.bottom,
+        top: Number.parseFloat(connector.top),
+        itemHeight: itemBox.height,
+      };
+    }));
+    for (const connector of mobileConnectors) {
+      expect.soft(connector.content).toBe('"↓"');
+      expect.soft(connector.float).toBe("none");
+      expect.soft(connector.position).toBe("absolute");
+      expect.soft(connector.left).toBeGreaterThanOrEqual(0);
+      expect.soft(connector.left).toBeLessThanOrEqual(16);
+      expect.soft(connector.top).toBeCloseTo(connector.itemHeight, 0);
+      expect.soft(connector.rowGap).toBeGreaterThanOrEqual(20);
+    }
   } else {
     expect(responsiveLayout.stepColumns).toBe(3);
   }
@@ -174,10 +320,14 @@ test("authoritative empty sessions render one accessible first-session path that
 
   await expect(onboarding).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create your first session" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Open first-created-session" })).toBeEnabled();
-  await expect(page.locator("#session-list .machine-group").getByRole("button", {
-    name: /Start a session on/,
-  })).toBeVisible();
+  const sessionsExpanded = await page.evaluate(() => (
+    window as typeof window & { state: { readonly sessionsExpanded: boolean } }
+  ).state.sessionsExpanded);
+  const sessionChooser = (viewport?.width ?? 0) > 768 && !sessionsExpanded
+    ? page.locator("#sidebar-session-list")
+    : page.locator("#session-list");
+  await expect(sessionChooser.getByRole("button", { name: "Open first-created-session" })).toBeEnabled();
+  await expect(sessionChooser.getByRole("button", { name: /Start a session on/ })).toBeVisible();
 });
 
 test("remote empty-state activation preserves the verified machine selector", async ({ page }) => {
@@ -261,10 +411,23 @@ test("remote empty-state activation preserves the verified machine selector", as
   const peerGroup = page.locator(
     `#session-list .machine-group[data-machine="${PEER_IDENTITY}"]`,
   );
-  const primary = peerGroup.getByRole("button", { name: "Create your first session" });
-  await expect(peerGroup.getByRole("region", { name: "No sessions yet" })).toBeVisible();
+  const sidebarPeerGroup = page.locator(
+    `#sidebar-session-list .machine-group[data-machine="${PEER_IDENTITY}"]`,
+  );
+  const desktop = (page.viewportSize()?.width ?? 0) > 768;
+  const primary = desktop
+    ? sidebarPeerGroup.getByRole("button", { name: "Start a session on onboarding peer" })
+    : peerGroup.getByRole("button", { name: "Create your first session" });
+  if (desktop) {
+    await expect(page.getByRole("button", {
+      name: /Create your first session|Start a session on onboarding peer/,
+    })).toHaveCount(1);
+    await expect(peerGroup.getByRole("region", { name: "No sessions yet" })).toBeHidden();
+  } else {
+    await expect(peerGroup.getByRole("region", { name: "No sessions yet" })).toBeVisible();
+    await expect(peerGroup.getByRole("button", { name: "Start a session on onboarding peer" })).toHaveCount(0);
+  }
   await expect(primary).toBeVisible();
-  await expect(peerGroup.getByRole("button", { name: "Start a session on onboarding peer" })).toHaveCount(0);
 
   await primary.focus();
   await page.keyboard.press("Enter");

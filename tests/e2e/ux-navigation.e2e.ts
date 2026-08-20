@@ -122,7 +122,11 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.sidebarAutoExpanded)).toBe(true);
 
-  await page.locator(`#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="${parent.id}"] .card-open`).click();
+  const parentCardOpen = page.locator(
+    `#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="${parent.id}"] .card-open`,
+  );
+  await parentCardOpen.focus();
+  await page.keyboard.press("Enter");
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
 
   expect(await page.evaluate(() => {
@@ -204,12 +208,18 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
   await expect(cards.nth(4).locator("script")).toHaveCount(0);
 
-  await cards.nth(1).click();
-  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack-sub-agent");
-
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
   const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
+  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  await expect(childSidebarCards).toHaveCount(2);
+  await page.locator("#sidebar-session-list").getByRole("button", {
+    name: "Open wolfpack-sub-agent",
+    exact: true,
+  }).press("Enter");
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack-sub-agent");
+  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+
   await expect(childSidebarCards).toHaveCount(0);
   await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents");
   await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveText(/2 agents$/);
@@ -289,8 +299,13 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "idle-child",
   ]);
   const sidebarCard = (name: string) => page.locator("#sidebar-session-list .card", { has: page.locator(".card-name", { hasText: name }) }).first();
-  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
-  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
+  const sidebar = page.locator("#desktop-sidebar");
+  await page.mouse.move(1, 100);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as WolfpackTestWindow
+  ).state.sidebarAutoExpanded)).toBe(true);
+  await sidebar.hover({ position: { x: 100, y: 100 } });
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child")).toHaveCount(0);
   await expect(sidebarCard("idle-child")).toHaveCount(0);
@@ -309,18 +324,16 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     return columns.split(" ").filter(Boolean).length;
   });
   expect(gridColumnCountBeforeSidebarHover).toBeGreaterThanOrEqual(3);
-  await page.evaluate(() => {
-    const stateWindow = window as unknown as WolfpackTestWindow & {
-      state: WolfpackTestWindow["state"] & { sidebarCollapsed: boolean; sidebarPinned: boolean; sessionsExpanded: boolean };
-    };
-    stateWindow.state.sidebarCollapsed = true;
-    stateWindow.state.sidebarPinned = false;
-    stateWindow.state.sessionsExpanded = false;
-    document.body.classList.remove("sidebar-pinned", "sessions-expanded");
-    document.getElementById("desktop-sidebar")?.classList.add("collapsed");
-    document.getElementById("sidebar-hover-edge")?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-  });
-  await page.waitForTimeout(250);
+  await page.mouse.move(600, 100);
+  await expect(sidebar).toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as WolfpackTestWindow
+  ).state.sidebarAutoExpanded)).toBe(false);
+  await page.mouse.move(1, 100);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as WolfpackTestWindow
+  ).state.sidebarAutoExpanded)).toBe(true);
   await expect.poll(() => page.evaluate(() => {
     const columns = getComputedStyle(document.getElementById("delegation-grid-container")!).gridTemplateColumns;
     return columns.split(" ").filter(Boolean).length;
@@ -339,6 +352,11 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(collapsedIdleCell).toBeHidden();
   const collapsedIdleTab = page.getByRole("button", { name: "Expand idle-child" });
   await expect(collapsedIdleTab).toBeVisible();
+  await page.mouse.move(1, 100);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as WolfpackTestWindow
+  ).state.sidebarAutoExpanded)).toBe(true);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).not.toHaveClass(/in-grid/);
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
@@ -351,16 +369,20 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await collapsedIdleTab.click();
   await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeVisible();
+  await page.mouse.move(1, 100);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as WolfpackTestWindow
+  ).state.sidebarAutoExpanded)).toBe(true);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(collapsedIdleTab).toHaveCount(0);
-
-  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
-  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
   await sidebarCard("attention-child").locator(".grid-btn").click();
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).toHaveClass(/collapsed/);
   await expect(page.getByRole("button", { name: "Expand attention-child" })).toBeVisible();
   await expect(sidebarCard("attention-child").locator(".grid-btn")).not.toHaveClass(/in-grid/);
   await page.getByRole("button", { name: "Expand attention-child" }).click();
+  await page.mouse.move(1, 100);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
 
   sessions = [
@@ -485,7 +507,10 @@ test("desktop delegation grid focus suspends hidden grid terminals", async ({ pa
   });
   await page.goto(srv.baseUrl);
 
-  await page.locator("#session-list .delegation-parent-card").click();
+  await page.locator("#sidebar-session-list").getByRole("button", {
+    name: "Open parent",
+    exact: true,
+  }).press("Enter");
   await page.getByRole("button", { name: "Focus child" }).click();
 
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
@@ -553,7 +578,9 @@ test("desktop opens a child terminal with a return to its parent delegation grid
   });
   await page.goto(srv.baseUrl);
 
-  await page.locator("#session-list .sub-session-card").click();
+  const sidebar = page.locator("#sidebar-session-list");
+  await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
+  await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
 
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
@@ -593,12 +620,12 @@ test("desktop stopping a focused child returns to its parent instead of session 
   });
   await page.goto(srv.baseUrl);
 
-  await page.locator("#session-list .sub-session-card").click();
+  const sidebar = page.locator("#sidebar-session-list");
+  await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
+  await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
   await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
-  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
-  const parentSidebarCard = page.locator('#sidebar-session-list .delegation-parent-card[data-session-order-machine=""]');
-  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
   const childSidebarCard = page.locator('#sidebar-session-list .sub-session-card[data-session-order-machine=""]');
+  await expect(childSidebarCard).toBeVisible();
   await childSidebarCard.locator(".kill-btn").click();
   await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
 

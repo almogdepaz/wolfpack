@@ -5940,8 +5940,25 @@ let sidebarInitialRender = false;
 let _sidebarRafId = null;
 let _lastSidebarHtml = "";
 
+function sidebarOwnsSessionChooser(): boolean {
+  const sidebarIsChooserSurface = state.sidebarPinned
+    || (state.sidebarAutoExpanded && state.currentView !== "sessions");
+  return isDesktop()
+    && sidebarIsChooserSurface
+    && !state.sessionsExpanded
+    && state.lastSessionGroups.some(group => group.sessions.length > 0);
+}
+
+function syncSessionChooserOwnership(): boolean {
+  const sidebarOwns = sidebarOwnsSessionChooser();
+  const sessionList = document.getElementById("session-list");
+  if (sessionList) sessionList.hidden = sidebarOwns;
+  return sidebarOwns;
+}
+
 function renderSidebar() {
   if (!isDesktop()) return;
+  syncSessionChooserOwnership();
   // Coalesce multiple calls per frame
   if (_sidebarRafId) return;
   _sidebarRafId = requestAnimationFrame(() => {
@@ -5953,6 +5970,13 @@ function renderSidebar() {
 function _renderSidebarNow() {
   const el = document.getElementById("sidebar-session-list");
   if (!el) return;
+  if (!syncSessionChooserOwnership()) {
+    if (_lastSidebarHtml) {
+      _lastSidebarHtml = "";
+      el.replaceChildren();
+    }
+    return;
+  }
   const groups = state.lastSessionGroups;
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
@@ -6127,10 +6151,8 @@ function initSidebar() {
   const hoverEdge = document.getElementById("sidebar-hover-edge");
 
   // Restore state
-  if (!state.sidebarPinned) {
-    sidebar.classList.add("collapsed");
-    state.sidebarCollapsed = true;
-  }
+  sidebar.classList.toggle("collapsed", !state.sidebarPinned);
+  state.sidebarCollapsed = !state.sidebarPinned;
   const syncSidebarInteractivity = (): void => {
     const collapsed = sidebar.classList.contains("collapsed");
     sidebar.toggleAttribute("inert", collapsed);
@@ -6220,6 +6242,7 @@ function initSidebar() {
       state.sidebarCollapsed = true;
     }
     updatePinButton();
+    renderSidebar();
   };
 
   // Expand button — toggle full-page sessions view
@@ -6244,6 +6267,7 @@ function initSidebar() {
       // Return to terminal if we have a session, else just stay
       if (state.currentSession || hasPreservedGrid()) returnToTerminalView();
     }
+    renderSidebar();
   };
 
   // Entering the narrow invisible edge temporarily opens an unpinned sidebar.
@@ -6252,6 +6276,7 @@ function initSidebar() {
       state.sidebarTransitionIsHover = true;
       sidebar.classList.remove("collapsed");
       state.sidebarAutoExpanded = true;
+      renderSidebar();
     }
   };
   hoverEdge.addEventListener("mouseenter", openAutoSidebar);
@@ -6265,6 +6290,7 @@ function initSidebar() {
           sidebar.classList.add("collapsed");
           state.sidebarCollapsed = true;
           state.sidebarAutoExpanded = false;
+          renderSidebar();
         }
       }, 300);
     }
@@ -6463,14 +6489,6 @@ initSettings();
 cleanSnapshots();
 renderCmdPalette();
 initSidebar(); // Init sidebar early so pin/expand/hover handlers are ready
-// Apply expanded sessions as default on desktop — sidebar collapsed in this mode
-if (isDesktop() && state.sessionsExpanded) {
-  document.body.classList.add("sessions-expanded");
-  const expandBtn = document.getElementById("sidebar-expand-btn");
-  if (expandBtn) expandBtn.classList.add("active");
-  const sb = document.getElementById("desktop-sidebar");
-  if (sb) { sb.classList.add("collapsed"); state.sidebarCollapsed = true; }
-}
 const initialSettingsSection = settingsSectionFromHash();
 if (initialSettingsSection) {
   void showSettings().then(() => revealSettingsSection(initialSettingsSection, false));
