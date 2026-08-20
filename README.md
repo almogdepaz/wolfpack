@@ -5,13 +5,13 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Version](https://img.shields.io/github/v/release/almogdepaz/wolfpack?label=version)](https://almogdepaz.github.io/wolfpack/)
 
-Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.
+**Run coding agents remotely—from your desktop or phone.** Keep their persistent terminals on your own machines, then monitor and control them even when you are away from your desk.
 
-Built-in coding-agent provider choices: Claude Code, Codex, Gemini CLI, Cursor, Pi.
+Wolfpack is a self-hosted control room built for remote and mobile use. Connect directly over your private Tailscale network without a Wolfpack-hosted relay or account. From the phone PWA, you can see which agents need attention, open a live terminal, and respond without returning to the host machine.
 
-Shell is the always-available fallback. Custom commands and wrappers on PATH are supported separately. Reach sessions locally in a browser, or remotely from a browser or phone over Tailscale, without a Wolfpack-hosted relay or account.
+Built-in coding-agent provider choices: Claude Code, Codex, Gemini CLI, Cursor, Pi. Shell is the always-available fallback, and custom commands or wrappers on `PATH` are supported separately.
 
-Sessions live in a Rust PTY broker, not the web server, so server-only restarts preserve them; a broker restart or login-service reinstallation can terminate them.
+Sessions live in a Rust PTY broker, not the web server, so closing the browser or restarting only the web server does not end them; a broker restart or login-service reinstallation can terminate them.
 
 **Homepage:** [almogdepaz.github.io/wolfpack](https://almogdepaz.github.io/wolfpack/) · **Agent-readable overview:** [llms.txt](https://almogdepaz.github.io/wolfpack/llms.txt)
 
@@ -27,6 +27,8 @@ Sessions live in a Rust PTY broker, not the web server, so server-only restarts 
   <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile sessions dashboard showing real broker-backed sessions" />
   <img src="docs/mobile-ghostty.png" width="220" alt="Wolfpack mobile Ghostty terminal showing colorized coding-agent output and touch controls" />
 </p>
+
+Monitor your sessions, spot agents waiting for input, and take over a live terminal from the phone PWA.
 
 > **security:** wolfpack gives browser users shell-level control over configured projects. Keep it private to a trusted Tailnet. If other people share the Tailnet, configure device/user ACLs and consider JWT. Session control follows the ordinary global API auth policy when configured and has no inter-session authorization layer; read the [full trust model](docs/installation.md#security-and-trust).
 
@@ -70,18 +72,21 @@ Open the local URL on the host machine. The project picker lists projects under 
 
 To uninstall: `wolfpack uninstall --yes` (curl), `bunx wolfpack-bridge@latest uninstall --yes` (Bunx), or `npx --yes wolfpack-bridge@latest uninstall --yes` (npm).
 
-## why wolfpack
+## built for remote and mobile work
 
 | instead of | Wolfpack gives you |
 | --- | --- |
-| SSH and tmux juggling | browser and phone control for agent terminals |
-| sessions dying on server restart | broker-owned persistent PTYs |
+| being tied to the host machine | remote browser and phone control for agent terminals |
+| SSH and tmux juggling | one visual control room with live session previews |
+| missing an agent waiting for input | needs-input states and optional phone notifications |
 | hosted remote-control SaaS | direct private Tailnet access, without a Wolfpack relay or account |
-| one host at a time | trusted multi-machine session control |
+| sessions dying with the web server | broker-owned persistent PTYs |
+| managing one host at a time | trusted multi-machine session control |
 
-- **see what needs attention** — running, idle, and needs-input session states with live output previews.
-- **work how you prefer** — phone PWA, desktop terminal grid, notifications, and direct terminal attach.
-- **use the agents you already run** — built-in commands or custom commands on `PATH`; configure them in **Settings → Agents**.
+- **control agents while away from your desk** — check progress, spot sessions that need input, and reopen live terminals from a trusted phone or browser.
+- **use your phone as a real control surface** — install the PWA, use touch-friendly terminal controls, and optionally receive notifications.
+- **return to the same work on desktop** — move between the mobile session list, desktop terminal grid, and direct terminal attach without replacing the underlying session.
+- **use the agents you already run** — choose a built-in command or configure a custom command on `PATH` in **Settings → Agents**.
 
 The multi-machine dashboard and desktop sidebar show only local sessions and currently ready, handshake-verified Wolfpack peers. Generic, offline, malformed, and unreachable Tailnet candidates stay out of the control room; **Settings → Machines** retains bounded discovery diagnostics. Peer headers show the machine display name and hostname without rendering internal node, installation, or routing identities.
 
