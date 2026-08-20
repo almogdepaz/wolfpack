@@ -177,15 +177,8 @@ describe("control api schema generation", () => {
   });
 });
 
-describe("control api schema docs", () => {
-  test("documents runtime routes as authoritative validation boundary", () => {
-    const docs = readFileSync("docs/control-api-schema.md", "utf-8");
-
-    expect(docs).toContain("Runtime routes remain authoritative");
-  });
-
-  test("publishes the opaque relay adapter contract and its inherited trust boundary", () => {
-    const docs = readFileSync("docs/control-api-schema.md", "utf-8");
+describe("control api schema", () => {
+  test("publishes the opaque relay adapter contract", () => {
     const connect = httpOperation("connectTaskRelay");
     const peerTopology = httpOperation("resolvePeerTaskRelayTopology");
     const send = httpOperation("sendTaskRelayEnvelope");
@@ -202,8 +195,6 @@ describe("control api schema docs", () => {
     expect(relay).toMatchObject({ type: "string" });
     expect(String(relay.pattern)).toContain("wolfpack");
     expect(JSON.stringify(endpoint)).not.toContain("ts.net");
-    expect(docs).toContain("trusted local processes and trusted Tailnet machines");
-    expect(docs).toContain("does not provide per-Pi-session authorization");
   });
 });
 

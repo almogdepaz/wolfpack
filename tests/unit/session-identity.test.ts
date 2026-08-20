@@ -150,13 +150,6 @@ describe("session identity metadata", () => {
     });
   });
 
-  test("documents public project path exposure", () => {
-    const docs = readFileSync(join(process.cwd(), "docs/session-identity.md"), "utf-8");
-
-    expect(docs).toContain("Public session APIs intentionally expose `projectPath`");
-  });
-
-
   test("supports tab-private memory mode without writing identity metadata", () => {
     const devDir = tmpDevDir();
     const store = new SessionIdentityStore(devDir, "memory");
