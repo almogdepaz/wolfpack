@@ -45,6 +45,25 @@ async function openTwoCellGrid(page: Page): Promise<void> {
   await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(2, { timeout: 5000 });
 }
 
+async function routeHydratedPty(page: Page, ptyReadyGate?: Promise<void>): Promise<Map<string, WebSocketRoute>> {
+  const sockets = new Map<string, WebSocketRoute>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    sockets.set(session, ws);
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      void Promise.resolve(ptyReadyGate).then(() => ws.send(JSON.stringify({ type: "pty_ready" })));
+    });
+  });
+  return sockets;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test("sub-session notification adds a child beside the active single parent", async ({ page }) => {

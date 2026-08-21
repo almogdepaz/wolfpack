@@ -448,6 +448,16 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
 
   const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
   const sockets = await routeHydratedPty(page);
+  await page.route("**/ghostty-web.bundle.js*", async (route) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    const patched = body.replace(
+      /window\.createIsolatedGhostty = function\(\) \{[\s\S]*?return GhosttyWeb\.Ghostty\.load\(\);\n\};/,
+      "window.createIsolatedGhostty = undefined;",
+    );
+    if (patched === body) throw new Error("missing createIsolatedGhostty shim");
+    await route.fulfill({ response, body: patched });
+  });
   await page.route("**/api/sessions", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -464,10 +474,8 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   await openSessionFromUi(page, "solo", "");
   await expect.poll(() => sockets.has("solo")).toBe(true);
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
-  await page.evaluate(() => {
-    (window as unknown as Window & { backToSessions(): void }).backToSessions();
-    (window as unknown as Window & { createIsolatedGhostty?: unknown }).createIsolatedGhostty = undefined;
-  });
+  await page.locator("#sidebar-expand-btn").click();
+  await expect(page.locator("#session-list")).toBeVisible();
 
   await page.locator("#session-list .delegation-parent-card").click();
 
