@@ -1,14 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { sendMessageDraftAttempt } from "../../src/terminal-input.ts";
 
-const app = readFileSync(join(import.meta.dir, "../../public/app.ts"), "utf8");
+describe("message draft send attempt", () => {
+  test("normalizes the wire payload and preserves the trimmed draft on failure", () => {
+    const payloads: string[] = [];
+    const result = sendMessageDraftAttempt("  run\nthis  ", (wireText) => {
+      payloads.push(wireText);
+      return false;
+    });
 
-describe("truthful input lifecycle", () => {
-  test("propagates WebSocket backpressure rejection to draft restoration", () => {
-    expect(app).toContain("send(data: string | Blob | BufferSource): boolean");
-    expect(app).toContain("if (!sendBounded(copy, copy.byteLength)) return false");
-    expect(app).toContain("return state.terminalController.send(bytes)");
-    expect(app).toContain("input.value = saved");
+    expect(payloads).toEqual(["run this\r"]);
+    expect(result).toEqual({ sent: false, savedDraft: "run\nthis" });
+  });
+
+  test("reports success with the same saved draft for callers to clear", () => {
+    const payloads: string[] = [];
+    const result = sendMessageDraftAttempt("  echo ok  ", (wireText) => {
+      payloads.push(wireText);
+      return true;
+    });
+
+    expect(payloads).toEqual(["echo ok\r"]);
+    expect(result).toEqual({ sent: true, savedDraft: "echo ok" });
   });
 });

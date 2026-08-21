@@ -1,31 +1,101 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  browserAuthFetch,
+  getBrowserAuthToken,
+  setBrowserAuthToken,
+} from "../../public/browser-auth.ts";
 
-const app = readFileSync(join(import.meta.dir, "../../public/app.ts"), "utf8");
-const auth = readFileSync(join(import.meta.dir, "../../public/browser-auth.ts"), "utf8");
-const appState = readFileSync(join(import.meta.dir, "../../public/app-state.ts"), "utf8");
+class MemoryStorage {
+  readonly #values = new Map<string, string>();
+
+  get length(): number {
+    return this.#values.size;
+  }
+
+  clear(): void {
+    this.#values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.#values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return [...this.#values.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.#values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.#values.set(key, value);
+  }
+}
+
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
+const originalSessionStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+const originalLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+
+function setGlobal(name: "location" | "sessionStorage" | "localStorage" | "fetch", value: unknown): void {
+  Object.defineProperty(globalThis, name, {
+    configurable: true,
+    value,
+    writable: true,
+  });
+}
+
+function restoreGlobal(name: "location" | "sessionStorage" | "localStorage" | "fetch", descriptor: PropertyDescriptor | undefined): void {
+  if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+  else delete (globalThis as Record<string, unknown>)[name];
+}
 
 describe("browser authentication flow", () => {
-  test("centralizes API credentials and gives 401 an explicit dialog", () => {
-    expect(app).toContain("authenticatedFetchWithTimeout(base, opts)");
-    expect(auth).toContain('title: "Authentication required"');
-    expect(auth).toContain("fetchWithTimeout(input, init, undefined, browserAuthFetch)");
-    expect(auth).toContain('sessionStorage.setItem(STORAGE_KEY');
-    expect(auth).toContain('localStorage.removeItem("wpJwt")');
+  beforeEach(() => {
+    setGlobal("location", new URL("https://local.test/app"));
+    setGlobal("sessionStorage", new MemoryStorage());
+    setGlobal("localStorage", new MemoryStorage());
   });
 
-  test("uses authenticated timed fetches for every push API request", () => {
-    for (const route of ["vapid-key", "subscribe", "unsubscribe"]) {
-      expect(appState).toMatch(new RegExp(
-        `authenticatedFetchWithTimeout\\(sameOriginPushUrl\\(location\\.origin, "/api/push/${route}"\\)`,
-      ));
-    }
-    expect(appState).not.toMatch(/\bfetch\(sameOriginPushUrl\(location\.origin, "\/api\/push\//);
+  afterEach(() => {
+    restoreGlobal("location", originalLocation);
+    restoreGlobal("sessionStorage", originalSessionStorage);
+    restoreGlobal("localStorage", originalLocalStorage);
+    restoreGlobal("fetch", originalFetch);
   });
 
-  test("uses a short-lived ticket instead of putting JWTs in browser WebSocket URLs", () => {
-    expect(app).toContain('target.searchParams.set("ticket", ticket)');
-    expect(app).not.toContain('target.searchParams.set("token"');
+  test("keeps session tokens isolated by request origin", () => {
+    setBrowserAuthToken("/api/sessions", " local-token ");
+    setBrowserAuthToken("https://remote.test/api/sessions", "remote-token");
+
+    expect(getBrowserAuthToken("https://local.test/api/status")).toBe("local-token");
+    expect(getBrowserAuthToken("https://remote.test/api/status")).toBe("remote-token");
+    expect(getBrowserAuthToken("https://other.test/api/status")).toBeNull();
+  });
+
+  test("migrates and removes the legacy localStorage token only for the same origin", () => {
+    localStorage.setItem("wpJwt", "legacy-token");
+
+    expect(getBrowserAuthToken("https://remote.test/api/status")).toBeNull();
+    expect(localStorage.getItem("wpJwt")).toBe("legacy-token");
+
+    expect(getBrowserAuthToken("/api/status")).toBe("legacy-token");
+    expect(localStorage.getItem("wpJwt")).toBeNull();
+    expect(getBrowserAuthToken("https://local.test/api/other")).toBe("legacy-token");
+  });
+
+  test("injects bearer auth unless the caller already supplied Authorization", async () => {
+    const authorizations: Array<string | null> = [];
+    setGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("Authorization"));
+      return new Response("ok");
+    });
+    setBrowserAuthToken("/api/status", "scoped-token");
+
+    await browserAuthFetch("/api/status");
+    await browserAuthFetch("/api/status", { headers: { Authorization: "Basic caller" } });
+
+    expect(authorizations).toEqual(["Bearer scoped-token", "Basic caller"]);
   });
 });

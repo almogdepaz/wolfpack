@@ -116,9 +116,13 @@ import {
   canonicalTailnetOrigin,
 } from "../src/tailnet-machine-contract";
 import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
-import { snapshotKeysToEvict } from "../src/snapshot-cache";
+import {
+  isFreshSnapshotTimestamp,
+  snapshotKeysToEvict,
+} from "../src/snapshot-cache";
 import { serializeBufferTail } from "../src/terminal-buffer";
 import {
+  sendMessageDraftAttempt,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldInterceptCopy,
   shouldReleaseScrollLockOnKeydown,
@@ -884,7 +888,7 @@ function snapshotEntries() {
       const snapshot = JSON.parse(localStorage.getItem(key));
       if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
       const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
-      if (typeof savedAt !== "number" || Date.now() - savedAt > SNAPSHOT_TTL_MS) {
+      if (!isFreshSnapshotTimestamp(savedAt, Date.now(), SNAPSHOT_TTL_MS)) {
         localStorage.removeItem(key);
         continue;
       }
@@ -923,7 +927,7 @@ function loadSnapshot(machine, session) {
     snapshot = JSON.parse(raw);
     if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
     const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
-    if (typeof savedAt !== "number" || Date.now() - savedAt > SNAPSHOT_TTL_MS) throw new Error("expired snapshot");
+    if (!isFreshSnapshotTimestamp(savedAt, Date.now(), SNAPSHOT_TTL_MS)) throw new Error("expired snapshot");
   } catch {
     localStorage.removeItem(key);
     return null;
@@ -3342,7 +3346,7 @@ function sendMsg() {
   const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   const text = input.value.trim();
   if (!text || !state.currentSession) return;
-  const saved = text;
+  const saved = input.value;
   input.value = "";
   clearDraft();
   autoResizeInput();
@@ -3355,7 +3359,10 @@ function sendMsg() {
   btn.classList.add("send-flash");
 
   wpMetrics.sendCount++;
-  if (_sendTerminalInput(_textEncoder.encode(text.replace(/\n/g, " ") + "\r"))) {
+  const attempt = sendMessageDraftAttempt(saved, wireText =>
+    _sendTerminalInput(_textEncoder.encode(wireText))
+  );
+  if (attempt.sent) {
     // No Enter-retry timer here. The previous 800ms retry submitted a
     // duplicate Enter on any command that took >800ms to produce output
     // (slow grep, network request, interactive prompt waiting for input),
@@ -3367,7 +3374,7 @@ function sendMsg() {
     // case any older path schedules one.
   } else {
     wpMetrics.sendFailCount++;
-    input.value = saved;
+    input.value = attempt.savedDraft;
     saveDraft();
     autoResizeInput();
     updatePreview();

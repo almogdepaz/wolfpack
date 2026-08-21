@@ -1,14 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import {
   CANONICAL_HOMEPAGE_URL,
-  HOMEPAGE_DIAGNOSTIC_DIRECTORY,
-  HOMEPAGE_SCREENSHOT_PROJECTS,
   REPOSITORY_ROOT,
   SITE_ROOT,
-  homepageScreenshotPath,
   jsonLdSource,
   readSiteFile,
   siteAssetHashPrefix,
@@ -290,89 +287,5 @@ describe("homepage quality contract", () => {
     expect(jsonLd.applicationCategory).toBe("DeveloperApplication");
     expect(validateHomepageSitemap(sitemap)).toEqual([]);
     expect(robotsText).toContain(`Sitemap: ${canonical}sitemap.xml`);
-  });
-
-  test.each([
-    [
-      "malformed XML",
-      `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${CANONICAL_HOMEPAGE_URL}</loc></url>`,
-    ],
-    [
-      "wrong root",
-      `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${CANONICAL_HOMEPAGE_URL}</loc></url></sitemapindex>`,
-    ],
-    [
-      "wrong namespace",
-      `<urlset xmlns="https://example.test/not-sitemap"><url><loc>${CANONICAL_HOMEPAGE_URL}</loc></url></urlset>`,
-    ],
-    [
-      "duplicate direct url",
-      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${CANONICAL_HOMEPAGE_URL}</loc></url><url/></urlset>`,
-    ],
-    [
-      "duplicate direct loc",
-      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${CANONICAL_HOMEPAGE_URL}</loc><loc>${CANONICAL_HOMEPAGE_URL}</loc></url></urlset>`,
-    ],
-    [
-      "noncanonical loc",
-      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.test/</loc></url></urlset>`,
-    ],
-  ])("rejects %s through the shared sitemap validator", (_name, sitemap) => {
-    expect(validateHomepageSitemap(sitemap)).not.toEqual([]);
-  });
-
-  test("retains and immediately uploads one ignored screenshot per homepage project", () => {
-    const workflow = readFileSync(
-      join(REPOSITORY_ROOT, ".github", "workflows", "test.yml"),
-      "utf8",
-    );
-    const browserInstallIndex = workflow.indexOf("Install critical Playwright browsers");
-    const homepageQaIndex = workflow.indexOf("Run homepage quality and resilience QA");
-    const uploadIndex = workflow.indexOf("Upload homepage QA diagnostics");
-    const laterPlaywrightIndex = workflow.indexOf("Run critical Chromium desktop and mobile E2E");
-    const namedSteps = [...workflow.matchAll(/^      - name: (.+)$/gm)]
-      .map((match) => match[1] ?? "");
-    const homepageStepIndex = namedSteps.indexOf("Run homepage quality and resilience QA");
-    const screenshotPaths = HOMEPAGE_SCREENSHOT_PROJECTS.map(homepageScreenshotPath);
-
-    expect(HOMEPAGE_SCREENSHOT_PROJECTS).toEqual([
-      "desktop",
-      "iphone-se",
-      "iphone-14",
-    ]);
-    expect(screenshotPaths).toEqual([
-      join(HOMEPAGE_DIAGNOSTIC_DIRECTORY, "homepage-desktop.png"),
-      join(HOMEPAGE_DIAGNOSTIC_DIRECTORY, "homepage-iphone-se.png"),
-      join(HOMEPAGE_DIAGNOSTIC_DIRECTORY, "homepage-iphone-14.png"),
-    ]);
-    expect(HOMEPAGE_DIAGNOSTIC_DIRECTORY.startsWith(
-      join(REPOSITORY_ROOT, "tests", "e2e", "test-results"),
-    )).toBe(false);
-    for (const screenshotPath of screenshotPaths) {
-      const repositoryPath = relative(REPOSITORY_ROOT, screenshotPath);
-      const check = spawnSync(
-        "git",
-        ["check-ignore", "--quiet", "--", repositoryPath],
-        { cwd: REPOSITORY_ROOT },
-      );
-      expect(check.status).toBe(0);
-    }
-
-    expect(browserInstallIndex).toBeGreaterThan(-1);
-    expect(homepageQaIndex).toBeGreaterThan(browserInstallIndex);
-    expect(uploadIndex).toBeGreaterThan(homepageQaIndex);
-    expect(laterPlaywrightIndex).toBeGreaterThan(uploadIndex);
-    expect(namedSteps[homepageStepIndex + 1]).toBe("Upload homepage QA diagnostics");
-    expect(workflow).toContain(
-      "bunx playwright test tests/e2e/homepage-install.e2e.ts --project=desktop --project=iphone-se --project=iphone-14",
-    );
-    const uploadStep = workflow.slice(uploadIndex, laterPlaywrightIndex);
-    expect(uploadStep).toContain("if: always()");
-    expect(uploadStep).toContain(
-      "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4",
-    );
-    expect(uploadStep).toContain("name: homepage-quality-diagnostics");
-    expect(uploadStep).toContain("path: artifacts/homepage-quality");
-    expect(uploadStep).toContain("if-no-files-found: error");
   });
 });

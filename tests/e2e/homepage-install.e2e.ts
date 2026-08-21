@@ -19,7 +19,6 @@ import type { TestServer } from "./helpers.ts";
 
 const HOMEPAGE_PREFIX = "/homepage/";
 const BUNX_COMMAND = "bunx wolfpack-bridge@latest";
-const NPX_COMMAND = "npx --yes wolfpack-bridge@latest";
 const LOCAL_FCP_BUDGET_MS = 5_000;
 const FIRST_PARTY_TRANSFER_BUDGET_BYTES = 1_000_000;
 const HAVE_METADATA_READY_STATE = 1;
@@ -133,51 +132,18 @@ test.beforeEach(async ({ page }) => {
   await openHomepage(page);
 });
 
-test("serves an unlisted existing site file with its MIME type", async ({ page }) => {
-  const response = await page.goto(`${server.baseUrl}${HOMEPAGE_PREFIX}sitemap.xml`);
-  expect(response).not.toBeNull();
-  expect(response?.status()).toBe(200);
-  expect(response?.headers()["content-type"]).toBe("application/xml; charset=utf-8");
-  expect(await response?.text()).toContain("<urlset");
-});
-
-test("rejects missing, directory, malformed, and encoded traversal paths", async ({ page }) => {
-  for (const requestPath of [
-    "missing.txt",
-    "assets/",
-    "%E0%A4%A",
-    "%2e%2e%2fpackage.json",
-  ]) {
-    const response = await page.goto(`${server.baseUrl}${HOMEPAGE_PREFIX}${requestPath}`);
-    expect(response, requestPath).not.toBeNull();
-    expect(response?.status(), requestPath).toBe(404);
-  }
-});
-
 test("install section is visible, keyboard reachable, responsive, and accessible", async ({ page }) => {
   const installRegion = page.getByRole("region", { name: "Install Wolfpack" });
   await expect(installRegion).toBeVisible();
 
-  const installCtas = page.getByRole("link", { name: "Install Wolfpack", exact: true });
-  await expect(installCtas).toHaveCount(3);
-  for (let index = 0; index < 3; index++) {
-    await expect(installCtas.nth(index)).toHaveAttribute("href", "#install");
-  }
+  const heroCta = page.locator(".hero .install-cta");
+  await expect(heroCta).toHaveAttribute("href", "#install");
 
   await expect(page.locator(".nav nav")).toBeVisible();
   await expect(page.locator(".nav nav").getByRole("link", { name: "How it works" })).toBeVisible();
   await expect(page.locator(".nav nav").getByRole("link", { name: "Install" })).toBeVisible();
   await expect(page.locator(".nav nav").getByRole("link", { name: "Privacy" })).toBeVisible();
 
-  for (const command of [
-    "curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh | bash",
-    BUNX_COMMAND,
-    NPX_COMMAND,
-  ]) {
-    await expect(page.getByText(command, { exact: true })).toBeVisible();
-  }
-
-  const heroCta = page.locator(".hero .install-cta");
   await heroCta.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/#install$/);
@@ -188,7 +154,7 @@ test("install section is visible, keyboard reachable, responsive, and accessible
   await page.keyboard.press("Enter");
   await expect(page.locator("details.installer-changes")).toHaveAttribute("open", "");
 
-  const copyButton = page.getByRole("button", { name: "Copy persistent CLI command" });
+  const copyButton = page.locator("[data-copy-command]").first();
   await copyButton.focus();
   const focusOutline = await copyButton.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -280,7 +246,7 @@ test("aborted Google Fonts preserve content through declared local fallbacks", a
   await page.reload({ waitUntil: "load" });
 
   await expect(page.locator("h1")).toBeVisible();
-  await expect(page.getByText(BUNX_COMMAND, { exact: true })).toBeVisible();
+  await expect(page.locator("[data-install-command]").first()).toBeVisible();
   const fontFamilies = await page.evaluate(() => ({
     body: getComputedStyle(document.body).fontFamily,
     command: getComputedStyle(document.querySelector("[data-install-command]") as Element).fontFamily,

@@ -104,6 +104,22 @@ export function terminalDataFromKeydownForBeforeInputDedupe(event: TerminalKeydo
   }
 }
 
+export interface MessageDraftSendResult {
+  readonly sent: boolean;
+  readonly savedDraft: string;
+}
+
+export function sendMessageDraftAttempt(
+  text: string,
+  sender: (wireText: string) => boolean,
+): MessageDraftSendResult {
+  const savedDraft = text.trim();
+  return {
+    sent: sender(`${savedDraft.replace(/\n/g, " ")}\r`),
+    savedDraft,
+  };
+}
+
 export interface MessageInputEnterEvent {
   readonly key: string;
   readonly shiftKey: boolean;
