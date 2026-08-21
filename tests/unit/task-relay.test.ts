@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import { isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import type { RelayEnvelope } from "../../src/task-relay/domain.ts";
 import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
+import { MalformedRelayStoreError, TaskRelayStore } from "../../src/task-relay/store.ts";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const session = (sessionId: string, harness = "pi", alive = true) => async (selector: string) => selector === sessionId
@@ -21,6 +23,111 @@ async function connect(gateway: TaskRelayGateway, sessionId: string, generation 
   return connected.endpoint;
 }
 
+const SENDER_ID = "0accef20-3e6b-4bdd-9faf-1d875b07112a";
+const RECEIVER_ID = "8e5fbbf1-fbc8-4a45-a73f-b10239428c65";
+const ROUTE_ID = `${RELAY_ID}:peer:813dcecd-2787-4455-a260-9ce19b9d9bbf`;
+const PEER_ORIGIN = "https://receiver.example.ts.net";
+const LOCAL_ENVELOPE: RelayEnvelope = {
+  envelopeId: "stored-local-envelope",
+  protocolVersion: RELAY_PROTOCOL_VERSION,
+  source: { relay: RELAY_ID, id: SENDER_ID },
+  target: { relay: RELAY_ID, id: RECEIVER_ID },
+  payload: { opaque: true },
+  createdAt: NOW.toISOString(),
+};
+const REMOTE_ENVELOPE: RelayEnvelope = {
+  ...LOCAL_ENVELOPE,
+  envelopeId: "stored-remote-envelope",
+  target: { relay: ROUTE_ID, id: RECEIVER_ID },
+};
+const VALID_REGISTRATION = {
+  endpoint: { relay: RELAY_ID, id: SENDER_ID },
+  sessionId: "sender",
+  generation: "sender-generation",
+  protocolVersions: [RELAY_PROTOCOL_VERSION],
+  leaseExpiresAt: "2026-08-09T00:01:00.000Z",
+};
+const VALID_STORED_ENVELOPE = {
+  envelope: LOCAL_ENVELOPE,
+  digest: "00270c4e435d6d3dcd38b9d100b20162655af332b2cd7e3bb56046419d4d736b",
+  acceptedAt: NOW.toISOString(),
+  acceptanceId: "ad5bac02-2eef-4ae7-9099-e60b74313abc",
+};
+const VALID_MAILBOX_ITEM = {
+  endpointId: RECEIVER_ID,
+  envelopeId: LOCAL_ENVELOPE.envelopeId,
+  cursor: "1",
+  acknowledgedAt: undefined,
+};
+const VALID_PEER_ROUTE = { id: ROUTE_ID, origin: PEER_ORIGIN };
+const VALID_OUTBOX_ITEM = {
+  envelope: REMOTE_ENVELOPE,
+  peerOrigin: PEER_ORIGIN,
+  digest: "8431c2702d805570009cb80552a92b9fdc1f104a6acf128b639c762926b94d34",
+  acceptanceId: "510ba100-e8a7-4ba8-89bd-e92c99e52a2e",
+  queuedAt: NOW.toISOString(),
+  attempts: 1,
+  lastAttemptAt: NOW.toISOString(),
+  forwardedAt: undefined,
+  exhaustedAt: undefined,
+  lastError: "peer unavailable",
+};
+const VALID_RELAY_STATE = {
+  version: 1,
+  registrations: [VALID_REGISTRATION],
+  envelopes: [VALID_STORED_ENVELOPE],
+  mailbox: [VALID_MAILBOX_ITEM],
+  peerRoutes: [VALID_PEER_ROUTE],
+  outbox: [VALID_OUTBOX_ITEM],
+};
+
+function storeOperations(store: TaskRelayStore): readonly (() => Promise<unknown>)[] {
+  return [
+    () => store.register(VALID_REGISTRATION),
+    () => store.registrationForSession("sender", NOW),
+    () => store.registration(SENDER_ID, NOW),
+    () => store.deactivateRegistration("sender", SENDER_ID, NOW.toISOString()),
+    () => store.accept(LOCAL_ENVELOPE, NOW.toISOString()),
+    () => store.inbox(RECEIVER_ID, "0"),
+    () => store.acknowledge(RECEIVER_ID, LOCAL_ENVELOPE.envelopeId, NOW.toISOString()),
+    () => store.peerRoute(PEER_ORIGIN),
+    () => store.peerOrigin(ROUTE_ID),
+    () => store.queuePeer({
+      envelope: REMOTE_ENVELOPE,
+      peerOrigin: PEER_ORIGIN,
+      queuedAt: NOW.toISOString(),
+      attempts: 0,
+      lastAttemptAt: undefined,
+      forwardedAt: undefined,
+      exhaustedAt: undefined,
+      lastError: undefined,
+    }),
+    () => store.outbox(),
+    () => store.updateOutbox(REMOTE_ENVELOPE.envelopeId, item => item),
+    () => store.cleanup(NOW),
+  ];
+}
+
+async function expectMalformedRelayStore(operation: () => Promise<unknown>, label = "malformed store"): Promise<void> {
+  try {
+    await operation();
+    throw new Error("expected malformed relay store failure");
+  } catch (error) {
+    expect(error, label).toBeInstanceOf(MalformedRelayStoreError);
+    if (!(error instanceof Error)) throw error;
+    expect(error.message, label).toBe("relay store is malformed");
+  }
+}
+
+function rawOverflowState(): string {
+  const marker = "raw-overflow-payload";
+  const state = {
+    ...VALID_RELAY_STATE,
+    envelopes: [{ ...VALID_STORED_ENVELOPE, envelope: { ...LOCAL_ENVELOPE, payload: marker } }],
+  };
+  return JSON.stringify(state).replace(JSON.stringify(marker), "1e400");
+}
+
 describe("pi tasks relay v2", () => {
   test("authenticates a generation-bound source, accepts opaque payloads exactly once, and retains ordered mailbox delivery until acknowledgement", async () => {
     const directory = root();
@@ -35,7 +142,7 @@ describe("pi tasks relay v2", () => {
         source: sender,
         target: receiver,
         payload: { taskId: "this is opaque", kind: "assignment", nested: { terminal: "completed" } },
-        createdAt: NOW.toISOString(),
+        createdAt: "opaque-client-clock",
       };
 
       await expect(gateway.send({ callerSession: "sender", envelope })).resolves.toMatchObject({ ok: true, kind: "accepted" });
@@ -47,7 +154,7 @@ describe("pi tasks relay v2", () => {
 
       await expect(receiverGateway.receive({ callerSession: "receiver", cursor: "0" })).resolves.toMatchObject({
         ok: true,
-        envelopes: [expect.objectContaining({ envelopeId: "envelope-1", payload: envelope.payload })],
+        envelopes: [expect.objectContaining({ envelopeId: "envelope-1", payload: envelope.payload, createdAt: "opaque-client-clock" })],
         nextCursor: "1",
       });
       await expect(receiverGateway.acknowledgeDelivery({ callerSession: "receiver", envelopeId: "envelope-1" })).resolves.toMatchObject({ ok: true });
@@ -69,6 +176,45 @@ describe("pi tasks relay v2", () => {
       await expect(gateway.send({ callerSession: "sender", envelope: { ...base, protocolVersion: 999 } })).resolves.toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL" } });
       await expect(gateway.send({ callerSession: "sender", envelope: { ...base, payload: "x".repeat(64 * 1024) } })).resolves.toMatchObject({ ok: false, error: { code: "PAYLOAD_TOO_LARGE" } });
       await expect(gateway.connect({ callerSession: "sender", generation: "process-2", protocolVersions: [99] })).resolves.toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL" } });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts ordinary JSON payloads and rejects unsafe values without throwing", async () => {
+    const directory = root();
+    try {
+      const senderGateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => NOW });
+      const targetGateway = new TaskRelayGateway({ root: directory, inspectSession: session("target"), now: () => NOW });
+      const source = await connect(senderGateway, "sender");
+      const target = await connect(targetGateway, "target");
+      const base = { protocolVersion: RELAY_PROTOCOL_VERSION, source, target, createdAt: NOW.toISOString() };
+      const cyclicPayload: Record<string, unknown> = {};
+      cyclicPayload.self = cyclicPayload;
+      const customToJson = [1];
+      Object.defineProperty(customToJson, "toJSON", { enumerable: true, value: () => 1n });
+      const throwingIndex = [1];
+      Object.defineProperty(throwingIndex, "0", { enumerable: true, get: () => { throw new Error("index getter executed"); } });
+      const revoked = Proxy.revocable([1], {});
+      revoked.revoke();
+      expect(isJsonValue(revoked.proxy)).toBe(false);
+
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "bigint", payload: 1n } })).resolves.toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "cycle", payload: cyclicPayload } })).resolves.toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "custom-to-json", payload: customToJson } })).resolves.toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "throwing-index", payload: throwingIndex } })).resolves.toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "null", payload: null } })).resolves.toMatchObject({ ok: true });
+      const shared = { value: 1 };
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "shared", payload: { left: shared, right: shared } } })).resolves.toMatchObject({ ok: true });
+      await expect(senderGateway.send({ callerSession: "sender", envelope: { ...base, envelopeId: "frozen-array", payload: Object.freeze([1, { valid: true }]) } })).resolves.toMatchObject({ ok: true });
+      await expect(targetGateway.receive({ callerSession: "target", cursor: "0" })).resolves.toMatchObject({
+        ok: true,
+        envelopes: [
+          expect.objectContaining({ envelopeId: "null", payload: null }),
+          expect.objectContaining({ envelopeId: "shared", payload: { left: { value: 1 }, right: { value: 1 } } }),
+          expect.objectContaining({ envelopeId: "frozen-array", payload: [1, { valid: true }] }),
+        ],
+      });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -387,6 +533,73 @@ describe("pi tasks relay v2", () => {
         lastError: "local peer origin unavailable",
         exhaustedAt: now.toISOString(),
       })]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects representative malformed persisted relay records on reads and mutations", async () => {
+    const malformedStates = [
+      { label: "invalid JSON", contents: "{" },
+      { label: "registration endpoint", contents: JSON.stringify({ ...VALID_RELAY_STATE, registrations: [{ ...VALID_REGISTRATION, endpoint: null }] }) },
+      { label: "registration integer", contents: JSON.stringify({ ...VALID_RELAY_STATE, registrations: [{ ...VALID_REGISTRATION, protocolVersions: [1.5] }] }) },
+      { label: "stored timestamp", contents: JSON.stringify({ ...VALID_RELAY_STATE, envelopes: [{ ...VALID_STORED_ENVELOPE, acceptedAt: "not-a-date" }] }) },
+      { label: "non-decimal cursor", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [{ ...VALID_MAILBOX_ITEM, cursor: "one" }] }) },
+      { label: "zero cursor", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [{ ...VALID_MAILBOX_ITEM, cursor: "0" }] }) },
+      { label: "dangling mailbox", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [{ ...VALID_MAILBOX_ITEM, envelopeId: "missing-envelope" }] }) },
+      { label: "duplicate mailbox", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [VALID_MAILBOX_ITEM, VALID_MAILBOX_ITEM] }) },
+      { label: "orphan envelope", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [] }) },
+      { label: "duplicate envelope", contents: JSON.stringify({ ...VALID_RELAY_STATE, envelopes: [VALID_STORED_ENVELOPE, VALID_STORED_ENVELOPE] }) },
+      { label: "peer origin", contents: JSON.stringify({ ...VALID_RELAY_STATE, peerRoutes: [{ ...VALID_PEER_ROUTE, origin: "not-an-origin" }] }) },
+      { label: "outbox optional field", contents: JSON.stringify({ ...VALID_RELAY_STATE, outbox: [{ ...VALID_OUTBOX_ITEM, lastError: 500 }] }) },
+      { label: "outbox route", contents: JSON.stringify({ ...VALID_RELAY_STATE, outbox: [{ ...VALID_OUTBOX_ITEM, peerOrigin: "https://other.example.ts.net" }] }) },
+      { label: "stored digest", contents: JSON.stringify({ ...VALID_RELAY_STATE, envelopes: [{ ...VALID_STORED_ENVELOPE, digest: "0".repeat(64) }] }) },
+      { label: "outbox digest", contents: JSON.stringify({ ...VALID_RELAY_STATE, outbox: [{ ...VALID_OUTBOX_ITEM, digest: "0".repeat(64) }] }) },
+      { label: "overflow payload", contents: rawOverflowState() },
+    ];
+
+    for (const { contents, label } of malformedStates) {
+      const directory = root();
+      try {
+        writeFileSync(join(directory, "relay-state.json"), contents);
+        const store = new TaskRelayStore(directory);
+        await expectMalformedRelayStore(() => store.outbox(), label);
+        await expectMalformedRelayStore(() => store.cleanup(NOW), label);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("uses the same malformed-store boundary across every public store method", async () => {
+    const directory = root();
+    try {
+      const malformed = { ...VALID_RELAY_STATE, registrations: [{ ...VALID_REGISTRATION, endpoint: null }] };
+      writeFileSync(join(directory, "relay-state.json"), JSON.stringify(malformed));
+      for (const operation of storeOperations(new TaskRelayStore(directory))) {
+        await expectMalformedRelayStore(operation);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("loads legacy relay state without peer routes and normalizes it on mutation", async () => {
+    const directory = root();
+    try {
+      const { peerRoutes: _legacyOmission, ...legacyState } = { ...VALID_RELAY_STATE, outbox: [] };
+      writeFileSync(join(directory, "relay-state.json"), JSON.stringify(legacyState));
+      const store = new TaskRelayStore(directory);
+
+      await expect(store.registration(SENDER_ID, NOW)).resolves.toMatchObject({ sessionId: "sender" });
+      await expect(store.inbox(RECEIVER_ID, "0")).resolves.toEqual([
+        expect.objectContaining({ cursor: "1", envelope: expect.objectContaining({ envelopeId: "stored-local-envelope" }) }),
+      ]);
+      await expect(store.peerOrigin(ROUTE_ID)).resolves.toBeUndefined();
+      await store.register(VALID_REGISTRATION);
+
+      const normalized = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
+      expect(normalized.peerRoutes).toEqual([]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

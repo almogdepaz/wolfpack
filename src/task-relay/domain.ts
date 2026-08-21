@@ -58,6 +58,87 @@ export interface RelayInboxItem {
   readonly acknowledgedAt: string | undefined;
 }
 
+const OPAQUE_RELAY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PEER_RELAY_ID = new RegExp(`^${RELAY_ID}:peer:${OPAQUE_RELAY_ID.source.slice(1, -1)}$`);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmpty(value: unknown, maximum = 512): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
+function isJsonArray(value: readonly unknown[], ancestors: Set<object>): boolean {
+  if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+  const keys = Reflect.ownKeys(value);
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  if (lengthDescriptor === undefined || lengthDescriptor.configurable || lengthDescriptor.enumerable
+    || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0
+    || keys.length !== lengthDescriptor.value + 1) return false;
+  for (const key of keys) {
+    if (key === "length") continue;
+    if (typeof key !== "string") return false;
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= lengthDescriptor.value || String(index) !== key) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)
+      || !isJsonValueAt(descriptor.value, ancestors)) return false;
+  }
+  return true;
+}
+
+function isJsonValueAt(value: unknown, ancestors: Set<object>): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || ancestors.has(value)) return false;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return isJsonArray(value, ancestors);
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") return false;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)
+        || !isJsonValueAt(descriptor.value, ancestors)) return false;
+    }
+    return true;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+export function isJsonValue(value: unknown): boolean {
+  try {
+    return isJsonValueAt(value, new Set());
+  } catch {
+    return false;
+  }
+}
+
+export function isOpaqueRelayId(value: unknown): value is string {
+  return typeof value === "string" && OPAQUE_RELAY_ID.test(value);
+}
+
+export function isPeerRelayId(value: unknown): value is string {
+  return typeof value === "string" && PEER_RELAY_ID.test(value);
+}
+
+export function isRelayTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+export function isRelayEndpoint(value: unknown): value is RelayEndpoint {
+  return isRecord(value) && nonEmpty(value.relay) && isOpaqueRelayId(value.id);
+}
+
+export function isRelayEnvelope(value: unknown): value is RelayEnvelope {
+  return isRecord(value) && nonEmpty(value.envelopeId) && typeof value.protocolVersion === "number"
+    && isRelayEndpoint(value.source) && isRelayEndpoint(value.target)
+    && typeof value.createdAt === "string" && isJsonValue(value.payload);
+}
+
 export type RelayResult<T> =
   | ({ readonly ok: true } & T)
   | { readonly ok: false; readonly error: { readonly code: RelayErrorCode; readonly message: string; readonly retryable: boolean } };

@@ -9,6 +9,9 @@ import {
   RELAY_PROTOCOL_VERSION,
   encodedJsonBytes,
   isLocalRelay,
+  isPeerRelayId,
+  isRelayEndpoint,
+  isRelayEnvelope,
   relayFailure,
 } from "./domain.ts";
 import type { RelayEndpoint, RelayEnvelope, RelayInboxItem, RelayRegistration, RelayResult } from "./domain.ts";
@@ -37,26 +40,6 @@ interface ConnectInput {
 
 function nonEmpty(value: unknown, maximum = 512): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum;
-}
-
-const OPAQUE_ENDPOINT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PEER_RELAY_ID = new RegExp(`^${RELAY_ID}:peer:${OPAQUE_ENDPOINT_ID.source.slice(1, -1)}$`);
-
-function validEndpoint(value: unknown): value is RelayEndpoint {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && nonEmpty((value as Record<string, unknown>).relay) && typeof (value as Record<string, unknown>).id === "string"
-    && OPAQUE_ENDPOINT_ID.test((value as Record<string, unknown>).id as string);
-}
-
-function validEnvelope(value: unknown): value is RelayEnvelope {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const envelope = value as Record<string, unknown>;
-  return nonEmpty(envelope.envelopeId) && typeof envelope.protocolVersion === "number" && validEndpoint(envelope.source)
-    && validEndpoint(envelope.target) && typeof envelope.createdAt === "string" && envelope.payload !== undefined;
-}
-
-function validPeerRelay(value: string): boolean {
-  return PEER_RELAY_ID.test(value);
 }
 
 export class TaskRelayGateway {
@@ -118,7 +101,7 @@ export class TaskRelayGateway {
   }
 
   async resolvePeerEndpoint(input: { readonly origin: string; readonly endpoint: RelayEndpoint }): Promise<RelayResult<{ readonly endpoint: RelayEndpoint }>> {
-    if (!validEndpoint(input.endpoint) || !isLocalRelay(input.endpoint)) {
+    if (!isRelayEndpoint(input.endpoint) || !isLocalRelay(input.endpoint)) {
       return relayFailure(RELAY_ERROR.INVALID_REQUEST, "peer topology requires a local opaque endpoint");
     }
     try {
@@ -159,7 +142,7 @@ export class TaskRelayGateway {
   }
 
   async disconnect(input: { readonly callerSession: string; readonly endpoint: RelayEndpoint }): Promise<RelayResult<Record<never, never>>> {
-    if (!validEndpoint(input.endpoint)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay endpoint");
+    if (!isRelayEndpoint(input.endpoint)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay endpoint");
     const caller = await this.#caller(input.callerSession);
     if (!caller.ok) return caller;
     const registration = await this.#store.registration(input.endpoint.id, this.#now());
@@ -173,11 +156,11 @@ export class TaskRelayGateway {
   async resolve(input: { readonly callerSession: string; readonly target: RelayEndpoint; readonly protocolVersion: number }): Promise<RelayResult<{ readonly endpoint: RelayEndpoint }>> {
     const caller = await this.#caller(input.callerSession);
     if (!caller.ok) return caller;
-    if (!validEndpoint(input.target) || input.protocolVersion !== RELAY_PROTOCOL_VERSION) {
+    if (!isRelayEndpoint(input.target) || input.protocolVersion !== RELAY_PROTOCOL_VERSION) {
       return relayFailure(RELAY_ERROR.INCOMPATIBLE_PROTOCOL, "invalid or incompatible relay target");
     }
     if (!isLocalRelay(input.target)) {
-      if (!validPeerRelay(input.target.relay) || await this.#store.peerOrigin(input.target.relay) === undefined) {
+      if (!isPeerRelayId(input.target.relay) || await this.#store.peerOrigin(input.target.relay) === undefined) {
         return relayFailure(RELAY_ERROR.CROSS_RELAY_ENDPOINT, "endpoint belongs to another relay");
       }
       return { ok: true, endpoint: input.target };
@@ -190,7 +173,7 @@ export class TaskRelayGateway {
   }
 
   async send(input: { readonly callerSession: string; readonly envelope: RelayEnvelope }): Promise<RelayResult<{ readonly kind: "accepted" | "duplicate"; readonly acceptanceId: string; readonly forwarding: "local" | "forwarded" | "pending" }>> {
-    if (!validEnvelope(input.envelope)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay envelope");
+    if (!isRelayEnvelope(input.envelope)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay envelope");
     if (input.envelope.protocolVersion !== RELAY_PROTOCOL_VERSION) return relayFailure(RELAY_ERROR.INCOMPATIBLE_PROTOCOL, "unsupported envelope protocol version");
     if (encodedJsonBytes(input.envelope.payload) > RELAY_LIMITS.PAYLOAD_BYTES) return relayFailure(RELAY_ERROR.PAYLOAD_TOO_LARGE, "relay payload exceeds byte limit");
     const caller = await this.#caller(input.callerSession);
@@ -209,7 +192,7 @@ export class TaskRelayGateway {
       if (accepted.kind === "conflict") return relayFailure(RELAY_ERROR.ENVELOPE_CONFLICT, "envelope id conflicts with durable content");
       return { ok: true, kind: accepted.kind, acceptanceId: accepted.acceptanceId, forwarding: "local" };
     }
-    if (!validPeerRelay(input.envelope.target.relay)) {
+    if (!isPeerRelayId(input.envelope.target.relay)) {
       return relayFailure(RELAY_ERROR.CROSS_RELAY_ENDPOINT, "target endpoint belongs to another relay");
     }
     const peerOrigin = await this.#store.peerOrigin(input.envelope.target.relay);
@@ -256,7 +239,7 @@ export class TaskRelayGateway {
 
   /** Peer input is admitted by Wolfpack's inherited trusted-Tailnet HTTP policy. */
   async receivePeer(input: unknown): Promise<RelayResult<{ readonly kind: "accepted" | "duplicate"; readonly acceptanceId: string }>> {
-    if (!validEnvelope(input) || input.protocolVersion !== RELAY_PROTOCOL_VERSION || !isLocalRelay(input.target)
+    if (!isRelayEnvelope(input) || input.protocolVersion !== RELAY_PROTOCOL_VERSION || !isLocalRelay(input.target)
       || !isLocalRelay(input.source) || encodedJsonBytes(input.payload) > RELAY_LIMITS.PAYLOAD_BYTES) {
       return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid peer relay envelope");
     }

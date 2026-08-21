@@ -2,7 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { RELAY_ID } from "./domain.ts";
+import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
+import {
+  RELAY_ID,
+  isOpaqueRelayId,
+  isPeerRelayId,
+  isRelayEndpoint,
+  isRelayEnvelope,
+  isRelayTimestamp,
+} from "./domain.ts";
 import type { RelayEndpoint, RelayEnvelope, RelayInboxItem, RelayRegistration } from "./domain.ts";
 
 interface StoredEnvelope {
@@ -70,12 +78,140 @@ function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
 }
 
-function validState(value: unknown): value is Omit<RelayState, "peerRoutes"> & { readonly peerRoutes?: unknown } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const state = value as Record<string, unknown>;
-  return state.version === 1 && Array.isArray(state.registrations) && Array.isArray(state.envelopes)
-    && Array.isArray(state.mailbox) && Array.isArray(state.outbox)
-    && (state.peerRoutes === undefined || Array.isArray(state.peerRoutes));
+interface PersistedRelayState {
+  readonly version: 1;
+  readonly registrations: readonly RelayRegistration[];
+  readonly envelopes: readonly StoredEnvelope[];
+  readonly mailbox: readonly StoredMailboxItem[];
+  readonly peerRoutes?: readonly PeerRoute[];
+  readonly outbox: readonly PeerOutboxItem[];
+}
+
+const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+const DECIMAL_CURSOR_PATTERN = /^[1-9][0-9]*$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isOptionalTimestamp(value: unknown): value is string | undefined {
+  return value === undefined || isRelayTimestamp(value);
+}
+
+function isCanonicalPeerOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || !URL.canParse(value)) return false;
+  const url = new URL(value);
+  return url.protocol === "https:" && url.origin === value && url.pathname === "/"
+    && url.search === "" && url.hash === "" && canonicalTailnetOrigin(url.hostname) === value;
+}
+
+function isRelayRegistration(value: unknown): value is RelayRegistration {
+  if (!isRecord(value)) return false;
+  return isRelayEndpoint(value.endpoint) && value.endpoint.relay === RELAY_ID
+    && isNonEmptyString(value.sessionId) && isNonEmptyString(value.generation)
+    && Array.isArray(value.protocolVersions) && value.protocolVersions.length > 0
+    && value.protocolVersions.every(Number.isInteger) && isRelayTimestamp(value.leaseExpiresAt);
+}
+
+function hasMatchingDigest(envelope: RelayEnvelope, expected: unknown): expected is string {
+  if (typeof expected !== "string" || !DIGEST_PATTERN.test(expected)) return false;
+  try {
+    return digest(envelope) === expected;
+  } catch {
+    return false;
+  }
+}
+
+function isStoredEnvelope(value: unknown): value is StoredEnvelope {
+  if (!isRecord(value) || !isRelayEnvelope(value.envelope)) return false;
+  return Number.isInteger(value.envelope.protocolVersion)
+    && value.envelope.source.relay === RELAY_ID && value.envelope.target.relay === RELAY_ID
+    && hasMatchingDigest(value.envelope, value.digest)
+    && isRelayTimestamp(value.acceptedAt) && isOpaqueRelayId(value.acceptanceId);
+}
+
+function isStoredMailboxItem(value: unknown): value is StoredMailboxItem {
+  if (!isRecord(value)) return false;
+  return isOpaqueRelayId(value.endpointId) && isNonEmptyString(value.envelopeId)
+    && typeof value.cursor === "string" && DECIMAL_CURSOR_PATTERN.test(value.cursor)
+    && isOptionalTimestamp(value.acknowledgedAt);
+}
+
+function isPeerRoute(value: unknown): value is PeerRoute {
+  return isRecord(value) && isPeerRelayId(value.id) && isCanonicalPeerOrigin(value.origin);
+}
+
+function isPeerOutboxItem(value: unknown): value is PeerOutboxItem {
+  if (!isRecord(value) || !isRelayEnvelope(value.envelope)) return false;
+  return Number.isInteger(value.envelope.protocolVersion) && value.envelope.source.relay === RELAY_ID
+    && isPeerRelayId(value.envelope.target.relay) && isCanonicalPeerOrigin(value.peerOrigin)
+    && hasMatchingDigest(value.envelope, value.digest)
+    && isOpaqueRelayId(value.acceptanceId) && isRelayTimestamp(value.queuedAt)
+    && typeof value.attempts === "number" && Number.isInteger(value.attempts) && value.attempts >= 0
+    && isOptionalTimestamp(value.lastAttemptAt) && isOptionalTimestamp(value.forwardedAt)
+    && isOptionalTimestamp(value.exhaustedAt)
+    && (value.lastError === undefined || typeof value.lastError === "string");
+}
+
+function hasValidMailboxBijection(
+  mailbox: readonly StoredMailboxItem[],
+  envelopes: readonly StoredEnvelope[],
+): boolean {
+  if (mailbox.length !== envelopes.length) return false;
+  const storedEnvelopes = new Map<string, RelayEnvelope>();
+  for (const item of envelopes) {
+    if (storedEnvelopes.has(item.envelope.envelopeId)) return false;
+    storedEnvelopes.set(item.envelope.envelopeId, item.envelope);
+  }
+  const mailboxEnvelopeIds = new Set<string>();
+  const cursorsByEndpoint = new Map<string, Set<string>>();
+  for (const item of mailbox) {
+    const envelope = storedEnvelopes.get(item.envelopeId);
+    if (envelope === undefined || envelope.target.id !== item.endpointId || mailboxEnvelopeIds.has(item.envelopeId)) {
+      return false;
+    }
+    mailboxEnvelopeIds.add(item.envelopeId);
+    const cursors = cursorsByEndpoint.get(item.endpointId) ?? new Set<string>();
+    if (cursors.has(item.cursor)) return false;
+    cursors.add(item.cursor);
+    cursorsByEndpoint.set(item.endpointId, cursors);
+  }
+  return mailboxEnvelopeIds.size === storedEnvelopes.size;
+}
+
+function hasValidOutboxRoutes(
+  outbox: readonly PeerOutboxItem[],
+  peerRoutes: readonly PeerRoute[],
+): boolean {
+  const routes = new Map(peerRoutes.map(route => [route.id, route.origin]));
+  return outbox.every(item => routes.get(item.envelope.target.relay) === item.peerOrigin);
+}
+
+function isPersistedRelayState(value: unknown): value is PersistedRelayState {
+  if (!isRecord(value) || value.version !== 1) return false;
+  const registrations = value.registrations;
+  const envelopes = value.envelopes;
+  const mailbox = value.mailbox;
+  const peerRoutes = value.peerRoutes;
+  const outbox = value.outbox;
+  if (!Array.isArray(registrations) || !registrations.every(isRelayRegistration)) return false;
+  if (!Array.isArray(envelopes) || !envelopes.every(isStoredEnvelope)) return false;
+  if (!Array.isArray(mailbox) || !mailbox.every(isStoredMailboxItem)) return false;
+  if (peerRoutes !== undefined && (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute))) return false;
+  if (!Array.isArray(outbox) || !outbox.every(isPeerOutboxItem)) return false;
+  const routes = peerRoutes ?? [];
+  return hasValidMailboxBijection(mailbox, envelopes) && hasValidOutboxRoutes(outbox, routes);
+}
+
+export class MalformedRelayStoreError extends TypeError {
+  constructor(cause?: unknown) {
+    super("relay store is malformed", cause === undefined ? undefined : { cause });
+    this.name = "MalformedRelayStoreError";
+  }
 }
 
 function atomicWrite(path: string, state: RelayState): void {
@@ -238,9 +374,15 @@ export class TaskRelayStore {
 
   #read(): RelayState {
     if (!existsSync(this.path)) return EMPTY;
-    const parsed = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
-    if (!validState(parsed)) throw new TypeError("relay store is malformed");
-    return { ...EMPTY, ...parsed, peerRoutes: Array.isArray(parsed.peerRoutes) ? parsed.peerRoutes as PeerRoute[] : [] };
+    const source = readFileSync(this.path, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(source);
+    } catch (cause) {
+      throw new MalformedRelayStoreError(cause);
+    }
+    if (!isPersistedRelayState(parsed)) throw new MalformedRelayStoreError();
+    return { ...parsed, peerRoutes: parsed.peerRoutes ?? [] };
   }
 
   async #mutate<T>(operation: (state: RelayState) => { readonly state: RelayState; readonly value: T }): Promise<T> {
