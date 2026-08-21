@@ -162,11 +162,9 @@ export function createPtySocketClient(
     const origin = opts.machine ? dependencies.resolveReadyMachineOrigin(opts.machine) : location.origin;
     if (!origin) return { kind: "unavailable" };
     const reset = consumeReset;
+    const url = buildPtyWebSocketUrl({ origin, session: opts.session, ticket, reset });
     consumeReset = false;
-    return {
-      kind: "available",
-      url: buildPtyWebSocketUrl({ origin, session: opts.session, ticket, reset }),
-    };
+    return { kind: "available", url };
   }
 
   /** Send one attach handshake to bootstrap PTY spawn on fresh WS open. */
