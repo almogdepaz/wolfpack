@@ -208,7 +208,7 @@ test("addToGrid from terminal view shows grid loading immediately", async ({ pag
   await page.evaluate(() => {
     // Hold async terminal mount open so this checks the pre-mount gap that
     // used to expose stale/full-width terminal content before hydration began.
-    window.ghosttyReady = new Promise(() => {});
+    (window as unknown as { ghosttyReady: Promise<never> }).ghosttyReady = new Promise<never>(() => {});
   });
   await toggleSessionGridFromUi(page, "another-project", "");
 
@@ -334,7 +334,7 @@ test("addToGrid hides single terminal container before grid cells mount", async 
   await page.evaluate(() => {
     // Hold async grid terminal mount open so this inspects the synchronous
     // single-terminal → grid transition gap.
-    window.ghosttyReady = new Promise(() => {});
+    (window as unknown as { ghosttyReady: Promise<never> }).ghosttyReady = new Promise<never>(() => {});
   });
   await toggleSessionGridFromUi(page, "another-project", "");
 

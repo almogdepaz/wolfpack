@@ -121,10 +121,10 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   let conn1Output = "";
   let conn2Prefill = "";
   let connectionCount = 0;
-  let activePageSocket: WebSocketRoute | null = null;
+  const activePageSocket: { current: WebSocketRoute | null } = { current: null };
 
   const ready = page.routeWebSocket(/\/ws\/pty/, (ws) => {
-    activePageSocket = ws;
+    activePageSocket.current = ws;
     const server = ws.connectToServer();
     connectionCount++;
     const thisConn = connectionCount;
@@ -221,7 +221,7 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   await expect(connStatus).toBeHidden();
 
   // ── Simulate server-side WS disconnect ──
-  activePageSocket?.close();
+  activePageSocket.current?.close();
 
   // ── Verify auto-recovery. Fast reconnects can complete before the banner is
   // visibly painted, so the broker test keys off the second WS + hidden final state.
