@@ -22,6 +22,7 @@ type TestWorkflow = {
 const workflowPath = join(process.cwd(), ".github", "workflows", "test.yml");
 const workflowSource = readFileSync(workflowPath, "utf-8");
 const workflow = Bun.YAML.parse(workflowSource) as TestWorkflow;
+const LOCKED_BROKER_TEST_COMMAND = "cargo test --locked --manifest-path broker/Cargo.toml --all";
 
 function requireJob(name: string): WorkflowJob {
   const job = workflow.jobs[name];
@@ -60,12 +61,16 @@ describe("pull request Ghostty VT behavior CI policy", () => {
     expect(commands).toContain("bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu");
   });
 
-  test("runs the complete locked Cargo suite with authoritative Ghostty", () => {
-    const job = requireJob("ghostty-vt-behavior");
-    const commands = runCommands(job).join("\n");
-    expect(commands).toContain("cargo test --locked --manifest-path broker/Cargo.toml --all");
-    expect(commands).not.toContain("--features");
-    expect(commands).not.toContain("shadow");
+  test("runs the complete locked Cargo suite exactly once in the primary job", () => {
+    const primaryCommands = runCommands(requireJob("test"));
+    const specializedCommands = runCommands(requireJob("ghostty-vt-behavior"));
+    const workflowCommands = Object.values(workflow.jobs).flatMap(runCommands);
+
+    expect(primaryCommands).toContain(LOCKED_BROKER_TEST_COMMAND);
+    expect(specializedCommands).not.toContain(LOCKED_BROKER_TEST_COMMAND);
+    expect(workflowCommands.filter(command => command.trim() === LOCKED_BROKER_TEST_COMMAND)).toHaveLength(1);
+    expect(workflowCommands.join("\n")).not.toContain("--features");
+    expect(workflowCommands.join("\n")).not.toContain("shadow");
   });
 
   test("builds an authoritative real broker and runs snapshot hydration/reflow integration against it", () => {

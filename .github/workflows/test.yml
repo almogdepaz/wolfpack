@@ -127,9 +127,6 @@ jobs:
       - name: Build verified libghostty-vt archive (linux-x64)
         run: bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu
 
-      - name: Run broker tests (authoritative Ghostty)
-        run: cargo test --locked --manifest-path broker/Cargo.toml --all
-
       - name: Build authoritative Ghostty broker binary
         run: cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker
 
