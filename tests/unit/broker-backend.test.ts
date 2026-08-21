@@ -4,8 +4,10 @@
  * Drives BrokerBackend against a fake broker client that records RPC calls
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import {
@@ -23,6 +25,9 @@ import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
+const PRIOR_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+const SUITE_ROOT = mkdtempSync(join(tmpdir(), "wolfpack-broker-backend-test-"));
+const TEST_SESSION_IDENTITY_PATH = join(SUITE_ROOT, "session-identities.json");
 
 interface RecordedRequest {
   method: string;
@@ -264,10 +269,16 @@ let backend: BrokerBackend;
 
 beforeEach(() => {
   process.env.WOLFPACK_TEST = "1";
-  process.env.WOLFPACK_SESSION_IDENTITY_PATH = `${process.cwd()}/.wolfpack/broker-backend-identity-${process.pid}.json`;
+  process.env.WOLFPACK_SESSION_IDENTITY_PATH = TEST_SESSION_IDENTITY_PATH;
   rmSync(sessionIdentityStorePath(), { force: true });
   client = new FakeBrokerClient();
   backend = new BrokerBackend(client);
+});
+
+afterAll(() => {
+  rmSync(SUITE_ROOT, { recursive: true, force: true });
+  if (PRIOR_SESSION_IDENTITY_PATH === undefined) delete process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+  else process.env.WOLFPACK_SESSION_IDENTITY_PATH = PRIOR_SESSION_IDENTITY_PATH;
 });
 
 describe("BrokerBackend.list", () => {

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   SessionIdentityStore,
@@ -12,10 +13,14 @@ import {
 
 process.env.WOLFPACK_TEST = "1";
 
+const SUITE_ROOT = mkdtempSync(join(tmpdir(), "wolfpack-session-identity-test-"));
+
+afterAll(() => {
+  rmSync(SUITE_ROOT, { recursive: true, force: true });
+});
+
 function tmpDevDir(): string {
-  const root = join(process.cwd(), ".wolfpack", "test-session-identity");
-  mkdirSync(root, { recursive: true });
-  return mkdtempSync(join(root, "dev-"));
+  return mkdtempSync(join(SUITE_ROOT, "dev-"));
 }
 
 describe("session identity metadata", () => {
