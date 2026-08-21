@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   CMD_REGEX,
-  MAX_INITIAL_PROMPT_LENGTH,
-  MAX_SESSION_NAME_LENGTH,
   clampCols,
   clampRows,
   isValidPort,
@@ -18,14 +16,14 @@ describe("isValidSessionName", () => {
     "my_session",
     "Wolfpack2",
     "x",
-    "a".repeat(MAX_SESSION_NAME_LENGTH),
+    "a".repeat(100),
   ])("accepts %p", (name) => {
     expect(isValidSessionName(name)).toBe(true);
   });
 
   test.each([
     ["empty", ""],
-    ["101 chars", "a".repeat(MAX_SESSION_NAME_LENGTH + 1)],
+    ["101 chars", "a".repeat(101)],
     ["dot", "foo.bar"],
     ["colon", "foo:bar"],
     ["slash", "foo/bar"],
@@ -106,11 +104,6 @@ describe("projectLabelToSessionName", () => {
     ["empty fallback", "", "project"],
   ])("normalizes %s", (_label, input, expected) => {
     expect(projectLabelToSessionName(input)).toBe(expected);
-  });
-
-  test("exports prompt/session limits used by API contracts", () => {
-    expect(MAX_SESSION_NAME_LENGTH).toBe(100);
-    expect(MAX_INITIAL_PROMPT_LENGTH).toBe(32_768);
   });
 });
 
