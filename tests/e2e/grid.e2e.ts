@@ -82,10 +82,11 @@ type TrackedPtyRoute = {
   readonly counts: (session: string) => PtyProtocolCounts;
 };
 
-async function routeTrackedHydratedPty(page: Page, conflictAfterReadySession?: string): Promise<TrackedPtyRoute> {
+async function routeTrackedHydratedPty(page: Page, conflictAfterReadySessions: readonly string[] = []): Promise<TrackedPtyRoute> {
   const sockets = new Map<string, WebSocketRoute[]>();
   const messages = new Map<string, PtyClientMessage[]>();
-  let conflictSent = false;
+  const conflictedSessions = new Set(conflictAfterReadySessions);
+  const sentConflicts = new Set<string>();
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     const session = new URL(ws.url()).searchParams.get("session") ?? "";
     sockets.set(session, [...(sockets.get(session) ?? []), ws]);
@@ -99,8 +100,8 @@ async function routeTrackedHydratedPty(page: Page, conflictAfterReadySession?: s
       if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
       ws.send(JSON.stringify({ type: "prefill_done" }));
       ws.send(JSON.stringify({ type: "pty_ready" }));
-      if (!conflictSent && parsed.prefillMode === "viewport" && session === conflictAfterReadySession) {
-        conflictSent = true;
+      if (parsed.prefillMode === "viewport" && conflictedSessions.has(session) && !sentConflicts.has(session)) {
+        sentConflicts.add(session);
         ws.send(JSON.stringify({ type: "viewer_conflict" }));
       }
     });
@@ -643,37 +644,47 @@ test("addToGrid from non-terminal view switches to terminal view first", async (
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
 
-test("removeFromGrid clears pending take-control timer", async ({ page }) => {
-  const protocol = await routeTrackedHydratedPty(page, "test-project");
+test("removing a conflicted grid cell prevents its scheduled takeover fallback", async ({ page }) => {
+  const controlSession = "test-project";
+  const removedSession = "another-project";
+  const stableSession = "third-project";
+  const protocol = await routeTrackedHydratedPty(page, [controlSession, removedSession]);
   await loadApp(page);
-  await toggleSessionGridFromUi(page, "test-project", "");
-  await toggleSessionGridFromUi(page, "another-project", "");
-  await toggleSessionGridFromUi(page, "third-project", "");
-  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project", "third-project"]);
+  await toggleSessionGridFromUi(page, controlSession, "");
+  await toggleSessionGridFromUi(page, removedSession, "");
+  await toggleSessionGridFromUi(page, stableSession, "");
+  await expect.poll(() => gridSessionNames(page)).toEqual([controlSession, removedSession, stableSession]);
 
-  const conflictedCell = page.locator('#desktop-grid-container .grid-cell[data-session="test-project"]');
-  await expect(conflictedCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
-  expect(protocol.counts("test-project")).toEqual({
-    sockets: 1,
-    attaches: 1,
-    takeControls: 0,
-    takeoverAttaches: 0,
-  });
+  const controlCell = page.locator(`#desktop-grid-container .grid-cell[data-session="${controlSession}"]`);
+  const removedCell = page.locator(`#desktop-grid-container .grid-cell[data-session="${removedSession}"]`);
+  await expect(controlCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
+  await expect(removedCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
 
-  await conflictedCell.locator(".viewer-conflict-overlay .conflict-btn").click();
-  await expect.poll(() => protocol.counts("test-project").takeControls).toBe(1);
+  await controlCell.locator(".viewer-conflict-overlay .conflict-btn").click();
+  await removedCell.locator(".viewer-conflict-overlay .conflict-btn").click();
+  await expect.poll(() => protocol.counts(controlSession).takeControls).toBe(1);
+  await expect.poll(() => protocol.counts(removedSession).takeControls).toBe(1);
 
-  await conflictedCell.getByRole("button", { name: "Remove test-project from grid" }).click();
-  await expect.poll(() => gridSessionNames(page)).toEqual(["another-project", "third-project"]);
+  await removedCell.getByRole("button", { name: `Remove ${removedSession} from grid` }).click();
+  await expect.poll(() => gridSessionNames(page)).toEqual([controlSession, stableSession]);
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
-  const removedCounts = protocol.counts("test-project");
-  const remainingCounts = [protocol.counts("another-project"), protocol.counts("third-project")];
+  const controlCountsBeforeFallback = protocol.counts(controlSession);
+  const removedCountsAfterRemoval = protocol.counts(removedSession);
+  const stableCountsAfterRemoval = protocol.counts(stableSession);
+  expect(controlCountsBeforeFallback.takeoverAttaches).toBe(0);
+  expect(removedCountsAfterRemoval.takeoverAttaches).toBe(0);
 
+  // External contract: removal may clear the timer or let the pending callback
+  // self-disarm, but the removed session must not perform a takeover action.
   await page.waitForTimeout(TAKE_CONTROL_FALLBACK_MS + 500);
 
-  expect(protocol.counts("test-project")).toEqual(removedCounts);
-  expect([protocol.counts("another-project"), protocol.counts("third-project")]).toEqual(remainingCounts);
-  await expect.poll(() => gridSessionNames(page)).toEqual(["another-project", "third-project"]);
+  const controlCountsAfterFallback = protocol.counts(controlSession);
+  expect(controlCountsAfterFallback.sockets).toBe(controlCountsBeforeFallback.sockets + 1);
+  expect(controlCountsAfterFallback.attaches).toBe(controlCountsBeforeFallback.attaches + 1);
+  expect(controlCountsAfterFallback.takeoverAttaches).toBe(controlCountsBeforeFallback.takeoverAttaches + 1);
+  expect(protocol.counts(removedSession)).toEqual(removedCountsAfterRemoval);
+  expect(protocol.counts(stableSession)).toEqual(stableCountsAfterRemoval);
+  await expect.poll(() => gridSessionNames(page)).toEqual([controlSession, stableSession]);
 });
 
 test("navigating away from terminal with active grid suspends grid state", async ({ page }) => {
