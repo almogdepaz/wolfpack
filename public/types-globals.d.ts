@@ -23,7 +23,7 @@ declare global {
     };
     readonly options: { disableStdin: boolean; cursorBlink: boolean };
     readonly wasmTerm?: unknown;
-    readonly viewportY?: unknown;
+    readonly viewportY?: number;
     loadAddon(addon: GhosttyFitAddon): void;
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
     attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean): void;
@@ -43,7 +43,7 @@ declare global {
     getScrollbackLength?(): number;
     clear(): void;
     dispose(): void;
-    write(data: Uint8Array | string): void;
+    write(data: Uint8Array | string, callback?: () => void): void;
   }
 
   interface GhosttyTerminalOptions {

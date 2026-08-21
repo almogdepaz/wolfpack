@@ -80,7 +80,7 @@ interface GridDeps {
   initTerminal: (cached?: string | null) => void;
   backToSessions: () => void;
   renderSidebar: () => void;
-  createPtyTerminalController: (opts: { session: string; machine?: string; [k: string]: unknown }) => GridTerminalController;
+  createPtyTerminalController: (opts: { session: string; machine?: string; scrollback: number; [k: string]: unknown }) => GridTerminalController;
   createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
   showNotice: (title: string, message: string) => void;
   canUseWasmTerminal?: () => boolean;
