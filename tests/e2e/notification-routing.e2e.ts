@@ -29,7 +29,9 @@ test("notification session route resolves stable identity in its machine context
       }),
     });
   });
+  let attachedSession = "";
   await page.routeWebSocket(/\/ws\/pty/, (socket) => {
+    attachedSession = new URL(socket.url()).searchParams.get("session") || "";
     socket.onMessage((message) => {
       if (typeof message !== "string") return;
       const parsed = JSON.parse(message) as { readonly type?: string };
@@ -42,10 +44,14 @@ test("notification session route resolves stable identity in its machine context
 
   await page.goto(`${server.baseUrl}/?sessionId=stable-session-id&session=stale-name&machine=local`);
 
-  await expect.poll(() => page.evaluate(() => {
-    const state = (window as unknown as { state?: { currentSession?: string; currentMachine?: string } }).state;
-    return { session: state?.currentSession, machine: state?.currentMachine };
-  })).toEqual({ session: "current-agent-name", machine: "" });
+  await expect.poll(() => attachedSession).toBe("current-agent-name");
   await expect(page.locator("#terminal-view")).toBeVisible();
+  await expect.poll(async () => {
+    const activeCard = page.locator('[data-action="open-session"][aria-current="page"]').first();
+    if (await activeCard.count() > 0) return await activeCard.getAttribute("data-session");
+    const chipLabel = page.locator("#chip-label");
+    if (await chipLabel.count() > 0) return (await chipLabel.textContent())?.trim();
+    return "";
+  }).toBe("current-agent-name");
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5_000 });
 });

@@ -39,6 +39,7 @@ import { mkdtempSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
+import { openSessionFromUi, terminalTail } from "./helpers.ts";
 
 const PROJECT_NAME = "wp-scroll-lock";
 const SESSION_NAME = "scroll-lock";
@@ -82,12 +83,7 @@ test("scroll-lock: viewport stays anchored while output streams into scrollback"
 
   await page.goto(srv!.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
-  // Use openSession() directly so the test doesn't depend on layout/click hit
-  // testing (the sidebar list on desktop can render cards outside the viewport).
-  await page.evaluate((name) => {
-    // @ts-ignore — page-global
-    openSession(name);
-  }, SESSION_NAME);
+  await openSessionFromUi(page, SESSION_NAME);
 
   const canvas = page.locator("#desktop-terminal-container canvas");
   await expect(canvas).toBeVisible({ timeout: 5000 });
@@ -116,21 +112,9 @@ test("scroll-lock: viewport stays anchored while output streams into scrollback"
   // there's something to scroll past.
   await wait(800);
 
-  // Read the prompt to ensure the loop finished.
-  const afterSeq = await page.evaluate(() => {
-    // @ts-ignore — page-global state
-    const term = state?.terminalController?.term;
-    if (!term) return null;
-    return {
-      scrollbackLength: term.getScrollbackLength?.() ?? 0,
-      viewportY: term.viewportY,
-      rows: term.rows,
-    };
-  });
-  expect(afterSeq, "must expose terminal handle via state").not.toBeNull();
-  // 200 emitted MARK lines + STREAM partial run >> the ~47-row viewport,
-  // so many should sit in scrollback by now.
-  expect(afterSeq!.scrollbackLength).toBeGreaterThan(100);
+  // 200 emitted MARK lines + STREAM partial run >> the viewport, so the
+  // rendered tail should already be advancing before we lock the viewport.
+  await expect.poll(() => terminalTail(page.locator("#desktop-terminal-container"), 80)).toContain("STREAM_");
 
   // ── Step 2: scroll up so a known MARK row is at viewport row 0 ──────────
   // Aim for ~30 lines up: lands somewhere in the middle of the MARK sequence.
@@ -145,30 +129,13 @@ test("scroll-lock: viewport stays anchored while output streams into scrollback"
   // Let the smooth-scroll animation settle.
   await wait(400);
 
-  // Read what's now at viewport row 0.
-  const anchored = await page.evaluate(() => {
-    // @ts-ignore — page-global state
-    const term = state?.terminalController?.term;
-    if (!term) return null;
-    const i = term.getScrollbackLength();
-    const g = Math.floor(term.viewportY);
-    // viewport row 0 maps to scrollback row (i - g + 0) when g > 0
-    const line = g > 0 ? term.wasmTerm.getScrollbackLine(i - g) : term.wasmTerm.getLine(0);
-    if (!line) return null;
-    const text = line
-      .map((c: { codepoint: number }) => (c.codepoint > 0 ? String.fromCodePoint(c.codepoint) : ""))
-      .join("")
-      .replace(/\s+$/, "");
-    return { scrollbackLength: i, viewportY: term.viewportY, row0: text };
+  const topRegionBefore = await canvas.evaluate((element) => {
+    const canvasElement = element as HTMLCanvasElement;
+    const context = canvasElement.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("missing canvas context");
+    return Array.from(context.getImageData(0, 0, canvasElement.width, Math.max(1, Math.floor(canvasElement.height * 0.18))).data);
   });
-  expect(anchored, "viewport-row-0 read must succeed").not.toBeNull();
-  expect(
-    anchored!.row0,
-    `viewport row 0 should hold a MARK_N line after scroll-up (got: "${anchored!.row0}")`,
-  ).toMatch(/MARK_\d+/);
-
-  const anchoredMark = anchored!.row0;
-  const anchoredScrollback = anchored!.scrollbackLength;
+  const tailBefore = await terminalTail(page.locator("#desktop-terminal-container"), 120);
 
   // ── Step 3: Command is a browser modifier, not terminal input. Pressing it
   // must preserve the anchored viewport while STREAM output continues.
@@ -177,42 +144,16 @@ test("scroll-lock: viewport stays anchored while output streams into scrollback"
   await page.keyboard.up("Meta");
   await wait(2500);
 
-  // ── Step 4: assert viewport row 0 still holds the same MARK row ─────────
-  const after = await page.evaluate(() => {
-    // @ts-ignore — page-global state
-    const term = state?.terminalController?.term;
-    if (!term) return null;
-    const i = term.getScrollbackLength();
-    const g = Math.floor(term.viewportY);
-    const line = g > 0 ? term.wasmTerm.getScrollbackLine(i - g) : null;
-    if (!line) return null;
-    const text = line
-      .map((c: { codepoint: number }) => (c.codepoint > 0 ? String.fromCodePoint(c.codepoint) : ""))
-      .join("")
-      .replace(/\s+$/, "");
-    return { scrollbackLength: i, viewportY: term.viewportY, row0: text };
+  // ── Step 4: assert viewport row 0 still holds the same pixels ─────────
+  const topRegionAfter = await canvas.evaluate((element) => {
+    const canvasElement = element as HTMLCanvasElement;
+    const context = canvasElement.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("missing canvas context");
+    return Array.from(context.getImageData(0, 0, canvasElement.width, Math.max(1, Math.floor(canvasElement.height * 0.18))).data);
   });
-  expect(after, "post-stream viewport-row-0 read must succeed").not.toBeNull();
+  const tailAfter = await terminalTail(page.locator("#desktop-terminal-container"), 120);
 
-  // The CRITICAL assertion. With the bug present:
-  //   - scrollbackLength has grown (new STREAM_NNNN rows pushed off live screen)
-  //   - viewportY is unchanged (scrollToBottom monkey-patch swallowed the calls)
-  //   - therefore (scrollbackLength - viewportY) points to a NEW row, not
-  //     the MARK row the user was reading
-  //
-  // With the fix in place:
-  //   - viewportY incremented to compensate for scrollback growth
-  //   - (scrollbackLength - viewportY) still resolves to the original MARK row
-  expect(
-    after!.scrollbackLength,
-    "scrollback should have grown from streaming output",
-  ).toBeGreaterThan(anchoredScrollback);
-  expect(
-    after!.row0,
-    `viewport row 0 should still anchor the same content the user was reading
-       before streaming began. anchored: "${anchoredMark}"
-       now:      "${after!.row0}"
-       scrollback grew: ${anchoredScrollback} -> ${after!.scrollbackLength}
-       viewportY: ${anchored!.viewportY} -> ${after!.viewportY}`,
-  ).toBe(anchoredMark);
+  expect(tailAfter, "terminal transcript should advance while viewport is scroll-locked").not.toBe(tailBefore);
+  expect(tailAfter).toContain("STREAM_");
+  expect(topRegionAfter).toEqual(topRegionBefore);
 });

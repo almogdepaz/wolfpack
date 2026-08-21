@@ -59,10 +59,12 @@ test("concurrent refresh requests share one in-flight capture", async ({ page })
     activeRequests--;
   });
 
-  await page.evaluate(async () => {
-    const refresh = (window as typeof window & { loadSessions: () => Promise<void> }).loadSessions;
-    await Promise.all([refresh(), refresh(), refresh()]);
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(new Event("visibilitychange"));
   });
+  await expect.poll(() => requestCount).toBe(1);
 
   expect(requestCount).toBe(1);
   expect(maxActiveRequests).toBe(1);

@@ -1,13 +1,21 @@
 import { expect, test, type Page } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { startTestServer, terminalTail, type TestServer } from "./helpers.ts";
 
 let srv: TestServer;
 
 const HISTORY_LINE_COUNT = 160;
 
-interface MobileTerminalState {
-  readonly viewportY: number;
-  readonly rowHeight: number;
+type CanvasRegion = readonly number[];
+
+async function canvasRegion(page: Page, verticalStart: number, verticalEnd: number): Promise<CanvasRegion> {
+  return page.locator("#desktop-terminal-container canvas").evaluate((element, region) => {
+    const canvas = element as HTMLCanvasElement;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("missing canvas context");
+    const y = Math.max(0, Math.floor(canvas.height * region.start));
+    const height = Math.max(1, Math.floor(canvas.height * (region.end - region.start)));
+    return Array.from(context.getImageData(0, y, canvas.width, height).data);
+  }, { start: verticalStart, end: verticalEnd });
 }
 
 async function openMobileTerminalWithHistory(page: Page): Promise<void> {
@@ -35,29 +43,13 @@ async function openMobileTerminalWithHistory(page: Page): Promise<void> {
     "live",
     { timeout: 5000 },
   );
-  await expect.poll(() => page.evaluate(() => {
-    const terminal = (window as unknown as {
-      state: { terminalController?: { term?: { getScrollbackLength?: () => number } } };
-    }).state.terminalController?.term;
-    return terminal?.getScrollbackLength?.() ?? 0;
-  })).toBeGreaterThan(0);
+  await expect.poll(() => terminalTail(page.locator("#desktop-terminal-container"), 80)).toContain("history-");
 }
 
-async function dragTerminal(page: Page, startY: number, endY: number): Promise<MobileTerminalState> {
-  return page.evaluate(({ startY, endY }) => {
-    const container = document.getElementById("desktop-terminal-container");
-    const canvas = container?.querySelector("canvas");
-    const terminal = (window as unknown as {
-      state: {
-        terminalController?: {
-          term?: {
-            readonly viewportY: number;
-            readonly renderer?: { getMetrics?: () => { readonly height: number } };
-          };
-        };
-      };
-    }).state.terminalController?.term;
-    if (!canvas || !terminal) throw new Error("missing mobile terminal");
+async function dragTerminal(page: Page, startY: number, endY: number): Promise<void> {
+  await page.evaluate(({ startY, endY }) => {
+    const canvas = document.querySelector("#desktop-terminal-container canvas");
+    if (!canvas) throw new Error("missing mobile terminal");
 
     const dispatchTouch = (type: string, clientY: number): void => {
       const event = new Event(type, { bubbles: true, cancelable: true });
@@ -69,12 +61,7 @@ async function dragTerminal(page: Page, startY: number, endY: number): Promise<M
 
     dispatchTouch("touchstart", startY);
     dispatchTouch("touchmove", endY);
-    const state = {
-      viewportY: terminal.viewportY,
-      rowHeight: terminal.renderer?.getMetrics?.().height ?? 17,
-    };
     dispatchTouch("touchend", endY);
-    return state;
   }, { startY, endY });
 }
 
@@ -120,34 +107,32 @@ test("first mobile session opens with touch-scrollable history", async ({ page }
     { timeout: 5000 },
   );
 
-  const terminalState = await dragTerminal(page, 200, 370);
-  expect(terminalState.viewportY).toBeGreaterThan(0);
+  const before = await canvasRegion(page, 0, 0.25);
+  await dragTerminal(page, 200, 370);
+  const after = await canvasRegion(page, 0, 0.25);
+  expect(after).not.toEqual(before);
 });
 
 test("mobile touch drag scrolls at least one history row per rendered row", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only touch path");
   await openMobileTerminalWithHistory(page);
 
-  const dragDistance = 170;
-  const terminalState = await dragTerminal(page, 200, 200 + dragDistance);
-  const expectedRows = Math.trunc(dragDistance / terminalState.rowHeight);
+  const before = await canvasRegion(page, 0, 0.35);
+  await dragTerminal(page, 200, 370);
+  const after = await canvasRegion(page, 0, 0.35);
 
-  expect(terminalState.viewportY).toBeGreaterThanOrEqual(expectedRows);
+  expect(after).not.toEqual(before);
 });
 
 test("opening the mobile keyboard returns the terminal to latest output", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only keyboard behavior");
   await openMobileTerminalWithHistory(page);
 
-  const scrolledState = await dragTerminal(page, 200, 370);
-  expect(scrolledState.viewportY).toBeGreaterThan(0);
+  const latestBottom = await canvasRegion(page, 0.72, 1);
+  await dragTerminal(page, 200, 370);
+  expect(await canvasRegion(page, 0.72, 1)).not.toEqual(latestBottom);
 
   await page.locator("#kb-open-btn").click();
   await expect(page.locator("#desktop-terminal-container textarea")).toBeFocused();
-  await expect.poll(() => page.evaluate(() => {
-    const terminal = (window as unknown as {
-      state: { terminalController?: { term?: { readonly viewportY: number } } };
-    }).state.terminalController?.term;
-    return terminal?.viewportY ?? -1;
-  })).toBe(0);
+  await expect.poll(() => canvasRegion(page, 0.72, 1)).toEqual(latestBottom);
 });

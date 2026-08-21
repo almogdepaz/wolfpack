@@ -102,6 +102,10 @@ declare global {
     /** Factory for per-Terminal WASM isolation; see public/app.ts:481 and
      *  scripts/bundle-ghostty.ts for context. */
     createIsolatedGhostty?: () => Promise<unknown>;
+
+    readonly __wolfpackTest: Readonly<{
+      serializeTerminalTail(container: HTMLElement, maxLines: number): string;
+    }>;
   }
 }
 

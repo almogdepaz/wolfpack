@@ -121,8 +121,10 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   let conn1Output = "";
   let conn2Prefill = "";
   let connectionCount = 0;
+  let activePageSocket: WebSocketRoute | null = null;
 
   const ready = page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    activePageSocket = ws;
     const server = ws.connectToServer();
     connectionCount++;
     const thisConn = connectionCount;
@@ -186,12 +188,17 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   expect(mainVisible, `${MAIN_TOKEN} must appear on main screen before TUI`).toBeTruthy();
 
   // ── Enter alt-screen and draw the deterministic TUI fixture ──
-  // Send the long escape-heavy command directly; mobile keyboard emulation can
-  // mangle long quoted strings while wrapping in the proxy input.
-  await page.evaluate((cmd) => {
-    const w = window as unknown as { state?: { terminalController?: { send?: (data: Uint8Array) => void } } };
-    w.state?.terminalController?.send?.(new TextEncoder().encode(cmd + "\r"));
+  const terminalInput = page.locator("#desktop-terminal-container textarea");
+  await terminalInput.focus();
+  await terminalInput.evaluate((textarea, cmd) => {
+    textarea.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: cmd,
+      inputType: "insertFromPaste",
+    }));
   }, TUI_CMD);
+  await page.keyboard.press("Enter");
 
   // Wait for terminal output to settle after the TUI command. The shell will
   // execute printf (drawing the TUI) then emit a new prompt — idle detection
@@ -214,10 +221,7 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   await expect(connStatus).toBeHidden();
 
   // ── Simulate server-side WS disconnect ──
-  await page.evaluate(() => {
-    const w = window as unknown as { state?: { terminalController?: { ptyClient?: { ws?: WebSocket | null } } } };
-    w.state?.terminalController?.ptyClient?.ws?.close();
-  });
+  activePageSocket?.close();
 
   // ── Verify auto-recovery. Fast reconnects can complete before the banner is
   // visibly painted, so the broker test keys off the second WS + hidden final state.

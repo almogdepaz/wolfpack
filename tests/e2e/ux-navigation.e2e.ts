@@ -1,26 +1,7 @@
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 
 let srv: TestServer;
-
-type WolfpackTestWindow = Window & {
-  openSession(name: string, machineUrl?: string): void;
-  addToGrid(name: string, machineUrl?: string): void;
-  loadSessions(): Promise<void>;
-  showProjectPicker(machineUrl?: string): void;
-  showView(name: string): void;
-  state: {
-    currentSession?: string | null;
-    activeDelegationRoot?: string | null;
-    focusedDelegationSession?: string | null;
-    gridSessions: Array<{ readonly session: string; readonly machine?: string; readonly controller?: unknown }>;
-    preservedGridSessions: Array<{ readonly session: string; readonly machine?: string }>;
-    delegationGridSessions: Array<{ readonly session: string; readonly controller?: unknown; readonly _collapsed?: boolean }>;
-    sidebarAutoExpanded?: boolean;
-    sidebarCollapsed?: boolean;
-    sidebarPinned?: boolean;
-  };
-};
 
 test.beforeAll(async () => {
   srv = await startTestServer();
@@ -29,6 +10,14 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   srv?.close();
 });
+
+async function activeSessionName(page: Page): Promise<string> {
+  return (await page.locator("#chip-label").textContent().catch(() => ""))?.trim() ?? "";
+}
+
+async function expectActiveSession(page: Page, session: string): Promise<void> {
+  await expect.poll(() => activeSessionName(page)).toBe(session);
+}
 
 async function routeHydratedPty(page: Page): Promise<Map<string, WebSocketRoute>> {
   const sockets = new Map<string, WebSocketRoute>();
@@ -113,14 +102,14 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("solo"));
+  await openSessionFromUi(page, "solo");
   await expect.poll(() => sockets.has("solo")).toBe(true);
 
   const sidebar = page.locator("#desktop-sidebar");
   await expect(sidebar).toHaveClass(/collapsed/);
   await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
   await expect(sidebar).not.toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.sidebarAutoExpanded)).toBe(true);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
 
   const parentCardOpen = page.locator(
     `#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="${parent.id}"] .card-open`,
@@ -129,20 +118,7 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   await page.keyboard.press("Enter");
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
 
-  expect(await page.evaluate(() => {
-    const stateWindow = window as unknown as WolfpackTestWindow;
-    return {
-      sidebarClassCollapsed: document.getElementById("desktop-sidebar")?.classList.contains("collapsed") ?? false,
-      sidebarAutoExpanded: stateWindow.state.sidebarAutoExpanded,
-      sidebarCollapsed: stateWindow.state.sidebarCollapsed,
-      sidebarPinned: stateWindow.state.sidebarPinned,
-    };
-  })).toEqual({
-    sidebarClassCollapsed: true,
-    sidebarAutoExpanded: false,
-    sidebarCollapsed: true,
-    sidebarPinned: false,
-  });
+  await expect(sidebar).toHaveClass(/collapsed/);
 });
 
 test("desktop groups structured sub-agents directly under their parent", async ({ page }, testInfo) => {
@@ -217,7 +193,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
     exact: true,
   }).press("Enter");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack-sub-agent");
+  await expectActiveSession(page, "wolfpack-sub-agent");
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
 
   await expect(childSidebarCards).toHaveCount(0);
@@ -233,21 +209,18 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(childSidebarCards).toHaveCount(2);
   await parentSidebarCard.getByRole("button", { name: "Open wolfpack" }).focus();
   await page.keyboard.press("Enter");
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+  await expectActiveSession(page, "wolfpack");
 
   await expect(childSidebarCard.locator(".grid-btn")).toHaveClass(/in-grid/);
   await childSidebarCard.locator(".grid-btn").click();
-  await expect.poll(() => page.evaluate(() => {
-    const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "wolfpack-sub-agent");
-    return !!session?._collapsed;
-  })).toBe(true);
+  await expect(page.locator('#delegation-grid-container .grid-cell[data-session="wolfpack-sub-agent"]')).toHaveClass(/collapsed/);
   await expect(childSidebarCard.locator(".grid-btn")).not.toHaveClass(/in-grid/);
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+  await expectActiveSession(page, "wolfpack");
 
   await childSidebarCard.locator(".kill-btn").click();
   await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
   await expect.poll(() => killRequests).toEqual([{ session: "wolfpack-sub-agent" }]);
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("wolfpack");
+  await expectActiveSession(page, "wolfpack");
 });
 
 test("desktop opens and refreshes an ephemeral delegation grid without changing the manual grid", async ({ page }, testInfo) => {
@@ -280,14 +253,11 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
   });
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("manual-one"));
+  await openSessionFromUi(page, "manual-one");
   await expect.poll(() => sockets.has("manual-one")).toBe(true);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).addToGrid("manual-two"));
-  await expect.poll(() => page.evaluate(() =>
-    (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session),
-  )).toEqual(["manual-one", "manual-two"]);
-
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("delegation-parent"));
+  await toggleSessionGridFromUi(page, "manual-two");
+  await expect.poll(() => gridSessionNames(page)).toEqual(["manual-one", "manual-two"]);
+  await openSessionFromUi(page, "delegation-parent");
 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
   await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
@@ -302,9 +272,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   const sidebar = page.locator("#desktop-sidebar");
   await page.mouse.move(1, 100);
   await expect(sidebar).not.toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => (
-    window as unknown as WolfpackTestWindow
-  ).state.sidebarAutoExpanded)).toBe(true);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
   await sidebar.hover({ position: { x: 100, y: 100 } });
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child")).toHaveCount(0);
@@ -313,11 +281,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await sidebarCard("delegation-parent").locator(".delegation-sidebar-toggle").click();
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
-  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session))).toEqual([]);
-  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
-    "manual-one",
-    "manual-two",
-  ]);
+  expect(await gridSessionNames(page)).toEqual([]);
 
   const gridColumnCountBeforeSidebarHover = await page.evaluate(() => {
     const columns = getComputedStyle(document.getElementById("delegation-grid-container")!).gridTemplateColumns;
@@ -326,14 +290,10 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   expect(gridColumnCountBeforeSidebarHover).toBeGreaterThanOrEqual(3);
   await page.mouse.move(600, 100);
   await expect(sidebar).toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => (
-    window as unknown as WolfpackTestWindow
-  ).state.sidebarAutoExpanded)).toBe(false);
+  await expect(sidebar).toHaveClass(/collapsed/);
   await page.mouse.move(1, 100);
   await expect(sidebar).not.toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => (
-    window as unknown as WolfpackTestWindow
-  ).state.sidebarAutoExpanded)).toBe(true);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect.poll(() => page.evaluate(() => {
     const columns = getComputedStyle(document.getElementById("delegation-grid-container")!).gridTemplateColumns;
     return columns.split(" ").filter(Boolean).length;
@@ -342,7 +302,12 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await page.evaluate(() => {
     document.querySelector('#delegation-grid-container .grid-cell[data-session="attention-child"]')?.setAttribute("data-stability-marker", "same-cell");
   });
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).loadSessions());
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
   await expect(page.locator('#delegation-grid-container .grid-cell[data-stability-marker="same-cell"]')).toHaveCount(1);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/transitioning/);
 
@@ -354,26 +319,19 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(collapsedIdleTab).toBeVisible();
   await page.mouse.move(1, 100);
   await expect(sidebar).not.toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => (
-    window as unknown as WolfpackTestWindow
-  ).state.sidebarAutoExpanded)).toBe(true);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).not.toHaveClass(/in-grid/);
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => {
-    const session = (window as unknown as WolfpackTestWindow).state.delegationGridSessions.find(entry => entry.session === "idle-child");
-    return session?.controller == null;
-  })).toBe(true);
+  await expect(collapsedIdleCell.locator("canvas")).toHaveCount(0);
   await expect.poll(() => collapsedIdleTab.evaluate(button => getComputedStyle(button).boxShadow)).not.toBe("none");
   await collapsedIdleTab.click();
   await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeVisible();
   await page.mouse.move(1, 100);
   await expect(sidebar).not.toHaveClass(/collapsed/);
-  await expect.poll(() => page.evaluate(() => (
-    window as unknown as WolfpackTestWindow
-  ).state.sidebarAutoExpanded)).toBe(true);
+  await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(collapsedIdleTab).toHaveCount(0);
   await sidebarCard("attention-child").locator(".grid-btn").click();
@@ -404,10 +362,6 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "idle-child",
   ], { timeout: 7_000 });
 
-  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
-    "manual-one",
-    "manual-two",
-  ]);
 });
 
 test("desktop delegation focus makes suspended manual-grid sessions available to add", async ({ page }, testInfo) => {
@@ -429,22 +383,15 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
     });
   });
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("manual-one"));
+  await openSessionFromUi(page, "manual-one");
   await expect.poll(() => sockets.has("manual-one")).toBe(true);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).addToGrid("manual-two"));
-  await expect.poll(() => page.evaluate(() =>
-    (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session),
-  )).toEqual(["manual-one", "manual-two"]);
-
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("child"));
+  await toggleSessionGridFromUi(page, "manual-two");
+  await expect.poll(() => gridSessionNames(page)).toEqual(["manual-one", "manual-two"]);
+  await openSessionFromUi(page, "child");
 
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
-  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.gridSessions.map(entry => entry.session))).toEqual([]);
-  expect(await page.evaluate(() => (window as unknown as WolfpackTestWindow).state.preservedGridSessions.map(entry => entry.session))).toEqual([
-    "manual-one",
-    "manual-two",
-  ]);
+  expect(await gridSessionNames(page)).toEqual([]);
 
   const manualOneCard = page.locator("#sidebar-session-list .card", {
     has: page.locator(".card-name", { hasText: "manual-one" }),
@@ -459,34 +406,12 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
   await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
   await manualOneGridButton.click();
 
-  await expect.poll(() => page.evaluate(() => {
-    const app = window as unknown as WolfpackTestWindow;
-    return {
-      activeDelegationRoot: app.state.activeDelegationRoot,
-      gridSessions: app.state.gridSessions.map(entry => entry.session),
-      preservedGridSessions: app.state.preservedGridSessions.map(entry => entry.session),
-    };
-  })).toEqual({
-    activeDelegationRoot: null,
-    gridSessions: ["child", "manual-one"],
-    preservedGridSessions: [],
-  });
-
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("child"));
+  await expect.poll(() => gridSessionNames(page)).toEqual(["child", "manual-one"]);
+  await openSessionFromUi(page, "child");
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("manual-one"));
-  await expect.poll(() => page.evaluate(() => {
-    const app = window as unknown as WolfpackTestWindow;
-    return {
-      activeDelegationRoot: app.state.activeDelegationRoot,
-      currentSession: app.state.currentSession,
-      preservedGridSessions: app.state.preservedGridSessions.map(entry => entry.session),
-    };
-  })).toEqual({
-    activeDelegationRoot: null,
-    currentSession: "manual-one",
-    preservedGridSessions: [],
-  });
+  await openSessionFromUi(page, "manual-one");
+  await expectActiveSession(page, "manual-one");
+  await expect(page.locator("#delegation-grid-shell")).toBeHidden();
   await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
 });
 
@@ -536,9 +461,7 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
     });
   });
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => {
-    (window as unknown as WolfpackTestWindow).openSession("solo", "");
-  });
+  await openSessionFromUi(page, "solo", "");
   await expect.poll(() => sockets.has("solo")).toBe(true);
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
   await page.evaluate(() => {
@@ -630,7 +553,7 @@ test("desktop stopping a focused child returns to its parent instead of session 
   await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
 
   await expect.poll(() => killRequests).toEqual([{ session: "child" }]);
-  await expect.poll(() => page.evaluate(() => (window as unknown as WolfpackTestWindow).state.currentSession)).toBe("parent");
+  await expectActiveSession(page, "parent");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.locator("#sessions-view")).not.toHaveClass(/visible/);
   await expect.poll(() => sockets.has("parent")).toBe(true);
@@ -647,7 +570,7 @@ test("project picker filters fetched projects by typed prefix without refetching
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   const projectNameInput = page.locator("#new-project-name");
   await expect(projectNameInput).toBeFocused();
   await expect(projectNameInput).toHaveAttribute("placeholder", "Filter existing projects");
@@ -673,7 +596,7 @@ test("project picker filters fetched projects by typed prefix without refetching
 
 test("project picker separates known projects, folder opening, and project creation", async ({ page }) => {
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
 
   await expect(page.getByText("Projects", { exact: true })).toBeVisible();
   await expect(page.locator("#new-project-name")).toHaveAttribute("placeholder", "Filter existing projects");
@@ -730,7 +653,7 @@ test("project picker preserves exact explicit server directory text in browser r
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.locator("#open-folder-action").click();
   await page.locator("#directory-browser-path").fill(projectDir);
   await page.getByRole("button", { name: "Go to path" }).click();
@@ -780,7 +703,7 @@ test("project picker surfaces directory validation before entering agent selecti
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.locator("#open-folder-action").click();
   await page.locator("#directory-browser-path").fill("/srv/worktrees/missing");
   await page.getByRole("button", { name: "Go to path" }).click();
@@ -792,7 +715,7 @@ test("project picker surfaces directory validation before entering agent selecti
 
 test("project creation controls retain practical target sizes", async ({ page }) => {
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.locator("#create-project-action").click();
 
   const inputBox = await page.locator("#new-project-create-name").boundingBox();
@@ -809,7 +732,7 @@ test("desktop project picker keeps a large catalog scrollable", async ({ page },
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
 
   const projectList = page.locator("#project-list");
   await expect(projectList.locator(".card")).toHaveCount(projects.length);
@@ -827,7 +750,7 @@ test("desktop project picker cards retain a practical target size", async ({ pag
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
 
   const cardBox = await page.locator("#project-list .card").boundingBox();
   expect(cardBox?.height).toBeGreaterThanOrEqual(44);
@@ -852,7 +775,7 @@ test("enter in project search never creates a directory", async ({ page }) => {
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   const search = page.locator("#new-project-name");
   await search.fill("brand-new");
   await search.press("Enter");
@@ -888,7 +811,7 @@ test("desktop new-session pickers use arrow navigation only after it starts", as
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   const projectCards = page.locator("#project-list .card");
   await expect(projectCards).toHaveText(["alpha", "beta"]);
   await expect(page.locator("#project-list .card.keyboard-selected")).toHaveCount(0);
@@ -936,7 +859,7 @@ test("desktop selects a filtered project instead of creating its typed prefix", 
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.locator("#new-project-name").fill("wo");
   const projectCards = page.locator("#project-list .card");
   await expect(projectCards).toHaveText(["wolfpack"]);
@@ -966,7 +889,7 @@ test("click selects a filtered project through final create", async ({ page }) =
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.locator("#new-project-name").fill("wo");
   const projectCards = page.locator("#project-list .card");
   await expect(projectCards).toHaveText(["wolfpack"]);
@@ -997,7 +920,7 @@ test("desktop enter selects the first filtered project without arrow navigation"
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.locator("#new-project-name").fill("wo");
   await expect(page.locator("#project-list .card")).toHaveText(["wolfpack", "wolfpack-tools"]);
   await page.keyboard.press("Enter");
@@ -1025,7 +948,7 @@ test("create failure returns to the agent form with the entered session name and
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await page.getByRole("button", { name: "Open project wolfpack" }).click();
   const sessionName = page.locator("#session-name-input");
   await sessionName.fill("my-session");
@@ -1088,7 +1011,7 @@ test("desktop escape from new-session picker returns to expanded sessions, not a
   test.skip(testInfo.project.name !== "desktop", "desktop expanded-session regression");
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("test-project"));
+  await openSessionFromUi(page, "test-project");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 
   await page.locator("#sidebar-expand-btn").click();
@@ -1109,11 +1032,10 @@ test("desktop escape from new-session picker reopens the previous terminal", asy
   test.skip(testInfo.project.name !== "desktop", "desktop terminal-origin regression");
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("test-project"));
+  await openSessionFromUi(page, "test-project");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
-
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
 
   await page.keyboard.press("Escape");
@@ -1162,7 +1084,7 @@ test("desktop settings back from a terminal reopens that terminal", async ({ pag
   test.skip(testInfo.project.name !== "desktop", "desktop terminal-origin regression");
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).openSession("test-project"));
+  await openSessionFromUi(page, "test-project");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible({ timeout: 10_000 });
 
@@ -1228,7 +1150,7 @@ test("settings shows provider readiness and adds an installed provider", async (
   });
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => (window as unknown as WolfpackTestWindow).showView("settings"));
+  await openSettingsFromUi(page);
   await expect(page.locator("#setting-snapshotTtl")).toHaveCount(0);
 
   const shellRow = page.locator("#agents-list .agent-row").filter({ hasText: "shell" });

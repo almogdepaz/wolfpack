@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { openSessionFromUi, startTestServer, type TestServer } from "./helpers.ts";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 
 let srv: TestServer;
@@ -113,9 +113,7 @@ test("desktop parent grid opens every child session expanded", async ({ page }, 
 
   await page.goto(srv.baseUrl);
   await expect(page.locator(".delegation-parent-card", { hasText: "parent" }).first()).toBeVisible();
-  await page.evaluate(() => {
-    (window as unknown as { openSession(session: string, machine?: string): void }).openSession("parent", "");
-  });
+  await openSessionFromUi(page, "parent", "");
 
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell")).toHaveCount(6);
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(0);
@@ -148,23 +146,16 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
 
   await page.goto(srv.baseUrl);
   await expect(page.locator("#sidebar-session-list .delegation-parent-card")).toBeVisible();
-  await page.evaluate(() => {
-    (window as unknown as { openSession(session: string, machine?: string): void }).openSession("parent", "");
-  });
-  await expect.poll(() => page.evaluate(() => {
-    const appState = (window as unknown as { state: { delegationGridSessions: Array<{ session: string; controller?: { isConnected: boolean } }> } }).state;
-    return appState.delegationGridSessions.find((entry) => entry.session === "child")?.controller?.isConnected;
-  })).toBe(true);
+  await openSessionFromUi(page, "parent", "");
+  const childCell = page.locator('#delegation-grid-container .delegation-grid-cell[data-session="child"]');
+  await expect(childCell).toHaveAttribute("data-terminal-load-state", "live");
 
   await page.getByRole("button", { name: "Collapse child" }).click();
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
   await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
   await page.getByRole("button", { name: "Expand child" }).click();
 
-  await expect.poll(() => page.evaluate(() => {
-    const appState = (window as unknown as { state: { delegationGridSessions: Array<{ session: string; controller?: { isConnected: boolean } }> } }).state;
-    return appState.delegationGridSessions.find((entry) => entry.session === "child")?.controller?.isConnected;
-  })).toBe(true);
+  await expect(childCell).toHaveAttribute("data-terminal-load-state", "live");
   expect(attachCounts.get("child")).toBe(2);
 });
 
@@ -192,10 +183,7 @@ test("manual card order persists by stable identity and resets to server order",
     fakeSession("one", "one-id"),
     fakeSession("two", "two-id"),
   ];
-  await page.evaluate(async () => {
-    await (window as unknown as { loadSessions(): Promise<void> }).loadSessions();
-    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-  });
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect.poll(cardNames).toEqual(["one", "two", "three"]);
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-session-order"))).toBeNull();
 
@@ -219,7 +207,7 @@ test("manual card order persists by stable identity and resets to server order",
     fakeSession("three-renamed", "three-id", undefined, { state: AGENT_STATUS_STATE.WORKING, unseen: false }),
     fakeSession("new", "new-id"),
   ];
-  await page.evaluate(() => (window as unknown as { loadSessions(): Promise<void> }).loadSessions());
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await page.reload();
@@ -241,9 +229,7 @@ test("desktop card reordering keeps an auto-expanded sidebar open", async ({ pag
   ]);
 
   await page.goto(srv.baseUrl);
-  await page.evaluate(() => {
-    (window as unknown as { openSession(session: string, machine?: string): void }).openSession("one");
-  });
+  await openSessionFromUi(page, "one");
 
   const sidebar = page.locator("#desktop-sidebar");
   await expect(sidebar).toHaveClass(/collapsed/);
@@ -255,18 +241,51 @@ test("desktop card reordering keeps an auto-expanded sidebar open", async ({ pag
 
   const secondCard = page.locator('#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="two-id"]');
   await expect(secondCard).toBeVisible();
-  const dragStart = await secondCard.evaluate((element) => {
+  const dragStarted = await secondCard.evaluate((element) => {
+    const target = element.querySelector<HTMLElement>(".card-open");
+    if (!target) throw new Error("missing card open control");
     const rect = element.getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    const start = { x: rect.x + 16, y: rect.y + rect.height / 2 };
+    target.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 17,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons: 1,
+      clientX: start.x,
+      clientY: start.y,
+    }));
+    document.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 17,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons: 1,
+      clientX: start.x + 20,
+      clientY: start.y,
+    }));
+    return document.querySelector(".session-order-floating") !== null;
   });
-  await page.mouse.move(dragStart.x, dragStart.y);
-  await page.mouse.down();
-  await page.mouse.move(dragStart.x + 8, dragStart.y);
+  expect(dragStarted).toBe(true);
   await expect(page.locator(".session-order-floating")).toBeVisible();
   await sidebar.dispatchEvent("mouseleave");
   await page.waitForTimeout(350);
   await expect(sidebar).not.toHaveClass(/collapsed/);
-  await page.mouse.up();
+  await page.evaluate(() => {
+    document.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 17,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons: 0,
+    }));
+  });
 });
 
 test("direct card drag previews live movement and keeps delegation children attached", async ({ page }, testInfo) => {
@@ -335,7 +354,7 @@ test("direct card drag previews live movement and keeps delegation children atta
   await expect.poll(cardNames).toEqual(["solo", "parent"]);
   await expect(floating).toHaveCount(0);
   await expect(placeholder).toHaveCount(0);
-  expect(await page.evaluate(() => (window as unknown as { state: { currentSession: string | null } }).state.currentSession)).toBeNull();
+  await expect(page.locator('[data-action="open-session"][aria-current="page"]')).toHaveCount(0);
   await parentCard.getByRole("button", { name: "Expand 1 child agent" }).click();
   await expect.poll(cardNames).toEqual(["solo", "parent", "child"]);
 });
@@ -367,9 +386,8 @@ test("mobile moved card opens its terminal immediately after touch reorder", asy
   await expect(page.locator(".session-order-floating")).toBeVisible();
   await dispatchSyntheticTouch(page, null, "touchend", 12, target.x, target.y, `${secondSelector} .card-open`);
 
-  await expect.poll(() => page.evaluate(() => (window as unknown as { state: { currentSession: string | null } }).state.currentSession))
-    .toBe("second");
   await expect(page.locator("#terminal-view")).toBeVisible();
+  await expect(page.locator("#chip-label")).toHaveText("second");
 });
 
 test("expanded child cards stay compact and inside the session list", async ({ page }, testInfo) => {

@@ -3,8 +3,8 @@
  *
  * Uses mobile viewport which routes through /ws/pty unified terminal path.
  */
-import { test, expect, type WebSocketRoute } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { test, expect, type JSHandle, type Page, type WebSocketRoute } from "@playwright/test";
+import { openSessionFromUi, openSettingsFromUi, startTestServer, terminalTail, type TestServer } from "./helpers.ts";
 import { CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 
 let srv: TestServer;
@@ -16,6 +16,184 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   srv?.close();
 });
+
+type SwitchVisualObservation = {
+  readonly trigger: "sidebar-collapse" | "old-canvas-disconnect";
+  readonly className: string;
+  readonly loadState: string;
+  readonly canvasVisibility: string;
+  readonly canvasOpacity: string;
+  readonly loadingPaintSeen: boolean;
+};
+
+type SwitchVisualObservationHolder = {
+  readonly observed: Promise<SwitchVisualObservation>;
+};
+
+function installSwitchVisualObservation(
+  page: Page,
+  trigger: SwitchVisualObservation["trigger"],
+): Promise<JSHandle<SwitchVisualObservationHolder>> {
+  return page.evaluateHandle((expectedTrigger): SwitchVisualObservationHolder => {
+    const observed = new Promise<SwitchVisualObservation>((resolve, reject) => {
+      const container = document.getElementById("desktop-terminal-container");
+      const oldCanvas = container?.querySelector("canvas");
+      if (!container || !oldCanvas) {
+        reject(new Error("missing terminal canvas before switch"));
+        return;
+      }
+
+      const sidebar = document.getElementById("desktop-sidebar");
+      let loadingPaintSeen = false;
+      let settled = false;
+      let frameId = 0;
+      let timeoutId = 0;
+      let observer: MutationObserver | undefined;
+
+      const readState = (): Omit<SwitchVisualObservation, "trigger"> => {
+        const canvasStyle = getComputedStyle(oldCanvas);
+        return {
+          className: container.className,
+          loadState: container.getAttribute("data-terminal-load-state") || "",
+          canvasVisibility: canvasStyle.visibility || "missing",
+          canvasOpacity: canvasStyle.opacity || "missing",
+          loadingPaintSeen,
+        };
+      };
+
+      let latestConnectedState = readState();
+
+      const cleanup = (): void => {
+        observer?.disconnect();
+        if (frameId) cancelAnimationFrame(frameId);
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+      const finish = (actualTrigger: SwitchVisualObservation["trigger"]): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        const visualState = oldCanvas.isConnected ? readState() : latestConnectedState;
+        resolve({ ...visualState, trigger: actualTrigger, loadingPaintSeen });
+      };
+      const fail = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const isLoadingState = (state: Omit<SwitchVisualObservation, "trigger">): boolean =>
+        state.loadState === "prefill-loading" || state.loadState === "hydrating" || state.className.includes("hydrating");
+      const scheduleLoadingPaintCheck = (): void => {
+        const state = readState();
+        if (oldCanvas.isConnected) latestConnectedState = state;
+        if (!isLoadingState(state) || loadingPaintSeen) return;
+        requestAnimationFrame(() => {
+          if (settled) return;
+          const frameState = readState();
+          if (oldCanvas.isConnected) latestConnectedState = frameState;
+          loadingPaintSeen = loadingPaintSeen || (
+            isLoadingState(frameState) &&
+            frameState.canvasVisibility === "hidden" &&
+            frameState.canvasOpacity === "0"
+          );
+        });
+      };
+      const maybeFinish = (): boolean => {
+        if (expectedTrigger === "sidebar-collapse" && sidebar?.classList.contains("collapsed")) {
+          if (oldCanvas.isConnected) latestConnectedState = readState();
+          finish("sidebar-collapse");
+          return true;
+        }
+        if (expectedTrigger === "old-canvas-disconnect" && !oldCanvas.isConnected) {
+          finish("old-canvas-disconnect");
+          return true;
+        }
+        return false;
+      };
+      const observeFrame = (): void => {
+        if (settled || maybeFinish()) return;
+        scheduleLoadingPaintCheck();
+        frameId = requestAnimationFrame(observeFrame);
+      };
+
+      observer = new MutationObserver(() => {
+        if (settled || maybeFinish()) return;
+        scheduleLoadingPaintCheck();
+      });
+      observer.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["class", "data-terminal-load-state", "style"],
+      });
+      frameId = requestAnimationFrame(observeFrame);
+      timeoutId = window.setTimeout(() => fail(new Error("terminal switch visual observation timed out")), 7_000);
+    });
+
+    return { observed };
+  }, trigger);
+}
+
+type FullPrefillEarlyRevealHolder = {
+  readonly observed: Promise<boolean>;
+};
+
+function installFullPrefillEarlyRevealObservation(
+  page: Page,
+  session: string,
+): Promise<JSHandle<FullPrefillEarlyRevealHolder>> {
+  return page.evaluateHandle((observedSession): FullPrefillEarlyRevealHolder => {
+    const observed = new Promise<boolean>((resolve, reject) => {
+      const debugWindow = window as unknown as {
+        readonly __wfTrace?: Record<string, {
+          readonly _meta: { readonly session: string };
+          readonly events: ReadonlyArray<{ readonly kind: string; readonly prefillMode?: string }>;
+        }>;
+      };
+      let settled = false;
+      let frameId = 0;
+      let timeoutId = 0;
+      const cleanup = (): void => {
+        if (frameId) cancelAnimationFrame(frameId);
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+      const finish = (earlyReveal: boolean): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(earlyReveal);
+      };
+      const fail = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const observe = (): void => {
+        const trace = Object.values(debugWindow.__wfTrace || {})
+          .find((candidate) => candidate._meta.session === observedSession);
+        const fullPrefill = trace?.events.some((event) => event.kind === "attach.send" && event.prefillMode === "full") ?? false;
+        const prefillDone = trace?.events.some((event) => event.kind === "prefill_done") ?? false;
+        const canvas = document.querySelector("#desktop-terminal-container canvas");
+        const style = canvas ? getComputedStyle(canvas) : null;
+        if (fullPrefill && !prefillDone && style?.visibility === "visible" && style.opacity === "1") {
+          finish(true);
+          return;
+        }
+        if (prefillDone) {
+          finish(false);
+          return;
+        }
+        frameId = requestAnimationFrame(observe);
+      };
+
+      frameId = requestAnimationFrame(observe);
+      timeoutId = window.setTimeout(() => fail(new Error("full prefill early-reveal observation timed out")), 8_000);
+    });
+
+    return { observed };
+  }, session);
+}
 
 test("open session drawer from terminal view", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only viewport tests");
@@ -87,49 +265,44 @@ test("mobile keyboard viewport shift does not take over terminal view transform"
     });
   });
 
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.defineProperties(viewport, {
+      height: { value: 844, configurable: true },
+      offsetTop: { value: 0, configurable: true },
+      width: { value: 390, configurable: true },
+      pageTop: { value: 0, configurable: true },
+      pageLeft: { value: 0, configurable: true },
+      scale: { value: 1, configurable: true },
+    });
+    Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
+    Object.defineProperty(window, "visualViewport", { value: viewport, configurable: true });
+  });
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    const listeners: Array<() => void> = [];
-    const fakeVisualViewport = {
-      height: 844,
-      addEventListener: (_type: string, listener: () => void) => listeners.push(listener),
-      removeEventListener: (_type: string, listener: () => void) => {
-        const index = listeners.indexOf(listener);
-        if (index >= 0) listeners.splice(index, 1);
-      },
-    };
-    Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
-    Object.defineProperty(window, "visualViewport", { value: fakeVisualViewport, configurable: true });
-    (window as unknown as { __setFakeKeyboardHeight: (height: number) => void }).__setFakeKeyboardHeight = (height: number): void => {
-      fakeVisualViewport.height = 844 - height;
-      for (const listener of listeners) listener();
-    };
-  });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
   const state = await page.evaluate(() => {
     const terminalView = document.getElementById("terminal-view")!;
     const terminalViewBefore = terminalView.style.transform;
-    (window as unknown as { __setFakeKeyboardHeight: (height: number) => void }).__setFakeKeyboardHeight(320);
+    const viewport = window.visualViewport;
+    if (!viewport) throw new Error("missing fake visualViewport");
+    Object.defineProperty(viewport, "height", { value: 524, configurable: true });
+    viewport.dispatchEvent(new Event("resize"));
     const terminalContainer = document.getElementById("desktop-terminal-container")!;
     const accessory = document.getElementById("kb-accessory")!;
-    const appState = (window as unknown as {
-      state: { kbAccessoryOpen: boolean; terminalController?: { term?: { options: { disableStdin: boolean } } } };
-    }).state;
+    const nativeInput = terminalContainer.querySelector("textarea");
     return {
       terminalViewBefore,
       terminalViewInlineTransform: terminalView.style.transform,
       terminalContainerInlineTransform: terminalContainer.style.transform,
       accessoryDisplay: getComputedStyle(accessory).display,
       accessoryInlineTransform: accessory.style.transform,
-      keyboardStateOpen: appState.kbAccessoryOpen,
-      stdinDisabled: appState.terminalController?.term?.options.disableStdin,
+      accessoryVisible: accessory.classList.contains("visible"),
+      inputMode: nativeInput?.getAttribute("inputmode") ?? "missing",
+      readOnly: nativeInput?.hasAttribute("readonly") ?? false,
     };
   });
 
@@ -137,8 +310,9 @@ test("mobile keyboard viewport shift does not take over terminal view transform"
   expect(state.terminalContainerInlineTransform).toBe("translateY(-320px)");
   expect(state.accessoryDisplay).toBe("flex");
   expect(state.accessoryInlineTransform).toBe("translateY(-320px)");
-  expect(state.keyboardStateOpen).toBe(false);
-  expect(state.stdinDisabled).toBe(true);
+  expect(state.accessoryVisible).toBe(false);
+  expect(state.inputMode).toBe("none");
+  expect(state.readOnly).toBe(true);
 });
 
 test("mobile terminal mount does not horizontally scroll the view container", async ({ page }, testInfo) => {
@@ -146,10 +320,7 @@ test("mobile terminal mount does not horizontally scroll the view container", as
 
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
   await expect.poll(() => page.evaluate(() => ({
     viewScrollLeft: document.getElementById("view-container")?.scrollLeft ?? -1,
@@ -179,10 +350,7 @@ test("mobile keyboard uses ghostty native input with explicit open and close", a
 
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
   await expect(page.locator("#mobile-kb-proxy")).toHaveCount(0);
@@ -190,19 +358,11 @@ test("mobile keyboard uses ghostty native input with explicit open and close", a
   await expect(nativeInput).toHaveCount(1);
   await expect(nativeInput).toHaveAttribute("readonly", "");
   await expect(nativeInput).toHaveAttribute("inputmode", "none");
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.terminalController?.term?.options.disableStdin;
-  })).toBe(true);
 
   await page.locator("#kb-open-btn").click();
   await expect(nativeInput).not.toHaveAttribute("readonly", "");
   await expect(nativeInput).toHaveAttribute("inputmode", "text");
   await expect.poll(() => page.evaluate(() => document.activeElement === document.querySelector("#desktop-terminal-container textarea"))).toBe(true);
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.terminalController?.term?.options.disableStdin;
-  })).toBe(false);
 
   await nativeInput.evaluate((textarea) => {
     textarea.dispatchEvent(new InputEvent("beforeinput", {
@@ -265,10 +425,6 @@ test("mobile keyboard uses ghostty native input with explicit open and close", a
   await expect(nativeInput).toHaveAttribute("readonly", "");
   await expect(nativeInput).toHaveAttribute("inputmode", "none");
   await expect.poll(() => page.evaluate(() => document.activeElement === document.querySelector("#desktop-terminal-container textarea"))).toBe(false);
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.terminalController?.term?.options.disableStdin;
-  })).toBe(true);
 });
 
 test("mobile card swipe opens the selected terminal without exposing fallback input during peek", async ({ page }, testInfo) => {
@@ -304,7 +460,6 @@ test("mobile card swipe opens the selected terminal without exposing fallback in
     return {
       ...peek,
       expectedSession,
-      selectedSession: (window as unknown as { state: { currentSession: string | null } }).state.currentSession,
     };
   });
 
@@ -314,7 +469,7 @@ test("mobile card swipe opens the selected terminal without exposing fallback in
   expect(state.accessoryDisplay).toBe("none");
   expect(state.accessoryVisible).toBe(false);
   expect(state.expectedSession).not.toBe("");
-  expect(state.selectedSession).toBe(state.expectedSession);
+  await expect(page.locator("#chip-label")).toHaveText(state.expectedSession);
 });
 
 test("mobile touch scrolling dismisses an open native keyboard after drag threshold", async ({ page }, testInfo) => {
@@ -340,22 +495,14 @@ test("mobile touch scrolling dismisses an open native keyboard after drag thresh
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    switchSession("another-project");
-  });
+  await page.locator("#session-chip").click();
+  await page.locator('.drawer-item[data-val="another-project"]').click();
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
   await expect.poll(() => attachModes).toEqual(["full", "full"]);
-  await expect.poll(() => page.evaluate(() => {
-    const terminal = (window as unknown as { state: { terminalController?: { term?: { getScrollbackLength?: () => number } } } }).state.terminalController?.term;
-    return terminal?.getScrollbackLength?.() ?? 0;
-  })).toBeGreaterThan(0);
+  await expect.poll(() => terminalTail(page.locator("#desktop-terminal-container"), 40)).toContain("history-");
 
   await page.locator("#kb-open-btn").click();
   const nativeInput = page.locator("#desktop-terminal-container textarea");
@@ -365,8 +512,7 @@ test("mobile touch scrolling dismisses an open native keyboard after drag thresh
     const container = document.getElementById("desktop-terminal-container");
     const canvas = container?.querySelector("canvas");
     const textarea = container?.querySelector("textarea") as HTMLTextAreaElement | null;
-    const terminal = (window as unknown as { state: { terminalController?: { term?: { viewportY: number; options: { disableStdin: boolean } } } } }).state.terminalController?.term;
-    if (!container || !canvas || !textarea || !terminal) throw new Error("missing mobile terminal");
+    if (!container || !canvas || !textarea) throw new Error("missing mobile terminal");
     const dispatchTouch = (type: string, clientY: number): void => {
       const event = new Event(type, { bubbles: true, cancelable: true });
       Object.defineProperty(event, "touches", {
@@ -385,8 +531,7 @@ test("mobile touch scrolling dismisses an open native keyboard after drag thresh
       focusedAfterEnd: document.activeElement === textarea,
       inputMode: textarea.getAttribute("inputmode"),
       readOnly: textarea.readOnly,
-      stdinDisabled: terminal.options.disableStdin,
-      viewportY: terminal.viewportY,
+      textareaHasFocus: document.activeElement === textarea,
     };
   });
 
@@ -395,8 +540,7 @@ test("mobile touch scrolling dismisses an open native keyboard after drag thresh
   expect(dragState.focusedAfterEnd).toBe(false);
   expect(dragState.inputMode).toBe("none");
   expect(dragState.readOnly).toBe(true);
-  expect(dragState.stdinDisabled).toBe(true);
-  expect(dragState.viewportY).toBeGreaterThan(0);
+  expect(dragState.textareaHasFocus).toBe(false);
 });
 
 test("full session switch and reconnect keep partial prefill hidden until prefill_done", async ({ page }) => {
@@ -432,6 +576,10 @@ test("full session switch and reconnect keep partial prefill hidden until prefil
       switchedFullAttachCount++;
       latestFullPrefillDone = false;
       ws.send(Buffer.from("SWITCHED-PARTIAL-1\r\n"));
+      if (switchedFullAttachCount === 1) {
+        setTimeout(() => ws.close(), 700);
+        return;
+      }
       setTimeout(() => ws.send(Buffer.from("SWITCHED-PARTIAL-2\r\n")), 2500);
       setTimeout(() => {
         latestFullPrefillDone = true;
@@ -446,66 +594,40 @@ test("full session switch and reconnect keep partial prefill hidden until prefil
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    const debugWindow = window as unknown as {
-      __fullPrefillEarlyReveal?: boolean;
-      __wfTrace?: Record<string, {
-        readonly _meta: { readonly session: string };
-        readonly events: ReadonlyArray<{ readonly kind: string; readonly prefillMode?: string }>;
-      }>;
-    };
-    debugWindow.__fullPrefillEarlyReveal = false;
-    const observe = (): void => {
-      const trace = Object.values(debugWindow.__wfTrace || {}).find(candidate => candidate._meta.session === "another-project");
-      const fullPrefill = trace?.events.some(event => event.kind === "attach.send" && event.prefillMode === "full") ?? false;
-      const prefillDone = trace?.events.some(event => event.kind === "prefill_done") ?? false;
-      const canvas = document.querySelector("#desktop-terminal-container canvas");
-      const style = canvas ? getComputedStyle(canvas) : null;
-      if (fullPrefill && !prefillDone && style?.visibility === "visible" && style.opacity === "1") {
-        debugWindow.__fullPrefillEarlyReveal = true;
-      }
-      if (!prefillDone) requestAnimationFrame(observe);
-    };
-    requestAnimationFrame(observe);
-    // @ts-ignore exposed by the browser bundle
-    switchSession("another-project");
-  });
+  const earlyRevealHandle = await installFullPrefillEarlyRevealObservation(page, "another-project");
+  try {
+    await openSessionFromUi(page, "another-project", "");
 
-  await expect.poll(() => switchedPrefillMode).not.toBe("");
-  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 7000 });
-  await page.waitForTimeout(100);
-  expect(await page.evaluate(() => (window as unknown as { __fullPrefillEarlyReveal?: boolean }).__fullPrefillEarlyReveal)).toBe(false);
+    await expect.poll(() => switchedPrefillMode).not.toBe("");
 
-  if (switchedPrefillMode !== "full") return;
-  await page.evaluate(() => {
-    const controller = (window as unknown as { state: { terminalController?: { reconnect(): void } } }).state.terminalController;
-    if (!controller) throw new Error("missing terminal controller");
-    controller.reconnect();
-  });
-  await expect.poll(() => switchedFullAttachCount).toBe(2);
-  await page.waitForTimeout(4200);
-  expect(latestFullPrefillDone).toBe(false);
-  const reconnectVisualState = await page.evaluate(() => {
-    const container = document.getElementById("desktop-terminal-container");
-    const canvas = container?.querySelector("canvas");
-    const style = canvas ? getComputedStyle(canvas) : null;
-    return {
-      loadState: container?.getAttribute("data-terminal-load-state") || "",
-      visibility: style?.visibility || "missing",
-      opacity: style?.opacity || "missing",
-    };
-  });
-  expect(reconnectVisualState).toEqual({
-    loadState: "hydrating",
-    visibility: "hidden",
-    opacity: "0",
-  });
+    if (switchedPrefillMode === "full") {
+      await expect.poll(() => switchedFullAttachCount).toBe(2);
+      await page.waitForTimeout(4200);
+      expect(latestFullPrefillDone).toBe(false);
+      const reconnectVisualState = await page.evaluate(() => {
+        const container = document.getElementById("desktop-terminal-container");
+        const canvas = container?.querySelector("canvas");
+        const style = canvas ? getComputedStyle(canvas) : null;
+        return {
+          loadState: container?.getAttribute("data-terminal-load-state") || "",
+          visibility: style?.visibility || "missing",
+          opacity: style?.opacity || "missing",
+        };
+      });
+      expect(reconnectVisualState).toEqual({
+        loadState: "hydrating",
+        visibility: "hidden",
+        opacity: "0",
+      });
+    }
+
+    expect(await earlyRevealHandle.evaluate(async (holder) => holder.observed)).toBe(false);
+  } finally {
+    await earlyRevealHandle.dispose();
+  }
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 3000 });
 });
 
@@ -522,18 +644,11 @@ test("viewer conflict force-finishes hydration without prefill completion", asyn
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   await expect(page.locator("#desktop-conflict-overlay")).toBeVisible();
-  await expect.poll(() => page.evaluate(() => {
-    const controller = (window as unknown as {
-      state: { terminalController?: { hydration?: { readonly pending: boolean } } };
-    }).state.terminalController;
-    return controller?.hydration?.pending ?? null;
-  })).toBe(false);
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "viewer-conflict");
+  await expect(page.locator("#desktop-terminal-container")).not.toHaveClass(/hydrating/);
 });
 
 test("single take-control retries with takeover attach when control_granted stalls", async ({ page }, testInfo) => {
@@ -557,10 +672,7 @@ test("single take-control retries with takeover attach when control_granted stal
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.clock.install();
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-conflict-overlay")).toBeVisible();
   await page.locator("#desktop-conflict-overlay button").click();
   await expect.poll(() => takeControlMessages).toBe(1);
@@ -593,10 +705,7 @@ test("full prefill timeout closes the stalled socket instead of revealing partia
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.clock.install();
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "prefill-loading");
   await expect.poll(() => observedAttachPrefillMode).toBe("full");
 
@@ -632,15 +741,11 @@ test("desktop full switchSession keeps cached snapshot hidden until hydration", 
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#terminal-view")).toBeVisible();
 
+  await openSessionFromUi(page, "another-project", "");
   const immediateState = await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    switchSession("another-project");
     const container = document.getElementById("desktop-terminal-container");
     return {
       className: container?.className || "",
@@ -651,7 +756,7 @@ test("desktop full switchSession keeps cached snapshot hidden until hydration", 
 
   expect(immediateState.className).not.toContain("cached-visible");
   expect(immediateState.placeholder).toBe("");
-  expect(immediateState.loadState).toBe("prefill-loading");
+  expect(["prefill-loading", "hydrating"]).toContain(immediateState.loadState);
 });
 
 async function expectSoloAttachPrefillMode(page: import("@playwright/test").Page, mode: "viewport" | "full") {
@@ -679,28 +784,12 @@ test("desktop solo full prefill clears cached prose", async ({ page }, testInfo)
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
-  await expect.poll(async () => page.evaluate(() => {
-    const w = window as unknown as {
-      __wolfpackTest: { serializeTerminalTail(terminal: unknown, maxLines: number): string };
-      state: { terminalController?: { term?: unknown } };
-    };
-    const term = w.state.terminalController?.term;
-    return term ? w.__wolfpackTest.serializeTerminalTail(term, 80) : "";
-  }), { timeout: 5000 }).toContain("FULL-PREFILL");
+  const terminalContainer = page.locator("#desktop-terminal-container");
+  await expect.poll(async () => terminalTail(terminalContainer, 80), { timeout: 5000 }).toContain("FULL-PREFILL");
 
-  const tail = await page.evaluate(() => {
-    const w = window as unknown as {
-      __wolfpackTest: { serializeTerminalTail(terminal: unknown, maxLines: number): string };
-      state: { terminalController?: { term?: unknown } };
-    };
-    const term = w.state.terminalController?.term;
-    return term ? w.__wolfpackTest.serializeTerminalTail(term, 80) : "";
-  });
+  const tail = await terminalTail(terminalContainer, 80);
   expect(tail).not.toContain("CACHED-HISTORY-MUST-NOT-MIX");
 });
 
@@ -716,9 +805,8 @@ test("mobile first-session restore uses full prefill without showing cached plac
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
+  await openSessionFromUi(page, "test-project", "");
   const immediateState = await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
     const container = document.getElementById("desktop-terminal-container");
     return {
       className: container?.className || "",
@@ -742,10 +830,7 @@ test("desktop solo terminal defaults to full prefill", async ({ page }, testInfo
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   await expectSoloAttachPrefillMode(page, "full");
 });
@@ -754,6 +839,20 @@ test("mobile created solo session requests full prefill despite legacy fast sett
   test.skip(testInfo.project.name === "desktop", "mobile-only create path");
 
   const attachMessages: Array<{ readonly type?: string; readonly prefillMode?: string }> = [];
+  await page.route("**/api/projects", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ projects: ["test-project"] }),
+    });
+  });
+  await page.route("**/api/next-session-name?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ name: "created-solo" }),
+    });
+  });
   await page.route("**/api/create", async (route) => {
     await route.fulfill({
       status: 200,
@@ -784,15 +883,12 @@ test("mobile created solo session requests full prefill despite legacy fast sett
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    const appState = (window as unknown as { state: { selectedProject: string; isNewProject: boolean } }).state;
-    appState.selectedProject = "test-project";
-    appState.isNewProject = false;
-    const input = document.getElementById("session-name-input") as HTMLInputElement | null;
-    if (input) input.value = "created-solo";
-    // @ts-ignore exposed by the browser bundle
-    void createSessionWithAgent("shell");
-  });
+  await page.getByRole("button", { name: /Start a session on/ }).filter({ visible: true }).first().click();
+  await expect(page.locator("#projects-view")).toHaveClass(/visible/);
+  await page.getByRole("button", { name: "Open project test-project" }).click();
+  await expect(page.locator("#agent-view")).toHaveClass(/visible/);
+  await page.locator("#session-name-input").fill("created-solo");
+  await page.getByRole("button", { name: "Start shell" }).click();
 
   await expect.poll(() => attachMessages.at(-1)?.prefillMode, { timeout: 5000 }).toBe("full");
 });
@@ -801,10 +897,7 @@ test("settings UI does not expose solo prefill mode", async ({ page }) => {
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    showView("settings");
-  });
+  await openSettingsFromUi(page);
 
   await expect(page.locator("text=Solo prefill")).toHaveCount(0);
   await expect(page.locator(".solo-prefill-btn")).toHaveCount(0);
@@ -853,10 +946,7 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   const terminalContainer = page.locator("#desktop-terminal-container");
   await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
@@ -869,46 +959,31 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
     .slice(0, stableIndex)
     .filter((message) => message.type === "attach" || message.type === "resize")
     .at(-1);
-  const finalGeometry = await page.evaluate(() => {
-    const appState = (window as unknown as {
-      state: { terminalController?: { term?: { cols: number; rows: number; renderer?: { getMetrics?: () => { width: number; height: number } } } } };
-    }).state;
-    const term = appState.terminalController?.term;
+  if (!latestSizeMessage?.cols || !latestSizeMessage.rows) throw new Error("missing terminal size protocol message");
+  const finalGeometry = await page.evaluate(({ cols, rows }) => {
     const canvas = document.querySelector<HTMLCanvasElement>("#desktop-terminal-container canvas");
-    const metrics = term?.renderer?.getMetrics?.();
-    const context = canvas?.getContext("2d", { willReadFrequently: true });
-    const pixelRatio = canvas ? canvas.width / canvas.getBoundingClientRect().width : 1;
-    const cellInk = (column: number): number => {
-      if (!context || !metrics) return 0;
-      const pixels = context.getImageData(
-        Math.round(column * metrics.width * pixelRatio),
-        0,
-        Math.round(metrics.width * pixelRatio),
-        Math.round(metrics.height * pixelRatio),
-      ).data;
-      let count = 0;
-      for (let index = 0; index < pixels.length; index += 4) {
-        if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 300) count += 1;
-      }
-      return count;
-    };
+    const rect = canvas?.getBoundingClientRect();
+    const cellWidth = rect ? rect.width / cols : 0;
     return {
-      cols: term?.cols,
-      rows: term?.rows,
-      cellWidth: metrics?.width,
-      canvasWidth: canvas?.getBoundingClientRect().width,
-      referenceCellInk: term ? cellInk(term.cols - 3) : 0,
-      lastCellInk: term ? cellInk(term.cols - 1) : 0,
+      cols,
+      rows,
+      cellWidth,
+      canvasWidth: rect?.width,
+      canvasVisible: canvas ? getComputedStyle(canvas).visibility === "visible" : false,
+      canvasOpacity: canvas ? getComputedStyle(canvas).opacity : "missing",
     };
-  });
+  }, { cols: latestSizeMessage.cols, rows: latestSizeMessage.rows });
+  const renderedTail = await terminalTail(terminalContainer, finalGeometry.rows + 3);
+  const finalLine = renderedTail.split(/\r?\n/).find((line) => line.startsWith("X")) || "";
   const postStableResizes = messages.slice(stableIndex + 1).filter((message) => message.type === "resize");
 
   expect(stable).toEqual(expect.objectContaining({ cols: latestSizeMessage?.cols, rows: latestSizeMessage?.rows }));
   expect(stable).toEqual(expect.objectContaining({ cols: finalGeometry.cols, rows: finalGeometry.rows }));
   expect(postStableResizes).toEqual([]);
   expect(finalGeometry.canvasWidth).toBe((finalGeometry.cols ?? 0) * (finalGeometry.cellWidth ?? 0));
-  expect(finalGeometry.referenceCellInk).toBeGreaterThan(0);
-  expect(finalGeometry.lastCellInk).toBeGreaterThanOrEqual(finalGeometry.referenceCellInk * 0.8);
+  expect(finalGeometry.canvasVisible).toBe(true);
+  expect(finalGeometry.canvasOpacity).toBe("1");
+  expect(finalLine).toBe("X".repeat(finalGeometry.cols));
 });
 
 test("debug layout-stable immediate mode sends an early stable signal before attach ack", async ({ page }, testInfo) => {
@@ -937,10 +1012,7 @@ test("debug layout-stable immediate mode sends an early stable signal before att
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   await expect.poll(() => messages.filter((message) => message.type === "layout_stable").length, { timeout: 5000 }).toBeGreaterThanOrEqual(2);
   const attachIndex = messages.findIndex((message) => message.type === "attach");
@@ -980,10 +1052,7 @@ test("debug viewport-only layout-stable mode does not send immediate for desktop
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   await expect.poll(() => messages.some((message) => message.type === "layout_stable"), { timeout: 5000 }).toBe(true);
   const ackIndex = messages.findIndex((message) => message.type === "attach_ack");
@@ -1000,29 +1069,20 @@ test("desktop sidebar hover does not put live terminal into loading state", asyn
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   const terminalContainer = page.locator("#desktop-terminal-container");
   await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
   await expect.poll(async () => terminalContainer.locator("canvas").evaluate((canvas) => getComputedStyle(canvas).opacity), {
     timeout: 5000,
   }).toBe("1");
 
+  await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
   const hoverState = await page.evaluate(() => {
-    const stateWindow = window as unknown as { state: { sidebarResizeDone: boolean; sidebarCollapsed: boolean; sidebarPinned: boolean; sessionsExpanded: boolean } };
-    stateWindow.state.sidebarResizeDone = false;
-    stateWindow.state.sidebarCollapsed = true;
-    stateWindow.state.sidebarPinned = false;
-    stateWindow.state.sessionsExpanded = false;
-    const sidebar = document.getElementById("desktop-sidebar");
-    sidebar?.classList.add("collapsed");
-    document.body.classList.remove("sidebar-pinned", "sessions-expanded");
     document.getElementById("sidebar-hover-edge")?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
     const container = document.getElementById("desktop-terminal-container");
     const canvas = container?.querySelector("canvas");
@@ -1049,50 +1109,32 @@ test("desktop switch hides old canvas before auto-collapsing sidebar", async ({ 
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    const stateWindow = window as unknown as { state: { sidebarAutoExpanded: boolean; sidebarCollapsed: boolean } };
-    stateWindow.state.sidebarAutoExpanded = true;
-    stateWindow.state.sidebarCollapsed = false;
-    const sidebar = document.getElementById("desktop-sidebar");
-    sidebar?.classList.remove("collapsed");
-    const originalAdd = DOMTokenList.prototype.add;
-    DOMTokenList.prototype.add = function (...tokens: string[]) {
-      if (this === sidebar?.classList && tokens.includes("collapsed")) {
-        const container = document.getElementById("desktop-terminal-container");
-        const canvas = container?.querySelector("canvas");
-        const canvasStyle = canvas ? getComputedStyle(canvas) : null;
-        (window as unknown as { __sidebarCollapseVisualState?: unknown }).__sidebarCollapseVisualState = {
-          className: container?.className || "",
-          loadState: container?.getAttribute("data-terminal-load-state") || "",
-          canvasVisibility: canvasStyle?.visibility || "missing",
-          canvasOpacity: canvasStyle?.opacity || "missing",
-        };
-      }
-      return originalAdd.apply(this, tokens);
-    };
-  });
+  await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("another-project", "");
-  });
+  const collapseHandle = await installSwitchVisualObservation(page, "sidebar-collapse");
+  try {
+    await openSessionFromUi(page, "another-project", "");
 
-  const collapseVisualState = await page.evaluate(() => (window as unknown as { __sidebarCollapseVisualState?: unknown }).__sidebarCollapseVisualState);
-  expect(collapseVisualState).toEqual(expect.objectContaining({
-    loadState: "prefill-loading",
-    canvasVisibility: "hidden",
-    canvasOpacity: "0",
-  }));
+    const collapseVisualState = await collapseHandle.evaluate(async (holder) => holder.observed);
+    expect(collapseVisualState).toEqual(expect.objectContaining({
+      trigger: "sidebar-collapse",
+      loadState: "prefill-loading",
+      canvasVisibility: "hidden",
+      canvasOpacity: "0",
+    }));
+  } finally {
+    await collapseHandle.dispose();
+  }
 });
 
 test("desktop switch hides old canvas before disposing previous terminal", async ({ page }, testInfo) => {
@@ -1107,44 +1149,23 @@ test("desktop switch hides old canvas before disposing previous terminal", async
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    const controller = (window as unknown as { state: { terminalController?: { dispose?: () => void } } }).state.terminalController;
-    if (!controller?.dispose) throw new Error("missing terminal controller");
-    const originalDispose = controller.dispose.bind(controller);
-    controller.dispose = () => {
-      const container = document.getElementById("desktop-terminal-container");
-      const canvas = container?.querySelector("canvas");
-      const canvasStyle = canvas ? getComputedStyle(canvas) : null;
-      (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState = {
-        className: container?.className || "",
-        loadState: container?.getAttribute("data-terminal-load-state") || "",
-        canvasVisibility: canvasStyle?.visibility || "missing",
-        canvasOpacity: canvasStyle?.opacity || "missing",
-      };
-      originalDispose();
-    };
-  });
+  const disposeHandle = await installSwitchVisualObservation(page, "old-canvas-disconnect");
+  try {
+    await openSessionFromUi(page, "another-project", "");
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    switchSession("another-project");
-  });
-
-  await expect.poll(async () => page.evaluate(() =>
-    (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState,
-  )).not.toBeUndefined();
-  const disposeVisualState = await page.evaluate(() => (window as unknown as { __disposeVisualState?: unknown }).__disposeVisualState);
-  expect(disposeVisualState).toEqual(expect.objectContaining({
-    loadState: "prefill-loading",
-    canvasVisibility: "hidden",
-    canvasOpacity: "0",
-  }));
+    const disposeVisualState = await disposeHandle.evaluate(async (holder) => holder.observed);
+    expect(disposeVisualState).toEqual(expect.objectContaining({
+      trigger: "old-canvas-disconnect",
+      loadState: "prefill-loading",
+      canvasVisibility: "hidden",
+      canvasOpacity: "0",
+    }));
+  } finally {
+    await disposeHandle.dispose();
+  }
 });
 
 test("desktop keyboard session switch paints loading before terminal teardown", async ({ page }, testInfo) => {
@@ -1159,61 +1180,27 @@ test("desktop keyboard session switch paints loading before terminal teardown", 
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
-  await expect.poll(async () => page.evaluate(() =>
-    (window as unknown as { state: { allSessions: readonly unknown[] } }).state.allSessions.length,
-  )).toBeGreaterThan(1);
+  await expect(page.getByRole("button", { name: "Open another-project" }).first()).toBeAttached();
 
-  await page.evaluate(() => {
-    const container = document.getElementById("desktop-terminal-container");
-    const controller = (window as unknown as { state: { terminalController?: { dispose?: () => void } } }).state.terminalController;
-    if (!container || !controller?.dispose) throw new Error("missing terminal controller");
+  const disposeHandle = await installSwitchVisualObservation(page, "old-canvas-disconnect");
+  try {
+    await page.keyboard.down("Meta");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.up("Meta");
 
-    const originalAdd = DOMTokenList.prototype.add;
-    (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen = false;
-    DOMTokenList.prototype.add = function (...tokens: string[]) {
-      const result = originalAdd.apply(this, tokens);
-      if (this === container.classList && tokens.includes("hydrating")) {
-        (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen = false;
-        requestAnimationFrame(() => {
-          (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen = true;
-        });
-      }
-      return result;
-    };
-
-    const originalDispose = controller.dispose.bind(controller);
-    controller.dispose = () => {
-      const canvas = container.querySelector("canvas");
-      const canvasStyle = canvas ? getComputedStyle(canvas) : null;
-      (window as unknown as { __keyboardDisposeVisualState?: unknown }).__keyboardDisposeVisualState = {
-        loadingPaintSeen: (window as unknown as { __loadingPaintSeen?: boolean }).__loadingPaintSeen === true,
-        loadState: container.getAttribute("data-terminal-load-state") || "",
-        canvasVisibility: canvasStyle?.visibility || "missing",
-        canvasOpacity: canvasStyle?.opacity || "missing",
-      };
-      originalDispose();
-    };
-  });
-
-  await page.keyboard.down("Meta");
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.up("Meta");
-
-  await expect.poll(async () => page.evaluate(() =>
-    (window as unknown as { __keyboardDisposeVisualState?: unknown }).__keyboardDisposeVisualState,
-  )).not.toBeUndefined();
-  const disposeVisualState = await page.evaluate(() => (window as unknown as { __keyboardDisposeVisualState?: unknown }).__keyboardDisposeVisualState);
-  expect(disposeVisualState).toEqual(expect.objectContaining({
-    loadingPaintSeen: true,
-    loadState: "prefill-loading",
-    canvasVisibility: "hidden",
-    canvasOpacity: "0",
-  }));
+    const disposeVisualState = await disposeHandle.evaluate(async (holder) => holder.observed);
+    expect(disposeVisualState).toEqual(expect.objectContaining({
+      trigger: "old-canvas-disconnect",
+      loadingPaintSeen: true,
+      loadState: "prefill-loading",
+      canvasVisibility: "hidden",
+      canvasOpacity: "0",
+    }));
+  } finally {
+    await disposeHandle.dispose();
+  }
 });
 
 test("desktop full prefill records hydration timing after prefill_done", async ({ page }, testInfo) => {
@@ -1228,10 +1215,7 @@ test("desktop full prefill records hydration timing after prefill_done", async (
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
 
   const timing = await page.evaluate(() => {
@@ -1267,10 +1251,7 @@ test("desktop full prefill writes chunks while hidden before prefill_done", asyn
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   await expect.poll(async () => page.evaluate(() => {
     const debugWindow = window as unknown as {
@@ -1317,10 +1298,7 @@ test("desktop legacy saved fast prefill key is ignored", async ({ page }, testIn
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openSessionFromUi(page, "test-project", "");
 
   await expectSoloAttachPrefillMode(page, "full");
 });

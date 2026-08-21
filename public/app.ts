@@ -5045,19 +5045,16 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// ── Expose onclick-referenced functions to global scope ──
-// Bun's bundler tree-shakes functions only referenced in HTML onclick strings.
-// Assigning to window ensures they survive bundling and are callable from inline handlers.
-Object.assign(window, {
-  // session/project onclick handlers
-  openSession, killSession, selectProject, showProjectPicker,
-  sendQuickCmd, editQuickCmd, deleteQuickCmd, moveQuickCmd,
-  createSessionWithAgent, deleteCustomCmd, retryMachine,
-  // agent settings onclick handlers (inline in renderAgentsList)
-  toggleAgentEnabled, removeAgent, addAgent,
-  // grid + view (used by onclick and e2e page.evaluate)
-  toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
-  toggleSidebarDelegationChildren,
-  loadSessions, showView, state,
-  __wolfpackTest: Object.freeze({ serializeTerminalTail: serializeXtermTail }),
+function serializeTerminalTailForTest(container: HTMLElement, maxLines: number): string {
+  const controller = container.id === "desktop-terminal-container"
+    ? state.terminalController
+    : [...state.gridSessions, ...state.delegationGridSessions]
+      .find((session) => session._cellElement === container)?.controller;
+  return controller?.term ? serializeXtermTail(controller.term, maxLines) : "";
+}
+
+Object.defineProperty(window, "__wolfpackTest", {
+  value: Object.freeze({ serializeTerminalTail: serializeTerminalTailForTest }),
+  writable: false,
+  configurable: false,
 });

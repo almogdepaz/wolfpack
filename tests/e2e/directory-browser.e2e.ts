@@ -1,13 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { API_REQUEST_TIMEOUT_MS } from "../../public/fetch-timeout.ts";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { openProjectPickerFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
-
-interface TestWindow extends Window {
-  showProjectPicker(machineUrl?: string): void;
-}
 
 const MACHINE_NAME = "studio-mac";
 const BASE_DIRECTORY = "/server/projects";
@@ -33,7 +29,7 @@ async function openProjectPicker(page: Page): Promise<void> {
     });
   });
   await page.goto(server.baseUrl);
-  await page.evaluate(() => (window as unknown as TestWindow).showProjectPicker());
+  await openProjectPickerFromUi(page);
   await expect(page.getByRole("button", { name: `Open folder on ${MACHINE_NAME}` })).toBeVisible();
 }
 
