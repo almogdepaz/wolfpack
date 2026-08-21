@@ -84,6 +84,22 @@ export interface PtySocketClientOpts {
   readonly shouldReconnect?: () => boolean;
 }
 
+export interface BuildPtyWebSocketUrlOptions {
+  readonly origin: string;
+  readonly session: string;
+  readonly ticket?: string;
+  readonly reset?: boolean;
+}
+
+export function buildPtyWebSocketUrl(options: BuildPtyWebSocketUrlOptions): string {
+  const target = new URL("/ws/pty", options.origin);
+  target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+  target.searchParams.set("session", options.session);
+  if (options.ticket) target.searchParams.set("ticket", options.ticket);
+  if (options.reset) target.searchParams.set("reset", "1");
+  return target.href;
+}
+
 export interface PtySocketClient {
   connect(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
@@ -145,13 +161,12 @@ export function createPtySocketClient(
   function buildUrl(ticket: string | undefined): PtySocketRoute {
     const origin = opts.machine ? dependencies.resolveReadyMachineOrigin(opts.machine) : location.origin;
     if (!origin) return { kind: "unavailable" };
-    const target = new URL("/ws/pty", origin);
-    target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-    target.searchParams.set("session", opts.session);
-    if (ticket) target.searchParams.set("ticket", ticket);
-    if (consumeReset) target.searchParams.set("reset", "1");
+    const reset = consumeReset;
     consumeReset = false;
-    return { kind: "available", url: target.href };
+    return {
+      kind: "available",
+      url: buildPtyWebSocketUrl({ origin, session: opts.session, ticket, reset }),
+    };
   }
 
   /** Send one attach handshake to bootstrap PTY spawn on fresh WS open. */

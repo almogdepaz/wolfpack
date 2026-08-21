@@ -235,6 +235,29 @@ describe("homepage quality contract", () => {
     }
   });
 
+  test("keeps artifact behavior links to install, release, recovery, and trust destinations", () => {
+    const hrefs = new Set(
+      attributesFor("a[href]")
+        .map(({ href }) => href)
+        .filter((href): href is string => href !== undefined),
+    );
+    const expectedDestinations = [
+      "https://github.com/almogdepaz/wolfpack/blob/main/docs/installation.md",
+      "https://github.com/almogdepaz/wolfpack/blob/main/docs/first-session.md",
+      "https://github.com/almogdepaz/wolfpack/blob/main/docs/troubleshooting.md",
+      "https://github.com/almogdepaz/wolfpack/releases/latest",
+      "https://github.com/almogdepaz/wolfpack/releases/latest/download/checksums-sha256.txt",
+      "https://github.com/almogdepaz/wolfpack/blob/main/docs/installation.md#security-and-trust",
+    ];
+
+    for (const destination of expectedDestinations) {
+      expect(hrefs.has(destination)).toBe(true);
+      const url = new URL(destination);
+      expect(url.protocol).toBe("https:");
+      expect(url.hostname).toBe("github.com");
+    }
+  });
+
   test("keeps external URLs valid and new-tab links isolated", () => {
     const externalValues = [
       ...attributesFor("a[href]").map(({ href }) => href),

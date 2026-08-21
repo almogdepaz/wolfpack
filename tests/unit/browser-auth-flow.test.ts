@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  authenticatedFetchWithTimeout,
   browserAuthFetch,
   getBrowserAuthToken,
   setBrowserAuthToken,
@@ -97,5 +98,46 @@ describe("browser authentication flow", () => {
     await browserAuthFetch("/api/status", { headers: { Authorization: "Basic caller" } });
 
     expect(authorizations).toEqual(["Bearer scoped-token", "Basic caller"]);
+  });
+
+  test("retries one authenticated request after a 401 credential prompt", async () => {
+    const statuses = [401, 200];
+    const requests: string[] = [];
+    let prompts = 0;
+
+    const response = await authenticatedFetchWithTimeout("/api/status", {}, {
+      timedFetch: async (input) => {
+        requests.push(input.toString());
+        return new Response(null, { status: statuses.shift() ?? 500 });
+      },
+      promptForCredential: async () => {
+        prompts++;
+        return true;
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(prompts).toBe(1);
+    expect(requests).toEqual(["/api/status", "/api/status"]);
+  });
+
+  test("does not retry a 401 when the credential prompt is declined", async () => {
+    const requests: string[] = [];
+    let prompts = 0;
+
+    const response = await authenticatedFetchWithTimeout("/api/status", {}, {
+      timedFetch: async (input) => {
+        requests.push(input.toString());
+        return new Response(null, { status: 401 });
+      },
+      promptForCredential: async () => {
+        prompts++;
+        return false;
+      },
+    });
+
+    expect(response.status).toBe(401);
+    expect(prompts).toBe(1);
+    expect(requests).toEqual(["/api/status"]);
   });
 });
