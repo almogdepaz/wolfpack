@@ -14,6 +14,18 @@ import {
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import {
+  addToGridState,
+  removeFromGridState,
+  resumeGridState,
+  suspendGridState,
+} from "../src/grid-logic";
+import {
+  classifyDisconnect,
+  handleControlGranted,
+  handleDisplaced,
+  handleViewerConflict,
+} from "../src/take-control-logic";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 
 // ── Dependency injection ──
@@ -315,7 +327,7 @@ async function mountGridController(gs, cell, idx) {
     },
     onViewerConflict: () => {
 
-      var r = WP.handleViewerConflict({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
+      var r = handleViewerConflict({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
       gs._displaced = r.newState.displaced;
       gs._autoTakeControl = r.newState.autoTakeControl;
       gs._slowLoad?.stop();
@@ -328,7 +340,7 @@ async function mountGridController(gs, cell, idx) {
       }
     },
     onControlGranted: () => {
-      var s = WP.handleControlGranted({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
+      var s = handleControlGranted({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
       gs._displaced = s.displaced;
       gs._autoTakeControl = s.autoTakeControl;
       removeGridCellConflictOverlay(gs);
@@ -339,9 +351,9 @@ async function mountGridController(gs, cell, idx) {
     onDisconnected: (code, reason) => {
       removeGridCellConflictOverlay(gs);
       if (!sessionsForGridSession(gs).includes(gs)) return;
-      var action = WP.classifyDisconnect(code, reason || "");
+      var action = classifyDisconnect(code, reason || "");
       if (action === "displaced") {
-        var ns = WP.handleDisplaced({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
+        var ns = handleDisplaced({ displaced: gs._displaced, autoTakeControl: gs._autoTakeControl });
         gs._displaced = ns.displaced;
         gs._autoTakeControl = ns.autoTakeControl;
         gs._slowLoad?.stop();
@@ -773,7 +785,7 @@ export function setDelegationGridFocus(idx: number): void {
 }
 
 export function suspendGridMode() {
-  const preserved = WP.suspendGridState(state.gridSessions, state.gridFocusIndex);
+  const preserved = suspendGridState(state.gridSessions, state.gridFocusIndex);
   if (preserved.sessions.length >= 2) {
     state.preservedGridSessions = preserved.sessions;
     state.preservedGridFocusIndex = preserved.focusIndex;
@@ -810,7 +822,7 @@ export function restorePreservedGrid() {
   // handled gracefully: each cell's controller will receive
   // CLOSE_CODE_SESSION_UNAVAILABLE (4001) and transition to "session-ended"
   // state without crashing the grid.
-  const restored = WP.resumeGridState(state.preservedGridSessions, state.preservedGridFocusIndex);
+  const restored = resumeGridState(state.preservedGridSessions, state.preservedGridFocusIndex);
   state.gridSessions = restored.sessions.map(gs => ({
     session: gs.session,
     machine: gs.machine || "",
@@ -844,7 +856,7 @@ export function addToGrid(session: string, machine?: string): void {
   if (!canOpenMultiTerminalGrid()) return;
   const targetMachine = machine || "";
   if (state.currentView !== "terminal" && hasPreservedGrid()) {
-    const result = WP.addToGridState(
+    const result = addToGridState(
       state.preservedGridSessions,
       session,
       targetMachine,
@@ -1145,7 +1157,7 @@ export function toggleGrid(session, machine, event) {
   if (!isGridActive() && hasPreservedGrid() && state.currentView !== "terminal") {
     const idx = state.preservedGridSessions.findIndex(gs => gs.session === session && (gs.machine || "") === (machine || ""));
     if (idx !== -1) {
-      const result = WP.removeFromGridState(state.preservedGridSessions, idx, state.preservedGridFocusIndex);
+      const result = removeFromGridState(state.preservedGridSessions, idx, state.preservedGridFocusIndex);
       if (result.exitGrid) {
         state.preservedGridSessions = [];
         state.preservedGridFocusIndex = 0;

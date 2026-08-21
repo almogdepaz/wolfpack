@@ -50,8 +50,8 @@ jobs:
       - name: Generate embedded assets
         run: bun run scripts/gen-assets.ts
 
-      - name: Check public-assets.ts is in sync with public/
-        run: git diff --exit-code src/public-assets.ts public/wolfpack-lib.js
+      - name: Check generated public assets are in sync
+        run: git diff --exit-code src/public-assets.ts
 
       - name: Typecheck (root + public/)
         run: bun run typecheck

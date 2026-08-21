@@ -1,7 +1,6 @@
 /**
- * Pure grid layout and state logic — extracted from index.html for testability.
- * The frontend uses inline versions of these; this module is the canonical source
- * for testing grid behavior without a browser DOM.
+ * Pure grid layout and state logic imported directly by the browser frontend
+ * and unit tests.
  */
 
 export const MAX_GRID_CELLS = 6;

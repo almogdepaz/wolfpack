@@ -685,15 +685,21 @@ test("desktop solo full prefill clears cached prose", async ({ page }, testInfo)
   });
 
   await expect.poll(async () => page.evaluate(() => {
-    const controller = (window as unknown as { state: { terminalController?: { term?: { buffer?: { active?: unknown } } } } }).state.terminalController;
-    const buffer = controller?.term?.buffer?.active;
-    if (!buffer) return "";
-    return (window as unknown as { WP: { serializeBufferTail(buffer: unknown, maxLines: number): string } }).WP.serializeBufferTail(buffer, 80);
+    const w = window as unknown as {
+      __wolfpackTest: { serializeTerminalTail(terminal: unknown, maxLines: number): string };
+      state: { terminalController?: { term?: unknown } };
+    };
+    const term = w.state.terminalController?.term;
+    return term ? w.__wolfpackTest.serializeTerminalTail(term, 80) : "";
   }), { timeout: 5000 }).toContain("FULL-PREFILL");
 
   const tail = await page.evaluate(() => {
-    const buffer = (window as unknown as { state: { terminalController?: { term?: { buffer?: { active?: unknown } } } } }).state.terminalController?.term?.buffer?.active;
-    return buffer ? (window as unknown as { WP: { serializeBufferTail(buffer: unknown, maxLines: number): string } }).WP.serializeBufferTail(buffer, 80) : "";
+    const w = window as unknown as {
+      __wolfpackTest: { serializeTerminalTail(terminal: unknown, maxLines: number): string };
+      state: { terminalController?: { term?: unknown } };
+    };
+    const term = w.state.terminalController?.term;
+    return term ? w.__wolfpackTest.serializeTerminalTail(term, 80) : "";
   });
   expect(tail).not.toContain("CACHED-HISTORY-MUST-NOT-MIX");
 });

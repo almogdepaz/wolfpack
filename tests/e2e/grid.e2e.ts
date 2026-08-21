@@ -477,20 +477,19 @@ test("grid viewport prefill does not seed cached prose into terminal scrollback"
 
   const cells = await page.evaluate(() => {
     const w = window as unknown as {
-      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
+      __wolfpackTest: { serializeTerminalTail(terminal: unknown, maxLines: number): string };
       state: {
         gridSessions: Array<{
           session: string;
-          controller?: { term?: { buffer?: { active?: unknown }; getScrollbackLength?: () => number } };
+          controller?: { term?: { getScrollbackLength?: () => number } };
         }>;
       };
     };
     return w.state.gridSessions.map((gs) => {
       const term = gs.controller?.term;
-      const buffer = term?.buffer?.active;
       return {
         session: gs.session,
-        text: buffer ? w.WP.serializeBufferTail(buffer, 120) : "",
+        text: term ? w.__wolfpackTest.serializeTerminalTail(term, 120) : "",
         scrollbackLength: term?.getScrollbackLength?.() ?? 0,
       };
     });
@@ -792,17 +791,17 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
 
   const cells = await page.evaluate(() => {
     const w = window as unknown as {
-      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
+      __wolfpackTest: { serializeTerminalTail(terminal: unknown, maxLines: number): string };
       state: {
         gridSessions: Array<{
           session: string;
-          controller?: { term?: { buffer?: { active?: unknown } } };
+          controller?: { term?: unknown };
         }>;
       };
     };
     return w.state.gridSessions.map((gs) => {
-      const buffer = gs.controller?.term?.buffer?.active;
-      return buffer ? w.WP.serializeBufferTail(buffer, 120) : "";
+      const term = gs.controller?.term;
+      return term ? w.__wolfpackTest.serializeTerminalTail(term, 120) : "";
     });
   });
   expect(cells).toHaveLength(2);

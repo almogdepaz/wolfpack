@@ -135,10 +135,38 @@ import {
 } from "../src/tailnet-machine-contract";
 import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
 import { snapshotKeysToEvict } from "../src/snapshot-cache";
+import { nextAttachDimensionAction } from "../src/attach-dimensions";
 import {
+  resizeRehydrateScrollTarget,
+  serializeBufferTail,
+} from "../src/terminal-buffer";
+import {
+  shouldInsertMessageNewlineFromAccessoryKey,
+  shouldInterceptCopy,
+  shouldReleaseScrollLockOnKeydown,
+  shouldSubmitMessageInputOnEnter,
+  splitTerminalInputBytes,
   terminalDataFromBeforeInput,
   terminalDataFromKeydownForBeforeInputDedupe,
 } from "../src/terminal-input";
+import {
+  fetchTimeoutMs as peerHealthTimeoutMs,
+  recordFailure as peerHealthRecordFailure,
+  recordSuccess as peerHealthRecordSuccess,
+} from "../src/peer-health";
+import {
+  classifyDisconnect,
+  handleControlGranted,
+  handleDisplaced,
+  handleTakeControlClick,
+  handleViewerConflict,
+  prepareAutoTakeControl,
+} from "../src/take-control-logic";
+import {
+  CLOSE_CODE_PREFILL_TIMEOUT,
+  CLOSE_CODE_SERVER_ERROR,
+  WS_CLOSE_REASONS,
+} from "../src/ws-constants";
 
 // ── WASM capability guard ──
 
@@ -696,7 +724,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // Copy (ghostty renders to canvas, so native copy doesn't work)
   // ghostty-web: true = "handled, stop", false = "not handled, continue"
   term.attachCustomKeyEventHandler((e) => {
-    if (WP.shouldInterceptCopy(e, term.hasSelection())) {
+    if (shouldInterceptCopy(e, term.hasSelection())) {
       navigator.clipboard.writeText(term.getSelection()).catch((e) => { console.debug("[clipboard] copy failed:", e); });
       return true;
     }
@@ -980,7 +1008,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     const dims = _attachUsesProposedDimensions
       ? (opts.getProposedDimensions?.() ?? opts.getTermDimensions())
       : opts.getTermDimensions();
-    const dimensionAction = WP.nextAttachDimensionAction(
+    const dimensionAction = nextAttachDimensionAction(
       dims,
       _attachDimensionRetry.attempt,
       ATTACH_DIMENSION_MAX_ATTEMPTS,
@@ -992,7 +1020,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     }
     if (dimensionAction.kind === "fail") {
       clearAttachRetryState();
-      ws.close(WP.CLOSE_CODE_SERVER_ERROR, "attach dimensions unavailable");
+      ws.close(CLOSE_CODE_SERVER_ERROR, "attach dimensions unavailable");
       return;
     }
     clearAttachRetryState();
@@ -1032,7 +1060,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
         _prefillDoneTimeout = null;
         if (!_awaitingPrefillDone || ws !== attachedSocket || attachedSocket.readyState !== WebSocket.OPEN) return;
         __wfTraceEvent(_trace, "prefill.timeout", { timeoutMs: PREFILL_PROTOCOL_TIMEOUT_MS });
-        attachedSocket.close(WP.CLOSE_CODE_PREFILL_TIMEOUT, WP.WS_CLOSE_REASONS.PREFILL_TIMEOUT);
+        attachedSocket.close(CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS.PREFILL_TIMEOUT);
       }, PREFILL_PROTOCOL_TIMEOUT_MS);
     }
     ws.send(JSON.stringify(msg));
@@ -1191,7 +1219,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
 
   function deferOrderedResizeFrame(frame: DeferredOrderedResizeFrame): void {
     if (_deferredOrderedResizeBytes + frame.bytes > ORDERED_RESIZE_BARRIER_MAX_BYTES) {
-      ws?.close(WP.CLOSE_CODE_SERVER_ERROR, "ordered resize barrier overflow");
+      ws?.close(CLOSE_CODE_SERVER_ERROR, "ordered resize barrier overflow");
       return;
     }
     _deferredOrderedResizeBytes += frame.bytes;
@@ -1453,7 +1481,7 @@ function createPtySocketClient(opts: PtySocketClientOpts): PtySocketClient {
     const bytes = data instanceof ArrayBuffer
       ? new Uint8Array(data)
       : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    for (const frame of WP.splitTerminalInputBytes(bytes)) {
+    for (const frame of splitTerminalInputBytes(bytes)) {
       const copy = new ArrayBuffer(frame.byteLength);
       new Uint8Array(copy).set(frame);
       if (!sendBounded(copy, copy.byteLength)) return false;
@@ -1913,7 +1941,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
         }
       };
       _scrollLockKeydownHandler = (event: KeyboardEvent) => {
-        if (!WP.shouldReleaseScrollLockOnKeydown(event)) return;
+        if (!shouldReleaseScrollLockOnKeydown(event)) return;
         if (_userScrolledUp) {
           _userScrolledUp = false;
           _userRequestedScrollback = false;
@@ -1985,7 +2013,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       onReveal: () => {
         const pendingResizeScrollRestore = resizeLifecycle.takePendingScrollRestore();
         if (pendingResizeScrollRestore && _term) {
-          const target = WP.resizeRehydrateScrollTarget({
+          const target = resizeRehydrateScrollTarget({
             ...pendingResizeScrollRestore,
             newScrollbackLength: _term.getScrollbackLength?.() ?? 0,
           });
@@ -2422,7 +2450,7 @@ function flushSnapshot() {
   if (text) saveSnapshot(state.currentMachine, state.currentSession, text);
 }
 function serializeXtermTail(term, maxLines) {
-  return WP.serializeBufferTail(term.buffer.active, maxLines);
+  return serializeBufferTail(term.buffer.active, maxLines);
 }
 
 // ── Machine registry ──
@@ -3346,13 +3374,13 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
       failure: "network" as const,
     });
   }
-  const timeoutMs = isRemote ? WP.peerHealthTimeoutMs(state.peerHealth, machineIdentity) : 0;
+  const timeoutMs = isRemote ? peerHealthTimeoutMs(state.peerHealth, machineIdentity) : 0;
   const signal = isRemote
     ? AbortSignal.any([refreshSignal, AbortSignal.timeout(timeoutMs)])
     : refreshSignal;
   const options = { signal };
   return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
-    if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordSuccess(state.peerHealth, machineIdentity);
+    if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     return {
       machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
       sessions: sessions.sessions || [],
@@ -3360,7 +3388,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
       pending: false,
     };
   }).catch((error: unknown) => {
-    if (isRemote && isCurrentLoad()) state.peerHealth = WP.peerHealthRecordFailure(state.peerHealth, machineIdentity);
+    if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordFailure(state.peerHealth, machineIdentity);
     return {
       machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
       sessions: [], online: false, pending: false,
@@ -4402,7 +4430,7 @@ function startDesktopTakeControlFallback(): void {
     isPending: () => !!document.getElementById("desktop-conflict-overlay"),
     prepareRetry: () => {
       _desktopTakeControlTimer = null;
-      _tcState = WP.prepareAutoTakeControl(_tcState);
+      _tcState = prepareAutoTakeControl(_tcState);
     },
   });
 }
@@ -4415,12 +4443,12 @@ function showDesktopConflictOverlay() {
   removeDesktopConflictOverlay();
   const overlay = createConflictOverlay("Session active on another device", "Take Control", () => {
     if (!state.terminalController) return;
-    var clickAction = WP.handleTakeControlClick(state.terminalController.isConnected);
+    var clickAction = handleTakeControlClick(state.terminalController.isConnected);
     if (clickAction === "send-take-control") {
       state.terminalController.sendTakeControl();
       startDesktopTakeControlFallback();
     } else {
-      _tcState = WP.prepareAutoTakeControl(_tcState);
+      _tcState = prepareAutoTakeControl(_tcState);
       state.terminalController.reconnect({ takeControl: true });
     }
     // Don't remove overlay here — wait for control_granted to confirm
@@ -4531,7 +4559,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       if (wasReconnect) wpMetrics.reconnectCount++;
       // Successful WS open clears stale conflict overlay. If the server
       // sees a conflict, onViewerConflict fires after onOpen and re-shows it.
-      _tcState = WP.handleControlGranted(_tcState);
+      _tcState = handleControlGranted(_tcState);
       removeDesktopConflictOverlay();
       setTerminalLoadVisualState(container, "prefill-loading");
       slowLoad.start("waiting for terminal prefill");
@@ -4571,7 +4599,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       addToGrid(session, state.currentMachine || "");
     },
     onViewerConflict: () => {
-      var r = WP.handleViewerConflict(_tcState);
+      var r = handleViewerConflict(_tcState);
       _tcState = r.newState;
       slowLoad.stop();
       setTerminalLoadVisualState(container, _tcState.displaced ? "displaced" : "viewer-conflict");
@@ -4582,7 +4610,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       }
     },
     onControlGranted: () => {
-      _tcState = WP.handleControlGranted(_tcState);
+      _tcState = handleControlGranted(_tcState);
       removeDesktopConflictOverlay();
       setTerminalLoadVisualState(container, "hydrating");
       slowLoad.start("restoring terminal control");
@@ -4591,9 +4619,9 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
     },
     onDisconnected: (code, reason) => {
       removeDesktopConflictOverlay();
-      var action = WP.classifyDisconnect(code, reason || "");
+      var action = classifyDisconnect(code, reason || "");
       if (action === "displaced") {
-        _tcState = WP.handleDisplaced(_tcState);
+        _tcState = handleDisplaced(_tcState);
         slowLoad.stop();
         setTerminalLoadVisualState(container, "displaced");
         showDesktopConflictOverlay();
@@ -5379,7 +5407,7 @@ msgInput.addEventListener("keydown", (e) => {
   if (state.currentView !== "terminal") return;
   const empty = !msgInput.value.trim();
   if (e.key === "Enter") {
-    if (WP.shouldSubmitMessageInputOnEnter({
+    if (shouldSubmitMessageInputOnEnter({
       key: e.key,
       shiftKey: e.shiftKey,
       enterSends: wpSettings.enterSends,
@@ -5488,7 +5516,7 @@ function insertMessageInputNewline(): void {
     function fire() {
       haptic([15]);
       const messageInput = document.getElementById("msg-input") as HTMLTextAreaElement;
-      if (WP.shouldInsertMessageNewlineFromAccessoryKey({
+      if (shouldInsertMessageNewlineFromAccessoryKey({
         key,
         isMessageInputActive: document.activeElement === messageInput,
         hasMessageInputDraft: messageInput.value.length > 0,
@@ -6522,4 +6550,5 @@ Object.assign(window, {
   toggleGrid, addToGrid, removeFromGrid, suspendGridMode,
   toggleSidebarDelegationChildren,
   loadSessions, showView, state,
+  __wolfpackTest: Object.freeze({ serializeTerminalTail: serializeXtermTail }),
 });

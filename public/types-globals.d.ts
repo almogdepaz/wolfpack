@@ -1,24 +1,15 @@
 /**
  * Ambient global declarations for the browser bundle.
  *
- * The frontend loads several script tags that install globals on `window`
- * before `app.bundle.js` runs:
+ * The app bundle lazily loads `/ghostty-web.bundle.js` before constructing a
+ * terminal. Ghostty then installs `window.Terminal` and `window.FitAddon`.
  *
- *   - `/ghostty-web.bundle.js` → `window.Terminal`, `window.FitAddon`
- *   - `/wolfpack-lib.js`       → `window.WP` (the surface re-exported from
- *                                 `src/wolfpack-client-lib.ts`)
- *
- * Plus a few window globals used by app.ts (debug surface, wasm-bundle
+ * A few additional window globals are used by app.ts (debug surface, wasm-bundle
  * handoff). Declare them here so the rest of the code doesn't need ad-hoc
  * casts.
  *
  * This file is `.d.ts` so it contributes types only; it never emits.
  */
-
-// `WP` is the runtime surface bundled from src/wolfpack-client-lib.ts.
-// Re-export through the type system so all `WP.foo` access stays accurate
-// to the source of truth.
-import type * as WolfpackClientLib from "../src/wolfpack-client-lib";
 
 declare global {
   interface GhosttyTerminal {
@@ -94,8 +85,6 @@ declare global {
     fit(): void;
   }
 
-  const WP: typeof WolfpackClientLib;
-
   // ghostty-web globals. The bundle ships untyped (it's loaded as a UMD
   // bundle attached to `window`), so this is the minimal structural surface
   // this frontend actually consumes.
@@ -106,7 +95,6 @@ declare global {
     // ghostty-web handoff (set by /ghostty-web.bundle.js at load time)
     Terminal: typeof Terminal;
     FitAddon: typeof FitAddon;
-    WP: typeof WolfpackClientLib;
 
     // wasm-bundle bootstrap (set by /ghostty-web.bundle.js, signals readiness)
     ghosttyReady?: Promise<void>;

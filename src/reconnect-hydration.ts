@@ -1,7 +1,6 @@
 /**
  * Pure decision functions for reconnect hydration.
- * Used by both the browser frontend (via wolfpack-lib.js bundle)
- * and unit tests (via direct import).
+ * Imported directly by both the browser frontend and unit tests.
  */
 
 /**

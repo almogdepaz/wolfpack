@@ -1,7 +1,6 @@
 /**
  * Pure functions for terminal input handling.
- * Used by both the browser frontend (via wolfpack-lib.js bundle)
- * and unit tests (via direct import).
+ * Imported directly by both the browser frontend and unit tests.
  */
 import { PTY_BINARY_FRAME_MAX_BYTES } from "./ws-constants";
 
