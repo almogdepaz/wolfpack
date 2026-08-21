@@ -5,7 +5,6 @@
 // ── Regex patterns ──
 
 export const CMD_REGEX = /^[a-zA-Z0-9 \-._/=]+$/;
-export const SAFE_FILENAME = /^[a-zA-Z0-9._\- ]+$/;
 
 // ── Validation functions ──
 
@@ -40,12 +39,6 @@ export function clampRows(n: number): number {
 
 export function isValidPort(n: number): boolean {
   return Number.isInteger(n) && n >= 1 && n <= 65535;
-}
-
-// ── Shell escaping ──
-
-export function shellEscape(s: string): string {
-  return "'" + s.replace(/\0/g, "").replace(/'/g, "'\\''") + "'";
 }
 
 // ── XML/plist escaping ──

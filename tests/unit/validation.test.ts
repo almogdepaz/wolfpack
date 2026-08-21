@@ -1,232 +1,181 @@
 import { describe, expect, test } from "bun:test";
 import {
   CMD_REGEX,
+  MAX_INITIAL_PROMPT_LENGTH,
+  MAX_SESSION_NAME_LENGTH,
+  clampCols,
+  clampRows,
+  isValidPort,
   isValidProjectName,
   isValidSessionName,
+  projectLabelToSessionName,
 } from "../../src/validation.ts";
 
-// ── isValidSessionName tests ──
-
 describe("isValidSessionName", () => {
-  test("accepts simple name", () => {
-    expect(isValidSessionName("my-session")).toBe(true);
+  test.each([
+    "session",
+    "my-session",
+    "my_session",
+    "Wolfpack2",
+    "x",
+    "a".repeat(MAX_SESSION_NAME_LENGTH),
+  ])("accepts %p", (name) => {
+    expect(isValidSessionName(name)).toBe(true);
   });
 
-  test("accepts underscores", () => {
-    expect(isValidSessionName("my_session")).toBe(true);
-  });
-
-  test("accepts numbers", () => {
-    expect(isValidSessionName("wolfpack-2")).toBe(true);
-  });
-
-  test("accepts uppercase", () => {
-    expect(isValidSessionName("MySession")).toBe(true);
-  });
-
-  test("rejects dots (tmux restriction)", () => {
-    expect(isValidSessionName("foo.bar")).toBe(false);
-  });
-
-  test("rejects colons (tmux restriction)", () => {
-    expect(isValidSessionName("foo:bar")).toBe(false);
-  });
-
-  test("rejects spaces", () => {
-    expect(isValidSessionName("my session")).toBe(false);
-  });
-
-  test("rejects empty string", () => {
-    expect(isValidSessionName("")).toBe(false);
-  });
-
-  test("rejects slashes", () => {
-    expect(isValidSessionName("foo/bar")).toBe(false);
-  });
-
-  test("rejects shell injection", () => {
-    expect(isValidSessionName("foo;rm -rf /")).toBe(false);
-  });
-
-  test("rejects names over 100 chars", () => {
-    expect(isValidSessionName("a".repeat(101))).toBe(false);
-  });
-
-  test("accepts names at 100 chars", () => {
-    expect(isValidSessionName("a".repeat(100))).toBe(true);
+  test.each([
+    ["empty", ""],
+    ["101 chars", "a".repeat(MAX_SESSION_NAME_LENGTH + 1)],
+    ["dot", "foo.bar"],
+    ["colon", "foo:bar"],
+    ["slash", "foo/bar"],
+    ["backslash", "foo\\bar"],
+    ["space", "foo bar"],
+    ["semicolon", "foo;rm -rf /"],
+    ["pipe", "foo|bar"],
+    ["ampersand", "foo&bar"],
+    ["redirect", "foo>bar"],
+    ["quote", "foo'bar"],
+    ["double quote", 'foo"bar'],
+    ["dollar substitution", "$(whoami)"],
+    ["backtick substitution", "`whoami`"],
+    ["NUL", "foo\0bar"],
+    ["BEL control", "foo\x07bar"],
+    ["ANSI escape", "\x1b[31mred\x1b[0m"],
+    ["newline", "foo\nbar"],
+    ["carriage return", "foo\rbar"],
+    ["tab", "foo\tbar"],
+    ["unicode emoji", "wolf🐺pack"],
+    ["unicode CJK", "テスト"],
+    ["unicode RTL override", "\u202Eevil"],
+  ])("rejects %s", (_label, name) => {
+    expect(isValidSessionName(name)).toBe(false);
   });
 });
-
-// ── isValidProjectName tests ──
 
 describe("isValidProjectName", () => {
-  test("accepts simple alphanumeric name", () => {
-    expect(isValidProjectName("myproject")).toBe(true);
+  test.each([
+    "project",
+    "my-project",
+    "test_123",
+    "foo.bar",
+    ".hidden",
+    "123project",
+    "my-project_v2.0",
+  ])("accepts %p", (name) => {
+    expect(isValidProjectName(name)).toBe(true);
   });
 
-  test("accepts name with hyphens", () => {
-    expect(isValidProjectName("my-project")).toBe(true);
-  });
-
-  test("accepts name with dots", () => {
-    expect(isValidProjectName("foo.bar")).toBe(true);
-  });
-
-  test("accepts name with underscores", () => {
-    expect(isValidProjectName("test_123")).toBe(true);
-  });
-
-  test("accepts mixed valid chars", () => {
-    expect(isValidProjectName("my-project_v2.0")).toBe(true);
-  });
-
-  test("accepts single character", () => {
-    expect(isValidProjectName("a")).toBe(true);
-  });
-
-  test("rejects dot-dot (parent traversal)", () => {
-    expect(isValidProjectName("..")).toBe(false);
-  });
-
-  test("rejects single dot (current dir)", () => {
-    expect(isValidProjectName(".")).toBe(false);
-  });
-
-  test("rejects path traversal attempt", () => {
-    expect(isValidProjectName("../../etc/passwd")).toBe(false);
-  });
-
-  test("rejects empty string", () => {
-    expect(isValidProjectName("")).toBe(false);
-  });
-
-  test("rejects XSS script tag", () => {
-    expect(isValidProjectName("<script>")).toBe(false);
-  });
-
-  test("rejects spaces", () => {
-    expect(isValidProjectName("my project")).toBe(false);
-  });
-
-  test("rejects name with slashes", () => {
-    expect(isValidProjectName("foo/bar")).toBe(false);
-  });
-
-  test("rejects name with backslash", () => {
-    expect(isValidProjectName("foo\\bar")).toBe(false);
-  });
-
-  test("rejects name with semicolon (shell injection)", () => {
-    expect(isValidProjectName("foo;rm -rf /")).toBe(false);
-  });
-
-  test("rejects name with pipe", () => {
-    expect(isValidProjectName("foo|bar")).toBe(false);
-  });
-
-  test("rejects name with backticks", () => {
-    expect(isValidProjectName("`whoami`")).toBe(false);
-  });
-
-  test("rejects name with $() command substitution", () => {
-    expect(isValidProjectName("$(whoami)")).toBe(false);
-  });
-
-  test("rejects newlines", () => {
-    expect(isValidProjectName("foo\nbar")).toBe(false);
-  });
-
-  test("rejects null bytes", () => {
-    expect(isValidProjectName("foo\0bar")).toBe(false);
-  });
-
-  test("accepts dotfile-style name", () => {
-    expect(isValidProjectName(".hidden")).toBe(true);
-  });
-
-  test("accepts name starting with number", () => {
-    expect(isValidProjectName("123project")).toBe(true);
+  test.each([
+    ["single dot", "."],
+    ["dot dot", ".."],
+    ["traversal", "../../etc/passwd"],
+    ["slash", "foo/bar"],
+    ["backslash", "foo\\bar"],
+    ["empty", ""],
+    ["space", "my project"],
+    ["semicolon", "foo;rm -rf /"],
+    ["pipe", "foo|bar"],
+    ["ampersand", "foo&bar"],
+    ["redirect", "foo>bar"],
+    ["quote", "foo'bar"],
+    ["double quote", 'foo"bar'],
+    ["dollar substitution", "$(whoami)"],
+    ["backtick substitution", "`whoami`"],
+    ["script tag", "<script>"],
+    ["newline", "project\nrm -rf /"],
+    ["carriage return", "project\revil"],
+    ["NUL", "foo\0bar"],
+    ["BEL control", "foo\x07bar"],
+    ["ANSI escape", "\x1b[31mred\x1b[0m"],
+    ["unicode emoji", "wolf🐺pack"],
+    ["unicode CJK", "プロジェクト"],
+    ["URL-encoded traversal", "..%2F..%2Fetc"],
+    ["URL-encoded backslash", "foo%5Cbar"],
+  ])("rejects %s", (_label, name) => {
+    expect(isValidProjectName(name)).toBe(false);
   });
 });
 
-// ── CMD_REGEX tests ──
+describe("projectLabelToSessionName", () => {
+  test.each([
+    ["clean", "project_1", "project_1"],
+    ["dot becomes underscore", "foo.bar", "foo_bar"],
+    ["hostile chars become underscores", "../rm -rf /", "___rm_-rf__"],
+    ["unicode becomes underscores", "wolf🐺pack", "wolf__pack"],
+    ["empty fallback", "", "project"],
+  ])("normalizes %s", (_label, input, expected) => {
+    expect(projectLabelToSessionName(input)).toBe(expected);
+  });
+
+  test("exports prompt/session limits used by API contracts", () => {
+    expect(MAX_SESSION_NAME_LENGTH).toBe(100);
+    expect(MAX_INITIAL_PROMPT_LENGTH).toBe(32_768);
+  });
+});
 
 describe("CMD_REGEX", () => {
-  test("accepts simple command", () => {
-    expect(CMD_REGEX.test("npm run build")).toBe(true);
+  test.each([
+    "npm run build",
+    "node src/index.js",
+    "./bin/start --config=prod",
+    "claude --dangerously-skip-permissions",
+    "my_script.sh --flag=value /tmp/project",
+  ])("accepts %p", (command) => {
+    expect(CMD_REGEX.test(command)).toBe(true);
   });
 
-  test("accepts command with path", () => {
-    expect(CMD_REGEX.test("node src/index.js")).toBe(true);
-  });
-
-  test("accepts command with equals (flags)", () => {
-    expect(CMD_REGEX.test("--config=prod")).toBe(true);
-  });
-
-  test("accepts command with hyphens", () => {
-    expect(CMD_REGEX.test("run-tests --verbose")).toBe(true);
-  });
-
-  test("accepts command with dots and underscores", () => {
-    expect(CMD_REGEX.test("my_script.sh")).toBe(true);
-  });
-
-  test("accepts command with forward slashes", () => {
-    expect(CMD_REGEX.test("./bin/start")).toBe(true);
-  });
-
-  test("rejects semicolon (command chaining)", () => {
-    expect(CMD_REGEX.test("npm test; rm -rf /")).toBe(false);
-  });
-
-  test("rejects pipe", () => {
-    expect(CMD_REGEX.test("cat file | grep secret")).toBe(false);
-  });
-
-  test("rejects ampersand (background/chaining)", () => {
-    expect(CMD_REGEX.test("cmd && evil")).toBe(false);
-  });
-
-  test("rejects backtick (command substitution)", () => {
-    expect(CMD_REGEX.test("`whoami`")).toBe(false);
-  });
-
-  test("rejects $() (command substitution)", () => {
-    expect(CMD_REGEX.test("$(cat /etc/passwd)")).toBe(false);
-  });
-
-  test("rejects redirect >", () => {
-    expect(CMD_REGEX.test("echo hi > /tmp/out")).toBe(false);
-  });
-
-  test("rejects redirect <", () => {
-    expect(CMD_REGEX.test("cmd < /etc/passwd")).toBe(false);
-  });
-
-  test("rejects newline (command injection)", () => {
-    expect(CMD_REGEX.test("cmd\nrm -rf /")).toBe(false);
-  });
-
-  test("rejects empty string", () => {
-    expect(CMD_REGEX.test("")).toBe(false);
-  });
-
-  test("rejects backslash", () => {
-    expect(CMD_REGEX.test("path\\to\\file")).toBe(false);
-  });
-
-  test("rejects single quotes", () => {
-    expect(CMD_REGEX.test("echo 'hello'")).toBe(false);
-  });
-
-  test("rejects double quotes", () => {
-    expect(CMD_REGEX.test('echo "hello"')).toBe(false);
-  });
-
-  test("rejects exclamation mark", () => {
-    expect(CMD_REGEX.test("!command")).toBe(false);
+  test.each([
+    ["empty", ""],
+    ["semicolon", "npm test; rm -rf /"],
+    ["pipe", "cat file | grep secret"],
+    ["ampersand", "cmd && evil"],
+    ["backtick", "`whoami`"],
+    ["dollar substitution", "$(cat /etc/passwd)"],
+    ["redirect out", "echo hi > /tmp/out"],
+    ["redirect in", "cmd < /etc/passwd"],
+    ["newline", "cmd\nrm -rf /"],
+    ["carriage return", "cmd\rrm -rf /"],
+    ["backslash", "path\\to\\file"],
+    ["single quote", "echo 'hello'"],
+    ["double quote", 'echo "hello"'],
+    ["exclamation", "!command"],
+    ["NUL", "cmd\0evil"],
+    ["ANSI escape", "\x1b[31mevil"],
+  ])("rejects %s", (_label, command) => {
+    expect(CMD_REGEX.test(command)).toBe(false);
   });
 });
 
-// ── Plan file validation tests ──
+describe("clampCols / clampRows", () => {
+  test.each([
+    ["cols inside", clampCols, 120, 120],
+    ["cols min", clampCols, 20, 20],
+    ["cols max", clampCols, 300, 300],
+    ["cols below min", clampCols, 19, 20],
+    ["cols above max", clampCols, 301, 300],
+    ["cols NaN default", clampCols, NaN, 80],
+    ["cols Infinity default", clampCols, Infinity, 80],
+    ["cols -Infinity default", clampCols, -Infinity, 80],
+    ["rows inside", clampRows, 24, 24],
+    ["rows min", clampRows, 5, 5],
+    ["rows max", clampRows, 100, 100],
+    ["rows below min", clampRows, 4, 5],
+    ["rows above max", clampRows, 101, 100],
+    ["rows NaN default", clampRows, NaN, 24],
+    ["rows Infinity default", clampRows, Infinity, 24],
+    ["rows -Infinity default", clampRows, -Infinity, 24],
+  ] as const)("%s", (_label, clamp, input, expected) => {
+    expect(clamp(input)).toBe(expected);
+  });
+});
+
+describe("isValidPort", () => {
+  test.each([1, 80, 443, 8080, 18790, 65535])("accepts %p", (port) => {
+    expect(isValidPort(port)).toBe(true);
+  });
+
+  test.each([0, -1, 65536, 18790.5, NaN, Infinity, -Infinity])("rejects %p", (port) => {
+    expect(isValidPort(port)).toBe(false);
+  });
+});
