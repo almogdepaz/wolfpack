@@ -130,11 +130,23 @@ function validate(schema: unknown, value: unknown, root: JsonObject, path = "$."
   return [];
 }
 
-function httpResponse(operationId: string): JsonObject {
+function httpOperation(operationId: string): JsonObject {
   const http = artifact.http;
   const operation = isObject(http) ? http[operationId] : undefined;
-  if (!isObject(operation) || !isObject(operation.response)) throw new Error(`missing operation ${operationId}`);
-  return operation.response;
+  if (!isObject(operation)) throw new Error(`missing operation ${operationId}`);
+  return operation;
+}
+
+function httpRequest(operationId: string): JsonObject {
+  const request = httpOperation(operationId).request;
+  if (!isObject(request)) throw new Error(`missing request for ${operationId}`);
+  return request;
+}
+
+function httpResponse(operationId: string): JsonObject {
+  const response = httpOperation(operationId).response;
+  if (!isObject(response)) throw new Error(`missing response for ${operationId}`);
+  return response;
 }
 
 async function getJson(path: string): Promise<unknown> {
@@ -200,4 +212,52 @@ describe("control api generated schema against runtime responses", () => {
       expect(validate(httpResponse(operationId), payload, artifact), operationId).toEqual([]);
     }
   });
+
+  const invalidRequestCases = [
+    {
+      name: "rejects unknown create properties",
+      operationId: "createSession",
+      path: "/api/create",
+      body: { projectDir: join(TEST_DEV_DIR, "missing-project"), unexpected: true },
+    },
+    {
+      name: "rejects unknown settings properties",
+      operationId: "updateSettings",
+      path: "/api/settings",
+      body: { unexpected: true },
+    },
+    {
+      name: "rejects unknown setCmdEnabled properties",
+      operationId: "updateSettings",
+      path: "/api/settings",
+      body: { setCmdEnabled: { cmd: "shell", enabled: true, unexpected: true } },
+    },
+    {
+      name: "rejects fractional resize dimensions",
+      operationId: "resizeSession",
+      path: "/api/resize",
+      body: { session: "wolf-1", cols: 80.5, rows: 24.5 },
+    },
+    {
+      name: "rejects unknown resize properties",
+      operationId: "resizeSession",
+      path: "/api/resize",
+      body: { session: "wolf-1", cols: 80, rows: 24, unexpected: true },
+    },
+  ] as const;
+
+  for (const invalidRequest of invalidRequestCases) {
+    test(invalidRequest.name, async () => {
+      expect(
+        validate(httpRequest(invalidRequest.operationId), invalidRequest.body, artifact),
+        `${invalidRequest.operationId} schema`,
+      ).not.toEqual([]);
+      const response = await fetch(`${base}${invalidRequest.path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(invalidRequest.body),
+      });
+      expect(response.status, `${invalidRequest.path} runtime`).toBe(400);
+    });
+  }
 });

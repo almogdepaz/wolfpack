@@ -179,6 +179,26 @@ function hasOptionalType(
   return body[key] === undefined || typeof body[key] === type;
 }
 
+function hasOnlyKeys(body: Record<string, unknown>, allowedKeys: ReadonlySet<string>): boolean {
+  return Object.keys(body).every(key => allowedKeys.has(key));
+}
+
+const CREATE_BODY_STRING_KEYS = [
+  "project",
+  "projectDir",
+  "newProject",
+  "newProjectParent",
+  "cmd",
+  "sessionName",
+  "parentSession",
+  "initialPrompt",
+] as const;
+const CREATE_BODY_KEYS = new Set<string>(CREATE_BODY_STRING_KEYS);
+const SETTINGS_BODY_STRING_KEYS = ["agentCmd", "addCmd", "removeCmd"] as const;
+const SETTINGS_BODY_KEYS = new Set<string>([...SETTINGS_BODY_STRING_KEYS, "setCmdEnabled"]);
+const SET_CMD_ENABLED_BODY_KEYS = new Set(["cmd", "enabled"]);
+const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
+
 interface CreateBody extends Record<string, unknown> {
   project?: string;
   projectDir?: string;
@@ -191,16 +211,8 @@ interface CreateBody extends Record<string, unknown> {
 }
 
 function isCreateBody(body: Record<string, unknown>): body is CreateBody {
-  return [
-    "project",
-    "projectDir",
-    "newProject",
-    "newProjectParent",
-    "cmd",
-    "sessionName",
-    "parentSession",
-    "initialPrompt",
-  ].every(key => hasOptionalType(body, key, "string"));
+  return hasOnlyKeys(body, CREATE_BODY_KEYS)
+    && CREATE_BODY_STRING_KEYS.every(key => hasOptionalType(body, key, "string"));
 }
 
 interface SessionCreateBody extends Record<string, unknown> {
@@ -297,11 +309,11 @@ function isAgentRuntimeAckBody(body: Record<string, unknown>): body is AgentRunt
 }
 
 function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
-  if (!["agentCmd", "addCmd", "removeCmd"].every(key => hasOptionalType(body, key, "string"))) {
-    return false;
-  }
+  if (!hasOnlyKeys(body, SETTINGS_BODY_KEYS)
+    || !SETTINGS_BODY_STRING_KEYS.every(key => hasOptionalType(body, key, "string"))) return false;
   return body.setCmdEnabled === undefined || (
     isJsonObject(body.setCmdEnabled) &&
+    hasOnlyKeys(body.setCmdEnabled, SET_CMD_ENABLED_BODY_KEYS) &&
     typeof body.setCmdEnabled.cmd === "string" &&
     typeof body.setCmdEnabled.enabled === "boolean"
   );
@@ -1309,9 +1321,10 @@ export const routes: Record<
     if (!body) return;
     const { session, cols, rows } = body;
     if (
+      !hasOnlyKeys(body, RESIZE_BODY_KEYS) ||
       typeof session !== "string" || !session ||
-      typeof cols !== "number" || !Number.isFinite(cols) ||
-      typeof rows !== "number" || !Number.isFinite(rows)
+      typeof cols !== "number" || !Number.isInteger(cols) ||
+      typeof rows !== "number" || !Number.isInteger(rows)
     ) return json(res, { error: "missing params" }, 400);
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
