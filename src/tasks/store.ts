@@ -16,6 +16,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
+  canonicalJson as serializeCanonicalJson,
+  compareCanonicalJsonKeysByLocale,
+} from "../canonical-json.ts";
+import {
   TASK_API_ERROR,
   TASK_EVENT_TYPE,
   TASK_STATUS,
@@ -210,34 +214,10 @@ export class TaskStoreError extends Error {
   }
 }
 
-interface JsonObject {
-  readonly [key: string]: JsonValue | undefined;
-}
-
-type JsonValue = boolean | null | number | string | readonly JsonValue[] | JsonObject;
-
 // A Wolfpack server owns one TaskStore; its mutable indexes and locks are intentionally instance-local.
 
-function stableJson(value: unknown): JsonValue {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("task store records must contain finite JSON numbers");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(stableJson);
-  if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([, child]) => child !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, stableJson(child)]),
-    );
-  }
-  throw new TypeError("task store records must contain JSON values");
-}
-
 function canonicalJson(value: unknown): string {
-  return JSON.stringify(stableJson(value));
+  return serializeCanonicalJson(value, compareCanonicalJsonKeysByLocale);
 }
 
 function digest(value: string): string {
