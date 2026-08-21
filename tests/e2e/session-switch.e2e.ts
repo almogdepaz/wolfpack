@@ -963,7 +963,24 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
   const finalGeometry = await page.evaluate(({ cols, rows }) => {
     const canvas = document.querySelector<HTMLCanvasElement>("#desktop-terminal-container canvas");
     const rect = canvas?.getBoundingClientRect();
+    const context = canvas?.getContext("2d", { willReadFrequently: true });
     const cellWidth = rect ? rect.width / cols : 0;
+    const pixelCellWidth = canvas ? canvas.width / cols : 0;
+    const pixelCellHeight = canvas ? canvas.height / rows : 0;
+    const cellInk = (column: number): number => {
+      if (!context || !canvas) return 0;
+      const pixels = context.getImageData(
+        Math.round(column * pixelCellWidth),
+        0,
+        Math.max(1, Math.round(pixelCellWidth)),
+        Math.max(1, Math.round(pixelCellHeight)),
+      ).data;
+      let count = 0;
+      for (let index = 0; index < pixels.length; index += 4) {
+        if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 300) count += 1;
+      }
+      return count;
+    };
     return {
       cols,
       rows,
@@ -971,6 +988,8 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
       canvasWidth: rect?.width,
       canvasVisible: canvas ? getComputedStyle(canvas).visibility === "visible" : false,
       canvasOpacity: canvas ? getComputedStyle(canvas).opacity : "missing",
+      referenceCellInk: cols >= 3 ? cellInk(cols - 3) : 0,
+      lastCellInk: cols >= 1 ? cellInk(cols - 1) : 0,
     };
   }, { cols: latestSizeMessage.cols, rows: latestSizeMessage.rows });
   const renderedTail = await terminalTail(terminalContainer, finalGeometry.rows + 3);
@@ -984,6 +1003,8 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
   expect(finalGeometry.canvasVisible).toBe(true);
   expect(finalGeometry.canvasOpacity).toBe("1");
   expect(finalLine).toBe("X".repeat(finalGeometry.cols));
+  expect(finalGeometry.referenceCellInk).toBeGreaterThan(0);
+  expect(finalGeometry.lastCellInk).toBeGreaterThanOrEqual(finalGeometry.referenceCellInk * 0.8);
 });
 
 test("debug layout-stable immediate mode sends an early stable signal before attach ack", async ({ page }, testInfo) => {
