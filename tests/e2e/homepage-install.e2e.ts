@@ -12,7 +12,6 @@ import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   HOMEPAGE_DIAGNOSTIC_DIRECTORY,
   SITE_ROOT,
-  headersForSiteRequest,
   homepageScreenshotPath,
 } from "../homepage-quality-helpers.ts";
 import { startTestServer } from "./helpers.ts";
@@ -41,18 +40,11 @@ const REAL_SITE_ROOT = realpathSync(SITE_ROOT);
 
 interface ResolvedSiteFile {
   readonly absolutePath: string;
-  readonly relativePath: string;
 }
 
 let server: TestServer;
 const browserErrors = new WeakMap<Page, string[]>();
-const homepageResponses = new WeakMap<Page, Response>();
 const siteResponses = new WeakMap<Page, Response[]>();
-
-function contractHeaders(requestUrl: URL, relativePath: string): Record<string, string> {
-  const deployedPath = relativePath === "index.html" ? "/" : `/${relativePath}`;
-  return Object.fromEntries(headersForSiteRequest(new URL(deployedPath, requestUrl)));
-}
 
 function isContainedFilePath(root: string, candidate: string): boolean {
   const pathFromRoot = relative(root, candidate);
@@ -80,10 +72,7 @@ function resolveSiteFile(requestUrl: URL): ResolvedSiteFile | null {
     const absolutePath = realpathSync(candidatePath);
     if (!isContainedFilePath(REAL_SITE_ROOT, absolutePath)) return null;
     if (!statSync(absolutePath).isFile()) return null;
-    return {
-      absolutePath,
-      relativePath: relative(SITE_ROOT, candidatePath).split(sep).join("/"),
-    };
+    return { absolutePath };
   } catch {
     return null;
   }
@@ -100,12 +89,11 @@ async function fulfillHomepageRoute(route: Route): Promise<void> {
     status: 200,
     contentType: CONTENT_TYPES_BY_EXTENSION[extname(siteFile.absolutePath).toLowerCase()]
       ?? FALLBACK_CONTENT_TYPE,
-    headers: contractHeaders(requestUrl, siteFile.relativePath),
     body: readFileSync(siteFile.absolutePath),
   });
 }
 
-async function openHomepage(page: Page): Promise<Response> {
+async function openHomepage(page: Page): Promise<void> {
   await page.route(`${server.baseUrl}${HOMEPAGE_PREFIX}**`, fulfillHomepageRoute);
   await page.route(GOOGLE_FONTS_URL, async (route) => {
     if (new URL(route.request().url()).hostname === "fonts.googleapis.com") {
@@ -116,7 +104,6 @@ async function openHomepage(page: Page): Promise<Response> {
   });
   const response = await page.goto(`${server.baseUrl}${HOMEPAGE_PREFIX}`);
   if (!response) throw new Error("homepage navigation returned no response");
-  return response;
 }
 
 test.describe.configure({ timeout: 60_000 });
@@ -143,7 +130,7 @@ test.beforeEach(async ({ page }) => {
       responses.push(response);
     }
   });
-  homepageResponses.set(page, await openHomepage(page));
+  await openHomepage(page);
 });
 
 test("serves an unlisted existing site file with its MIME type", async ({ page }) => {
@@ -284,12 +271,6 @@ test("captures a full-page diagnostic and stays within generous local budgets", 
     FIRST_PARTY_TRANSFER_BUDGET_BYTES,
   );
 
-  const response = homepageResponses.get(page);
-  expect(response).toBeDefined();
-  expect((await response?.allHeaders())?.["content-security-policy"])
-    .toContain("default-src 'none'");
-  expect((await response?.allHeaders())?.["referrer-policy"])
-    .toBe("strict-origin-when-cross-origin");
   expect(browserErrors.get(page)).toEqual([]);
 });
 

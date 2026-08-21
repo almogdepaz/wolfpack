@@ -1,7 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import type { Element } from "@xmldom/xmldom";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const REPOSITORY_ROOT = join(import.meta.dirname, "..");
@@ -19,11 +19,6 @@ export const HOMEPAGE_SCREENSHOT_PROJECTS = [
 export const CANONICAL_HOMEPAGE_URL = "https://almogdepaz.github.io/wolfpack/";
 
 const SITEMAP_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9";
-
-export interface HeaderRule {
-  readonly path: string;
-  readonly headers: ReadonlyMap<string, string>;
-}
 
 export function homepageScreenshotPath(projectName: string): string {
   if (!HOMEPAGE_SCREENSHOT_PROJECTS.some((name) => name === projectName)) {
@@ -101,42 +96,4 @@ export function jsonLdSource(document: string): string {
   const end = document.indexOf("</script>", contentStart);
   if (end < 0) throw new Error("homepage JSON-LD closing tag is missing");
   return document.slice(contentStart, end);
-}
-
-export function jsonLdCspHash(document: string): string {
-  return createHash("sha256")
-    .update(Buffer.from(jsonLdSource(document), "utf8"))
-    .digest("base64");
-}
-
-export function headersForSiteRequest(requestUrl: URL): ReadonlyMap<string, string> {
-  const headers = new Map<string, string>();
-  for (const rule of readHeaderRules()) {
-    if (rule.path !== "/*" && rule.path !== requestUrl.pathname) continue;
-    for (const [name, value] of rule.headers) headers.set(name, value);
-  }
-  return headers;
-}
-
-export function readHeaderRules(): readonly HeaderRule[] {
-  const headersPath = join(SITE_ROOT, "_headers");
-  if (!existsSync(headersPath)) return [];
-
-  const rules: Array<{ path: string; headers: Map<string, string> }> = [];
-  for (const line of readFileSync(headersPath, "utf8").split(/\r?\n/)) {
-    if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    if (!/^\s/.test(line)) {
-      rules.push({ path: line.trim(), headers: new Map() });
-      continue;
-    }
-    const rule = rules.at(-1);
-    if (!rule) throw new Error("header appears before a path rule");
-    const separator = line.indexOf(":");
-    if (separator < 0) throw new Error(`invalid header line: ${line}`);
-    rule.headers.set(
-      line.slice(0, separator).trim().toLowerCase(),
-      line.slice(separator + 1).trim(),
-    );
-  }
-  return rules;
 }

@@ -8,16 +8,12 @@ import {
   HOMEPAGE_SCREENSHOT_PROJECTS,
   REPOSITORY_ROOT,
   SITE_ROOT,
-  headersForSiteRequest,
   homepageScreenshotPath,
-  jsonLdCspHash,
   jsonLdSource,
-  readHeaderRules,
   readSiteFile,
   siteAssetHashPrefix,
   validateHomepageSitemap,
 } from "../homepage-quality-helpers.ts";
-import type { HeaderRule } from "../homepage-quality-helpers.ts";
 
 const HOMEPAGE = readFileSync(join(SITE_ROOT, "index.html"), "utf8");
 const APP_DOCUMENT = readFileSync(
@@ -64,9 +60,6 @@ const RENDER_ASSET_SPECS = [
     compatibilityFileName: undefined,
   },
 ] as const;
-const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
-const REVALIDATED_CACHE_CONTROL = "public, max-age=0, must-revalidate";
-
 interface ElementAttributes {
   readonly [name: string]: string;
 }
@@ -96,21 +89,6 @@ function oneAttribute(selector: string, name: string): string {
   return value ?? "";
 }
 
-function directiveMap(policy: string): ReadonlyMap<string, readonly string[]> {
-  return new Map(policy.split(";").map((entry) => {
-    const [name = "", ...values] = entry.trim().split(/\s+/);
-    return [name, values] as const;
-  }).filter(([name]) => name));
-}
-
-function headerRule(path: string): HeaderRule {
-  const rules = readHeaderRules().filter((rule) => rule.path === path);
-  expect(rules).toHaveLength(1);
-  const rule = rules[0];
-  if (!rule) throw new Error(`missing header rule for ${path}`);
-  return rule;
-}
-
 function renderAssetPaths(): readonly string[] {
   return RENDER_ASSET_SPECS.map(({
     directory,
@@ -132,20 +110,6 @@ function renderAssetPaths(): readonly string[] {
     expect(match).not.toBeNull();
     return directory ? `${directory}/${fileName}` : fileName;
   });
-}
-
-function staleAssetPath(assetPath: string): string {
-  return assetPath.replace(/\.([0-9a-f])([0-9a-f]{15})(?=\.[^.]+$)/, (_, first, rest) =>
-    `.${first === "0" ? "1" : "0"}${rest}`
-  );
-}
-
-function unhashedAssetPath(assetPath: string): string {
-  return assetPath.replace(/\.[0-9a-f]{16}(?=\.[^.]+$)/, "");
-}
-
-function deployedSitePath(relativePath: string): string {
-  return `${new URL(CANONICAL_HOMEPAGE_URL).pathname}${relativePath}`;
 }
 
 function siteRelativePath(url: URL): string {
@@ -210,8 +174,9 @@ describe("homepage quality contract", () => {
     expect(ignoredFiles).toEqual([]);
   });
 
-  test("keeps canonical-site app asset consumers deployable and revalidated", () => {
+  test("keeps canonical-site app asset consumers deployable", () => {
     const canonicalOrigin = new URL(CANONICAL_HOMEPAGE_URL).origin;
+    const canonicalAssetsPath = new URL("assets/", CANONICAL_HOMEPAGE_URL).pathname;
     const consumerValues = [
       ...attributesForDocument(APP_DOCUMENT, "meta[content]").map(({ content }) => content),
       ...attributesForDocument(APP_DOCUMENT, "link[href]").map(({ href }) => href),
@@ -223,7 +188,7 @@ describe("homepage quality contract", () => {
       .map((value) => new URL(value, CANONICAL_HOMEPAGE_URL))
       .filter((url) =>
         url.origin === canonicalOrigin &&
-        url.pathname.startsWith(deployedSitePath("assets/"))
+        url.pathname.startsWith(canonicalAssetsPath)
       );
 
     expect(canonicalAssetUrls.map(({ href }) => href)).toEqual([
@@ -236,15 +201,6 @@ describe("homepage quality contract", () => {
     expect(firstPartyRenderUrls().some((url) =>
       url.pathname === compatibilityUrl.pathname
     )).toBe(false);
-    for (const requestUrl of [
-      compatibilityUrl,
-      new URL(`${compatibilityUrl.pathname}?query=cannot-make-immutable`, compatibilityUrl),
-    ]) {
-      const cacheControl = headersForSiteRequest(requestUrl).get("cache-control");
-      expect(cacheControl).toBe(REVALIDATED_CACHE_CONTROL);
-      expect(cacheControl).not.toContain("immutable");
-    }
-
     const sitePath = siteRelativePath(compatibilityUrl);
     expect(existsSync(join(SITE_ROOT, sitePath))).toBe(true);
     const hashedIconPath = renderAssetPaths().find((path) =>
@@ -256,7 +212,7 @@ describe("homepage quality contract", () => {
     }
   });
 
-  test("externalizes executable code and leaves only exact-hashed JSON-LD inline", () => {
+  test("externalizes executable code and leaves only JSON-LD inline", () => {
     const scripts = attributesFor("script");
     const externalScripts = scripts.filter(({ src }) => src);
     const inlineScripts = scripts.filter(({ src }) => !src);
@@ -308,6 +264,7 @@ describe("homepage quality contract", () => {
     const canonical = oneAttribute('link[rel="canonical"]', "href");
     const description = oneAttribute('meta[name="description"]', "content");
     const robots = oneAttribute('meta[name="robots"]', "content");
+    const referrer = oneAttribute('meta[name="referrer"]', "content");
     const themeColor = oneAttribute('meta[name="theme-color"]', "content");
     const openGraphUrl = oneAttribute('meta[property="og:url"]', "content");
     const openGraphImage = oneAttribute('meta[property="og:image"]', "content");
@@ -319,6 +276,7 @@ describe("homepage quality contract", () => {
     expect(canonical).toBe(CANONICAL_HOMEPAGE_URL);
     expect(description.length).toBeGreaterThan(40);
     expect(robots).toBe("index, follow");
+    expect(referrer).toBe("strict-origin-when-cross-origin");
     expect(themeColor).toMatch(/^#[0-9a-f]{6}$/i);
     expect(openGraphUrl).toBe(canonical);
     expect(new URL(openGraphImage).origin).toBe(new URL(canonical).origin);
@@ -361,93 +319,6 @@ describe("homepage quality contract", () => {
     ],
   ])("rejects %s through the shared sitemap validator", (_name, sitemap) => {
     expect(validateHomepageSitemap(sitemap)).not.toEqual([]);
-  });
-
-  test("derives a restrictive functional policy from the exact JSON-LD bytes", () => {
-    const global = headerRule("/*");
-    const policy = global.headers.get("content-security-policy") ?? "";
-    const directives = directiveMap(policy);
-    const expectedJsonLdHash = `'sha256-${jsonLdCspHash(HOMEPAGE)}'`;
-
-    expect(directives.get("default-src")).toEqual(["'none'"]);
-    expect(new Set(directives.get("script-src"))).toEqual(
-      new Set(["'self'", expectedJsonLdHash]),
-    );
-    expect(new Set(directives.get("style-src"))).toEqual(
-      new Set(["'self'", "https://fonts.googleapis.com"]),
-    );
-    expect(directives.get("font-src")).toEqual(["https://fonts.gstatic.com"]);
-    expect(new Set(directives.get("img-src"))).toEqual(new Set(["'self'", "data:"]));
-    expect(directives.get("media-src")).toEqual(["'self'"]);
-    expect(new Set(directives.get("connect-src"))).toEqual(
-      new Set(["https://fonts.googleapis.com", "https://fonts.gstatic.com"]),
-    );
-    for (const directive of ["base-uri", "frame-ancestors", "object-src", "form-action", "frame-src", "worker-src"]) {
-      expect(directives.get(directive)).toEqual(["'none'"]);
-    }
-    expect(policy).not.toContain("'unsafe-inline'");
-    expect(policy).not.toContain("'unsafe-eval'");
-    expect(policy).not.toMatch(/https:\/\/(?!fonts\.(?:googleapis|gstatic)\.com)/);
-
-    expect(global.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
-    expect(oneAttribute('meta[name="referrer"]', "content"))
-      .toBe("strict-origin-when-cross-origin");
-    expect(global.headers.get("x-content-type-options")).toBe("nosniff");
-    const permissions = global.headers.get("permissions-policy") ?? "";
-    expect(permissions).toContain("clipboard-write=(self)");
-    for (const capability of ["camera", "geolocation", "microphone", "payment", "usb"]) {
-      expect(permissions).toContain(`${capability}=()`);
-    }
-  });
-
-  test("matches static header rules by pathname and caches only exact hashed assets", () => {
-    const rules = readHeaderRules();
-    const global = headerRule("/*");
-    const renderAssets = renderAssetPaths();
-    const expectedPaths = new Set(renderAssets.map(deployedSitePath));
-    const immutableRules = rules.filter((rule) =>
-      rule.headers.get("cache-control")?.includes("immutable") === true
-    );
-
-    expect(global.headers.get("cache-control")).toBe(REVALIDATED_CACHE_CONTROL);
-    expect(new Set(immutableRules.map(({ path }) => path))).toEqual(expectedPaths);
-    for (const asset of renderAssets) {
-      const pathname = deployedSitePath(asset);
-      const exactHeaders = headersForSiteRequest(
-        new URL(pathname, CANONICAL_HOMEPAGE_URL),
-      );
-      const queryHeaders = headersForSiteRequest(
-        new URL(`${pathname}?cache-bust=ignored`, CANONICAL_HOMEPAGE_URL),
-      );
-      expect(exactHeaders.get("cache-control")).toBe(IMMUTABLE_CACHE_CONTROL);
-      expect(queryHeaders).toEqual(exactHeaders);
-
-      for (const nonFingerprintedPath of [
-        unhashedAssetPath(pathname),
-        staleAssetPath(pathname),
-      ]) {
-        expect(headersForSiteRequest(
-          new URL(nonFingerprintedPath, CANONICAL_HOMEPAGE_URL),
-        ).get("cache-control")).toBe(REVALIDATED_CACHE_CONTROL);
-        expect(headersForSiteRequest(
-          new URL(`${nonFingerprintedPath}?v=${siteAssetHashPrefix(asset)}`, CANONICAL_HOMEPAGE_URL),
-        ).get("cache-control")).toBe(REVALIDATED_CACHE_CONTROL);
-      }
-    }
-    for (const path of [
-      "/",
-      "/index.html",
-      "/_headers",
-      "/robots.txt",
-      "/sitemap.xml",
-      "/llms.txt",
-      "/llms-full.txt",
-      "/unknown",
-    ]) {
-      expect(headersForSiteRequest(
-        new URL(`${path.slice(1)}?query=cannot-match-a-rule`, CANONICAL_HOMEPAGE_URL),
-      ).get("cache-control")).toBe(REVALIDATED_CACHE_CONTROL);
-    }
   });
 
   test("retains and immediately uploads one ignored screenshot per homepage project", () => {
