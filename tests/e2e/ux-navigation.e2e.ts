@@ -401,7 +401,14 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
   await page.getByRole("button", { name: "Back to session grid" }).click();
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
   await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
-  await page.getByRole("button", { name: "Focus child" }).click();
+
+  await openSettingsFromUi(page);
+  await page.locator("#settings-back-btn").click();
+  await expect.poll(() => gridSessionNames(page)).toEqual(["manual-one", "manual-two"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  await expect(manualOneGridButton).toHaveClass(/in-grid/);
+
+  await openSessionFromUi(page, "child");
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await expect(manualOneGridButton).not.toHaveClass(/in-grid/);
   await manualOneGridButton.click();

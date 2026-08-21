@@ -10,6 +10,7 @@
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import { gridSessionNames, openSessionFromUi, openSettingsFromUi, startTestServer, terminalTail, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 import { CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
+import { TAKE_CONTROL_FALLBACK_MS } from "../../public/take-control-coordinator.ts";
 
 let srv: TestServer;
 
@@ -62,6 +63,59 @@ async function routeHydratedPty(page: Page, ptyReadyGate?: Promise<void>): Promi
     });
   });
   return sockets;
+}
+
+type PtyClientMessage = {
+  readonly type?: string;
+  readonly prefillMode?: string;
+  readonly takeControl?: boolean;
+};
+
+type PtyProtocolCounts = {
+  readonly sockets: number;
+  readonly attaches: number;
+  readonly takeControls: number;
+  readonly takeoverAttaches: number;
+};
+
+type TrackedPtyRoute = {
+  readonly counts: (session: string) => PtyProtocolCounts;
+};
+
+async function routeTrackedHydratedPty(page: Page, conflictAfterReadySession?: string): Promise<TrackedPtyRoute> {
+  const sockets = new Map<string, WebSocketRoute[]>();
+  const messages = new Map<string, PtyClientMessage[]>();
+  let conflictSent = false;
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    sockets.set(session, [...(sockets.get(session) ?? []), ws]);
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as PtyClientMessage;
+      messages.set(session, [...(messages.get(session) ?? []), parsed]);
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+      if (!conflictSent && parsed.prefillMode === "viewport" && session === conflictAfterReadySession) {
+        conflictSent = true;
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+      }
+    });
+  });
+  return {
+    counts(session: string): PtyProtocolCounts {
+      const sessionMessages = messages.get(session) ?? [];
+      return {
+        sockets: sockets.get(session)?.length ?? 0,
+        attaches: sessionMessages.filter((message) => message.type === "attach").length,
+        takeControls: sessionMessages.filter((message) => message.type === "take_control").length,
+        takeoverAttaches: sessionMessages.filter((message) => message.type === "attach" && message.takeControl === true).length,
+      };
+    },
+  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -590,25 +644,64 @@ test("addToGrid from non-terminal view switches to terminal view first", async (
 });
 
 test("removeFromGrid clears pending take-control timer", async ({ page }) => {
+  const protocol = await routeTrackedHydratedPty(page, "test-project");
   await loadApp(page);
-  await openTwoCellGrid(page);
+  await toggleSessionGridFromUi(page, "test-project", "");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  await toggleSessionGridFromUi(page, "third-project", "");
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project", "third-project"]);
 
-  await page.locator("#desktop-grid-container .grid-cell").first().getByRole("button", { name: /Remove/ }).click();
+  const conflictedCell = page.locator('#desktop-grid-container .grid-cell[data-session="test-project"]');
+  await expect(conflictedCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
+  expect(protocol.counts("test-project")).toEqual({
+    sockets: 1,
+    attaches: 1,
+    takeControls: 0,
+    takeoverAttaches: 0,
+  });
 
-  await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(1);
-  await page.waitForTimeout(100);
-  await expect(page.locator("#desktop-conflict-overlay")).toBeHidden();
+  await conflictedCell.locator(".viewer-conflict-overlay .conflict-btn").click();
+  await expect.poll(() => protocol.counts("test-project").takeControls).toBe(1);
+
+  await conflictedCell.getByRole("button", { name: "Remove test-project from grid" }).click();
+  await expect.poll(() => gridSessionNames(page)).toEqual(["another-project", "third-project"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  const removedCounts = protocol.counts("test-project");
+  const remainingCounts = [protocol.counts("another-project"), protocol.counts("third-project")];
+
+  await page.waitForTimeout(TAKE_CONTROL_FALLBACK_MS + 500);
+
+  expect(protocol.counts("test-project")).toEqual(removedCounts);
+  expect([protocol.counts("another-project"), protocol.counts("third-project")]).toEqual(remainingCounts);
+  await expect.poll(() => gridSessionNames(page)).toEqual(["another-project", "third-project"]);
 });
 
 test("navigating away from terminal with active grid suspends grid state", async ({ page }) => {
+  const protocol = await routeTrackedHydratedPty(page);
   await loadApp(page);
-  await openTwoCellGrid(page);
-  expect(await gridSessionNames(page)).toEqual(["test-project", "another-project"]);
+  await toggleSessionGridFromUi(page, "test-project", "");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  const initialCounts = {
+    testProject: protocol.counts("test-project"),
+    anotherProject: protocol.counts("another-project"),
+  };
 
   await openSettingsFromUi(page);
 
   await expect(page.locator("#settings-view")).toHaveClass(/visible/);
   await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(0);
+
+  await page.locator("#settings-back-btn").click();
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  await expect.poll(() => protocol.counts("test-project").attaches).toBeGreaterThan(initialCounts.testProject.attaches);
+  await expect.poll(() => protocol.counts("another-project").attaches).toBeGreaterThan(initialCounts.anotherProject.attaches);
+  const tails = await Promise.all(["test-project", "another-project"].map((session) =>
+    terminalTail(page.locator(`#desktop-grid-container .grid-cell[data-session="${session}"]`), 20),
+  ));
+  expect(tails).toEqual(expect.arrayContaining([expect.stringContaining("test-project-PREFILL"), expect.stringContaining("another-project-PREFILL")]));
 });
 
 test("transcript button clears grid-cell close controls", async ({ page }) => {

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gridSessionNames, openProjectPickerFromUi, openSessionFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
+import { gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 
 const PUBLIC_DIRECTORY = join(import.meta.dirname, "..", "..", "public");
 
@@ -1101,6 +1101,15 @@ test("replacement filters a mixed suspended grid without disrupting an unrelated
     closeCounts: socketsBeforeReplacement.closeCounts,
   });
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Back to session grid" }).click();
+  await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText(["local-parent", "local-child"]);
+  await openSettingsFromUi(page);
+  await page.locator("#settings-back-btn").click();
+  await expect.poll(() => gridSessionNames(page)).toEqual(["local-standalone", "other-manual"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(2);
   await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
   await expect(visibleMachineGroup(page, replacementIdentity)).toHaveCount(1);
 });
