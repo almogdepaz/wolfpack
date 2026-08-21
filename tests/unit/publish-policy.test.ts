@@ -34,7 +34,12 @@ function brokerBinary(target: BrokerTarget): Buffer {
 function preparePublication(mode: BrokerArtifactMode = "release"): string {
   root = mkdtempSync(join(tmpdir(), "wolfpack-publish-policy-"));
   mkdirSync(join(root, "broker"), { recursive: true });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ version: "1.0.0" }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({
+    version: "1.0.0",
+    optionalDependencies: Object.fromEntries(
+      Object.values(BROKER_TARGETS).map(target => [target.packageName, "1.0.0"]),
+    ),
+  }));
   writeFileSync(join(root, "broker", "Cargo.toml"), "[package]\nname = \"wolfpack-broker\"\nversion = \"1.0.0\"\n");
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "."], { cwd: root });

@@ -52,18 +52,27 @@ function prepareFixture(): { readonly root: string; readonly bin: string; readon
   mkdirSync(bin, { recursive: true });
   cpSync(join(process.cwd(), "scripts", "build.ts"), join(fixtureRoot, "scripts", "build.ts"));
   cpSync(join(process.cwd(), "scripts", "broker-artifacts.ts"), join(fixtureRoot, "scripts", "broker-artifacts.ts"));
-  writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({ version: "1.0.0" }));
+  cpSync(join(process.cwd(), "scripts", "release-version-policy.ts"), join(fixtureRoot, "scripts", "release-version-policy.ts"));
+  writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({
+    version: "1.0.0",
+    optionalDependencies: Object.fromEntries(
+      Object.values(BROKER_TARGETS).map(target => [target.packageName, "1.0.0"]),
+    ),
+  }));
   writeFileSync(join(fixtureRoot, "broker", "Cargo.toml"), "[package]\nname = \"wolfpack-broker\"\nversion = \"1.0.0\"\n");
   writeFileSync(join(fixtureRoot, "THIRD_PARTY_NOTICES"), "notices\n");
   writeFileSync(join(fixtureRoot, "src", "cli", "index.ts"), "console.log('fixture');\n");
   writeFileSync(hostBroker, brokerBinary(hostTarget()));
-  writeFileSync(log, "");
   execFileSync("git", ["init", "-q"], { cwd: fixtureRoot });
   execFileSync("git", ["add", "."], { cwd: fixtureRoot });
   execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: fixtureRoot });
+  writeFileSync(log, "");
 
   writeExecutable(join(bin, "bun"), `#!/bin/sh
 printf 'bun %s\\n' "$*" >> "$BUILD_TEST_LOG"
+if [ "\${BUILD_TEST_DIRTY_ASSETS:-}" = '1' ] && [ "$1" = 'run' ] && [ "$2" = 'scripts/gen-assets.ts' ]; then
+  printf '// generated drift\\n' >> "$PWD/src/cli/index.ts"
+fi
 outfile=''
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '--outfile' ]; then
@@ -91,6 +100,7 @@ chmod +x "$PWD/broker/target/release/wolfpack-broker"
 function runBuild(
   fixture: { readonly root: string; readonly bin: string; readonly log: string; readonly hostBroker: string },
   mode: "server-only" | "local" | "package-all" | "unspecified",
+  extraEnvironment: Readonly<Record<string, string>> = {},
 ): string {
   execFileSync(process.execPath, [join(fixture.root, "scripts", "build.ts")], {
     cwd: fixture.root,
@@ -101,6 +111,7 @@ function runBuild(
       BUILD_TEST_HOST_BROKER: fixture.hostBroker,
       WOLFPACK_BUILD_MODE: mode === "server-only" || mode === "unspecified" ? "" : mode,
       WOLFPACK_BUILD_SERVER_ONLY: mode === "server-only" ? "1" : "0",
+      ...extraEnvironment,
     },
     stdio: "pipe",
   });
@@ -112,6 +123,26 @@ describe("scripts/build.ts modes", () => {
     const fixture = prepareFixture();
 
     expect(() => runBuild(fixture, "unspecified")).toThrow("WOLFPACK_BUILD_MODE");
+  });
+
+  test("rejects missing or mismatched platform dependencies without mutating package.json", () => {
+    const fixture = prepareFixture();
+    const packagePath = join(fixture.root, "package.json");
+
+    const missing = JSON.stringify({ version: "1.0.0" });
+    writeFileSync(packagePath, missing);
+    expect(() => runBuild(fixture, "server-only")).toThrow("optionalDependencies");
+    expect(readFileSync(packagePath, "utf8")).toBe(missing);
+
+    const mismatched = JSON.stringify({
+      version: "1.0.0",
+      optionalDependencies: Object.fromEntries(
+        Object.values(BROKER_TARGETS).map(target => [target.packageName, target.cpu === "x64" ? "0.9.0" : "1.0.0"]),
+      ),
+    });
+    writeFileSync(packagePath, mismatched);
+    expect(() => runBuild(fixture, "server-only")).toThrow("0.9.0");
+    expect(readFileSync(packagePath, "utf8")).toBe(mismatched);
   });
 
   test("server-only mode compiles the cli without broker staging or platform packages", () => {
@@ -148,6 +179,13 @@ describe("scripts/build.ts modes", () => {
     appendFileSync(join(fixture.root, "broker", "Cargo.toml"), "# dirty broker source\n");
 
     expect(() => runBuild(fixture, "package-all")).toThrow("tracked source");
+    expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
+  });
+
+  test("package-all mode rejects tracked drift produced during asset generation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runBuild(fixture, "package-all", { BUILD_TEST_DIRTY_ASSETS: "1" })).toThrow("tracked source");
     expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
   });
 

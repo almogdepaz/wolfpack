@@ -3,11 +3,12 @@ import { join } from "node:path";
 import {
   BROKER_TARGETS,
   assertReleaseSourceClean,
-  readBrokerVersion,
   readSourceRevision,
   validateBrokerArtifact,
   type BrokerTarget,
 } from "./broker-artifacts";
+import { validateReleaseVersions } from "./release-version-policy";
+import type { ReleaseVersions } from "./release-version-policy";
 
 function readObject(path: string): Record<string, unknown> {
   const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -21,12 +22,10 @@ function isExactStringArray(value: unknown, expected: string): boolean {
   return Array.isArray(value) && value.length === 1 && value[0] === expected;
 }
 
-export function validatePublicationArtifacts(root: string): void {
+export function validatePublicationArtifacts(root: string): ReleaseVersions {
   assertReleaseSourceClean(root);
-  const mainPackage = readObject(join(root, "package.json"));
-  const version = mainPackage.version;
-  if (typeof version !== "string" || !version) throw new Error("root package version is invalid");
-  const brokerVersion = readBrokerVersion(root);
+  const versions = validateReleaseVersions(root);
+  const { productVersion: version, brokerVersion } = versions;
   const sourceRevision = readSourceRevision(root);
   const npmDirectory = join(root, "dist", "npm");
 
@@ -60,4 +59,6 @@ export function validatePublicationArtifacts(root: string): void {
       expectedSourceRevision: sourceRevision,
     });
   }
+
+  return versions;
 }

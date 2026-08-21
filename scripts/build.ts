@@ -12,7 +12,6 @@ import {
   chmodSync,
   copyFileSync,
   mkdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -28,6 +27,7 @@ import {
   writeBrokerArtifactMetadata,
   type BrokerTarget,
 } from "./broker-artifacts";
+import { validateReleaseVersions } from "./release-version-policy";
 
 const ROOT = join(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -39,11 +39,6 @@ const THIRD_PARTY_NOTICES = join(ROOT, "THIRD_PARTY_NOTICES");
 const TARGETS = Object.keys(BROKER_TARGETS) as BrokerTarget[];
 
 type BuildMode = "server-only" | "local" | "package-all";
-
-interface MainPackage {
-  readonly version: string;
-  optionalDependencies?: Record<string, string>;
-}
 
 function hostBunTarget(): BrokerTarget {
   const target = `bun-${platform()}-${arch()}`;
@@ -65,28 +60,13 @@ function run(command: string): void {
   execSync(command, { cwd: ROOT, stdio: "inherit" });
 }
 
-const mainPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as MainPackage;
-const version = mainPkg.version;
 const mode = buildMode();
 if (mode === "package-all") assertReleaseSourceClean(ROOT);
-
-// Version binding is completed by audit:I-02. Preserve the existing behavior here.
-let pkgDirty = false;
-if (mainPkg.optionalDependencies) {
-  for (const dependency of Object.keys(mainPkg.optionalDependencies)) {
-    if (mainPkg.optionalDependencies[dependency] !== version) {
-      mainPkg.optionalDependencies[dependency] = version;
-      pkgDirty = true;
-    }
-  }
-}
-if (pkgDirty) {
-  writeFileSync(join(ROOT, "package.json"), `${JSON.stringify(mainPkg, null, 2)}\n`);
-  console.log(`synced optionalDependencies to version ${version}`);
-}
+const { productVersion: version } = validateReleaseVersions(ROOT);
 
 console.log("=== generating embedded assets ===");
 run("bun run scripts/gen-assets.ts");
+if (mode === "package-all") assertReleaseSourceClean(ROOT);
 mkdirSync(DIST, { recursive: true });
 
 const brokerStaged = new Map<BrokerTarget, string>();

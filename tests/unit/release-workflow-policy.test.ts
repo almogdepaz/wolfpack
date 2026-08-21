@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateReleaseTag } from "../../scripts/release-version-policy";
 
 type WorkflowStep = {
   readonly id?: string;
@@ -29,6 +30,7 @@ type ReleaseWorkflow = {
 
 const workflowPath = join(process.cwd(), ".github", "workflows", "release.yml");
 const workflowSource = readFileSync(workflowPath, "utf-8");
+const productVersion = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8")) as { version: string }).version;
 const workflow = Bun.YAML.parse(workflowSource) as ReleaseWorkflow;
 const jobs = workflow.jobs;
 const allSteps = Object.values(jobs).flatMap(job => job.steps ?? []);
@@ -49,20 +51,43 @@ function jobNeeds(jobName: string, dependency: string): boolean {
 interface TagClassification {
   readonly status: number | null;
   readonly prerelease: string | undefined;
+  readonly expectedPrerelease: string | undefined;
   readonly stderr: string;
 }
 
-function classifyTag(tag: string): TagClassification {
+function classifyTag(tag: string, fixtureProductVersion = productVersion): TagClassification {
   const classificationStep = jobs["classify-release"]?.steps?.find(step => step.id === "classify");
   const root = mkdtempSync(join(tmpdir(), "wolfpack-release-tag-"));
   const outputPath = join(root, "github-output");
   try {
+    mkdirSync(join(root, "broker"));
+    const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8")) as {
+      version: string;
+      optionalDependencies: Record<string, string>;
+    };
+    manifest.version = fixtureProductVersion;
+    manifest.optionalDependencies = Object.fromEntries(
+      Object.keys(manifest.optionalDependencies).map(name => [name, fixtureProductVersion]),
+    );
+    writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
+    writeFileSync(join(root, "broker", "Cargo.toml"), readFileSync(join(process.cwd(), "broker", "Cargo.toml")));
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["add", "package.json", "broker/Cargo.toml"], { cwd: root });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"],
+      { cwd: root },
+    );
+    const expectedPrerelease = tag === `v${fixtureProductVersion}`
+      ? String(validateReleaseTag(root, tag).prerelease)
+      : undefined;
     const execution = spawnSync("bash", ["-c", `set -euo pipefail\n${classificationStep?.run ?? ""}`], {
       encoding: "utf-8",
       env: {
         ...process.env,
         GITHUB_OUTPUT: outputPath,
         RELEASE_TAG: tag,
+        WOLFPACK_RELEASE_ROOT: root,
       },
     });
     const output = existsSync(outputPath) ? readFileSync(outputPath, "utf-8").trim() : "";
@@ -70,32 +95,24 @@ function classifyTag(tag: string): TagClassification {
       .split("\n")
       .find(line => line.startsWith("prerelease="))
       ?.slice("prerelease=".length);
-    return { status: execution.status, prerelease, stderr: execution.stderr };
+    return { status: execution.status, prerelease, expectedPrerelease, stderr: execution.stderr };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 describe("release workflow security policy", () => {
-  test("classifies stable, build-metadata, and prerelease tags behaviorally", () => {
-    const cases = [
-      { tag: "v1.6.20", prerelease: "false", npmEligible: true },
-      { tag: "v1.6.20+build-1", prerelease: "false", npmEligible: true },
-      { tag: "v1.6.20-rc.1", prerelease: "true", npmEligible: false },
-      { tag: "v1.6.20-rc.1+build-1", prerelease: "true", npmEligible: false },
-    ] as const;
-
-    for (const expected of cases) {
-      const classification = classifyTag(expected.tag);
+  test("classifies stable or prerelease tags from the checked-out manifest policy", () => {
+    for (const version of [productVersion, "1.6.20-rc.1"]) {
+      const classification = classifyTag(`v${version}`, version);
 
       expect(classification.status, classification.stderr).toBe(0);
-      expect(classification.prerelease).toBe(expected.prerelease);
-      expect(classification.prerelease === "false").toBe(expected.npmEligible);
+      expect(classification.prerelease).toBe(classification.expectedPrerelease);
     }
   });
 
-  test("rejects invalid tags before release jobs can mutate state", () => {
-    for (const tag of ["v1.6", "v1.6.20-rc..1", "not-a-tag"]) {
+  test("rejects invalid and mismatched tags before release jobs can mutate state", () => {
+    for (const tag of ["v1.6", "v1.6.20-rc..1", "not-a-tag", "v999.0.0"]) {
       const classification = classifyTag(tag);
 
       expect(classification.status).not.toBe(0);
@@ -103,10 +120,22 @@ describe("release workflow security policy", () => {
     }
   });
 
-  test("reuses one validated classification for GitHub release and npm eligibility", () => {
+  test("binds checked-out manifests before every build and reuses one classification", () => {
     const classifier = jobs["classify-release"];
+    const classifierSteps = classifier?.steps ?? [];
+    const checkoutIndex = classifierSteps.findIndex(step => step.uses?.startsWith("actions/checkout@"));
+    const setupIndex = classifierSteps.findIndex(step => step.uses?.startsWith("oven-sh/setup-bun@"));
+    const classifyIndex = classifierSteps.findIndex(step => step.id === "classify");
     const releaseSteps = stepsUsing("softprops/action-gh-release");
 
+    expect(checkoutIndex).toBeGreaterThanOrEqual(0);
+    expect(setupIndex).toBeGreaterThan(checkoutIndex);
+    expect(classifyIndex).toBeGreaterThan(setupIndex);
+    expect(classifierSteps[classifyIndex]?.run).toBe("bun run scripts/release-version-policy.ts");
+    expect(classifierSteps[classifyIndex]?.env).toEqual({ RELEASE_TAG: "${{ github.ref_name }}" });
+    for (const jobName of ["broker-darwin", "broker-linux", "build"]) {
+      expect(jobNeeds(jobName, "classify-release")).toBe(true);
+    }
     expect(classifier?.outputs?.prerelease).toBe("${{ steps.classify.outputs.prerelease }}");
     expect(releaseSteps).toHaveLength(1);
     expect(releaseSteps[0].with?.prerelease).toBe(
@@ -127,7 +156,7 @@ describe("release workflow security policy", () => {
     }
 
     const bunSetupSteps = stepsUsing("oven-sh/setup-bun");
-    expect(bunSetupSteps).toHaveLength(4);
+    expect(bunSetupSteps).toHaveLength(5);
     for (const step of bunSetupSteps) {
       expect(step.with?.["bun-version"]).toBe("1.3.9");
     }
@@ -180,6 +209,22 @@ describe("release workflow security policy", () => {
     }
     expect(jobSource("build")).not.toContain("action-gh-release");
     expect(jobSource("build")).not.toContain("NPM_TOKEN");
+  });
+
+  test("uploads only dist and publishes it with the validated checked-out manifest", () => {
+    const buildUpload = jobs.build?.steps?.find(step => step.name === "Upload release bundle");
+    const publishSteps = jobs["publish-npm"]?.steps ?? [];
+    const publishCheckout = publishSteps.findIndex(step => step.uses?.startsWith("actions/checkout@"));
+    const publishDownload = publishSteps.findIndex(step => step.name === "Download release bundle");
+
+    expect(buildUpload?.with?.path).toBe("dist");
+    expect(JSON.stringify(buildUpload)).not.toContain("package.json");
+    const releaseDownload = jobs.release?.steps?.find(step => step.name === "Download release bundle");
+    expect(publishCheckout).toBeGreaterThanOrEqual(0);
+    expect(publishDownload).toBeGreaterThan(publishCheckout);
+    expect(publishSteps[publishDownload]?.with?.path).toBe("dist");
+    expect(releaseDownload?.with?.path).toBe("dist");
+    expect(workflowSource).not.toContain("version-synchronized by scripts/build.ts");
   });
 
   test("isolates npm credentials and attests installer-consumed release assets", () => {
