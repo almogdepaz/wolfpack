@@ -16,6 +16,14 @@ export type ResolveProjectSelectionResult =
   | { readonly ok: true; readonly value: ExistingProjectSelection }
   | { readonly ok: false; readonly code: "invalid" | "not_dir" | "not_found" | "unavailable"; readonly error: string };
 
+type ProjectSelectionFailure = Extract<ResolveProjectSelectionResult, { readonly ok: false }>;
+
+export function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]): 400 | 404 | 503 {
+  if (code === "not_found") return 404;
+  if (code === "unavailable") return 503;
+  return 400;
+}
+
 export function resolveExistingProjectSelection(input: {
   readonly project?: string;
   readonly projectDir?: string;

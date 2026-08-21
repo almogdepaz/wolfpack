@@ -1,5 +1,5 @@
 /**
- * Unit tests for the settings model in src/server/routes.ts.
+ * Unit tests for the settings model in src/server/project-settings-routes.ts.
  *
  * Covers:
  *   - effectiveAgentCmd: fallback rules
@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 process.env.WOLFPACK_TEST = "1";
 
 const { effectiveAgentCmd, effectiveCmds, loadSettings } = await import(
-  "../../src/server/routes.ts"
+  "../../src/server/project-settings-routes.ts"
 );
 
 // Each test gets its own settings file so they don't interfere.
