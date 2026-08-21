@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium } from "@playwright/test";
+import type { Browser, Page } from "@playwright/test";
 import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
   HYDRATION_DEBUG_SILENCE_KEY,

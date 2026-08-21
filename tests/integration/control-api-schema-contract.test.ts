@@ -5,6 +5,11 @@ import { mkdirSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
+import {
+  isJsonObject as isObject,
+  validateControlApiSchemaValue as validate,
+} from "../control-api-schema-validator.ts";
+import type { JsonObject } from "../control-api-schema-validator.ts";
 
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
@@ -55,80 +60,6 @@ const { server } = createServerInstance();
 
 let base = "";
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
-
-type JsonObject = Record<string, unknown>;
-
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveRef(schema: JsonObject, root: JsonObject): JsonObject {
-  const ref = schema.$ref;
-  if (typeof ref !== "string") return schema;
-  const prefix = "#/$defs/";
-  if (!ref.startsWith(prefix)) throw new Error(`unsupported ref ${ref}`);
-  const defs = root.$defs;
-  const name = ref.slice(prefix.length);
-  if (!isObject(defs) || !isObject(defs[name])) throw new Error(`missing ref ${ref}`);
-  return defs[name] as JsonObject;
-}
-
-function validate(schema: unknown, value: unknown, root: JsonObject, path = "$."): string[] {
-  if (!isObject(schema)) return [];
-  const resolved = resolveRef(schema, root);
-  if (resolved !== schema) return validate(resolved, value, root, path);
-
-  if (Array.isArray(resolved.anyOf)) {
-    const variants = resolved.anyOf.map((candidate) => validate(candidate, value, root, path));
-    if (!variants.some((errors) => errors.length === 0)) {
-      return [`${path} did not match anyOf: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
-    }
-  }
-
-  if ("const" in resolved && value !== resolved.const) return [`${path} expected const ${JSON.stringify(resolved.const)}`];
-  if (Array.isArray(resolved.enum) && !resolved.enum.some((candidate) => candidate === value)) {
-    return [`${path} expected one of ${JSON.stringify(resolved.enum)}`];
-  }
-
-  if (typeof resolved.type === "string") {
-    if (resolved.type === "object" && !isObject(value)) return [`${path} expected object`];
-    if (resolved.type === "array" && !Array.isArray(value)) return [`${path} expected array`];
-    if (resolved.type === "string" && typeof value !== "string") return [`${path} expected string`];
-    if (resolved.type === "number" && typeof value !== "number") return [`${path} expected number`];
-    if (resolved.type === "integer" && !Number.isInteger(value)) return [`${path} expected integer`];
-    if (resolved.type === "boolean" && typeof value !== "boolean") return [`${path} expected boolean`];
-    if (resolved.type === "null" && value !== null) return [`${path} expected null`];
-  }
-
-  if (typeof value === "string" && typeof resolved.pattern === "string" && !(new RegExp(resolved.pattern).test(value))) {
-    return [`${path} failed pattern ${resolved.pattern}`];
-  }
-
-  if (Array.isArray(value) && isObject(resolved.items)) {
-    return value.flatMap((item, index) => validate(resolved.items, item, root, `${path}[${index}]`));
-  }
-
-  if (isObject(value)) {
-    const required = Array.isArray(resolved.required) ? resolved.required : [];
-    const errors: string[] = [];
-    for (const key of required) {
-      if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
-    }
-    if (isObject(resolved.properties)) {
-      for (const [key, child] of Object.entries(resolved.properties)) {
-        if (key in value) errors.push(...validate(child, value[key], root, `${path}.${key}`));
-      }
-      if (resolved.additionalProperties === false) {
-        for (const key of Object.keys(value)) {
-          if (!(key in resolved.properties)) errors.push(`${path}.${key} is not allowed`);
-        }
-      }
-    }
-    return errors;
-  }
-
-  return [];
-}
 
 function httpOperation(operationId: string): JsonObject {
   const http = artifact.http;

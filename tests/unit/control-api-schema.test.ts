@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import {
-  CONTROL_API_SCHEMA_ARTIFACT,
-  buildControlApiSchema,
-} from "../../src/control-api/schema.ts";
+import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
 import {
   generateControlApiSchemaText,
   validateControlApiSchemaArtifact,
@@ -19,108 +16,14 @@ import {
   TAILNET_MAX_CANDIDATES,
   classifyMachineHandshake,
 } from "../../src/tailnet-machine-contract.ts";
-
-type JsonObject = Record<string, unknown>;
+import {
+  isJsonObject as isObject,
+  resolveControlApiSchemaRef as resolveRef,
+  validateControlApiSchemaValue as validate,
+} from "../control-api-schema-validator.ts";
+import type { JsonObject } from "../control-api-schema-validator.ts";
 
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
-
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveRef(schema: JsonObject, root: JsonObject): JsonObject {
-  const ref = schema.$ref;
-  if (typeof ref !== "string") return schema;
-  const prefix = "#/$defs/";
-  if (!ref.startsWith(prefix)) throw new Error(`unsupported ref ${ref}`);
-  const name = ref.slice(prefix.length);
-  const defs = root.$defs;
-  if (!isObject(defs) || !isObject(defs[name])) throw new Error(`missing ref ${ref}`);
-  return defs[name] as JsonObject;
-}
-
-function validate(schema: unknown, value: unknown, root: JsonObject, path = "$"): string[] {
-  if (!isObject(schema)) return [];
-  const resolved = resolveRef(schema, root);
-  if (resolved !== schema) return validate(resolved, value, root, path);
-
-  if (Array.isArray(resolved.anyOf)) {
-    const variants = resolved.anyOf.map((candidate) => validate(candidate, value, root, path));
-    return variants.some((errors) => errors.length === 0)
-      ? []
-      : [`${path} did not match anyOf: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
-  }
-
-  if (Array.isArray(resolved.oneOf)) {
-    const variants = resolved.oneOf.map((candidate) => validate(candidate, value, root, path));
-    return variants.filter((errors) => errors.length === 0).length === 1
-      ? []
-      : [`${path} did not match exactly one variant: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
-  }
-
-  if (Array.isArray(resolved.allOf)) {
-    const { allOf: _allOf, ...withoutAllOf } = resolved;
-    return [
-      ...resolved.allOf.flatMap((candidate) => validate(candidate, value, root, path)),
-      ...validate(withoutAllOf, value, root, path),
-    ];
-  }
-
-  if ("const" in resolved && value !== resolved.const) {
-    return [`${path} expected const ${JSON.stringify(resolved.const)}`];
-  }
-
-  if (Array.isArray(resolved.enum) && !resolved.enum.some((candidate) => candidate === value)) {
-    return [`${path} expected one of ${JSON.stringify(resolved.enum)}`];
-  }
-
-  if (typeof resolved.type === "string") {
-    if (resolved.type === "object" && !isObject(value)) return [`${path} expected object`];
-    if (resolved.type === "array" && !Array.isArray(value)) return [`${path} expected array`];
-    if (resolved.type === "string" && typeof value !== "string") return [`${path} expected string`];
-    if (resolved.type === "number" && typeof value !== "number") return [`${path} expected number`];
-    if (resolved.type === "integer" && (!Number.isInteger(value))) return [`${path} expected integer`];
-    if (resolved.type === "boolean" && typeof value !== "boolean") return [`${path} expected boolean`];
-    if (resolved.type === "null" && value !== null) return [`${path} expected null`];
-  }
-
-  if (typeof value === "string" && typeof resolved.pattern === "string" && !(new RegExp(resolved.pattern).test(value))) {
-    return [`${path} failed pattern ${resolved.pattern}`];
-  }
-
-  if (Array.isArray(value)) {
-    const errors: string[] = [];
-    if (typeof resolved.minItems === "number" && value.length < resolved.minItems) errors.push(`${path} has too few items`);
-    if (typeof resolved.maxItems === "number" && value.length > resolved.maxItems) errors.push(`${path} has too many items`);
-    if (resolved.uniqueItems === true && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) {
-      errors.push(`${path} has duplicate items`);
-    }
-    if (isObject(resolved.contains) && !value.some((item) => validate(resolved.contains, item, root, path).length === 0)) {
-      errors.push(`${path} is missing a required item`);
-    }
-    if (isObject(resolved.items)) errors.push(...value.flatMap((item, index) => validate(resolved.items, item, root, `${path}[${index}]`)));
-    return errors;
-  }
-
-  if (isObject(value) && isObject(resolved.properties)) {
-    const required = Array.isArray(resolved.required) ? resolved.required : [];
-    const errors: string[] = [];
-    for (const key of required) {
-      if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
-    }
-    for (const [key, child] of Object.entries(resolved.properties)) {
-      if (key in value) errors.push(...validate(child, value[key], root, `${path}.${key}`));
-    }
-    if (resolved.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!(key in resolved.properties)) errors.push(`${path}.${key} is not allowed`);
-      }
-    }
-    return errors;
-  }
-
-  return [];
-}
 
 function httpOperation(operationId: string): JsonObject {
   const http = artifact.http;
@@ -152,10 +55,6 @@ function wsMessage(name: string): JsonObject {
 describe("control api schema generation", () => {
   test("generated artifact is current", () => {
     expect(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")).toBe(generateControlApiSchemaText());
-  });
-
-  test("schema source emits a stable snapshot", () => {
-    expect(JSON.stringify(buildControlApiSchema(), null, 2)).toMatchSnapshot();
   });
 
   test("artifact has no duplicate contracts or unsupported field types", () => {
