@@ -71,8 +71,8 @@ describe("third-party notice policy", () => {
   test("npm root and platform packages include the notice next to every broker", () => {
     expect(PACKAGE_JSON.files).toContain("THIRD_PARTY_NOTICES");
     expect(BUILD_SCRIPT).toContain("const THIRD_PARTY_NOTICES");
-    expect(BUILD_SCRIPT).toContain("copyFileSync(THIRD_PARTY_NOTICES, join(BROKER_DIR, target, \"THIRD_PARTY_NOTICES\"));");
-    expect(BUILD_SCRIPT).toContain("copyFileSync(THIRD_PARTY_NOTICES, join(pkgDir, \"THIRD_PARTY_NOTICES\"));");
-    expect(BUILD_SCRIPT).toContain('files: ["wolfpack", "wolfpack-broker", "THIRD_PARTY_NOTICES"]');
+    expect(BUILD_SCRIPT).toContain("copyFileSync(THIRD_PARTY_NOTICES, join(targetDir, \"THIRD_PARTY_NOTICES\"));");
+    expect(BUILD_SCRIPT).toContain("copyFileSync(THIRD_PARTY_NOTICES, join(packageDir, \"THIRD_PARTY_NOTICES\"));");
+    expect(BUILD_SCRIPT).toContain('files: ["wolfpack", "wolfpack-broker", "broker-artifact.json", "THIRD_PARTY_NOTICES"]');
   });
 });

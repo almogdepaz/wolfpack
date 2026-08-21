@@ -306,16 +306,26 @@ verify_service_pid() {
 if [ "$DEPLOY_BROKER" = "0" ]; then
   WOLFPACK_BUILD_SERVER_ONLY=1 bun run scripts/build.ts
 else
-  WOLFPACK_BUILD_SERVER_ONLY=0 bun run scripts/build.ts
+  WOLFPACK_BUILD_MODE=local bun run scripts/build.ts
 fi
 
 ARCH="$(uname -m)"
 if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
   SERVER_SOURCE="dist/wolfpack-darwin-arm64"
+  BROKER_TARGET="bun-darwin-arm64"
 else
   SERVER_SOURCE="dist/wolfpack-darwin-x64"
+  BROKER_TARGET="bun-darwin-x64"
 fi
-BROKER_SOURCE="dist/wolfpack-broker"
+BROKER_SOURCE="dist/local/$BROKER_TARGET/wolfpack-broker"
+if [ "$DEPLOY_BROKER" = "1" ]; then
+  bun run scripts/broker-artifacts.ts validate \
+    --root=. \
+    --binary="$BROKER_SOURCE" \
+    --metadata="dist/local/$BROKER_TARGET/broker-artifact.json" \
+    --target="$BROKER_TARGET" \
+    --mode=local
+fi
 PORT="$(config_port)"
 PORT="${PORT:-18790}"
 mkdir -p "$INSTALL_DIR"

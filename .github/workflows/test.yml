@@ -33,7 +33,7 @@ jobs:
       # updating, catching a stale lockfile (forgotten `cargo update`,
       # hand-edited Cargo.toml without lock refresh, etc.) instead of
       # silently drifting at build time. CI is the only place we enforce
-      # this; `bun run scripts/build.ts` in dev mode stays unlocked so
+      # this; `WOLFPACK_BUILD_MODE=local bun run scripts/build.ts` stays unlocked so
       # local rebuilds Just Work.
       - name: Build wolfpack-broker (required by integration + e2e tests)
         run: cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker

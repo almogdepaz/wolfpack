@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { arch, platform, tmpdir } from "node:os";
+import {
+  BROKER_TARGETS,
+  createBrokerArtifactMetadata,
+  readSourceRevision,
+  writeBrokerArtifactMetadata,
+  type BrokerTarget,
+} from "../../scripts/broker-artifacts";
 
 let fixtureRoot = "";
 
@@ -15,19 +22,45 @@ function writeExecutable(path: string, content: string): void {
   chmodSync(path, 0o755);
 }
 
-function prepareFixture(): { readonly root: string; readonly bin: string; readonly log: string } {
+function brokerBinary(target: BrokerTarget): Buffer {
+  const binary = Buffer.alloc(64);
+  if (BROKER_TARGETS[target].binaryFormat === "elf") {
+    binary.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+    binary.writeUInt16LE(BROKER_TARGETS[target].architecture === "x64" ? 62 : 183, 18);
+  } else {
+    binary.set([0xcf, 0xfa, 0xed, 0xfe]);
+    binary.writeUInt32LE(BROKER_TARGETS[target].architecture === "x64" ? 0x01000007 : 0x0100000c, 4);
+  }
+  return binary;
+}
+
+function hostTarget(): BrokerTarget {
+  const target = `bun-${platform()}-${arch()}`;
+  if (!Object.hasOwn(BROKER_TARGETS, target)) throw new Error(`unsupported test host: ${target}`);
+  return target as BrokerTarget;
+}
+
+function prepareFixture(): { readonly root: string; readonly bin: string; readonly log: string; readonly hostBroker: string } {
   fixtureRoot = mkdtempSync(join(tmpdir(), "wolfpack-build-script-"));
   const bin = join(fixtureRoot, "test-bin");
   const log = join(fixtureRoot, "commands.log");
+  const hostBroker = join(fixtureRoot, "host-broker");
   mkdirSync(join(fixtureRoot, "scripts"), { recursive: true });
   mkdirSync(join(fixtureRoot, "src", "cli"), { recursive: true });
+  mkdirSync(join(fixtureRoot, "broker"), { recursive: true });
   mkdirSync(join(fixtureRoot, "bin"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   cpSync(join(process.cwd(), "scripts", "build.ts"), join(fixtureRoot, "scripts", "build.ts"));
+  cpSync(join(process.cwd(), "scripts", "broker-artifacts.ts"), join(fixtureRoot, "scripts", "broker-artifacts.ts"));
   writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({ version: "1.0.0" }));
+  writeFileSync(join(fixtureRoot, "broker", "Cargo.toml"), "[package]\nname = \"wolfpack-broker\"\nversion = \"1.0.0\"\n");
   writeFileSync(join(fixtureRoot, "THIRD_PARTY_NOTICES"), "notices\n");
   writeFileSync(join(fixtureRoot, "src", "cli", "index.ts"), "console.log('fixture');\n");
+  writeFileSync(hostBroker, brokerBinary(hostTarget()));
   writeFileSync(log, "");
+  execFileSync("git", ["init", "-q"], { cwd: fixtureRoot });
+  execFileSync("git", ["add", "."], { cwd: fixtureRoot });
+  execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: fixtureRoot });
 
   writeExecutable(join(bin, "bun"), `#!/bin/sh
 printf 'bun %s\\n' "$*" >> "$BUILD_TEST_LOG"
@@ -49,20 +82,25 @@ fi
   writeExecutable(join(bin, "cargo"), `#!/bin/sh
 printf 'cargo %s\\n' "$*" >> "$BUILD_TEST_LOG"
 mkdir -p "$PWD/broker/target/release"
-printf 'broker\\n' > "$PWD/broker/target/release/wolfpack-broker"
+cp "$BUILD_TEST_HOST_BROKER" "$PWD/broker/target/release/wolfpack-broker"
 chmod +x "$PWD/broker/target/release/wolfpack-broker"
 `);
-  return { root: fixtureRoot, bin, log };
+  return { root: fixtureRoot, bin, log, hostBroker };
 }
 
-function runBuild(fixture: { readonly root: string; readonly bin: string; readonly log: string }, serverOnly: boolean): string {
+function runBuild(
+  fixture: { readonly root: string; readonly bin: string; readonly log: string; readonly hostBroker: string },
+  mode: "server-only" | "local" | "package-all" | "unspecified",
+): string {
   execFileSync(process.execPath, [join(fixture.root, "scripts", "build.ts")], {
     cwd: fixture.root,
     env: {
       ...process.env,
       PATH: `${fixture.bin}:${process.env.PATH ?? ""}`,
       BUILD_TEST_LOG: fixture.log,
-      WOLFPACK_BUILD_SERVER_ONLY: serverOnly ? "1" : "0",
+      BUILD_TEST_HOST_BROKER: fixture.hostBroker,
+      WOLFPACK_BUILD_MODE: mode === "server-only" || mode === "unspecified" ? "" : mode,
+      WOLFPACK_BUILD_SERVER_ONLY: mode === "server-only" ? "1" : "0",
     },
     stdio: "pipe",
   });
@@ -70,10 +108,16 @@ function runBuild(fixture: { readonly root: string; readonly bin: string; readon
 }
 
 describe("scripts/build.ts modes", () => {
+  test("requires an explicit broker build mode", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runBuild(fixture, "unspecified")).toThrow("WOLFPACK_BUILD_MODE");
+  });
+
   test("server-only mode compiles the cli without broker staging or platform packages", () => {
     const fixture = prepareFixture();
 
-    const commands = runBuild(fixture, true);
+    const commands = runBuild(fixture, "server-only");
 
     expect(commands).not.toContain("cargo ");
     expect(existsSync(join(fixture.root, "dist", "broker"))).toBe(false);
@@ -81,13 +125,67 @@ describe("scripts/build.ts modes", () => {
     expect(existsSync(join(fixture.root, "bin", "wolfpack"))).toBe(true);
   });
 
-  test("normal mode stages the broker and generates platform packages", () => {
+  test("local mode ignores stale release staging and emits only the fresh host broker", () => {
     const fixture = prepareFixture();
+    mkdirSync(join(fixture.root, "dist", "broker", "bun-darwin-x64"), { recursive: true });
+    mkdirSync(join(fixture.root, "dist", "npm", "wolfpack-bridge-darwin-x64"), { recursive: true });
+    writeFileSync(join(fixture.root, "dist", "broker", "bun-darwin-x64", "wolfpack-broker"), "stale\n");
+    writeFileSync(join(fixture.root, "dist", "npm", "wolfpack-bridge-darwin-x64", "wolfpack-broker"), "stale\n");
+    appendFileSync(join(fixture.root, "broker", "Cargo.toml"), "# local tracked change\n");
 
-    const commands = runBuild(fixture, false);
+    const commands = runBuild(fixture, "local");
+    const localBroker = join(fixture.root, "dist", "local", hostTarget(), "wolfpack-broker");
 
     expect(commands).toContain("cargo build --release --manifest-path broker/Cargo.toml --bin wolfpack-broker");
-    expect(existsSync(join(fixture.root, "dist", "wolfpack-broker"))).toBe(true);
+    expect(existsSync(join(fixture.root, "dist", "broker"))).toBe(false);
+    expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
+    expect(readFileSync(localBroker).equals(brokerBinary(hostTarget()))).toBe(true);
+    expect(existsSync(join(fixture.root, "dist", "local", hostTarget(), "broker-artifact.json"))).toBe(true);
+  });
+
+  test("package-all mode rejects tracked source changes before packaging", () => {
+    const fixture = prepareFixture();
+    appendFileSync(join(fixture.root, "broker", "Cargo.toml"), "# dirty broker source\n");
+
+    expect(() => runBuild(fixture, "package-all")).toThrow("tracked source");
+    expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
+  });
+
+  test("package-all mode fails closed when staged provenance is incomplete", () => {
+    const fixture = prepareFixture();
+    const targetDir = join(fixture.root, "dist", "broker", "bun-darwin-arm64");
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, "wolfpack-broker"), brokerBinary("bun-darwin-arm64"));
+
+    expect(() => runBuild(fixture, "package-all")).toThrow();
+    expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
+  });
+
+  test("package-all mode requires proven target artifacts and skips the host cargo build", () => {
+    const fixture = prepareFixture();
+    const revision = readSourceRevision(fixture.root);
+    for (const target of Object.keys(BROKER_TARGETS) as BrokerTarget[]) {
+      const targetDir = join(fixture.root, "dist", "broker", target);
+      const binary = join(targetDir, "wolfpack-broker");
+      mkdirSync(targetDir, { recursive: true });
+      writeFileSync(binary, brokerBinary(target));
+      writeBrokerArtifactMetadata(
+        join(targetDir, "broker-artifact.json"),
+        createBrokerArtifactMetadata({
+          binaryPath: binary,
+          mode: "release",
+          target,
+          brokerVersion: "1.0.0",
+          sourceRevision: revision,
+        }),
+      );
+    }
+
+    const commands = runBuild(fixture, "package-all");
+
+    expect(commands).not.toContain("cargo ");
     expect(existsSync(join(fixture.root, "dist", "npm", "wolfpack-bridge-darwin-arm64", "wolfpack-broker"))).toBe(true);
+    expect(existsSync(join(fixture.root, "dist", "npm", "wolfpack-bridge-darwin-arm64", "broker-artifact.json"))).toBe(true);
+    expect(existsSync(join(fixture.root, "dist", "local"))).toBe(false);
   });
 });

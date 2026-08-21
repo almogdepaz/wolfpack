@@ -148,6 +148,24 @@ describe("release workflow security policy", () => {
     }
   });
 
+  test("stages broker provenance for every target and selects package-all explicitly", () => {
+    const brokerJobs = [jobs["broker-darwin"], jobs["broker-linux"]];
+    const stagingSource = brokerJobs
+      .flatMap(job => job?.steps ?? [])
+      .map(step => step.run ?? "")
+      .join("\n");
+    for (const target of [
+      "bun-linux-x64",
+      "bun-linux-arm64",
+      "bun-darwin-x64",
+      "bun-darwin-arm64",
+    ]) {
+      expect(stagingSource).toContain(`--target=${target}`);
+    }
+    expect(stagingSource.match(/broker-artifacts\.ts stage/g)).toHaveLength(4);
+    expect(jobSource("build")).toContain("WOLFPACK_BUILD_MODE=package-all bun run scripts/build.ts");
+  });
+
   test("keeps build jobs read-only and grants release authority only to the release job", () => {
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(jobs.release?.permissions).toMatchObject({

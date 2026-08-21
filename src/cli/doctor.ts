@@ -333,7 +333,7 @@ function checkBinary(): CheckResult[] {
       fix: () => {
         const replaced = updateStableBinary();
         if (!replaced) {
-          throw new Error("cannot copy binary — rebuild first: bun run scripts/build.ts");
+          throw new Error("cannot copy binary — rebuild first: WOLFPACK_BUILD_MODE=local bun run scripts/build.ts");
         }
       },
     });
@@ -389,7 +389,7 @@ async function checkBroker(): Promise<CheckResult[]> {
     results.push({
       name: "broker binary", group: "Broker", status: "fail",
       detail: "not found in ~/.wolfpack/bin",
-      fixHint: "bun run scripts/build.ts (requires rust toolchain)",
+      fixHint: "WOLFPACK_BUILD_MODE=local bun run scripts/build.ts (requires rust toolchain)",
     });
   }
 

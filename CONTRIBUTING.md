@@ -44,13 +44,13 @@ Frontend files live in `public/`. The server doesn't serve from disk — everyth
 2. Run `bun run scripts/gen-assets.ts` — bundles `public/app.ts` and ghostty-web, then embeds every file from `public/` into `src/public-assets.ts` (binary → base64, text → string)
 3. **Do NOT edit `src/public-assets.ts` manually** — it's auto-generated
 
-## Building Release Binaries
+## Building Binaries
 
 ```bash
-bun run scripts/build.ts
+WOLFPACK_BUILD_MODE=local bun run scripts/build.ts
 ```
 
-Produces `wolfpack` for linux-x64, linux-arm64, darwin-x64, darwin-arm64 plus per-platform npm package directories in `dist/`. Also stages `wolfpack-broker` per platform — in CI it expects pre-built broker binaries under `dist/broker/<target>/`; locally it falls back to a host-arch-only `cargo build --release`.
+Local mode builds all four `wolfpack` binaries plus a fresh host broker under `dist/local/<target>`; it emits no platform npm packages. `package-all` requires four pre-staged, proven release brokers under `dist/broker/<target>` and emits the platform packages.
 
 **Tailnet release gate:** Before a Tailnet release, complete the [physical-device release matrix](docs/tailnet-release-matrix.md); physical-device evidence is required, and automated checks do not substitute for it.
 
