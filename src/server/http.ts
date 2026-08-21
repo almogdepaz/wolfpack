@@ -16,7 +16,7 @@ import {
 } from "../tailnet-machine-contract.js";
 import type { MachineHandshake, TailnetMachineCandidate } from "../tailnet-machine-contract.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
-import { MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
+import { isValidProjectName, MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
 
 const log = createLogger("http");
 
@@ -100,6 +100,18 @@ export async function isAllowedSession(session: string): Promise<boolean> {
 export function json(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
+}
+
+/** Validate project name param. Returns project string or sends 400 and returns null. */
+export function validateProjectParam(
+  res: ServerResponse,
+  project: string | null | undefined,
+): project is string {
+  if (!project || !isValidProjectName(project)) {
+    json(res, { error: "invalid project" }, 400);
+    return false;
+  }
+  return true;
 }
 
 const PUBLIC_API_PATHS = new Set(["/api/info", "/api/machine"]);

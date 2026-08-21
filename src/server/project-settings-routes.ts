@@ -38,6 +38,7 @@ import {
   json,
   parseObjectBody,
   uniqueSessionName,
+  validateProjectParam,
 } from "./http.js";
 import {
   projectDirectoryHttpStatus,
@@ -145,15 +146,6 @@ function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
     typeof body.setCmdEnabled.cmd === "string" &&
     typeof body.setCmdEnabled.enabled === "boolean"
   );
-}
-
-/** Validate project name param. Returns project string or sends 400 and returns null. */
-function validateProject(res: ServerResponse, project: string | null | undefined): project is string {
-  if (!project || !isValidProjectName(project)) {
-    json(res, { error: "invalid project" }, 400);
-    return false;
-  }
-  return true;
 }
 
 function listDevProjects(): string[] {
@@ -409,7 +401,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
     let projectSelection: { readonly project: string; readonly projectDir: string };
     if (newProject !== undefined) {
       const folderName = newProject.trim();
-      if (!validateProject(res, folderName)) return;
+      if (!validateProjectParam(res, folderName)) return;
       let projectParent = DEV_DIR;
       if (newProjectParent !== undefined) {
         const parentValidation = validateExplicitProjectDir(newProjectParent);

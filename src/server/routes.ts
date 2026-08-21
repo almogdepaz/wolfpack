@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { execFile } from "node:child_process";
 import { createLogger, errMsg } from "../log.js";
-import { clampCols, clampRows, isValidProjectName } from "../validation.js";
+import { clampCols, clampRows } from "../validation.js";
 
 import { assets } from "../public-assets.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
@@ -28,6 +28,7 @@ import {
   serveFile,
   enumerateLocalTailnetCandidates,
   getLocalMachineHandshake,
+  validateProjectParam,
 } from "./http.js";
 import { activePtySessions, teardownPty } from "./websocket.js";
 import {
@@ -61,15 +62,6 @@ function isAgentRuntimeAckBody(body: Record<string, unknown>): body is AgentRunt
     && typeof body.transitionSequence === "number"
     && Number.isInteger(body.transitionSequence)
     && body.transitionSequence > 0;
-}
-
-/** Validate project name param. Returns project string or sends 400 and returns null. */
-function validateProject(res: ServerResponse, project: string | null | undefined): project is string {
-  if (!project || !isValidProjectName(project)) {
-    json(res, { error: "invalid project" }, 400);
-    return false;
-  }
-  return true;
 }
 
 const VERSION: string = pkg.version;
@@ -229,7 +221,7 @@ export const routes: Record<
   "GET /api/git-status": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
-    if (!validateProject(res, session)) return;
+    if (!validateProjectParam(res, session)) return;
     if (!(await isAllowedSession(session)))
       return json(res, { error: "session not found" }, 404);
     const projectDir = getBackend().sessionDir(session);
