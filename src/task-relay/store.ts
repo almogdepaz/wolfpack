@@ -116,7 +116,8 @@ function hasMatchingDigest(envelope: RelayEnvelope, expected: unknown): expected
 function isStoredEnvelope(value: unknown): value is StoredEnvelope {
   if (!isRecord(value) || !isRelayEnvelope(value.envelope)) return false;
   return Number.isInteger(value.envelope.protocolVersion)
-    && value.envelope.source.relay === RELAY_ID && value.envelope.target.relay === RELAY_ID
+    && (value.envelope.source.relay === RELAY_ID || isPeerRelayId(value.envelope.source.relay))
+    && value.envelope.target.relay === RELAY_ID
     && hasMatchingDigest(value.envelope, value.digest)
     && isRelayTimestamp(value.acceptedAt) && isOpaqueRelayId(value.acceptanceId);
 }
@@ -170,6 +171,14 @@ function hasValidMailboxBijection(
   return mailboxEnvelopeIds.size === storedEnvelopes.size;
 }
 
+function hasValidEnvelopeRoutes(
+  envelopes: readonly StoredEnvelope[],
+  peerRoutes: readonly PeerRoute[],
+): boolean {
+  const routes = new Set(peerRoutes.map(route => route.id));
+  return envelopes.every(item => item.envelope.source.relay === RELAY_ID || routes.has(item.envelope.source.relay));
+}
+
 function hasValidOutboxRoutes(
   outbox: readonly PeerOutboxItem[],
   peerRoutes: readonly PeerRoute[],
@@ -191,7 +200,9 @@ function isPersistedRelayState(value: unknown): value is PersistedRelayState {
   if (peerRoutes !== undefined && (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute))) return false;
   if (!Array.isArray(outbox) || !outbox.every(isPeerOutboxItem)) return false;
   const routes = peerRoutes ?? [];
-  return hasValidMailboxBijection(mailbox, envelopes) && hasValidOutboxRoutes(outbox, routes);
+  return hasValidMailboxBijection(mailbox, envelopes)
+    && hasValidEnvelopeRoutes(envelopes, routes)
+    && hasValidOutboxRoutes(outbox, routes);
 }
 
 export class MalformedRelayStoreError extends TypeError {

@@ -42,6 +42,10 @@ function nonEmpty(value: unknown, maximum = 512): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum;
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export class TaskRelayGateway {
   readonly #store: TaskRelayStore;
   readonly #now: () => Date;
@@ -239,15 +243,24 @@ export class TaskRelayGateway {
 
   /** Peer input is admitted by Wolfpack's inherited trusted-Tailnet HTTP policy. */
   async receivePeer(input: unknown): Promise<RelayResult<{ readonly kind: "accepted" | "duplicate"; readonly acceptanceId: string }>> {
-    if (!isRelayEnvelope(input) || input.protocolVersion !== RELAY_PROTOCOL_VERSION || !isLocalRelay(input.target)
-      || !isLocalRelay(input.source) || encodedJsonBytes(input.payload) > RELAY_LIMITS.PAYLOAD_BYTES) {
+    if (!record(input) || typeof input.origin !== "string" || !isRelayEnvelope(input.envelope)) {
       return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid peer relay envelope");
     }
-    const target = await this.#store.registration(input.target.id, this.#now());
-    if (!target || !target.protocolVersions.includes(input.protocolVersion)) {
+    const envelope = input.envelope;
+    if (envelope.protocolVersion !== RELAY_PROTOCOL_VERSION || !isLocalRelay(envelope.target)
+      || !isLocalRelay(envelope.source) || encodedJsonBytes(envelope.payload) > RELAY_LIMITS.PAYLOAD_BYTES) {
+      return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid peer relay envelope");
+    }
+    const target = await this.#store.registration(envelope.target.id, this.#now());
+    if (!target || !target.protocolVersions.includes(envelope.protocolVersion)) {
       return relayFailure(RELAY_ERROR.TARGET_NOT_REGISTERED, "peer target endpoint is not actively registered");
     }
-    const accepted = await this.#store.accept(input, this.#now().toISOString());
+    let sourceRelay: string;
+    try { sourceRelay = await this.peerRelay(input.origin); } catch {
+      return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid peer relay origin");
+    }
+    const acceptedEnvelope: RelayEnvelope = { ...envelope, source: { ...envelope.source, relay: sourceRelay } };
+    const accepted = await this.#store.accept(acceptedEnvelope, this.#now().toISOString());
     if (accepted.kind === "conflict") return relayFailure(RELAY_ERROR.ENVELOPE_CONFLICT, "peer envelope id conflicts with durable content");
     return { ok: true, kind: accepted.kind, acceptanceId: accepted.acceptanceId };
   }
@@ -303,7 +316,7 @@ export class TaskRelayGateway {
       const response = await this.#peerFetch(`${item.peerOrigin}/api/task-relay/v2/peer/receive`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(this.#peerEnvelope(item)),
+        body: JSON.stringify({ origin: this.#peerOrigin, envelope: this.#peerEnvelope(item) }),
         redirect: "error",
         signal: AbortSignal.timeout(5_000),
       });

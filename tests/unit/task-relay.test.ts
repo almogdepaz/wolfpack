@@ -378,6 +378,55 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("preserves peer source routes so the receiver can reply", async () => {
+    const senderRoot = root();
+    const receiverRoot = root();
+    let sender: TaskRelayGateway | undefined;
+    let receiver: TaskRelayGateway | undefined;
+    try {
+      const senderOrigin = "https://sender.example.ts.net";
+      const receiverOrigin = "https://receiver.example.ts.net";
+      sender = new TaskRelayGateway({
+        root: senderRoot,
+        inspectSession: session("sender"),
+        now: () => NOW,
+        peerOrigin: senderOrigin,
+        peerFetch: async (_url, init) => Response.json(await receiver!.receivePeer(JSON.parse(String(init?.body)))),
+      });
+      receiver = new TaskRelayGateway({
+        root: receiverRoot,
+        inspectSession: session("receiver"),
+        now: () => NOW,
+        peerOrigin: receiverOrigin,
+        peerFetch: async (_url, init) => Response.json(await sender!.receivePeer(JSON.parse(String(init?.body)))),
+      });
+      const source = await connect(sender, "sender");
+      const target = await connect(receiver, "receiver");
+      const remoteTarget = { relay: await sender.peerRelay(receiverOrigin), id: target.id };
+      const outbound = { envelopeId: "peer-question", protocolVersion: RELAY_PROTOCOL_VERSION, source, target: remoteTarget, payload: { question: true }, createdAt: NOW.toISOString() };
+
+      await expect(sender.send({ callerSession: "sender", envelope: outbound })).resolves.toMatchObject({ ok: true, forwarding: "forwarded" });
+      const received = await receiver.receive({ callerSession: "receiver", cursor: "0" });
+      if (!received.ok) throw new Error("expected receiver inbox");
+      expect(received.envelopes[0]?.envelopeId).toBe("peer-question");
+      expect(received.envelopes[0]?.source?.relay).toMatch(/^wolfpack-pi-tasks-v2:peer:/);
+
+      await expect(receiver.send({
+        callerSession: "receiver",
+        envelope: { envelopeId: "peer-answer", protocolVersion: RELAY_PROTOCOL_VERSION, source: target, target: received.envelopes[0]!.source, payload: { answer: true }, createdAt: NOW.toISOString() },
+      })).resolves.toMatchObject({ ok: true, forwarding: "forwarded" });
+      await expect(sender.receive({ callerSession: "sender", cursor: "0" })).resolves.toMatchObject({
+        ok: true,
+        envelopes: [expect.objectContaining({ envelopeId: "peer-answer", payload: { answer: true } })],
+      });
+    } finally {
+      sender?.close();
+      receiver?.close();
+      rmSync(senderRoot, { recursive: true, force: true });
+      rmSync(receiverRoot, { recursive: true, force: true });
+    }
+  });
+
   test("persists opaque peer routes and recovers remote forwarding without a sender mailbox", async () => {
     const senderRoot = root();
     const receiverRoot = root();

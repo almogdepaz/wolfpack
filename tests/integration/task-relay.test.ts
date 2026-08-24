@@ -109,8 +109,7 @@ describe("task relay v2 routes", () => {
         },
       });
       expect(await accepted.json()).toMatchObject({ ok: true, forwarding: "forwarded" });
-      expect(outbound).toMatchObject({ source: { relay: RELAY_ID }, target: { relay: RELAY_ID } });
-      expect(JSON.stringify(outbound)).not.toContain("sender.example.ts.net");
+      expect(outbound).toMatchObject({ origin: "https://sender.example.ts.net", envelope: { source: { relay: RELAY_ID }, target: { relay: RELAY_ID } } });
       expect(JSON.stringify(outbound)).not.toContain("receiver.example.ts.net");
     } finally {
       globalThis.fetch = systemFetch;

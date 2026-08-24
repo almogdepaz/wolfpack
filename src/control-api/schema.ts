@@ -511,6 +511,10 @@ export const controlApiSource: ControlApiSource = {
       payload: {},
       createdAt: string(),
     }, ["envelopeId", "protocolVersion", "source", "target", "payload", "createdAt"]),
+    RelayPeerEnvelope: object({
+      origin: ref("TailnetOrigin"),
+      envelope: ref("RelayEnvelope"),
+    }, ["origin", "envelope"]),
     RelayErrorEnvelope: object({
       ok: { const: false },
       error: object({ code: { enum: Object.values(RELAY_ERROR) }, message: string(), retryable: boolean() }, ["code", "message", "retryable"]),
@@ -756,7 +760,7 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       requestContentType: "application/json",
-      request: ref("RelayEnvelope"),
+      request: ref("RelayPeerEnvelope"),
       response: ref("RelayPeerReceiveResponse"),
       errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "413 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
     },
