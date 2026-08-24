@@ -15,7 +15,6 @@ import {
   waitForClose,
   wait,
   connectPty as _connectPty,
-  collectJsonMessages,
   waitForMessage,
   sendTakeControl,
   type PtyTestContext,
@@ -74,10 +73,12 @@ describe("take-control: control_granted", () => {
     const ws2 = await connectPty(session);
     await waitForMessage(ws2, "viewer_conflict");
 
+    const ws1Close = waitForClose(ws1);
     const granted = waitForMessage(ws2, "control_granted");
     sendTakeControl(ws2);
     const msg = await granted;
     expect(msg.type).toBe("control_granted");
+    await ws1Close;
 
     await closeWs(ws2);
     await wait(100);
@@ -142,6 +143,7 @@ describe("take-control: entry promotion", () => {
 
   test("old entry pendingViewer is nulled after promotion", async () => {
     const ws1 = await connectPty(session);
+    const ws1Close = waitForClose(ws1);
 
     const ws2 = await connectPty(session);
     await waitForMessage(ws2, "viewer_conflict");
@@ -155,6 +157,7 @@ describe("take-control: entry promotion", () => {
 
     // Old entry's pendingViewer should be cleaned up
     expect(entry.pendingViewer).toBeNull();
+    await ws1Close;
 
     await closeWs(ws2);
     await wait(100);
@@ -522,6 +525,7 @@ describe("take-control: cross-session isolation", () => {
     await closeEvent;
 
     // Session 2 unaffected
+    expect(entry1.alive).toBe(false);
     expect(entry2.alive).toBe(true);
     expect(entry2.viewer).toBeTruthy();
     expect(ws2a.readyState).toBe(WebSocket.OPEN);

@@ -14,7 +14,6 @@ import {
   canAcceptInputDefault,
   computeInputGate,
   type GridSession,
-  type InputGateState,
 } from "../../src/grid-logic";
 
 describe("gridLayoutClass", () => {

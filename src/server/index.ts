@@ -1,17 +1,12 @@
 /**
  * Wolfpack server — HTTP + WebSocket server creation, CORS, startup.
  */
-import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
+import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import pkg from "../../package.json";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
 import { initBackend, getBackend, getRouter } from "./backend.js";
@@ -44,7 +39,6 @@ const log = createLogger("server");
 
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
-const VERSION: string = pkg.version;
 
 // inherit user's full PATH from login shell — launchd PATH is minimal
 try {

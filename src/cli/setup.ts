@@ -2,9 +2,9 @@
  * Interactive setup wizard.
  */
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { printQR } from "../qr.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
@@ -43,17 +43,6 @@ import { configureTailscaleRemoteAccess, inspectTailscaleSelf } from "./tailscal
 import pkg from "../../package.json";
 
 const log = createLogger("setup");
-
-function check(name: string, cmd: string): boolean {
-  try {
-    execSync(cmd, { stdio: "ignore" });
-    print(`  ${green("✓")} ${name}`);
-    return true;
-  } catch { /* expected: prerequisite not installed */
-    print(`  ${red("✗")} ${name}`);
-    return false;
-  }
-}
 
 function printSetupCompletion(options: {
   readonly port: number;

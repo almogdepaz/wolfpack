@@ -133,9 +133,7 @@ test("WS disconnect keeps reconnecting banner visible during a network outage", 
   await expect(connStatus).toBeHidden({ timeout: 15000 });
 });
 
-test("WS disconnect during active session preserves terminal content", async ({
-  page,
-}, testInfo) => {
+test("WS disconnect during active session preserves terminal content", async () => {
   // TODO: Requires a live PTY to echo back command-output. Re-enable once
   // we have a mock PTY echo process for E2E tests.
   test.skip(true, "needs mock PTY process — Bun.spawn can't be stubbed");

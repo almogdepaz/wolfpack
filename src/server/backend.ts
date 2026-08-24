@@ -329,12 +329,6 @@ export class BackendRouter implements SessionBackend {
     }
   }
 
-  private stopWatchdog(): void {
-    if (!this.watchdogTimer) return;
-    clearInterval(this.watchdogTimer);
-    this.watchdogTimer = null;
-  }
-
   private teardownBrokerClient(): void {
     if (this.brokerClient) {
       try { this.brokerClient.close(); } catch (e: unknown) {

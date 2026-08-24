@@ -372,6 +372,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     await Promise.all([ptyReady, forwardedOutput]);
 
     expect(backend.writeCalls).toHaveLength(1);
+    expect(Buffer.from(acceptedInput ?? []).equals(input)).toBe(true);
     expect(ws.binaryFrames().some((frame) => frame.equals(input))).toBe(true);
   });
 

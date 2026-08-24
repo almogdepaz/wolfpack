@@ -31,7 +31,6 @@ const { server, wss } = createServerInstance();
 // ── Test setup ──
 
 let port: number;
-let baseUrl: string;
 let baseWsUrl: string;
 let tailnetServer: TailnetOriginServerFixture;
 
@@ -46,7 +45,6 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       port = (server.address() as AddressInfo).port;
-      baseUrl = `http://127.0.0.1:${port}`;
       baseWsUrl = `ws://127.0.0.1:${port}`;
       resolve();
     });

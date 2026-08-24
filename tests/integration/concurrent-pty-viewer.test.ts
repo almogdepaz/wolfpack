@@ -228,8 +228,10 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
     const wsB = await connectPty();
     await waitForMessage(wsB, "viewer_conflict");
 
+    const wsAClose = waitForClose(wsA);
     sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
+    await wsAClose;
     await wait(50);
 
     // B now has a fresh entry — install a mock proc with an exit trigger
@@ -264,6 +266,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
   test("proc crash while pending viewer exists closes both viewers", async () => {
     // A connects with mock proc, B is pending, proc crashes → both closed
     const wsA = await connectPty();
+    expect(wsA.readyState).toBe(WebSocket.OPEN);
     const entry = ctx.activePtySessions.get(SESSION) as any;
 
     // Install mock proc
@@ -308,6 +311,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
     const wsB = await connectPty();
     await waitForMessage(wsB, "viewer_conflict");
 
+    const wsAClose = waitForClose(wsA);
     const entry = ctx.activePtySessions.get(SESSION) as any;
 
     // Simulate crash: entry torn down but B's pending handler still has closure ref
@@ -318,6 +322,7 @@ describe("concurrent viewers: PTY crash mid-take-control", () => {
       entry.viewer = null;
     }
 
+    await wsAClose;
     await wait(100);
 
     // B sends take_control after crash — server should handle gracefully
@@ -353,8 +358,10 @@ describe("concurrent viewers: no leaked activePtySessions entries", () => {
     await waitForMessage(wsB, "viewer_conflict");
 
     // B takes from A
+    const wsAClose = waitForClose(wsA);
     sendTakeControl(wsB);
     await waitForMessage(wsB, "control_granted");
+    await wsAClose;
     await wait(50);
 
     // A reconnects and takes from B

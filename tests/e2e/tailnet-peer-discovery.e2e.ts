@@ -29,20 +29,6 @@ interface ReplacementSocketWindow extends Window {
   }>;
 }
 
-interface ReplacementFocusedDelegationWindow extends ReplacementSocketWindow {
-  readonly state: {
-    readonly activeDelegationRoot: string | null;
-    readonly focusedDelegationSession: string | null;
-    readonly currentSession: string | null;
-    readonly currentMachine: string;
-    readonly currentView: string;
-    readonly terminalController: unknown;
-    readonly delegationGridSessions: Array<{ readonly session: string }>;
-    readonly preservedGridSessions: Array<{ readonly session: string }>;
-    readonly preservedGridFocusIndex: number;
-  };
-}
-
 function visibleSessionList(page: Page) {
   return page.locator([
     "#session-list:not([hidden])",
@@ -459,7 +445,7 @@ test("removes a ready peer from workspace navigation when its sessions request f
   await expect(page.locator("#terminal-view")).toBeVisible();
 });
 
-test("revokes a stale peer after candidate enumeration failures and recovers its stable identity", async ({ page }, testInfo) => {
+test("revokes a stale peer after candidate enumeration failures and recovers its stable identity", async ({ page }) => {
   let candidateMode: "valid" | "transport-failure" | "malformed-envelope" | "error-envelope" = "valid";
   let peerSessionRequests = 0;
   await page.route("**/api/tailnet/v1/candidates", async (route) => {

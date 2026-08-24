@@ -1,9 +1,8 @@
 import {
   esc, escAttr, loadStoredJson, isDesktop,
-  getTerminalFontFamily,
   wpSettings, TERM_PRESETS, toggleSetting,
-  applyTermToXterm, initSettings, haptic, requestNotifications,
-  QC_STORAGE_KEY, loadQuickCmds, RECENTS_STORAGE_KEY, MAX_RECENTS,
+  initSettings, haptic,
+  QC_STORAGE_KEY, RECENTS_STORAGE_KEY, MAX_RECENTS,
   state, setState,
   SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL, SNAPSHOT_TTL_MS,
   DESKTOP_TERMINAL_SCROLLBACK,
@@ -11,11 +10,11 @@ import {
 
 import {
   initGridDeps,
-  isGridActive, updateGridLayout, renderGridCells, getGridCellElement,
+  isGridActive,
   hasPreservedGrid, clearPreservedGrid, retireGridSessionsForMachine,
-  retirePreservedGridSessionsForMachine, setCurrentSessionFromGridFocus,
-  returnToTerminalView, setGridFocus, suspendGridMode, restorePreservedGrid,
-  backFromSettings, addToGrid, removeFromGrid, exitGridMode,
+  retirePreservedGridSessionsForMachine,
+  returnToTerminalView, setGridFocus, suspendGridMode,
+  backFromSettings, addToGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
   canOpenMultiTerminalGrid, disposeDelegationGrid,
@@ -125,7 +124,6 @@ import {
   sendMessageDraftAttempt,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldInterceptCopy,
-  shouldReleaseScrollLockOnKeydown,
   shouldSubmitMessageInputOnEnter,
 } from "../src/terminal-input";
 import {
@@ -748,7 +746,6 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   return { term, fitAddon };
 }
 
-const DESKTOP_INITIAL_PREFILL_TIMEOUT_MS = 1000;
 function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTerminalController {
   return createStrictPtyTerminalController(opts, {
     createTerminalInstance,
@@ -1280,10 +1277,8 @@ function showView(name: string, skipAnimation?: boolean): void {
   const nextEl = document.getElementById(effectiveName + "-view");
   if (!nextEl) return;
   exposeActiveView(nextEl);
-  const wasSwipe = state.swipeNavigated;
   if (state.swipeNavigated) { skipAnimation = true; state.swipeNavigated = false; }
   const animate = isMobile && !skipAnimation && prevView !== effectiveName && prevEl && nextEl;
-  const animateHeader = isMobile && prevView !== effectiveName && !skipAnimation || wasSwipe;
   const goingForward = (VIEW_DEPTH[effectiveName] || 0) > (VIEW_DEPTH[prevView] || 0);
 
   // Stop debug panel refresh when leaving settings
@@ -1835,26 +1830,6 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
 function returnToDelegationGrid(): void {
   if (!state.activeDelegationRoot) return;
   openDelegationGrid(state.activeDelegationRoot, state.delegationMachine || "");
-}
-
-function exitDelegationWorkspace(): void {
-  if (!state.activeDelegationRoot) return;
-  if (state.terminalController) destroyTerminal();
-  teardownDelegationWorkspace();
-  if (hasPreservedGrid()) {
-    showView("terminal", true);
-    restorePreservedGrid();
-    return;
-  }
-  if (isGridActive()) {
-    setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
-    updateGridLayout();
-    showView("terminal", true);
-    renderSidebar();
-    return;
-  }
-  setState({ currentSession: null, currentMachine: "" });
-  backToSessions();
 }
 
 type MachineFailureCategory = "auth" | "timeout" | "server" | "network" | "unknown";
@@ -2856,23 +2831,6 @@ function showAgentAddError(msg: string): void {
   if (refresh) refresh.addEventListener("click", () => { void loadProviderReadiness(); });
 })();
 
-// Legacy compatibility: older versions of the picker used these names.
-// Keep them as no-op aliases so any cached HTML/inline handlers don't crash
-// after upgrade. Safe to remove after a release cycle.
-async function deleteCustomCmd(cmd, e) {
-  if (e) e.stopPropagation();
-  try {
-    await api("/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ removeCmd: cmd }),
-    }, state.projectMachine);
-    showAgentPicker();
-  } catch (e) {
-    showAgentAddError("Failed to delete command: " + errorMessage(e));
-  }
-}
-
 async function createSessionWithAgent(cmd) {
   const nameInput = document.getElementById("session-name-input") as HTMLInputElement;
   const sessionName = (nameInput.value || "").trim();
@@ -3085,7 +3043,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       // renderer.render(forceAll=true) bypasses both guards and repaints every cell.
       if (state.terminalController) state.terminalController.forceRepaint();
     },
-    onOutput: (data) => {
+    onOutput: () => {
       if (_cachedPendingReset) {
         _cachedPendingReset = false;
         if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
@@ -3185,7 +3143,7 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
     },
   });
 
-  await state.terminalController.mount(container, { cached });
+  await state.terminalController.mount(container);
   if (!state.terminalController) return; // disposed while awaiting WASM init
   if (!state.terminalController.term) {
     // WASM init failed — show error instead of blank screen
@@ -3295,10 +3253,6 @@ function destroyTerminal() {
 }
 
 // ── Terminal ──
-
-function terminalSessionKey() {
-  return (state.currentMachine || "") + "|" + (state.currentSession || "");
-}
 
 function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
@@ -3949,7 +3903,6 @@ msgInput.addEventListener("keydown", (e) => {
   const HOLD_MS = 400;
   const LARGE_THRESHOLD = 50;
   let holdTimer = null;
-  let holdStarted = false;
 
   function needsHold() {
     if (!wpSettings.holdToSend) return false;
@@ -3960,7 +3913,6 @@ msgInput.addEventListener("keydown", (e) => {
   function startHold(e) {
     if (!needsHold()) { sendMsg(); return; }
     e.preventDefault();
-    holdStarted = true;
     btn.classList.add("holding");
     btn.style.setProperty("--hold-duration", HOLD_MS + "ms");
     holdTimer = setTimeout(() => {
@@ -3969,14 +3921,12 @@ msgInput.addEventListener("keydown", (e) => {
       haptic([10, 30, 10]);
       sendMsg();
       setTimeout(() => btn.classList.remove("hold-complete"), 300);
-      holdStarted = false;
     }, HOLD_MS);
   }
 
   function cancelHold() {
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
     btn.classList.remove("holding", "hold-complete");
-    holdStarted = false;
   }
 
   // Touch events for mobile
@@ -3994,18 +3944,6 @@ msgInput.addEventListener("keydown", (e) => {
 })();
 
 // ── Keyboard accessory row (UX-15) ──
-// Toggle-based: user taps ⌨ button in input bar to show/hide.
-// Always starts closed on session entry.
-function toggleKbAccessory() {
-  const acc = document.getElementById("kb-accessory");
-  const cmd = document.getElementById("cmd-palette");
-  if (!acc) return;
-  state.kbAccessoryOpen = !state.kbAccessoryOpen;
-  acc.classList.toggle("visible", state.kbAccessoryOpen);
-  if (cmd && cmd.innerHTML) cmd.classList.toggle("visible", state.kbAccessoryOpen);
-  haptic([10]);
-}
-
 function insertMessageInputNewline(): void {
   const input = document.getElementById("msg-input") as HTMLTextAreaElement;
   const start = input.selectionStart;

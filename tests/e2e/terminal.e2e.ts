@@ -48,7 +48,7 @@ test("terminal receives output via WebSocket", async ({ page }, testInfo) => {
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5000 });
 });
 
-test("sending input updates terminal output", async ({ page }, testInfo) => {
+test("sending input updates terminal output", async () => {
   // TODO: Requires a live PTY (Bun.spawn tmux attach) which the mock exec
   // can't provide. Re-enable once we have a mock PTY echo process.
   test.skip(true, "needs mock PTY process — Bun.spawn can't be stubbed");

@@ -1,4 +1,4 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { createLogger, errMsg } from "../log.js";
 import {

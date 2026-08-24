@@ -19,7 +19,6 @@ const { server } = createServerInstance();
 // ── Test setup ──
 
 let port: number;
-let baseUrl: string;
 let baseWsUrl: string;
 
 const _realConsoleError = console.error;
@@ -32,7 +31,6 @@ beforeAll((done) => {
   };
   server.listen(0, "127.0.0.1", () => {
     port = (server.address() as AddressInfo).port;
-    baseUrl = `http://127.0.0.1:${port}`;
     baseWsUrl = `ws://127.0.0.1:${port}`;
     done();
   });
@@ -44,33 +42,6 @@ afterAll(() => {
 });
 
 // ── Helpers ──
-
-function post(path: string, body: unknown) {
-  return fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-async function rawUpgrade(path: string): Promise<{ status: number; ws?: WebSocket }> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(`${baseWsUrl}${path}`);
-    ws.addEventListener("open", () => resolve({ status: 101, ws }));
-    ws.addEventListener("error", () => resolve({ status: 0 }));
-    ws.addEventListener("close", (ev) => {
-      resolve({ status: ev.code === 1006 ? 403 : ev.code });
-    });
-  });
-}
-
-function closeWs(ws: WebSocket): Promise<void> {
-  return new Promise((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) return resolve();
-    ws.addEventListener("close", () => resolve());
-    ws.close();
-  });
-}
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

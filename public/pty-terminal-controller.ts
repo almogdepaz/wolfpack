@@ -164,7 +164,7 @@ export interface PtyTerminalControllerOpts {
   readonly onHydrated?: () => void;
 }
 export interface PtyTerminalController {
-  mount(container: HTMLElement, mountOpts?: { readonly cached?: string | null }): Promise<void>;
+  mount(container: HTMLElement): Promise<void>;
   connect(connectOpts?: { readonly takeControl?: boolean }): void;
   focus(): void;
   scrollToBottom(): void;
@@ -347,12 +347,10 @@ export function createPtyTerminalController(
   }
 
   /**
-   * mount(container, { cached }?) — create terminal, open in container, load
-   * CanvasAddon, fit, create hydration controller (not yet started).
-   * Cached plaintext is not written here; restored history must come from
-   * broker prefill or an explicit/gated fast-mode replay path.
+   * mount(container) — create terminal, open in container, load CanvasAddon,
+   * fit, create hydration controller (not yet started).
    */
-  async function mount(container: HTMLElement, mountOpts?: { readonly cached?: string | null }) {
+  async function mount(container: HTMLElement) {
     if (_term || _mounting) return; // already mounted or in progress
     const trace = __wfTraceGet(opts.session, opts.machine || "");
     _mounting = true;

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { CDPSession, Page, WebSocketRoute } from "@playwright/test";
-import { openSessionFromUi, openSettingsFromUi, startTestServer, terminalTail, toggleSessionGridFromUi } from "./helpers.ts";
+import { openSessionFromUi, openSettingsFromUi, startTestServer, terminalTail } from "./helpers.ts";
 import type { TestServer } from "./helpers.ts";
 import { CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 

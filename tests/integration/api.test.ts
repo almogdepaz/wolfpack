@@ -2,8 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";

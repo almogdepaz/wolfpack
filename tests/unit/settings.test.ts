@@ -6,7 +6,7 @@
  *   - effectiveCmds: empty-list fallback to ["shell"]
  *   - loadSettings: legacy customCmds migration + bad-input filtering
  */
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

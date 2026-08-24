@@ -8,7 +8,7 @@
  * server; the assertion is that the second attach's prefill includes the
  * marker bytes typed before the first server was killed.
  */
-import { test, expect, type WebSocketRoute } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";

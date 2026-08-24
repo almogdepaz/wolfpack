@@ -7,9 +7,7 @@ import { print, printError, printJson, bold, dim, red, yellow, WOLF } from "./fo
 import pkg from "../../package.json";
 import {
   loadConfig,
-  isPortInUse,
   remoteUrl,
-  type Config,
 } from "./config.js";
 import {
   serviceInstall,
