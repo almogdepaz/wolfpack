@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
-  "edcVersion": "2",
+  "edcVersion": "2.0.0",
   "repoContextFile": "edc-context/index.md",
   "reports": {
     "issues": "edc-context/reports/issues.md",
     "complexity": "edc-context/reports/complexity.md"
   },
   "build": {
-    "info": "edc-context/build/build.json"
+    "buildInfoFile": "edc-context/build/build.json"
   },
   "policy": {
     "defaultMode": "advisory",
@@ -17,26 +17,59 @@
     {
       "name": "wolfpack",
       "doc": "edc-context/modules/wolfpack.md",
-      "summary": "Bun server, CLI, browser PWA, and TypeScript broker boundary.",
-      "priority": 20,
+      "summary": "Bun server, CLI, browser PWA, TypeScript broker boundary, Tailnet peers, tasks/relay, notifications, setup/service, and packaging.",
+      "priority": 100,
       "match": {
         "prefixes": [
+          "bin/",
           "src/",
           "public/",
-          "scripts/",
-          "bin/",
-          "tests/"
+          "scripts/"
         ]
       }
     },
     {
       "name": "broker",
       "doc": "edc-context/modules/broker.md",
-      "summary": "Rust Unix-socket PTY daemon, streaming protocol, and Ghostty terminal authority.",
-      "priority": 10,
+      "summary": "Rust Unix-socket PTY broker daemon, binary/JSON protocol, session registry, output replay, terminal snapshots, resize, and Ghostty VT FFI.",
+      "priority": 90,
       "match": {
         "prefixes": [
           "broker/"
+        ]
+      }
+    },
+    {
+      "name": "tests",
+      "doc": "edc-context/modules/tests.md",
+      "summary": "Bun, integration, Playwright, snapshot, schema, fixture, and real-broker regression contracts.",
+      "priority": 80,
+      "match": {
+        "prefixes": [
+          "tests/"
+        ]
+      }
+    },
+    {
+      "name": "docs",
+      "doc": "edc-context/modules/docs.md",
+      "summary": "Operator documentation, public site/LLM surfaces, generated API-contract publication, install/Tailnet/PWA/task/session guidance, and doc drift boundaries.",
+      "priority": 70,
+      "match": {
+        "prefixes": [
+          "docs/",
+          "site/"
+        ]
+      }
+    },
+    {
+      "name": "skills",
+      "doc": "edc-context/modules/skills.md",
+      "summary": "Bundled Pi Wolfpack control skill and agent-facing policy over public CLI/API surfaces.",
+      "priority": 60,
+      "match": {
+        "prefixes": [
+          "skills/"
         ]
       }
     }
@@ -48,53 +81,78 @@
         "globs": [
           "README.md",
           "CONTRIBUTING.md",
+          "SECURITY.md",
+          "SUPPORT.md",
           "LICENSE",
           "THIRD_PARTY_NOTICES",
+          "llms.txt",
           "package.json",
           "bun.lock",
           "bunfig.toml",
-          "tsconfig.json",
+          "tsconfig*.json",
           "playwright.config.ts",
+          "Cargo.lock",
           "install.sh",
+          "AGENTS.md",
           "ghostty-vt.lock.json",
-          "llms.txt",
-          ".gitignore",
-          "AGENTS.md"
+          ".gitignore"
         ],
-        "reason": "Repository metadata and top-level orientation are covered by their own source files; no durable architecture module is warranted.",
+        "reason": "Top-level repository metadata and tool configuration are lightweight source files, not a separate runtime authority boundary.",
         "reviewPolicy": "no-context-review"
       },
       {
-        "id": "documentation-and-support",
+        "id": "generated-and-planning-artifacts",
         "globs": [
-          "docs/",
-          ".github/",
-          ".plans/",
-          "patches/",
-          "skills/",
-          "plans/",
-          "edc-context/",
-          "site/"
+          "edc-context/**",
+          "artifacts/**",
+          ".github/**",
+          ".plans/**",
+          "plans/**",
+          "patches/**"
         ],
-        "reason": "Documentation, CI policy, plans, patches, packaged skills, static marketing-site files, and legacy report material do not form an additional runtime authority boundary.",
+        "reason": "Generated context, CI/planning material, patches, and collected artifacts route back to owning source modules when semantic behavior is in question.",
         "reviewPolicy": "no-context-review"
       }
     ]
   },
   "unmapped": {
-    "allowedGlobs": []
+    "allowedGlobs": [
+      "README.md",
+      "CONTRIBUTING.md",
+      "SECURITY.md",
+      "SUPPORT.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES",
+      "llms.txt",
+      "package.json",
+      "bun.lock",
+      "bunfig.toml",
+      "tsconfig*.json",
+      "playwright.config.ts",
+      "Cargo.lock",
+      "install.sh",
+      "AGENTS.md",
+      "ghostty-vt.lock.json",
+      ".gitignore",
+      "edc-context/**",
+      "artifacts/**",
+      ".github/**",
+      ".plans/**",
+      "plans/**",
+      "patches/**"
+    ]
   },
-  "generatedAt": "2026-08-09T07:42:15Z",
-  "sourceCommit": "6b8cd4ddec9e813105fd7b81a4b7426a19fa5b66",
+  "generatedAt": "2026-08-24T21:31:50Z",
+  "sourceCommit": "aaee44a882319d07f80e4885de1f7d862dbabe54",
   "coverage": {
-    "contextMappedFileCount": 363,
-    "contextlessFileCount": 64,
+    "contextMappedFileCount": 442,
+    "contextlessFileCount": 31,
     "uncoveredFileCount": 0,
     "ambiguousPathCount": 0,
     "ignoredFileCount": 0,
     "ignoreSource": "none",
     "ignoreGlobs": [],
-    "mappedFileCount": 363,
-    "unmappedFileCount": 64
+    "mappedFileCount": 442,
+    "unmappedFileCount": 31
   }
 }

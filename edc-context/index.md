@@ -1,38 +1,52 @@
-# wolfpack context index
+# Wolfpack EDC Context Index
 
 ## How to use
-- Read this file first, then select module docs by changed path or task.
-- For cross-boundary work, read only the related module named by routing/coupling guidance.
-- Contextless entries are machine coverage only; reports are reserved for explicit review/audit workflows.
+
+Start here to route work, then open only the module document(s) for the paths or contracts you are changing:
+
+- `edc-context/modules/wolfpack.md` for Bun server/CLI/browser/runtime, broker client boundary, sessions, Tailnet, tasks, packaging.
+- `edc-context/modules/broker.md` for the Rust PTY broker daemon, Unix-socket protocol, PTY lifecycle, snapshots, replay, resize, Ghostty FFI.
+- `edc-context/modules/tests.md` for test harnesses, CI/e2e fixtures, and executable regression contracts.
+- `edc-context/modules/docs.md` for docs/site/API-publication wording and doc authority boundaries.
+- `edc-context/modules/skills.md` for the bundled Pi control skill and agent-facing Wolfpack instructions.
+
+Do not treat generated bundles, staged EDC artifacts, screenshots, or prior test results as source truth. Reports and contextless machine coverage are intentionally outside the normal human read path.
 
 ## Route by path/task
-| touching / task | read first | also inspect | why |
-| --- | --- | --- | --- |
-| `src/`, `public/`, `scripts/`, `bin/`, or TypeScript tests | `modules/wolfpack.md` | `modules/broker.md` only for broker wire/lifecycle/snapshot changes | Bun server, CLI, PWA, persistence, and TypeScript broker client |
-| `broker/` | `modules/broker.md` | `modules/wolfpack.md` for client-visible wire, snapshot, or lifecycle changes | Rust PTY daemon and Ghostty terminal authority |
-| Tailnet setup, CORS, discovery, machine identity, remote routing, or notification deep links | `modules/wolfpack.md` | its Tailnet verification selection | Candidate facts, verified handshakes, stable identity, and current origin authority form one trust flow |
-| terminal attach, resize, replay, hydration, grid, or reconnect | `modules/wolfpack.md` | its terminal verification selection; `modules/broker.md` only when broker sequencing/snapshot semantics change | Snapshot-to-live continuity spans browser, WebSocket server, and broker |
-| session create/open/control, runtime status, or identity | `modules/wolfpack.md` | `modules/broker.md` when adding broker fields/RPCs | Server validates and persists identity; broker owns the PTY |
-| `src/tasks/`, task routes, Pi task delivery, retention, or federation | `modules/wolfpack.md` | its task source pointers and focused unit/integration harness | Durable ledgers and canonical event transitions are server-owned |
-| public API/schema or generated browser assets | `modules/wolfpack.md` | its generated-contract verification selection and generation scripts | Generated artifacts must remain synchronized with their source authority |
-| broker protocol/codec or terminal snapshot | `modules/broker.md` | `modules/wolfpack.md` | Both sides must agree on frames and recovery semantics |
+
+| Path or task | Read first | Notes |
+| --- | --- | --- |
+| `broker/**` | `modules/broker.md` | Broker owns PTY children, registry, output sequence/replay, snapshots, resize transaction, socket codec/server, and Ghostty VT FFI bounds. |
+| `src/**`, `public/**`, `bin/**`, `scripts/**` | `modules/wolfpack.md` | Covers server HTTP/WS auth, session/project APIs, broker client/backend, browser terminal hydration, Tailnet peers, tasks/relay/push, setup/service/build. |
+| `tests/**` | `modules/tests.md` | Use for harness behavior and regression intent; production modules remain semantic authority. |
+| `docs/**`, `site/**` | `modules/docs.md` | Docs/site publish user contracts but do not override runtime validation, auth, broker, service, or installer behavior. |
+| `skills/**` | `modules/skills.md` | Skill is a policy wrapper over public Wolfpack CLI/API, not an independent protocol/auth authority. |
+| Broker protocol or terminal attach/reconnect changes | `modules/broker.md` + `modules/wolfpack.md` + relevant `modules/tests.md` sections | Highest coupling: Rust protocol/session sequencing, TS broker client/backend, WS attach, browser hydration, and real-broker tests must stay aligned. |
+| Auth, Tailnet, remote machine, or browser peer changes | `modules/wolfpack.md` + `modules/docs.md` + `modules/skills.md` as needed | Stable machine identity/canonical origin are routing authority; labels and forwarded headers are not. |
+| Tasks, relay, notification, or Pi integration changes | `modules/wolfpack.md` + `modules/docs.md` + `modules/skills.md` + task tests in `modules/tests.md` | Wolfpack owns durable task/relay stores; Pi skills/extensions are clients over public surfaces. |
+| Install, release, service, or broker artifact changes | `modules/wolfpack.md` + `modules/broker.md` + `modules/docs.md` + `modules/tests.md` | Preserve server-only vs broker restart blast-radius warnings and artifact provenance checks. |
 
 ## Critical global invariants
-- The broker is the sole PTY and authoritative terminal-state owner; server restarts must not kill or replace sessions.
-- A terminal snapshot covers a broker output sequence. Attach/replay/reconnect must preserve that cut or force a fresh snapshot when replay is truncated.
-- Broker UUIDs are durable session identity. Display names are selectors, and external-agent IDs must be redacted from public output.
-- A remote browser origin is routable only after current local candidate enumeration plus a matching bounded machine handshake. Stale metadata, local storage, and request headers are not origin authority.
-- Tailnet/global access is shell-level authority over visible sessions. Preserve canonical CORS/origin checks, optional global JWT, project containment, and command validation across REST and WebSocket paths.
-- Task ledgers and canonical events are durable authority; caches and browser state are not. Browser stable machine identities and task-federation origin addresses are separate contracts.
-- Bounded queues, probes, bodies, candidate sets, and caches intentionally favor explicit recovery over unbounded memory or silently stale state.
+
+- Broker UUIDs/session IDs are durable authority. Visible names are convenience selectors and must fail closed on ambiguity, reuse, or parent/child races.
+- Terminal truth is broker-owned: `output_seq`, snapshots, replay, live output, exit ordering, and browser hydration all share one per-session sequence domain.
+- Control frames/messages and raw PTY bytes must remain separated across broker and browser transports.
+- Project selection must stay unambiguous: named project, explicit existing directory, and new-project flows are mutually constrained and server-validated.
+- Remote exposure is shell-equivalent host access. Tailscale/canonical-origin/device/user verification is the primary remote trust boundary; JWT is additive.
+- Generated/staged artifacts, public bundles, generated schemas, media, and test results are not source truth; route back to owning source/contracts.
+- Slow terminal consumers are shed rather than buffered indefinitely because broker snapshots/replay are the recovery mechanism.
+- Durable task/relay serialization and hashes are migration-sensitive; canonical JSON ordering changes can invalidate stored ledgers or digests.
 
 ## Cross-module coupling / blast radius
-- `broker/src/protocol.rs` and `broker/src/codec.rs` changes cascade through `src/broker/codec.ts`, `src/broker/client.ts`, `src/server/broker-backend.ts`, WebSocket behavior, browser recovery, and integration tests.
-- Broker output sequencing, snapshot, resize, or Ghostty changes alter browser attach/reconnect correctness, not merely daemon internals.
-- Tailnet machine-contract changes cascade through setup/config validation, server CORS and discovery routes, browser peer registry, remote REST/WebSocket routing, notification links, generated API schema, and E2E fixtures.
-- HTTP origin/JWT/session-control changes affect both REST and `/ws/pty`; test localhost, direct sibling Tailnet origins, and Tailscale Serve origin recovery.
-- Public API/message changes require coordinated runtime, `src/control-api/schema.ts`, generated schema, compatibility docs, and contract tests.
-- Task domain/store/gateway changes can affect crash recovery, inbox/outbox ordering, Pi injection, peer federation, retention, and public schema even without broker changes.
+
+- **Server restart** should preserve sessions because PTYs live in the broker; it is the lower-blast-radius update path when broker protocol/state do not change.
+- **Broker restart** terminates broker-owned PTYs/snapshots/replay and breaks live continuity unless a future tested handoff protocol exists.
+- **Broker protocol changes** affect Rust broker, TS broker client/backend, terminal WS attach/reconnect, docs/broker-protocol, and real-broker integration/e2e tests.
+- **Terminal hydration/resize changes** jointly affect server WS handling, browser socket/controller/order logic, broker snapshot/resize behavior, and tests for replay, prefill, takeover, slow viewers, and reconnect.
+- **Auth/Tailnet changes** affect server routes/upgrades, browser peer registry/fetch behavior, CLI remote control, Pi skill guidance, docs/site exposure wording, and integration/e2e fixtures.
+- **Task/relay changes** affect durable server stores/gateways, generated Control API schema/docs, Pi skill expectations, Tailnet federation tests, and notification/session-target routing.
+- **Build/install changes** affect scripts, optional broker artifacts, service staging paths, docs/site install guidance, and release/install policy tests; broker binary provenance must remain aligned.
 
 ## Architecture overview
-Browser PWA → Bun HTTP/WebSocket and durable control plane → per-user Unix socket → Rust broker → local PTYs. Tailnet peers are contacted directly without a Wolfpack relay; the browser control room routes only through fresh verified peer handshakes.
+
+Wolfpack is a self-hosted control room for persistent coding-agent terminals. The TypeScript server/CLI/browser layer authenticates users, validates project/session intent, exposes HTTP/WS/CLI surfaces, handles Tailnet peers, tasks, notifications, setup, and packaging. The Rust broker is the local daemon that actually owns PTY child processes and terminal state behind an owner-only Unix socket.
