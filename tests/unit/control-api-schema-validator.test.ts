@@ -25,5 +25,6 @@ describe("control api schema validator", () => {
 
     expect(validateControlApiSchemaValue(schema, "not-a-uuid", root)).not.toEqual([]);
     expect(validateControlApiSchemaValue(schema, "550e8400-e29b-41d4-a716-446655440000", root)).toEqual([]);
+    expect(validateControlApiSchemaValue(schema, "018f6b48-4b1c-7000-8000-000000000001", root)).toEqual([]);
   });
 });

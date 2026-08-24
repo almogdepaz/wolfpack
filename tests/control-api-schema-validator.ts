@@ -70,7 +70,7 @@ export function validateControlApiSchemaValue(
     if (typeof resolved.minLength === "number" && value.length < resolved.minLength) errors.push(`${path} is too short`);
     if (typeof resolved.maxLength === "number" && value.length > resolved.maxLength) errors.push(`${path} is too long`);
     if (typeof resolved.pattern === "string" && !new RegExp(resolved.pattern).test(value)) errors.push(`${path} failed pattern ${resolved.pattern}`);
-    if (resolved.format === "uuid" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    if (resolved.format === "uuid" && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)) {
       errors.push(`${path} expected uuid`);
     }
     if (errors.length > 0) return errors;
