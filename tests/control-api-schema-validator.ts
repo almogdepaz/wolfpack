@@ -105,6 +105,16 @@ export function validateControlApiSchemaValue(
     for (const key of required) {
       if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
     }
+    if (isJsonObject(resolved.dependentRequired)) {
+      for (const [key, dependents] of Object.entries(resolved.dependentRequired)) {
+        if (!(key in value) || !Array.isArray(dependents)) continue;
+        for (const dependent of dependents) {
+          if (typeof dependent === "string" && !(dependent in value)) {
+            errors.push(`${path}.${dependent} is required by ${path}.${key}`);
+          }
+        }
+      }
+    }
     for (const [key, child] of Object.entries(resolved.properties)) {
       if (key in value) errors.push(...validateControlApiSchemaValue(child, value[key], root, `${path}.${key}`));
     }
