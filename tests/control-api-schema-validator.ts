@@ -65,8 +65,22 @@ export function validateControlApiSchemaValue(
     if (resolved.type === "null" && value !== null) return [`${path} expected null`];
   }
 
-  if (typeof value === "string" && typeof resolved.pattern === "string" && !new RegExp(resolved.pattern).test(value)) {
-    return [`${path} failed pattern ${resolved.pattern}`];
+  if (typeof value === "string") {
+    const errors: string[] = [];
+    if (typeof resolved.minLength === "number" && value.length < resolved.minLength) errors.push(`${path} is too short`);
+    if (typeof resolved.maxLength === "number" && value.length > resolved.maxLength) errors.push(`${path} is too long`);
+    if (typeof resolved.pattern === "string" && !new RegExp(resolved.pattern).test(value)) errors.push(`${path} failed pattern ${resolved.pattern}`);
+    if (resolved.format === "uuid" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+      errors.push(`${path} expected uuid`);
+    }
+    if (errors.length > 0) return errors;
+  }
+
+  if (typeof value === "number") {
+    const errors: string[] = [];
+    if (typeof resolved.minimum === "number" && value < resolved.minimum) errors.push(`${path} is below minimum ${resolved.minimum}`);
+    if (typeof resolved.maximum === "number" && value > resolved.maximum) errors.push(`${path} is above maximum ${resolved.maximum}`);
+    if (errors.length > 0) return errors;
   }
 
   if (Array.isArray(value)) {
