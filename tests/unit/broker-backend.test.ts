@@ -435,6 +435,29 @@ describe("BrokerBackend.createSession", () => {
     expect(params.env.flat()).not.toContain(initialPrompt);
   });
 
+  test("passes pi model selection as an opaque native --model argv value", async () => {
+    const model = "openrouter/$(touch /tmp/not-executed); echo $HOME";
+    const initialPrompt = "review the diff";
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "modeled", id: SESSION_UUID_1 }),
+    }));
+
+    await backend.createSession(
+      "modeled",
+      "/tmp/proj",
+      "pi",
+      loadSettings,
+      { agentKind: "pi", model, initialPrompt },
+    );
+
+    const create = client.requests.find((request) => request.method === "create_session");
+    const params = create?.params as { command: string[]; env: Array<[string, string]> };
+    expect(params.command.slice(3)).toEqual(["wolfpack-agent", model, initialPrompt]);
+    expect(params.command[2]).toContain('pi --model "$1" "$2"');
+    expect(params.command[2]).not.toContain(model);
+    expect(params.env.flat()).not.toContain(model);
+  });
+
   test("persists parent identity in broker env and public session identity", async () => {
     const parentSession = {
       wolfpackSessionId: SESSION_UUID_2,

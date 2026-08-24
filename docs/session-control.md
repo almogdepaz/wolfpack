@@ -39,8 +39,8 @@ wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--pro
 ## Spawn a child agent
 
 ```bash
-wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-wolfpack agent spawn --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
@@ -48,13 +48,14 @@ wolfpack agent spawn --project-dir <path> [--name <session>] [--prompt|--prompt-
 - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND` from the current parent agent.
 - resolves the parent through structured broker identity and launches the same supported harness.
 - accepts `--name <session>` for meaningful child names such as `200-security-review`; if omitted, derives `<parent>-sub-agent`, then numbered names.
+- for Pi parents only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. Non-Pi parents reject model selection; omission preserves their existing same-harness launch behavior.
 - passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
 - `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked.
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
 - json success has the same fields as top-level creation, including stable `sessionId`.
 
-`wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors. It never means top-level creation.
+`wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors and optional Pi model selection. It never means top-level creation.
 
 The browser project picker keeps the configured-root catalog as its default. **Open existing directory** accepts a server-local absolute path; it does not enumerate the filesystem or create directories outside `WOLFPACK_DEV_DIR`.
 

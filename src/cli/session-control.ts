@@ -6,6 +6,7 @@ import {
   isOpenableHarness,
   isSessionOpenErrorCode,
   SESSION_OPEN_ERROR,
+  SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../session-open-contract.js";
 import type {
   OpenableHarness,
@@ -69,8 +70,8 @@ The server owns validation, naming, identity, and launch.`;
 }
 
 export function sessionOpenUsage(): string {
-  return `Usage: wolfpack session open <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-       wolfpack session open --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  return `Usage: wolfpack session open <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+       wolfpack session open --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 
@@ -83,8 +84,8 @@ export function agentUsage(): string {
 Global selector: wolfpack --machine <short-name-or-fqdn> agent spawn ...
 
 Commands:
-  wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-  wolfpack agent spawn --project-dir <path> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
 
 Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
@@ -124,6 +125,7 @@ export type ParsedSessionCommand =
     readonly action: "open";
     readonly selector: ExistingProjectSelector;
     readonly sessionName?: string;
+    readonly model?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
@@ -144,6 +146,7 @@ export type ParsedAgentCommand =
     readonly action: "spawn";
     readonly selector: ExistingProjectSelector;
     readonly sessionName?: string;
+    readonly model?: string;
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
@@ -241,6 +244,7 @@ const LAUNCH_KNOWN_OPTIONS = new Set([
   "--plan",
   "--name",
   "--session-name",
+  "--model",
   "--notify-parent",
   "--harness",
   "--message",
@@ -295,6 +299,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   const planValue = isLaunch ? consumeLaunchValue(args, "--plan") : null;
   const projectDirValue = isLaunch ? consumeLaunchValue(args, "--project-dir") : null;
   const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
+  const modelValue = action === "open" ? consumeLaunchValue(args, "--model") : null;
   const notifyParent = isLaunch ? consumeFlag(args, "--notify-parent") : false;
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
@@ -304,6 +309,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const promptFile = promptFileValue ?? undefined;
     const plan = planValue ?? undefined;
     const sessionName = nameValue ?? undefined;
+    const model = modelValue ?? undefined;
     const project = args.shift();
     const projectDir = projectDirValue ?? undefined;
     const harness = harnessValue !== null && isCreatableHarness(harnessValue)
@@ -318,13 +324,17 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     const validSessionName = action !== "open"
       || nameValue === null
       || (Boolean(nameValue.trim()) && isValidSessionName(nameValue));
+    const validModel = action !== "open"
+      || modelValue === null
+      || (Boolean(modelValue.trim())
+        && unicodeCodePointLength(modelValue) <= SESSION_OPEN_MAX_MODEL_LENGTH);
     const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
     const validHarness = action !== "create"
       || harnessValue === null
       || harness !== undefined;
     const validNotify = action !== "create" || !notifyParent;
     const selector = parseExistingProjectSelector(project, projectDir);
-    if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validHarness || !validNotify) {
+    if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify) {
       return {
         ok: false,
         message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -347,6 +357,7 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
       action,
       selector,
       ...(sessionName !== undefined && { sessionName }),
+      ...(model !== undefined && { model }),
       prompt,
       ...(promptFile !== undefined && { promptFile }),
       ...(plan !== undefined && { plan }),
@@ -430,7 +441,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]";
+  const usage = "Usage: wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]";
   if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
@@ -438,6 +449,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     action: "spawn",
     selector: parsed.selector,
     ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
+    ...(parsed.model !== undefined && { model: parsed.model }),
     prompt: parsed.prompt,
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
     ...(parsed.plan !== undefined && { plan: parsed.plan }),
@@ -680,6 +692,7 @@ interface LaunchPromptSource {
 interface SessionOpenLaunchArgs extends LaunchPromptSource {
   readonly selector: ExistingProjectSelector;
   readonly sessionName?: string;
+  readonly model?: string;
 }
 
 function projectSelectorRequest(selector: ExistingProjectSelector):
@@ -757,6 +770,7 @@ async function runSessionOpen(
         ...projectSelectorRequest(parsed.selector),
         parentSession: context.parentSession,
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
+        ...(parsed.model !== undefined && { model: parsed.model }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
     }, target) as SessionLaunchResponse;

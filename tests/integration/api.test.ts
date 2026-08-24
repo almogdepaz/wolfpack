@@ -10,6 +10,7 @@ import { SESSION_CREATE_ERROR } from "../../src/session-create-contract.ts";
 import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
+  SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../../src/session-open-contract.ts";
 import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
 import {
@@ -1334,11 +1335,13 @@ describe("POST /api/session-open", () => {
 
   test("creates one same-harness child with exact parent identity and prompt", async () => {
     const prompt = "review '$(touch /tmp/not-executed)' \"$HOME\"; done";
+    const model = "openrouter/anthropic/claude-sonnet-4";
     const frames = attachNotificationViewer("wolf-1");
 
     const res = await post("/api/session-open", {
       project: "my-app",
       parentSession: "wolf-1",
+      model,
       initialPrompt: prompt,
     });
 
@@ -1359,6 +1362,7 @@ describe("POST /api/session-open", () => {
         wolfpackSessionId: "mock:wolf-1",
         wolfpackSessionName: "wolf-1",
       },
+      model,
       initialPrompt: prompt,
     });
     expect(frames.map((frame) => JSON.parse(frame))).toEqual([{
@@ -1581,6 +1585,46 @@ describe("POST /api/session-open", () => {
       expect(mockBackend.lastCreateArgs, project).toBeNull();
       expect(existsSync(join(TEST_DEV_DIR, project))).toBe(false);
     }
+  });
+
+  test("rejects blank and oversized model selections", async () => {
+    for (const model of ["   ", "x".repeat(SESSION_OPEN_MAX_MODEL_LENGTH + 1)]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+        model,
+      });
+      expect(res.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("rejects model selection for non-pi parents without changing omitted behavior", async () => {
+    useParentHarness("claude");
+    const rejected = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+      model: "anthropic/claude-opus-4-1",
+    });
+    expect(rejected.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+    expect(await rejected.json()).toEqual({
+      error: "invalid session-open request",
+      code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+
+    const omitted = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+    });
+    expect(omitted.status).toBe(200);
+    expect(mockBackend.lastCreateArgs?.agentKind).toBe("claude");
+    expect(mockBackend.lastCreateArgs).not.toHaveProperty("model");
   });
 
   test("rejects blank and oversized prompts", async () => {

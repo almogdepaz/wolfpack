@@ -21,6 +21,7 @@ import { SESSION_CREATE_ERROR } from "../session-create-contract.js";
 import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
+  SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../session-open-contract.js";
 import { unicodeCodePointLength } from "../session-prompt-contract.js";
 import { DEV_DIR } from "./dev-dir.js";
@@ -117,16 +118,18 @@ interface SessionOpenBody extends Record<string, unknown> {
   projectDir?: string;
   parentSession: string;
   sessionName?: string;
+  model?: string;
   initialPrompt?: string;
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "sessionName", "string")
+    && hasOptionalType(body, "model", "string")
     && hasOptionalType(body, "initialPrompt", "string");
 }
 
@@ -543,6 +546,11 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
       || (
+        body.model !== undefined
+        && (!body.model.trim()
+          || unicodeCodePointLength(body.model) > SESSION_OPEN_MAX_MODEL_LENGTH)
+      )
+      || (
         body.initialPrompt !== undefined
         && (!body.initialPrompt.trim()
           || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
@@ -597,6 +605,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         project,
         projectDir,
         sessionName: body.sessionName,
+        model: body.model,
         initialPrompt: body.initialPrompt,
         notify: (parent, session) => {
           notifySubSessionOpened(parent.wolfpackSessionName, session);

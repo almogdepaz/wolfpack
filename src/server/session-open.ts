@@ -1,3 +1,4 @@
+import { AGENT_KIND } from "../agent-kind.js";
 import {
   isOpenableHarness,
   SESSION_OPEN_ERROR,
@@ -19,11 +20,11 @@ export const SESSION_OPEN_MAX_CREATE_ATTEMPTS = 4;
 
 type SessionOpenAllocationErrorCode = Exclude<
   SessionOpenErrorCode,
-  | typeof SESSION_OPEN_ERROR.INVALID_REQUEST
-  | typeof SESSION_OPEN_ERROR.PROJECT_NOT_FOUND
+  typeof SESSION_OPEN_ERROR.PROJECT_NOT_FOUND
 >;
 
 const ERROR_MESSAGE: Record<SessionOpenAllocationErrorCode, string> = {
+  INVALID_REQUEST: "invalid session-open request",
   PARENT_SESSION_NOT_FOUND: "parent session not found",
   PARENT_SESSION_CHANGED: "parent session identity changed",
   PARENT_IDENTITY_UNAVAILABLE: "parent session identity unavailable",
@@ -76,6 +77,7 @@ interface OpenSubSessionInput {
   readonly project: string;
   readonly projectDir: string;
   readonly sessionName?: string;
+  readonly model?: string;
   readonly initialPrompt?: string;
   readonly notify?: (parent: ParentSessionIdentity, session: string) => void;
 }
@@ -136,6 +138,9 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   };
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
+    if (input.model !== undefined && parentState.harness !== AGENT_KIND.PI) {
+      throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
+    }
     const session = chooseSubAgentSessionName(
       input.parentSession,
       parentState.names,
@@ -151,6 +156,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
         {
           agentKind: parentState.harness,
           parentSession: parentIdentity,
+          ...(input.model !== undefined && { model: input.model }),
           initialPrompt: input.initialPrompt,
         },
       );

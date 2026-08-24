@@ -4,6 +4,7 @@ import {
   OPENABLE_HARNESSES,
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
+  SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import {
@@ -1028,6 +1029,12 @@ export const controlApiSource: ControlApiSource = {
       request: existingProjectSelectorSchema({
         parentSession: ref("SessionName"),
         sessionName: ref("SessionName"),
+        model: {
+          type: "string",
+          minLength: 1,
+          maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
+          description: "Opaque pi model pattern or ID passed to the child harness",
+        },
         initialPrompt: {
           type: "string",
           minLength: 1,

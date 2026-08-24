@@ -54,6 +54,7 @@ export interface SessionLaunchOptions {
   readonly agentKind?: AgentKind | string;
   readonly externalAgent?: CaptureSessionIdentityInput["externalAgent"];
   readonly parentSession?: ParentSessionIdentity;
+  readonly model?: string;
   readonly initialPrompt?: string;
 }
 

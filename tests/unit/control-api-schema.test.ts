@@ -6,6 +6,7 @@ import {
   validateControlApiSchemaArtifact,
 } from "../../scripts/gen-control-api-schema.ts";
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
+import { SESSION_OPEN_MAX_MODEL_LENGTH } from "../../src/session-open-contract.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
@@ -450,6 +451,7 @@ describe("control api schema compatibility samples", () => {
     expect(validate(request, {
       project: "wolfpack",
       parentSession: "pi-main",
+      model: "openrouter/anthropic/claude-sonnet-4",
       initialPrompt: "perform differential review only",
     }, artifact)).toEqual([]);
     expect(validate(request, {
@@ -462,6 +464,17 @@ describe("control api schema compatibility samples", () => {
       parentSession: "pi-main",
       sessionName: "override",
     }, artifact)).toEqual([]);
+    expect((request.properties as JsonObject).model).toEqual({
+      type: "string",
+      minLength: 1,
+      maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
+      description: "Opaque pi model pattern or ID passed to the child harness",
+    });
+    expect(validate(request, {
+      project: "wolfpack",
+      parentSession: "pi-main",
+      model: "x".repeat(SESSION_OPEN_MAX_MODEL_LENGTH + 1),
+    }, artifact)).not.toEqual([]);
     expect((request.properties as JsonObject).initialPrompt).toMatchObject({
       type: "string",
       minLength: 1,

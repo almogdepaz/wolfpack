@@ -1419,6 +1419,12 @@
           "sessionName": {
             "$ref": "#/$defs/SessionName"
           },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Opaque pi model pattern or ID passed to the child harness"
+          },
           "initialPrompt": {
             "type": "string",
             "minLength": 1,

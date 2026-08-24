@@ -16,10 +16,12 @@ describe("session control cli parsing", () => {
     });
   });
 
-  test("parses an explicit launch instruction without inherited context", () => {
+  test("parses an explicit launch instruction and model without inherited context", () => {
     expect(parseSessionCommand([
       "open",
       "wolfpack",
+      "--model",
+      "anthropic/claude-opus-4-1",
       "--prompt",
       "perform differential review only",
       "--json",
@@ -27,6 +29,7 @@ describe("session control cli parsing", () => {
       ok: true,
       action: "open",
       selector: { kind: "project", project: "wolfpack" },
+      model: "anthropic/claude-opus-4-1",
       prompt: "perform differential review only",
       output: "json",
     });
@@ -245,6 +248,8 @@ describe("session control cli parsing", () => {
       const code = await runSessionCommand([
         "open",
         "wolfpack",
+        "--model",
+        "anthropic/claude-opus-4-1",
         "--prompt",
         "perform differential review only",
         "--json",
@@ -255,6 +260,7 @@ describe("session control cli parsing", () => {
         body: {
           project: "wolfpack",
           parentSession: "pi-main",
+          model: "anthropic/claude-opus-4-1",
           initialPrompt: "perform differential review only",
         },
       }];
