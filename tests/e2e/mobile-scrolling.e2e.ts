@@ -24,7 +24,8 @@ function historyLine(prefix: string, index: number): string {
 }
 
 async function canvasSnapshot(page: Page, geometry: AttachGeometry): Promise<CanvasSnapshot> {
-  return page.locator("#desktop-terminal-container canvas").evaluate((element, { rows, sampleStride }) => {
+  return page.locator("#desktop-terminal-container canvas").evaluate(async (element, { rows, sampleStride }) => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const canvas = element as HTMLCanvasElement;
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("missing canvas context");
