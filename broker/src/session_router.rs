@@ -217,6 +217,10 @@ impl SessionRouter {
         if let Err(message) = validate_snapshot_target_cols(p.target_cols) {
             return invalid_request(id, format!("snapshot params: {message}"));
         }
+        let session = match self.registry.get(p.session_id) {
+            Some(session) => session,
+            None => return unknown_session(id, p.session_id),
+        };
         let _permit = match self.registry.try_acquire_snapshot() {
             Some(permit) => permit,
             None => return ControlResponse::err(
@@ -227,12 +231,9 @@ impl SessionRouter {
                 },
             ),
         };
-        match self.registry.get(p.session_id) {
-            Some(s) => match s.snapshot_terminal(p.scrollback_lines, p.target_cols) {
-                Ok(snapshot) => ControlResponse::ok(id, ResponsePayload::Snapshot { snapshot }),
-                Err(error) => terminal_snapshot_error(id, error),
-            },
-            None => unknown_session(id, p.session_id),
+        match session.snapshot_terminal(p.scrollback_lines, p.target_cols) {
+            Ok(snapshot) => ControlResponse::ok(id, ResponsePayload::Snapshot { snapshot }),
+            Err(error) => terminal_snapshot_error(id, error),
         }
     }
 
@@ -333,6 +334,7 @@ fn unknown_session(id: u64, sid: Uuid) -> ControlResponse {
 mod tests {
     use super::*;
     use crate::protocol::Status;
+    use crate::registry::MAX_CONCURRENT_SNAPSHOTS;
     use serde_json::json;
     use std::time::Duration;
 
@@ -698,6 +700,32 @@ mod tests {
         ));
         assert_eq!(still_usable.status, Status::Ok);
         cleanup(&reg);
+    }
+
+    #[test]
+    fn saturated_snapshot_limit_preserves_validation_and_unknown_session_precedence() {
+        let (router, reg) = router();
+        let permits: Vec<_> = (0..MAX_CONCURRENT_SNAPSHOTS)
+            .map(|_| reg.try_acquire_snapshot().expect("snapshot permit"))
+            .collect();
+
+        let invalid = router.handle(req(
+            1,
+            methods::SNAPSHOT,
+            json!({ "session_id": Uuid::nil(), "target_cols": 301 }),
+        ));
+        assert_eq!(invalid.status, Status::Error);
+        assert_eq!(invalid.error.expect("error").code, ErrorCode::InvalidRequest);
+
+        let unknown = router.handle(req(
+            2,
+            methods::SNAPSHOT,
+            json!({ "session_id": Uuid::nil() }),
+        ));
+        assert_eq!(unknown.status, Status::Error);
+        assert_eq!(unknown.error.expect("error").code, ErrorCode::UnknownSession);
+
+        drop(permits);
     }
 
     #[test]

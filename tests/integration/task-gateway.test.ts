@@ -9,6 +9,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
+const PRIOR_ENV = {
+  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
+  WOLFPACK_TAILNET_SUFFIX: process.env.WOLFPACK_TAILNET_SUFFIX,
+  WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
+  WOLFPACK_TASK_ROOT: process.env.WOLFPACK_TASK_ROOT,
+} as const;
+
 process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_TAILNET_SUFFIX = "example.ts.net";
 delete process.env.WOLFPACK_JWT_SECRET;
@@ -19,9 +26,18 @@ process.env.WOLFPACK_TASK_ROOT = join(root, "tasks");
 mkdirSync(parentProject, { recursive: true });
 mkdirSync(receiverProject, { recursive: true });
 
-const { __setTestBackend } = await import("../../src/server/backend.ts");
-const { MockBackend } = await import("../../src/server/mock-backend.ts");
-const { createServerInstance } = await import("../../src/server/index.ts");
+const {
+  __resetBackend,
+  __resetJwtAuthConfig,
+  __setTestBackend,
+  MockBackend,
+} = await import("../../src/test-hooks.ts");
+__resetJwtAuthConfig();
+const {
+  createServerInstance,
+  __globalRateLimiter,
+  __pollRateLimiter,
+} = await import("../../src/server/index.ts");
 const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("../../src/tasks/domain.ts");
 const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
@@ -44,6 +60,8 @@ const { server } = createServerInstance();
 let base = "";
 
 beforeAll(async () => {
+  __pollRateLimiter._map.clear();
+  __globalRateLimiter._map.clear();
   await new Promise<void>((resolve) => (server as Server).listen(0, "127.0.0.1", () => {
     base = `http://127.0.0.1:${((server as Server).address() as AddressInfo).port}`;
     resolve();
@@ -52,7 +70,19 @@ beforeAll(async () => {
 
 afterAll(() => {
   (server as Server).close();
+  __pollRateLimiter._map.clear();
+  __globalRateLimiter._map.clear();
+  __resetTaskGatewayForTests();
   rmSync(root, { recursive: true, force: true });
+  __resetBackend();
+  for (const [key, value] of Object.entries(PRIOR_ENV)) {
+    if (key === "WOLFPACK_TEST") continue;
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  __resetJwtAuthConfig();
+  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
+  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 async function request(path: string, method: "GET" | "POST", body?: unknown, headers: Record<string, string> = {}) {

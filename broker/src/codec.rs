@@ -72,10 +72,17 @@ pub enum Frame {
     Event(Event),
 }
 
-fn output_frame_header(out: &OutputFrame) -> Result<[u8; 29]> {
-    let payload_len = 24usize.saturating_add(out.data.len());
-    let payload_len = u32::try_from(payload_len).unwrap_or(u32::MAX);
+fn checked_output_payload_len(data_len: usize) -> Result<u32> {
+    let payload_len = 24usize
+        .checked_add(data_len)
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or(CodecError::FrameTooLarge(u32::MAX))?;
     validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len)?;
+    Ok(payload_len)
+}
+
+fn output_frame_header(out: &OutputFrame) -> Result<[u8; 29]> {
+    let payload_len = checked_output_payload_len(out.data.len())?;
     let mut header = [0u8; 29];
     header[0] = FRAME_KIND_OUTPUT_BINARY;
     header[1..5].copy_from_slice(&payload_len.to_be_bytes());
@@ -105,12 +112,8 @@ where
 
 pub fn write_frame<W: Write>(w: &mut W, frame: &Frame) -> Result<()> {
     if let Frame::OutputBinary(out) = frame {
-        let payload_len = 24usize.saturating_add(out.data.len());
-        validate_payload_len(FRAME_KIND_OUTPUT_BINARY, payload_len as u32)?;
-        w.write_all(&[FRAME_KIND_OUTPUT_BINARY])?;
-        w.write_all(&(payload_len as u32).to_be_bytes())?;
-        w.write_all(out.session_id.as_bytes())?;
-        w.write_all(&out.seq.to_be_bytes())?;
+        let header = output_frame_header(out)?;
+        w.write_all(&header)?;
         w.write_all(out.data.as_slice())?;
         return Ok(());
     }
@@ -334,6 +337,31 @@ mod tests {
             Frame::OutputBinary(b) => assert_eq!(b, out),
             other => panic!("wrong kind: {other:?}"),
         }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn output_payload_length_rejects_values_above_u32_without_allocation() {
+        assert!(matches!(
+            checked_output_payload_len(u32::MAX as usize + 1),
+            Err(CodecError::FrameTooLarge(u32::MAX))
+        ));
+    }
+
+    #[test]
+    fn sync_output_binary_rejects_oversized_payload_before_writing() {
+        let frame = Frame::OutputBinary(OutputFrame {
+            session_id: nil(),
+            seq: 42,
+            data: Arc::new(vec![0; MAX_OUTPUT_BINARY_PAYLOAD as usize - 24 + 1]),
+        });
+        let mut writer = Vec::new();
+
+        assert!(matches!(
+            write_frame(&mut writer, &frame),
+            Err(CodecError::FrameTooLarge(length)) if length == MAX_OUTPUT_BINARY_PAYLOAD + 1
+        ));
+        assert!(writer.is_empty());
     }
 
     #[tokio::test]
