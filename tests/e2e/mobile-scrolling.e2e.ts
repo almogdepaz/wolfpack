@@ -20,7 +20,7 @@ type CanvasSnapshot = {
 };
 
 function historyLine(prefix: string, index: number): string {
-  return `${prefix}-${index}`;
+  return `${prefix}-${String(index).padStart(3, "0").repeat(4)}`;
 }
 
 async function canvasSnapshot(page: Page, geometry: AttachGeometry): Promise<CanvasSnapshot> {
