@@ -4,6 +4,7 @@ import { startTestServer, terminalTail, type TestServer } from "./helpers.ts";
 let srv: TestServer;
 
 const HISTORY_LINE_COUNT = 160;
+const CANVAS_SAMPLE_STRIDE = 3;
 
 type AttachGeometry = {
   readonly cols: number;
@@ -23,22 +24,32 @@ function historyLine(prefix: string, index: number): string {
 }
 
 async function canvasSnapshot(page: Page, geometry: AttachGeometry): Promise<CanvasSnapshot> {
-  return page.locator("#desktop-terminal-container canvas").evaluate((element, rows) => {
+  return page.locator("#desktop-terminal-container canvas").evaluate((element, { rows, sampleStride }) => {
     const canvas = element as HTMLCanvasElement;
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("missing canvas context");
     const rect = canvas.getBoundingClientRect();
     const x = Math.floor(canvas.width * 0.2);
-    const width = Math.max(1, Math.floor(canvas.width * 0.6));
-    const height = Math.max(1, Math.floor(canvas.height * 0.75));
+    const sourceWidth = Math.max(1, Math.floor(canvas.width * 0.6));
+    const sourceHeight = Math.max(1, Math.floor(canvas.height * 0.75));
+    const source = context.getImageData(x, 0, sourceWidth, sourceHeight).data;
+    const width = Math.max(1, Math.floor(sourceWidth / sampleStride));
+    const height = Math.max(1, Math.floor(sourceHeight / sampleStride));
+    const data: number[] = [];
+    for (let row = 0; row < height; row += 1) {
+      for (let column = 0; column < width; column += 1) {
+        const offset = ((row * sampleStride * sourceWidth) + (column * sampleStride)) * 4;
+        data.push(source[offset], source[offset + 1], source[offset + 2], source[offset + 3]);
+      }
+    }
     return {
-      data: Array.from(context.getImageData(x, 0, width, height).data),
+      data,
       width,
       height,
-      pixelRowHeight: canvas.height / rows,
+      pixelRowHeight: canvas.height / rows / sampleStride,
       cssRowHeight: rect.height / rows,
     };
-  }, geometry.rows);
+  }, { rows: geometry.rows, sampleStride: CANVAS_SAMPLE_STRIDE });
 }
 
 function averageMismatchAtShift(before: CanvasSnapshot, after: CanvasSnapshot, rowShift: number): number {
