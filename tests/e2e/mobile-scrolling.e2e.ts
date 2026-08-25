@@ -29,10 +29,9 @@ async function canvasSnapshot(page: Page, geometry: AttachGeometry): Promise<Can
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("missing canvas context");
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor(canvas.width * 0.2);
-    const sourceWidth = Math.max(1, Math.floor(canvas.width * 0.6));
+    const sourceWidth = Math.max(1, Math.floor(canvas.width * 0.5));
     const sourceHeight = Math.max(1, Math.floor(canvas.height * 0.75));
-    const source = context.getImageData(x, 0, sourceWidth, sourceHeight).data;
+    const source = context.getImageData(0, 0, sourceWidth, sourceHeight).data;
     const width = Math.max(1, Math.floor(sourceWidth / sampleStride));
     const height = Math.max(1, Math.floor(sourceHeight / sampleStride));
     const data: number[] = [];
