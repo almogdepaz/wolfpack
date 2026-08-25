@@ -697,9 +697,7 @@ async function runSingle(baseUrl: string, timings: ServerTiming[], session: stri
   const { page, close } = await setupPage(baseUrl);
   const timingStart = timings.length;
   try {
-    await page.evaluate((name) => {
-      (window as unknown as { openSession(name: string): void }).openSession(name);
-    }, session);
+    await page.getByRole("button", { name: `Open ${session}`, exact: true }).filter({ visible: true }).first().click();
     const traces = await readTraces(page, 1);
     const trace = Object.values(traces).find((item) => item._meta.session === session);
     if (!trace) throw new Error(`missing trace for ${session}`);
@@ -727,20 +725,12 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
   const { page, close } = await setupPage(baseUrl);
   const timingStart = timings.length;
   try {
-    await page.evaluate((names) => {
-      const w = window as unknown as {
-        openSession(name: string): void;
-        addToGrid(name: string): void;
-      };
-      w.openSession(names[0]);
-    }, sessions);
+    await page.getByRole("button", { name: `Open ${sessions[0]}`, exact: true }).filter({ visible: true }).first().click();
     await page.waitForSelector("#desktop-terminal-container canvas", { state: "attached", timeout: 10_000 });
     const addDelayMs = gridAddDelayMs();
     if (addDelayMs > 0) await page.waitForTimeout(addDelayMs);
     for (const session of sessions.slice(1)) {
-      await page.evaluate((name) => {
-        (window as unknown as { addToGrid(name: string): void }).addToGrid(name);
-      }, session);
+      await page.getByRole("button", { name: `Add to grid: ${session}`, exact: true }).filter({ visible: true }).first().click();
       await page.waitForTimeout(100);
     }
     const traces = await readTraces(page, sessions.length);
