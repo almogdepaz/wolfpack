@@ -19,8 +19,12 @@ type CanvasSnapshot = {
   readonly cssRowHeight: number;
 };
 
-function historyLine(prefix: string, index: number): string {
-  return `${prefix}-${String(index).padStart(3, "0").repeat(4)}`;
+function historyLine(prefix: string, index: number, cols: number): string {
+  const rowWidth = Math.max(0, cols - 1);
+  const marker = `${prefix}-`.slice(0, rowWidth);
+  const patternWidth = rowWidth - marker.length;
+  const token = index.toString(16).padStart(2, "0").toUpperCase();
+  return token.repeat(Math.ceil(patternWidth / 2)).slice(0, patternWidth) + marker;
 }
 
 async function canvasSnapshot(page: Page, geometry: AttachGeometry): Promise<CanvasSnapshot> {
@@ -94,11 +98,12 @@ async function openMobileTerminalWithHistory(page: Page): Promise<AttachGeometry
       let parsed: { readonly type?: string; readonly cols?: number; readonly rows?: number };
       try { parsed = JSON.parse(message); } catch { return; }
       if (parsed.type !== "attach") return;
-      geometry = { cols: parsed.cols ?? 80, rows: parsed.rows ?? 24 };
+      const cols = parsed.cols ?? 80;
+      geometry = { cols, rows: parsed.rows ?? 24 };
       ws.send(JSON.stringify({ type: "attach_ack" }));
       ws.send(Buffer.from(Array.from(
         { length: HISTORY_LINE_COUNT },
-        (_, index) => `${historyLine("history", index)}\r\n`,
+        (_, index) => `${historyLine("history", index, cols)}\r\n`,
       ).join("")));
       ws.send(JSON.stringify({ type: "prefill_done" }));
       ws.send(JSON.stringify({ type: "pty_ready" }));
@@ -155,12 +160,13 @@ test("first mobile session opens with touch-scrollable history", async ({ page }
       let parsed: { readonly type?: string; readonly cols?: number; readonly prefillMode?: string; readonly rows?: number };
       try { parsed = JSON.parse(message); } catch { return; }
       if (parsed.type !== "attach") return;
-      geometry = { cols: parsed.cols ?? 80, rows: parsed.rows ?? 24 };
+      const cols = parsed.cols ?? 80;
+      geometry = { cols, rows: parsed.rows ?? 24 };
       const prefillMode = parsed.prefillMode ?? "full";
       ws.send(JSON.stringify({ type: "attach_ack" }));
       ws.send(Buffer.from(Array.from(
         { length: HISTORY_LINE_COUNT },
-        (_, index) => `${historyLine("first-open-history", index)}\r\n`,
+        (_, index) => `${historyLine("first-open-history", index, cols)}\r\n`,
       ).join("")));
       if (prefillMode === "viewport") {
         ws.send(JSON.stringify({ type: "prefill_viewport" }));
