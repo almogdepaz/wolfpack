@@ -25,7 +25,6 @@ import {
   FRAME_KIND_INPUT_BINARY,
   FRAME_KIND_OUTPUT_BINARY,
   type ControlRequest,
-  type ControlResponse,
   type EventBody,
   type Frame,
   type InputBinaryFrame,

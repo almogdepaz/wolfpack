@@ -1,5 +1,6 @@
 import { showAppDialog } from "./app-dialog";
 import { fetchWithTimeout } from "./fetch-timeout";
+import type { FetchLike } from "./fetch-timeout";
 
 const STORAGE_KEY = "wpAuthTokens:v1";
 
@@ -70,14 +71,29 @@ async function promptForBrowserCredential(input: RequestInfo | URL): Promise<boo
   return authPrompt;
 }
 
+export interface BrowserAuthenticatedFetchDependencies {
+  readonly timedFetch?: (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+    timeoutMs?: number,
+    fetchImpl?: FetchLike,
+  ) => Promise<Response>;
+  readonly authFetch?: FetchLike;
+  readonly promptForCredential?: (input: RequestInfo | URL) => Promise<boolean>;
+}
+
 /** Timed browser request with per-origin bearer auth and one interactive retry. */
 export async function authenticatedFetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
+  dependencies: BrowserAuthenticatedFetchDependencies = {},
 ): Promise<Response> {
-  let response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
-  if (response.status === 401 && await promptForBrowserCredential(input)) {
-    response = await fetchWithTimeout(input, init, undefined, browserAuthFetch);
+  const timedFetch = dependencies.timedFetch ?? fetchWithTimeout;
+  const authFetch = dependencies.authFetch ?? browserAuthFetch;
+  const promptForCredential = dependencies.promptForCredential ?? promptForBrowserCredential;
+  let response = await timedFetch(input, init, undefined, authFetch);
+  if (response.status === 401 && await promptForCredential(input)) {
+    response = await timedFetch(input, init, undefined, authFetch);
   }
   return response;
 }

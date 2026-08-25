@@ -4,6 +4,8 @@ export {
 } from "./agent-kind.js";
 export type { OpenableHarness } from "./agent-kind.js";
 
+export const SESSION_OPEN_MAX_MODEL_LENGTH = 512;
+
 export const SESSION_OPEN_ERROR = {
   INVALID_REQUEST: "INVALID_REQUEST",
   PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",

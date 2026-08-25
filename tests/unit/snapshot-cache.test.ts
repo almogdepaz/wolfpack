@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { snapshotKeysToEvict } from "../../src/snapshot-cache.ts";
+import {
+  isFreshSnapshotTimestamp,
+  snapshotKeysToEvict,
+} from "../../src/snapshot-cache.ts";
+
+describe("snapshot cache timestamps", () => {
+  test("accepts fresh and exact-boundary timestamps", () => {
+    expect(isFreshSnapshotTimestamp(900, 1_000, 100)).toBe(true);
+    expect(isFreshSnapshotTimestamp(1_000, 1_000, 100)).toBe(true);
+  });
+
+  test("rejects expired and invalid timestamps", () => {
+    expect(isFreshSnapshotTimestamp(899, 1_000, 100)).toBe(false);
+    expect(isFreshSnapshotTimestamp("900", 1_000, 100)).toBe(false);
+    expect(isFreshSnapshotTimestamp(undefined, 1_000, 100)).toBe(false);
+  });
+});
 
 describe("snapshot cache eviction", () => {
   test("keeps the three most recently used snapshots for a machine", () => {

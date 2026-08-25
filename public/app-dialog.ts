@@ -17,13 +17,24 @@ export interface AppDialogOptions {
 export type AppDialogResult = Readonly<Record<string, string>> | null;
 
 export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResult> {
-  const dialog = document.getElementById("app-dialog") as HTMLDialogElement;
-  const form = document.getElementById("app-dialog-form") as HTMLFormElement;
+  const dialog = document.getElementById("app-dialog");
+  const form = document.getElementById("app-dialog-form");
   const title = document.getElementById("app-dialog-title");
   const message = document.getElementById("app-dialog-message");
   const fields = document.getElementById("app-dialog-fields");
-  const cancel = document.getElementById("app-dialog-cancel") as HTMLButtonElement;
-  const confirm = document.getElementById("app-dialog-confirm") as HTMLButtonElement;
+  const cancel = document.getElementById("app-dialog-cancel");
+  const confirm = document.getElementById("app-dialog-confirm");
+  if (
+    !(dialog instanceof HTMLDialogElement) ||
+    !(form instanceof HTMLFormElement) ||
+    !(title instanceof HTMLElement) ||
+    !(message instanceof HTMLElement) ||
+    !(fields instanceof HTMLElement) ||
+    !(cancel instanceof HTMLButtonElement) ||
+    !(confirm instanceof HTMLButtonElement)
+  ) {
+    throw new Error("missing required app dialog elements");
+  }
   const focusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
   title.textContent = options.title;

@@ -448,14 +448,15 @@ describe("cross-process peer task gateway", () => {
       });
       expect(await accepted.json()).toMatchObject({ ok: true, forwarding: "forwarded" });
       const inbox = await fetch(`${receiver.base}/api/task-relay/v2/receive?callerSession=receiver&cursor=0`);
-      const inboxBody = await inbox.json() as { readonly ok: boolean; readonly envelopes: readonly { readonly envelopeId: string; readonly source: { readonly relay: string }; readonly target: { readonly relay: string; readonly id: string } }[] };
+      const inboxBody = await inbox.json() as { readonly ok: boolean; readonly envelopes: readonly { readonly envelopeId: string; readonly source: { readonly relay: string; readonly id: string }; readonly target: { readonly relay: string; readonly id: string } }[] };
       expect(inboxBody.ok).toBe(true);
       expect(inboxBody.envelopes).toHaveLength(1);
       expect(inboxBody.envelopes[0]).toMatchObject({
         envelopeId: "two-server-relay-envelope",
-        source: { relay: RELAY_ID },
+        source: { id: senderEndpoint.endpoint.id },
         target: receiverEndpoint.endpoint,
       });
+      expect(inboxBody.envelopes[0]?.source.relay).toMatch(/^wolfpack-pi-tasks-v2:peer:[0-9a-f-]{36}$/);
     } finally {
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       rmSync(fixture.root, { recursive: true, force: true });

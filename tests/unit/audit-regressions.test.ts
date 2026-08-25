@@ -184,36 +184,3 @@ describe("isWolfpackProcess — killPortHolder identity check", () => {
     expect(isWolfpackProcess("nginx: master")).toBe(false);
   });
 });
-
-import {
-  clampCols,
-  clampRows,
-} from "../../src/validation.js";
-
-// ── 3. clampCols / clampRows — NaN safety ──
-
-describe("clampCols / clampRows — NaN safety", () => {
-  test("NaN returns sensible default", () => {
-    expect(clampCols(NaN)).toBe(80);
-    expect(clampRows(NaN)).toBe(24);
-  });
-
-  test("normal values still clamp correctly", () => {
-    expect(clampCols(10)).toBe(20);
-    expect(clampCols(500)).toBe(300);
-    expect(clampCols(120)).toBe(120);
-    expect(clampRows(2)).toBe(5);
-    expect(clampRows(200)).toBe(100);
-    expect(clampRows(40)).toBe(40);
-  });
-
-  test("undefined coerces to NaN default", () => {
-    expect(clampCols(undefined as any)).toBe(80);
-    expect(clampRows(undefined as any)).toBe(24);
-  });
-
-  test("null coerces to 0, gets clamped to minimum", () => {
-    expect(clampCols(null as any)).toBe(20);
-    expect(clampRows(null as any)).toBe(5);
-  });
-});

@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium } from "@playwright/test";
+import type { Browser, Page } from "@playwright/test";
 import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
   HYDRATION_DEBUG_SILENCE_KEY,
@@ -163,7 +164,6 @@ type ServerPhaseSummary = {
 };
 
 const ROOT = join(import.meta.dirname, "..");
-const DEV_DIR = join(ROOT, ".wolfpack", "terminal-load-perf-dev");
 const DEFAULT_GRID_CELL_COUNTS = [2, 4, 6] as const;
 const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
@@ -252,7 +252,7 @@ function existingBroker(): { socketPath: string; tempDir: null; proc: null; stde
   return { socketPath, tempDir: null, proc: null, stderr: () => "" };
 }
 
-async function startServer(socketPath: string, opts?: { prefillDelayMs?: number }): Promise<{
+async function startServer(socketPath: string, devDir: string, opts?: { prefillDelayMs?: number }): Promise<{
   baseUrl: string;
   proc: ChildProcess;
   timings: ServerTiming[];
@@ -265,7 +265,7 @@ async function startServer(socketPath: string, opts?: { prefillDelayMs?: number 
       ...process.env,
       WOLFPACK_TEST: "1",
       WOLFPACK_BROKER_SOCKET: socketPath,
-      WOLFPACK_DEV_DIR: DEV_DIR,
+      WOLFPACK_DEV_DIR: devDir,
       WOLFPACK_LOG_LEVEL: "info",
       WOLFPACK_TERMINAL_LOAD_DEBUG: "1",
       ...(opts?.prefillDelayMs ? { WOLFPACK_TEST_PREFILL_DELAY_MS: String(opts.prefillDelayMs) } : {}),
@@ -315,8 +315,8 @@ async function startServer(socketPath: string, opts?: { prefillDelayMs?: number 
   return { baseUrl: `http://127.0.0.1:${port}`, proc, timings };
 }
 
-async function createSession(baseUrl: string, name: string, project: string): Promise<void> {
-  mkdirSync(join(DEV_DIR, project), { recursive: true });
+async function createSession(devDir: string, baseUrl: string, name: string, project: string): Promise<void> {
+  mkdirSync(join(devDir, project), { recursive: true });
   const res = await fetch(`${baseUrl}/api/create`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -697,9 +697,7 @@ async function runSingle(baseUrl: string, timings: ServerTiming[], session: stri
   const { page, close } = await setupPage(baseUrl);
   const timingStart = timings.length;
   try {
-    await page.evaluate((name) => {
-      (window as unknown as { openSession(name: string): void }).openSession(name);
-    }, session);
+    await page.getByRole("button", { name: `Open ${session}`, exact: true }).filter({ visible: true }).first().click();
     const traces = await readTraces(page, 1);
     const trace = Object.values(traces).find((item) => item._meta.session === session);
     if (!trace) throw new Error(`missing trace for ${session}`);
@@ -727,20 +725,12 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
   const { page, close } = await setupPage(baseUrl);
   const timingStart = timings.length;
   try {
-    await page.evaluate((names) => {
-      const w = window as unknown as {
-        openSession(name: string): void;
-        addToGrid(name: string): void;
-      };
-      w.openSession(names[0]);
-    }, sessions);
+    await page.getByRole("button", { name: `Open ${sessions[0]}`, exact: true }).filter({ visible: true }).first().click();
     await page.waitForSelector("#desktop-terminal-container canvas", { state: "attached", timeout: 10_000 });
     const addDelayMs = gridAddDelayMs();
     if (addDelayMs > 0) await page.waitForTimeout(addDelayMs);
     for (const session of sessions.slice(1)) {
-      await page.evaluate((name) => {
-        (window as unknown as { addToGrid(name: string): void }).addToGrid(name);
-      }, session);
+      await page.getByRole("button", { name: `Add to grid: ${session}`, exact: true }).filter({ visible: true }).first().click();
       await page.waitForTimeout(100);
     }
     const traces = await readTraces(page, sessions.length);
@@ -1021,7 +1011,11 @@ function printSummary(summary: ScenarioSummary): void {
   }
 }
 
-async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>>, runIndex: number): Promise<PerfRunReport> {
+async function runPerfMeasurement(
+  server: Awaited<ReturnType<typeof startServer>>,
+  devDir: string,
+  runIndex: number,
+): Promise<PerfRunReport> {
   const createdSessions: string[] = [];
   try {
     if (process.env.WOLFPACK_PERF_ONLY_PAGE_LOAD === "1") {
@@ -1031,7 +1025,7 @@ async function runPerfMeasurement(server: Awaited<ReturnType<typeof startServer>
     const runId = `${Date.now().toString(36)}-${runIndex + 1}`;
     const sessions = Array.from({ length: 6 }, (_, i) => `perf-${runId}-${i + 1}`);
     for (const [idx, session] of sessions.entries()) {
-      await createSession(server.baseUrl, session, `perf-project-${runIndex + 1}-${idx + 1}`);
+      await createSession(devDir, server.baseUrl, session, `perf-project-${runIndex + 1}-${idx + 1}`);
       createdSessions.push(session);
     }
 
@@ -1086,13 +1080,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  rmSync(DEV_DIR, { recursive: true, force: true });
-  mkdirSync(DEV_DIR, { recursive: true });
-
+  let devDir: string | null = null;
   let server: Awaited<ReturnType<typeof startServer>> | null = null;
   try {
+    devDir = mkdtempSync(join(tmpdir(), "wolfpack-terminal-load-perf-"));
     if (broker.proc) await waitForFile(broker.socketPath, 5000);
-    server = await startServer(broker.socketPath, {
+    server = await startServer(broker.socketPath, devDir, {
       prefillDelayMs: Number(process.env.WOLFPACK_PERF_SLOW_PREFILL_MS || 0) || undefined,
     });
 
@@ -1100,7 +1093,7 @@ async function main(): Promise<void> {
     const runs: PerfRunReport[] = [];
     for (let runIndex = 0; runIndex < runCount; runIndex++) {
       if (runCount > 1) console.log(`\nperf run ${runIndex + 1}/${runCount}`);
-      runs.push(await runPerfMeasurement(server, runIndex));
+      runs.push(await runPerfMeasurement(server, devDir, runIndex));
     }
 
     const summary = summarizePerfRuns(runs);
@@ -1130,6 +1123,7 @@ async function main(): Promise<void> {
       if (broker.proc.exitCode === null) broker.proc.kill("SIGKILL");
     }
     if (broker.tempDir) rmSync(broker.tempDir, { recursive: true, force: true });
+    if (devDir) rmSync(devDir, { recursive: true, force: true });
     if (process.env.WOLFPACK_BROKER_DEBUG && broker.stderr()) {
       process.stderr.write(`[broker stderr]\n${broker.stderr()}\n`);
     }

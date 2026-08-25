@@ -54,6 +54,7 @@ export interface SessionLaunchOptions {
   readonly agentKind?: AgentKind | string;
   readonly externalAgent?: CaptureSessionIdentityInput["externalAgent"];
   readonly parentSession?: ParentSessionIdentity;
+  readonly model?: string;
   readonly initialPrompt?: string;
 }
 
@@ -327,12 +328,6 @@ export class BackendRouter implements SessionBackend {
     } finally {
       this.watchdogInFlight = false;
     }
-  }
-
-  private stopWatchdog(): void {
-    if (!this.watchdogTimer) return;
-    clearInterval(this.watchdogTimer);
-    this.watchdogTimer = null;
   }
 
   private teardownBrokerClient(): void {

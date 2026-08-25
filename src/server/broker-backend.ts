@@ -396,14 +396,20 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       throw new Error(`invalid command: ${agentCmd}`);
     }
     let shellCmd: string;
+    if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI) {
+      throw new Error("model selection requires the pi harness");
+    }
     if (agentCmd === AGENT_KIND.SHELL) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }
       shellCmd = SHELL;
     } else {
-      const promptArg = options?.initialPrompt !== undefined ? " \"$1\"" : "";
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}${promptArg}; exec ${SHELL}`;
+      const modelArg = options?.model !== undefined ? ' --model "$1"' : "";
+      const promptArg = options?.initialPrompt !== undefined
+        ? ` "$${options.model !== undefined ? 2 : 1}"`
+        : "";
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}${modelArg}${promptArg}; exec ${SHELL}`;
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
@@ -428,8 +434,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           SHELL,
           "-lic",
           shellCmd,
-          ...(options?.initialPrompt !== undefined
-            ? ["wolfpack-agent", options.initialPrompt]
+          ...(options?.model !== undefined || options?.initialPrompt !== undefined
+            ? [
+                "wolfpack-agent",
+                ...(options.model !== undefined ? [options.model] : []),
+                ...(options.initialPrompt !== undefined ? [options.initialPrompt] : []),
+              ]
             : []),
         ],
         env,

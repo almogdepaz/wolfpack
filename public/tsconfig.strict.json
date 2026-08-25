@@ -5,6 +5,8 @@
     "delegation-sessions.ts",
     "ghostty-prewarm-pool.ts",
     "project-picker.ts",
+    "pty-socket-client.ts",
+    "pty-terminal-controller.ts",
     "session-order.ts",
     "session-order-ui.ts",
     "take-control-coordinator.ts",

@@ -4,8 +4,10 @@
  * Drives BrokerBackend against a fake broker client that records RPC calls
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import {
@@ -23,6 +25,9 @@ import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
+const PRIOR_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+const SUITE_ROOT = mkdtempSync(join(tmpdir(), "wolfpack-broker-backend-test-"));
+const TEST_SESSION_IDENTITY_PATH = join(SUITE_ROOT, "session-identities.json");
 
 interface RecordedRequest {
   method: string;
@@ -264,10 +269,16 @@ let backend: BrokerBackend;
 
 beforeEach(() => {
   process.env.WOLFPACK_TEST = "1";
-  process.env.WOLFPACK_SESSION_IDENTITY_PATH = `${process.cwd()}/.wolfpack/broker-backend-identity-${process.pid}.json`;
+  process.env.WOLFPACK_SESSION_IDENTITY_PATH = TEST_SESSION_IDENTITY_PATH;
   rmSync(sessionIdentityStorePath(), { force: true });
   client = new FakeBrokerClient();
   backend = new BrokerBackend(client);
+});
+
+afterAll(() => {
+  rmSync(SUITE_ROOT, { recursive: true, force: true });
+  if (PRIOR_SESSION_IDENTITY_PATH === undefined) delete process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+  else process.env.WOLFPACK_SESSION_IDENTITY_PATH = PRIOR_SESSION_IDENTITY_PATH;
 });
 
 describe("BrokerBackend.list", () => {
@@ -422,6 +433,29 @@ describe("BrokerBackend.createSession", () => {
     expect(params.command[2]).toContain('pi "$1"');
     expect(params.command[2]).not.toContain(initialPrompt);
     expect(params.env.flat()).not.toContain(initialPrompt);
+  });
+
+  test("passes pi model selection as an opaque native --model argv value", async () => {
+    const model = "openrouter/$(touch /tmp/not-executed); echo $HOME";
+    const initialPrompt = "review the diff";
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "modeled", id: SESSION_UUID_1 }),
+    }));
+
+    await backend.createSession(
+      "modeled",
+      "/tmp/proj",
+      "pi",
+      loadSettings,
+      { agentKind: "pi", model, initialPrompt },
+    );
+
+    const create = client.requests.find((request) => request.method === "create_session");
+    const params = create?.params as { command: string[]; env: Array<[string, string]> };
+    expect(params.command.slice(3)).toEqual(["wolfpack-agent", model, initialPrompt]);
+    expect(params.command[2]).toContain('pi --model "$1" "$2"');
+    expect(params.command[2]).not.toContain(model);
+    expect(params.env.flat()).not.toContain(model);
   });
 
   test("persists parent identity in broker env and public session identity", async () => {

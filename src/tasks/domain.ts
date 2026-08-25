@@ -1,3 +1,5 @@
+import { canonicalJson } from "../canonical-json.ts";
+
 export const TASK_API_ROUTES = {
   send: "POST /api/tasks/v1/send",
   status: "GET /api/tasks/v1/status",
@@ -439,14 +441,6 @@ export type ScopedIdempotencyResolution =
   | { readonly kind: "reused"; readonly taskId: string }
   | { readonly kind: "conflict"; readonly code: typeof TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT };
 
-type JsonValue =
-  | boolean
-  | null
-  | number
-  | string
-  | readonly JsonValue[]
-  | { readonly [key: string]: JsonValue };
-
 const ACTORS_BY_EVENT_TYPE: Readonly<Record<TaskEventType, readonly TaskActor[]>> = {
   [TASK_EVENT_TYPE.CREATED]: ["parent"],
   [TASK_EVENT_TYPE.RECEIVED]: ["receiver"],
@@ -572,28 +566,6 @@ const ALLOWED_EVENT_TYPES: Readonly<Record<TaskStatus, readonly TaskEventType[]>
     TASK_EVENT_TYPE.DELIVERY_FAILED,
   ],
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stableJson(value: unknown): JsonValue {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("canonical task JSON cannot contain a non-finite number");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(stableJson);
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .filter((key) => value[key] !== undefined)
-        .map((key) => [key, stableJson(value[key])]),
-    );
-  }
-  throw new TypeError("canonical task JSON accepts only JSON values");
-}
 
 function incrementDecimal(sequence: string): string {
   if (!/^(0|[1-9][0-9]*)$/.test(sequence)) throw new TypeError("sequence must be a decimal integer");
@@ -999,6 +971,6 @@ export function generateUuidV7(timestampMs: number = Date.now()): string {
 }
 
 export async function hashImmutableAssignment(assignment: unknown): Promise<string> {
-  const canonical = JSON.stringify(stableJson(assignment));
+  const canonical = canonicalJson(assignment);
   return new Bun.CryptoHasher("sha256").update(canonical).digest("hex");
 }

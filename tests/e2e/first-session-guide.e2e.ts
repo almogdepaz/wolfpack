@@ -294,12 +294,11 @@ test("authoritative empty sessions render one accessible first-session path that
     expect(responsiveLayout.stepColumns).toBe(3);
   }
 
+  const projectsRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/projects");
   await page.keyboard.press("Enter");
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
   await expect(page.locator("#new-project-name")).toBeFocused();
-  expect(await page.evaluate(() => (
-    window as typeof window & { state: { readonly projectMachine: string } }
-  ).state.projectMachine)).toBe("");
+  expect((await projectsRequest).url()).toBe(`${server.baseUrl}/api/projects`);
 
   await page.keyboard.press("Escape");
   await expect(page.locator("#sessions-view")).toHaveClass(/visible/);
@@ -312,22 +311,12 @@ test("authoritative empty sessions render one accessible first-session path that
       wolfpackSessionName: "first-created-session",
     },
   }];
-  await page.evaluate(async () => {
-    await (window as typeof window & {
-      loadSessions: (forceAfterCurrent?: boolean) => Promise<void>;
-    }).loadSessions(true);
-  });
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 
   await expect(onboarding).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create your first session" })).toHaveCount(0);
-  const sessionsExpanded = await page.evaluate(() => (
-    window as typeof window & { state: { readonly sessionsExpanded: boolean } }
-  ).state.sessionsExpanded);
-  const sessionChooser = (viewport?.width ?? 0) > 768 && !sessionsExpanded
-    ? page.locator("#sidebar-session-list")
-    : page.locator("#session-list");
-  await expect(sessionChooser.getByRole("button", { name: "Open first-created-session" })).toBeEnabled();
-  await expect(sessionChooser.getByRole("button", { name: /Start a session on/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open first-created-session" }).filter({ visible: true }).first()).toBeEnabled();
+  await expect(page.getByRole("button", { name: /Start a session on/ }).filter({ visible: true }).first()).toBeVisible();
 });
 
 test("remote empty-state activation preserves the verified machine selector", async ({ page }) => {
@@ -433,9 +422,6 @@ test("remote empty-state activation preserves the verified machine selector", as
   await page.keyboard.press("Enter");
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
   await expect(page.getByRole("button", { name: "Open project remote-onboarding-project" })).toBeVisible();
-  expect(await page.evaluate(() => (
-    window as typeof window & { state: { readonly projectMachine: string } }
-  ).state.projectMachine)).toBe(PEER_IDENTITY);
   expect(remoteProjectRequests).toEqual([`${PEER_ORIGIN}/api/projects`]);
   expect(localProjectRequests).toEqual([]);
 });

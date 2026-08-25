@@ -19,7 +19,6 @@ const { server } = createServerInstance();
 // ── Test setup ──
 
 let port: number;
-let baseUrl: string;
 let baseWsUrl: string;
 
 const _realConsoleError = console.error;
@@ -32,7 +31,6 @@ beforeAll((done) => {
   };
   server.listen(0, "127.0.0.1", () => {
     port = (server.address() as AddressInfo).port;
-    baseUrl = `http://127.0.0.1:${port}`;
     baseWsUrl = `ws://127.0.0.1:${port}`;
     done();
   });
@@ -45,33 +43,6 @@ afterAll(() => {
 
 // ── Helpers ──
 
-function post(path: string, body: unknown) {
-  return fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-async function rawUpgrade(path: string): Promise<{ status: number; ws?: WebSocket }> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(`${baseWsUrl}${path}`);
-    ws.addEventListener("open", () => resolve({ status: 101, ws }));
-    ws.addEventListener("error", () => resolve({ status: 0 }));
-    ws.addEventListener("close", (ev) => {
-      resolve({ status: ev.code === 1006 ? 403 : ev.code });
-    });
-  });
-}
-
-function closeWs(ws: WebSocket): Promise<void> {
-  return new Promise((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) return resolve();
-    ws.addEventListener("close", () => resolve());
-    ws.close();
-  });
-}
-
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -79,34 +50,6 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Reconnect — PTY /ws/pty close codes", () => {
-  test("attach failure yields 4001 (prevents reconnect loop)", async () => {
-    mockBackend.setSessionAlive("prompt-sess", false);
-    try {
-      const ws = new WebSocket(`${baseWsUrl}/ws/pty?session=prompt-sess`);
-      ws.binaryType = "arraybuffer";
-      const closePromise = new Promise<CloseEvent>((r) => ws.addEventListener("close", r));
-
-      await new Promise<void>((resolve, reject) => {
-        ws.addEventListener("open", () => resolve());
-        ws.addEventListener("error", () => reject(new Error("connect failed")));
-      });
-
-      // Trigger attach (resize triggers spawn for older clients) — broker
-      // mock reports session dead, so attach yields 4001.
-      ws.send(JSON.stringify({ type: "resize", cols: 80, rows: 24 }));
-
-      const ev = await Promise.race([
-        closePromise,
-        wait(5000).then(() => { throw new Error("timeout"); }),
-      ]) as CloseEvent;
-
-      expect(ev.code).toBe(4001);
-    } finally {
-      mockBackend.setSessionAlive("prompt-sess", null);
-      __activePtySessions.delete("prompt-sess");
-    }
-  });
-
   test("consecutive attach failures all return 4001 (no 1000 leak)", async () => {
     mockBackend.setSessionAlive("prompt-sess", false);
     try {

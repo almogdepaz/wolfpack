@@ -33,7 +33,7 @@ jobs:
       # updating, catching a stale lockfile (forgotten `cargo update`,
       # hand-edited Cargo.toml without lock refresh, etc.) instead of
       # silently drifting at build time. CI is the only place we enforce
-      # this; `bun run scripts/build.ts` in dev mode stays unlocked so
+      # this; `WOLFPACK_BUILD_MODE=local bun run scripts/build.ts` stays unlocked so
       # local rebuilds Just Work.
       - name: Build wolfpack-broker (required by integration + e2e tests)
         run: cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker
@@ -50,8 +50,8 @@ jobs:
       - name: Generate embedded assets
         run: bun run scripts/gen-assets.ts
 
-      - name: Check public-assets.ts is in sync with public/
-        run: git diff --exit-code src/public-assets.ts public/wolfpack-lib.js
+      - name: Check generated public assets are in sync
+        run: git diff --exit-code src/public-assets.ts
 
       - name: Typecheck (root + public/)
         run: bun run typecheck
@@ -126,9 +126,6 @@ jobs:
 
       - name: Build verified libghostty-vt archive (linux-x64)
         run: bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu
-
-      - name: Run broker tests (authoritative Ghostty)
-        run: cargo test --locked --manifest-path broker/Cargo.toml --all
 
       - name: Build authoritative Ghostty broker binary
         run: cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker

@@ -55,20 +55,6 @@ function injectFakeEntry(session: string) {
   });
 }
 
-/** Connect a viewer and register it as the active viewer on the fake entry. */
-async function connectAsActiveViewer(session: string): Promise<WebSocket> {
-  const ws = await connectPty(session);
-  await wait(10);
-  const entry = ctx.activePtySessions.get(session);
-  if (entry) entry.viewer = (ws as any)._socket || ws;
-  // The server sets entry.viewer on WS open in setupNewPtyEntry, but since we
-  // pre-injected the entry, the server won't call setupNewPtyEntry — it goes
-  // straight to the conflict path. The first WS to connect to an existing
-  // entry becomes the pendingViewer, not the active viewer. So we need to
-  // set up properly: inject entry with a viewer already set.
-  return ws;
-}
-
 // ── Viewer conflict protocol ──
 
 describe("pty takeover: viewer conflict", () => {
@@ -227,7 +213,6 @@ describe("pty takeover: rate limiting", () => {
 
   test("burst of messages beyond rate limit doesn't crash server", async () => {
     const ws = await connectPty("takeover-test");
-    const msgs = collectJsonMessages(ws);
     ws.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, prefillMode: "none" }));
     await wait(50);
 
@@ -368,10 +353,8 @@ describe("pty takeover: full two-viewer flow (grid scenario)", () => {
     const msgsB = collectJsonMessages(wsB);
     await waitForMessage(wsB, "viewer_conflict");
 
-    // Register close listener on A's viewer BEFORE triggering takeover
-    const entry = ctx.activePtySessions.get("takeover-test") as any;
-    // The fake entry's viewer is null (injectFakeEntry sets it to null).
-    // performImmediateTakeover closes the old viewer — with null it's a no-op.
+    // The fake entry's viewer is null (injectFakeEntry sets it to null), so
+    // performImmediateTakeover has no old viewer to close.
 
     // B sends attach with takeControl:true (the grid fast-path)
     wsB.send(JSON.stringify({
@@ -399,7 +382,6 @@ describe("pty takeover: full two-viewer flow (grid scenario)", () => {
   test("two real viewers: A active, B takes control → A gets 4002", async () => {
     // A: connect first, become active
     const wsA = await connectPty("takeover-test");
-    const msgsA = collectJsonMessages(wsA);
     wsA.send(JSON.stringify({ type: "attach", cols: 80, rows: 24, prefillMode: "none" }));
     await wait(300);
     // A will get 4001 from spawn failure, but entry exists briefly

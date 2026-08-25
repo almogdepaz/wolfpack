@@ -110,7 +110,3 @@ const AGENT_STATUS_STATE_SET: ReadonlySet<string> = new Set(AGENT_STATUS_STATES)
 export function isAgentStatusState(value: string): value is AgentStatusState {
   return AGENT_STATUS_STATE_SET.has(value);
 }
-
-export function agentStatusLabel(state: AgentStatusState): string {
-  return state.toUpperCase();
-}

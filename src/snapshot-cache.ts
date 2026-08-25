@@ -6,6 +6,14 @@ export interface SnapshotCacheEntry {
   readonly lastUsedAt: number;
 }
 
+export function isFreshSnapshotTimestamp(
+  savedAt: unknown,
+  now: number,
+  ttlMs: number,
+): savedAt is number {
+  return typeof savedAt === "number" && now - savedAt <= ttlMs;
+}
+
 export function snapshotKeysToEvict(
   entries: readonly SnapshotCacheEntry[],
   limit = SNAPSHOT_CACHE_LIMIT_PER_MACHINE,

@@ -2,8 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
@@ -11,6 +10,7 @@ import { SESSION_CREATE_ERROR } from "../../src/session-create-contract.ts";
 import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
+  SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../../src/session-open-contract.ts";
 import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
 import {
@@ -32,14 +32,19 @@ import type { TailnetOriginServerFixture } from "./tailnet-origin-fixture.ts";
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
+const PRIOR_WOLFPACK_DEV_DIR = process.env.WOLFPACK_DEV_DIR;
+const PRIOR_WOLFPACK_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+const PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
+const PRIOR_WOLFPACK_SETTINGS_PATH = process.env.WOLFPACK_SETTINGS_PATH;
+const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
+
 // Create a real temp dir for test project directories.
 // realpathSync resolves macOS /var → /private/var so isUnderDevDir agrees.
-const _rawTmpDir = join(tmpdir(), `wolfpack-api-test-${process.pid}`);
-mkdirSync(_rawTmpDir, { recursive: true });
-const TEST_DEV_DIR = realpathSync(_rawTmpDir);
+const RAW_TEST_DEV_DIR = mkdtempSync(join(tmpdir(), "wolfpack-api-test-"));
+const TEST_DEV_DIR = realpathSync(RAW_TEST_DEV_DIR);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
-process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(process.cwd(), ".wolfpack", `api-session-identities-${process.pid}.json`);
-process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DEV_DIR, `api-agent-runtime-state-${process.pid}.json`);
+process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(TEST_DEV_DIR, "session-identities.json");
+process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DEV_DIR, "agent-runtime-state.json");
 // Isolate the settings file so the /api/settings tests don't mutate the
 // developer's real ~/.wolfpack/bridge-settings.json. The path is read at
 // every loadSettings/saveSettings call so this works as long as it's set
@@ -89,14 +94,14 @@ let base = "";
 // Test project names used by /api/create tests
 const TEST_PROJECTS = ["my-app", "wolf-1", "fresh-app"];
 
-// Track dirs we actually created so we only clean up what we own
-const createdDirs: string[] = [];
+// Track external temp roots we created so cleanup never touches unrelated paths.
+const externalTempRoots: string[] = [];
 
 function createExplicitProjectDir(name = "outside project"): string {
   const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-api-"));
   const projectDir = join(root, name);
   mkdirSync(projectDir);
-  createdDirs.push(root);
+  externalTempRoots.push(root);
   return realpathSync(projectDir);
 }
 
@@ -105,7 +110,6 @@ function ensureTestProjectDirs(): void {
   for (const name of TEST_PROJECTS) {
     const dir = join(TEST_DEV_DIR, name);
     mkdirSync(dir, { recursive: true });
-    createdDirs.push(dir);
   }
 }
 
@@ -138,10 +142,17 @@ beforeEach(() => {
 
 afterAll(() => {
   (server as Server).close();
-  // Clean up only dirs we created (not TEST_DEV_DIR itself)
-  for (const dir of createdDirs) {
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
-  }
+  for (const root of externalTempRoots) rmSync(root, { recursive: true, force: true });
+  rmSync(TEST_DEV_DIR, { recursive: true, force: true });
+  if (PRIOR_WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
+  else process.env.WOLFPACK_DEV_DIR = PRIOR_WOLFPACK_DEV_DIR;
+  if (PRIOR_WOLFPACK_SESSION_IDENTITY_PATH === undefined) delete process.env.WOLFPACK_SESSION_IDENTITY_PATH;
+  else process.env.WOLFPACK_SESSION_IDENTITY_PATH = PRIOR_WOLFPACK_SESSION_IDENTITY_PATH;
+  if (PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH === undefined) delete process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
+  else process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH;
+  if (PRIOR_WOLFPACK_SETTINGS_PATH === undefined) delete process.env.WOLFPACK_SETTINGS_PATH;
+  else process.env.WOLFPACK_SETTINGS_PATH = PRIOR_WOLFPACK_SETTINGS_PATH;
+  __setDevDir(PRIOR_CACHED_DEV_DIR);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1324,11 +1335,13 @@ describe("POST /api/session-open", () => {
 
   test("creates one same-harness child with exact parent identity and prompt", async () => {
     const prompt = "review '$(touch /tmp/not-executed)' \"$HOME\"; done";
+    const model = "openrouter/anthropic/claude-sonnet-4";
     const frames = attachNotificationViewer("wolf-1");
 
     const res = await post("/api/session-open", {
       project: "my-app",
       parentSession: "wolf-1",
+      model,
       initialPrompt: prompt,
     });
 
@@ -1349,6 +1362,7 @@ describe("POST /api/session-open", () => {
         wolfpackSessionId: "mock:wolf-1",
         wolfpackSessionName: "wolf-1",
       },
+      model,
       initialPrompt: prompt,
     });
     expect(frames.map((frame) => JSON.parse(frame))).toEqual([{
@@ -1571,6 +1585,46 @@ describe("POST /api/session-open", () => {
       expect(mockBackend.lastCreateArgs, project).toBeNull();
       expect(existsSync(join(TEST_DEV_DIR, project))).toBe(false);
     }
+  });
+
+  test("rejects blank and oversized model selections", async () => {
+    for (const model of ["   ", "x".repeat(SESSION_OPEN_MAX_MODEL_LENGTH + 1)]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", {
+        project: "my-app",
+        parentSession: "wolf-1",
+        model,
+      });
+      expect(res.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request",
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("rejects model selection for non-pi parents without changing omitted behavior", async () => {
+    useParentHarness("claude");
+    const rejected = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+      model: "anthropic/claude-opus-4-1",
+    });
+    expect(rejected.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+    expect(await rejected.json()).toEqual({
+      error: "invalid session-open request",
+      code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+
+    const omitted = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+    });
+    expect(omitted.status).toBe(200);
+    expect(mockBackend.lastCreateArgs?.agentKind).toBe("claude");
+    expect(mockBackend.lastCreateArgs).not.toHaveProperty("model");
   });
 
   test("rejects blank and oversized prompts", async () => {
@@ -2009,7 +2063,7 @@ describe("GET /api/next-session-name", () => {
     const root = mkdtempSync(join(tmpdir(), "wolfpack-explicit-api-unavailable-"));
     const loop = join(root, "loop");
     symlinkSync("loop", loop);
-    createdDirs.push(root);
+    externalTempRoots.push(root);
 
     const projectDir = join(loop, "project");
     const expectedError = { error: "project directory unavailable" };
@@ -2140,8 +2194,7 @@ describe("POST /api/kill", () => {
 
 // ─── /api/settings ───────────────────────────────────────────────────────────
 //
-// These tests run with the production-default settings file (no override),
-// which means each test mutates real state in ~/.wolfpack/bridge-settings.json.
+// These tests use the suite-owned settings file under TEST_DEV_DIR.
 // To keep them isolated and idempotent, every test starts by issuing the
 // requests it needs and asserting on the deltas in the response (don't read
 // the file directly). beforeEach restores the 4 baseline cmds via a sequence

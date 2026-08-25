@@ -1,7 +1,6 @@
 /**
  * Pure functions for terminal input handling.
- * Used by both the browser frontend (via wolfpack-lib.js bundle)
- * and unit tests (via direct import).
+ * Imported directly by both the browser frontend and unit tests.
  */
 import { PTY_BINARY_FRAME_MAX_BYTES } from "./ws-constants";
 
@@ -103,6 +102,22 @@ export function terminalDataFromKeydownForBeforeInputDedupe(event: TerminalKeydo
     default:
       return null;
   }
+}
+
+export interface MessageDraftSendResult {
+  readonly sent: boolean;
+  readonly savedDraft: string;
+}
+
+export function sendMessageDraftAttempt(
+  text: string,
+  sender: (wireText: string) => boolean,
+): MessageDraftSendResult {
+  const savedDraft = text.trim();
+  return {
+    sent: sender(`${savedDraft.replace(/\n/g, " ")}\r`),
+    savedDraft,
+  };
 }
 
 export interface MessageInputEnterEvent {

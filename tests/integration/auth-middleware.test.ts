@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 

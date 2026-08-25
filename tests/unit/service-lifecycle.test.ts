@@ -15,6 +15,8 @@ const execCommands: string[] = [];
 const askPrompts: string[] = [];
 let curlBackendResponse = JSON.stringify({ counts: { broker: 3 } });
 let serviceActive = false;
+let failServerStop = false;
+let failServerStart = false;
 let currentConfig = { devDir: "/tmp/old-dev", port: 18790 };
 
 await mock.module("node:child_process", () => ({
@@ -26,9 +28,9 @@ await mock.module("node:child_process", () => ({
   execSync: mock((command: string) => {
     execCommands.push(command);
     if (command === "systemctl --user is-active wolfpack 2>&1") return serviceActive ? "active\n" : "inactive\n";
-    if (command === "systemctl --user stop wolfpack") {
-      throw new Error("server unit missing");
-    }
+    if (command === "systemctl --user is-active wolfpack-broker 2>&1") return "active\n";
+    if (command === "systemctl --user stop wolfpack" && failServerStop) throw new Error("server stop failed");
+    if (command === "systemctl --user start wolfpack" && failServerStart) throw new Error("server start failed");
     return "";
   }),
   spawn: mock(() => undefined),
@@ -114,6 +116,27 @@ describe("removeManagedEntrypoints", () => {
 });
 
 describe("refreshInstalledServerService", () => {
+  test("rewrites an installed descriptor without activating server or broker when reload is deferred", () => {
+    execCommands.length = 0;
+    askPrompts.length = 0;
+    serviceActive = true;
+    currentConfig = { devDir: "/tmp/deferred dev", port: 25555 };
+    const unitDir = join(homedir(), ".config", "systemd", "user");
+    const unitPath = join(unitDir, "wolfpack.service");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(unitPath, "old unit\n");
+
+    refreshInstalledServerService({ reload: false });
+
+    const unit = readFileSync(unitPath, "utf-8");
+    expect(unit).toContain('Environment="WOLFPACK_PORT=25555"');
+    expect(unit).toContain('Environment="WOLFPACK_DEV_DIR=/tmp/deferred dev"');
+    expect(execCommands).toContain("systemctl --user daemon-reload");
+    expect(execCommands).not.toContain("systemctl --user restart wolfpack");
+    expect(execCommands.some(command => command.includes("wolfpack-broker"))).toBe(false);
+    expect(askPrompts).toEqual([]);
+  });
+
   test("rewrites and restarts only the running server unit", () => {
     execCommands.length = 0;
     askPrompts.length = 0;
@@ -139,6 +162,7 @@ describe("refreshInstalledServerService", () => {
 describe("serviceStop", () => {
   test("attempts broker shutdown when broker-inclusive server stop fails", () => {
     execCommands.length = 0;
+    failServerStop = true;
 
     expect(serviceStop({ broker: true, skipBrokerSessionWarning: true })).toBe(false);
 
@@ -148,9 +172,37 @@ describe("serviceStop", () => {
 });
 
 describe("serviceRestart", () => {
+  test("returns false without starting the server or touching the broker when server stop fails", () => {
+    execCommands.length = 0;
+    failServerStop = true;
+    failServerStart = false;
+
+    expect(serviceRestart({ broker: false, skipBrokerSessionWarning: true })).toBe(false);
+
+    expect(execCommands).toContain("systemctl --user stop wolfpack");
+    expect(execCommands).not.toContain("systemctl --user start wolfpack");
+    expect(execCommands.some(command => command.includes("wolfpack-broker"))).toBe(false);
+  });
+
+  test("returns false without broker side effects when server start fails", () => {
+    execCommands.length = 0;
+    failServerStop = false;
+    failServerStart = true;
+
+    expect(serviceRestart({ broker: false, skipBrokerSessionWarning: true })).toBe(false);
+
+    expect(execCommands).toContain("systemctl --user stop wolfpack");
+    expect(execCommands).toContain("systemctl --user start wolfpack");
+    expect(execCommands.filter(command => command.includes("wolfpack-broker"))).toEqual([
+      "systemctl --user is-active wolfpack-broker 2>&1",
+    ]);
+  });
+
   test("uses one broker prompt that includes active session reset count", () => {
     execCommands.length = 0;
     askPrompts.length = 0;
+    failServerStop = false;
+    failServerStart = false;
     curlBackendResponse = JSON.stringify({ counts: { broker: 3 } });
 
     serviceRestart();
@@ -161,12 +213,14 @@ describe("serviceRestart", () => {
     expect(execCommands).toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
   });
 
-  test("server-only update restart does not prompt for or stop the broker", () => {
+  test("server-only update restart does not prompt for or stop a running broker", () => {
     execCommands.length = 0;
     askPrompts.length = 0;
+    failServerStop = false;
+    failServerStart = false;
     curlBackendResponse = JSON.stringify({ counts: { broker: 2 } });
 
-    serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+    expect(serviceRestart({ broker: false, skipBrokerSessionWarning: true })).toBe(true);
 
     expect(askPrompts).toEqual([]);
     expect(execCommands).toContain("systemctl --user stop wolfpack");

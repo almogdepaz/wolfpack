@@ -20,11 +20,13 @@ A same-harness **child** of the current agent:
 
 ```bash
 wolfpack agent spawn <project> --name 200-implementation --plan .plans/000-task.md --notify-parent --json
+# Pi parent only, when an explicit model is required:
+wolfpack agent spawn <project> --name 200-implementation --model <provider/model> --plan .plans/000-task.md --notify-parent --json
 ```
 
 `wolfpack session open` is only a deprecated child-spawn alias. Never use it for a top-level request.
 Replace `<project>` with `--project-dir <path>` when the user explicitly selects an existing directory outside the configured projects root. The CLI resolves relative paths and the server validates/canonicalizes the directory; never send both selectors.
-Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context.
+Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--model` is child-only: for Pi parents it forwards one bounded nonblank opaque value to Pi's native option; non-Pi parents reject it. Omit it to preserve the parent's normal model behavior.
 
 Use `--name <session>` for child agents and choose a short meaningful issue/role slug, for example `200-implementation`, `200-delivery-review`, or `auth-boundary-audit`. Avoid generic `*-sub-agent` names when the task purpose is known; Wolfpack will allocate a numbered suffix if the requested name is already taken. Prefer `--plan <file>` for plan work: Wolfpack generates the compact handoff prompt and verifies the file exists without copying plan contents into the parent transcript. Use `--prompt-file <file>` for long bespoke instructions. Use raw `--prompt` only for one short prompt sentence. Do NOT paste repository policy, architecture context, or full plans into the launch command.
 

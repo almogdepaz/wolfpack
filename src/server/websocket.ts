@@ -20,9 +20,9 @@ import {
   PTY_BINARY_FRAME_MAX_BYTES,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
-import { getBackend, getRouter } from "./backend.js";
+import { getRouter } from "./backend.js";
 import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./backend.js";
-import { createRateLimiter, isAllowedSession } from "./http.js";
+import { createRateLimiter } from "./http.js";
 import { createLogger, errMsg } from "../log.js";
 import { shouldFlushCoalescedOutput } from "../output-coalescing.js";
 import {
@@ -127,8 +127,6 @@ const GRID_PREFILL_SCROLLBACK_LINES = 200;
 const PREFILL_CHUNK_SIZE = 32 * 1024;
 const PREFILL_CHUNK_DELAY_MS = 8;
 const PREFILL_OVERLAP_LIMIT = 32 * 1024;
-const POLL_INTERVAL_MS = 50;
-const POST_INPUT_DELAY_MS = 50;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
 
@@ -163,8 +161,6 @@ function startViewerHeartbeat(ws: WebSocket, session: string, kind: "pending" | 
 }
 const RATE_LIMIT_PER_SEC = 60;
 const RESIZE_DEBOUNCE_MS = 80;
-const RAPID_EXIT_THRESHOLD_MS = 3_000;
-const POST_SPAWN_RESIZE_DELAY_MS = 100;
 // Pre-snapshot resize-settle wait: avoids the "scrollback flash" where each
 // of the client's resize messages causes the shell (e.g. claude) to redraw
 // its full screen on SIGWINCH — those redraws are then replayed via

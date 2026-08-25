@@ -5,6 +5,21 @@ import { mkdirSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
+import {
+  isJsonObject as isObject,
+  validateControlApiSchemaValue as validate,
+} from "../control-api-schema-validator.ts";
+import type { JsonObject } from "../control-api-schema-validator.ts";
+
+const PRIOR_ENV = {
+  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
+  WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
+  WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
+  WOLFPACK_SETTINGS_PATH: process.env.WOLFPACK_SETTINGS_PATH,
+  WOLFPACK_MACHINE_ID_PATH: process.env.WOLFPACK_MACHINE_ID_PATH,
+  WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
+} as const;
+const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
@@ -15,7 +30,6 @@ const TEST_DEV_DIR = realpathSync(rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
 process.env.WOLFPACK_MACHINE_ID_PATH = join(TEST_DEV_DIR, "machine-id");
-const priorTailscaleStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   Self: {
     ID: "n-schema-test",
@@ -31,9 +45,13 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   },
 });
 
-const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
-const { MockBackend } = await import("../../src/server/mock-backend.ts");
+const {
+  __resetBackend,
+  __resetJwtAuthConfig,
+  __setDevDir,
+  __setTestBackend,
+  MockBackend,
+} = await import("../../src/test-hooks.ts");
 __resetJwtAuthConfig();
 __setDevDir(TEST_DEV_DIR);
 
@@ -50,91 +68,33 @@ mockBackend.listIdentities = async () => {
 };
 __setTestBackend(mockBackend);
 
-const { createServerInstance } = await import("../../src/server/index.ts") as any;
+const {
+  createServerInstance,
+  __globalRateLimiter,
+  __pollRateLimiter,
+} = await import("../../src/server/index.ts") as any;
 const { server } = createServerInstance();
 
 let base = "";
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
 
-type JsonObject = Record<string, unknown>;
-
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function httpOperation(operationId: string): JsonObject {
+  const http = artifact.http;
+  const operation = isObject(http) ? http[operationId] : undefined;
+  if (!isObject(operation)) throw new Error(`missing operation ${operationId}`);
+  return operation;
 }
 
-function resolveRef(schema: JsonObject, root: JsonObject): JsonObject {
-  const ref = schema.$ref;
-  if (typeof ref !== "string") return schema;
-  const prefix = "#/$defs/";
-  if (!ref.startsWith(prefix)) throw new Error(`unsupported ref ${ref}`);
-  const defs = root.$defs;
-  const name = ref.slice(prefix.length);
-  if (!isObject(defs) || !isObject(defs[name])) throw new Error(`missing ref ${ref}`);
-  return defs[name] as JsonObject;
-}
-
-function validate(schema: unknown, value: unknown, root: JsonObject, path = "$."): string[] {
-  if (!isObject(schema)) return [];
-  const resolved = resolveRef(schema, root);
-  if (resolved !== schema) return validate(resolved, value, root, path);
-
-  if (Array.isArray(resolved.anyOf)) {
-    const variants = resolved.anyOf.map((candidate) => validate(candidate, value, root, path));
-    if (!variants.some((errors) => errors.length === 0)) {
-      return [`${path} did not match anyOf: ${variants.map((errors) => errors.join(", ")).join(" | ")}`];
-    }
-  }
-
-  if ("const" in resolved && value !== resolved.const) return [`${path} expected const ${JSON.stringify(resolved.const)}`];
-  if (Array.isArray(resolved.enum) && !resolved.enum.some((candidate) => candidate === value)) {
-    return [`${path} expected one of ${JSON.stringify(resolved.enum)}`];
-  }
-
-  if (typeof resolved.type === "string") {
-    if (resolved.type === "object" && !isObject(value)) return [`${path} expected object`];
-    if (resolved.type === "array" && !Array.isArray(value)) return [`${path} expected array`];
-    if (resolved.type === "string" && typeof value !== "string") return [`${path} expected string`];
-    if (resolved.type === "number" && typeof value !== "number") return [`${path} expected number`];
-    if (resolved.type === "integer" && !Number.isInteger(value)) return [`${path} expected integer`];
-    if (resolved.type === "boolean" && typeof value !== "boolean") return [`${path} expected boolean`];
-    if (resolved.type === "null" && value !== null) return [`${path} expected null`];
-  }
-
-  if (typeof value === "string" && typeof resolved.pattern === "string" && !(new RegExp(resolved.pattern).test(value))) {
-    return [`${path} failed pattern ${resolved.pattern}`];
-  }
-
-  if (Array.isArray(value) && isObject(resolved.items)) {
-    return value.flatMap((item, index) => validate(resolved.items, item, root, `${path}[${index}]`));
-  }
-
-  if (isObject(value)) {
-    const required = Array.isArray(resolved.required) ? resolved.required : [];
-    const errors: string[] = [];
-    for (const key of required) {
-      if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
-    }
-    if (isObject(resolved.properties)) {
-      for (const [key, child] of Object.entries(resolved.properties)) {
-        if (key in value) errors.push(...validate(child, value[key], root, `${path}.${key}`));
-      }
-      if (resolved.additionalProperties === false) {
-        for (const key of Object.keys(value)) {
-          if (!(key in resolved.properties)) errors.push(`${path}.${key} is not allowed`);
-        }
-      }
-    }
-    return errors;
-  }
-
-  return [];
+function httpRequest(operationId: string): JsonObject {
+  const request = httpOperation(operationId).request;
+  if (!isObject(request)) throw new Error(`missing request for ${operationId}`);
+  return request;
 }
 
 function httpResponse(operationId: string): JsonObject {
-  const http = artifact.http;
-  const operation = isObject(http) ? http[operationId] : undefined;
-  if (!isObject(operation) || !isObject(operation.response)) throw new Error(`missing operation ${operationId}`);
-  return operation.response;
+  const response = httpOperation(operationId).response;
+  if (!isObject(response)) throw new Error(`missing response for ${operationId}`);
+  return response;
 }
 
 async function getJson(path: string): Promise<unknown> {
@@ -166,9 +126,19 @@ beforeAll(async () => {
 
 afterAll(() => {
   (server as Server).close();
-  if (priorTailscaleStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
-  else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = priorTailscaleStatus;
+  __globalRateLimiter._map.clear();
+  __pollRateLimiter._map.clear();
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
+  __resetBackend();
+  __setDevDir(PRIOR_CACHED_DEV_DIR);
+  for (const [key, value] of Object.entries(PRIOR_ENV)) {
+    if (key === "WOLFPACK_TEST") continue;
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  __resetJwtAuthConfig();
+  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
+  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 describe("control api generated schema against runtime responses", () => {
@@ -200,4 +170,58 @@ describe("control api generated schema against runtime responses", () => {
       expect(validate(httpResponse(operationId), payload, artifact), operationId).toEqual([]);
     }
   });
+
+  const invalidRequestCases = [
+    {
+      name: "rejects unknown create properties",
+      operationId: "createSession",
+      path: "/api/create",
+      body: { projectDir: join(TEST_DEV_DIR, "missing-project"), unexpected: true },
+    },
+    {
+      name: "rejects newProjectParent without newProject",
+      operationId: "createSession",
+      path: "/api/create",
+      body: { project: "wolfpack", newProjectParent: TEST_DEV_DIR },
+    },
+    {
+      name: "rejects unknown settings properties",
+      operationId: "updateSettings",
+      path: "/api/settings",
+      body: { unexpected: true },
+    },
+    {
+      name: "rejects unknown setCmdEnabled properties",
+      operationId: "updateSettings",
+      path: "/api/settings",
+      body: { setCmdEnabled: { cmd: "shell", enabled: true, unexpected: true } },
+    },
+    {
+      name: "rejects fractional resize dimensions",
+      operationId: "resizeSession",
+      path: "/api/resize",
+      body: { session: "wolf-1", cols: 80.5, rows: 24.5 },
+    },
+    {
+      name: "rejects unknown resize properties",
+      operationId: "resizeSession",
+      path: "/api/resize",
+      body: { session: "wolf-1", cols: 80, rows: 24, unexpected: true },
+    },
+  ] as const;
+
+  for (const invalidRequest of invalidRequestCases) {
+    test(invalidRequest.name, async () => {
+      expect(
+        validate(httpRequest(invalidRequest.operationId), invalidRequest.body, artifact),
+        `${invalidRequest.operationId} schema`,
+      ).not.toEqual([]);
+      const response = await fetch(`${base}${invalidRequest.path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(invalidRequest.body),
+      });
+      expect(response.status, `${invalidRequest.path} runtime`).toBe(400);
+    });
+  }
 });

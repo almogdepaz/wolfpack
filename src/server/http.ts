@@ -16,7 +16,7 @@ import {
 } from "../tailnet-machine-contract.js";
 import type { MachineHandshake, TailnetMachineCandidate } from "../tailnet-machine-contract.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
-import { MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
+import { isValidProjectName, MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
 
 const log = createLogger("http");
 
@@ -100,6 +100,18 @@ export async function isAllowedSession(session: string): Promise<boolean> {
 export function json(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
+}
+
+/** Validate project name param. Returns project string or sends 400 and returns null. */
+export function validateProjectParam(
+  res: ServerResponse,
+  project: string | null | undefined,
+): project is string {
+  if (!project || !isValidProjectName(project)) {
+    json(res, { error: "invalid project" }, 400);
+    return false;
+  }
+  return true;
 }
 
 const PUBLIC_API_PATHS = new Set(["/api/info", "/api/machine"]);
@@ -205,6 +217,40 @@ export async function parseBody(
     );
     return undefined;
   }
+}
+
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export async function parseObjectBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: ParseBodyOptions = {},
+): Promise<Record<string, unknown> | null> {
+  const body = await parseBody(req, res, options);
+  if (body === undefined) return null;
+  if (!isJsonObject(body)) {
+    json(
+      res,
+      options.invalidResponse?.envelope ?? { error: "JSON body must be an object" },
+      options.invalidResponse?.status ?? 400,
+    );
+    return null;
+  }
+  return body;
+}
+
+export function hasOptionalType(
+  body: Record<string, unknown>,
+  key: string,
+  type: "string" | "number" | "boolean",
+): boolean {
+  return body[key] === undefined || typeof body[key] === type;
+}
+
+export function hasOnlyKeys(body: Record<string, unknown>, allowedKeys: ReadonlySet<string>): boolean {
+  return Object.keys(body).every(key => allowedKeys.has(key));
 }
 
 /** Generate a cryptographically random base64 nonce for CSP. */

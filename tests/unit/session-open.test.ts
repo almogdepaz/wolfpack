@@ -105,12 +105,14 @@ describe("openSubSession", () => {
     backend.sessions.push("pi-main-sub-agent");
     const notifications: Array<{ parentId: string; parentName: string; session: string }> = [];
     const prompt = "review '$(touch /tmp/not-executed)' \"$HOME\"; done";
+    const model = "openrouter/anthropic/claude-sonnet-4";
 
     const result = await openSubSession({
       backend,
       parentSession: "pi-main",
       project: "wolfpack",
       projectDir: "/dev/wolfpack",
+      model,
       initialPrompt: prompt,
       notify: (parent, session) => {
         notifications.push({
@@ -138,6 +140,7 @@ describe("openSubSession", () => {
           wolfpackSessionId: PARENT_ID,
           wolfpackSessionName: "pi-main",
         },
+        model,
         initialPrompt: prompt,
       },
     }]);
@@ -146,6 +149,26 @@ describe("openSubSession", () => {
       parentName: "pi-main",
       session: "pi-main-sub-agent-2",
     }]);
+  });
+
+  test("rejects model selection for a non-pi parent before creation", async () => {
+    const backend = new FakeSessionOpenBackend("claude-main", "claude");
+
+    let failure: unknown;
+    try {
+      await openSubSession({
+        backend,
+        parentSession: "claude-main",
+        project: "wolfpack",
+        projectDir: "/dev/wolfpack",
+        model: "anthropic/claude-opus-4-1",
+      });
+    } catch (error: unknown) {
+      failure = error;
+    }
+
+    expectSessionOpenError(failure, "INVALID_REQUEST");
+    expect(backend.createCalls).toEqual([]);
   });
 
   test("retries only typed duplicate collisions and stops at the bounded limit", async () => {

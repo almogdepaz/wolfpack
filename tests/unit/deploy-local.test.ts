@@ -23,7 +23,7 @@ function prepareFixture(): { readonly repo: string; readonly home: string; reado
   const log = join(tmpDir, "commands.log");
 
   mkdirSync(join(repo, "scripts"), { recursive: true });
-  mkdirSync(join(repo, "dist"), { recursive: true });
+  mkdirSync(join(repo, "dist", "local", "bun-darwin-arm64"), { recursive: true });
   mkdirSync(join(repo, "public"), { recursive: true });
   mkdirSync(join(home, ".wolfpack", "bin"), { recursive: true });
   mkdirSync(bin, { recursive: true });
@@ -39,7 +39,8 @@ exit 1
 `;
   writeExecutable(join(repo, "dist", "wolfpack-darwin-arm64"), serverFixture);
   writeExecutable(join(repo, "dist", "wolfpack-darwin-x64"), serverFixture);
-  writeFileSync(join(repo, "dist", "wolfpack-broker"), "broker\n");
+  writeFileSync(join(repo, "dist", "local", "bun-darwin-arm64", "wolfpack-broker"), "broker\n");
+  writeFileSync(join(repo, "dist", "local", "bun-darwin-arm64", "broker-artifact.json"), "{}\n");
   writeFileSync(join(repo, "public", "app.bundle.js"), "fresh-app-bundle\n");
   writeFileSync(join(home, ".wolfpack", "bin", "wolfpack-broker"), "installed-broker\n");
   writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ port: 18790 }));
@@ -51,7 +52,15 @@ case "$1" in
   -m) printf 'arm64\\n' ;;
 esac
 `);
-  writeExecutable(join(bin, "bun"), "#!/bin/sh\necho \"bun $* build-server-only=${WOLFPACK_BUILD_SERVER_ONLY:-}\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
+  writeExecutable(join(bin, "bun"), `#!/bin/sh
+echo "bun $* build-server-only=\${WOLFPACK_BUILD_SERVER_ONLY:-} build-mode=\${WOLFPACK_BUILD_MODE:-}" >> "$DEPLOY_TEST_LOG"
+case "$*" in
+  *"broker-artifacts.ts validate"*)
+    if [ "$DEPLOY_TEST_ARTIFACT_VALID" != "1" ]; then exit 1; fi
+    ;;
+esac
+exit 0
+`);
   writeExecutable(join(bin, "codesign"), "#!/bin/sh\necho \"codesign $*\" >> \"$DEPLOY_TEST_LOG\"\nexit 0\n");
   writeExecutable(join(bin, "mv"), `#!/bin/sh
 echo "mv $*" >> "$DEPLOY_TEST_LOG"
@@ -183,6 +192,7 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_SERVER_KICKSTART_FAIL: "0",
     DEPLOY_TEST_BROKER_PID_CHANGES_ON_SERVER_RESTART: "0",
     DEPLOY_TEST_CORRUPT_INSTALL: "0",
+    DEPLOY_TEST_ARTIFACT_VALID: "1",
     DEPLOY_TEST_OS: "Darwin",
     DEPLOY_VERIFY_TIMEOUT_SECS: "1",
     WOLFPACK_DEPLOY_ALLOW_NONINTERACTIVE: "1",
@@ -323,8 +333,7 @@ describe("scripts/deploy-local.sh", () => {
     const output = runDeploy(fixture, "yes");
     const commands = readFileSync(fixture.log, "utf-8");
 
-    expect(commands).toContain("build-server-only=");
-    expect(commands).not.toContain("build-server-only=1");
+    expect(commands).toContain("build-server-only= build-mode=local");
     expect(readFileSync(join(fixture.home, ".wolfpack", "bin", "wolfpack-broker"), "utf-8")).toBe("broker\n");
     expect(output).toContain("broker restarted");
     expect(output).toContain("server restarted");
@@ -333,6 +342,17 @@ describe("scripts/deploy-local.sh", () => {
     expect(commands.indexOf("com.wolfpack.broker")).toBeGreaterThan(-1);
     expect(commands.indexOf("com.wolfpack.server")).toBeGreaterThan(-1);
     expect(commands.indexOf("com.wolfpack.broker")).toBeLessThan(commands.indexOf("com.wolfpack.server"));
+  });
+
+  test("fails closed on invalid local broker provenance before deployment mutation", () => {
+    const fixture = prepareFixture();
+
+    expect(() => runDeploy(fixture, "yes", { DEPLOY_TEST_ARTIFACT_VALID: "0" })).toThrow();
+
+    const commands = readFileSync(fixture.log, "utf-8");
+    expect(commands).toContain("broker-artifacts.ts validate");
+    expect(commands).not.toContain("codesign");
+    expect(commands).not.toContain("launchctl");
   });
 
   test("reloads an installed broker to refresh launch constraints", () => {

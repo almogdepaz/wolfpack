@@ -7,6 +7,7 @@ import {
   parseAgentCommand,
   parseSessionCommand,
 } from "../../src/cli/session-control.ts";
+import { SESSION_OPEN_MAX_MODEL_LENGTH } from "../../src/session-open-contract.ts";
 
 describe("session control fast-path parsing", () => {
   test("parses top-level create with harness, prompt, and json", () => {
@@ -85,7 +86,7 @@ describe("session control fast-path parsing", () => {
   test("reports agent-native usage for invalid child-agent spawn", () => {
     expect(parseAgentCommand(["spawn"])).toEqual({
       ok: false,
-      message: "Usage: wolfpack agent spawn <project> [--name <session>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]",
+      message: "Usage: wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]",
     });
   });
 
@@ -122,6 +123,36 @@ describe("session control fast-path parsing", () => {
       prompt: "review the plan",
       output: "json",
     });
+  });
+
+  test("parses an opaque model selection only for child launches", () => {
+    expect(parseAgentCommand([
+      "spawn",
+      "branchout",
+      "--model",
+      "openrouter/anthropic/claude-sonnet-4",
+    ])).toEqual({
+      ok: true,
+      action: "spawn",
+      selector: { kind: "project", project: "branchout" },
+      model: "openrouter/anthropic/claude-sonnet-4",
+      prompt: undefined,
+      output: "plain",
+    });
+    expect(parseSessionCommand([
+      "open",
+      "branchout",
+      "--model=anthropic/claude-opus-4-1",
+    ])).toMatchObject({ ok: true, action: "open", model: "anthropic/claude-opus-4-1" });
+    expect(parseSessionCommand(["create", "branchout", "--model", "anthropic/claude-opus-4-1"]).ok)
+      .toBe(false);
+    expect(parseAgentCommand(["spawn", "branchout", "--model", "   "]).ok).toBe(false);
+    expect(parseAgentCommand([
+      "spawn",
+      "branchout",
+      "--model",
+      "x".repeat(SESSION_OPEN_MAX_MODEL_LENGTH + 1),
+    ]).ok).toBe(false);
   });
 
   test("parses compact plan spawn with parent notification", () => {
@@ -270,11 +301,11 @@ describe("session control fast-path requests", () => {
         });
       };
       const { runAgentCommand } = await import("./src/cli/session-control.ts");
-      const code = await runAgentCommand(["spawn", "branchout", "--name", "issue-200-reviewer", "--prompt", "execute the plan", "--json"]);
+      const code = await runAgentCommand(["spawn", "branchout", "--name", "issue-200-reviewer", "--model", "openrouter/anthropic/claude-sonnet-4", "--prompt", "execute the plan", "--json"]);
       const expected = [{
         url: "http://127.0.0.1:18790/api/session-open",
         method: "POST",
-        body: { project: "branchout", parentSession: "wolfpack", sessionName: "issue-200-reviewer", initialPrompt: "execute the plan" },
+        body: { project: "branchout", parentSession: "wolfpack", sessionName: "issue-200-reviewer", model: "openrouter/anthropic/claude-sonnet-4", initialPrompt: "execute the plan" },
       }];
       if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
       process.exit(code);

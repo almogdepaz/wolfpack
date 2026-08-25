@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 const root = join(import.meta.dir, "../..");
 const html = readFileSync(join(root, "public/index.html"), "utf8");
-const app = readFileSync(join(root, "public/app.ts"), "utf8");
 const manifest = JSON.parse(readFileSync(join(root, "public/manifest.json"), "utf8")) as Record<string, unknown>;
 
 describe("app shell accessibility contracts", () => {
@@ -12,30 +11,25 @@ describe("app shell accessibility contracts", () => {
     expect(html).toContain('<main id="view-container">');
     expect(html).toContain('<nav id="desktop-sidebar"');
     expect(html).toContain('aria-controls="session-drawer"');
-    expect(app).toContain('chip.setAttribute("aria-expanded", "true")');
-    expect(app).toContain('chip.setAttribute("aria-expanded", "false")');
+    expect(html).toContain('aria-expanded="false"');
   });
 
   test("labels the session name without exposing an initial-task field", () => {
     expect(html).toContain('for="session-name-input"');
     expect(html).not.toContain('id="initial-task-input"');
     expect(html).not.toContain('id="initial-task-description"');
-    expect(app).not.toContain('"initial-task-input"');
-    expect(app).not.toContain("initialPrompt:");
   });
 
   test("uses an in-app server folder view without native directory pickers", () => {
     expect(html).toContain('id="directory-browser-panel"');
+    expect(html).toContain('id="directory-browser-selection-label"');
     expect(html).not.toContain('id="directory-browser-dialog"');
-    expect(app).not.toContain("showDirectoryPicker");
-    expect(html).not.toContain("webkitdirectory");
-    expect(app).not.toContain("NSOpenPanel");
+    expect(html).not.toContain('webkitdirectory');
   });
 
   test("loads the heavy terminal renderer lazily", () => {
     expect(html).not.toContain('<script defer src="/ghostty-web.bundle.js');
     expect(html).toContain('name="wolfpack-ghostty-src"');
-    expect(app).toContain("await ensureGhosttyLoaded()");
   });
 
   test("keeps manifest and document theme colors consistent", () => {
@@ -45,11 +39,13 @@ describe("app shell accessibility contracts", () => {
     expect(html).toContain(`<meta name="theme-color" content="${theme}"`);
   });
 
-  test("makes drawers, overlays, and selection state programmatically available", () => {
+  test("makes drawers, dialogs, status, and privacy controls available to assistive tech", () => {
     expect(html).toContain('id="session-drawer" aria-label="Switch session" aria-hidden="true" inert');
     expect(html).toContain('id="git-status-overlay" role="dialog" aria-modal="true"');
-    expect(app).toContain('drawer.removeAttribute("inert")');
-    expect(app).toContain('aria-current="page"');
-    expect(app).toContain('aria-pressed="${inGrid ? "true" : "false"}"');
+    expect(html).toContain('id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message"');
+    expect(html).toContain('id="setting-recoveryCache"');
+    expect(html).toContain('id="clear-recovery-cache-btn"');
+    expect(html).toContain('id="recovery-cache-status"');
+    expect(html).toContain("Cached output may contain secrets");
   });
 });

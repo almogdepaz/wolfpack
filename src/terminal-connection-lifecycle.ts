@@ -1,16 +1,13 @@
-import {
-  createHydrationWriteTracker,
-} from "./hydration-write-tracker.ts";
-import {
-  createReplacementPrefillLifecycle,
-} from "./replacement-prefill-lifecycle.ts";
-import {
-  TERMINAL_REHYDRATION_ACTION,
-  terminalRehydrationAction,
-} from "./terminal-rehydration.ts";
-import type { TerminalRehydrationAction } from "./terminal-rehydration.ts";
+import { shouldRehydrate } from "./reconnect-hydration.ts";
 
-export { TERMINAL_REHYDRATION_ACTION } from "./terminal-rehydration.ts";
+export const TERMINAL_REHYDRATION_ACTION = {
+  NONE: "none",
+  IMMEDIATE: "immediate",
+  REPLACEMENT: "replacement",
+} as const;
+
+export type TerminalRehydrationAction =
+  typeof TERMINAL_REHYDRATION_ACTION[keyof typeof TERMINAL_REHYDRATION_ACTION];
 
 export interface TerminalSocketOpenState {
   readonly wasReconnect: boolean;
@@ -42,38 +39,53 @@ export interface TerminalConnectionLifecycle {
   reset(): void;
 }
 
-function prefillAction(action: {
-  readonly activateHydration: boolean;
-}): TerminalConnectionPrefillAction {
-  return { activateHydration: action.activateHydration };
-}
-
 export function createTerminalConnectionLifecycle(): TerminalConnectionLifecycle {
-  const hydrationWriteTracker = createHydrationWriteTracker();
-  const replacementPrefillLifecycle = createReplacementPrefillLifecycle();
+  let connectionEpoch = 0;
+  let pendingHydrationWrites = 0;
+  let replacementPrefillPending = false;
+
+  const completeReplacementPrefill = (): TerminalConnectionPrefillAction => {
+    if (!replacementPrefillPending) return { activateHydration: false };
+    replacementPrefillPending = false;
+    return { activateHydration: true };
+  };
 
   const beginReplacementPrefill = (hideImmediately: boolean): TerminalConnectionPrefillAction => {
-    hydrationWriteTracker.reset();
-    return prefillAction(replacementPrefillLifecycle.begin(hideImmediately));
+    pendingHydrationWrites = 0;
+    replacementPrefillPending = !hideImmediately;
+    return { activateHydration: hideImmediately };
   };
 
   return {
     beginConnection(): void {
-      hydrationWriteTracker.advanceEpoch();
+      connectionEpoch++;
+      pendingHydrationWrites = 0;
     },
     beginHydrationWrite(): number {
-      return hydrationWriteTracker.beginWrite();
+      pendingHydrationWrites++;
+      return connectionEpoch;
     },
     finishHydrationWrite(epoch: number): boolean {
-      return hydrationWriteTracker.finishWrite(epoch);
+      if (epoch !== connectionEpoch) return false;
+      pendingHydrationWrites = Math.max(0, pendingHydrationWrites - 1);
+      return true;
     },
     get pendingHydrationWrites(): number {
-      return hydrationWriteTracker.pending;
+      return pendingHydrationWrites;
     },
     onSocketOpen(state: TerminalSocketOpenState): TerminalSocketOpenAction {
-      const rehydrationAction = terminalRehydrationAction(state);
+      let rehydrationAction: TerminalRehydrationAction = TERMINAL_REHYDRATION_ACTION.NONE;
+      if (shouldRehydrate(
+        state.wasReconnect,
+        state.hydrationStarted,
+        state.hasAuthoritativePrefill,
+      )) {
+        rehydrationAction = state.wasReconnect
+          ? TERMINAL_REHYDRATION_ACTION.REPLACEMENT
+          : TERMINAL_REHYDRATION_ACTION.IMMEDIATE;
+      }
       if (rehydrationAction !== TERMINAL_REHYDRATION_ACTION.NONE) {
-        hydrationWriteTracker.reset();
+        pendingHydrationWrites = 0;
       }
       return {
         rehydrationAction,
@@ -82,21 +94,20 @@ export function createTerminalConnectionLifecycle(): TerminalConnectionLifecycle
     },
     beginReplacementPrefill,
     onPrefillDone(): TerminalConnectionPrefillAction {
-      return prefillAction(replacementPrefillLifecycle.onPrefillDone());
+      return completeReplacementPrefill();
     },
     onReplacePrefill(): void {
-      replacementPrefillLifecycle.onReplacePrefill();
-      hydrationWriteTracker.reset();
+      pendingHydrationWrites = 0;
     },
     onBinaryData(): TerminalConnectionPrefillAction {
-      return prefillAction(replacementPrefillLifecycle.onBinaryData());
+      return completeReplacementPrefill();
     },
     onControlGranted(): TerminalConnectionPrefillAction {
       return beginReplacementPrefill(true);
     },
     reset(): void {
-      hydrationWriteTracker.reset();
-      replacementPrefillLifecycle.reset();
+      pendingHydrationWrites = 0;
+      replacementPrefillPending = false;
     },
   };
 }

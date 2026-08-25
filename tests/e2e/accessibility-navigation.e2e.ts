@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 
@@ -83,9 +83,7 @@ test("connection and asynchronous settings feedback expose status semantics", as
 });
 
 test("quick command form is modal and restores focus when cancelled", async ({ page }) => {
-  await page.evaluate(() => {
-    (window as unknown as { showView(name: string): void }).showView("settings");
-  });
+  await openSettingsFromUi(page);
   await page.getByRole("link", { name: "Agents" }).click();
   const trigger = page.getByRole("button", { name: "Add Command" });
   await trigger.focus();

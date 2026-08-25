@@ -39,6 +39,49 @@ interface DashboardServiceFixture {
   readonly running: readonly boolean[];
 }
 
+function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
+  const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-service-restart-"));
+  const preloadPath = join(home, "service-fixture.ts");
+  writeFileSync(preloadPath, `
+    import { mock } from "bun:test";
+    mock.module(${JSON.stringify(join(root, "src", "cli", "service.ts"))}, () => ({
+      serviceInstall: () => {},
+      serviceUninstall: () => {},
+      serviceStop: () => true,
+      serviceStart: () => true,
+      serviceRestart: () => ${serviceRestartResult},
+      serviceStatus: () => {},
+      isServiceInstalled: () => true,
+      isServiceRunning: () => true,
+      updateStableBinary: () => false,
+      uninstall: () => {},
+    }));
+  `);
+  try {
+    const child = Bun.spawnSync([
+      process.execPath,
+      "--preload",
+      preloadPath,
+      cliEntry,
+      "service",
+      "restart",
+      "--server-only",
+    ], {
+      cwd: root,
+      env: { ...process.env, HOME: home, NO_COLOR: "1", WOLFPACK_SERVICE: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      exitCode: child.exitCode,
+      stdout: child.stdout.toString(),
+      stderr: child.stderr.toString(),
+    };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 function runDashboard(fixture: DashboardServiceFixture): CliResult {
   const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-dashboard-"));
   const preloadPath = join(home, "service-fixture.ts");
@@ -121,6 +164,7 @@ describe("cli help dispatch", () => {
 
       expect(child.exitCode).toBe(0);
       expect(child.stdout).toContain("Usage: wolfpack setup");
+      expect(child.stdout).toContain("--defer-service-restart");
       expect(child.stdout).not.toContain("Checking prerequisites");
       expect(child.stderr).toBe("");
     });
@@ -289,12 +333,28 @@ describe("cli help dispatch", () => {
     expect(child.stderr).not.toContain("\x1b[");
   });
 
+  test("service restart exits nonzero when the lifecycle reports failure", () => {
+    const child = runServiceRestartCli(false);
+
+    expect(child.exitCode).toBe(1);
+  });
+
+  test("service help documents the restart-only server option", () => {
+    const child = runCli(["service", "--help"]);
+
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout).toContain("Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
+    expect(child.stdout).toContain("wolfpack service restart --server-only");
+    expect(child.stderr).toBe("");
+  });
+
   test("invalid service usage writes its diagnostic to stderr", () => {
     const child = runCli(["service"]);
 
     expect(child.exitCode).toBe(1);
     expect(child.stdout).toBe("");
     expect(child.stderr).toContain("Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
+    expect(child.stderr).toContain("wolfpack service restart --server-only");
     expect(child.stderr).not.toContain("\x1b[");
   });
 
@@ -324,7 +384,10 @@ describe("setup option parsing", () => {
     const { parseSetupOptions } = await import("../../src/cli/index.ts");
     expect(parseSetupOptions(["--dev-dir", "/tmp/projects"])).toBeNull();
     expect(parseSetupOptions(["--non-interactive", "--dev-dir", "/tmp/projects", "--port", "19000"])).toEqual({
-      nonInteractive: true, devDir: "/tmp/projects", port: 19000,
+      nonInteractive: true, deferServiceRestart: false, devDir: "/tmp/projects", port: 19000,
+    });
+    expect(parseSetupOptions(["--defer-service-restart"])).toEqual({
+      nonInteractive: false, deferServiceRestart: true,
     });
     expect(parseSetupOptions(["--non-interactive", "--port", "80"])).toBeNull();
   });

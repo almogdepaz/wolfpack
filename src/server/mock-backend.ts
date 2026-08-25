@@ -52,6 +52,7 @@ export class MockBackend implements SessionBackend {
     cmd: string | undefined;
     agentKind?: string;
     parentSession?: ParentSessionIdentity;
+    model?: string;
     initialPrompt?: string;
   } | null = null;
   /** Last arguments passed to resize (name, cols, rows). */
@@ -165,6 +166,7 @@ export class MockBackend implements SessionBackend {
       cmd,
       agentKind: options?.agentKind ?? inferAgentKind(cmd),
       parentSession: options?.parentSession,
+      ...(options?.model !== undefined && { model: options.model }),
       initialPrompt: options?.initialPrompt,
     };
     if (this._onBeforeCreate) this._onBeforeCreate(name);

@@ -367,7 +367,7 @@
         "$id": "wolfpack:control-api:http:receivePeerTaskRelayEnvelope:request",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "receivePeerTaskRelayEnvelope request",
-        "$ref": "#/$defs/RelayEnvelope"
+        "$ref": "#/$defs/RelayPeerEnvelope"
       },
       "response": {
         "$id": "wolfpack:control-api:http:receivePeerTaskRelayEnvelope:response",
@@ -1418,6 +1418,12 @@
           },
           "sessionName": {
             "$ref": "#/$defs/SessionName"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Opaque pi model pattern or ID passed to the child harness"
           },
           "initialPrompt": {
             "type": "string",
@@ -3523,6 +3529,22 @@
         "target",
         "payload",
         "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "RelayPeerEnvelope": {
+      "type": "object",
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
+        },
+        "envelope": {
+          "$ref": "#/$defs/RelayEnvelope"
+        }
+      },
+      "required": [
+        "origin",
+        "envelope"
       ],
       "additionalProperties": false
     },

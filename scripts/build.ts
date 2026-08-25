@@ -1,215 +1,177 @@
 #!/usr/bin/env bun
 /**
- * Build script — generates embedded assets, compiles wolfpack for all 4
- * platform targets, then generates per-platform npm package dirs.
+ * Build script — generates embedded assets and compiles wolfpack for all four
+ * platform targets. Broker handling requires an explicit local or package-all
+ * mode unless WOLFPACK_BUILD_SERVER_ONLY=1.
  *
- * Run: bun run scripts/build.ts
- * Output:
- *   dist/wolfpack-{platform} binaries
- *   dist/npm/wolfpack-bridge-{os}-{cpu}/ package dirs
+ * Local:       WOLFPACK_BUILD_MODE=local bun run scripts/build.ts
+ * Release/CI:  WOLFPACK_BUILD_MODE=package-all bun run scripts/build.ts
  */
 import { execSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { arch, platform } from "node:os";
+import { join } from "node:path";
+import {
+  BROKER_TARGETS,
+  assertReleaseSourceClean,
+  createBrokerArtifactMetadata,
+  readBrokerVersion,
+  readSourceRevision,
+  validateBrokerArtifact,
+  writeBrokerArtifactMetadata,
+  type BrokerTarget,
+} from "./broker-artifacts";
+import { validateReleaseVersions } from "./release-version-policy";
 
 const ROOT = join(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
 const NPM_DIR = join(DIST, "npm");
 const BROKER_DIR = join(DIST, "broker");
+const LOCAL_BROKER_DIR = join(DIST, "local");
 const ENTRY = join(ROOT, "src", "cli", "index.ts");
 const THIRD_PARTY_NOTICES = join(ROOT, "THIRD_PARTY_NOTICES");
+const TARGETS = Object.keys(BROKER_TARGETS) as BrokerTarget[];
 
-const TARGETS = [
-  "bun-linux-x64",
-  "bun-linux-arm64",
-  "bun-darwin-x64",
-  "bun-darwin-arm64",
-] as const;
+type BuildMode = "server-only" | "local" | "package-all";
 
-// platform package metadata: bun target → { os, cpu, packageName, cargoTriple }
-const PLATFORM_META: Record<string, { os: string; cpu: string; name: string; cargoTriple: string }> = {
-  "bun-linux-x64":     { os: "linux",  cpu: "x64",   name: "wolfpack-bridge-linux-x64",   cargoTriple: "x86_64-unknown-linux-gnu" },
-  "bun-linux-arm64":   { os: "linux",  cpu: "arm64", name: "wolfpack-bridge-linux-arm64", cargoTriple: "aarch64-unknown-linux-gnu" },
-  "bun-darwin-x64":    { os: "darwin", cpu: "x64",   name: "wolfpack-bridge-darwin-x64",  cargoTriple: "x86_64-apple-darwin" },
-  "bun-darwin-arm64":  { os: "darwin", cpu: "arm64", name: "wolfpack-bridge-darwin-arm64", cargoTriple: "aarch64-apple-darwin" },
-};
-
-/** Map host platform/arch to a bun-target key, for the dev-mode fallback
- *  that uses a host-arch-only cargo build to satisfy all 4 platform pkgs. */
-function hostBunTarget(): typeof TARGETS[number] | null {
-  const p = platform();
-  const a = arch();
-  if (p === "linux"  && a === "x64")   return "bun-linux-x64";
-  if (p === "linux"  && a === "arm64") return "bun-linux-arm64";
-  if (p === "darwin" && a === "x64")   return "bun-darwin-x64";
-  if (p === "darwin" && a === "arm64") return "bun-darwin-arm64";
-  return null;
-}
-
-function run(cmd: string) {
-  console.log(`$ ${cmd}`);
-  execSync(cmd, { cwd: ROOT, stdio: "inherit" });
-}
-
-// read version from main package.json
-const mainPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
-const version: string = mainPkg.version;
-const BUILD_SERVER_ONLY = process.env.WOLFPACK_BUILD_SERVER_ONLY === "1";
-
-// sync optionalDependencies versions in main package.json
-let pkgDirty = false;
-if (mainPkg.optionalDependencies) {
-  for (const dep of Object.keys(mainPkg.optionalDependencies)) {
-    if (mainPkg.optionalDependencies[dep] !== version) {
-      mainPkg.optionalDependencies[dep] = version;
-      pkgDirty = true;
-    }
+function hostBunTarget(): BrokerTarget {
+  const target = `bun-${platform()}-${arch()}`;
+  if (!Object.hasOwn(BROKER_TARGETS, target)) {
+    throw new Error(`unsupported host target: ${target}`);
   }
-}
-if (pkgDirty) {
-  writeFileSync(join(ROOT, "package.json"), JSON.stringify(mainPkg, null, 2) + "\n");
-  console.log(`synced optionalDependencies to version ${version}`);
+  return target as BrokerTarget;
 }
 
-// step 1: generate embedded assets
+function buildMode(): BuildMode {
+  if (process.env.WOLFPACK_BUILD_SERVER_ONLY === "1") return "server-only";
+  const requested = process.env.WOLFPACK_BUILD_MODE;
+  if (requested === "local" || requested === "package-all") return requested;
+  throw new Error("set WOLFPACK_BUILD_MODE=local or WOLFPACK_BUILD_MODE=package-all");
+}
+
+function run(command: string): void {
+  console.log(`$ ${command}`);
+  execSync(command, { cwd: ROOT, stdio: "inherit" });
+}
+
+const mode = buildMode();
+if (mode === "package-all") assertReleaseSourceClean(ROOT);
+const { productVersion: version } = validateReleaseVersions(ROOT);
+
 console.log("=== generating embedded assets ===");
 run("bun run scripts/gen-assets.ts");
-
-// step 2: ensure dist/ exists
+if (mode === "package-all") assertReleaseSourceClean(ROOT);
 mkdirSync(DIST, { recursive: true });
 
-// step 3: stage broker binaries for each platform package.
-//
-// Two modes:
-//
-//   1. CI (release pipeline): broker binaries pre-built per-target by
-//      upstream jobs (broker-darwin / broker-linux in release.yml) and
-//      placed at `dist/broker/<bun-target>/wolfpack-broker`. We just verify
-//      they're all present.
-//
-//   2. Local dev (no staged binaries): build host-arch only via `cargo
-//      build --release` and reuse it for every platform pkg. Cross-arch
-//      packages will technically have the wrong-arch broker, but local
-//      `bun run scripts/build.ts` is for testing/dev-deploy on the host
-//      — not for publishing artifacts. Tests + `deploy-local.sh` only ever
-//      consume the host-arch broker, so this is safe.
-const brokerStaged: Record<string, string> = {};
-if (!BUILD_SERVER_ONLY) {
-console.log("\n=== staging wolfpack-broker for each platform target ===");
-mkdirSync(BROKER_DIR, { recursive: true });
-const missingStaged: string[] = [];
-for (const target of TARGETS) {
-  const staged = join(BROKER_DIR, target, "wolfpack-broker");
-  if (existsSync(staged)) {
-    brokerStaged[target] = staged;
-    console.log(`  ${target}: using pre-staged ${staged}`);
-  } else {
-    missingStaged.push(target);
-  }
-}
+const brokerStaged = new Map<BrokerTarget, string>();
+if (mode === "local") {
+  console.log("\n=== building fresh host wolfpack-broker ===");
+  rmSync(BROKER_DIR, { recursive: true, force: true });
+  rmSync(NPM_DIR, { recursive: true, force: true });
+  rmSync(LOCAL_BROKER_DIR, { recursive: true, force: true });
+  rmSync(join(DIST, "wolfpack-broker"), { force: true });
 
-if (missingStaged.length === TARGETS.length) {
-  // Pure dev mode: nothing pre-staged. Host-arch cargo build, fan out to all 4.
-  console.log("  no pre-staged binaries found — building host-arch broker via cargo (dev mode)");
   try {
     run("cargo build --release --manifest-path broker/Cargo.toml --bin wolfpack-broker");
-  } catch (e: unknown) {
+  } catch (error: unknown) {
     console.error("broker build failed — install rust toolchain (https://rustup.rs) and retry");
-    throw e;
+    throw error;
   }
-  const hostBuilt = join(ROOT, "broker", "target", "release", "wolfpack-broker");
+
+  const target = hostBunTarget();
+  const targetDir = join(LOCAL_BROKER_DIR, target);
+  const binaryPath = join(targetDir, "wolfpack-broker");
+  const metadataPath = join(targetDir, "broker-artifact.json");
+  mkdirSync(targetDir, { recursive: true });
+  copyFileSync(join(ROOT, "broker", "target", "release", "wolfpack-broker"), binaryPath);
+  chmodSync(binaryPath, 0o755);
+  const metadata = createBrokerArtifactMetadata({
+    binaryPath,
+    mode: "local",
+    target,
+    brokerVersion: readBrokerVersion(ROOT),
+    sourceRevision: readSourceRevision(ROOT),
+  });
+  writeBrokerArtifactMetadata(metadataPath, metadata);
+  brokerStaged.set(target, binaryPath);
+  console.log(`  staged fresh ${target} broker at ${binaryPath}`);
+} else if (mode === "package-all") {
+  console.log("\n=== validating release broker artifacts ===");
+  rmSync(LOCAL_BROKER_DIR, { recursive: true, force: true });
+  rmSync(NPM_DIR, { recursive: true, force: true });
+  rmSync(join(DIST, "wolfpack-broker"), { force: true });
+  const brokerVersion = readBrokerVersion(ROOT);
+  const sourceRevision = readSourceRevision(ROOT);
+
   for (const target of TARGETS) {
-    const dir = join(BROKER_DIR, target);
-    mkdirSync(dir, { recursive: true });
-    const dest = join(dir, "wolfpack-broker");
-    copyFileSync(hostBuilt, dest);
-    chmodSync(dest, 0o755);
-    brokerStaged[target] = dest;
+    const targetDir = join(BROKER_DIR, target);
+    const binaryPath = join(targetDir, "wolfpack-broker");
+    validateBrokerArtifact({
+      binaryPath,
+      metadataPath: join(targetDir, "broker-artifact.json"),
+      expectedMode: "release",
+      expectedTarget: target,
+      expectedBrokerVersion: brokerVersion,
+      expectedSourceRevision: sourceRevision,
+    });
+    brokerStaged.set(target, binaryPath);
+    copyFileSync(THIRD_PARTY_NOTICES, join(targetDir, "THIRD_PARTY_NOTICES"));
+    console.log(`  ${target}: verified target, version, source revision, and sha256`);
   }
-  console.log(`  fanned out ${hostBuilt} → 4 platform-target dirs (dev mode; cross-arch pkgs are not real binaries)`);
-} else if (missingStaged.length > 0) {
-  console.error(`broker binaries are partially staged — missing: ${missingStaged.join(", ")}`);
-  console.error("either stage all 4 (release CI) or stage none (dev mode auto-builds host arch)");
-  process.exit(1);
+  copyFileSync(THIRD_PARTY_NOTICES, join(DIST, "THIRD_PARTY_NOTICES"));
 }
 
-for (const target of TARGETS) {
-  copyFileSync(THIRD_PARTY_NOTICES, join(BROKER_DIR, target, "THIRD_PARTY_NOTICES"));
-}
-
-copyFileSync(THIRD_PARTY_NOTICES, join(DIST, "THIRD_PARTY_NOTICES"));
-
-// Stage the host-arch broker at the well-known dist/wolfpack-broker so
-// scripts/deploy-local.sh keeps working.
-const hostTarget = hostBunTarget();
-if (hostTarget && brokerStaged[hostTarget]) {
-  const hostDest = join(DIST, "wolfpack-broker");
-  copyFileSync(brokerStaged[hostTarget], hostDest);
-  chmodSync(hostDest, 0o755);
-  console.log(`  copied ${brokerStaged[hostTarget]} → ${hostDest} (host arch — used by deploy-local.sh)`);
-}
-}
-
-// step 4: compile wolfpack itself for each target
 console.log("\n=== compiling binaries ===");
 for (const target of TARGETS) {
   const name = `wolfpack-${target.replace("bun-", "")}`;
-  const outfile = join(DIST, name);
-  run(`bun build --compile --target=${target} ${ENTRY} --outfile ${outfile}`);
+  run(`bun build --compile --target=${target} ${ENTRY} --outfile ${join(DIST, name)}`);
 }
 
-// step 4: generate per-platform npm package dirs
-if (!BUILD_SERVER_ONLY) {
-console.log("\n=== generating platform packages ===");
-mkdirSync(NPM_DIR, { recursive: true });
+if (mode === "package-all") {
+  console.log("\n=== generating platform packages ===");
+  mkdirSync(NPM_DIR, { recursive: true });
 
-for (const target of TARGETS) {
-  const meta = PLATFORM_META[target];
-  const binaryName = `wolfpack-${target.replace("bun-", "")}`;
-  const pkgDir = join(NPM_DIR, meta.name);
+  for (const target of TARGETS) {
+    const targetMetadata = BROKER_TARGETS[target];
+    const packageDir = join(NPM_DIR, targetMetadata.packageName);
+    const brokerSource = brokerStaged.get(target);
+    if (!brokerSource) throw new Error(`missing validated broker artifact for ${target}`);
+    mkdirSync(packageDir, { recursive: true });
 
-  mkdirSync(pkgDir, { recursive: true });
-
-  // write platform package.json
-  const platformPkg = {
-    name: meta.name,
-    version,
-    description: `wolfpack-bridge binary for ${meta.os}-${meta.cpu}`,
-    os: [meta.os],
-    cpu: [meta.cpu],
-    files: ["wolfpack", "wolfpack-broker", "THIRD_PARTY_NOTICES"],
-    homepage: "https://almogdepaz.github.io/wolfpack/",
-    license: "MIT",
-    repository: {
-      type: "git",
-      url: "https://github.com/almogdepaz/wolfpack",
-    },
-  };
-  writeFileSync(join(pkgDir, "package.json"), JSON.stringify(platformPkg, null, 2) + "\n");
-
-  // copy wolfpack binary
-  const src = join(DIST, binaryName);
-  const dest = join(pkgDir, "wolfpack");
-  copyFileSync(src, dest);
-
-  // copy matching broker binary
-  const brokerSrc = brokerStaged[target];
-  const brokerDest = join(pkgDir, "wolfpack-broker");
-  copyFileSync(brokerSrc, brokerDest);
-  copyFileSync(THIRD_PARTY_NOTICES, join(pkgDir, "THIRD_PARTY_NOTICES"));
-  chmodSync(brokerDest, 0o755);
-
-  console.log(`  ${meta.name}/  (wolfpack + wolfpack-broker)`);
-}
+    const platformPackage = {
+      name: targetMetadata.packageName,
+      version,
+      description: `wolfpack-bridge binary for ${targetMetadata.os}-${targetMetadata.cpu}`,
+      os: [targetMetadata.os],
+      cpu: [targetMetadata.cpu],
+      files: ["wolfpack", "wolfpack-broker", "broker-artifact.json", "THIRD_PARTY_NOTICES"],
+      homepage: "https://almogdepaz.github.io/wolfpack/",
+      license: "MIT",
+      repository: {
+        type: "git",
+        url: "https://github.com/almogdepaz/wolfpack",
+      },
+    };
+    writeFileSync(join(packageDir, "package.json"), `${JSON.stringify(platformPackage, null, 2)}\n`);
+    copyFileSync(join(DIST, `wolfpack-${target.replace("bun-", "")}`), join(packageDir, "wolfpack"));
+    copyFileSync(brokerSource, join(packageDir, "wolfpack-broker"));
+    copyFileSync(join(BROKER_DIR, target, "broker-artifact.json"), join(packageDir, "broker-artifact.json"));
+    copyFileSync(THIRD_PARTY_NOTICES, join(packageDir, "THIRD_PARTY_NOTICES"));
+    chmodSync(join(packageDir, "wolfpack-broker"), 0o755);
+    console.log(`  ${targetMetadata.packageName}/  (wolfpack + verified wolfpack-broker)`);
+  }
 }
 
-// step 5: copy current platform binary to bin/ for local dev
-const currentBin = join(DIST, `wolfpack-${platform()}-${arch()}`);
-const binTarget = join(ROOT, "bin", "wolfpack");
-copyFileSync(currentBin, binTarget);
-console.log(`\ncopied ${currentBin} → bin/wolfpack`);
-
+const currentBinary = join(DIST, `wolfpack-${platform()}-${arch()}`);
+copyFileSync(currentBinary, join(ROOT, "bin", "wolfpack"));
+console.log(`\ncopied ${currentBinary} → bin/wolfpack`);
 console.log("\n=== build complete ===");
 console.log(`binaries in ${DIST}/`);
-if (!BUILD_SERVER_ONLY) console.log(`platform packages in ${NPM_DIR}/`);
+if (mode === "local") console.log(`local broker in ${LOCAL_BROKER_DIR}/`);
+if (mode === "package-all") console.log(`platform packages in ${NPM_DIR}/`);

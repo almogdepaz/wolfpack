@@ -4,6 +4,7 @@ import {
   OPENABLE_HARNESSES,
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
+  SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import {
@@ -183,7 +184,6 @@ function nextSessionNameSelectorSchema(): JsonSchema {
 }
 
 const ok = object({ ok: boolean() }, ["ok"]);
-const error = ref("ErrorEnvelope");
 const OPAQUE_RELAY_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
 function taskEventVariant(
@@ -512,6 +512,10 @@ export const controlApiSource: ControlApiSource = {
       payload: {},
       createdAt: string(),
     }, ["envelopeId", "protocolVersion", "source", "target", "payload", "createdAt"]),
+    RelayPeerEnvelope: object({
+      origin: ref("TailnetOrigin"),
+      envelope: ref("RelayEnvelope"),
+    }, ["origin", "envelope"]),
     RelayErrorEnvelope: object({
       ok: { const: false },
       error: object({ code: { enum: Object.values(RELAY_ERROR) }, message: string(), retryable: boolean() }, ["code", "message", "retryable"]),
@@ -757,7 +761,7 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       requestContentType: "application/json",
-      request: ref("RelayEnvelope"),
+      request: ref("RelayPeerEnvelope"),
       response: ref("RelayPeerReceiveResponse"),
       errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "413 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
     },
@@ -1025,6 +1029,12 @@ export const controlApiSource: ControlApiSource = {
       request: existingProjectSelectorSchema({
         parentSession: ref("SessionName"),
         sessionName: ref("SessionName"),
+        model: {
+          type: "string",
+          minLength: 1,
+          maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
+          description: "Opaque pi model pattern or ID passed to the child harness",
+        },
         initialPrompt: {
           type: "string",
           minLength: 1,

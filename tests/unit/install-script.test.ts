@@ -34,7 +34,7 @@ function prepareFixture(): {
   mkdirSync(systemBin, { recursive: true });
   writeFileSync(log, "");
   writeFileSync(commandLog, "");
-  const serverAsset = "#!/bin/sh\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nprintf \"new server\\n\"\n";
+  const serverAsset = "#!/bin/sh\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nif [ \"$INSTALL_TEST_FAIL_SETUP\" = \"1\" ] && [ \"$1\" = \"setup\" ]; then exit 42; fi\nif [ \"$INSTALL_TEST_FAIL_RESTART\" = \"1\" ] && [ \"$1\" = \"service\" ] && [ \"$2\" = \"restart\" ]; then exit 43; fi\nprintf \"new server\\n\"\n";
   const brokerAsset = "#!/bin/sh\nprintf \"new broker\\n\"\n";
   const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
   writeFileSync(checksums, `${sha256(serverAsset)}  wolfpack-linux-x64\n${sha256(brokerAsset)}  wolfpack-broker-linux-x64\n`);
@@ -73,7 +73,7 @@ case "$url" in
     if [ "$INSTALL_TEST_EMPTY_BROKER" != "1" ]; then printf '#!/bin/sh\\nprintf "new broker\\\\n"\\n' > "$output"; fi
     ;;
   *wolfpack-linux-x64)
-    printf '#!/bin/sh\\n[ -z "$INSTALL_TEST_COMMAND_LOG" ] || printf "%%s\\\\n" "$*" >> "$INSTALL_TEST_COMMAND_LOG"\\nprintf "new server\\\\n"\\n' > "$output"
+    printf '#!/bin/sh\\n[ -z "$INSTALL_TEST_COMMAND_LOG" ] || printf "%%s\\\\n" "$*" >> "$INSTALL_TEST_COMMAND_LOG"\\nif [ "$INSTALL_TEST_FAIL_SETUP" = "1" ] && [ "$1" = "setup" ]; then exit 42; fi\\nif [ "$INSTALL_TEST_FAIL_RESTART" = "1" ] && [ "$1" = "service" ] && [ "$2" = "restart" ]; then exit 43; fi\\nprintf "new server\\\\n"\\n' > "$output"
     ;;
   *) exit 22 ;;
 esac
@@ -95,6 +95,8 @@ function installerEnvironment(
     INSTALL_TEST_COMMAND_LOG: fixture.commandLog,
     INSTALL_TEST_CHECKSUMS: fixture.checksums,
     INSTALL_TEST_CORRUPT_CHECKSUM: "0",
+    INSTALL_TEST_FAIL_SETUP: "0",
+    INSTALL_TEST_FAIL_RESTART: "0",
     WOLFPACK_SYMLINK_DIR: fixture.systemBin,
     WOLFPACK_INSTALL_SKIP_SETUP: "1",
     ...extraEnv,
@@ -127,12 +129,13 @@ function scriptInvocation(platform: NodeJS.Platform, repositoryCwd: string): Scr
 
 function runInstallerWithSetup(
   fixture: ReturnType<typeof prepareFixture>,
+  extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
   const invocation = scriptInvocation(process.platform, process.cwd());
   return spawnSync("script", invocation.args, {
     cwd: invocation.cwd,
     encoding: "utf-8",
-    env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0" }),
+    env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0", ...extraEnv }),
   });
 }
 
@@ -143,6 +146,11 @@ function installedOutput(path: string): string {
 function installerStagingDirectories(installDir: string): readonly string[] {
   return readdirSync(installDir).filter((entry) => entry.startsWith(".install."));
 }
+
+const setsidLookup = process.platform === "linux"
+  ? spawnSync("/bin/sh", ["-c", "command -v setsid"], { encoding: "utf-8" })
+  : null;
+const setsidPath = setsidLookup?.stdout?.trim() || undefined;
 
 afterEach(() => {
   if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
@@ -325,7 +333,82 @@ describe("install.sh release binary staging", () => {
     ))).toEqual(["checksums-sha256.txt"]);
   });
 
-  test("an upgrade passes an unqualified service restart to the managed binary", () => {
+  test("a normal upgrade completes managed setup before restarting the service", () => {
+    const fixture = prepareFixture();
+    const serviceDir = join(fixture.home, ".config", "systemd", "user");
+    mkdirSync(serviceDir, { recursive: true });
+    writeFileSync(join(serviceDir, "wolfpack.service"), "installed\n");
+    writeFileSync(join(fixture.home, ".wolfpack", "config.json"), JSON.stringify({
+      devDir: join(fixture.home, "Dev"),
+      port: 18790,
+    }));
+
+    const result = runInstallerWithSetup(fixture);
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8").trim().split("\n")).toEqual([
+      "setup --defer-service-restart",
+      "service restart --server-only",
+    ]);
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
+  });
+
+  test.skipIf(!setsidPath)("does not invoke setup or restart without a controlling tty on Linux", () => {
+    const fixture = prepareFixture();
+    const serviceDir = join(fixture.home, ".config", "systemd", "user");
+    mkdirSync(serviceDir, { recursive: true });
+    writeFileSync(join(serviceDir, "wolfpack.service"), "installed\n");
+    writeFileSync(join(fixture.home, ".wolfpack", "config.json"), JSON.stringify({
+      devDir: join(fixture.home, "Dev"),
+      port: 18790,
+    }));
+
+    const result = spawnSync(setsidPath!, ["--wait", "bash", join(process.cwd(), "install.sh")], {
+      encoding: "utf-8",
+      env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0" }),
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(fixture.log, "utf-8")).toContain("wolfpack-linux-x64");
+    expect(readFileSync(fixture.commandLog, "utf-8")).toBe("");
+  });
+
+  test("does not restart an upgrade when setup fails", () => {
+    const fixture = prepareFixture();
+    const serviceDir = join(fixture.home, ".config", "systemd", "user");
+    mkdirSync(serviceDir, { recursive: true });
+    writeFileSync(join(serviceDir, "wolfpack.service"), "installed\n");
+    writeFileSync(join(fixture.home, ".wolfpack", "config.json"), JSON.stringify({
+      devDir: join(fixture.home, "Dev"),
+      port: 18790,
+    }));
+
+    const result = runInstallerWithSetup(fixture, { INSTALL_TEST_FAIL_SETUP: "1" });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("setup --defer-service-restart");
+  });
+
+  test("exits nonzero when the final server-only restart fails", () => {
+    const fixture = prepareFixture();
+    const serviceDir = join(fixture.home, ".config", "systemd", "user");
+    mkdirSync(serviceDir, { recursive: true });
+    writeFileSync(join(serviceDir, "wolfpack.service"), "installed\n");
+    writeFileSync(join(fixture.home, ".wolfpack", "config.json"), JSON.stringify({
+      devDir: join(fixture.home, "Dev"),
+      port: 18790,
+    }));
+
+    const result = runInstallerWithSetup(fixture, { INSTALL_TEST_FAIL_RESTART: "1" });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8").trim().split("\n")).toEqual([
+      "setup --defer-service-restart",
+      "service restart --server-only",
+    ]);
+  });
+
+  test("a skip-setup upgrade still restarts through the managed binary", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -335,7 +418,7 @@ describe("install.sh release binary staging", () => {
     const result = runInstaller(fixture);
 
     expect(result.status).toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service restart");
+    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service restart --server-only");
   });
 
   test("downloads and installs the matching wolfpack and broker assets from latest by default", () => {

@@ -2,9 +2,9 @@
  * Interactive setup wizard.
  */
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { printQR } from "../qr.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
@@ -44,21 +44,11 @@ import pkg from "../../package.json";
 
 const log = createLogger("setup");
 
-function check(name: string, cmd: string): boolean {
-  try {
-    execSync(cmd, { stdio: "ignore" });
-    print(`  ${green("✓")} ${name}`);
-    return true;
-  } catch { /* expected: prerequisite not installed */
-    print(`  ${red("✗")} ${name}`);
-    return false;
-  }
-}
-
 function printSetupCompletion(options: {
   readonly port: number;
   readonly remoteUrl: string | null;
   readonly serviceInstalled: boolean;
+  readonly serviceRunning: boolean;
   readonly detectedProviders: readonly OpenableHarness[];
 }): void {
   const localUrl = `http://localhost:${options.port}/`;
@@ -74,9 +64,12 @@ function printSetupCompletion(options: {
     print("");
     printQR(options.remoteUrl);
   }
-  print(options.serviceInstalled
-    ? dim("  Service: running (check with 'wolfpack service status').")
-    : dim("  Start: 'wolfpack' now, or 'wolfpack service install' at login."));
+  const serviceNextStep = options.serviceRunning
+    ? "  Service: running (check with 'wolfpack service status')."
+    : options.serviceInstalled
+      ? "  Service: installed but stopped (start with 'wolfpack service start')."
+      : "  Start: 'wolfpack' now, or 'wolfpack service install' at login.";
+  print(dim(serviceNextStep));
   print(dim("  Check: 'wolfpack doctor'"));
   print(dim(firstProvider
     ? `  Next: select Create your first session and choose ${getProviderDisplayName(firstProvider)}, or choose Shell.`
@@ -131,6 +124,7 @@ function installPackages(pkgs: string[]) {
 
 export interface SetupOptions {
   readonly nonInteractive?: boolean;
+  readonly deferServiceRestart?: boolean;
   readonly devDir?: string;
   readonly port?: number;
 }
@@ -280,17 +274,24 @@ export async function setup(options: SetupOptions = {}) {
     }),
   };
   saveConfig(config);
+  let serviceInstalled = isServiceInstalled();
+  let serviceRunning = serviceInstalled && isServiceRunning();
   const descriptorSettingsChanged = previousConfig?.devDir !== config.devDir
     || previousConfig?.port !== config.port;
   const remotePolicyChanged = previousConfig?.tailscaleHostname !== config.tailscaleHostname;
-  if (descriptorSettingsChanged && isServiceInstalled()) {
+  if (descriptorSettingsChanged && serviceInstalled) {
     // The plist/unit embeds these values; a plain restart would reload stale
-    // environment. Refresh only the server descriptor and preserve broker PTYs.
-    refreshInstalledServerService();
-  } else if (remotePolicyChanged && isServiceRunning()) {
-    // CORS policy is loaded at server startup. This intentionally restarts
-    // only the server; broker-owned PTYs and sessions remain untouched.
-    serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+    // environment. Installer-managed setup writes the descriptor now and
+    // leaves activation to the installer's final server-only restart.
+    refreshInstalledServerService({ reload: !options.deferServiceRestart });
+    if (!options.deferServiceRestart) serviceRunning = isServiceRunning();
+  } else if (remotePolicyChanged && serviceRunning && !options.deferServiceRestart) {
+    // CORS policy is loaded at server startup. A running broker remains
+    // untouched, so its PTYs and sessions survive the server restart.
+    if (!serviceRestart({ broker: false, skipBrokerSessionWarning: true })) {
+      throw new Error("failed to restart server service after setup changes");
+    }
+    serviceRunning = isServiceRunning();
   }
 
   initializeProviderSettingsFile({
@@ -335,19 +336,21 @@ export async function setup(options: SetupOptions = {}) {
     print(dim("  Run 'wolfpack setup' interactively to install the control skill and Pi Tasks."));
   }
 
-  const installService = interactive
-    ? ask("  Start wolfpack automatically on login? [Y/n] ")
-    : "n";
-  let serviceInstalled = false;
-  if (!interactive) {
+  if (!serviceInstalled && options.deferServiceRestart) {
+    print(dim("  Service activation deferred."));
+  } else if (!serviceInstalled && !interactive) {
     print(dim("  Non-interactive mode — skipping service install."));
     print(dim("  Run 'wolfpack service install' to start automatically on login."));
-  } else if (installService.toLowerCase() !== "n") {
-    try {
-      serviceInstall();
-      serviceInstalled = true;
-    } catch (e) {
-      print(red(`  Service install failed: ${e}`));
+  } else if (!serviceInstalled) {
+    const installService = ask("  Start wolfpack automatically on login? [Y/n] ");
+    if (installService.toLowerCase() !== "n") {
+      try {
+        serviceInstall();
+        serviceInstalled = true;
+        serviceRunning = true;
+      } catch (e) {
+        print(red(`  Service install failed: ${e}`));
+      }
     }
   }
 
@@ -355,6 +358,7 @@ export async function setup(options: SetupOptions = {}) {
     port: config.port,
     remoteUrl: verifiedRemoteHostname ? remoteUrl(config) : null,
     serviceInstalled,
+    serviceRunning,
     detectedProviders,
   });
 }

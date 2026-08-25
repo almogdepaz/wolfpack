@@ -1,9 +1,72 @@
 {
   "schemaVersion": 1,
-  "kind": "edc-context-build",
-  "edcVersion": "2",
-  "mode": "advisory",
-  "modules": ["wolfpack", "broker"],
-  "discovery": "git-index module plan; repository metadata/support paths are contextless",
-  "ignore": { "source": "none", "globs": [] }
+  "edcVersion": "2.0.0",
+  "runId": "build-20260824T163111Z-56217-27868",
+  "repoRoot": "/Users/home/Dev/wolfpack",
+  "canonicalAgentEntrypoint": "AGENTS.md",
+  "package": {
+    "name": "wolfpack-bridge",
+    "version": "1.6.20"
+  },
+  "assembly": {
+    "discoveryPlan": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/module-plan.json",
+    "moduleMetadata": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/build-modules.json",
+    "crossModuleNotes": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/cross-module.md",
+    "outputs": {
+      "index": "edc-context/index.md",
+      "partialManifest": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/partial-manifest.json",
+      "buildInfo": "edc-context/build/build.json",
+      "agentEntrypoint": "agent-entrypoint.md"
+    }
+  },
+  "modules": [
+    {
+      "name": "broker",
+      "paths": [
+        "broker"
+      ],
+      "doc": "edc-context/modules/broker.md",
+      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-1.md"
+    },
+    {
+      "name": "wolfpack",
+      "paths": [
+        "bin",
+        "src",
+        "public",
+        "scripts"
+      ],
+      "doc": "edc-context/modules/wolfpack.md",
+      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-2.md"
+    },
+    {
+      "name": "tests",
+      "paths": [
+        "tests"
+      ],
+      "doc": "edc-context/modules/tests.md",
+      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-3.md"
+    },
+    {
+      "name": "docs",
+      "paths": [
+        "docs",
+        "site"
+      ],
+      "doc": "edc-context/modules/docs.md",
+      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-4.md"
+    },
+    {
+      "name": "skills",
+      "paths": [
+        "skills"
+      ],
+      "doc": "edc-context/modules/skills.md",
+      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-5.md"
+    }
+  ],
+  "notes": [
+    "Assembly used the discovery plan, staged module docs, cross-module notes, and lightweight repository metadata only.",
+    "Manifest finalization, report generation, promotion, and validation are coordinator-owned."
+  ]
 }

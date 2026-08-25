@@ -16,7 +16,6 @@ import {
   waitForClose,
   wait,
   connectPty as _connectPty,
-  collectJsonMessages,
   waitForMessage,
   cleanupSessions,
   type PtyTestContext,

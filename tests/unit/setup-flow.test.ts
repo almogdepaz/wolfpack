@@ -17,10 +17,16 @@ interface TailscaleFixture {
 interface SetupFlowFixture {
   readonly tailscale?: TailscaleFixture;
   readonly failsTailscaleInstallation?: boolean;
-  readonly serviceRunning?: boolean;
+  readonly serviceRunning?: boolean | readonly boolean[];
   readonly serviceInstalled?: boolean;
+  readonly installServiceAnswer?: string;
+  readonly serviceRestartSucceeded?: boolean;
   readonly providerCommands?: readonly string[];
-  readonly setupOptions?: { readonly devDir?: string; readonly port?: number };
+  readonly setupOptions?: {
+    readonly devDir?: string;
+    readonly port?: number;
+    readonly deferServiceRestart?: boolean;
+  };
   readonly existingConfig?: { readonly devDir: string; readonly port: number; readonly tailscaleHostname?: string };
 }
 
@@ -87,6 +93,10 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
         if (prompt.includes("doesn't exist")) return "y";
         if (prompt.includes("press Enter to retry")) return "skip";
         if (prompt.includes("Projects directory") || prompt.includes("Server port")) return "";
+        if (prompt.includes("Start wolfpack automatically on login")) {
+          console.log("SERVICE_INSTALL_PROMPT");
+          return fixture?.installServiceAnswer ?? "n";
+        }
         return "n";
       },
       loadConfig: () => fixture?.existingConfig ?? (fixture?.tailscale?.previousHostname
@@ -101,12 +111,22 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
     }));
     if (fixture?.serviceRunning || fixture?.serviceInstalled) {
       const service = await import("./src/cli/service.ts");
+      const runningStates = Array.isArray(fixture?.serviceRunning)
+        ? fixture.serviceRunning
+        : [fixture?.serviceRunning ?? false];
+      let runningStateIndex = 0;
       await mock.module("./src/cli/service.js", () => ({
         ...service,
         isServiceInstalled: () => fixture?.serviceInstalled ?? false,
-        isServiceRunning: () => fixture?.serviceRunning ?? false,
-        refreshInstalledServerService: () => console.log("SERVICE_REFRESH=server-only"),
-        serviceRestart: (options) => console.log("SERVICE_RESTART=" + JSON.stringify(options)),
+        isServiceRunning: () => runningStates[runningStateIndex++] ?? runningStates[runningStates.length - 1],
+        refreshInstalledServerService: (options) => console.log(
+          "SERVICE_REFRESH=" + (options?.reload === false ? "descriptor-only" : "server-only"),
+        ),
+        serviceInstall: () => console.log("SERVICE_INSTALL"),
+        serviceRestart: (options) => {
+          console.log("SERVICE_RESTART=" + JSON.stringify(options));
+          return fixture?.serviceRestartSucceeded ?? true;
+        },
       }));
     }
 
@@ -301,13 +321,60 @@ describe("first-run setup", () => {
       existingConfig: { devDir: join(home, "Dev"), port: 18790 },
       setupOptions: { port: 24444 },
       serviceInstalled: true,
-      serviceRunning: true,
+      serviceRunning: [false, true],
     });
 
     expectSuccessfulSetup(result);
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({ port: 24444 });
     expect(result.stdout).toContain("SERVICE_REFRESH=server-only");
+    expect(result.stdout).toContain("Service: running");
     expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
+  test("defers descriptor activation during installer-managed setup", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      existingConfig: { devDir: join(home, "Dev"), port: 18790 },
+      setupOptions: { port: 25555, deferServiceRestart: true },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
+
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({ port: 25555 });
+    expect(result.stdout).toContain("SERVICE_REFRESH=descriptor-only");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
+  test("preserves an existing stopped login service without reinstalling it", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const hostname = "existing.tailnet.ts.net";
+    const result = runSetupFlow(home, {
+      tailscale: {
+        hostname,
+        serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
+      },
+      existingConfig: { devDir: home, port: 18790, tailscaleHostname: hostname },
+      serviceInstalled: true,
+      serviceRunning: false,
+      installServiceAnswer: "y",
+    });
+
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({
+      devDir: home,
+      port: 18790,
+      tailscaleHostname: hostname,
+    });
+    const behaviorLog = result.stdout.split("\n");
+    expect(behaviorLog).not.toContain("SERVICE_INSTALL_PROMPT");
+    expect(behaviorLog).not.toContain("SERVICE_INSTALL");
+    expect(result.stdout).not.toContain("SERVICE_REFRESH=");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
+    expect(result.stdout).toContain("Service: installed but stopped");
+    expect(result.stdout).not.toContain("Service: running");
   });
 
   test("does not refresh an installed descriptor when embedded settings are unchanged", () => {
@@ -332,10 +399,74 @@ describe("first-run setup", () => {
       hostname,
       previousHostname: "stale.tailnet.ts.net",
       serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
-    }, serviceRunning: true });
+    }, serviceInstalled: true, serviceRunning: [true, false] });
 
     expectSuccessfulSetup(result);
     expect(result.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
+    expect(result.stdout).toContain("Service: installed but stopped");
+    expect(result.stdout).not.toContain("Service: running");
+  });
+
+  test("defers remote-policy restart during installer-managed setup", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const hostname = "deferred.tailnet.ts.net";
+    const result = runSetupFlow(home, {
+      tailscale: {
+        hostname,
+        previousHostname: "stale.tailnet.ts.net",
+        serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
+      },
+      serviceInstalled: true,
+      serviceRunning: true,
+      setupOptions: { deferServiceRestart: true },
+    });
+
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({
+      tailscaleHostname: hostname,
+    });
+    expect(result.stdout).not.toContain("SERVICE_REFRESH=");
+    expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
+  test("does not offer service activation while restart deferral is active", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const hostname = "deferred-clean.tailnet.ts.net";
+    const result = runSetupFlow(home, {
+      tailscale: {
+        hostname,
+        serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
+      },
+      setupOptions: { deferServiceRestart: true },
+    });
+
+    expectSuccessfulSetup(result);
+    expect(result.stdout.split("\n")).not.toContain("SERVICE_INSTALL_PROMPT");
+  });
+
+  test("fails direct setup when its required server restart fails", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const hostname = "failed-restart.tailnet.ts.net";
+    const result = runSetupFlow(home, {
+      tailscale: {
+        hostname,
+        previousHostname: "stale.tailnet.ts.net",
+        serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
+      },
+      serviceInstalled: true,
+      serviceRunning: true,
+      serviceRestartSucceeded: false,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({
+      tailscaleHostname: hostname,
+    });
+    expect(result.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
+    expect(result.stdout).not.toContain("Setup complete");
   });
 
   test("does not retain an unverified remote URL from an earlier setup", () => {

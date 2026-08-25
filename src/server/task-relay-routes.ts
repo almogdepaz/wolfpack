@@ -109,7 +109,7 @@ export const taskRelayRoutes: Record<string, Handler> = {
   "POST /api/task-relay/v2/peer/receive": async (req, res) => {
     const body = await relayBody(req, res);
     if (!body) return;
-    if (!only(body, ["envelopeId", "protocolVersion", "source", "target", "payload", "createdAt"])) {
+    if (!only(body, ["origin", "envelope"]) || typeof body.origin !== "string" || !object(body.envelope)) {
       return response(res, { ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST, message: "invalid peer relay envelope", retryable: false } });
     }
     response(res, await getTaskRelayGateway().receivePeer(body));

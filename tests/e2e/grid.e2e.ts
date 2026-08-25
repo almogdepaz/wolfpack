@@ -2,17 +2,15 @@
  * Desktop grid navigation tests — covers the view-guard and suspend/resume paths
  * added for grid/navigation regressions.
  *
- * These tests use page.evaluate() to set up grid state directly, since the
- * WS/PTY layer is not fully exercisable in test mode (no real tmux). The goal
- * is to verify the view-transition and state-management logic that surrounds
- * the grid, not the terminal rendering itself.
+ * These tests drive grid state through rendered UI, DOM, and routed PTY frames.
  *
- * All tests require the desktop viewport (>768px) because addToGrid() and
- * suspendGridMode() are gated on isDesktop().
+ * All tests require the desktop viewport (>768px) because grid controls are
+ * desktop-only.
  */
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { gridSessionNames, openSessionFromUi, openSettingsFromUi, startTestServer, terminalTail, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 import { CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
+import { TAKE_CONTROL_FALLBACK_MS } from "../../public/take-control-coordinator.ts";
 
 let srv: TestServer;
 
@@ -32,15 +30,22 @@ test.beforeEach(async ({}, testInfo) => {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Navigate to the page and wait for the session cards to load. */
-async function loadApp(page: Page) {
+async function loadApp(page: Page): Promise<void> {
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 }
 
-/**
- * Inject two fake grid sessions into page state without going through the PTY
- * layer. `controller: null` is intentional — dispose() is guarded.
- */
+async function openTerminal(page: Page, session = "test-project"): Promise<void> {
+  await openSessionFromUi(page, session, "");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+}
+
+async function openTwoCellGrid(page: Page): Promise<void> {
+  await openTerminal(page, "test-project");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(2, { timeout: 5000 });
+}
+
 async function routeHydratedPty(page: Page, ptyReadyGate?: Promise<void>): Promise<Map<string, WebSocketRoute>> {
   const sockets = new Map<string, WebSocketRoute>();
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
@@ -52,30 +57,66 @@ async function routeHydratedPty(page: Page, ptyReadyGate?: Promise<void>): Promi
       if (parsed.type !== "attach") return;
       ws.send(JSON.stringify({ type: "attach_ack" }));
       ws.send(Buffer.from(`${session}-PREFILL\r\n`));
-      if (parsed.prefillMode === "viewport") {
-        ws.send(JSON.stringify({ type: "prefill_viewport" }));
-      }
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
       ws.send(JSON.stringify({ type: "prefill_done" }));
-      if (ptyReadyGate) {
-        void ptyReadyGate.then(() => ws.send(JSON.stringify({ type: "pty_ready" })));
-      } else {
-        ws.send(JSON.stringify({ type: "pty_ready" }));
-      }
+      void Promise.resolve(ptyReadyGate).then(() => ws.send(JSON.stringify({ type: "pty_ready" })));
     });
   });
   return sockets;
 }
 
-async function injectFakeGrid(page: Page) {
-  await page.evaluate(() => {
-    // @ts-ignore — page-global state
-    state.gridSessions = [
-      { session: "test-project", machine: "", controller: null, _cellElement: null },
-      { session: "another-project", machine: "", controller: null, _cellElement: null },
-    ];
-    // @ts-ignore
-    state.gridFocusIndex = 0;
+type PtyClientMessage = {
+  readonly type?: string;
+  readonly prefillMode?: string;
+  readonly takeControl?: boolean;
+};
+
+type PtyProtocolCounts = {
+  readonly sockets: number;
+  readonly attaches: number;
+  readonly takeControls: number;
+  readonly takeoverAttaches: number;
+};
+
+type TrackedPtyRoute = {
+  readonly counts: (session: string) => PtyProtocolCounts;
+};
+
+async function routeTrackedHydratedPty(page: Page, conflictAfterReadySessions: readonly string[] = []): Promise<TrackedPtyRoute> {
+  const sockets = new Map<string, WebSocketRoute[]>();
+  const messages = new Map<string, PtyClientMessage[]>();
+  const conflictedSessions = new Set(conflictAfterReadySessions);
+  const sentConflicts = new Set<string>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    sockets.set(session, [...(sockets.get(session) ?? []), ws]);
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as PtyClientMessage;
+      messages.set(session, [...(messages.get(session) ?? []), parsed]);
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+      if (parsed.prefillMode === "viewport" && conflictedSessions.has(session) && !sentConflicts.has(session)) {
+        sentConflicts.add(session);
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+      }
+    });
   });
+  return {
+    counts(session: string): PtyProtocolCounts {
+      const sessionMessages = messages.get(session) ?? [];
+      return {
+        sockets: sockets.get(session)?.length ?? 0,
+        attaches: sessionMessages.filter((message) => message.type === "attach").length,
+        takeControls: sessionMessages.filter((message) => message.type === "take_control").length,
+        takeoverAttaches: sessionMessages.filter((message) => message.type === "attach" && message.takeControl === true).length,
+      };
+    },
+  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -83,15 +124,8 @@ async function injectFakeGrid(page: Page) {
 test("sub-session notification adds a child beside the active single parent", async ({ page }) => {
   const sockets = await routeHydratedPty(page);
   await loadApp(page);
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openTerminal(page, "test-project");
   await expect.poll(() => sockets.has("test-project")).toBe(true);
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.currentSession === "test-project" && state.terminalController?.isConnected;
-  })).toBe(true);
 
   sockets.get("test-project")!.send(JSON.stringify({
     type: "sub_session_opened",
@@ -99,59 +133,39 @@ test("sub-session notification adds a child beside the active single parent", as
     session: "another-project",
   }));
 
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.map((entry) => entry.session);
-  })).toEqual(["test-project", "another-project"]);
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project"]);
 });
 
 test("sub-session notification ignores other parents, views, and existing grids", async ({ page }) => {
   const sockets = await routeHydratedPty(page);
   await loadApp(page);
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    openSession("test-project", "");
-  });
+  await openTerminal(page, "test-project");
   await expect.poll(() => sockets.has("test-project")).toBe(true);
-  const parentSocket = sockets.get("test-project")!;
+  let parentSocket = sockets.get("test-project")!;
 
   parentSocket.send(JSON.stringify({
     type: "sub_session_opened",
     parentSession: "another-project",
     session: "third-project",
   }));
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.length;
-  })).toBe(0);
+  await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(0);
 
-  await page.evaluate(() => {
-    // @ts-ignore exercise the message guard without changing socket ownership
-    state.currentView = "settings";
-  });
+  await openSettingsFromUi(page);
   parentSocket.send(JSON.stringify({
     type: "sub_session_opened",
     parentSession: "test-project",
     session: "another-project",
   }));
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.length;
-  })).toBe(0);
+  await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(0);
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    state.currentView = "terminal";
-  });
+  await openTerminal(page, "test-project");
+  parentSocket = sockets.get("test-project")!;
   parentSocket.send(JSON.stringify({
     type: "sub_session_opened",
     parentSession: "test-project",
     session: "another-project",
   }));
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.map((entry) => entry.session);
-  })).toEqual(["test-project", "another-project"]);
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project"]);
 
   await expect.poll(() => sockets.get("test-project")).not.toBeUndefined();
   sockets.get("test-project")!.send(JSON.stringify({
@@ -160,10 +174,7 @@ test("sub-session notification ignores other parents, views, and existing grids"
     session: "third-project",
   }));
   await page.waitForTimeout(50);
-  expect(await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.map((entry) => entry.session);
-  })).toEqual(["test-project", "another-project"]);
+  expect(await gridSessionNames(page)).toEqual(["test-project", "another-project"]);
 });
 
 test("grid requests viewport prefill", async ({ page }) => {
@@ -174,16 +185,7 @@ test("grid requests viewport prefill", async ({ page }) => {
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
 
   await expect.poll(async () => page.evaluate(() => {
     const debugWindow = window as unknown as {
@@ -202,20 +204,13 @@ test("grid requests viewport prefill", async ({ page }) => {
 test("addToGrid from terminal view shows grid loading immediately", async ({ page }) => {
   await loadApp(page);
 
+  await openTerminal(page, "test-project");
   await page.evaluate(() => {
     // Hold async terminal mount open so this checks the pre-mount gap that
     // used to expose stale/full-width terminal content before hydration began.
-    // @ts-ignore
-    window.ghosttyReady = new Promise(() => {});
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
+    (window as unknown as { ghosttyReady: Promise<never> }).ghosttyReady = new Promise<never>(() => {});
   });
+  await toggleSessionGridFromUi(page, "another-project", "");
 
   const cellStates = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
     cells.map((cell) => ({
@@ -260,25 +255,13 @@ test("lazy renderer topology rerender keeps one controller per grid session", as
   });
 
   await loadApp(page);
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
-    // Re-render the two pending cells while the lazy renderer is unresolved.
-    // @ts-ignore
-    addToGrid("third-project", "");
-  });
+  await toggleSessionGridFromUi(page, "test-project", "");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  // Re-render the two pending cells while the lazy renderer is unresolved.
+  await toggleSessionGridFromUi(page, "third-project", "");
 
   releaseRenderer!();
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((session) => session.controller?.isConnected);
-  }), { timeout: 5000 }).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(3, { timeout: 5000 });
 
   expect(await page.locator("#desktop-grid-container .grid-cell").count()).toBe(3);
   expect(await page.evaluate(() => {
@@ -294,92 +277,49 @@ test("lazy renderer topology rerender keeps one controller per grid session", as
 test("grid topology add hides existing canvases until relayout repaint completes", async ({ page }) => {
   await loadApp(page);
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.length === 2 && state.gridSessions.every((gs) =>
-      gs.controller?.isConnected &&
-      !gs.controller?.hydration?.pending &&
-      gs._cellElement?.classList.contains("hydrated")
-    );
-  }), { timeout: 5000 }).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
-  const immediate = await page.evaluate(() => {
-    // @ts-ignore
-    const existing = state.gridSessions.map((gs) => gs._cellElement);
-    // @ts-ignore
-    addToGrid("third-project", "");
-    return existing.map((cell: HTMLElement) => {
-      const canvas = cell.querySelector("canvas");
-      return {
-        transitioning: cell.classList.contains("transitioning"),
-        visibility: canvas ? getComputedStyle(canvas).visibility : "missing",
-      };
-    });
-  });
+  const existingCells = page.locator("#desktop-grid-container .grid-cell");
+  await toggleSessionGridFromUi(page, "third-project", "");
+  const immediate = await existingCells.evaluateAll((cells) => cells.slice(0, 2).map((cell) => {
+    const canvas = cell.querySelector("canvas");
+    return {
+      transitioning: cell.classList.contains("transitioning"),
+      visibility: canvas ? getComputedStyle(canvas).visibility : "missing",
+    };
+  }));
 
   expect(immediate).toEqual([
     { transitioning: true, visibility: "hidden" },
     { transitioning: true, visibility: "hidden" },
   ]);
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.slice(0, 2).every((gs) => {
-      const cell = gs._cellElement;
-      const canvas = cell?.querySelector("canvas");
-      return cell && canvas &&
-        !cell.classList.contains("transitioning") &&
-        getComputedStyle(canvas).visibility === "visible";
-    });
-  }), { timeout: 5000 }).toBe(true);
+  await expect.poll(async () => existingCells.evaluateAll((cells) => cells.slice(0, 2).every((cell) => {
+    const canvas = cell.querySelector("canvas");
+    return !!canvas && !cell.classList.contains("transitioning") && getComputedStyle(canvas).visibility === "visible";
+  })), { timeout: 5000 }).toBe(true);
 });
 
 test("grid topology add waits one frame after relayout repaint before revealing existing cells", async ({ page }) => {
   await routeHydratedPty(page);
   await loadApp(page);
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.length === 2 && state.gridSessions.every((gs) =>
-      gs.controller?.isConnected &&
-      !gs.controller?.hydration?.pending &&
-      gs._cellElement?.classList.contains("hydrated")
-    );
-  }), { timeout: 5000 }).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
-  const states = await page.evaluate(async () => {
-    // @ts-ignore
-    const existing = state.gridSessions.map((gs) => gs._cellElement as HTMLElement);
-    // @ts-ignore
-    addToGrid("third-project", "");
+  const existingCells = page.locator("#desktop-grid-container .grid-cell");
+  await toggleSessionGridFromUi(page, "third-project", "");
+  const states = await existingCells.evaluateAll(async (cells) => {
+    const existing = cells.slice(0, 2);
     const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     await nextFrame();
     await nextFrame();
-    const afterRepaintRequestFrame = existing.map((cell: HTMLElement) => cell.classList.contains("transitioning"));
+    const afterRepaintRequestFrame = existing.map((cell) => cell.classList.contains("transitioning"));
     await nextFrame();
-    const afterRevealFrame = existing.map((cell: HTMLElement) => cell.classList.contains("transitioning"));
+    const afterRevealFrame = existing.map((cell) => cell.classList.contains("transitioning"));
     return { afterRepaintRequestFrame, afterRevealFrame };
   });
 
@@ -389,25 +329,17 @@ test("grid topology add waits one frame after relayout repaint before revealing 
 
 test("addToGrid hides single terminal container before grid cells mount", async ({ page }) => {
   await loadApp(page);
+  await openTerminal(page, "test-project");
 
-  const immediateState = await page.evaluate(() => {
+  await page.evaluate(() => {
     // Hold async grid terminal mount open so this inspects the synchronous
     // single-terminal → grid transition gap.
-    // @ts-ignore
-    window.ghosttyReady = new Promise(() => {});
+    (window as unknown as { ghosttyReady: Promise<never> }).ghosttyReady = new Promise<never>(() => {});
+  });
+  await toggleSessionGridFromUi(page, "another-project", "");
+
+  const immediateState = await page.evaluate(() => {
     const terminal = document.getElementById("desktop-terminal-container")!;
-    terminal.style.display = "block";
-    terminal.classList.add("hydrated");
-    const canvas = document.createElement("canvas");
-    terminal.appendChild(canvas);
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
     return {
       terminalDisplay: getComputedStyle(terminal).display,
       gridActive: document.getElementById("desktop-grid-container")?.classList.contains("active") ?? false,
@@ -434,15 +366,8 @@ test("grid cached snapshots stay behind loading screen until hydration", async (
       "wp-snap||another-project",
       JSON.stringify({ d: "cached-another-project-line-that-would-wrap-in-grid", ts: Date.now() }),
     );
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
   });
+  await openTwoCellGrid(page);
 
   await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
 
@@ -460,41 +385,19 @@ test("grid viewport prefill does not seed cached prose into terminal scrollback"
     const cachedLines = Array.from({ length: 80 }, (_, idx) => `GRID-CACHED-SCROLLBACK-${idx}`).join("\n");
     localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
     localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
   });
+  await openTwoCellGrid(page);
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((gs) => !!gs.controller?.isConnected && gs._cellElement?.classList.contains("hydrated"));
-  }), { timeout: 5000 }).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
-  const cells = await page.evaluate(() => {
-    const w = window as unknown as {
-      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
-      state: {
-        gridSessions: Array<{
-          session: string;
-          controller?: { term?: { buffer?: { active?: unknown }; getScrollbackLength?: () => number } };
-        }>;
-      };
+  const cells = await Promise.all((await page.locator("#desktop-grid-container .grid-cell").all()).map(async (cell) => {
+    const text = await terminalTail(cell, 120);
+    return {
+      session: await cell.evaluate((element) => (element as HTMLElement).dataset.session ?? ""),
+      text,
+      scrollbackLength: text.split(/\r?\n/).length,
     };
-    return w.state.gridSessions.map((gs) => {
-      const term = gs.controller?.term;
-      const buffer = term?.buffer?.active;
-      return {
-        session: gs.session,
-        text: buffer ? w.WP.serializeBufferTail(buffer, 120) : "",
-        scrollbackLength: term?.getScrollbackLength?.() ?? 0,
-      };
-    });
-  });
+  }));
 
   expect(cells).toHaveLength(2);
   for (const cell of cells) {
@@ -520,21 +423,9 @@ test("grid output persists debounced recovery snapshots for every live cell", as
   });
   await loadApp(page);
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    state.currentSession = "test-project";
-    // @ts-ignore exposed by the browser bundle
-    state.currentMachine = "";
-    // @ts-ignore exposed by the browser bundle
-    showView("terminal", true);
-    // @ts-ignore exposed by the browser bundle
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
   await expect.poll(() => sockets.length).toBe(2);
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.every((gs) => gs._cellElement?.classList.contains("hydrated"));
-  })).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
   sockets[0].send(Buffer.from("GRID-LIVE-SNAPSHOT-MARKER-0\r\n"));
   sockets[1].send(Buffer.from("GRID-LIVE-SNAPSHOT-MARKER-1\r\n"));
@@ -568,16 +459,7 @@ test("grid viewport prefill timeout closes stalled sockets without revealing par
   await loadApp(page);
   await page.clock.install();
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    state.currentSession = "test-project";
-    // @ts-ignore exposed by the browser bundle
-    state.currentMachine = "";
-    // @ts-ignore exposed by the browser bundle
-    showView("terminal", true);
-    // @ts-ignore exposed by the browser bundle
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
   await expect.poll(() => page.locator("#desktop-grid-container .grid-cell canvas").count()).toBe(2);
   await expect.poll(() => attachCount).toBe(2);
 
@@ -605,16 +487,7 @@ test("grid viewport prefill timeout closes stalled sockets without revealing par
 test("new grid cells hide canvas until hydration completes", async ({ page }) => {
   await loadApp(page);
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
 
   await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
 
@@ -632,18 +505,20 @@ test("new grid cells hide canvas until hydration completes", async ({ page }) =>
   );
 
   expect(earlyCanvasStates.length).toBeGreaterThan(0);
-  for (const state of earlyCanvasStates) {
-    if (!state.hydrated) {
-      expect(state.hydrating).toBe(true);
-      expect(state.opacity).toBe("0");
-      expect(state.visibility).toBe("hidden");
+  for (const cellState of earlyCanvasStates) {
+    if (!cellState.hydrated) {
+      expect(cellState.hydrating).toBe(true);
+      expect(cellState.opacity).toBe("0");
+      expect(cellState.visibility).toBe("hidden");
     }
   }
 });
 
 test("grid manual retry hides stale content until replacement viewport prefill completes", async ({ page }) => {
   let attachCount = 0;
+  const sockets: WebSocketRoute[] = [];
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    sockets.push(ws);
     ws.onMessage((message) => {
       if (typeof message !== "string") return;
       const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
@@ -661,37 +536,12 @@ test("grid manual retry hides stale content until replacement viewport prefill c
   });
   await loadApp(page);
 
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    state.currentSession = "test-project";
-    // @ts-ignore exposed by the browser bundle
-    state.currentMachine = "";
-    // @ts-ignore exposed by the browser bundle
-    showView("terminal", true);
-    // @ts-ignore exposed by the browser bundle
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
   await expect.poll(() => attachCount).toBe(2);
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions.every((gs) => gs._cellElement?.classList.contains("hydrated"));
-  })).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // Closing the existing client models the disconnected half of a displaced
-    // cell before its take-control click creates a fresh socket client.
-    // @ts-ignore exposed by the browser bundle
-    state.gridSessions[0].controller.ptyClient.close();
-  });
-  await expect.poll(() => page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    return state.gridSessions[0].controller.isConnected;
-  })).toBe(false);
-
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    state.gridSessions[0].controller.connect({ takeControl: true });
-  });
+  await sockets[0].close();
+  await page.locator("#desktop-grid-container .grid-cell").first().locator(".viewer-conflict-overlay .conflict-btn").click();
   await expect.poll(() => attachCount).toBe(3);
 
   const replacementState = await page.locator("#desktop-grid-container .grid-cell").first().evaluate((cell) => {
@@ -741,16 +591,7 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
+  await openTwoCellGrid(page);
 
   await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
 
@@ -769,12 +610,12 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
   );
 
   expect(earlyStates.length).toBeGreaterThanOrEqual(2);
-  for (const state of earlyStates) {
-    expect(state.cachedVisible).toBe(false);
-    if (!state.hydrated) {
-      expect(state.hydrating).toBe(true);
-      expect(state.opacity).toBe("0");
-      expect(state.visibility).toBe("hidden");
+  for (const cellState of earlyStates) {
+    expect(cellState.cachedVisible).toBe(false);
+    if (!cellState.hydrated) {
+      expect(cellState.hydrating).toBe(true);
+      expect(cellState.opacity).toBe("0");
+      expect(cellState.visibility).toBe("hidden");
     }
   }
 
@@ -785,198 +626,113 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
   expect(firstImmediateIndex).toBeGreaterThan(-1);
   expect(firstAckIndex).toBeGreaterThan(firstImmediateIndex);
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((gs) => gs._cellElement?.classList.contains("hydrated"));
-  }), { timeout: 5000 }).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
-  const cells = await page.evaluate(() => {
-    const w = window as unknown as {
-      WP: { serializeBufferTail(buffer: unknown, maxLines: number): string };
-      state: {
-        gridSessions: Array<{
-          session: string;
-          controller?: { term?: { buffer?: { active?: unknown } } };
-        }>;
-      };
-    };
-    return w.state.gridSessions.map((gs) => {
-      const buffer = gs.controller?.term?.buffer?.active;
-      return buffer ? w.WP.serializeBufferTail(buffer, 120) : "";
-    });
-  });
+  const cells = await Promise.all((await page.locator("#desktop-grid-container .grid-cell").all()).map((cell) => terminalTail(cell, 120)));
   expect(cells).toHaveLength(2);
   for (const text of cells) expect(text).not.toContain("STALE-GRID-CACHED-PROSE");
 });
 
 test("addToGrid from non-terminal view switches to terminal view first", async ({ page }) => {
   await loadApp(page);
+  await openTerminal(page, "test-project");
+  await openSettingsFromUi(page);
+  await expect(page.locator("#settings-view")).toHaveClass(/visible/);
 
-  // Move to settings view so currentView !== "terminal"
-  await page.evaluate(() => {
-    // @ts-ignore
-    showView("settings");
-  });
-  const viewBefore = await page.evaluate(() => {
-    // @ts-ignore
-    return state.currentView;
-  });
-  expect(viewBefore).toBe("settings");
+  await toggleSessionGridFromUi(page, "another-project", "");
 
-  // Calling addToGrid while NOT on the terminal view should auto-switch
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
-
-  const viewAfter = await page.evaluate(() => {
-    // @ts-ignore
-    return state.currentView;
-  });
-  expect(viewAfter).toBe("terminal");
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
 
-test("removeFromGrid clears pending take-control timer", async ({ page }) => {
-  await page.goto(srv.baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
+test("removing a conflicted grid cell prevents its scheduled takeover fallback", async ({ page }) => {
+  const controlSession = "test-project";
+  const removedSession = "another-project";
+  const stableSession = "third-project";
+  const protocol = await routeTrackedHydratedPty(page, [controlSession, removedSession]);
+  await loadApp(page);
+  await toggleSessionGridFromUi(page, controlSession, "");
+  await toggleSessionGridFromUi(page, removedSession, "");
+  await toggleSessionGridFromUi(page, stableSession, "");
+  await expect.poll(() => gridSessionNames(page)).toEqual([controlSession, removedSession, stableSession]);
 
-  await page.evaluate(() => {
-    const w = window as unknown as {
-      state: {
-        currentView: string;
-        currentSession: string;
-        gridSessions: Array<unknown>;
-        gridFocusIndex: number;
-      };
-      removeFromGrid: (idx: number) => void;
-      __timerFired?: boolean;
-    };
-    w.__timerFired = false;
-    w.state.currentView = "terminal";
-    w.state.currentSession = "test-project";
-    w.state.gridFocusIndex = 0;
-    w.state.gridSessions = [
-      {
-        session: "test-project",
-        machine: "",
-        controller: { dispose() {}, isConnected: true },
-        _takeControlTimer: window.setTimeout(() => { w.__timerFired = true; }, 50),
-      },
-      { session: "another-project", machine: "", controller: { dispose() {}, isConnected: true } },
-    ];
-    w.removeFromGrid(0);
-  });
+  const controlCell = page.locator(`#desktop-grid-container .grid-cell[data-session="${controlSession}"]`);
+  const removedCell = page.locator(`#desktop-grid-container .grid-cell[data-session="${removedSession}"]`);
+  await expect(controlCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
+  await expect(removedCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
 
-  await page.waitForTimeout(100);
-  expect(await page.evaluate(() => (window as unknown as { __timerFired?: boolean }).__timerFired)).toBe(false);
+  await controlCell.locator(".viewer-conflict-overlay .conflict-btn").click();
+  await removedCell.locator(".viewer-conflict-overlay .conflict-btn").click();
+  await expect.poll(() => protocol.counts(controlSession).takeControls).toBe(1);
+  await expect.poll(() => protocol.counts(removedSession).takeControls).toBe(1);
+
+  await removedCell.getByRole("button", { name: `Remove ${removedSession} from grid` }).click();
+  await expect.poll(() => gridSessionNames(page)).toEqual([controlSession, stableSession]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  const controlCountsBeforeFallback = protocol.counts(controlSession);
+  const removedCountsAfterRemoval = protocol.counts(removedSession);
+  const stableCountsAfterRemoval = protocol.counts(stableSession);
+  expect(controlCountsBeforeFallback.takeoverAttaches).toBe(0);
+  expect(removedCountsAfterRemoval.takeoverAttaches).toBe(0);
+
+  // External contract: removal may clear the timer or let the pending callback
+  // self-disarm, but the removed session must not perform a takeover action.
+  await page.waitForTimeout(TAKE_CONTROL_FALLBACK_MS + 500);
+
+  const controlCountsAfterFallback = protocol.counts(controlSession);
+  expect(controlCountsAfterFallback.sockets).toBe(controlCountsBeforeFallback.sockets + 1);
+  expect(controlCountsAfterFallback.attaches).toBe(controlCountsBeforeFallback.attaches + 1);
+  expect(controlCountsAfterFallback.takeoverAttaches).toBe(controlCountsBeforeFallback.takeoverAttaches + 1);
+  expect(protocol.counts(removedSession)).toEqual(removedCountsAfterRemoval);
+  expect(protocol.counts(stableSession)).toEqual(stableCountsAfterRemoval);
+  await expect.poll(() => gridSessionNames(page)).toEqual([controlSession, stableSession]);
 });
 
 test("navigating away from terminal with active grid suspends grid state", async ({ page }) => {
+  const protocol = await routeTrackedHydratedPty(page);
   await loadApp(page);
+  await toggleSessionGridFromUi(page, "test-project", "");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  const initialCounts = {
+    testProject: protocol.counts("test-project"),
+    anotherProject: protocol.counts("another-project"),
+  };
 
-  // Go to terminal view and inject a fake two-session grid
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal");
-  });
-  await injectFakeGrid(page);
+  await openSettingsFromUi(page);
 
-  // Sanity: grid is active
-  const active = await page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.length >= 2;
-  });
-  expect(active).toBe(true);
+  await expect(page.locator("#settings-view")).toHaveClass(/visible/);
+  await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(0);
 
-  // Navigate away → suspendGridMode() should fire
-  await page.evaluate(() => {
-    // @ts-ignore
-    showView("settings");
-  });
-
-  const preserved = await page.evaluate(() => {
-    // @ts-ignore
-    return state.preservedGridSessions.map((s: { session: string }) => s.session);
-  });
-  expect(preserved).toContain("test-project");
-  expect(preserved).toContain("another-project");
-
-  // Live grid sessions should be cleared after suspension
-  const liveSessions = await page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.length;
-  });
-  expect(liveSessions).toBe(0);
+  await page.locator("#settings-back-btn").click();
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project"]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  await expect.poll(() => protocol.counts("test-project").attaches).toBeGreaterThan(initialCounts.testProject.attaches);
+  await expect.poll(() => protocol.counts("another-project").attaches).toBeGreaterThan(initialCounts.anotherProject.attaches);
+  const tails = await Promise.all(["test-project", "another-project"].map((session) =>
+    terminalTail(page.locator(`#desktop-grid-container .grid-cell[data-session="${session}"]`), 20),
+  ));
+  expect(tails).toEqual(expect.arrayContaining([expect.stringContaining("test-project-PREFILL"), expect.stringContaining("another-project-PREFILL")]));
 });
 
 test("transcript button clears grid-cell close controls", async ({ page }) => {
   await loadApp(page);
-  await page.evaluate(() => {
-    // @ts-ignore exposed by the browser bundle
-    showView("terminal");
-  });
-  await page.locator("#desktop-grid-container").evaluate((container) => container.classList.add("active"));
+  await openTwoCellGrid(page);
 
   await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCSS("top", "40px");
 });
 
 test("re-adding the remaining preserved session from settings reinitializes terminal view", async ({ page }) => {
   await loadApp(page);
+  await openTwoCellGrid(page);
+  await openSettingsFromUi(page);
 
-  await page.evaluate(() => {
-    // Start on settings with a suspended 2-session grid focused on another-project.
-    // @ts-ignore
-    state.preservedGridSessions = [
-      { session: "test-project", machine: "" },
-      { session: "another-project", machine: "" },
-    ];
-    // @ts-ignore
-    state.preservedGridFocusIndex = 1;
-    // @ts-ignore
-    state.currentSession = "another-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("settings");
-  });
+  await toggleSessionGridFromUi(page, "test-project", "");
+  await toggleSessionGridFromUi(page, "another-project", "");
 
-  await page.evaluate(() => {
-    // First click removes test-project from the preserved grid, leaving
-    // another-project as the current single session.
-    // @ts-ignore
-    toggleGrid("test-project", "", null);
-  });
-
-  await page.evaluate(() => {
-    // Second click re-adds the remaining current session from settings.
-    // This used to route through switchSession()'s same-session fast path
-    // and return without initializing the desktop terminal, leaving a blank view.
-    // @ts-ignore
-    toggleGrid("another-project", "", null);
-  });
-
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.currentView;
-  })).toBe("terminal");
-
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return !!state.terminalController;
-  })).toBe(true);
-
-  await expect.poll(async () => page.evaluate(() => {
-    const el = document.getElementById("desktop-terminal-container");
-    return el ? getComputedStyle(el).display : "none";
-  })).toBe("block");
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+  await expect(page.locator("#desktop-terminal-container")).toHaveCSS("display", "block");
+  await expect(page.locator("#desktop-terminal-container canvas")).toHaveCount(1, { timeout: 5000 });
 });
 
 // ── Black-canvas regression: forceRepaint must fire after pty_ready ──────────
@@ -989,58 +745,18 @@ test("re-adding the remaining preserved session from settings reinitializes term
 test("addToGrid triggers forceRepaint per cell after pty_ready", async ({ page }) => {
   let releasePtyReady: () => void;
   const ptyReadyGate = new Promise<void>((resolve) => { releasePtyReady = resolve; });
+  await routeHydratedPty(page, ptyReadyGate);
   await loadApp(page);
 
-  // Open a single terminal first so addToGrid promotes single→grid (2 cells).
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    initTerminal();
-  });
+  await openTwoCellGrid(page);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrating")).toHaveCount(2, { timeout: 5000 });
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return !!state.terminalController?.term;
-  }), { timeout: 5000 }).toBe(true);
-
-  // Controller creation awaits lazy renderer isolation. Gate pty_ready so
-  // every controller gets its spy before the event can trigger a repaint.
-  await routeHydratedPty(page, ptyReadyGate);
-  await page.evaluate(() => {
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.length === 2 && state.gridSessions.every((gs) => !!gs.controller);
-  }), { timeout: 5000 }).toBe(true);
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.gridSessions.forEach((gs) => {
-      gs._forceRepaintCount = 0;
-      const orig = gs.controller.forceRepaint.bind(gs.controller);
-      gs.controller.forceRepaint = () => { gs._forceRepaintCount++; orig(); };
-    });
-  });
   releasePtyReady!();
 
-  // Wait for gated WS handshake + pty_ready on every cell.
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((gs) => !!gs.controller?.isConnected);
-  }), { timeout: 5000 }).toBe(true);
-
-  // After pty_ready settles, every cell should have had ≥1 forced repaint.
-  // Without the fix this stays at 0 and the cell shows the manual blackfill.
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((gs) => gs._forceRepaintCount >= 1);
-  }), { timeout: 3000 }).toBe(true);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
+  await expect.poll(() => page.locator("#desktop-grid-container .grid-cell canvas").evaluateAll((canvases) =>
+    canvases.every((canvas) => getComputedStyle(canvas).visibility === "visible"),
+  )).toBe(true);
 });
 
 test("grid pty_ready clears stale prefill-loading state", async ({ page }) => {
@@ -1049,26 +765,11 @@ test("grid pty_ready clears stale prefill-loading state", async ({ page }) => {
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    initTerminal();
-  });
+  await openTerminal(page, "test-project");
 
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return !!state.terminalController?.term;
-  }), { timeout: 5000 }).toBe(true);
+  await expect(page.locator("#desktop-terminal-container canvas")).toHaveCount(1, { timeout: 5000 });
 
-  await page.evaluate(() => {
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
+  await toggleSessionGridFromUi(page, "another-project", "");
 
   await expect.poll(async () => page.evaluate(() => {
     const debugWindow = window as unknown as {
@@ -1095,46 +796,25 @@ test("grid pty_ready clears stale prefill-loading state", async ({ page }) => {
 });
 
 test("long-background visibilitychange reconnects each grid cell and repaints", async ({ page }) => {
-  await loadApp(page);
-
-  // Build a 2-cell grid first.
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.currentSession = "test-project";
-    // @ts-ignore
-    state.currentMachine = "";
-    // @ts-ignore
-    showView("terminal", true);
-    // @ts-ignore
-    initTerminal();
-  });
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return !!state.terminalController?.term;
-  }), { timeout: 5000 }).toBe(true);
-
-  await page.evaluate(() => {
-    // @ts-ignore
-    addToGrid("another-project", "");
-  });
-
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((gs) => !!gs.controller?.isConnected);
-  }), { timeout: 5000 }).toBe(true);
-
-  // Reset spy counters AFTER initial connect so we measure only post-reconnect repaints.
-  await page.evaluate(() => {
-    // @ts-ignore
-    state.gridSessions.forEach((gs) => {
-      gs._forceRepaintCount = 0;
-      gs._reconnectCount = 0;
-      const origRepaint = gs.controller.forceRepaint.bind(gs.controller);
-      gs.controller.forceRepaint = () => { gs._forceRepaintCount++; origRepaint(); };
-      const origReconnect = gs.controller.reconnect.bind(gs.controller);
-      gs.controller.reconnect = (...args: unknown[]) => { gs._reconnectCount++; return origReconnect(...args); };
+  const attachCounts = new Map<string, number>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (parsed.type !== "attach") return;
+      attachCounts.set(session, (attachCounts.get(session) ?? 0) + 1);
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-RECONNECT-${attachCounts.get(session)}\r\n`));
+      if (parsed.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
     });
   });
+
+  await loadApp(page);
+  await openTwoCellGrid(page);
+  await expect.poll(() => [...attachCounts.values()].reduce((sum, count) => sum + count, 0)).toBe(2);
 
   // Simulate >60s background: monkey-patch Date.now so the visibility handler
   // sees `hiddenDuration > 60_000` between the hidden/visible flip.
@@ -1144,30 +824,14 @@ test("long-background visibilitychange reconnects each grid cell and repaints", 
     Date.now = () => origNow() + offset;
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));
-    // Now jump 70s forward so the visible-event sees a long gap.
     offset = 70_000;
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
     document.dispatchEvent(new Event("visibilitychange"));
   });
 
-  // Each cell should have been told to reconnect.
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.map((gs) => gs._reconnectCount);
-  }), { timeout: 3000 }).toEqual([
-    expect.any(Number),
-    expect.any(Number),
-  ]);
-
-  const reconnectCounts = await page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.map((gs) => gs._reconnectCount);
-  });
-  for (const r of reconnectCounts) expect(r).toBeGreaterThanOrEqual(1);
-
-  // After reconnect → new pty_ready arrives → forceRepaint should fire (with fix).
-  await expect.poll(async () => page.evaluate(() => {
-    // @ts-ignore
-    return state.gridSessions.every((gs) => gs._forceRepaintCount >= 1);
-  }), { timeout: 5000 }).toBe(true);
+  await expect.poll(() => [
+    attachCounts.get("test-project") ?? 0,
+    attachCounts.get("another-project") ?? 0,
+  ], { timeout: 5000 }).toEqual([2, 2]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 });

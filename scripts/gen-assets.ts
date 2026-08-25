@@ -47,13 +47,6 @@ execSync("bun run scripts/bundle-ghostty.ts", {
   stdio: "inherit",
 });
 
-// Bundle client-side pure logic modules into public/wolfpack-lib.js
-console.log("bundling wolfpack-lib...");
-execSync("bun run scripts/bundle-client-lib.ts", {
-  cwd: join(import.meta.dirname, ".."),
-  stdio: "inherit",
-});
-
 // Bundle public/app.ts into public/app.bundle.js
 console.log("bundling app...");
 execSync("bun run scripts/bundle-app.ts", {
