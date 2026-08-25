@@ -2,50 +2,58 @@
  * Regression tests for fixes from the security/correctness audit.
  * Each test targets a specific finding that was fixed in the fix/audit-findings branch.
  */
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { lstatSync, mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
+const PRIOR_ENV = {
+  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
+  WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
+} as const;
+const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
+
+process.env.WOLFPACK_TEST = "1";
+const RAW_TEST_DEV_DIR = mkdtempSync(join(tmpdir(), "wolfpack-audit-devdir-"));
+const TEST_DEV_DIR = realpathSync(RAW_TEST_DEV_DIR);
+process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+const { __setDevDir } = await import("../../src/test-hooks.ts");
+const { isUnderDevDir } = await import("../../src/server/dev-dir.js");
+__setDevDir(TEST_DEV_DIR);
 
 // ── 1. Path containment boundary (audit finding: prefix check too weak) ──
-// Set DEV_DIR before importing so the module-level constant picks it up.
-// Use trailing slash to verify boundary logic handles normalized equivalence.
-process.env.WOLFPACK_DEV_DIR = "/Users/home/Dev/";
-const { isUnderDevDir } = await import("../../src/server/dev-dir.js");
 
 describe("isUnderDevDir — path containment boundary", () => {
   test("exact match on DEV_DIR itself", () => {
-    expect(isUnderDevDir("/Users/home/Dev/")).toBe(true);
-    expect(isUnderDevDir("/Users/home/Dev")).toBe(true);
+    expect(isUnderDevDir(`${TEST_DEV_DIR}/`)).toBe(true);
+    expect(isUnderDevDir(TEST_DEV_DIR)).toBe(true);
   });
 
   test("child directory matches", () => {
-    expect(isUnderDevDir("/Users/home/Dev/wolfpack")).toBe(true);
-    expect(isUnderDevDir("/Users/home/Dev/foo/bar/baz")).toBe(true);
+    expect(isUnderDevDir(join(TEST_DEV_DIR, "wolfpack"))).toBe(true);
+    expect(isUnderDevDir(join(TEST_DEV_DIR, "foo", "bar", "baz"))).toBe(true);
   });
 
   test("rejects sibling path that shares string prefix", () => {
-    // This was the original bug — /Users/home/Developer matched /Users/home/Dev
-    expect(isUnderDevDir("/Users/home/Developer")).toBe(false);
-    expect(isUnderDevDir("/Users/home/DevOps")).toBe(false);
-    expect(isUnderDevDir("/Users/home/Dev2")).toBe(false);
+    expect(isUnderDevDir(`${TEST_DEV_DIR}eloper`)).toBe(false);
+    expect(isUnderDevDir(`${TEST_DEV_DIR}Ops`)).toBe(false);
+    expect(isUnderDevDir(`${TEST_DEV_DIR}2`)).toBe(false);
   });
 
   test("rejects unrelated paths", () => {
-    expect(isUnderDevDir("/tmp/something")).toBe(false);
-    expect(isUnderDevDir("/Users/other/Dev/project")).toBe(false);
+    expect(isUnderDevDir(join(tmpdir(), "something"))).toBe(false);
+    expect(isUnderDevDir(join(dirname(TEST_DEV_DIR), "other", "project"))).toBe(false);
   });
 
   test("rejects partial prefix with no separator", () => {
-    expect(isUnderDevDir("/Users/home/Devious")).toBe(false);
+    expect(isUnderDevDir(`${TEST_DEV_DIR}ious`)).toBe(false);
   });
 });
 
 // ── 1b. validateProjectDir realpath containment ──
 // Imports the real `validateProjectDir` from src/ so this test cannot drift
-// from production. `isUnderDevDir` resolves DEV_DIR from process.env.WOLFPACK_DEV_DIR
-// at call time (set at top of file to /Users/home/Dev/).
+// from production.
 
-import { lstatSync, mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 const { validateExplicitProjectDir, validateProjectDir } = await import("../../src/server/validate-project-dir.js");
 
 describe("validateProjectDir — realpath containment", () => {
@@ -53,8 +61,7 @@ describe("validateProjectDir — realpath containment", () => {
     const testDevDir = mkdtempSync(join(tmpdir(), "wolfpack-devdir-"));
     const project = join(testDevDir, "legit-project");
     mkdirSync(project);
-    // testDevDir is under /tmp (or macOS equivalent), not under DEV_DIR (/Users/home/Dev/),
-    // so containment must fail.
+    // testDevDir is a sibling temp root, not under TEST_DEV_DIR.
     const real = realpathSync(project);
     expect(isUnderDevDir(real)).toBe(false);
     const result = validateProjectDir(project);
@@ -165,6 +172,15 @@ describe("validateExplicitProjectDir — explicit arbitrary directory boundary",
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+afterAll(() => {
+  rmSync(TEST_DEV_DIR, { recursive: true, force: true });
+  __setDevDir(PRIOR_CACHED_DEV_DIR);
+  if (PRIOR_ENV.WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
+  else process.env.WOLFPACK_DEV_DIR = PRIOR_ENV.WOLFPACK_DEV_DIR;
+  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
+  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 // ── 2. killPortHolder process verification ──
