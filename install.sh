@@ -224,22 +224,13 @@ mv -f "$STAGED_BROKER" "${INSTALL_DIR}/${BROKER_BINARY_NAME}" || exit 1
 echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
 echo "  $(green '✓') Broker installed to ${INSTALL_DIR}/${BROKER_BINARY_NAME}"
 
-# ── Restart service if already installed (upgrade path) ──
+# ── Detect an existing service (upgrade path) ──
 
 SERVICE_EXISTS=false
 if $IS_MACOS && [ -f "$HOME/Library/LaunchAgents/com.wolfpack.server.plist" ]; then
   SERVICE_EXISTS=true
 elif $IS_LINUX && [ -f "$HOME/.config/systemd/user/wolfpack.service" ]; then
   SERVICE_EXISTS=true
-fi
-
-if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
-  echo "  Restarting service with new binary..."
-  if "${INSTALL_DIR}/${BINARY_NAME}" service restart 2>/dev/null; then
-    echo "  $(green '✓') Server service restarted"
-  else
-    echo "  $(dim 'Server restart failed — run: wolfpack service restart')"
-  fi
 fi
 
 echo ""
@@ -294,17 +285,31 @@ echo ""
 
 # ── Run setup ──
 
-if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" = "1" ]; then
-  exit 0
+if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
+  if [ -x "$MANAGED_BINARY" ]; then
+    echo "  $(green '✓') $(bold 'wolfpack') installed"
+    echo ""
+    echo "  Run $(bold 'wolfpack') to start."
+    echo ""
+    if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
+      "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
+    else
+      exec "$MANAGED_BINARY" setup < /dev/tty
+    fi
+  else
+    echo "  $(red '✗') wolfpack binary not found after install"
+    exit 1
+  fi
 fi
 
-if [ -x "$MANAGED_BINARY" ]; then
-  echo "  $(green '✓') $(bold 'wolfpack') installed"
-  echo ""
-  echo "  Run $(bold 'wolfpack') to start."
-  echo ""
-  exec "$MANAGED_BINARY" setup < /dev/tty
-else
-  echo "  $(red '✗') wolfpack binary not found after install"
-  exit 1
+# ── Restart service after successful setup (upgrade path) ──
+
+if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
+  echo "  Restarting service with new binary..."
+  if "$MANAGED_BINARY" service restart --server-only 2>/dev/null; then
+    echo "  $(green '✓') Server service restarted"
+  else
+    echo "  $(dim 'Server restart failed — run: wolfpack service restart')"
+    exit 1
+  fi
 fi

@@ -68,6 +68,8 @@ export function hasUninstallConfirmationFlag(argv: string[]): boolean {
 }
 
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
+const SERVICE_USAGE = `Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]
+       wolfpack service restart --server-only`;
 
 export function topLevelUsage(): string {
   return `Usage: wolfpack [--machine <short-name-or-fqdn>] [command]
@@ -98,23 +100,29 @@ Help:
 }
 
 export function setupUsage(): string {
-  return `Usage: wolfpack setup [--non-interactive] [--dev-dir <path>] [--port <1024-65535>]
+  return `Usage: wolfpack setup [--non-interactive] [--defer-service-restart] [--dev-dir <path>] [--port <1024-65535>]
 
 Run the first-run setup wizard. Unattended setup must be explicitly enabled;
-unspecified fields preserve an existing valid configuration.`;
+unspecified fields preserve an existing valid configuration. Service-restart deferral
+writes descriptor changes without activation for an installer-managed handoff.`;
 }
 
 export interface ParsedSetupOptions {
   readonly nonInteractive: boolean;
+  readonly deferServiceRestart: boolean;
   readonly devDir?: string;
   readonly port?: number;
 }
 
 export function parseSetupOptions(argv: readonly string[]): ParsedSetupOptions | null {
-  const parsed: { nonInteractive: boolean; devDir?: string; port?: number } = { nonInteractive: false };
+  const parsed: { nonInteractive: boolean; deferServiceRestart: boolean; devDir?: string; port?: number } = {
+    nonInteractive: false,
+    deferServiceRestart: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--non-interactive") parsed.nonInteractive = true;
+    else if (arg === "--defer-service-restart") parsed.deferServiceRestart = true;
     else if (arg === "--dev-dir" && argv[i + 1]) parsed.devDir = argv[++i];
     else if (arg === "--port" && argv[i + 1]) {
       const port = Number(argv[++i]);
@@ -142,14 +150,18 @@ export type ServiceCommandAction = "install" | "uninstall" | "stop" | "start" | 
 export interface ParsedServiceCommand {
   readonly action: ServiceCommandAction;
   readonly broker: boolean;
+  readonly serverOnly: boolean;
 }
 
 export function parseServiceCommand(argv: readonly string[]): ParsedServiceCommand | null {
   const [action, ...flags] = argv;
   if (!action) return null;
   if (!["install", "uninstall", "stop", "start", "restart", "status"].includes(action)) return null;
-  if (flags.some(flag => flag !== "--broker")) return null;
-  return { action: action as ServiceCommandAction, broker: flags.includes("--broker") };
+  if (flags.some(flag => flag !== "--broker" && flag !== "--server-only")) return null;
+  const broker = flags.includes("--broker");
+  const serverOnly = flags.includes("--server-only");
+  if (serverOnly && (action !== "restart" || broker)) return null;
+  return { action: action as ServiceCommandAction, broker, serverOnly };
 }
 
 async function start() {
@@ -278,19 +290,23 @@ async function main() {
   } else if (cmd === "setup") {
     await runSetup(argv.slice(1));
   } else if (cmd === "service" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print("Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
+    print(SERVICE_USAGE);
   } else if (cmd === "service") {
     const serviceCommand = parseServiceCommand(argv.slice(1));
     if (!serviceCommand) {
-      printError("  Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]");
+      printError(`  ${SERVICE_USAGE}`);
       process.exit(1);
     }
     if (serviceCommand.action === "install") serviceInstall();
     else if (serviceCommand.action === "uninstall") serviceUninstall();
     else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
     else if (serviceCommand.action === "start") serviceStart();
-    else if (serviceCommand.action === "restart") serviceRestart(serviceCommand.broker ? { broker: true } : {});
-    else if (serviceCommand.action === "status") serviceStatus();
+    else if (serviceCommand.action === "restart") {
+      const restarted = serviceCommand.serverOnly
+        ? serviceRestart({ broker: false, skipBrokerSessionWarning: true })
+        : serviceRestart(serviceCommand.broker ? { broker: true } : {});
+      if (!restarted) process.exitCode = 1;
+    } else if (serviceCommand.action === "status") serviceStatus();
   } else if (cmd === "doctor" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
     print("Usage: wolfpack doctor [--json] [--fix]");
   } else if (cmd === "doctor") {

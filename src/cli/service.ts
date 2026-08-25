@@ -491,15 +491,16 @@ export function isServiceInstalled(): boolean {
 }
 
 /**
- * Rewrite and reload only the installed server descriptor after setup changes
- * descriptor-backed config. The independent broker and its PTYs are untouched.
+ * Rewrite the installed server descriptor after setup changes descriptor-backed
+ * config, optionally reloading it. The independent broker and its PTYs are untouched.
  */
-export function refreshInstalledServerService(): void {
+export function refreshInstalledServerService(options: { readonly reload?: boolean } = {}): void {
   if (!isServiceInstalled()) return;
-  const wasRunning = isServiceRunning();
+  const reload = options.reload ?? true;
+  const wasRunning = reload && isServiceRunning();
   // launchd can have a loaded KeepAlive job between process instances. It
   // still holds an in-memory copy of the old plist and must be re-bootstrapped.
-  const wasLoaded = IS_MACOS ? isLaunchdServiceLoaded() : wasRunning;
+  const wasLoaded = reload && (IS_MACOS ? isLaunchdServiceLoaded() : wasRunning);
   const authState = prepareServiceAuthFile(SERVICE_AUTH_PATH);
   const serviceAuthPath = authState === "absent" ? undefined : SERVICE_AUTH_PATH;
 
@@ -516,7 +517,7 @@ export function refreshInstalledServerService(): void {
     execSync("systemctl --user daemon-reload");
     if (wasRunning) execSync(`systemctl --user restart ${SYSTEMD_SERVICE}`);
   }
-  print(dim(`  Refreshed installed server service${wasLoaded ? " and reloaded it" : ""}.`));
+  print(dim(`  Refreshed installed server service descriptor${wasLoaded ? " and reloaded it" : ""}.`));
 }
 
 export function serviceInstall() {
@@ -733,7 +734,7 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
   return serverStopped;
 }
 
-export function serviceStart(_options: ServiceActionOptions = {}) {
+export function serviceStart(_options: ServiceActionOptions = {}): boolean {
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
     rotateLogFile(BROKER_LOG_PATH);
@@ -751,9 +752,11 @@ export function serviceStart(_options: ServiceActionOptions = {}) {
       execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
     }
     print(green("  Wolfpack service started."));
+    return true;
   } catch (e: unknown) {
     log.error("failed to start service", { error: errMsg(e) });
     print(red("  Failed to start service."));
+    return false;
   }
 }
 
@@ -783,7 +786,7 @@ function brokerRestartPrompt(activeBrokerSessions: number | null): string {
   return `  Restart broker too? This will reset ${activeBrokerSessions} active broker ${sessions}. (y/n) `;
 }
 
-export function serviceRestart(options: ServiceActionOptions = {}) {
+export function serviceRestart(options: ServiceActionOptions = {}): boolean {
   const activeBrokerSessions = readBrokerSessionCount(loadConfig());
   const promptedForBroker = options.broker === undefined;
   const restartBroker = options.broker ?? (
@@ -796,8 +799,8 @@ export function serviceRestart(options: ServiceActionOptions = {}) {
     ? yellow(`  Broker restart requested; ${sessionCount} may be terminated.`)
     : dim(`  Server-only restart; ${sessionCount} will remain broker-owned.`));
   const skipBrokerSessionWarning = options.skipBrokerSessionWarning ?? promptedForBroker;
-  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning })) return;
-  serviceStart({ broker: restartBroker });
+  if (!serviceStop({ broker: restartBroker, skipBrokerSessionWarning })) return false;
+  return serviceStart({ broker: restartBroker });
 }
 
 export function isServiceRunning(): boolean {

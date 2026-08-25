@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/almogdepaz/wolfpack/main/install.sh
 
 The installer immediately launches setup. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
 
-On later runs, `wolfpack` ensures the managed server is current and running, then prints the local and verified remote URLs plus a QR code. File replacement alone does not restart the running broker, but an existing configured service triggers an interactive restart; decline the broker restart while active sessions matter. See [what the installer does](docs/installation.md#what-the-installer-does) for the full lifecycle boundary.
+On later runs, `wolfpack` stages current binaries, runs deferred setup to verify configuration and print the local and verified remote URLs plus a QR code, then restarts an existing configured service server-only. Sessions on a running broker remain attached. See [what the installer does](docs/installation.md#what-the-installer-does) for the full lifecycle boundary.
 
 ### Bunx or npm: package runner
 
