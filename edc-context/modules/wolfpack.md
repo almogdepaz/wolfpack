@@ -3,7 +3,7 @@
 
 ## When To Read This
 
-Read this before changing session creation/control, terminal attach/reconnect behavior, Tailnet peer discovery, browser terminal hydration, service install/startup, task relay, push notification routing, or release packaging. Do not use `public/app.bundle.js`, `public/ghostty-web.bundle.js`, `src/public-assets.ts`, or `bin/wolfpack` as source truth; they are generated/staged artifacts. For broker internals, this module owns only the TypeScript client/backend boundary; the Rust broker source is outside this module scope and must be inspected separately before relying on broker implementation details.
+Read this before changing session creation/control, child-agent spawning, terminal attach/reconnect behavior, Tailnet peer discovery, browser terminal hydration, service install/startup/update, task relay, push notification routing, or release packaging. Do not use `public/app.bundle.js`, `public/ghostty-web.bundle.js`, `src/public-assets.ts`, or `bin/wolfpack` as source truth; they are generated/staged artifacts. For broker internals, this module owns only the TypeScript client/backend boundary; the Rust broker source is outside this module scope and must be inspected separately before relying on broker implementation details.
 
 ## Authority Boundaries
 
@@ -15,14 +15,16 @@ Read this before changing session creation/control, terminal attach/reconnect be
 ## Core Runtime Model
 
 1. CLI/service setup writes config and starts two user services: broker first, then server. The server refuses useful session operations without a reachable broker socket/handshake (`src/cli/service.ts`, `src/server/backend.ts`, `src/server/index.ts`). Server-only restarts intentionally preserve broker-owned PTYs.
-2. Browser and CLI call HTTP session APIs. Top-level and child sessions validate project selection, command/harness, names, and optional prompts before calling `backend.createSession` (`src/server/project-settings-routes.ts`, `src/server/session-create.ts`, `src/server/session-open.ts`).
-3. `BrokerBackend.createSession` converts a safe harness command into `SHELL -lic ...`, injects Wolfpack identity env vars, then asks broker `create_session`. It captures durable session identity after broker returns a UUID (`src/server/broker-backend.ts`).
+2. Browser and CLI call HTTP session APIs. Top-level and child sessions validate project selection, command/harness, names, optional prompts, and child-only model selection before calling `backend.createSession` (`src/cli/session-control.ts`, `src/server/project-settings-routes.ts`, `src/server/session-create.ts`, `src/server/session-open.ts`).
+3. `BrokerBackend.createSession` converts a safe harness command into `SHELL -lic ...`, injects Wolfpack identity env vars, and passes startup prompt/model values as opaque argv entries after the shell `-c` script; it captures durable session identity after broker returns a UUID (`src/server/broker-backend.ts`).
 4. Terminal viewing is a separate `/ws/pty` protocol over raw PTY bytes plus JSON control messages. A browser sends `attach`, the server settles geometry, snapshots broker state, subscribes to live output, gates pending input until the subscription boundary is established, then sends `pty_ready` (`src/server/websocket.ts`, `public/pty-socket-client.ts`).
 
 ## Session/Project Contracts That Are Easy To Break
 
 - `project` and `projectDir` are mutually exclusive selectors for existing sessions. `newProject` cannot be combined with `projectDir`; `newProjectParent` only makes sense with `newProject` (`src/server/project-settings-routes.ts`). Keep this exclusivity or the path validation authority becomes ambiguous.
-- `CMD_REGEX` is not the only command boundary: the backend also validates non-shell commands and uses `SHELL -lic` with identity env vars. Shell sessions reject `initialPrompt`; agent harnesses accept it via an argument appended after `wolfpack-agent` (`src/validation.ts`, `src/server/broker-backend.ts`).
+- `CMD_REGEX` is not the only command boundary: the backend also validates non-shell commands and uses `SHELL -lic` with identity env vars. Shell sessions reject `initialPrompt`; agent harnesses accept it via argv after `wolfpack-agent` (`src/validation.ts`, `src/server/broker-backend.ts`).
+- Child spawning is same-harness by design. `session-open` / `agent spawn` derives the child command from the active parent’s structured `agentKind`; clients cannot override `cmd` or `harness` (`src/server/session-open.ts`, `src/server/project-settings-routes.ts`).
+- Optional `--model` / request `model` is child-only and Pi-only. CLI and API validate it as nonblank and bounded by `SESSION_OPEN_MAX_MODEL_LENGTH`; `openSubSession` rejects model selection when the parent harness is not Pi, and `BrokerBackend` rejects model options for non-Pi commands before the broker call (`src/session-open-contract.ts`, `src/cli/session-control.ts`, `src/server/session-open.ts`, `src/server/broker-backend.ts`). Omission must preserve same-harness launch behavior for every provider.
 - Parent/child session creation re-reads parent state after duplicate-name races and verifies the parent UUID has not changed. Do not replace this with name-only checks; names can be reused after kill/recreate (`src/server/session-open.ts`).
 - `listIdentities()` must remain available and coherent with `list()` for session-control routes. Several APIs intentionally return 503 if identities are missing rather than falling back to name-only state (`src/server/session-control-routes.ts`).
 
@@ -58,11 +60,13 @@ This is the highest-coupling area. The server, `public/pty-socket-client.ts`, an
 - Dashboard session state is sampled from broker facts plus bounded snapshot fingerprints and optional project-local `.wolfpack/agent-status.json`. Runtime state is persisted/acknowledged by session UUID when available; when broker is unavailable the last known summaries are used with degraded liveness (`src/server/session-observation.ts`, `src/server/agent-status.ts`).
 - Push subscriptions are local persistent state under `~/.wolfpack`; endpoints are exact-host allowlisted push services, VAPID keys are generated locally, and `/api/notify` optionally embeds bounded session-target routes (`src/server/push.ts`, `src/server/push-routes.ts`, `src/push-subscription-origin.ts`).
 
-## Build/Packaging Contracts
+## Setup, Service, Install, and Packaging Contracts
 
 - `scripts/build.ts` always regenerates embedded public assets before compiling. Release/package-all mode requires clean tracked source and validates prebuilt broker artifacts by target, broker version, source revision, binary header architecture, and sha256 (`scripts/build.ts`, `scripts/broker-artifacts.ts`).
 - `bin/install.cjs` and `bin/run.cjs` copy/resolve platform optional packages and prepare macOS binaries with xattr/codesign. The service layer also stages stable copies under `~/.wolfpack/bin`; keep these paths aligned or service install will not find `wolfpack-broker`.
-- `scripts/gen-control-api-schema.ts` generates `docs/generated/control-api.schema.json` from `src/control-api/schema.ts`. The schema imports runtime constants from this module; update schema source when changing stable API messages/routes rather than hand-editing generated output.
+- The curl installer stages and verifies both server and broker assets, installs the managed pair, runs setup from the exact managed binary, and on existing services performs a final `service restart --server-only` so the broker is not intentionally restarted during upgrades (`install.sh`, `src/cli/index.ts`, `src/cli/service.ts`). If the final server restart fails, install exits nonzero rather than silently claiming success.
+- `wolfpack setup --defer-service-restart` is installer-facing. It may refresh installed server descriptors without activation and then leaves service handoff to the installer’s final restart; ordinary setup restarts only the server when remote-origin policy changes and preserves broker PTYs (`src/cli/index.ts`, `src/cli/setup.ts`, `src/cli/service.ts`).
+- `scripts/gen-control-api-schema.ts` generates `docs/generated/control-api.schema.json` from `src/control-api/schema.ts`. The schema imports runtime constants such as session-open model bounds from this module; update schema source when changing stable API messages/routes rather than hand-editing generated output.
 
 ## Read/Change Gotchas
 
@@ -71,13 +75,14 @@ This is the highest-coupling area. The server, `public/pty-socket-client.ts`, an
 - `src/server/http.ts` uses login-shell invocation for Tailscale status on macOS App Store installs; direct `execFile` is a known regression footgun.
 - Directory browsing is intentionally globally concurrency-limited and symlink-averse; broadening it affects remote browser ability to scan host files (`src/server/directory-browser.ts`).
 - Stopping/restarting broker is session-destructive; server-only restart is the safe default for code/config updates that do not require broker reset (`src/cli/service.ts`).
+- Performance harnesses should drive visible controls when measuring browser flows; direct `window.openSession` / `addToGrid` calls can bypass UI event path timing (`scripts/terminal-load-perf.ts`).
 
 ## Source Pointers
 
 - Server/auth/CORS/rate limits/WS upgrade: `src/server/index.ts`, `src/server/http.ts`, `src/auth.ts`, `src/server/tailnet-origin-policy.ts`, `src/server/ws-ticket.ts`.
-- Session/project APIs: `src/server/project-settings-routes.ts`, `src/server/session-create.ts`, `src/server/session-open.ts`, `src/server/session-control-routes.ts`, `src/server/project-selection.ts`, `src/server/validate-project-dir.ts`.
+- Session/project APIs: `src/cli/session-control.ts`, `src/server/project-settings-routes.ts`, `src/server/session-create.ts`, `src/server/session-open.ts`, `src/session-open-contract.ts`, `src/server/session-control-routes.ts`, `src/server/project-selection.ts`, `src/server/validate-project-dir.ts`.
 - Broker boundary: `src/server/backend.ts`, `src/server/broker-backend.ts`, `src/broker/client.ts`, `src/broker/codec.ts`, `src/broker/snapshot-render.ts`.
 - Browser terminal protocol: `src/server/websocket.ts`, `public/pty-socket-client.ts`, `public/pty-terminal-controller.ts`, `public/ordered-resize.ts`, `src/ws-constants.ts`.
 - Browser app/peer UI: `public/app.ts`, `public/app-state.ts`, `public/app-grid.ts`, `public/browser-auth.ts`, `src/tailnet-machine-contract.ts`, `src/tailnet-peer-registry.ts`.
 - Tasks/relay/notifications/status: `src/tasks/*`, `src/task-relay/*`, `src/canonical-json.ts`, `src/server/push*.ts`, `src/server/session-observation.ts`, `src/server/agent-status.ts`.
-- CLI/service/build: `src/cli/index.ts`, `src/cli/setup.ts`, `src/cli/service.ts`, `bin/*.cjs`, `scripts/build.ts`, `scripts/broker-artifacts.ts`, `scripts/gen-control-api-schema.ts`.
+- CLI/service/install/build: `src/cli/index.ts`, `src/cli/setup.ts`, `src/cli/service.ts`, `install.sh`, `bin/*.cjs`, `scripts/build.ts`, `scripts/broker-artifacts.ts`, `scripts/gen-control-api-schema.ts`, `scripts/terminal-load-perf.ts`.
