@@ -17,13 +17,13 @@ Do not treat generated bundles, staged EDC artifacts, screenshots, or prior test
 | Path or task | Read first | Notes |
 | --- | --- | --- |
 | `broker/**` | `modules/broker.md` | Broker owns PTY children, registry, output sequence/replay, snapshots, resize transaction, socket codec/server, and Ghostty VT FFI bounds. |
-| `src/**`, `public/**`, `bin/**`, `scripts/**` | `modules/wolfpack.md` | Covers server HTTP/WS auth, session/project APIs, broker client/backend, browser terminal hydration, Tailnet peers, tasks/relay/push, setup/service/build. |
+| `src/**`, `public/**`, `bin/**`, `scripts/**` | `modules/wolfpack.md` | Covers server HTTP/WS auth, session/project APIs, broker client/backend, browser terminal hydration, Tailnet peers, tasks/relay/push, setup/service/install/build. |
 | `tests/**` | `modules/tests.md` | Use for harness behavior and regression intent; production modules remain semantic authority. |
 | `docs/**`, `site/**` | `modules/docs.md` | Docs/site publish user contracts but do not override runtime validation, auth, broker, service, or installer behavior. |
 | `skills/**` | `modules/skills.md` | Skill is a policy wrapper over public Wolfpack CLI/API, not an independent protocol/auth authority. |
 | Broker protocol or terminal attach/reconnect changes | `modules/broker.md` + `modules/wolfpack.md` + relevant `modules/tests.md` sections | Highest coupling: Rust protocol/session sequencing, TS broker client/backend, WS attach, browser hydration, and real-broker tests must stay aligned. |
 | Auth, Tailnet, remote machine, or browser peer changes | `modules/wolfpack.md` + `modules/docs.md` + `modules/skills.md` as needed | Stable machine identity/canonical origin are routing authority; labels and forwarded headers are not. |
-| Tasks, relay, notification, or Pi integration changes | `modules/wolfpack.md` + `modules/docs.md` + `modules/skills.md` + task tests in `modules/tests.md` | Wolfpack owns durable task/relay stores; Pi skills/extensions are clients over public surfaces. |
+| Tasks, relay, notification, Pi integration, or child-agent model selection changes | `modules/wolfpack.md` + `modules/docs.md` + `modules/skills.md` + task/API tests in `modules/tests.md` | Wolfpack owns durable task/relay stores and the `agent spawn`/`session-open` launch contract; Pi skills/extensions are clients over public surfaces. |
 | Install, release, service, or broker artifact changes | `modules/wolfpack.md` + `modules/broker.md` + `modules/docs.md` + `modules/tests.md` | Preserve server-only vs broker restart blast-radius warnings and artifact provenance checks. |
 
 ## Critical global invariants
@@ -36,6 +36,7 @@ Do not treat generated bundles, staged EDC artifacts, screenshots, or prior test
 - Generated/staged artifacts, public bundles, generated schemas, media, and test results are not source truth; route back to owning source/contracts.
 - Slow terminal consumers are shed rather than buffered indefinitely because broker snapshots/replay are the recovery mechanism.
 - Durable task/relay serialization and hashes are migration-sensitive; canonical JSON ordering changes can invalidate stored ledgers or digests.
+- Child-agent launch remains same-harness and parent-identity pinned; model override is a bounded Pi-only option, not a generic client-owned command/harness override.
 
 ## Cross-module coupling / blast radius
 
@@ -45,7 +46,7 @@ Do not treat generated bundles, staged EDC artifacts, screenshots, or prior test
 - **Terminal hydration/resize changes** jointly affect server WS handling, browser socket/controller/order logic, broker snapshot/resize behavior, and tests for replay, prefill, takeover, slow viewers, and reconnect.
 - **Auth/Tailnet changes** affect server routes/upgrades, browser peer registry/fetch behavior, CLI remote control, Pi skill guidance, docs/site exposure wording, and integration/e2e fixtures.
 - **Task/relay changes** affect durable server stores/gateways, generated Control API schema/docs, Pi skill expectations, Tailnet federation tests, and notification/session-target routing.
-- **Build/install changes** affect scripts, optional broker artifacts, service staging paths, docs/site install guidance, and release/install policy tests; broker binary provenance must remain aligned.
+- **Build/install changes** affect scripts, optional broker artifacts, service staging paths, setup/service restart handoff, docs/site install guidance, and release/install policy tests; broker binary provenance and server-only vs broker restart claims must remain aligned.
 
 ## Architecture overview
 
