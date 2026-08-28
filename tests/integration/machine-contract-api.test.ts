@@ -1,19 +1,28 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const PRIOR_ENV = {
+  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
+  WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
+  WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
+  WOLFPACK_SETTINGS_PATH: process.env.WOLFPACK_SETTINGS_PATH,
+  WOLFPACK_MACHINE_ID_PATH: process.env.WOLFPACK_MACHINE_ID_PATH,
+  WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
+} as const;
+const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
-const testRoot = join(tmpdir(), `wolfpack-machine-contract-${process.pid}`);
-mkdirSync(testRoot, { recursive: true });
+const rawTestRoot = mkdtempSync(join(tmpdir(), "wolfpack-machine-contract-"));
+const testRoot = realpathSync(rawTestRoot);
 process.env.WOLFPACK_DEV_DIR = testRoot;
 process.env.WOLFPACK_SETTINGS_PATH = join(testRoot, "bridge-settings.json");
 process.env.WOLFPACK_MACHINE_ID_PATH = join(testRoot, "machine-id");
-const priorTailscaleStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
 const defaultTailscaleStatus = JSON.stringify({
   Self: {
     ID: "n-local",
@@ -40,9 +49,13 @@ const defaultTailscaleStatus = JSON.stringify({
 });
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus;
 
-const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
-const { MockBackend } = await import("../../src/server/mock-backend.ts");
+const {
+  __resetBackend,
+  __resetJwtAuthConfig,
+  __setDevDir,
+  __setTestBackend,
+  MockBackend,
+} = await import("../../src/test-hooks.ts");
 __resetJwtAuthConfig();
 __setDevDir(testRoot);
 __setTestBackend(new MockBackend({ sessions: [] }));
@@ -71,9 +84,17 @@ afterAll(() => {
   (server as Server).close();
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
-  if (priorTailscaleStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
-  else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = priorTailscaleStatus;
   rmSync(testRoot, { recursive: true, force: true });
+  __resetBackend();
+  __setDevDir(PRIOR_CACHED_DEV_DIR);
+  for (const [key, value] of Object.entries(PRIOR_ENV)) {
+    if (key === "WOLFPACK_TEST") continue;
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  __resetJwtAuthConfig();
+  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
+  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 describe("direct machine contract routes", () => {

@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
@@ -34,6 +34,8 @@ const CONTROL_QUEUE_CAPACITY: usize =
     CONTROL_QUEUE_MAX_BYTES / crate::codec::MAX_CONTROL_RESPONSE_PAYLOAD as usize;
 const MAX_CONNECTIONS: usize = 128;
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 32;
+const OWNER_ONLY_SOCKET_UMASK: libc::mode_t = 0o077;
+static SOCKET_BIND_UMASK_MUTEX: Mutex<()> = Mutex::new(());
 static CONTROL_QUEUE_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 static OUTPUT_QUEUE_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 /// Merge adjacent PTY reads before crossing the broker socket without raising
@@ -47,6 +49,31 @@ const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// frame and this depth caps queued data before socket backpressure applies.
 const INPUT_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const INPUT_QUEUE_CAPACITY: usize = INPUT_QUEUE_MAX_BYTES / MAX_INPUT_BINARY_PAYLOAD as usize;
+
+struct SocketBindUmaskGuard {
+    previous_umask: libc::mode_t,
+    _mutex_guard: MutexGuard<'static, ()>,
+}
+
+impl SocketBindUmaskGuard {
+    fn acquire() -> Self {
+        let mutex_guard = match SOCKET_BIND_UMASK_MUTEX.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let previous_umask = unsafe { libc::umask(OWNER_ONLY_SOCKET_UMASK) };
+        Self {
+            previous_umask,
+            _mutex_guard: mutex_guard,
+        }
+    }
+}
+
+impl Drop for SocketBindUmaskGuard {
+    fn drop(&mut self) {
+        unsafe { libc::umask(self.previous_umask) };
+    }
+}
 
 pub struct ServerConfig {
     pub socket_path: PathBuf,
@@ -130,9 +157,9 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
     // Set umask to 0o077 before bind so the kernel creates the socket file
     // with mode 0o600 directly, eliminating the TOCTOU window between bind
     // and the chmod below. Restore umask immediately after bind.
-    let old_umask = unsafe { libc::umask(0o077) };
+    let umask_guard = SocketBindUmaskGuard::acquire();
     let bind_result = UnixListener::bind(&socket_path);
-    unsafe { libc::umask(old_umask) };
+    drop(umask_guard);
     let listener = bind_result?;
     // Belt-and-suspenders: also chmod in case of an unusual kernel that does
     // not honour umask for Unix sockets.
@@ -891,6 +918,51 @@ mod tests {
     use crate::protocol::Status;
     use crate::registry::{CreateOptions, MAX_CONCURRENT_SNAPSHOTS};
     use serde_json::json;
+
+    const TEST_BASELINE_UMASK: libc::mode_t = 0o022;
+
+    struct TestUmaskRestore(libc::mode_t);
+
+    fn lock_umask_for_test() -> MutexGuard<'static, ()> {
+        match SOCKET_BIND_UMASK_MUTEX.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    impl TestUmaskRestore {
+        fn set(umask: libc::mode_t) -> Self {
+            let _guard = lock_umask_for_test();
+            Self(unsafe { libc::umask(umask) })
+        }
+    }
+
+    impl Drop for TestUmaskRestore {
+        fn drop(&mut self) {
+            let _guard = lock_umask_for_test();
+            unsafe { libc::umask(self.0) };
+        }
+    }
+
+    fn current_process_umask() -> libc::mode_t {
+        let _guard = lock_umask_for_test();
+        let current = unsafe { libc::umask(OWNER_ONLY_SOCKET_UMASK) };
+        unsafe { libc::umask(current) };
+        current
+    }
+
+    #[test]
+    fn socket_bind_umask_guard_serializes_and_restores_process_umask() {
+        let _restore_test_umask = TestUmaskRestore::set(TEST_BASELINE_UMASK);
+        {
+            let _guard = SocketBindUmaskGuard::acquire();
+            assert!(matches!(
+                SOCKET_BIND_UMASK_MUTEX.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+        }
+        assert_eq!(current_process_umask(), TEST_BASELINE_UMASK);
+    }
 
     #[tokio::test]
     async fn snapshot_subscribe_shares_the_process_snapshot_limit() {

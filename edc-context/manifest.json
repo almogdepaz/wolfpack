@@ -142,8 +142,8 @@
       "patches/**"
     ]
   },
-  "generatedAt": "2026-08-24T21:31:50Z",
-  "sourceCommit": "aaee44a882319d07f80e4885de1f7d862dbabe54",
+  "generatedAt": "2026-08-25T18:16:38Z",
+  "sourceCommit": "9d1d2d87c10ac32d6b88a52261f1885d04f1e887",
   "coverage": {
     "contextMappedFileCount": 442,
     "contextlessFileCount": 31,
