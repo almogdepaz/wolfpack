@@ -36,6 +36,7 @@ const PRIOR_WOLFPACK_DEV_DIR = process.env.WOLFPACK_DEV_DIR;
 const PRIOR_WOLFPACK_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTITY_PATH;
 const PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
 const PRIOR_WOLFPACK_SETTINGS_PATH = process.env.WOLFPACK_SETTINGS_PATH;
+const PRIOR_WOLFPACK_TASK_RELAY_ROOT = process.env.WOLFPACK_TASK_RELAY_ROOT;
 const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 // Create a real temp dir for test project directories.
@@ -50,8 +51,12 @@ process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DEV_DIR, "agent-runtim
 // every loadSettings/saveSettings call so this works as long as it's set
 // before the first request.
 const TEST_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
+const TEST_TASK_RELAY_ROOT = join(TEST_DEV_DIR, "task-relay");
 process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
+process.env.WOLFPACK_TASK_RELAY_ROOT = TEST_TASK_RELAY_ROOT;
 
+const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/task-relay/gateway.ts");
+__resetTaskRelayGatewayForTests();
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend, DuplicateSessionError } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
@@ -142,6 +147,9 @@ beforeEach(() => {
 
 afterAll(() => {
   (server as Server).close();
+  __resetTaskRelayGatewayForTests();
+  if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
+  else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
   for (const root of externalTempRoots) rmSync(root, { recursive: true, force: true });
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
   if (PRIOR_WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
@@ -153,6 +161,12 @@ afterAll(() => {
   if (PRIOR_WOLFPACK_SETTINGS_PATH === undefined) delete process.env.WOLFPACK_SETTINGS_PATH;
   else process.env.WOLFPACK_SETTINGS_PATH = PRIOR_WOLFPACK_SETTINGS_PATH;
   __setDevDir(PRIOR_CACHED_DEV_DIR);
+});
+
+describe("API fixture isolation", () => {
+  test("keeps the task relay gateway under the suite temp dev directory", () => {
+    expect(getTaskRelayGateway().root).toBe(TEST_TASK_RELAY_ROOT);
+  });
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
