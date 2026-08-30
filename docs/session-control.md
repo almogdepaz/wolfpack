@@ -84,6 +84,27 @@ wolfpack session read <session-or-id> [--json]
 - selectors that ambiguously match a name and another session's ID fail closed.
 - Pi/agent task layers may use `session status <selector> --json` only as Wolfpack-owned target evidence: selector resolution, broker/session existence, stable identity, project path, harness, and terminal liveness. They must not infer Pi model readiness, task completion, or agent state from Wolfpack status.
 
+## Parent-owned teardown
+
+Teardown is parent-owned: when the parent decides a child is no longer needed, it must explicitly tear down that exact session. Completion or blocking alone is not an automatic cleanup trigger; a persistent role session may be retained for follow-up. In Pi, `/quit` exits the harness only; it does not call Wolfpack teardown, so the shell-backed Wolfpack session may remain active.
+
+```bash
+# Local
+wolfpack kill <session-or-id> --json
+
+# Configured Tailnet peer
+wolfpack --machine <short-name-or-fqdn> kill <session-or-id> --json
+```
+
+`kill` accepts the same opaque selector rules as inspection. It uses Wolfpack's ordinary global API auth policy; `--machine` first verifies the configured Tailnet target and carries the normal JWT authorization when configured. A local JSON success is `{ "ok": true, "session": string, "sessionId": string }`; a remote JSON success retains those fields and adds verified `machine` identity. After success, verify teardown through the matching target's active-session list:
+
+```bash
+wolfpack list --json
+wolfpack --machine <short-name-or-fqdn> list --json
+```
+
+The killed `sessionId` must be absent. Do not treat `/quit` as a substitute, and do not kill a session without explicit authority for that exact target.
+
 ## Send and wait
 
 ```bash
