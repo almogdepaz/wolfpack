@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   PI_INTEGRATION_PACKAGES,
   acceptsPiIntegrationInstall,
@@ -41,11 +42,12 @@ function installedMarkdownReferences(skillPath: string): readonly { readonly fro
     if (typeof entry !== "string" || !entry.endsWith(".md")) continue;
     const markdownPath = join(skillPath, entry);
     const markdown = readFileSync(markdownPath, "utf8");
-    for (const match of markdown.matchAll(/\]\(([^)\s]+\.md)(?:#[^)\s]*)?\)/g)) {
-      const reference = match[1];
-      if (!reference || /^(?:https?:)?\/\//.test(reference)) continue;
-      const target = resolve(dirname(markdownPath), reference);
-      references.push({ from: markdownPath, target });
+    for (const match of markdown.matchAll(/\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^)]*["'])?\s*\)/g)) {
+      const destination = match[1] ?? match[2];
+      if (!destination || destination.startsWith("#") || destination.startsWith("//")) continue;
+      const destinationUrl = new URL(destination, pathToFileURL(markdownPath));
+      if (destinationUrl.protocol !== "file:") continue;
+      references.push({ from: markdownPath, target: fileURLToPath(destinationUrl) });
     }
   }
   return references;
@@ -167,6 +169,18 @@ describe("Pi integration setup", () => {
       expect(relative(skillPath, target).startsWith("..")).toBe(false);
       expect(existsSync(target), `${relative(skillPath, from)} references ${relative(skillPath, target)}`).toBe(true);
     }
+  });
+
+  test("discovers extensionless local Markdown destinations", () => {
+    const skillPath = tempDir();
+    writeFileSync(join(skillPath, "SKILL.md"), [
+      "[local reference](references/control#teardown)",
+      "[remote reference](https://example.com/reference)",
+    ].join("\n"));
+
+    expect(installedMarkdownReferences(skillPath)).toEqual([
+      { from: join(skillPath, "SKILL.md"), target: join(skillPath, "references", "control") },
+    ]);
   });
 
   test("refuses to replace an existing Wolfpack skill before installing Pi Tasks", () => {
