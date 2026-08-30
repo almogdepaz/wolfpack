@@ -15,7 +15,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { canonicalJson as serializeCanonicalJson } from "../canonical-json.ts";
+import { canonicalJson } from "../canonical-json.ts";
 import {
   TASK_API_ERROR,
   TASK_EVENT_TYPE,
@@ -212,10 +212,6 @@ export class TaskStoreError extends Error {
 }
 
 // A Wolfpack server owns one TaskStore; its mutable indexes and locks are intentionally instance-local.
-
-function canonicalJson(value: unknown): string {
-  return serializeCanonicalJson(value);
-}
 
 function digest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
