@@ -52,6 +52,8 @@ Parent acknowledgment is two-phase for remote tasks. The sender persists `task.p
 
 All unresolved tasks are retained without eviction; operators must monitor store count and byte growth. An unacknowledged terminal task is also retained. After a completed two-phase parent acknowledgment, terminal payloads are retained for 10 days, then compact task-ID and assignment-hash tombstones remain for a further 10 days to prevent delayed duplicates from resurrecting work. Cleanup never escapes the configured task root.
 
+Durable task JSON now uses locale-independent UTF-16 code-unit key ordering. Existing task ledgers, tombstones, and caches remain structurally readable with no operator action; new appends and rewrites simply use the deterministic ordering going forward. Relay durability is stricter: on first access, Wolfpack validates a legacy version-1 `relay-state.json` and then replaces it with an empty deterministic version-2 state. Legacy relay registrations, mailbox records, peer routes, outbox items, and acceptance IDs are discarded. A malformed legacy state or an unsupported state version fails closed and is not reset.
+
 Artifacts are paths-only metadata. A receiver may declare up to 20 project-relative regular-file paths; the receiver gateway derives machine and project provenance and returns warnings that identify each rejected submitted path. v1 transfers no artifact bytes, snapshots, hashes, or download state. A parent verifies a remote artifact through an appropriate remote inspection, reviewer, or normal source-control transfer.
 
 ## Live-peer readiness checklist

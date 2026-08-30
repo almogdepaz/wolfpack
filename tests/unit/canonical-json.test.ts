@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  canonicalJson,
-  compareCanonicalJsonKeysByLocale,
-} from "../../src/canonical-json.ts";
+import { canonicalJson } from "../../src/canonical-json.ts";
 
 describe("canonical JSON", () => {
   test("sorts recursive object keys by code unit and omits undefined object properties", () => {
@@ -14,24 +11,15 @@ describe("canonical JSON", () => {
     })).toBe("{\"!\":\"punctuation\",\"A\":null,\"a\":true,\"z\":{\"a\":2,\"z\":1}}");
   });
 
-  test("propagates a deterministic injected comparator through nested objects", () => {
-    const descendingCodeUnit = (left: string, right: string): number => left < right ? 1 : left > right ? -1 : 0;
-    const value = { a: { a: 1, c: 3, b: 2 }, c: 3, b: 2 };
+  test("uses utf-16 code-unit ordering across punctuation and case-sensitive keys", () => {
+    const value = { _: 1, "!": 2, a: 3, A: 4, nested: { _: 5, "!": 6, a: 7, A: 8 } };
 
-    expect(canonicalJson(value)).toBe("{\"a\":{\"a\":1,\"b\":2,\"c\":3},\"b\":2,\"c\":3}");
-    expect(canonicalJson(value, descendingCodeUnit))
-      .toBe("{\"c\":3,\"b\":2,\"a\":{\"c\":3,\"b\":2,\"a\":1}}");
+    expect(canonicalJson(value))
+      .toBe("{\"!\":2,\"A\":4,\"_\":1,\"a\":3,\"nested\":{\"!\":6,\"A\":8,\"_\":5,\"a\":7}}");
   });
 
-  test("delegates locale ordering to the runtime-native localeCompare behavior", () => {
-    const value: Readonly<Record<string, number>> = { z: 1, Z: 2, a: 3, A: 4, "!": 5, _: 6 };
-    const runtimeSortedKeys = Object.keys(value).sort((left, right) => left.localeCompare(right));
-    const runtimeExpected = JSON.stringify(Object.fromEntries(
-      runtimeSortedKeys.map((key) => [key, value[key]]),
-    ));
-
-    expect(compareCanonicalJsonKeysByLocale("_", "!")).toBe("_".localeCompare("!"));
-    expect(canonicalJson(value, compareCanonicalJsonKeysByLocale)).toBe(runtimeExpected);
+  test("orders numeric-looking keys by utf-16 code unit rather than object enumeration", () => {
+    expect(canonicalJson({ "2": "two", "10": "ten" })).toBe("{\"10\":\"ten\",\"2\":\"two\"}");
   });
 
   test("retains array order and sparse-array serialization", () => {

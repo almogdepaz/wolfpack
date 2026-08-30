@@ -114,10 +114,25 @@ describe("task append-only store", () => {
     const root = testRoot();
     const store = new TaskStore({ root });
     const ledger = await createSender(store, "task-fsync");
-    const result = await store.appendEvent(ledger, createdEvent("task-fsync"));
+    const result = await store.appendOutboundIntent(ledger, {
+      id: "completed-task-fsync",
+      taskId: "task-fsync",
+      type: "task.completed",
+      actor: "receiver",
+      occurredAt: "2026-08-03T00:00:00.000Z",
+      message: undefined,
+      replyToMessageId: undefined,
+      payload: { kind: "none" },
+      completion: {
+        summary: "done",
+        result: { _: 1, "!": 2, a: 3, A: 4 },
+        error: undefined,
+        artifacts: undefined,
+      },
+    });
 
     expect(result.kind).toBe("appended");
-    expect(readFileSync(ledger.paths.ledgerPath, "utf-8")).toContain('"id":"created-task-fsync"');
+    expect(readFileSync(ledger.paths.ledgerPath, "utf-8")).toContain('"result":{"!":2,"A":4,"_":1,"a":3}');
   });
 
   test("serializes concurrent same-task mutation and reuses only exact duplicate records", async () => {
