@@ -55,15 +55,6 @@ interface RelayState {
   readonly outbox: readonly PeerOutboxItem[];
 }
 
-interface PersistedRelayStateV1 {
-  readonly version: 1;
-  readonly registrations: readonly RelayRegistration[];
-  readonly envelopes: readonly StoredEnvelope[];
-  readonly mailbox: readonly StoredMailboxItem[];
-  readonly peerRoutes?: readonly PeerRoute[];
-  readonly outbox: readonly PeerOutboxItem[];
-}
-
 interface PersistedRelayStateV2 {
   readonly version: 2;
   readonly registrations: readonly RelayRegistration[];
@@ -85,12 +76,6 @@ function digestJson(value: string): string {
 
 function digest(value: unknown): string {
   return digestJson(canonicalJson(value));
-}
-
-function legacyDigest(envelope: RelayEnvelope): string {
-  const json = JSON.stringify(envelope);
-  if (typeof json !== "string") throw new TypeError("relay envelopes require JSON values");
-  return digestJson(json);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -120,28 +105,21 @@ function isRelayRegistration(value: unknown): value is RelayRegistration {
     && value.protocolVersions.every(Number.isInteger) && isRelayTimestamp(value.leaseExpiresAt);
 }
 
-function hasMatchingDigest(
-  envelope: RelayEnvelope,
-  expected: unknown,
-  digestEnvelope: (value: RelayEnvelope) => string,
-): expected is string {
+function hasMatchingDigest(envelope: RelayEnvelope, expected: unknown): expected is string {
   if (typeof expected !== "string" || !DIGEST_PATTERN.test(expected)) return false;
   try {
-    return digestEnvelope(envelope) === expected;
+    return digest(envelope) === expected;
   } catch {
     return false;
   }
 }
 
-function isStoredEnvelope(
-  value: unknown,
-  digestEnvelope: (value: RelayEnvelope) => string,
-): value is StoredEnvelope {
+function isStoredEnvelope(value: unknown): value is StoredEnvelope {
   if (!isRecord(value) || !isRelayEnvelope(value.envelope)) return false;
   return Number.isInteger(value.envelope.protocolVersion)
     && (value.envelope.source.relay === RELAY_ID || isPeerRelayId(value.envelope.source.relay))
     && value.envelope.target.relay === RELAY_ID
-    && hasMatchingDigest(value.envelope, value.digest, digestEnvelope)
+    && hasMatchingDigest(value.envelope, value.digest)
     && isRelayTimestamp(value.acceptedAt) && isOpaqueRelayId(value.acceptanceId);
 }
 
@@ -156,14 +134,11 @@ function isPeerRoute(value: unknown): value is PeerRoute {
   return isRecord(value) && isPeerRelayId(value.id) && isCanonicalPeerOrigin(value.origin);
 }
 
-function isPeerOutboxItem(
-  value: unknown,
-  digestEnvelope: (value: RelayEnvelope) => string,
-): value is PeerOutboxItem {
+function isPeerOutboxItem(value: unknown): value is PeerOutboxItem {
   if (!isRecord(value) || !isRelayEnvelope(value.envelope)) return false;
   return Number.isInteger(value.envelope.protocolVersion) && value.envelope.source.relay === RELAY_ID
     && isPeerRelayId(value.envelope.target.relay) && isCanonicalPeerOrigin(value.peerOrigin)
-    && hasMatchingDigest(value.envelope, value.digest, digestEnvelope)
+    && hasMatchingDigest(value.envelope, value.digest)
     && isOpaqueRelayId(value.acceptanceId) && isRelayTimestamp(value.queuedAt)
     && typeof value.attempts === "number" && Number.isInteger(value.attempts) && value.attempts >= 0
     && isOptionalTimestamp(value.lastAttemptAt) && isOptionalTimestamp(value.forwardedAt)
@@ -213,24 +188,6 @@ function hasValidOutboxRoutes(
   return outbox.every(item => routes.get(item.envelope.target.relay) === item.peerOrigin);
 }
 
-function isPersistedRelayStateV1(value: unknown): value is PersistedRelayStateV1 {
-  if (!isRecord(value) || value.version !== 1) return false;
-  const registrations = value.registrations;
-  const envelopes = value.envelopes;
-  const mailbox = value.mailbox;
-  const peerRoutes = value.peerRoutes;
-  const outbox = value.outbox;
-  if (!Array.isArray(registrations) || !registrations.every(isRelayRegistration)) return false;
-  if (!Array.isArray(envelopes) || !envelopes.every((item) => isStoredEnvelope(item, legacyDigest))) return false;
-  if (!Array.isArray(mailbox) || !mailbox.every(isStoredMailboxItem)) return false;
-  if (peerRoutes !== undefined && (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute))) return false;
-  if (!Array.isArray(outbox) || !outbox.every((item) => isPeerOutboxItem(item, legacyDigest))) return false;
-  const routes = peerRoutes ?? [];
-  return hasValidMailboxBijection(mailbox, envelopes)
-    && hasValidEnvelopeRoutes(envelopes, routes)
-    && hasValidOutboxRoutes(outbox, routes);
-}
-
 function isPersistedRelayStateV2(value: unknown): value is PersistedRelayStateV2 {
   if (!isRecord(value) || value.version !== 2) return false;
   const registrations = value.registrations;
@@ -239,10 +196,10 @@ function isPersistedRelayStateV2(value: unknown): value is PersistedRelayStateV2
   const peerRoutes = value.peerRoutes;
   const outbox = value.outbox;
   if (!Array.isArray(registrations) || !registrations.every(isRelayRegistration)) return false;
-  if (!Array.isArray(envelopes) || !envelopes.every((item) => isStoredEnvelope(item, digest))) return false;
+  if (!Array.isArray(envelopes) || !envelopes.every(isStoredEnvelope)) return false;
   if (!Array.isArray(mailbox) || !mailbox.every(isStoredMailboxItem)) return false;
   if (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute)) return false;
-  if (!Array.isArray(outbox) || !outbox.every((item) => isPeerOutboxItem(item, digest))) return false;
+  if (!Array.isArray(outbox) || !outbox.every(isPeerOutboxItem)) return false;
   return hasValidMailboxBijection(mailbox, envelopes)
     && hasValidEnvelopeRoutes(envelopes, peerRoutes)
     && hasValidOutboxRoutes(outbox, peerRoutes);
@@ -250,7 +207,7 @@ function isPersistedRelayStateV2(value: unknown): value is PersistedRelayStateV2
 
 function parsePersistedRelayState(value: unknown): RelayState | "reset" | undefined {
   if (!isRecord(value)) return undefined;
-  if (value.version === 1) return isPersistedRelayStateV1(value) ? "reset" : undefined;
+  if (value.version === 1) return "reset";
   if (value.version === 2) return isPersistedRelayStateV2(value) ? value : undefined;
   return undefined;
 }

@@ -80,17 +80,6 @@ const VALID_RELAY_STATE = {
   peerRoutes: [VALID_PEER_ROUTE],
   outbox: [VALID_OUTBOX_ITEM],
 };
-const LEGACY_STORED_ENVELOPE = JSON.parse("{\"createdAt\":\"2026-08-09T00:00:00.000Z\",\"envelopeId\":\"stored-local-envelope\",\"payload\":{\"_\":1,\"!\":2,\"a\":3,\"A\":4},\"protocolVersion\":2,\"source\":{\"id\":\"0accef20-3e6b-4bdd-9faf-1d875b07112a\",\"relay\":\"wolfpack-pi-tasks-v2\"},\"target\":{\"id\":\"8e5fbbf1-fbc8-4a45-a73f-b10239428c65\",\"relay\":\"wolfpack-pi-tasks-v2\"}}") as RelayEnvelope;
-const LEGACY_QUEUED_ENVELOPE = JSON.parse("{\"createdAt\":\"2026-08-09T00:00:00.000Z\",\"envelopeId\":\"stored-remote-envelope\",\"payload\":{\"_\":1,\"!\":2,\"a\":3,\"A\":4},\"protocolVersion\":2,\"source\":{\"id\":\"0accef20-3e6b-4bdd-9faf-1d875b07112a\",\"relay\":\"wolfpack-pi-tasks-v2\"},\"target\":{\"id\":\"8e5fbbf1-fbc8-4a45-a73f-b10239428c65\",\"relay\":\"wolfpack-pi-tasks-v2:peer:813dcecd-2787-4455-a260-9ce19b9d9bbf\"}}") as RelayEnvelope;
-const VALID_LEGACY_RELAY_STATE = {
-  version: 1,
-  registrations: [VALID_REGISTRATION],
-  envelopes: [{ ...VALID_STORED_ENVELOPE, envelope: LEGACY_STORED_ENVELOPE, digest: "2a2b2d53fdbef3efa5117e15733e90570cd6a528e0df1ad23fecb84ea9a480ba" }],
-  mailbox: [{ ...VALID_MAILBOX_ITEM, cursor: "7" }],
-  peerRoutes: [VALID_PEER_ROUTE],
-  outbox: [{ ...VALID_OUTBOX_ITEM, envelope: LEGACY_QUEUED_ENVELOPE, digest: "24fd5a05a70448d6301cc378191d37ce7b0bd8a1666d0b711214ae5cd1b9d27f" }],
-};
-
 function storeOperations(store: TaskRelayStore): readonly (() => Promise<unknown>)[] {
   return [
     () => store.register(VALID_REGISTRATION),
@@ -615,7 +604,6 @@ describe("pi tasks relay v2", () => {
       { label: "stored digest", contents: JSON.stringify({ ...VALID_RELAY_STATE, envelopes: [{ ...VALID_STORED_ENVELOPE, digest: "0".repeat(64) }] }) },
       { label: "outbox digest", contents: JSON.stringify({ ...VALID_RELAY_STATE, outbox: [{ ...VALID_OUTBOX_ITEM, digest: "0".repeat(64) }] }) },
       { label: "overflow payload", contents: rawOverflowState() },
-      { label: "malformed v1", contents: JSON.stringify({ ...VALID_RELAY_STATE, version: 1 }) },
       { label: "unknown version", contents: JSON.stringify({ ...VALID_RELAY_STATE, version: 3 }) },
     ];
 
@@ -645,51 +633,19 @@ describe("pi tasks relay v2", () => {
     }
   });
 
-  test("discards a valid locale-ordered v1 relay state on first access", async () => {
+  test("destructively resets any parsed v1 relay state without validating its fields", async () => {
     const directory = root();
     const path = join(directory, "relay-state.json");
     try {
-      writeFileSync(path, JSON.stringify(VALID_LEGACY_RELAY_STATE));
+      writeFileSync(path, JSON.stringify({ version: 1, discarded: { malformed: true } }));
       const store = new TaskRelayStore(directory);
 
-      await expect(store.registration(SENDER_ID, NOW)).resolves.toBeUndefined();
-      await expect(store.inbox(RECEIVER_ID, "0")).resolves.toEqual([]);
       await expect(store.outbox()).resolves.toEqual([]);
-      await expect(store.peerOrigin(ROUTE_ID)).resolves.toBeUndefined();
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
         version: 2,
         registrations: [],
         envelopes: [],
         mailbox: [],
-        peerRoutes: [],
-        outbox: [],
-      });
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("resets v1 before accepting a formerly stored envelope", async () => {
-    const directory = root();
-    const path = join(directory, "relay-state.json");
-    try {
-      writeFileSync(path, JSON.stringify(VALID_LEGACY_RELAY_STATE));
-      const store = new TaskRelayStore(directory);
-      const accepted = await store.accept(LEGACY_STORED_ENVELOPE, NOW.toISOString());
-
-      expect(accepted.kind).toBe("accepted");
-      expect(accepted.acceptanceId).not.toBe(VALID_STORED_ENVELOPE.acceptanceId);
-      await expect(store.registration(SENDER_ID, NOW)).resolves.toBeUndefined();
-      await expect(store.outbox()).resolves.toEqual([]);
-      await expect(store.peerOrigin(ROUTE_ID)).resolves.toBeUndefined();
-      await expect(store.inbox(RECEIVER_ID, "0")).resolves.toEqual([
-        expect.objectContaining({ cursor: "1", envelope: LEGACY_STORED_ENVELOPE }),
-      ]);
-      expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
-        version: 2,
-        registrations: [],
-        envelopes: [expect.objectContaining({ acceptanceId: accepted.acceptanceId })],
-        mailbox: [expect.objectContaining({ cursor: "1" })],
         peerRoutes: [],
         outbox: [],
       });
