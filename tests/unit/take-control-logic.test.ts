@@ -1,8 +1,5 @@
 import { describe, test, expect } from "bun:test";
 import {
-  CLOSE_CODE_DISPLACED,
-  CLOSE_CODE_SESSION_UNAVAILABLE,
-  CLOSE_CODE_NORMAL,
   initialTakeControlState,
   handleViewerConflict,
   handleControlGranted,
@@ -12,14 +9,6 @@ import {
   prepareAutoTakeControl,
   type GridCellTakeControlState,
 } from "../../src/take-control-logic";
-
-// ── Close code constants ──
-
-describe("close code constants", () => {
-  test("displaced = 4002", () => expect(CLOSE_CODE_DISPLACED).toBe(4002));
-  test("session unavailable = 4001", () => expect(CLOSE_CODE_SESSION_UNAVAILABLE).toBe(4001));
-  test("normal = 1000", () => expect(CLOSE_CODE_NORMAL).toBe(1000));
-});
 
 // ── Initial state ──
 

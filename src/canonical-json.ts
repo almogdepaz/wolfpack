@@ -1,40 +1,25 @@
-export type CanonicalJsonKeyComparator = (left: string, right: string) => number;
-
-type CanonicalJsonValue =
-  | boolean
-  | null
-  | number
-  | string
-  | CanonicalJsonValue[]
-  | { readonly [key: string]: CanonicalJsonValue };
-
-export function compareCanonicalJsonKeysByLocale(left: string, right: string): number {
-  return left.localeCompare(right);
-}
-
-function canonicalValue(
-  value: unknown,
-  compareKeys: CanonicalJsonKeyComparator | undefined,
-): CanonicalJsonValue {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+function canonicalValue(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new TypeError("canonical JSON cannot contain a non-finite number");
-    return value;
+    return JSON.stringify(value);
   }
-  if (Array.isArray(value)) return value.map((child) => canonicalValue(child, compareKeys));
+  if (Array.isArray(value)) {
+    const values: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      values.push(index in value ? canonicalValue(value[index]) : "null");
+    }
+    return `[${values.join(",")}]`;
+  }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     const keys = Object.keys(record).filter((key) => record[key] !== undefined);
-    if (compareKeys) keys.sort(compareKeys);
-    else keys.sort();
-    return Object.fromEntries(keys.map((key) => [key, canonicalValue(record[key], compareKeys)]));
+    keys.sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalValue(record[key])}`).join(",")}}`;
   }
   throw new TypeError("canonical JSON accepts only JSON values");
 }
 
-export function canonicalJson(
-  value: unknown,
-  compareKeys: CanonicalJsonKeyComparator | undefined = undefined,
-): string {
-  return JSON.stringify(canonicalValue(value, compareKeys));
+export function canonicalJson(value: unknown): string {
+  return canonicalValue(value);
 }

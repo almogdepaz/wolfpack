@@ -73,14 +73,13 @@ const VALID_OUTBOX_ITEM = {
   lastError: "peer unavailable",
 };
 const VALID_RELAY_STATE = {
-  version: 1,
+  version: 2,
   registrations: [VALID_REGISTRATION],
   envelopes: [VALID_STORED_ENVELOPE],
   mailbox: [VALID_MAILBOX_ITEM],
   peerRoutes: [VALID_PEER_ROUTE],
   outbox: [VALID_OUTBOX_ITEM],
 };
-
 function storeOperations(store: TaskRelayStore): readonly (() => Promise<unknown>)[] {
   return [
     () => store.register(VALID_REGISTRATION),
@@ -605,6 +604,7 @@ describe("pi tasks relay v2", () => {
       { label: "stored digest", contents: JSON.stringify({ ...VALID_RELAY_STATE, envelopes: [{ ...VALID_STORED_ENVELOPE, digest: "0".repeat(64) }] }) },
       { label: "outbox digest", contents: JSON.stringify({ ...VALID_RELAY_STATE, outbox: [{ ...VALID_OUTBOX_ITEM, digest: "0".repeat(64) }] }) },
       { label: "overflow payload", contents: rawOverflowState() },
+      { label: "unknown version", contents: JSON.stringify({ ...VALID_RELAY_STATE, version: 3 }) },
     ];
 
     for (const { contents, label } of malformedStates) {
@@ -633,22 +633,22 @@ describe("pi tasks relay v2", () => {
     }
   });
 
-  test("loads legacy relay state without peer routes and normalizes it on mutation", async () => {
+  test("destructively resets any parsed v1 relay state without validating its fields", async () => {
     const directory = root();
+    const path = join(directory, "relay-state.json");
     try {
-      const { peerRoutes: _legacyOmission, ...legacyState } = { ...VALID_RELAY_STATE, outbox: [] };
-      writeFileSync(join(directory, "relay-state.json"), JSON.stringify(legacyState));
+      writeFileSync(path, JSON.stringify({ version: 1, discarded: { malformed: true } }));
       const store = new TaskRelayStore(directory);
 
-      await expect(store.registration(SENDER_ID, NOW)).resolves.toMatchObject({ sessionId: "sender" });
-      await expect(store.inbox(RECEIVER_ID, "0")).resolves.toEqual([
-        expect.objectContaining({ cursor: "1", envelope: expect.objectContaining({ envelopeId: "stored-local-envelope" }) }),
-      ]);
-      await expect(store.peerOrigin(ROUTE_ID)).resolves.toBeUndefined();
-      await store.register(VALID_REGISTRATION);
-
-      const normalized = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
-      expect(normalized.peerRoutes).toEqual([]);
+      await expect(store.outbox()).resolves.toEqual([]);
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+        version: 2,
+        registrations: [],
+        envelopes: [],
+        mailbox: [],
+        peerRoutes: [],
+        outbox: [],
+      });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

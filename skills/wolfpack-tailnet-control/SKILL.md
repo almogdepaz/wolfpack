@@ -50,11 +50,22 @@ wolfpack session wait <session-or-id> '<text>' --json
 
 Treat session selectors as opaque handles. Prefer the stable `sessionId` returned by create/spawn/list/status. If the user already supplied an exact target, do not list first.
 
+## Parent-owned teardown
+
+`/quit` exits the Pi harness only; it does not kill the shell-backed Wolfpack session, which may remain active. When the parent owns cleanup after an explicit task result, kill the exact child ID, then verify it is absent:
+
+```bash
+wolfpack kill <session-or-id> --json
+wolfpack list --json
+
+wolfpack --machine <short-name-or-fqdn> kill <session-or-id> --json
+wolfpack --machine <short-name-or-fqdn> list --json
+```
+
+A successful kill returns JSON with `ok: true`, `session`, and `sessionId`; remote output also has verified `machine` identity. The global Wolfpack auth policy remains the boundary. Do not kill a mistaken session or treat `/quit` as teardown.
+
 Read-only inspection is allowed when requested. Creation, sending input, killing, taking control, remote-host access, and notifications require explicit user intent for that action and target. Never scrape terminal/UI prose as protocol, bypass auth, guess tokens, or kill a mistaken session as cleanup without permission.
 
 ## References — load only when needed
 
-- command/API behavior: `docs/session-control.md`
-- setup, auth, and Tailscale: `README.md`
-- troubleshooting: `docs/troubleshooting.md`
-- broker internals only when changing transport: `docs/broker-protocol.md`
+- [canonical session, setup, troubleshooting, and broker references](references.md)

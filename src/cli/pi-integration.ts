@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
-import { WOLFPACK_PI_CONTROL_SKILL } from "./pi-skill.js";
+import { WOLFPACK_PI_CONTROL_SKILL_FILES } from "./pi-skill.js";
 
 export const PI_INTEGRATION_PACKAGES = ["npm:@sgtbeatdown/pi-tasks"] as const;
 export const PI_CONTROL_SKILL_NAME = "wolfpack-tailnet-control";
@@ -87,7 +87,9 @@ function installWolfpackPiSkill(skillPath: string): ExistingPiSkill | FailedPiSk
     mkdirSync(dirname(skillPath), { recursive: true });
     mkdirSync(skillPath);
     createdSkillDirectory = true;
-    writeFileSync(join(skillPath, "SKILL.md"), WOLFPACK_PI_CONTROL_SKILL);
+    for (const { filename, content } of WOLFPACK_PI_CONTROL_SKILL_FILES) {
+      writeFileSync(join(skillPath, filename), content);
+    }
   } catch {
     let canRetry = true;
     if (createdSkillDirectory) {

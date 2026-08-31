@@ -1,2 +1,3 @@
 [test]
+preload = ["./tests/test-preload.ts"]
 testMatch = ["tests/unit/**/*", "tests/integration/**/*", "tests/snapshot/**/*"]

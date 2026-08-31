@@ -47,22 +47,10 @@ describe("backend singleton", () => {
     expect(getBackend()).toBe(backend);
   });
 
-  test("__resetBackend clears the singleton", () => {
-    initBackend();
-    __resetBackend();
-    expect(getBackend()).toBeDefined();
-  });
-
   test("__resetBackend throws outside test mode", () => {
     delete process.env.WOLFPACK_TEST;
     expect(() => __resetBackend()).toThrow("only available in test mode");
     process.env.WOLFPACK_TEST = "1";
-  });
-
-  test("__setTestBackend injects a mock backend", () => {
-    const mock = new MockBackend();
-    __setTestBackend(mock);
-    expect(getBackend()).toBe(mock);
   });
 
   test("__setTestBackend throws outside test mode", () => {

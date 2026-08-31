@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, closeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { canonicalJson, compareCanonicalJsonKeysByLocale } from "../canonical-json.ts";
+import { canonicalJson } from "../canonical-json.ts";
 import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
 import {
   RELAY_ID,
@@ -47,7 +47,7 @@ export interface PeerOutboxItem {
 }
 
 interface RelayState {
-  readonly version: 1;
+  readonly version: 2;
   readonly registrations: readonly RelayRegistration[];
   readonly envelopes: readonly StoredEnvelope[];
   readonly mailbox: readonly StoredMailboxItem[];
@@ -55,27 +55,28 @@ interface RelayState {
   readonly outbox: readonly PeerOutboxItem[];
 }
 
-const EMPTY: RelayState = { version: 1, registrations: [], envelopes: [], mailbox: [], peerRoutes: [], outbox: [] };
-const PEER_RELAY_PREFIX = `${RELAY_ID}:peer:`;
-const locks = new Map<string, Promise<void>>();
-
-function digest(value: unknown): string {
-  return createHash("sha256")
-    .update(canonicalJson(value, compareCanonicalJsonKeysByLocale), "utf8")
-    .digest("hex");
-}
-
-interface PersistedRelayState {
-  readonly version: 1;
+interface PersistedRelayStateV2 {
+  readonly version: 2;
   readonly registrations: readonly RelayRegistration[];
   readonly envelopes: readonly StoredEnvelope[];
   readonly mailbox: readonly StoredMailboxItem[];
-  readonly peerRoutes?: readonly PeerRoute[];
+  readonly peerRoutes: readonly PeerRoute[];
   readonly outbox: readonly PeerOutboxItem[];
 }
 
+const EMPTY: RelayState = { version: 2, registrations: [], envelopes: [], mailbox: [], peerRoutes: [], outbox: [] };
+const PEER_RELAY_PREFIX = `${RELAY_ID}:peer:`;
+const locks = new Map<string, Promise<void>>();
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const DECIMAL_CURSOR_PATTERN = /^[1-9][0-9]*$/;
+
+function digestJson(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function digest(value: unknown): string {
+  return digestJson(canonicalJson(value));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -187,8 +188,8 @@ function hasValidOutboxRoutes(
   return outbox.every(item => routes.get(item.envelope.target.relay) === item.peerOrigin);
 }
 
-function isPersistedRelayState(value: unknown): value is PersistedRelayState {
-  if (!isRecord(value) || value.version !== 1) return false;
+function isPersistedRelayStateV2(value: unknown): value is PersistedRelayStateV2 {
+  if (!isRecord(value) || value.version !== 2) return false;
   const registrations = value.registrations;
   const envelopes = value.envelopes;
   const mailbox = value.mailbox;
@@ -197,12 +198,18 @@ function isPersistedRelayState(value: unknown): value is PersistedRelayState {
   if (!Array.isArray(registrations) || !registrations.every(isRelayRegistration)) return false;
   if (!Array.isArray(envelopes) || !envelopes.every(isStoredEnvelope)) return false;
   if (!Array.isArray(mailbox) || !mailbox.every(isStoredMailboxItem)) return false;
-  if (peerRoutes !== undefined && (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute))) return false;
+  if (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute)) return false;
   if (!Array.isArray(outbox) || !outbox.every(isPeerOutboxItem)) return false;
-  const routes = peerRoutes ?? [];
   return hasValidMailboxBijection(mailbox, envelopes)
-    && hasValidEnvelopeRoutes(envelopes, routes)
-    && hasValidOutboxRoutes(outbox, routes);
+    && hasValidEnvelopeRoutes(envelopes, peerRoutes)
+    && hasValidOutboxRoutes(outbox, peerRoutes);
+}
+
+function parsePersistedRelayState(value: unknown): RelayState | "reset" | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.version === 1) return "reset";
+  if (value.version === 2) return isPersistedRelayStateV2(value) ? value : undefined;
+  return undefined;
 }
 
 export class MalformedRelayStoreError extends TypeError {
@@ -217,7 +224,7 @@ function atomicWrite(path: string, state: RelayState): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const descriptor = openSync(temporary, "w", 0o600);
   try {
-    writeFileSync(descriptor, canonicalJson(state, compareCanonicalJsonKeysByLocale), "utf8");
+    writeFileSync(descriptor, canonicalJson(state), "utf8");
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
@@ -379,8 +386,13 @@ export class TaskRelayStore {
     } catch (cause) {
       throw new MalformedRelayStoreError(cause);
     }
-    if (!isPersistedRelayState(parsed)) throw new MalformedRelayStoreError();
-    return { ...parsed, peerRoutes: parsed.peerRoutes ?? [] };
+    const state = parsePersistedRelayState(parsed);
+    if (!state) throw new MalformedRelayStoreError();
+    if (state === "reset") {
+      atomicWrite(this.path, EMPTY);
+      return EMPTY;
+    }
+    return state;
   }
 
   async #mutate<T>(operation: (state: RelayState) => { readonly state: RelayState; readonly value: T }): Promise<T> {

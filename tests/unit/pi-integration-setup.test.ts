@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   PI_INTEGRATION_PACKAGES,
   acceptsPiIntegrationInstall,
@@ -33,6 +34,59 @@ fi
 `);
   chmodSync(executable, 0o755);
   return { pathValue: directory, callLog };
+}
+
+function installedMarkdownReferences(skillPath: string): readonly { readonly from: string; readonly target: string }[] {
+  const references: { from: string; target: string }[] = [];
+  for (const entry of readdirSync(skillPath, { recursive: true })) {
+    if (typeof entry !== "string" || !entry.endsWith(".md")) continue;
+    const markdownPath = join(skillPath, entry);
+    const markdown = readFileSync(markdownPath, "utf8");
+    for (const match of markdown.matchAll(/\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^)]*["'])?\s*\)/g)) {
+      const destination = match[1] ?? match[2];
+      if (!destination || destination.startsWith("#") || destination.startsWith("//")) continue;
+      const destinationUrl = new URL(destination, pathToFileURL(markdownPath));
+      if (destinationUrl.protocol !== "file:") continue;
+      references.push({ from: markdownPath, target: fileURLToPath(destinationUrl) });
+    }
+  }
+  return references;
+}
+
+function expectSkillWriteFailure(filename: string): void {
+  const script = String.raw`
+    import { mock } from "bun:test";
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    await mock.module("node:fs", () => ({
+      ...fs,
+      writeFileSync(file, ...args) {
+        if (String(file).endsWith("/wolfpack-tailnet-control/${filename}")) {
+          throw new Error("simulated write failure");
+        }
+        return fs.writeFileSync(file, ...args);
+      },
+    }));
+    const { installPiIntegration } = await import("./src/cli/pi-integration.ts");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wolfpack-pi-cleanup-"));
+    const agent = path.join(root, "agent");
+    const skill = path.join(agent, "skills", "wolfpack-tailnet-control");
+    try {
+      const result = installPiIntegration({ pathValue: "", piAgentDirectory: agent });
+      if (result.status !== "skill_write_failed") throw new Error("expected skill write failure");
+      if (fs.existsSync(skill)) throw new Error("partial skill directory was not removed");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  `;
+  const result = Bun.spawnSync([process.execPath, "-e", script], {
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  expect(result.exitCode).toBe(0);
 }
 
 afterEach(() => {
@@ -94,6 +148,41 @@ describe("Pi integration setup", () => {
     expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
   });
 
+  test("installs every local Markdown reference from the bundled control skill", () => {
+    const pi = fakePi();
+    const piAgentDirectory = join(tempDir(), "agent");
+    const skillPath = join(piAgentDirectory, "skills", "wolfpack-tailnet-control");
+
+    const result = installPiIntegration({
+      pathValue: pi.pathValue,
+      piAgentDirectory,
+      env: { CALL_LOG: pi.callLog },
+    });
+
+    expect(result).toEqual({
+      status: "installed",
+      installedSources: PI_INTEGRATION_PACKAGES,
+    });
+    const references = installedMarkdownReferences(skillPath);
+    expect(references).not.toHaveLength(0);
+    for (const { from, target } of references) {
+      expect(relative(skillPath, target).startsWith("..")).toBe(false);
+      expect(existsSync(target), `${relative(skillPath, from)} references ${relative(skillPath, target)}`).toBe(true);
+    }
+  });
+
+  test("discovers extensionless local Markdown destinations", () => {
+    const skillPath = tempDir();
+    writeFileSync(join(skillPath, "SKILL.md"), [
+      "[local reference](references/control#teardown)",
+      "[remote reference](https://example.com/reference)",
+    ].join("\n"));
+
+    expect(installedMarkdownReferences(skillPath)).toEqual([
+      { from: join(skillPath, "SKILL.md"), target: join(skillPath, "references", "control") },
+    ]);
+  });
+
   test("refuses to replace an existing Wolfpack skill before installing Pi Tasks", () => {
     const pi = fakePi();
     const piAgentDirectory = join(tempDir(), "agent");
@@ -111,39 +200,11 @@ describe("Pi integration setup", () => {
   });
 
   test("cleans a newly created skill directory when writing the skill fails", () => {
-    const script = String.raw`
-      import { mock } from "bun:test";
-      const fs = await import("node:fs");
-      const path = await import("node:path");
-      const os = await import("node:os");
-      await mock.module("node:fs", () => ({
-        ...fs,
-        writeFileSync(file, ...args) {
-          if (String(file).endsWith("/wolfpack-tailnet-control/SKILL.md")) {
-            throw new Error("simulated write failure");
-          }
-          return fs.writeFileSync(file, ...args);
-        },
-      }));
-      const { installPiIntegration } = await import("./src/cli/pi-integration.ts");
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "wolfpack-pi-cleanup-"));
-      const agent = path.join(root, "agent");
-      const skill = path.join(agent, "skills", "wolfpack-tailnet-control");
-      try {
-        const result = installPiIntegration({ pathValue: "", piAgentDirectory: agent });
-        if (result.status !== "skill_write_failed") throw new Error("expected skill write failure");
-        if (fs.existsSync(skill)) throw new Error("partial skill directory was not removed");
-      } finally {
-        fs.rmSync(root, { recursive: true, force: true });
-      }
-    `;
-    const result = Bun.spawnSync([process.execPath, "-e", script], {
-      cwd: process.cwd(),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    expectSkillWriteFailure("SKILL.md");
+  });
 
-    expect(result.exitCode).toBe(0);
+  test("cleans a newly created skill directory when writing references fails", () => {
+    expectSkillWriteFailure("references.md");
   });
 
   test("reports a retry command when Pi Tasks installation fails after skill installation", () => {
