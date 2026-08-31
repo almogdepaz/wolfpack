@@ -269,6 +269,9 @@ impl SessionRouter {
 
 pub(crate) fn validate_snapshot_target_cols(target_cols: Option<u16>) -> Result<(), String> {
     if let Some(cols) = target_cols {
+        if cols == 0 {
+            return Err("target_cols must be greater than zero".to_string());
+        }
         if cols > MAX_TERMINAL_COLS {
             return Err(format!("target_cols must be at most {MAX_TERMINAL_COLS}"));
         }
@@ -646,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_target_cols_above_terminal_ceiling_is_invalid_before_session_lookup() {
+    fn snapshot_target_cols_outside_terminal_bounds_is_invalid_before_session_lookup() {
         let (router, reg) = router();
         let create = router.handle(req(
             1,
@@ -667,7 +670,7 @@ mod tests {
             assert_eq!(response.status, Status::Ok, "target_cols={target_cols}");
         }
 
-        for target_cols in [301, 65535] {
+        for target_cols in [0, 301, 65535] {
             let response = router.handle(req(
                 3,
                 methods::SNAPSHOT,

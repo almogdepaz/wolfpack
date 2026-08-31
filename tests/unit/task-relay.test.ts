@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -764,6 +764,7 @@ describe("pi tasks relay v2", () => {
     const directory = root();
     let now = NOW;
     let gateway: TaskRelayGateway | undefined;
+    jest.useFakeTimers();
     try {
       const store = new TaskRelayStore(directory);
       await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "periodic-expiry" }, now.toISOString());
@@ -776,13 +777,17 @@ describe("pi tasks relay v2", () => {
       });
       await gateway.initialize();
       now = new Date(now.getTime() + 1001);
-      await Bun.sleep(20);
+      jest.advanceTimersByTime(5);
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "after-periodic-cleanup" }, now.toISOString());
 
       const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
-      expect(state.envelopes).toEqual([]);
-      expect(state.mailbox).toEqual([]);
+      expect(state.envelopes.map((item: { envelope: { envelopeId: string } }) => item.envelope.envelopeId)).toEqual([
+        "after-periodic-cleanup",
+      ]);
+      expect(state.mailbox.map((item: { envelopeId: string }) => item.envelopeId)).toEqual(["after-periodic-cleanup"]);
     } finally {
       gateway?.close();
+      jest.useRealTimers();
       rmSync(directory, { recursive: true, force: true });
     }
   });

@@ -476,20 +476,23 @@ async fn snapshot_subscribe_uses_snapshot_reflow_width_bounds() {
     .await;
     assert_eq!(narrow.status, Status::Ok);
 
-    let oversized = round_trip(
-        &mut stream,
-        ControlRequest {
-            id: 3,
-            method: methods::SNAPSHOT_SUBSCRIBE.into(),
-            params: json!({ "session_id": created.id, "target_cols": 301 }),
-        },
-    )
-    .await;
-    assert_eq!(oversized.status, Status::Error);
-    assert_eq!(
-        oversized.error.expect("error").code,
-        ErrorCode::InvalidRequest
-    );
+    for target_cols in [0, 301] {
+        let invalid = round_trip(
+            &mut stream,
+            ControlRequest {
+                id: 3,
+                method: methods::SNAPSHOT_SUBSCRIBE.into(),
+                params: json!({ "session_id": created.id, "target_cols": target_cols }),
+            },
+        )
+        .await;
+        assert_eq!(invalid.status, Status::Error, "target_cols={target_cols}");
+        assert_eq!(
+            invalid.error.expect("error").code,
+            ErrorCode::InvalidRequest,
+            "target_cols={target_cols}"
+        );
+    }
 
     drop(stream);
     h.shutdown().await;
