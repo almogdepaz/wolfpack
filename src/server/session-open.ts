@@ -138,7 +138,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   };
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
-    if (input.model !== undefined && parentState.harness !== AGENT_KIND.PI) {
+    if (input.model !== undefined && parentState.harness !== AGENT_KIND.PI.id) {
       throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
     }
     const session = chooseSubAgentSessionName(

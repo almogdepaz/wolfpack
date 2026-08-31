@@ -3,7 +3,7 @@ import { AGENT_KIND } from "./agent-kind.js";
 import { detectInstalledProviderCommands } from "./provider-readiness.js";
 
 export interface InitialProviderSettings {
-  readonly agentCmd: typeof AGENT_KIND.SHELL;
+  readonly agentCmd: typeof AGENT_KIND.SHELL.id;
   readonly cmds: ReadonlyArray<{
     readonly cmd: string;
     readonly enabled: true;
@@ -19,9 +19,9 @@ export function initializeProviderSettingsFile(
   options: InitialProviderSettingsOptions,
 ): InitialProviderSettings | null {
   const settings: InitialProviderSettings = {
-    agentCmd: AGENT_KIND.SHELL,
+    agentCmd: AGENT_KIND.SHELL.id,
     cmds: [
-      { cmd: AGENT_KIND.SHELL, enabled: true },
+      { cmd: AGENT_KIND.SHELL.id, enabled: true },
       ...detectInstalledProviderCommands(options.pathValue).map(cmd => ({
         cmd,
         enabled: true as const,

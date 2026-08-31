@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { AGENT_KIND } from "../../src/agent-kind.ts";
 import {
   PI_INTEGRATION_PACKAGES,
   acceptsPiIntegrationInstall,
@@ -21,7 +22,7 @@ function tempDir(): string {
 
 function fakePi(): { readonly pathValue: string; readonly callLog: string } {
   const directory = tempDir();
-  const executable = join(directory, "pi");
+  const executable = join(directory, AGENT_KIND.PI.cmd);
   const callLog = join(directory, "calls.log");
   writeFileSync(executable, `#!/bin/sh
 printf '%s\\n' "$*" >> "$CALL_LOG"
@@ -112,7 +113,7 @@ describe("Pi integration setup", () => {
     const disclosure = piIntegrationDisclosureLines().join("\n");
 
     expect(disclosure).toContain("wolfpack-tailnet-control");
-    expect(disclosure).toContain("pi install npm:@sgtbeatdown/pi-tasks");
+    expect(disclosure).toContain(`${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/pi-tasks`);
     expect(disclosure).toContain("Wolfpack will install the skill");
     expect(disclosure).not.toContain("Pi will install the skill");
     expect(disclosure).not.toContain("npm:wolfpack-bridge");
@@ -224,7 +225,7 @@ describe("Pi integration setup", () => {
       status: "extension_failed",
       installedSources: [],
       failedSource: "npm:@sgtbeatdown/pi-tasks",
-      retryCommand: "pi install npm:@sgtbeatdown/pi-tasks",
+      retryCommand: `${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/pi-tasks`,
     });
     expect(existsSync(join(skillPath, "SKILL.md"))).toBe(true);
     expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");

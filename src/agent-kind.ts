@@ -1,40 +1,43 @@
-export const CURSOR_AGENT_COMMAND = "agent";
+export interface AgentKindDefinition {
+  readonly id: string;
+  readonly cmd: string;
+}
 
 export const AGENT_KIND = {
-  SHELL: "shell",
-  PI: "pi",
-  CLAUDE: "claude",
-  CODEX: "codex",
-  GEMINI: "gemini",
-  CURSOR: "cursor",
-  UNKNOWN: "unknown",
-} as const;
+  SHELL: { id: "shell", cmd: "shell" },
+  PI: { id: "pi", cmd: "pi" },
+  CLAUDE: { id: "claude", cmd: "claude" },
+  CODEX: { id: "codex", cmd: "codex" },
+  GEMINI: { id: "gemini", cmd: "gemini" },
+  CURSOR: { id: "cursor", cmd: "agent" },
+  UNKNOWN: { id: "unknown", cmd: "unknown" },
+} as const satisfies Readonly<Record<string, AgentKindDefinition>>;
 
 export const KNOWN_AGENT_KINDS = [
-  AGENT_KIND.SHELL,
-  AGENT_KIND.CLAUDE,
-  AGENT_KIND.CODEX,
-  AGENT_KIND.PI,
-  AGENT_KIND.GEMINI,
-  AGENT_KIND.CURSOR,
-  AGENT_KIND.UNKNOWN,
+  AGENT_KIND.SHELL.id,
+  AGENT_KIND.CLAUDE.id,
+  AGENT_KIND.CODEX.id,
+  AGENT_KIND.PI.id,
+  AGENT_KIND.GEMINI.id,
+  AGENT_KIND.CURSOR.id,
+  AGENT_KIND.UNKNOWN.id,
 ] as const;
 
 export type AgentKind = typeof KNOWN_AGENT_KINDS[number];
 
 export const OPENABLE_HARNESSES = [
-  AGENT_KIND.PI,
-  AGENT_KIND.CLAUDE,
-  AGENT_KIND.CODEX,
-  AGENT_KIND.GEMINI,
-  AGENT_KIND.CURSOR,
+  AGENT_KIND.PI.id,
+  AGENT_KIND.CLAUDE.id,
+  AGENT_KIND.CODEX.id,
+  AGENT_KIND.GEMINI.id,
+  AGENT_KIND.CURSOR.id,
 ] as const;
 
 export type OpenableHarness = typeof OPENABLE_HARNESSES[number];
 
 /** Harnesses valid for explicit top-level session creation. */
 export const CREATABLE_HARNESSES = [
-  AGENT_KIND.SHELL,
+  AGENT_KIND.SHELL.id,
   ...OPENABLE_HARNESSES,
 ] as const;
 
@@ -56,19 +59,30 @@ export function isCreatableHarness(value: string): value is CreatableHarness {
   return CREATABLE_HARNESS_SET.has(value);
 }
 
+/** Resolves exact canonical harness ids without rewriting arbitrary commands. */
+export function resolveAgentCommand(command: string): string {
+  return Object.values(AGENT_KIND).find((definition) => definition.id === command)?.cmd ?? command;
+}
+
 export function inferAgentKindFromCommand(command: string | undefined): AgentKind | string {
-  const value = (command || AGENT_KIND.SHELL).trim();
-  if (!value || value === AGENT_KIND.SHELL) return AGENT_KIND.SHELL;
+  const value = (command || AGENT_KIND.SHELL.cmd).trim();
+  if (!value || value === AGENT_KIND.SHELL.cmd) return AGENT_KIND.SHELL.id;
   const first = value.split(/\s+/)[0]?.split("/").pop()?.toLowerCase() || value.toLowerCase();
-  if (isKnownAgentKind(first)) return first;
-  return first || AGENT_KIND.UNKNOWN;
+  const definition = Object.values(AGENT_KIND).find((candidate) => candidate.id === first || candidate.cmd === first);
+  return definition?.id ?? (first || AGENT_KIND.UNKNOWN.id);
 }
 
 export function detectAgentKindFromCommandArgs(command: readonly string[] | undefined): AgentKind | undefined {
   if (!command) return undefined;
   const joined = command.join(" ");
-  for (const agent of OPENABLE_HARNESSES) {
-    if (joined.includes(agent)) return agent;
+  for (const definition of [
+    AGENT_KIND.PI,
+    AGENT_KIND.CLAUDE,
+    AGENT_KIND.CODEX,
+    AGENT_KIND.GEMINI,
+    AGENT_KIND.CURSOR,
+  ]) {
+    if (joined.includes(definition.id)) return definition.id;
   }
   return undefined;
 }

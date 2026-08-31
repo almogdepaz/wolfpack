@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { AGENT_KIND, CURSOR_AGENT_COMMAND } from "./agent-kind.js";
+import { AGENT_KIND } from "./agent-kind.js";
 import type { OpenableHarness } from "./agent-kind.js";
 
 const VERSION_OUTPUT_MAX_CHARS = 160;
@@ -18,44 +18,44 @@ export interface ProviderDefinition {
 
 export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   {
-    id: AGENT_KIND.CLAUDE,
+    id: AGENT_KIND.CLAUDE.id,
     displayName: "Claude Code",
-    command: AGENT_KIND.CLAUDE,
+    command: AGENT_KIND.CLAUDE.cmd,
     versionArgs: ["--version"],
     installGuidance: "npm install -g @anthropic-ai/claude-code",
-    loginCommand: AGENT_KIND.CLAUDE,
+    loginCommand: AGENT_KIND.CLAUDE.cmd,
   },
   {
-    id: AGENT_KIND.CODEX,
+    id: AGENT_KIND.CODEX.id,
     displayName: "Codex",
-    command: AGENT_KIND.CODEX,
+    command: AGENT_KIND.CODEX.cmd,
     versionArgs: ["--version"],
     installGuidance: "npm install -g @openai/codex",
-    loginCommand: `${AGENT_KIND.CODEX} login`,
+    loginCommand: `${AGENT_KIND.CODEX.cmd} login`,
   },
   {
-    id: AGENT_KIND.GEMINI,
+    id: AGENT_KIND.GEMINI.id,
     displayName: "Gemini CLI",
-    command: AGENT_KIND.GEMINI,
+    command: AGENT_KIND.GEMINI.cmd,
     versionArgs: ["--version"],
     installGuidance: "npm install -g @google/gemini-cli",
-    loginCommand: AGENT_KIND.GEMINI,
+    loginCommand: AGENT_KIND.GEMINI.cmd,
   },
   {
-    id: AGENT_KIND.CURSOR,
+    id: AGENT_KIND.CURSOR.id,
     displayName: "Cursor",
-    command: CURSOR_AGENT_COMMAND,
+    command: AGENT_KIND.CURSOR.cmd,
     versionArgs: ["--version"],
     installGuidance: "curl https://cursor.com/install -fsS | bash",
-    loginCommand: CURSOR_AGENT_COMMAND,
+    loginCommand: AGENT_KIND.CURSOR.cmd,
   },
   {
-    id: AGENT_KIND.PI,
+    id: AGENT_KIND.PI.id,
     displayName: "Pi",
-    command: AGENT_KIND.PI,
+    command: AGENT_KIND.PI.cmd,
     versionArgs: ["--version"],
     installGuidance: "npm install -g @mariozechner/pi-coding-agent",
-    loginCommand: AGENT_KIND.PI,
+    loginCommand: AGENT_KIND.PI.cmd,
   },
 ] as const;
 

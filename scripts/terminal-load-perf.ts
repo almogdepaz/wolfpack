@@ -15,6 +15,7 @@ import {
 } from "../src/ghostty-prewarm-debug";
 import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
 import { LAYOUT_STABLE_DEBUG_MODE_KEY } from "../src/terminal-layout-stable-debug";
+import { AGENT_KIND } from "../src/agent-kind";
 
 export type TraceEvent = { t: number; kind: string; [field: string]: unknown };
 export type TraceState = {
@@ -320,7 +321,7 @@ async function createSession(devDir: string, baseUrl: string, name: string, proj
   const res = await fetch(`${baseUrl}/api/create`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ project, cmd: "shell", sessionName: name }),
+    body: JSON.stringify({ project, cmd: AGENT_KIND.SHELL.id, sessionName: name }),
     signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) throw new Error(`create ${name} failed: ${res.status} ${await res.text()}`);

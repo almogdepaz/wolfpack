@@ -194,7 +194,7 @@ export class SessionIdentityStore {
       wolfpackSessionId: input.wolfpackSessionId,
       wolfpackSessionName: input.wolfpackSessionName,
       projectPath: input.projectPath,
-      agentKind: input.agentKind || existing?.agentKind || AGENT_KIND.UNKNOWN,
+      agentKind: input.agentKind || existing?.agentKind || AGENT_KIND.UNKNOWN.id,
       createdAt: existing?.createdAt ?? now,
       restoredAt: existing ? now : undefined,
       updatedAt: now,
@@ -224,7 +224,7 @@ export class SessionIdentityStore {
       const candidateExternalAgent = normalizeExternalAgent(
         {
           ...session,
-          agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN,
+          agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN.id,
           externalAgent: session.externalAgent,
         },
         existing,
@@ -235,7 +235,7 @@ export class SessionIdentityStore {
         wolfpackSessionId: session.wolfpackSessionId,
         wolfpackSessionName: session.wolfpackSessionName,
         projectPath: session.projectPath,
-        agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN,
+        agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN.id,
         createdAt: existing?.createdAt ?? restoredAt,
         restoredAt: existing?.restoredAt ?? restoredAt,
         updatedAt: existing?.updatedAt ?? restoredAt,

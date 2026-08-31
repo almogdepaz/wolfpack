@@ -19,8 +19,8 @@ type TaxonomyRule = {
 
 const ROOT = join(import.meta.dirname, "..", "..");
 
-function taxonomyMembers(...groups: ReadonlyArray<Readonly<Record<string, string>>>): readonly string[] {
-  return groups.flatMap(group => Object.values(group));
+function taxonomyMembers(...groups: ReadonlyArray<Readonly<Record<string, string | { readonly id: string }>>>): readonly string[] {
+  return groups.flatMap(group => Object.values(group).map(value => typeof value === "string" ? value : value.id));
 }
 
 const TAXONOMIES: readonly TaxonomyRule[] = [
@@ -59,6 +59,7 @@ function hasRuleSiteAncestor(node: ts.Node): boolean {
     if (ts.isBinaryExpression(current)) return true;
     if (ts.isCaseClause(current)) return true;
     if (ts.isPropertyAssignment(current) && current.name === node) return true;
+    if (ts.isConditionalExpression(current)) return true;
     if (ts.isArrayLiteralExpression(current)) return true;
     current = current.parent;
   }

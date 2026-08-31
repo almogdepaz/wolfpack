@@ -2617,7 +2617,7 @@ async function showAgentPicker(): Promise<void> {
   // /api/settings now returns { settings, effective } — effective.cmds is
   // the list to render (already filtered to enabled, with ["shell"] fallback
   // when nothing's on). Manage which cmds appear via the Settings page.
-  const cmds = data.effective?.cmds || [AGENT_KIND.SHELL];
+  const cmds = data.effective?.cmds || [AGENT_KIND.SHELL.id];
   const defaultCmd = data.effective?.agentCmd;
   const html = cmds.map(cmd => `
     <button type="button" class="card" data-action="create-agent-session" data-command="${escAttr(cmd)}" aria-label="Start ${escAttr(cmd)}">
@@ -2720,12 +2720,12 @@ function renderProviderReadiness(
   const list = document.getElementById("provider-readiness-list");
   if (!list) return;
   const configured = new Set((settings?.settings?.cmds || []).map((entry) => entry.cmd));
-  const shellAdded = configured.has(AGENT_KIND.SHELL);
-  const shell = `<div class="provider-row installed" data-provider-id="${escAttr(AGENT_KIND.SHELL)}">
+  const shellAdded = configured.has(AGENT_KIND.SHELL.id);
+  const shell = `<div class="provider-row installed" data-provider-id="${escAttr(AGENT_KIND.SHELL.id)}">
     <div class="provider-row-header">
       <span class="provider-name">Shell</span>
       <span class="provider-badge installed">built-in</span>
-      <button class="provider-add-btn" data-provider-command="${escAttr(AGENT_KIND.SHELL)}"
+      <button class="provider-add-btn" data-provider-command="${escAttr(AGENT_KIND.SHELL.id)}"
         aria-label="${shellAdded ? "Shell added" : "Add Shell"}"
         ${shellAdded ? "disabled" : ""}>${shellAdded ? "added" : "+ add"}</button>
     </div>

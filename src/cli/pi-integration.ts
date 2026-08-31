@@ -8,6 +8,7 @@ import { WOLFPACK_PI_CONTROL_SKILL_FILES } from "./pi-skill.js";
 
 export const PI_INTEGRATION_PACKAGES = ["npm:@sgtbeatdown/pi-tasks"] as const;
 export const PI_CONTROL_SKILL_NAME = "wolfpack-tailnet-control";
+const PI_INSTALL_COMMAND_PREFIX = `${AGENT_KIND.PI.cmd} install`;
 
 export type PiIntegrationSetupMode = "hidden" | "prompt" | "guidance";
 
@@ -16,7 +17,7 @@ export function piIntegrationDisclosureLines(): readonly string[] {
     "  - Wolfpack skill: installs wolfpack-tailnet-control into Pi.",
     "  - Pi Tasks: adds agent_task_* tools and their delegation skill.",
     "  Wolfpack will install the skill, then Pi will run:",
-    ...PI_INTEGRATION_PACKAGES.map((source) => `    pi install ${source}`),
+    ...PI_INTEGRATION_PACKAGES.map((source) => `    ${PI_INSTALL_COMMAND_PREFIX} ${source}`),
     "  Skills and extensions can execute commands with your user permissions. Review before accepting.",
   ];
 }
@@ -60,7 +61,7 @@ export function planPiIntegrationSetup(
   pathValue: string | undefined,
   interactive: boolean,
 ): PiIntegrationSetupMode {
-  const hasPi = detectInstalledProviderCommands(pathValue).includes(AGENT_KIND.PI);
+  const hasPi = detectInstalledProviderCommands(pathValue).includes(AGENT_KIND.PI.id);
   if (!hasPi) return "hidden";
   return interactive ? "prompt" : "guidance";
 }
@@ -119,7 +120,7 @@ export function installPiIntegration(
 
   for (const source of PI_INTEGRATION_PACKAGES) {
     try {
-      execFileSync("pi", ["install", source], {
+      execFileSync(AGENT_KIND.PI.cmd, ["install", source], {
         env,
         stdio: "inherit",
       });
@@ -129,7 +130,7 @@ export function installPiIntegration(
         status: "extension_failed",
         installedSources,
         failedSource: source,
-        retryCommand: `pi install ${source}`,
+        retryCommand: `${PI_INSTALL_COMMAND_PREFIX} ${source}`,
       };
     }
   }

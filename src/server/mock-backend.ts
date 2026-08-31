@@ -119,7 +119,7 @@ export class MockBackend implements SessionBackend {
         wolfpackSessionId: `mock:${name}`,
         wolfpackSessionName: name,
         projectPath: "",
-        agentKind: AGENT_KIND.UNKNOWN,
+        agentKind: AGENT_KIND.UNKNOWN.id,
         createdAt: now,
         updatedAt: now,
         ...(this._parentSessions.get(name) && { parentSession: this._parentSessions.get(name) }),

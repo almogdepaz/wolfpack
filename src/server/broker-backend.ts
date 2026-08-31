@@ -59,8 +59,8 @@ import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/co
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import {
   AGENT_KIND,
-  CURSOR_AGENT_COMMAND,
   detectAgentKindFromCommandArgs,
+  resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
@@ -392,16 +392,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity> {
-    const agentCmd = cmd || loadSettings().agentCmd || AGENT_KIND.CLAUDE;
-    if (agentCmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(agentCmd)) {
+    const agentCmd = cmd || loadSettings().agentCmd || AGENT_KIND.CLAUDE.id;
+    if (agentCmd !== AGENT_KIND.SHELL.id && !CMD_REGEX.test(agentCmd)) {
       throw new Error(`invalid command: ${agentCmd}`);
     }
-    const launchCmd = agentCmd === AGENT_KIND.CURSOR ? CURSOR_AGENT_COMMAND : agentCmd;
+    const launchCmd = resolveAgentCommand(agentCmd);
     let shellCmd: string;
-    if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI) {
+    if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI.id) {
       throw new Error("model selection requires the pi harness");
     }
-    if (agentCmd === AGENT_KIND.SHELL) {
+    if (agentCmd === AGENT_KIND.SHELL.id) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }
