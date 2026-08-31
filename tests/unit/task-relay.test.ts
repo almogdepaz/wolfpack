@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import { encodedJsonBytes, isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
 import type { RelayEnvelope } from "../../src/task-relay/domain.ts";
 import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
 import { MalformedRelayStoreError, TaskRelayStore } from "../../src/task-relay/store.ts";
@@ -105,6 +105,16 @@ function storeOperations(store: TaskRelayStore): readonly (() => Promise<unknown
     () => store.updateOutbox(REMOTE_ENVELOPE.envelopeId, item => item),
     () => store.cleanup(NOW),
   ];
+}
+
+async function acceptInboxEnvelopes(store: TaskRelayStore, count: number, payloadBytes = 0): Promise<void> {
+  for (let index = 1; index <= count; index += 1) {
+    await store.accept({
+      ...LOCAL_ENVELOPE,
+      envelopeId: `page-envelope-${index}`,
+      payload: payloadBytes === 0 ? { index } : { index, content: "x".repeat(payloadBytes) },
+    }, NOW.toISOString());
+  }
 }
 
 async function expectMalformedRelayStore(operation: () => Promise<unknown>, label = "malformed store"): Promise<void> {
@@ -617,6 +627,47 @@ describe("pi tasks relay v2", () => {
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
+    }
+  });
+
+  test("bounds store inbox pages by item count and preserves cursor continuity", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await acceptInboxEnvelopes(store, RELAY_LIMITS.INBOX_PAGE_ITEMS + 1);
+
+      const firstPage = await store.inbox(RECEIVER_ID, "0");
+      expect(firstPage.items).toHaveLength(RELAY_LIMITS.INBOX_PAGE_ITEMS);
+      expect(firstPage.items[0]?.cursor).toBe("1");
+      expect(firstPage.items.at(-1)?.cursor).toBe(String(RELAY_LIMITS.INBOX_PAGE_ITEMS));
+      expect(firstPage.hasMore).toBe(true);
+
+      const secondPage = await store.inbox(RECEIVER_ID, firstPage.items.at(-1)!.cursor);
+      expect(secondPage.items.map(item => item.cursor)).toEqual([String(RELAY_LIMITS.INBOX_PAGE_ITEMS + 1)]);
+      expect(secondPage.hasMore).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds store inbox pages by encoded envelope bytes", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await acceptInboxEnvelopes(store, 6, RELAY_LIMITS.PAYLOAD_BYTES);
+
+      const page = await store.inbox(RECEIVER_ID, "0");
+      expect(page.items.length).toBeGreaterThan(0);
+      expect(page.items.length).toBeLessThan(6);
+      expect(page.hasMore).toBe(true);
+      const pageBytes = page.items.reduce((total, item) => total + encodedJsonBytes(item.envelope), 0);
+      expect(pageBytes).toBeLessThanOrEqual(RELAY_LIMITS.INBOX_PAGE_BYTES);
+
+      const nextPage = await store.inbox(RECEIVER_ID, page.items.at(-1)!.cursor);
+      expect(nextPage.items.length).toBeGreaterThan(0);
+      expect(pageBytes + encodedJsonBytes(nextPage.items[0]!.envelope)).toBeGreaterThan(RELAY_LIMITS.INBOX_PAGE_BYTES);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

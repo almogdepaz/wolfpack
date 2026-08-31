@@ -14,7 +14,7 @@ import {
   isRelayEnvelope,
   relayFailure,
 } from "./domain.ts";
-import type { RelayEndpoint, RelayEnvelope, RelayInboxItem, RelayRegistration, RelayResult } from "./domain.ts";
+import type { RelayEndpoint, RelayEnvelope, RelayRegistration, RelayResult } from "./domain.ts";
 import { TaskRelayStore, newOpaqueEndpoint } from "./store.ts";
 import type { PeerOutboxItem } from "./store.ts";
 
@@ -220,16 +220,13 @@ export class TaskRelayGateway {
     if (!/^(0|[1-9][0-9]*)$/.test(input.cursor)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay inbox cursor");
     const endpoint = await this.#endpointForCaller(input.callerSession);
     if (!endpoint.ok) return endpoint;
-    const items = await this.#store.inbox(endpoint.endpoint.id, input.cursor);
-    const page: RelayInboxItem[] = [];
-    let bytes = 0;
-    for (const item of items) {
-      const itemBytes = encodedJsonBytes(item.envelope);
-      if (page.length === RELAY_LIMITS.INBOX_PAGE_ITEMS || bytes + itemBytes > RELAY_LIMITS.INBOX_PAGE_BYTES) break;
-      page.push(item);
-      bytes += itemBytes;
-    }
-    return { ok: true, envelopes: page.map((item) => item.envelope), nextCursor: page.at(-1)?.cursor ?? input.cursor, hasMore: page.length < items.length };
+    const page = await this.#store.inbox(endpoint.endpoint.id, input.cursor);
+    return {
+      ok: true,
+      envelopes: page.items.map(item => item.envelope),
+      nextCursor: page.items.at(-1)?.cursor ?? input.cursor,
+      hasMore: page.hasMore,
+    };
   }
 
   async acknowledgeDelivery(input: { readonly callerSession: string; readonly envelopeId: string }): Promise<RelayResult<{ readonly kind: "acknowledged" | "duplicate" }>> {

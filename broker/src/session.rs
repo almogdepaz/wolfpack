@@ -334,12 +334,21 @@ impl Session {
         }
 
         let reaper_inner = Arc::clone(&inner);
+        let reaper_terminal = Arc::clone(&terminal);
         let reaper_bus = Arc::clone(&bus);
         let reaper_seq = Arc::clone(&seq);
         let reap_id = id;
         let reaper_events = events.clone();
         spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
-            reap(child.into_child(), reaper_inner, reaper_bus, reaper_seq, reap_id, reaper_events)
+            reap(
+                child.into_child(),
+                reaper_inner,
+                reaper_terminal,
+                reaper_bus,
+                reaper_seq,
+                reap_id,
+                reaper_events,
+            )
         })
         .map_err(|e| SpawnError::ThreadSpawn(e.to_string()))?;
 
@@ -664,6 +673,12 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                 // and OutputChunk.seq use the same monotonic numbering.
                 {
                     let mut term = terminal.lock().expect("terminal poisoned");
+                    // A reaper timeout closes the bus while holding this same
+                    // lock. Once forced closed, no later PTY bytes may advance
+                    // terminal state or the final output watermark.
+                    if bus.is_closed() {
+                        break Ok(());
+                    }
                     let new_seq = match term.try_feed_chunk(&data) {
                         Ok(()) => seq.fetch_add(1, Ordering::SeqCst) + 1,
                         Err(error) => break Err(io::Error::other(error)),
@@ -785,20 +800,26 @@ fn take_cleanup_observation_for_test() -> (Option<u32>, Option<u32>) {
 fn reap(
     mut child: Box<dyn Child + Send + Sync>,
     inner: Arc<Inner>,
+    terminal: Arc<Mutex<TerminalState>>,
     output_bus: Arc<OutputBus>,
     seq: Arc<AtomicU64>,
     session_id: Uuid,
     events: EventSender,
 ) {
     let exit = child.wait();
-    if !output_bus.wait_closed(EXIT_DRAIN_BARRIER_TIMEOUT) {
+    let final_seq = if output_bus.wait_closed(EXIT_DRAIN_BARRIER_TIMEOUT) {
+        seq.load(Ordering::SeqCst)
+    } else {
         tracing::warn!(
             %session_id,
             "PTY output drainer did not close before exit barrier timeout; closing output bus"
         );
+        // Serialize forced closure with terminal feed + sequence publication.
+        // The drainer checks bus closure under this same lock before feeding.
+        let _terminal = terminal.lock().expect("terminal poisoned");
         output_bus.close();
-    }
-    let final_seq = seq.load(Ordering::SeqCst);
+        seq.load(Ordering::SeqCst)
+    };
     let (exit_code, transitioned) = {
         let mut st = inner.state.lock().expect("session state poisoned");
         let transitioned = st.alive;
@@ -872,6 +893,18 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CountingTerminal {
+        feed_count: usize,
+    }
+
+    impl TerminalFeed for CountingTerminal {
+        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<(), TerminalStateError> {
+            self.feed_count += 1;
+            Ok(())
+        }
+    }
+
     struct FailingReader;
 
     impl Read for FailingReader {
@@ -918,6 +951,40 @@ mod tests {
             receiver.try_recv(),
             Err(broadcast::error::TryRecvError::Closed)
         ));
+    }
+
+    #[test]
+    fn drainer_discards_output_after_forced_close_without_advancing_sequence() {
+        let terminal = Arc::new(Mutex::new(CountingTerminal::default()));
+        let seq = Arc::new(AtomicU64::new(7));
+        let bus = OutputBus::new(4, 4);
+        bus.publish(OutputChunk {
+            seq: 7,
+            data: Arc::new(b"retained chunk".to_vec()),
+        });
+        bus.close();
+
+        drain_reader_with_terminal(
+            OneChunkReader {
+                chunk: Some(b"late chunk"),
+            },
+            Arc::clone(&terminal),
+            Arc::clone(&seq),
+            Arc::clone(&bus),
+        )
+        .expect("forced close should terminate the drainer cleanly");
+
+        assert_eq!(terminal.lock().expect("terminal").feed_count, 0);
+        assert_eq!(seq.load(Ordering::SeqCst), 7);
+        assert_eq!(bus.current_seq(), 7);
+        assert_eq!(
+            bus.subscribe(Some(0))
+                .replay
+                .iter()
+                .map(|chunk| chunk.seq)
+                .collect::<Vec<_>>(),
+            vec![7],
+        );
     }
 
     #[test]

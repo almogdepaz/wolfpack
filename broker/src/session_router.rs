@@ -267,7 +267,7 @@ impl SessionRouter {
     }
 }
 
-fn validate_snapshot_target_cols(target_cols: Option<u16>) -> Result<(), String> {
+pub(crate) fn validate_snapshot_target_cols(target_cols: Option<u16>) -> Result<(), String> {
     if let Some(cols) = target_cols {
         if cols > MAX_TERMINAL_COLS {
             return Err(format!("target_cols must be at most {MAX_TERMINAL_COLS}"));

@@ -6,6 +6,8 @@ import { canonicalJson } from "../canonical-json.ts";
 import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
 import {
   RELAY_ID,
+  RELAY_LIMITS,
+  encodedJsonBytes,
   isOpaqueRelayId,
   isPeerRelayId,
   isRelayEndpoint,
@@ -31,6 +33,11 @@ interface StoredMailboxItem {
 export interface PeerRoute {
   readonly id: string;
   readonly origin: string;
+}
+
+export interface RelayInboxPage {
+  readonly items: readonly RelayInboxItem[];
+  readonly hasMore: boolean;
 }
 
 export interface PeerOutboxItem {
@@ -299,16 +306,38 @@ export class TaskRelayStore {
     });
   }
 
-  async inbox(endpointId: string, cursor: string): Promise<readonly RelayInboxItem[]> {
+  async inbox(endpointId: string, cursor: string): Promise<RelayInboxPage> {
     const state = this.#read();
-    const envelopes = new Map(state.envelopes.map((item) => [item.envelope.envelopeId, item.envelope]));
-    return state.mailbox
-      .filter((item) => item.endpointId === endpointId && BigInt(item.cursor) > BigInt(cursor))
-      .sort((left, right) => BigInt(left.cursor) < BigInt(right.cursor) ? -1 : 1)
-      .flatMap((item) => {
-        const envelope = envelopes.get(item.envelopeId);
-        return envelope ? [{ cursor: item.cursor, envelope, acknowledgedAt: item.acknowledgedAt }] : [];
-      });
+    const selectedMailbox: StoredMailboxItem[] = [];
+    let matchingItems = 0;
+    for (const item of state.mailbox) {
+      if (item.endpointId !== endpointId || BigInt(item.cursor) <= BigInt(cursor)) continue;
+      matchingItems += 1;
+      const insertionIndex = selectedMailbox.findIndex(candidate => BigInt(item.cursor) < BigInt(candidate.cursor));
+      if (insertionIndex === -1) selectedMailbox.push(item);
+      else selectedMailbox.splice(insertionIndex, 0, item);
+      if (selectedMailbox.length > RELAY_LIMITS.INBOX_PAGE_ITEMS) selectedMailbox.pop();
+    }
+
+    const selectedEnvelopeIds = new Set(selectedMailbox.map(item => item.envelopeId));
+    const envelopes = new Map<string, RelayEnvelope>();
+    for (const item of state.envelopes) {
+      if (selectedEnvelopeIds.has(item.envelope.envelopeId)) {
+        envelopes.set(item.envelope.envelopeId, item.envelope);
+      }
+    }
+
+    const items: RelayInboxItem[] = [];
+    let bytes = 0;
+    for (const item of selectedMailbox) {
+      const envelope = envelopes.get(item.envelopeId);
+      if (envelope === undefined) continue;
+      const itemBytes = encodedJsonBytes(envelope);
+      if (bytes + itemBytes > RELAY_LIMITS.INBOX_PAGE_BYTES) break;
+      items.push({ cursor: item.cursor, envelope, acknowledgedAt: item.acknowledgedAt });
+      bytes += itemBytes;
+    }
+    return { items, hasMore: items.length < matchingItems };
   }
 
   async acknowledge(endpointId: string, envelopeId: string, at: string): Promise<"acknowledged" | "duplicate" | "missing"> {
