@@ -23,6 +23,7 @@ use crate::registry::{Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::ring_buffer::OutputChunk;
 use crate::router::Router;
 use crate::session::EventSender;
+use crate::session_router::validate_snapshot_target_cols;
 
 /// Per-connection queue depth. Control/global lifecycle and output use separate
 /// queues so PTY traffic cannot starve request responses; the socket writer
@@ -546,17 +547,14 @@ async fn handle_snapshot_subscribe(
             .await;
         }
     };
-    if params
-        .target_cols
-        .is_some_and(|cols| !(20..=300).contains(&cols))
-    {
+    if let Err(message) = validate_snapshot_target_cols(params.target_cols) {
         return send_response(
             writer_tx,
             ControlResponse::err(
                 id,
                 ProtocolError {
                     code: ErrorCode::InvalidRequest,
-                    message: "snapshot_subscribe target_cols must be between 20 and 300".into(),
+                    message: format!("snapshot_subscribe params: {message}"),
                 },
             ),
         )

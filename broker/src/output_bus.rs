@@ -109,17 +109,18 @@ impl OutputBus {
     /// Holding the sender lock across both keeps subscribe atomic with
     /// publish: a subscribe call interleaved with a publish either sees
     /// the chunk in its replay slice OR on its live receiver, never both
-    /// and never neither.
+    /// and never neither. Chunks published after closure are ignored.
     pub fn publish(&self, chunk: OutputChunk) {
         let sender_guard = self.sender.lock().expect("output bus sender poisoned");
+        let Some(tx) = sender_guard.as_ref() else {
+            return;
+        };
         let mut ring = self.ring.lock().expect("output bus ring poisoned");
         ring.push(chunk.clone());
         self.last_seq.store(chunk.seq, Ordering::SeqCst);
-        if let Some(tx) = sender_guard.as_ref() {
-            // Err means no receivers; that's fine — bytes are still in the ring
-            // for future subscribers.
-            let _ = tx.send(chunk);
-        }
+        // Err means no receivers; that's fine — bytes are still in the ring
+        // for future subscribers.
+        let _ = tx.send(chunk);
     }
 
     /// Atomically capture replay + live receiver + current_seq. After the
@@ -261,6 +262,22 @@ mod tests {
         assert_eq!(sub.replay.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(), vec![1]);
         assert!(sub.receiver.recv().await.is_err());
         assert!(bus.is_closed());
+    }
+
+    #[test]
+    fn publish_after_close_preserves_replay_and_watermark() {
+        let bus = OutputBus::new(4, 4);
+        bus.publish(chunk(1, b"before"));
+        bus.close();
+
+        bus.publish(chunk(2, b"after"));
+
+        let sub = bus.subscribe(Some(0));
+        assert_eq!(
+            sub.replay.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(sub.current_seq, 1);
     }
 
     #[tokio::test]

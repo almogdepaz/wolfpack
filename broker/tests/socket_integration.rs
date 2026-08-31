@@ -452,6 +452,53 @@ async fn snapshot_subscribe_establishes_atomic_live_cut() {
 }
 
 #[tokio::test]
+async fn snapshot_subscribe_uses_snapshot_reflow_width_bounds() {
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+    let resp = round_trip(
+        &mut stream,
+        create_request(1, Some("snapshot-widths"), &["sleep", "30"]),
+    )
+    .await;
+    let created = match resp.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    let narrow = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 2,
+            method: methods::SNAPSHOT_SUBSCRIBE.into(),
+            params: json!({ "session_id": created.id, "target_cols": 4 }),
+        },
+    )
+    .await;
+    assert_eq!(narrow.status, Status::Ok);
+
+    for target_cols in [0, 301] {
+        let invalid = round_trip(
+            &mut stream,
+            ControlRequest {
+                id: 3,
+                method: methods::SNAPSHOT_SUBSCRIBE.into(),
+                params: json!({ "session_id": created.id, "target_cols": target_cols }),
+            },
+        )
+        .await;
+        assert_eq!(invalid.status, Status::Error, "target_cols={target_cols}");
+        assert_eq!(
+            invalid.error.expect("error").code,
+            ErrorCode::InvalidRequest,
+            "target_cols={target_cols}"
+        );
+    }
+
+    drop(stream);
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn resize_unknown_session_returns_unknown_session() {
     let h = Harness::boot().await;
     let mut stream = connect(&h.socket_path).await;

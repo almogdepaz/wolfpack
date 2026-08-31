@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import { encodedJsonBytes, isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
 import type { RelayEnvelope } from "../../src/task-relay/domain.ts";
 import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
 import { MalformedRelayStoreError, TaskRelayStore } from "../../src/task-relay/store.ts";
@@ -27,6 +27,8 @@ const SENDER_ID = "0accef20-3e6b-4bdd-9faf-1d875b07112a";
 const RECEIVER_ID = "8e5fbbf1-fbc8-4a45-a73f-b10239428c65";
 const ROUTE_ID = `${RELAY_ID}:peer:813dcecd-2787-4455-a260-9ce19b9d9bbf`;
 const PEER_ORIGIN = "https://receiver.example.ts.net";
+const STALE_ENDPOINT_ID = "11111111-1111-4111-8111-111111111111";
+const RECENT_ENDPOINT_ID = "22222222-2222-4222-8222-222222222222";
 const LOCAL_ENVELOPE: RelayEnvelope = {
   envelopeId: "stored-local-envelope",
   protocolVersion: RELAY_PROTOCOL_VERSION,
@@ -105,6 +107,16 @@ function storeOperations(store: TaskRelayStore): readonly (() => Promise<unknown
     () => store.updateOutbox(REMOTE_ENVELOPE.envelopeId, item => item),
     () => store.cleanup(NOW),
   ];
+}
+
+async function acceptInboxEnvelopes(store: TaskRelayStore, count: number, payloadBytes = 0): Promise<void> {
+  for (let index = 1; index <= count; index += 1) {
+    await store.accept({
+      ...LOCAL_ENVELOPE,
+      envelopeId: `page-envelope-${index}`,
+      payload: payloadBytes === 0 ? { index } : { index, content: "x".repeat(payloadBytes) },
+    }, NOW.toISOString());
+  }
 }
 
 async function expectMalformedRelayStore(operation: () => Promise<unknown>, label = "malformed store"): Promise<void> {
@@ -586,6 +598,200 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("expires every stale transport state while retaining recent work and registrations", async () => {
+    const directory = root();
+    const cutoff = new Date(NOW.getTime() - 24 * 60 * 60 * 1000);
+    const oldTimestamp = new Date(cutoff.getTime() - 1).toISOString();
+    const recentTimestamp = new Date(cutoff.getTime() + 1).toISOString();
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.register({
+        ...VALID_REGISTRATION,
+        endpoint: { relay: RELAY_ID, id: STALE_ENDPOINT_ID },
+        sessionId: "stale-session",
+        leaseExpiresAt: oldTimestamp,
+      });
+      await store.register({
+        ...VALID_REGISTRATION,
+        endpoint: { relay: RELAY_ID, id: RECENT_ENDPOINT_ID },
+        sessionId: "recent-session",
+        leaseExpiresAt: recentTimestamp,
+      });
+
+      for (const [envelopeId, endpointId, acceptedAt, acknowledgedAt] of [
+        ["old-unacknowledged", STALE_ENDPOINT_ID, oldTimestamp, undefined],
+        ["old-acknowledged", STALE_ENDPOINT_ID, oldTimestamp, oldTimestamp],
+        ["recent-unacknowledged", RECENT_ENDPOINT_ID, recentTimestamp, undefined],
+        ["recent-acknowledged", RECENT_ENDPOINT_ID, oldTimestamp, recentTimestamp],
+      ] as const) {
+        await store.accept({
+          ...LOCAL_ENVELOPE,
+          envelopeId,
+          source: { relay: RELAY_ID, id: endpointId },
+          target: { relay: RELAY_ID, id: endpointId },
+          createdAt: acceptedAt,
+        }, acceptedAt);
+        if (acknowledgedAt !== undefined) await store.acknowledge(endpointId, envelopeId, acknowledgedAt);
+      }
+
+      const route = await store.peerRoute(PEER_ORIGIN);
+      for (const [envelopeId, queuedAt, terminal] of [
+        ["old-pending", oldTimestamp, undefined],
+        ["old-forwarded", oldTimestamp, { forwardedAt: oldTimestamp }],
+        ["old-exhausted", oldTimestamp, { exhaustedAt: oldTimestamp }],
+        ["recent-pending", recentTimestamp, undefined],
+        ["recent-forwarded", oldTimestamp, { forwardedAt: recentTimestamp }],
+      ] as const) {
+        await store.queuePeer({
+          envelope: {
+            ...REMOTE_ENVELOPE,
+            envelopeId,
+            source: { relay: RELAY_ID, id: envelopeId.startsWith("old-") ? STALE_ENDPOINT_ID : RECENT_ENDPOINT_ID },
+            target: { relay: route.id, id: RECEIVER_ID },
+            createdAt: queuedAt,
+          },
+          peerOrigin: PEER_ORIGIN,
+          queuedAt,
+          attempts: 0,
+          lastAttemptAt: undefined,
+          forwardedAt: undefined,
+          exhaustedAt: undefined,
+          lastError: undefined,
+        });
+        if (terminal !== undefined) await store.updateOutbox(envelopeId, item => ({ ...item, ...terminal }));
+      }
+
+      await expect(store.cleanup(cutoff)).resolves.toBe(6);
+      const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
+      expect(state.mailbox.map((item: { envelopeId: string }) => item.envelopeId)).toEqual([
+        "recent-unacknowledged",
+        "recent-acknowledged",
+      ]);
+      expect(state.envelopes.map((item: { envelope: { envelopeId: string } }) => item.envelope.envelopeId)).toEqual([
+        "recent-unacknowledged",
+        "recent-acknowledged",
+      ]);
+      expect(state.outbox.map((item: { envelope: { envelopeId: string } }) => item.envelope.envelopeId)).toEqual([
+        "recent-pending",
+        "recent-forwarded",
+      ]);
+      expect(state.registrations.map((item: { endpoint: { id: string } }) => item.endpoint.id)).toEqual([RECENT_ENDPOINT_ID]);
+      expect(state.peerRoutes).toEqual([expect.objectContaining({ origin: PEER_ORIGIN })]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves mailbox cursor continuity after expired payloads are removed", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.register({
+        ...VALID_REGISTRATION,
+        endpoint: { relay: RELAY_ID, id: RECEIVER_ID },
+        sessionId: "receiver",
+        leaseExpiresAt: new Date(NOW.getTime() + 60_000).toISOString(),
+      });
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "expired-first" }, new Date(NOW.getTime() - 2).toISOString());
+      await store.cleanup(new Date(NOW.getTime() - 1));
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "retained-second" }, NOW.toISOString());
+
+      const page = await store.inbox(RECEIVER_ID, "1");
+      expect(page.items.map(item => ({ cursor: item.cursor, envelopeId: item.envelope.envelopeId }))).toEqual([
+        { cursor: "2", envelopeId: "retained-second" },
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("derives durable cursor watermarks from existing version-2 state", async () => {
+    const directory = root();
+    try {
+      writeFileSync(join(directory, "relay-state.json"), JSON.stringify(VALID_RELAY_STATE));
+      const store = new TaskRelayStore(directory);
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "legacy-second" }, NOW.toISOString());
+
+      const page = await store.inbox(RECEIVER_ID, "1");
+      expect(page.items.map(item => ({ cursor: item.cursor, envelopeId: item.envelope.envelopeId }))).toEqual([
+        { cursor: "2", envelopeId: "legacy-second" },
+      ]);
+      const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
+      expect(state.mailboxCursors).toEqual([{ endpointId: RECEIVER_ID, cursor: "2" }]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("uses configurable retention during startup cleanup", async () => {
+    const directory = root();
+    const previousRetention = process.env.WOLFPACK_TASK_RELAY_RETENTION_MS;
+    let gateway: TaskRelayGateway | undefined;
+    try {
+      expect(RELAY_LIMITS.RETENTION_MS).toBe(24 * 60 * 60 * 1000);
+      process.env.WOLFPACK_TASK_RELAY_RETENTION_MS = "1000";
+      const store = new TaskRelayStore(directory);
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "expired-at-startup" }, new Date(NOW.getTime() - 1001).toISOString());
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "retained-at-startup" }, new Date(NOW.getTime() - 999).toISOString());
+
+      gateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => NOW });
+      await gateway.initialize();
+
+      const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
+      expect(state.envelopes.map((item: { envelope: { envelopeId: string } }) => item.envelope.envelopeId)).toEqual(["retained-at-startup"]);
+    } finally {
+      gateway?.close();
+      if (previousRetention === undefined) delete process.env.WOLFPACK_TASK_RELAY_RETENTION_MS;
+      else process.env.WOLFPACK_TASK_RELAY_RETENTION_MS = previousRetention;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects invalid relay retention configuration", () => {
+    const directory = root();
+    const previousRetention = process.env.WOLFPACK_TASK_RELAY_RETENTION_MS;
+    try {
+      process.env.WOLFPACK_TASK_RELAY_RETENTION_MS = "not-a-duration";
+      expect(() => new TaskRelayGateway({ root: directory })).toThrow("WOLFPACK_TASK_RELAY_RETENTION_MS must be a positive safe integer");
+    } finally {
+      if (previousRetention === undefined) delete process.env.WOLFPACK_TASK_RELAY_RETENTION_MS;
+      else process.env.WOLFPACK_TASK_RELAY_RETENTION_MS = previousRetention;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("cleans expired relay transport state periodically", async () => {
+    const directory = root();
+    let now = NOW;
+    let gateway: TaskRelayGateway | undefined;
+    jest.useFakeTimers();
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "periodic-expiry" }, now.toISOString());
+      gateway = new TaskRelayGateway({
+        root: directory,
+        inspectSession: session("sender"),
+        now: () => now,
+        retentionMs: 1000,
+        cleanupIntervalMs: 5,
+      });
+      await gateway.initialize();
+      now = new Date(now.getTime() + 1001);
+      jest.advanceTimersByTime(5);
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "after-periodic-cleanup" }, now.toISOString());
+
+      const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
+      expect(state.envelopes.map((item: { envelope: { envelopeId: string } }) => item.envelope.envelopeId)).toEqual([
+        "after-periodic-cleanup",
+      ]);
+      expect(state.mailbox.map((item: { envelopeId: string }) => item.envelopeId)).toEqual(["after-periodic-cleanup"]);
+    } finally {
+      gateway?.close();
+      jest.useRealTimers();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("rejects representative malformed persisted relay records on reads and mutations", async () => {
     const malformedStates = [
       { label: "invalid JSON", contents: "{" },
@@ -596,6 +802,8 @@ describe("pi tasks relay v2", () => {
       { label: "zero cursor", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [{ ...VALID_MAILBOX_ITEM, cursor: "0" }] }) },
       { label: "dangling mailbox", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [{ ...VALID_MAILBOX_ITEM, envelopeId: "missing-envelope" }] }) },
       { label: "duplicate mailbox", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [VALID_MAILBOX_ITEM, VALID_MAILBOX_ITEM] }) },
+      { label: "mailbox cursor behind payload", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [{ ...VALID_MAILBOX_ITEM, cursor: "2" }], mailboxCursors: [{ endpointId: RECEIVER_ID, cursor: "1" }] }) },
+      { label: "duplicate mailbox cursor", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailboxCursors: [{ endpointId: RECEIVER_ID, cursor: "1" }, { endpointId: RECEIVER_ID, cursor: "2" }] }) },
       { label: "orphan envelope", contents: JSON.stringify({ ...VALID_RELAY_STATE, mailbox: [] }) },
       { label: "duplicate envelope", contents: JSON.stringify({ ...VALID_RELAY_STATE, envelopes: [VALID_STORED_ENVELOPE, VALID_STORED_ENVELOPE] }) },
       { label: "peer origin", contents: JSON.stringify({ ...VALID_RELAY_STATE, peerRoutes: [{ ...VALID_PEER_ROUTE, origin: "not-an-origin" }] }) },
@@ -617,6 +825,47 @@ describe("pi tasks relay v2", () => {
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
+    }
+  });
+
+  test("bounds store inbox pages by item count and preserves cursor continuity", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await acceptInboxEnvelopes(store, RELAY_LIMITS.INBOX_PAGE_ITEMS + 1);
+
+      const firstPage = await store.inbox(RECEIVER_ID, "0");
+      expect(firstPage.items).toHaveLength(RELAY_LIMITS.INBOX_PAGE_ITEMS);
+      expect(firstPage.items[0]?.cursor).toBe("1");
+      expect(firstPage.items.at(-1)?.cursor).toBe(String(RELAY_LIMITS.INBOX_PAGE_ITEMS));
+      expect(firstPage.hasMore).toBe(true);
+
+      const secondPage = await store.inbox(RECEIVER_ID, firstPage.items.at(-1)!.cursor);
+      expect(secondPage.items.map(item => item.cursor)).toEqual([String(RELAY_LIMITS.INBOX_PAGE_ITEMS + 1)]);
+      expect(secondPage.hasMore).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds store inbox pages by encoded envelope bytes", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await acceptInboxEnvelopes(store, 6, RELAY_LIMITS.PAYLOAD_BYTES);
+
+      const page = await store.inbox(RECEIVER_ID, "0");
+      expect(page.items.length).toBeGreaterThan(0);
+      expect(page.items.length).toBeLessThan(6);
+      expect(page.hasMore).toBe(true);
+      const pageBytes = page.items.reduce((total, item) => total + encodedJsonBytes(item.envelope), 0);
+      expect(pageBytes).toBeLessThanOrEqual(RELAY_LIMITS.INBOX_PAGE_BYTES);
+
+      const nextPage = await store.inbox(RECEIVER_ID, page.items.at(-1)!.cursor);
+      expect(nextPage.items.length).toBeGreaterThan(0);
+      expect(pageBytes + encodedJsonBytes(nextPage.items[0]!.envelope)).toBeGreaterThan(RELAY_LIMITS.INBOX_PAGE_BYTES);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
@@ -646,6 +895,7 @@ describe("pi tasks relay v2", () => {
         registrations: [],
         envelopes: [],
         mailbox: [],
+        mailboxCursors: [],
         peerRoutes: [],
         outbox: [],
       });
