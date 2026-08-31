@@ -43,7 +43,7 @@ function fakeSession(
       wolfpackSessionId: id,
       wolfpackSessionName: name,
       projectPath: "",
-      agentKind: "unknown",
+      agentKind: "custom",
       createdAt: "1970-01-01T00:00:00.000Z",
       updatedAt: "1970-01-01T00:00:00.000Z",
       ...(parent && {

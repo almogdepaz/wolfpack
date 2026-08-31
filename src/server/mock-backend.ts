@@ -18,7 +18,7 @@ import type {
 } from "../session-prompt-contract.js";
 import { stripAnsi } from "./strip-ansi.js";
 import { inferAgentKind } from "./session-identity.js";
-import { AGENT_KIND } from "../agent-kind.js";
+import { CUSTOM_AGENT_KIND } from "../agent-kind.js";
 import type {
   ParentSessionIdentity,
   PublicSessionIdentity,
@@ -119,7 +119,7 @@ export class MockBackend implements SessionBackend {
         wolfpackSessionId: `mock:${name}`,
         wolfpackSessionName: name,
         projectPath: "",
-        agentKind: AGENT_KIND.UNKNOWN.id,
+        agentKind: CUSTOM_AGENT_KIND,
         createdAt: now,
         updatedAt: now,
         ...(this._parentSessions.get(name) && { parentSession: this._parentSessions.get(name) }),

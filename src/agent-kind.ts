@@ -10,8 +10,9 @@ export const AGENT_KIND = {
   CODEX: { id: "codex", cmd: "codex" },
   GEMINI: { id: "gemini", cmd: "gemini" },
   CURSOR: { id: "cursor", cmd: "agent" },
-  UNKNOWN: { id: "unknown", cmd: "unknown" },
 } as const satisfies Readonly<Record<string, AgentKindDefinition>>;
+
+export const CUSTOM_AGENT_KIND = "custom" as const;
 
 export const KNOWN_AGENT_KINDS = [
   AGENT_KIND.SHELL.id,
@@ -20,7 +21,7 @@ export const KNOWN_AGENT_KINDS = [
   AGENT_KIND.PI.id,
   AGENT_KIND.GEMINI.id,
   AGENT_KIND.CURSOR.id,
-  AGENT_KIND.UNKNOWN.id,
+  CUSTOM_AGENT_KIND,
 ] as const;
 
 export type AgentKind = typeof KNOWN_AGENT_KINDS[number];
@@ -64,12 +65,12 @@ export function resolveAgentCommand(command: string): string {
   return Object.values(AGENT_KIND).find((definition) => definition.id === command)?.cmd ?? command;
 }
 
-export function inferAgentKindFromCommand(command: string | undefined): AgentKind | string {
+export function inferAgentKindFromCommand(command: string | undefined): AgentKind {
   const value = (command || AGENT_KIND.SHELL.cmd).trim();
   if (!value || value === AGENT_KIND.SHELL.cmd) return AGENT_KIND.SHELL.id;
   const first = value.split(/\s+/)[0]?.split("/").pop()?.toLowerCase() || value.toLowerCase();
   const definition = Object.values(AGENT_KIND).find((candidate) => candidate.id === first || candidate.cmd === first);
-  return definition?.id ?? (first || AGENT_KIND.UNKNOWN.id);
+  return definition?.id ?? CUSTOM_AGENT_KIND;
 }
 
 export function detectAgentKindFromCommandArgs(command: readonly string[] | undefined): AgentKind | undefined {

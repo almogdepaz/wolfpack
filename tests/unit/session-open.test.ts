@@ -271,8 +271,8 @@ describe("openSubSession", () => {
     expect(backend.createCalls).toHaveLength(1);
   });
 
-  test("rejects unavailable identity and unsupported shell or unknown harnesses", async () => {
-    for (const agentKind of ["shell", "unknown"]) {
+  test("rejects unavailable identity and unsupported shell or custom harnesses", async () => {
+    for (const agentKind of ["shell", "custom"]) {
       const backend = new FakeSessionOpenBackend("parent", agentKind);
       let failure: unknown;
       try {

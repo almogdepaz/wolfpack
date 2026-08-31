@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
-import { AGENT_KIND } from "../../src/agent-kind";
+import { AGENT_KIND, CUSTOM_AGENT_KIND } from "../../src/agent-kind";
 import {
   AGENT_STATUS_AUTHORITY,
   AGENT_STATUS_FRESHNESS,
@@ -24,7 +24,7 @@ function taxonomyMembers(...groups: ReadonlyArray<Readonly<Record<string, string
 }
 
 const TAXONOMIES: readonly TaxonomyRule[] = [
-  { name: "agent-kind", owner: "src/agent-kind.ts", members: taxonomyMembers(AGENT_KIND), context: /agent|harness/i },
+  { name: "agent-kind", owner: "src/agent-kind.ts", members: taxonomyMembers(AGENT_KIND, { CUSTOM: CUSTOM_AGENT_KIND }), context: /agent|harness/i },
   { name: "terminal-prefill-mode", owner: "src/terminal-prefill.ts", members: taxonomyMembers(TERMINAL_PREFILL_MODE), context: /prefill/i },
   { name: "agent-status-source", owner: "src/agent-status-contract.ts", members: taxonomyMembers(AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_SOURCE), context: /AgentStatus|statusSource|freshness|authority|candidate|readStructuredStatusFile/ },
 ];

@@ -415,8 +415,9 @@ describe("BrokerBackend.createSession", () => {
     await backend.createSession("custom-one", "/tmp/proj", "cursor-custom", loadSettings);
 
     const customCreate = client.requests.find((request) => request.method === "create_session");
-    const customParams = customCreate?.params as { command: string[] };
+    const customParams = customCreate?.params as { command: string[]; env: Array<[string, string]> };
     expect(customParams.command[2]).toContain("; cursor-custom; exec");
+    expect(customParams.env).toContainEqual(["WOLFPACK_AGENT_KIND", "custom"]);
   });
 
   test("captures launch identity without terminal prose scraping", async () => {
