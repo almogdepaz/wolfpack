@@ -10,6 +10,8 @@ export const RELAY_LIMITS = {
   MAX_LEASE_MS: 5 * 60_000,
   MAX_FORWARD_ATTEMPTS: 4,
   FORWARD_RETRY_MS: 1_000,
+  RETENTION_MS: 24 * 60 * 60 * 1_000,
+  CLEANUP_INTERVAL_MS: 60 * 60 * 1_000,
 } as const;
 
 export const RELAY_ERROR = {

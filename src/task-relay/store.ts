@@ -30,6 +30,11 @@ interface StoredMailboxItem {
   readonly acknowledgedAt: string | undefined;
 }
 
+interface StoredMailboxCursor {
+  readonly endpointId: string;
+  readonly cursor: string;
+}
+
 export interface PeerRoute {
   readonly id: string;
   readonly origin: string;
@@ -58,6 +63,7 @@ interface RelayState {
   readonly registrations: readonly RelayRegistration[];
   readonly envelopes: readonly StoredEnvelope[];
   readonly mailbox: readonly StoredMailboxItem[];
+  readonly mailboxCursors: readonly StoredMailboxCursor[];
   readonly peerRoutes: readonly PeerRoute[];
   readonly outbox: readonly PeerOutboxItem[];
 }
@@ -67,11 +73,12 @@ interface PersistedRelayStateV2 {
   readonly registrations: readonly RelayRegistration[];
   readonly envelopes: readonly StoredEnvelope[];
   readonly mailbox: readonly StoredMailboxItem[];
+  readonly mailboxCursors?: readonly StoredMailboxCursor[];
   readonly peerRoutes: readonly PeerRoute[];
   readonly outbox: readonly PeerOutboxItem[];
 }
 
-const EMPTY: RelayState = { version: 2, registrations: [], envelopes: [], mailbox: [], peerRoutes: [], outbox: [] };
+const EMPTY: RelayState = { version: 2, registrations: [], envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [], outbox: [] };
 const PEER_RELAY_PREFIX = `${RELAY_ID}:peer:`;
 const locks = new Map<string, Promise<void>>();
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
@@ -137,6 +144,11 @@ function isStoredMailboxItem(value: unknown): value is StoredMailboxItem {
     && isOptionalTimestamp(value.acknowledgedAt);
 }
 
+function isStoredMailboxCursor(value: unknown): value is StoredMailboxCursor {
+  return isRecord(value) && isOpaqueRelayId(value.endpointId)
+    && typeof value.cursor === "string" && DECIMAL_CURSOR_PATTERN.test(value.cursor);
+}
+
 function isPeerRoute(value: unknown): value is PeerRoute {
   return isRecord(value) && isPeerRelayId(value.id) && isCanonicalPeerOrigin(value.origin);
 }
@@ -179,6 +191,31 @@ function hasValidMailboxBijection(
   return mailboxEnvelopeIds.size === storedEnvelopes.size;
 }
 
+function hasValidMailboxCursors(
+  mailbox: readonly StoredMailboxItem[],
+  mailboxCursors: readonly StoredMailboxCursor[],
+): boolean {
+  const cursors = new Map<string, bigint>();
+  for (const item of mailboxCursors) {
+    if (cursors.has(item.endpointId)) return false;
+    cursors.set(item.endpointId, BigInt(item.cursor));
+  }
+  return mailbox.every(item => (cursors.get(item.endpointId) ?? 0n) >= BigInt(item.cursor));
+}
+
+function mailboxCursorWatermarks(mailbox: readonly StoredMailboxItem[]): readonly StoredMailboxCursor[] {
+  const cursors = new Map<string, bigint>();
+  for (const item of mailbox) {
+    const cursor = BigInt(item.cursor);
+    if (cursor > (cursors.get(item.endpointId) ?? 0n)) cursors.set(item.endpointId, cursor);
+  }
+  return [...cursors].map(([endpointId, cursor]) => ({ endpointId, cursor: cursor.toString() }));
+}
+
+function addLocalEndpointReference(references: Set<string>, endpoint: RelayEndpoint): void {
+  if (endpoint.relay === RELAY_ID) references.add(endpoint.id);
+}
+
 function hasValidEnvelopeRoutes(
   envelopes: readonly StoredEnvelope[],
   peerRoutes: readonly PeerRoute[],
@@ -200,14 +237,17 @@ function isPersistedRelayStateV2(value: unknown): value is PersistedRelayStateV2
   const registrations = value.registrations;
   const envelopes = value.envelopes;
   const mailbox = value.mailbox;
+  const mailboxCursors = value.mailboxCursors;
   const peerRoutes = value.peerRoutes;
   const outbox = value.outbox;
   if (!Array.isArray(registrations) || !registrations.every(isRelayRegistration)) return false;
   if (!Array.isArray(envelopes) || !envelopes.every(isStoredEnvelope)) return false;
   if (!Array.isArray(mailbox) || !mailbox.every(isStoredMailboxItem)) return false;
+  if (mailboxCursors !== undefined && (!Array.isArray(mailboxCursors) || !mailboxCursors.every(isStoredMailboxCursor))) return false;
   if (!Array.isArray(peerRoutes) || !peerRoutes.every(isPeerRoute)) return false;
   if (!Array.isArray(outbox) || !outbox.every(isPeerOutboxItem)) return false;
   return hasValidMailboxBijection(mailbox, envelopes)
+    && (mailboxCursors === undefined || hasValidMailboxCursors(mailbox, mailboxCursors))
     && hasValidEnvelopeRoutes(envelopes, peerRoutes)
     && hasValidOutboxRoutes(outbox, peerRoutes);
 }
@@ -215,7 +255,9 @@ function isPersistedRelayStateV2(value: unknown): value is PersistedRelayStateV2
 function parsePersistedRelayState(value: unknown): RelayState | "reset" | undefined {
   if (!isRecord(value)) return undefined;
   if (value.version === 1) return "reset";
-  if (value.version === 2) return isPersistedRelayStateV2(value) ? value : undefined;
+  if (value.version === 2 && isPersistedRelayStateV2(value)) {
+    return { ...value, mailboxCursors: value.mailboxCursors ?? mailboxCursorWatermarks(value.mailbox) };
+  }
   return undefined;
 }
 
@@ -299,10 +341,19 @@ export class TaskRelayStore {
       const nextDigest = digest(envelope);
       if (existing) return { state, value: { kind: existing.digest === nextDigest ? "duplicate" as const : "conflict" as const, acceptanceId: existing.acceptanceId } };
       const stored: StoredEnvelope = { envelope, digest: nextDigest, acceptedAt, acceptanceId: randomUUID() };
-      const cursor = (state.mailbox.filter((item) => item.endpointId === envelope.target.id)
-        .reduce((maximum, item) => BigInt(item.cursor) > maximum ? BigInt(item.cursor) : maximum, 0n) + 1n).toString();
+      const previousCursor = state.mailboxCursors.find(item => item.endpointId === envelope.target.id)?.cursor ?? "0";
+      const cursor = (BigInt(previousCursor) + 1n).toString();
       const mailbox: StoredMailboxItem = { endpointId: envelope.target.id, envelopeId: envelope.envelopeId, cursor, acknowledgedAt: undefined };
-      return { state: { ...state, envelopes: [...state.envelopes, stored], mailbox: [...state.mailbox, mailbox] }, value: { kind: "accepted" as const, acceptanceId: stored.acceptanceId } };
+      const mailboxCursor = { endpointId: envelope.target.id, cursor };
+      return {
+        state: {
+          ...state,
+          envelopes: [...state.envelopes, stored],
+          mailbox: [...state.mailbox, mailbox],
+          mailboxCursors: [...state.mailboxCursors.filter(item => item.endpointId !== envelope.target.id), mailboxCursor],
+        },
+        value: { kind: "accepted" as const, acceptanceId: stored.acceptanceId },
+      };
     });
   }
 
@@ -387,21 +438,49 @@ export class TaskRelayStore {
   }
 
   async cleanup(before: Date): Promise<number> {
+    const cutoff = before.getTime();
+    if (!Number.isFinite(cutoff)) throw new TypeError("relay cleanup cutoff must be a valid date");
     return this.#mutate((state) => {
-      const retainedMailbox = state.mailbox.filter((item) => item.acknowledgedAt === undefined || Date.parse(item.acknowledgedAt) >= before.getTime());
-      const retainedIds = new Set(retainedMailbox.map((item) => item.envelopeId));
-      const retainedOutbox = state.outbox.filter((item) => {
-        const completedAt = item.forwardedAt ?? item.exhaustedAt;
-        return completedAt === undefined || Date.parse(completedAt) >= before.getTime();
+      const envelopesById = new Map(state.envelopes.map(item => [item.envelope.envelopeId, item]));
+      const retainedMailbox = state.mailbox.filter((item) => {
+        const stored = envelopesById.get(item.envelopeId);
+        const retainedFrom = item.acknowledgedAt ?? stored?.acceptedAt;
+        return retainedFrom !== undefined && Date.parse(retainedFrom) >= cutoff;
       });
+      const retainedIds = new Set(retainedMailbox.map(item => item.envelopeId));
+      const retainedEnvelopes = state.envelopes.filter(item => retainedIds.has(item.envelope.envelopeId));
+      const retainedOutbox = state.outbox.filter((item) => {
+        const retainedFrom = item.forwardedAt ?? item.exhaustedAt ?? item.queuedAt;
+        return Date.parse(retainedFrom) >= cutoff;
+      });
+      const referencedEndpoints = new Set<string>();
+      for (const item of retainedEnvelopes) {
+        addLocalEndpointReference(referencedEndpoints, item.envelope.source);
+        addLocalEndpointReference(referencedEndpoints, item.envelope.target);
+      }
+      for (const item of retainedOutbox) {
+        addLocalEndpointReference(referencedEndpoints, item.envelope.source);
+        addLocalEndpointReference(referencedEndpoints, item.envelope.target);
+      }
+      const retainedRegistrations = state.registrations.filter(item =>
+        referencedEndpoints.has(item.endpoint.id) || Date.parse(item.leaseExpiresAt) >= cutoff);
+      const retainedCursorEndpoints = new Set([
+        ...retainedRegistrations.map(item => item.endpoint.id),
+        ...retainedMailbox.map(item => item.endpointId),
+      ]);
+      const retainedMailboxCursors = state.mailboxCursors.filter(item => retainedCursorEndpoints.has(item.endpointId));
       return {
         state: {
           ...state,
+          registrations: retainedRegistrations,
           mailbox: retainedMailbox,
-          envelopes: state.envelopes.filter((item) => retainedIds.has(item.envelope.envelopeId)),
+          mailboxCursors: retainedMailboxCursors,
+          envelopes: retainedEnvelopes,
           outbox: retainedOutbox,
         },
-        value: state.mailbox.length - retainedMailbox.length + state.outbox.length - retainedOutbox.length,
+        value: state.registrations.length - retainedRegistrations.length
+          + state.mailbox.length - retainedMailbox.length
+          + state.outbox.length - retainedOutbox.length,
       };
     });
   }

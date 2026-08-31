@@ -1,4 +1,5 @@
 import { loadConfig, remoteUrl } from "../cli/config.ts";
+import { createLogger, errMsg } from "../log.ts";
 import { getBackend } from "../server/backend.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
@@ -20,7 +21,10 @@ import type { PeerOutboxItem } from "./store.ts";
 
 type PeerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type Inspection = Extract<SessionInspectionResult, { readonly ok: true }>;
-type RetryTimer = ReturnType<typeof setInterval>;
+type IntervalTimer = ReturnType<typeof setInterval>;
+
+const RETENTION_ENV = "WOLFPACK_TASK_RELAY_RETENTION_MS";
+const log = createLogger("task-relay");
 
 interface GatewayOptions {
   readonly root: string | undefined;
@@ -29,6 +33,8 @@ interface GatewayOptions {
   readonly peerFetch?: PeerFetch;
   readonly inspectSession?: (selector: string) => Promise<SessionInspectionResult>;
   readonly retryIntervalMs?: number;
+  readonly retentionMs?: number;
+  readonly cleanupIntervalMs?: number;
 }
 
 interface ConnectInput {
@@ -46,6 +52,21 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function positiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
+  return value;
+}
+
+function configuredRetentionMs(override: number | undefined): number {
+  if (override !== undefined) return positiveSafeInteger(override, "relay retentionMs");
+  const configured = process.env[RETENTION_ENV];
+  if (configured === undefined) return RELAY_LIMITS.RETENTION_MS;
+  if (!/^[1-9][0-9]*$/.test(configured)) {
+    throw new TypeError(`${RETENTION_ENV} must be a positive safe integer`);
+  }
+  return positiveSafeInteger(Number(configured), RETENTION_ENV);
+}
+
 export class TaskRelayGateway {
   readonly #store: TaskRelayStore;
   readonly #now: () => Date;
@@ -53,7 +74,10 @@ export class TaskRelayGateway {
   readonly #peerFetch: PeerFetch;
   readonly #inspectSession: (selector: string) => Promise<SessionInspectionResult>;
   readonly #retryIntervalMs: number;
-  #retryTimer: RetryTimer | undefined;
+  readonly #retentionMs: number;
+  readonly #cleanupIntervalMs: number;
+  #retryTimer: IntervalTimer | undefined;
+  #cleanupTimer: IntervalTimer | undefined;
   #initialization: Promise<void> | undefined;
   readonly #forwarding = new Map<string, Promise<boolean>>();
 
@@ -67,22 +91,34 @@ export class TaskRelayGateway {
       return inspect ? inspect.call(getBackend(), selector) : { ok: false, code: "NOT_FOUND" };
     });
     this.#retryIntervalMs = options.retryIntervalMs ?? RELAY_LIMITS.FORWARD_RETRY_MS;
+    this.#retentionMs = configuredRetentionMs(options.retentionMs);
+    this.#cleanupIntervalMs = positiveSafeInteger(
+      options.cleanupIntervalMs ?? RELAY_LIMITS.CLEANUP_INTERVAL_MS,
+      "relay cleanupIntervalMs",
+    );
   }
 
   get root(): string {
     return this.#store.root;
   }
 
-  /** Starts restart recovery and bounded background retry for durable peer outbox records. */
+  /** Starts retention cleanup, restart recovery, and bounded background maintenance. */
   async initialize(): Promise<void> {
     this.#initialization ??= (async () => {
       try {
+        await this.#cleanupExpired();
         await this.flushPeerOutbox(true);
       } finally {
         this.#retryTimer ??= setInterval(() => {
           void this.flushPeerOutbox().catch(() => undefined);
         }, this.#retryIntervalMs);
         this.#retryTimer.unref?.();
+        this.#cleanupTimer ??= setInterval(() => {
+          void this.#cleanupExpired().catch(error => {
+            log.warn("task relay retention cleanup failed", { error: errMsg(error) });
+          });
+        }, this.#cleanupIntervalMs);
+        this.#cleanupTimer.unref?.();
       }
     })();
     await this.#initialization;
@@ -90,7 +126,9 @@ export class TaskRelayGateway {
 
   close(): void {
     if (this.#retryTimer) clearInterval(this.#retryTimer);
+    if (this.#cleanupTimer) clearInterval(this.#cleanupTimer);
     this.#retryTimer = undefined;
+    this.#cleanupTimer = undefined;
     this.#initialization = undefined;
   }
 
@@ -274,6 +312,10 @@ export class TaskRelayGateway {
 
   async cleanup(before: Date): Promise<number> {
     return this.#store.cleanup(before);
+  }
+
+  async #cleanupExpired(): Promise<number> {
+    return this.#store.cleanup(new Date(this.#now().getTime() - this.#retentionMs));
   }
 
   async #forwardEnvelope(envelopeId: string, recoverImmediately = false): Promise<boolean> {
