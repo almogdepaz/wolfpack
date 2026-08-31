@@ -1,3 +1,5 @@
+export const CURSOR_AGENT_COMMAND = "agent";
+
 export const AGENT_KIND = {
   SHELL: "shell",
   PI: "pi",

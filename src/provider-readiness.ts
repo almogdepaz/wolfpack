@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { AGENT_KIND } from "./agent-kind.js";
+import { AGENT_KIND, CURSOR_AGENT_COMMAND } from "./agent-kind.js";
 import type { OpenableHarness } from "./agent-kind.js";
 
 const VERSION_OUTPUT_MAX_CHARS = 160;
@@ -44,10 +44,10 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   {
     id: AGENT_KIND.CURSOR,
     displayName: "Cursor",
-    command: AGENT_KIND.CURSOR,
+    command: CURSOR_AGENT_COMMAND,
     versionArgs: ["--version"],
-    installGuidance: "Install from https://cursor.com/downloads, then add the cursor command to PATH",
-    loginCommand: AGENT_KIND.CURSOR,
+    installGuidance: "curl https://cursor.com/install -fsS | bash",
+    loginCommand: CURSOR_AGENT_COMMAND,
   },
   {
     id: AGENT_KIND.PI,

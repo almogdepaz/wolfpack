@@ -59,6 +59,7 @@ import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/co
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import {
   AGENT_KIND,
+  CURSOR_AGENT_COMMAND,
   detectAgentKindFromCommandArgs,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
@@ -395,6 +396,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (agentCmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(agentCmd)) {
       throw new Error(`invalid command: ${agentCmd}`);
     }
+    const launchCmd = agentCmd === AGENT_KIND.CURSOR ? CURSOR_AGENT_COMMAND : agentCmd;
     let shellCmd: string;
     if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI) {
       throw new Error("model selection requires the pi harness");
@@ -409,7 +411,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       const promptArg = options?.initialPrompt !== undefined
         ? ` "$${options.model !== undefined ? 2 : 1}"`
         : "";
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}${modelArg}${promptArg}; exec ${SHELL}`;
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${modelArg}${promptArg}; exec ${SHELL}`;
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
