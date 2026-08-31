@@ -244,7 +244,7 @@ function testIdentity(name: string, id: string): PublicSessionIdentity {
     wolfpackSessionId: id,
     wolfpackSessionName: name,
     projectPath: "",
-    agentKind: "unknown",
+    agentKind: "custom",
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -307,7 +307,7 @@ describe("GET /api/sessions", () => {
     expect(typeof data.sessions[0].triage).toBe("string");
     expect(data.sessions[0].identity).toMatchObject({
       wolfpackSessionName: data.sessions[0].name,
-      agentKind: "unknown",
+      agentKind: "custom",
     });
     expect(data.sessions[0].identity).not.toHaveProperty("alive");
     expect(data.sessions[0].identity).not.toHaveProperty("triage");
@@ -928,7 +928,7 @@ describe("agent-native top-level session control", () => {
       project: "",
       projectPath: "",
       projectDir: "",
-      harness: "unknown",
+      harness: "custom",
       terminal: { exists: true, alive: true, status: "ready" },
     });
     expect(listed).not.toHaveProperty("lastLine");
@@ -944,7 +944,7 @@ describe("agent-native top-level session control", () => {
       project: "",
       projectPath: "",
       projectDir: "",
-      harness: "unknown",
+      harness: "custom",
       terminal: { exists: true, alive: true, status: "ready" },
     });
 
@@ -1721,7 +1721,7 @@ describe("POST /api/session-open", () => {
       code: SESSION_OPEN_ERROR.PARENT_IDENTITY_UNAVAILABLE,
     });
 
-    for (const harness of ["shell", "unknown"]) {
+    for (const harness of ["shell", "custom"]) {
       useParentHarness(harness);
       const unsupported = await post("/api/session-open", {
         project: "my-app",

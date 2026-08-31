@@ -201,10 +201,10 @@ function settingsPath(): string {
  * first.
  */
 const DEFAULT_CMDS: ReadonlyArray<{ cmd: string; enabled: boolean }> = [
-  { cmd: AGENT_KIND.SHELL, enabled: true },
-  { cmd: AGENT_KIND.CLAUDE, enabled: true },
-  { cmd: AGENT_KIND.PI, enabled: true },
-  { cmd: AGENT_KIND.CODEX, enabled: true },
+  { cmd: AGENT_KIND.SHELL.id, enabled: true },
+  { cmd: AGENT_KIND.CLAUDE.id, enabled: true },
+  { cmd: AGENT_KIND.PI.id, enabled: true },
+  { cmd: AGENT_KIND.CODEX.id, enabled: true },
 ];
 
 interface CmdEntry {
@@ -222,7 +222,7 @@ interface Settings {
 
 /** A command is valid if it's literally `"shell"` or matches CMD_REGEX. */
 function isValidCmd(cmd: string): boolean {
-  return cmd === AGENT_KIND.SHELL || CMD_REGEX.test(cmd);
+  return cmd === AGENT_KIND.SHELL.id || CMD_REGEX.test(cmd);
 }
 
 export function loadSettings(): Settings {
@@ -236,7 +236,7 @@ export function loadSettings(): Settings {
 
   const agentCmd = raw && typeof raw.agentCmd === "string" && isValidCmd(raw.agentCmd)
     ? raw.agentCmd
-    : "shell";
+    : AGENT_KIND.SHELL.id;
 
   // A persisted `cmds` array is authoritative, including an explicitly empty
   // array. Synthesizing built-ins would undo the user's explicit configuration.
@@ -280,14 +280,14 @@ export function effectiveAgentCmd(s: Settings): string {
   const requested = enabled.find(c => c.cmd === s.agentCmd);
   if (requested) return requested.cmd;
   if (enabled.length > 0) return enabled[0].cmd;
-  return AGENT_KIND.SHELL;
+  return AGENT_KIND.SHELL.id;
 }
 
 /** What the session-create picker should show: enabled cmds, or ["shell"] if
  *  the user has disabled everything (always-on fallback). */
 export function effectiveCmds(s: Settings): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
-  return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL];
+  return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL.id];
 }
 
 export type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -355,7 +355,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
     ) {
       return json(res, { error: "invalid project selection" }, 400);
     }
-    if (cmd && cmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(cmd)) {
+    if (cmd && cmd !== AGENT_KIND.SHELL.id && !CMD_REGEX.test(cmd)) {
       return json(res, { error: "invalid characters in command" }, 400);
     }
     if (
@@ -445,7 +445,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       // so the backend never sees a disabled or missing agentCmd.
       const settingsResolver = () => ({ agentCmd: effectiveAgentCmd(loadSettings()) });
       const agentKind = inferAgentKind(cmd || settingsResolver().agentCmd);
-      if (initialPrompt !== undefined && agentKind === AGENT_KIND.SHELL) {
+      if (initialPrompt !== undefined && agentKind === AGENT_KIND.SHELL.id) {
         return json(res, { error: "initial prompt requires an agent harness" }, 400);
       }
       await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
@@ -504,7 +504,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
     const { project, projectDir } = projectSelection.value;
 
     const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
-    if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL) {
+    if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL.id) {
       return json(res, {
         error: "initial prompt requires an agent harness",
         code: SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS,

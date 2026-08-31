@@ -60,6 +60,7 @@ import type { SessionInspectionResult } from "../session-status-contract.js";
 import {
   AGENT_KIND,
   detectAgentKindFromCommandArgs,
+  resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
 import { CMD_REGEX } from "../validation.js";
@@ -391,15 +392,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity> {
-    const agentCmd = cmd || loadSettings().agentCmd || AGENT_KIND.CLAUDE;
-    if (agentCmd !== AGENT_KIND.SHELL && !CMD_REGEX.test(agentCmd)) {
+    const agentCmd = cmd || loadSettings().agentCmd || AGENT_KIND.CLAUDE.id;
+    if (agentCmd !== AGENT_KIND.SHELL.id && !CMD_REGEX.test(agentCmd)) {
       throw new Error(`invalid command: ${agentCmd}`);
     }
+    const launchCmd = resolveAgentCommand(agentCmd);
     let shellCmd: string;
-    if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI) {
+    if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI.id) {
       throw new Error("model selection requires the pi harness");
     }
-    if (agentCmd === AGENT_KIND.SHELL) {
+    if (agentCmd === AGENT_KIND.SHELL.id) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }
@@ -409,7 +411,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       const promptArg = options?.initialPrompt !== undefined
         ? ` "$${options.model !== undefined ? 2 : 1}"`
         : "";
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${agentCmd}${modelArg}${promptArg}; exec ${SHELL}`;
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${modelArg}${promptArg}; exec ${SHELL}`;
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);

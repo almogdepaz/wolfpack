@@ -4,7 +4,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
-  AGENT_KIND,
+  CUSTOM_AGENT_KIND,
   inferAgentKindFromCommand,
 } from "../agent-kind.js";
 import type { AgentKind } from "../agent-kind.js";
@@ -91,7 +91,7 @@ export function sessionIdentityStorePath(devDir?: string): string {
   return join(DEV_DIR, ".wolfpack", "session-identities.json");
 }
 
-export function inferAgentKind(cmd: string | undefined): AgentKind | string {
+export function inferAgentKind(cmd: string | undefined): AgentKind {
   return inferAgentKindFromCommand(cmd);
 }
 
@@ -194,7 +194,7 @@ export class SessionIdentityStore {
       wolfpackSessionId: input.wolfpackSessionId,
       wolfpackSessionName: input.wolfpackSessionName,
       projectPath: input.projectPath,
-      agentKind: input.agentKind || existing?.agentKind || AGENT_KIND.UNKNOWN,
+      agentKind: input.agentKind || existing?.agentKind || CUSTOM_AGENT_KIND,
       createdAt: existing?.createdAt ?? now,
       restoredAt: existing ? now : undefined,
       updatedAt: now,
@@ -224,7 +224,7 @@ export class SessionIdentityStore {
       const candidateExternalAgent = normalizeExternalAgent(
         {
           ...session,
-          agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN,
+          agentKind: session.agentKind ?? existing?.agentKind ?? CUSTOM_AGENT_KIND,
           externalAgent: session.externalAgent,
         },
         existing,
@@ -235,7 +235,7 @@ export class SessionIdentityStore {
         wolfpackSessionId: session.wolfpackSessionId,
         wolfpackSessionName: session.wolfpackSessionName,
         projectPath: session.projectPath,
-        agentKind: session.agentKind ?? existing?.agentKind ?? AGENT_KIND.UNKNOWN,
+        agentKind: session.agentKind ?? existing?.agentKind ?? CUSTOM_AGENT_KIND,
         createdAt: existing?.createdAt ?? restoredAt,
         restoredAt: existing?.restoredAt ?? restoredAt,
         updatedAt: existing?.updatedAt ?? restoredAt,

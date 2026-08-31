@@ -42,10 +42,39 @@ describe("provider readiness", () => {
     }
   });
 
-  test("returns installed commands for first-run settings without probing versions", () => {
-    const path = fakeExecutable("cursor", "exit 99");
+  test("detects Cursor Agent CLI as the cursor harness without probing versions", () => {
+    const path = fakeExecutable("agent", "exit 99");
 
     expect(detectInstalledProviderCommands(path)).toEqual(["cursor"]);
+  });
+
+  test("reports Cursor Agent CLI under the cursor provider id", async () => {
+    const path = fakeExecutable("agent", "printf 'Cursor Agent 1.2.3\\n'");
+
+    const cursor = (await detectProviderReadiness({ path })).find((provider) => provider.id === "cursor");
+
+    expect(cursor).toEqual({
+      id: "cursor",
+      displayName: "Cursor",
+      command: "agent",
+      status: "installed",
+      executablePath: join(path, "agent"),
+      version: "Cursor Agent 1.2.3",
+      authStatus: "unknown",
+      loginCommand: "agent",
+    });
+  });
+
+  test("offers Cursor's documented Agent CLI install command when missing", async () => {
+    const cursor = (await detectProviderReadiness({ path: undefined })).find((provider) => provider.id === "cursor");
+
+    expect(cursor).toEqual({
+      id: "cursor",
+      displayName: "Cursor",
+      command: "agent",
+      status: "missing",
+      installGuidance: "curl https://cursor.com/install -fsS | bash",
+    });
   });
 
   test("reports a real executable path, bounded version, and unknown auth status", async () => {

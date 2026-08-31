@@ -196,7 +196,7 @@ export class TaskGateway {
     }
     const target = remote ? undefined : await this.#resolve(input.to.sessionId, "target");
     if (target !== undefined && !target.ok) return target;
-    if (target !== undefined && target.value.harness !== AGENT_KIND.PI) return failure(TASK_API_ERROR.TARGET_NOT_PI, "target session is not a Pi harness");
+    if (target !== undefined && target.value.harness !== AGENT_KIND.PI.id) return failure(TASK_API_ERROR.TARGET_NOT_PI, "target session is not a Pi harness");
     if (target !== undefined && input.preflight?.requiredProject !== undefined && input.preflight.requiredProject !== basename(target.value.projectPath)) {
       return failure(TASK_API_ERROR.PROJECT_MISMATCH, "target project does not match preflight");
     }
@@ -517,7 +517,7 @@ export class TaskGateway {
     }
     const target = await this.#resolve(assignment.target.sessionId, "target");
     if (!target.ok) return target;
-    if (target.value.harness !== AGENT_KIND.PI) return failure(TASK_API_ERROR.TARGET_NOT_PI, "target session is not a Pi harness");
+    if (target.value.harness !== AGENT_KIND.PI.id) return failure(TASK_API_ERROR.TARGET_NOT_PI, "target session is not a Pi harness");
     if (assignment.preflight?.requiredProject !== undefined && assignment.preflight.requiredProject !== basename(target.value.projectPath)) {
       return failure(TASK_API_ERROR.PROJECT_MISMATCH, "target project does not match preflight");
     }

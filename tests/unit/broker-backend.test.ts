@@ -396,6 +396,30 @@ describe("BrokerBackend.createSession", () => {
     expect(backend.sessionDir("newone")).toBe("/tmp/work");
   });
 
+  test("launches the cursor harness through agent while preserving cursor identity and custom commands", async () => {
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "cursor-one", id: SESSION_UUID_1 }),
+    }));
+    await backend.createSession("cursor-one", "/tmp/proj", "cursor", loadSettings);
+
+    const cursorCreate = client.requests.find((request) => request.method === "create_session");
+    const cursorParams = cursorCreate?.params as { command: string[]; env: Array<[string, string]> };
+    expect(cursorParams.command[2]).toContain("; agent; exec");
+    expect(cursorParams.command[2]).not.toContain("; cursor; exec");
+    expect(cursorParams.env).toContainEqual(["WOLFPACK_AGENT_KIND", "cursor"]);
+
+    client.requests = [];
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "custom-one", id: SESSION_UUID_2 }),
+    }));
+    await backend.createSession("custom-one", "/tmp/proj", "cursor-custom", loadSettings);
+
+    const customCreate = client.requests.find((request) => request.method === "create_session");
+    const customParams = customCreate?.params as { command: string[]; env: Array<[string, string]> };
+    expect(customParams.command[2]).toContain("; cursor-custom; exec");
+    expect(customParams.env).toContainEqual(["WOLFPACK_AGENT_KIND", "custom"]);
+  });
+
   test("captures launch identity without terminal prose scraping", async () => {
     client.setHandler("create_session", () => okResp({
       session: sessionInfo({ name: "codex-one", id: SESSION_UUID_1 }),
