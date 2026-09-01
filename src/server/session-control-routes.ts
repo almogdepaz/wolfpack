@@ -36,7 +36,7 @@ import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 import { getTaskRelayGateway } from "../task-relay/gateway.ts";
 import type { RelayEndpoint } from "../task-relay/domain.ts";
-import type { RouteHandler } from "./project-settings-routes.js";
+import type { RouteHandler } from "./route-handler.js";
 
 const log = createLogger("routes");
 
