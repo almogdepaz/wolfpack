@@ -121,6 +121,7 @@ import {
 } from "../src/snapshot-cache";
 import { serializeBufferTail } from "../src/terminal-buffer";
 import {
+  encodeTerminalBinary,
   sendMessageDraftAttempt,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldInterceptCopy,
@@ -721,9 +722,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
           _terminalInputAccepted = true;
           __wfTraceEvent(trace, "first.input.accepted", { source: "onBinary" });
         }
-        const buf = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i) & 0xff;
-        sendInput(buf);
+        sendInput(encodeTerminalBinary(data));
       }
     });
   }
