@@ -45,7 +45,7 @@ export function getTerminalFontFamily() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, recoveryCache:true, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false};
 
 function loadWpSettings() {
   const stored = loadStoredJson("wp-effects", {});
@@ -423,7 +423,6 @@ export const state = {
   // connection state
   sessionRefreshTimer: null,
   // UI interaction state
-  snapshotTimer: null,
   swipeNavigated: false,
   projectMachine: "",
   selectedProject: "",
@@ -436,7 +435,6 @@ export const state = {
   notificationUnsubscribePending: false,
   notificationUnsubscribeInFlight: false,
   kbAccessoryOpen: false,
-  _cachedFallbackTimer: null,
   // peer health: { [machineUrl]: { failures } }. A peer that fails repeatedly
   // drops to a shorter fetch timeout so it doesn't dominate UI refresh time.
   // Intentionally NOT persisted across page reloads — stale failure state
@@ -479,9 +477,5 @@ if (typeof document !== "undefined") {
 
 // ── Constants ──
 
-export const SNAPSHOT_KEY_PREFIX = "wp-snap|";
-export const SNAPSHOT_MAX_BYTES = 16384;
-export const SNAPSHOT_SAVE_INTERVAL = 2000;
-export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 export const DESKTOP_TERMINAL_SCROLLBACK = 2000;
 export const GRID_TERMINAL_SCROLLBACK = 1000;

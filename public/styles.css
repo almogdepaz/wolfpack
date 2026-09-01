@@ -1489,28 +1489,6 @@ body.no-animations, body.no-animations * {
   opacity: 1;
   visibility: visible;
 }
-#desktop-terminal-container.cached-visible canvas {
-  opacity: 1;
-  visibility: visible;
-}
-.cached-terminal-placeholder {
-  position: absolute;
-  inset: 4px;
-  margin: 0;
-  overflow: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: rgba(235, 235, 235, 0.86);
-  background: #0a0a0a;
-  font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  pointer-events: none;
-  z-index: 4;
-}
-.terminal-load-state-cached {
-  background:
-    linear-gradient(180deg, rgba(0,255,65,0.025), transparent 28%),
-    var(--bg-base);
-}
 .terminal-load-state-prefill-loading,
 .terminal-load-state-hydrating,
 .terminal-load-state-reconnecting {
@@ -1795,10 +1773,6 @@ body.no-animations, body.no-animations * {
   transition: opacity 80ms ease;
 }
 .grid-cell.hydrated:not(.grid-loading):not(.transitioning) canvas {
-  opacity: 1;
-  visibility: visible;
-}
-.grid-cell.cached-visible canvas {
   opacity: 1;
   visibility: visible;
 }

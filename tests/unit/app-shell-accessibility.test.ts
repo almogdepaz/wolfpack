@@ -39,13 +39,9 @@ describe("app shell accessibility contracts", () => {
     expect(html).toContain(`<meta name="theme-color" content="${theme}"`);
   });
 
-  test("makes drawers, dialogs, status, and privacy controls available to assistive tech", () => {
+  test("makes drawers and dialogs available to assistive tech", () => {
     expect(html).toContain('id="session-drawer" aria-label="Switch session" aria-hidden="true" inert');
     expect(html).toContain('id="git-status-overlay" role="dialog" aria-modal="true"');
     expect(html).toContain('id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message"');
-    expect(html).toContain('id="setting-recoveryCache"');
-    expect(html).toContain('id="clear-recovery-cache-btn"');
-    expect(html).toContain('id="recovery-cache-status"');
-    expect(html).toContain("Cached output may contain secrets");
   });
 });

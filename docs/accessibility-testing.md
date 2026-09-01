@@ -14,4 +14,3 @@ Automated axe scans cover the active sessions view, settings, and modal dialogs.
 - Repeat session drawer navigation and verify current/pressed states are announced.
 - Explore settings by touch and confirm every toggle and icon button has an accessible name and at least a 44 px target.
 - Confirm reduced-motion mode avoids non-essential view and loading animation.
-- Confirm cached terminal output privacy text, opt-out, and clear status are announced.

@@ -1,4 +1,4 @@
-#include "ghostty_vt_shim.h"
+#include "ghostty_vt_internal.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -6,13 +6,6 @@
 #include <string.h>
 
 #include <ghostty/vt.h>
-
-#define WP_OK 0
-#define WP_ERR_INVALID -1
-#define WP_ERR_GHOSTTY -2
-#define WP_ERR_NO_SPACE -3
-#define WP_ERR_OOM -4
-#define WP_ERR_LIMIT -5
 
 struct WpGhosttyTerminal {
   GhosttyTerminal terminal;
@@ -110,52 +103,12 @@ static int encode_utf8(uint32_t cp, uint8_t out[4], size_t* out_len) {
   return WP_ERR_INVALID;
 }
 
-static int checked_add_size(size_t a, size_t b, size_t* out) {
-  if (a > SIZE_MAX - b) return WP_ERR_LIMIT;
-  *out = a + b;
-  return WP_OK;
-}
-
-static int checked_u32_from_size(size_t value, uint32_t* out) {
-  if (value > UINT32_MAX) return WP_ERR_LIMIT;
-  *out = (uint32_t)value;
-  return WP_OK;
-}
-
-static int checked_cell_index(size_t row_idx, uint16_t cols, uint16_t col, size_t* out) {
-  size_t base = 0;
-  if (cols != 0 && row_idx > SIZE_MAX / (size_t)cols) return WP_ERR_LIMIT;
-  base = row_idx * (size_t)cols;
-  return checked_add_size(base, (size_t)col, out);
-}
-
-static int checked_point_y(size_t start_y, uint16_t row_idx, uint32_t* out_y) {
-  size_t y = 0;
-  int rc = checked_add_size(start_y, (size_t)row_idx, &y);
-  if (rc != WP_OK) return rc;
-  return checked_u32_from_size(y, out_y);
-}
-
 static int terminal_bool_mode(GhosttyTerminal terminal, GhosttyMode mode, uint8_t* out) {
   bool value = false;
   GhosttyResult result = ghostty_terminal_mode_get(terminal, mode, &value);
   if (result != GHOSTTY_SUCCESS) return WP_ERR_GHOSTTY;
   *out = value ? 1 : 0;
   return WP_OK;
-}
-
-static int row_source_to_point_tag(WpGhosttyRowSource row_source, GhosttyPointTag* out_tag) {
-  if (out_tag == NULL) return WP_ERR_INVALID;
-  switch (row_source) {
-    case WP_GHOSTTY_ROW_SOURCE_ACTIVE:
-      *out_tag = GHOSTTY_POINT_TAG_ACTIVE;
-      return WP_OK;
-    case WP_GHOSTTY_ROW_SOURCE_HISTORY:
-      *out_tag = GHOSTTY_POINT_TAG_HISTORY;
-      return WP_OK;
-    default:
-      return WP_ERR_INVALID;
-  }
 }
 
 WpGhosttyTerminal* wp_ghostty_terminal_new(uint16_t cols, uint16_t rows, size_t scrollback_limit) {
@@ -325,8 +278,8 @@ static int write_cell_text(
   }
   if (required_cps == 0) return WP_OK;
 
-  if (required_cps > WP_GHOSTTY_MAX_CELL_CODEPOINTS) return WP_ERR_LIMIT;
-  if (required_cps > SIZE_MAX / sizeof(uint32_t)) return WP_ERR_LIMIT;
+  int allocation_rc = wp_validate_required_cps_allocation(required_cps);
+  if (allocation_rc != WP_OK) return allocation_rc;
 
   uint32_t stack_cps[16];
   uint32_t* cps = stack_cps;
@@ -358,25 +311,16 @@ static int write_cell_text(
       return rc;
     }
     size_t next_cell_used = 0;
-    rc = checked_add_size(cell_used, encoded_len, &next_cell_used);
-    if (rc != WP_OK) {
-      if (cps != stack_cps) free(cps);
-      return rc;
-    }
-    if (next_cell_used > WP_GHOSTTY_MAX_CELL_TEXT_BYTES) {
-      if (cps != stack_cps) free(cps);
-      return WP_ERR_LIMIT;
-    }
-
     size_t next_used = 0;
-    rc = checked_add_size(*used, encoded_len, &next_used);
+    rc = wp_accumulate_text_sizes(
+        *used,
+        encoded_len,
+        cell_used,
+        &next_used,
+        &next_cell_used);
     if (rc != WP_OK) {
       if (cps != stack_cps) free(cps);
       return rc;
-    }
-    if (next_used > WP_GHOSTTY_MAX_EXTRACT_TEXT_BYTES) {
-      if (cps != stack_cps) free(cps);
-      return WP_ERR_LIMIT;
     }
     if (text != NULL) {
       if (next_used > text_cap) {
@@ -392,8 +336,8 @@ static int write_cell_text(
 
   uint32_t offset = 0;
   uint32_t len = 0;
-  int offset_rc = checked_u32_from_size(start, &offset);
-  int len_rc = checked_u32_from_size(*used - start, &len);
+  int offset_rc = wp_checked_u32_from_size(start, &offset);
+  int len_rc = wp_checked_u32_from_size(*used - start, &len);
   if (offset_rc != WP_OK) return offset_rc;
   if (len_rc != WP_OK) return len_rc;
   out->text_offset = offset;
@@ -413,7 +357,7 @@ int wp_ghostty_terminal_extract_rows(
     size_t* out_text_len) {
   if (wrapper == NULL || rows == NULL || cells == NULL || out_text_len == NULL) return WP_ERR_INVALID;
   GhosttyPointTag point_tag = GHOSTTY_POINT_TAG_ACTIVE;
-  int row_source_rc = row_source_to_point_tag(row_source, &point_tag);
+  int row_source_rc = wp_row_source_to_point_tag(row_source, &point_tag);
   if (row_source_rc != WP_OK) return row_source_rc;
 
   uint16_t cols = 0;
@@ -437,7 +381,7 @@ int wp_ghostty_terminal_extract_rows(
     point.tag = point_tag;
     point.value.coordinate.x = 0;
     uint32_t row_y = 0;
-    int point_rc = checked_point_y(start_y, row_idx, &row_y);
+    int point_rc = wp_checked_point_y(start_y, row_idx, &row_y);
     if (point_rc != WP_OK) return point_rc;
     point.value.coordinate.y = row_y;
 
@@ -452,7 +396,7 @@ int wp_ghostty_terminal_extract_rows(
 
     for (uint16_t col = 0; col < cols; col++) {
       size_t cell_index = 0;
-      int index_rc = checked_cell_index((size_t)row_idx, cols, col, &cell_index);
+      int index_rc = wp_checked_cell_index((size_t)row_idx, cols, col, &cell_index);
       if (index_rc != WP_OK) return index_rc;
       WpGhosttyCell* out = &cells[cell_index];
       memset(out, 0, sizeof(*out));
@@ -497,42 +441,5 @@ int wp_ghostty_terminal_extract_rows(
   }
 
   *out_text_len = used;
-  return WP_OK;
-}
-
-int wp_ghostty_test_required_cps_allocation(size_t required_cps) {
-  if (required_cps > WP_GHOSTTY_MAX_CELL_CODEPOINTS) return WP_ERR_LIMIT;
-  if (required_cps > SIZE_MAX / sizeof(uint32_t)) return WP_ERR_LIMIT;
-  return WP_OK;
-}
-
-int wp_ghostty_test_accumulate_text(size_t used, size_t encoded_len, size_t cell_used) {
-  size_t next_cell_used = 0;
-  int rc = checked_add_size(cell_used, encoded_len, &next_cell_used);
-  if (rc != WP_OK) return rc;
-  if (next_cell_used > WP_GHOSTTY_MAX_CELL_TEXT_BYTES) return WP_ERR_LIMIT;
-  size_t next_used = 0;
-  rc = checked_add_size(used, encoded_len, &next_used);
-  if (rc != WP_OK) return rc;
-  if (next_used > WP_GHOSTTY_MAX_EXTRACT_TEXT_BYTES) return WP_ERR_LIMIT;
-  return WP_OK;
-}
-
-int wp_ghostty_test_cell_index(size_t row_idx, uint16_t cols, uint16_t col, size_t* out_index) {
-  if (out_index == NULL) return WP_ERR_INVALID;
-  return checked_cell_index(row_idx, cols, col, out_index);
-}
-
-int wp_ghostty_test_point_y(size_t start_y, uint16_t row_idx, uint32_t* out_y) {
-  if (out_y == NULL) return WP_ERR_INVALID;
-  return checked_point_y(start_y, row_idx, out_y);
-}
-
-int wp_ghostty_test_row_source_mapping(int row_source, uint8_t* out_is_history) {
-  if (out_is_history == NULL) return WP_ERR_INVALID;
-  GhosttyPointTag point_tag = GHOSTTY_POINT_TAG_ACTIVE;
-  int rc = row_source_to_point_tag((WpGhosttyRowSource)row_source, &point_tag);
-  if (rc != WP_OK) return rc;
-  *out_is_history = point_tag == GHOSTTY_POINT_TAG_HISTORY ? 1 : 0;
   return WP_OK;
 }

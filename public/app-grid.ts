@@ -34,7 +34,7 @@ interface GridTerminalController {
   readonly isConnected: boolean;
   readonly hydration?: { forceFinish(): void };
   readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
-  mount(cell: HTMLElement, opts: { readonly cached?: string | null }): Promise<void>;
+  mount(cell: HTMLElement): Promise<void>;
   connect(opts?: { readonly takeControl?: boolean }): void;
   reconnect(opts?: { readonly takeControl?: boolean }): void;
   scheduleReconnect(): void;
@@ -77,7 +77,7 @@ interface GridDeps {
   showView: (name: string, skipAnimation?: boolean) => void;
   openSession: (name: string, machineUrl?: string) => void;
   destroyTerminal: () => void;
-  initTerminal: (cached?: string | null) => void;
+  initTerminal: () => void;
   backToSessions: () => void;
   renderSidebar: () => void;
   createPtyTerminalController: (opts: { session: string; machine?: string; scrollback: number; [k: string]: unknown }) => GridTerminalController;
@@ -392,7 +392,7 @@ async function mountGridController(gs, cell, idx) {
   gs.controller = controller;
   delete gs._resetPty;
   try {
-    await controller.mount(cell, {});
+    await controller.mount(cell);
   } catch (error) {
     clearPendingGridMount(gs, cell);
     if (gs.controller === controller) gs.controller = null;
