@@ -100,6 +100,9 @@ import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { parseSessionNotificationRoute } from "../src/session-notification-route";
 import {
+  createTailnetDiscoveryAutoRefresh,
+} from "../src/tailnet-discovery-auto-refresh";
+import {
   LOCAL_MACHINE_IDENTITY,
   TailnetPeerRegistry,
   isStableMachineIdentity,
@@ -892,6 +895,7 @@ function resolveReadyMachineOrigin(machineIdentity: string | undefined): string 
 }
 
 async function showMachineUnavailable(): Promise<void> {
+  void tailnetDiscoveryAutoRefresh.requestRefresh();
   await showAppDialog({
     title: "Machine unavailable",
     message: "This Tailnet machine is no longer ready. Refresh Tailnet discovery and try again.",
@@ -1045,6 +1049,13 @@ function renderUpdatedLocalMachineMetadata(): void {
   if (state.drawerOpen) renderDrawerList();
 }
 
+const tailnetDiscoveryAutoRefresh = createTailnetDiscoveryAutoRefresh({
+  refresh: async () => {
+    await refreshTailnetPeers();
+  },
+  isVisible: () => document.visibilityState === "visible",
+});
+
 void (async (): Promise<void> => {
   try {
     const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
@@ -1061,9 +1072,7 @@ void (async (): Promise<void> => {
   }
 })();
 
-void refreshTailnetPeers().catch(() => {
-  // Local sessions remain useful if Tailnet candidate enumeration is unavailable.
-});
+tailnetDiscoveryAutoRefresh.sync(true);
 
 function errorMessage(err: unknown): string {
   if (err && typeof err === "object" && "message" in err) {
@@ -1969,8 +1978,8 @@ async function openSessionFromNotificationRoute(expectedLoadEpoch: number): Prom
 
 function retryMachine(_machineIdentity: string, event?: Event): void {
   event?.stopPropagation();
-  void refreshTailnetPeers()
-    .then((result) => result === "applied" ? loadSessions(true) : undefined)
+  void tailnetDiscoveryAutoRefresh.requestRefresh()
+    .then(() => loadSessions(true))
     .catch(() => undefined);
 }
 
@@ -3717,8 +3726,9 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     const hiddenDuration = _hiddenAt ? Date.now() - _hiddenAt : 0;
     _hiddenAt = 0;
-    // Resume one shared cadence and refresh immediately after foregrounding.
+    // Resume shared cadences and refresh immediately after foregrounding.
     syncSessionRefreshTimer(true);
+    tailnetDiscoveryAutoRefresh.sync(true);
     if (state.currentSession && state.currentView === "terminal") {
       if (!isDesktop()) {
         // Mobile: always force-reconnect — iOS/Android background tabs kill
@@ -3768,12 +3778,17 @@ document.addEventListener("visibilitychange", () => {
     }
   } else {
     _hiddenAt = Date.now();
-    // Stop session refresh when backgrounded
+    // Stop browser-side polling when backgrounded.
     if (state.sessionRefreshTimer) {
       clearInterval(state.sessionRefreshTimer);
       state.sessionRefreshTimer = null;
     }
+    tailnetDiscoveryAutoRefresh.stop();
   }
+});
+
+window.addEventListener("online", () => {
+  tailnetDiscoveryAutoRefresh.sync(true);
 });
 
 // ── Canvas backing-store recovery ──
