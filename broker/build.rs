@@ -40,6 +40,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=WOLFPACK_GHOSTTY_VT_DIR");
     println!("cargo:rerun-if-changed=native/ghostty_vt_shim.c");
     println!("cargo:rerun-if-changed=native/ghostty_vt_shim.h");
+    println!("cargo:rerun-if-changed=native/ghostty_vt_internal.h");
+    println!("cargo:rerun-if-changed=tests/native/ghostty_vt_test_harness.c");
 
     let target = env::var("TARGET").expect("TARGET is set by Cargo");
     let host = env::var("HOST").expect("HOST is set by Cargo");
@@ -66,6 +68,16 @@ fn main() {
         .host(&host)
         .target(&target)
         .compile("wolfpack_ghostty_vt_shim");
+
+    cc::Build::new()
+        .file(manifest.join("tests/native/ghostty_vt_test_harness.c"))
+        .include(manifest.join("native"))
+        .include(&verified.include_dir)
+        .define("GHOSTTY_STATIC", None)
+        .std("c11")
+        .host(&host)
+        .target(&target)
+        .compile("wolfpack_ghostty_vt_test_harness");
 
     println!(
         "cargo:rustc-link-search=native={}",

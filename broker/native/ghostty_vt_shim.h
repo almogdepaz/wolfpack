@@ -82,12 +82,6 @@ int wp_ghostty_terminal_extract_rows(
     size_t text_cap,
     size_t* out_text_len);
 
-int wp_ghostty_test_required_cps_allocation(size_t required_cps);
-int wp_ghostty_test_accumulate_text(size_t used, size_t encoded_len, size_t cell_used);
-int wp_ghostty_test_cell_index(size_t row_idx, uint16_t cols, uint16_t col, size_t* out_index);
-int wp_ghostty_test_point_y(size_t start_y, uint16_t row_idx, uint32_t* out_y);
-int wp_ghostty_test_row_source_mapping(int row_source, uint8_t* out_is_history);
-
 #ifdef __cplusplus
 }
 #endif
