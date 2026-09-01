@@ -1,4 +1,3 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   mkdirSync,
   readFileSync,
@@ -53,8 +52,9 @@ import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity } from "./session-identity.js";
 import { createTopLevelSession } from "./session-create.js";
 import { openSubSession, SessionOpenError } from "./session-open.js";
-import { notifySubSessionOpened } from "./websocket.js";
+import { notifySubSessionOpened } from "./session-notifications.js";
 import type { InvalidBodyResponse } from "./http.js";
+import type { RouteHandler } from "./route-handler.js";
 
 const log = createLogger("routes");
 
@@ -289,8 +289,6 @@ export function effectiveCmds(s: Settings): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
   return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL.id];
 }
-
-export type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
 export const projectSettingsRoutes: Record<string, RouteHandler> = {
   "GET /api/projects": async (_req, res) => {
