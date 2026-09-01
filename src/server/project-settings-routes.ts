@@ -52,7 +52,7 @@ import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity } from "./session-identity.js";
 import { createTopLevelSession } from "./session-create.js";
 import { openSubSession, SessionOpenError } from "./session-open.js";
-import { notifySubSessionOpened } from "./websocket.js";
+import { notifySubSessionOpened } from "./session-notifications.js";
 import type { InvalidBodyResponse } from "./http.js";
 import type { RouteHandler } from "./route-handler.js";
 
