@@ -22,7 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend.js";
+import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend-contract.js";
 import type {
   CapturePaneOptions,
   PtyBackendMethods,
@@ -35,7 +35,7 @@ import type {
   SessionPrefill,
   SessionPrefillOptions,
   SessionPromptBackendMethods,
-} from "./backend.js";
+} from "./backend-contract.js";
 import {
   SESSION_PROMPT_OUTCOME,
   SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
