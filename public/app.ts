@@ -62,14 +62,14 @@ import {
   resolveGhosttyPrewarmDebugTiming,
 } from "../src/ghostty-prewarm-debug";
 import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
-import { AGENT_KIND } from "./app-contracts";
+import { AGENT_KIND } from "../src/agent-kind";
 import {
   FIRST_SESSION_GUIDE_URL,
   PHONE_PWA_NOTIFICATIONS_GUIDE_URL,
   SECURITY_AND_TRUST_URL,
   SESSION_CONTROL_CREATE_URL,
-} from "./app-contracts";
-import { sessionRuntimeState, sessionRuntimeUi } from "./app-contracts";
+} from "../src/documentation-links";
+import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
 import {
   delegationChildSummaryText,
   delegationGridMembers,
@@ -95,42 +95,42 @@ import {
   bindSessionOrderEvents,
   type SessionOrderCardReference,
 } from "./session-order-ui";
-import { AGENT_STATUS_STATE } from "./app-contracts";
-import { TERMINAL_PREFILL_MODE } from "./app-contracts";
-import type { TerminalPrefillMode } from "./app-contracts";
-import { WOLFPACK_TERMINAL_THEME } from "./app-contracts";
-import { nextMenuSelection } from "./app-contracts";
-import { parseSessionNotificationRoute } from "./app-contracts";
+import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
+import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import type { TerminalPrefillMode } from "../src/terminal-prefill";
+import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
+import { nextMenuSelection } from "../src/menu-navigation";
+import { parseSessionNotificationRoute } from "../src/session-notification-route";
 import {
   LOCAL_MACHINE_IDENTITY,
   TailnetPeerRegistry,
   isStableMachineIdentity,
   probeTailnetCandidates,
-} from "./app-contracts";
+} from "../src/tailnet-peer-registry";
 import type {
   TailnetPeerEntry,
   TailnetPeerIdentityReplacement,
-} from "./app-contracts";
+} from "../src/tailnet-peer-registry";
 import {
   canonicalTailnetOrigin,
-} from "./app-contracts";
-import type { TailnetMachineCandidate } from "./app-contracts";
+} from "../src/tailnet-machine-contract";
+import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
 import {
   isFreshSnapshotTimestamp,
   snapshotKeysToEvict,
-} from "./app-contracts";
-import { serializeBufferTail } from "./app-contracts";
+} from "../src/snapshot-cache";
+import { serializeBufferTail } from "../src/terminal-buffer";
 import {
   sendMessageDraftAttempt,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldInterceptCopy,
   shouldSubmitMessageInputOnEnter,
-} from "./app-contracts";
+} from "../src/terminal-input";
 import {
   fetchTimeoutMs as peerHealthTimeoutMs,
   recordFailure as peerHealthRecordFailure,
   recordSuccess as peerHealthRecordSuccess,
-} from "./app-contracts";
+} from "../src/peer-health";
 import {
   classifyDisconnect,
   handleControlGranted,
@@ -138,7 +138,7 @@ import {
   handleTakeControlClick,
   handleViewerConflict,
   prepareAutoTakeControl,
-} from "./app-contracts";
+} from "../src/take-control-logic";
 
 // ── WASM capability guard ──
 
