@@ -51,6 +51,8 @@ import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
+import { createTerminalLiveGate } from "./terminal-bootstrap";
+import type { TerminalLiveGate } from "./terminal-bootstrap";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import {
   resolveGhosttyPrewarmDebugPoolSize,
@@ -2854,12 +2856,18 @@ function setMobileKeyboardShift(offsetPx: number): void {
   for (const el of mobileKeyboardShiftElements()) el.style.transform = transform;
 }
 
-async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<void> {
-  if (state.terminalController) return;
-  const isMobile = !isDesktop();
-  const container = document.getElementById("desktop-terminal-container");
+type TerminalSlowLoadIndicator = ReturnType<typeof createTerminalSlowPathIndicator>;
+
+interface TerminalControllerBootstrapOptions {
+  readonly container: HTMLElement;
+  readonly isMobile: boolean;
+  readonly prefillMode: TerminalPrefillMode;
+  readonly slowLoad: TerminalSlowLoadIndicator;
+  readonly liveGate: TerminalLiveGate;
+}
+
+function prepareTerminalBootstrapView(container: HTMLElement): TerminalSlowLoadIndicator {
   document.getElementById("terminal-view")?.classList.remove("terminal-swipe-peek");
-  const terminalPrefillMode = prefillModeOverride ?? TERMINAL_PREFILL_MODE.FULL;
   container.style.display = "block";
   container.innerHTML = "";
   container.classList.add("hydrating");
@@ -2872,23 +2880,157 @@ async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<
   document.getElementById("input-bar").style.display = "none";
   document.getElementById("cmd-palette").classList.remove("visible");
   document.getElementById("msg-preview").style.display = "none";
+  return slowLoad;
+}
 
-  _tcState = { displaced: false, autoTakeControl: false };
-  let hydrated = false;
-  let mobilePostMountReady = !isMobile;
-  let terminalMarkedLive = false;
-  const markTerminalLive = () => {
-    if (!hydrated || !mobilePostMountReady || terminalMarkedLive) return;
-    terminalMarkedLive = true;
+function handleTerminalOpened(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+  wasReconnect: boolean,
+): void {
+  if (wasReconnect) wpMetrics.reconnectCount++;
+  // Successful WS open clears stale conflict overlay. If the server
+  // sees a conflict, onViewerConflict fires after onOpen and re-shows it.
+  _tcState = handleControlGranted(_tcState);
+  removeDesktopConflictOverlay();
+  setTerminalLoadVisualState(container, "prefill-loading");
+  slowLoad.start("waiting for terminal prefill");
+  setConnState("live");
+}
+
+function handleTerminalPtyReady(): void {
+  // Force a full canvas repaint after prefill completes. FitAddon.fit() and
+  // Terminal.resize() both no-op when dimensions haven't changed, so sendFitResize
+  // does nothing if the terminal is the same size as before the session switch.
+  // renderer.render(forceAll=true) bypasses both guards and repaints every cell.
+  state.terminalController?.forceRepaint();
+}
+
+function handleTerminalOutput(): void {
+  if (state.enterRetryTimer) {
+    clearTimeout(state.enterRetryTimer);
+    state.enterRetryTimer = null;
+  }
+  wpMetrics.wsMessagesReceived++;
+}
+
+function handleTerminalSubSessionOpened(parentSession: string, session: string): void {
+  if (!isDesktop()) return;
+  if (state.currentView !== "terminal") return;
+  if (state.currentSession !== parentSession) return;
+  if (state.gridSessions.length > 0) return;
+  if (session === parentSession) return;
+  addToGrid(session, state.currentMachine || "");
+}
+
+function handleTerminalViewerConflict(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+): void {
+  const result = handleViewerConflict(_tcState);
+  _tcState = result.newState;
+  slowLoad.stop();
+  setTerminalLoadVisualState(container, _tcState.displaced ? "displaced" : "viewer-conflict");
+  if (result.action === "auto-take-control") {
+    state.terminalController.sendTakeControl();
+  } else {
+    showDesktopConflictOverlay();
+  }
+}
+
+function handleTerminalControlGranted(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+  isMobile: boolean,
+): void {
+  _tcState = handleControlGranted(_tcState);
+  removeDesktopConflictOverlay();
+  setTerminalLoadVisualState(container, "hydrating");
+  slowLoad.start("restoring terminal control");
+  if (isMobile) setMobileGhosttyKeyboardOpen(state.kbAccessoryOpen);
+  else state.terminalController?.focus();
+}
+
+function handleTerminalDisconnected(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+  code: number,
+  reason: string,
+): void {
+  removeDesktopConflictOverlay();
+  const action = classifyDisconnect(code, reason || "");
+  if (action === "displaced") {
+    _tcState = handleDisplaced(_tcState);
     slowLoad.stop();
-    setTerminalLoadVisualState(container, "live");
-    scheduleGhosttyPrewarm();
-  };
-  state.terminalController = createPtyTerminalController({
+    setTerminalLoadVisualState(container, "displaced");
+    showDesktopConflictOverlay();
+    return;
+  }
+  if (action === "session-ended") {
+    slowLoad.stop();
+    setTerminalLoadVisualState(container, "failed");
+    setConnState("session-ended");
+    const statusEl = document.getElementById("conn-status");
+    if (statusEl) statusEl.textContent = "session unavailable \u2014 use \u2190 to go back";
+    return;
+  }
+  if (action === "pty-exited") {
+    slowLoad.stop();
+    setTerminalLoadVisualState(container, "failed");
+    setConnState("session-ended");
+    return;
+  }
+  state.terminalController.scheduleReconnect();
+}
+
+function handleTerminalReconnecting(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+): void {
+  setTerminalLoadVisualState(container, "reconnecting");
+  slowLoad.start("reconnecting terminal");
+  setConnState("reconnecting");
+}
+
+function handleTerminalReconnectExhausted(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+): void {
+  slowLoad.stop();
+  setTerminalLoadVisualState(container, "failed");
+  setConnState("offline");
+}
+
+function handleTerminalRouteUnavailable(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+): void {
+  slowLoad.stop();
+  setTerminalLoadVisualState(container, "failed");
+  setConnState("machine-unavailable");
+}
+
+function handleTerminalHydrationStart(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+  liveGate: TerminalLiveGate,
+): void {
+  // A controller survives reconnects, but each hydration cycle needs its
+  // own final live transition after the mobile post-mount gate is ready.
+  liveGate.onHydrationStart();
+  setTerminalLoadVisualState(container, "hydrating");
+  slowLoad.start("hydrating terminal");
+}
+
+function createTerminalBootstrapController(
+  options: TerminalControllerBootstrapOptions,
+): PtyTerminalController {
+  const { container, isMobile, liveGate, prefillMode, slowLoad } = options;
+  return createPtyTerminalController({
     session: state.currentSession,
     machine: state.currentMachine || "",
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
-    prefillMode: terminalPrefillMode,
+    prefillMode,
     hydrationMinPendingMs: 80,
     hydrationSettleMs: INITIAL_HYDRATION_SETTLE_MS,
     hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
@@ -2896,163 +3038,113 @@ async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
     shouldReconnect: () => !!state.terminalController?.term,
-    onOpen: (wasReconnect) => {
-      if (wasReconnect) wpMetrics.reconnectCount++;
-      // Successful WS open clears stale conflict overlay. If the server
-      // sees a conflict, onViewerConflict fires after onOpen and re-shows it.
-      _tcState = handleControlGranted(_tcState);
-      removeDesktopConflictOverlay();
-      setTerminalLoadVisualState(container, "prefill-loading");
-      slowLoad.start("waiting for terminal prefill");
-      setConnState("live");
+    onOpen: (wasReconnect) => handleTerminalOpened(container, slowLoad, wasReconnect),
+    onPtyReady: handleTerminalPtyReady,
+    onOutput: handleTerminalOutput,
+    onSubSessionOpened: handleTerminalSubSessionOpened,
+    onViewerConflict: () => handleTerminalViewerConflict(container, slowLoad),
+    onControlGranted: () => handleTerminalControlGranted(container, slowLoad, isMobile),
+    onDisconnected: (code, reason) => handleTerminalDisconnected(container, slowLoad, code, reason),
+    onReconnecting: () => handleTerminalReconnecting(container, slowLoad),
+    onReconnectExhausted: () => handleTerminalReconnectExhausted(container, slowLoad),
+    onRouteUnavailable: () => handleTerminalRouteUnavailable(container, slowLoad),
+    onHydrationStart: () => handleTerminalHydrationStart(container, slowLoad, liveGate),
+    onHydrated: liveGate.onHydrated,
+  });
+}
+
+function showTerminalMountFailure(
+  container: HTMLElement,
+  slowLoad: TerminalSlowLoadIndicator,
+): void {
+  slowLoad.stop();
+  setTerminalLoadVisualState(container, "failed");
+  container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:13px;padding:20px;text-align:center">Terminal unavailable — WebAssembly not supported in this browser</div>';
+}
+
+function setupMobileTerminalInput(
+  container: HTMLElement,
+  controller: PtyTerminalController,
+): void {
+  if (!controller.term) return;
+  // Ghostty owns input semantics; Wolfpack only gates whether its native
+  // textarea is allowed to open the virtual keyboard.
+  container.setAttribute("inputmode", "none");
+  setMobileGhosttyKeyboardOpen(false);
+  state._touchCleanup = setupTouchScrollHandler(
+    container, controller.term,
+    (data) => state.terminalController && state.terminalController.send(data),
+    () => !!(state.terminalController && state.terminalController.isConnected),
+    () => {
+      setMobileGhosttyKeyboardOpen(false);
     },
-    onPtyReady: () => {
-      // Force a full canvas repaint after prefill completes. FitAddon.fit() and
-      // Terminal.resize() both no-op when dimensions haven't changed, so sendFitResize
-      // does nothing if the terminal is the same size as before the session switch.
-      // renderer.render(forceAll=true) bypasses both guards and repaints every cell.
-      if (state.terminalController) state.terminalController.forceRepaint();
-    },
-    onOutput: () => {
-      if (state.enterRetryTimer) { clearTimeout(state.enterRetryTimer); state.enterRetryTimer = null; }
-      wpMetrics.wsMessagesReceived++;
-    },
-    onSubSessionOpened: (parentSession, session) => {
-      if (!isDesktop()) return;
-      if (state.currentView !== "terminal") return;
-      if (state.currentSession !== parentSession) return;
-      if (state.gridSessions.length > 0) return;
-      if (session === parentSession) return;
-      addToGrid(session, state.currentMachine || "");
-    },
-    onViewerConflict: () => {
-      var r = handleViewerConflict(_tcState);
-      _tcState = r.newState;
+  );
+}
+
+function setupMobileTerminalViewport(): void {
+  if (!window.visualViewport) return;
+  const vvHandler = (): void => {
+    if (!window.visualViewport) return;
+    const kbHeight = keyboardOcclusionHeight(window.innerHeight, {
+      height: window.visualViewport.height,
+      // Browsers always provide offsetTop; use zero for incomplete viewport
+      // implementations so keyboard resize handling still fails safely.
+      offsetTop: window.visualViewport.offsetTop ?? 0,
+    });
+    const kbOpen = kbHeight > 150;
+    // Shift terminal sub-elements without changing their layout height.
+    // ghostty-web sees no container resize → no reflow → no scroll-through.
+    // Keep #terminal-view transform reserved for mobile view/swipe navigation.
+    setMobileKeyboardShift(kbOpen ? kbHeight : 0);
+    // Viewport is authoritative for collapse only. Opening remains an
+    // explicit keyboard-button action so layout changes cannot enable stdin.
+    if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
+  };
+  window.visualViewport.addEventListener("resize", vvHandler);
+  window.visualViewport.addEventListener("scroll", vvHandler);
+  state.visualViewportHandler = vvHandler;
+  // Fire once to catch keyboard already open from previous session
+  vvHandler();
+}
+
+async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<void> {
+  if (state.terminalController) return;
+  const isMobile = !isDesktop();
+  const container = document.getElementById("desktop-terminal-container");
+  const slowLoad = prepareTerminalBootstrapView(container);
+  const terminalPrefillMode = prefillModeOverride ?? TERMINAL_PREFILL_MODE.FULL;
+  const liveGate = createTerminalLiveGate({
+    waitForPostMount: isMobile,
+    onLive: () => {
       slowLoad.stop();
-      setTerminalLoadVisualState(container, _tcState.displaced ? "displaced" : "viewer-conflict");
-      if (r.action === "auto-take-control") {
-        state.terminalController.sendTakeControl();
-      } else {
-        showDesktopConflictOverlay();
-      }
+      setTerminalLoadVisualState(container, "live");
+      scheduleGhosttyPrewarm();
     },
-    onControlGranted: () => {
-      _tcState = handleControlGranted(_tcState);
-      removeDesktopConflictOverlay();
-      setTerminalLoadVisualState(container, "hydrating");
-      slowLoad.start("restoring terminal control");
-      if (isMobile) setMobileGhosttyKeyboardOpen(state.kbAccessoryOpen);
-      else if (state.terminalController) state.terminalController.focus();
-    },
-    onDisconnected: (code, reason) => {
-      removeDesktopConflictOverlay();
-      var action = classifyDisconnect(code, reason || "");
-      if (action === "displaced") {
-        _tcState = handleDisplaced(_tcState);
-        slowLoad.stop();
-        setTerminalLoadVisualState(container, "displaced");
-        showDesktopConflictOverlay();
-        return;
-      }
-      if (action === "session-ended") {
-        slowLoad.stop();
-        setTerminalLoadVisualState(container, "failed");
-        setConnState("session-ended");
-        const statusEl = document.getElementById("conn-status");
-        if (statusEl) statusEl.textContent = "session unavailable \u2014 use \u2190 to go back";
-        return;
-      }
-      if (action === "pty-exited") {
-        slowLoad.stop();
-        setTerminalLoadVisualState(container, "failed");
-        setConnState("session-ended");
-        return;
-      }
-      state.terminalController.scheduleReconnect();
-    },
-    onReconnecting: () => {
-      setTerminalLoadVisualState(container, "reconnecting");
-      slowLoad.start("reconnecting terminal");
-      setConnState("reconnecting");
-    },
-    onReconnectExhausted: () => {
-      slowLoad.stop();
-      setTerminalLoadVisualState(container, "failed");
-      setConnState("offline");
-    },
-    onRouteUnavailable: () => {
-      slowLoad.stop();
-      setTerminalLoadVisualState(container, "failed");
-      setConnState("machine-unavailable");
-    },
-    onHydrationStart: () => {
-      // A controller survives reconnects, but each hydration cycle needs its
-      // own final live transition after the mobile post-mount gate is ready.
-      hydrated = false;
-      terminalMarkedLive = false;
-      setTerminalLoadVisualState(container, "hydrating");
-      slowLoad.start("hydrating terminal");
-    },
-    onHydrated: () => {
-      hydrated = true;
-      markTerminalLive();
-    },
+  });
+
+  _tcState = { displaced: false, autoTakeControl: false };
+  state.terminalController = createTerminalBootstrapController({
+    container,
+    isMobile,
+    prefillMode: terminalPrefillMode,
+    slowLoad,
+    liveGate,
   });
 
   await state.terminalController.mount(container);
   if (!state.terminalController) return; // disposed while awaiting WASM init
   if (!state.terminalController.term) {
-    // WASM init failed — show error instead of blank screen
-    slowLoad.stop();
-    setTerminalLoadVisualState(container, "failed");
-    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:13px;padding:20px;text-align:center">Terminal unavailable — WebAssembly not supported in this browser</div>';
+    showTerminalMountFailure(container, slowLoad);
     return;
   }
 
-  // Mobile: Ghostty owns input semantics; Wolfpack only gates whether its
-  // native textarea is allowed to open the virtual keyboard.
-  if (isMobile && state.terminalController.term) {
-    container.setAttribute("inputmode", "none");
-    setMobileGhosttyKeyboardOpen(false);
-    state._touchCleanup = setupTouchScrollHandler(
-      container, state.terminalController.term,
-      (data) => state.terminalController && state.terminalController.send(data),
-      () => !!(state.terminalController && state.terminalController.isConnected),
-      () => {
-        setMobileGhosttyKeyboardOpen(false);
-      },
-    );
+  if (isMobile) {
+    setupMobileTerminalInput(container, state.terminalController);
+    setupMobileTerminalViewport();
   }
-
-  if (window.visualViewport && isMobile) {
-    const vvHandler = () => {
-      if (!window.visualViewport) return;
-      const kbHeight = keyboardOcclusionHeight(window.innerHeight, {
-        height: window.visualViewport.height,
-        // Browsers always provide offsetTop; use zero for incomplete viewport
-        // implementations so keyboard resize handling still fails safely.
-        offsetTop: window.visualViewport.offsetTop ?? 0,
-      });
-      const kbOpen = kbHeight > 150;
-      // Shift terminal sub-elements without changing their layout height.
-      // ghostty-web sees no container resize → no reflow → no scroll-through.
-      // Keep #terminal-view transform reserved for mobile view/swipe navigation.
-      setMobileKeyboardShift(kbOpen ? kbHeight : 0);
-      // Viewport is authoritative for collapse only. Opening remains an
-      // explicit keyboard-button action so layout changes cannot enable stdin.
-      if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
-    };
-    window.visualViewport.addEventListener("resize", vvHandler);
-    window.visualViewport.addEventListener("scroll", vvHandler);
-    state.visualViewportHandler = vvHandler;
-    // Fire once to catch keyboard already open from previous session
-    vvHandler();
-  }
-
   // Hydration can complete while mount awaits Ghostty. Do not expose a live
-  // terminal on mobile until its visual viewport handlers are ready.
-  mobilePostMountReady = true;
-  markTerminalLive();
+  // terminal on mobile until its post-mount handlers are ready.
+  liveGate.onPostMountReady();
   connectDesktopWs();
 }
 
