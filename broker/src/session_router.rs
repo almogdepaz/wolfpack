@@ -1,6 +1,6 @@
 //! Session-aware router.
 //!
-//! Wires a shared `Registry` into the broker's `Router` trait so that the
+//! Wires a shared `Registry` into the broker's request handler so that the
 //! control plane can drive session lifecycle. `subscribe` and `unsubscribe`
 //! are intercepted by the server connection handler before they reach the
 //! router (they need per-connection writer state the router can't see); if
@@ -37,7 +37,6 @@ use crate::protocol::{
     SessionInfoParams, SnapshotParams,
 };
 use crate::registry::{CreateError, CreateOptions, Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
-use crate::router::Router;
 use crate::session::{EventSender, KillError, KillOutcome, ResizeError, SpawnError};
 use crate::terminal_state::TerminalStateError;
 
@@ -64,8 +63,8 @@ impl SessionRouter {
     }
 }
 
-impl Router for SessionRouter {
-    fn handle(&self, req: ControlRequest) -> ControlResponse {
+impl SessionRouter {
+    pub fn handle(&self, req: ControlRequest) -> ControlResponse {
         let id = req.id;
         match req.method.as_str() {
             methods::LIST_SESSIONS => match req.parse_params::<ListSessionsParams>() {

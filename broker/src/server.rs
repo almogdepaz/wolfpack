@@ -21,9 +21,8 @@ use crate::protocol::{
 };
 use crate::registry::{Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::ring_buffer::OutputChunk;
-use crate::router::Router;
 use crate::session::EventSender;
-use crate::session_router::validate_snapshot_target_cols;
+use crate::session_router::{validate_snapshot_target_cols, SessionRouter};
 
 /// Per-connection queue depth. Control/global lifecycle and output use separate
 /// queues so PTY traffic cannot starve request responses; the socket writer
@@ -78,7 +77,7 @@ impl Drop for SocketBindUmaskGuard {
 
 pub struct ServerConfig {
     pub socket_path: PathBuf,
-    pub router: Arc<dyn Router + Send + Sync>,
+    pub router: Arc<SessionRouter>,
     /// Required for `subscribe`/`unsubscribe`: the connection layer needs
     /// the live `Session` to attach to its `OutputBus`. The router could
     /// also reach the registry indirectly, but plumbing it explicitly
@@ -226,7 +225,7 @@ async fn prepare_socket_path(socket_path: &Path) -> io::Result<()> {
 
 async fn accept_loop(
     listener: UnixListener,
-    router: Arc<dyn Router + Send + Sync>,
+    router: Arc<SessionRouter>,
     registry: Arc<Registry>,
     events: EventSender,
     writer_queue_capacity: Option<usize>,
@@ -281,7 +280,7 @@ async fn accept_loop(
 
 async fn handle_connection(
     stream: UnixStream,
-    router: Arc<dyn Router + Send + Sync>,
+    router: Arc<SessionRouter>,
     registry: Arc<Registry>,
     event_rx: broadcast::Receiver<Event>,
     writer_queue_cap: Option<usize>,
@@ -490,7 +489,7 @@ async fn connection_writer(
 /// caller can stop the read loop instead of looping on dead writes.
 async fn dispatch_frame(
     frame: Frame,
-    router: &dyn Router,
+    router: &SessionRouter,
     registry: &Arc<Registry>,
     writer_tx: &mpsc::Sender<Frame>,
     output_tx: &mpsc::Sender<Frame>,

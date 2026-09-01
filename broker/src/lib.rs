@@ -3,7 +3,6 @@ pub mod output_bus;
 pub mod protocol;
 pub mod registry;
 pub mod ring_buffer;
-pub mod router;
 pub mod server;
 pub mod session;
 pub mod session_router;
