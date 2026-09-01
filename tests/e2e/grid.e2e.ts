@@ -354,89 +354,6 @@ test("addToGrid hides single terminal container before grid cells mount", async 
   });
 });
 
-test("grid cached snapshots stay behind loading screen until hydration", async ({ page }) => {
-  await loadApp(page);
-
-  await page.evaluate(() => {
-    localStorage.setItem(
-      "wp-snap||test-project",
-      JSON.stringify({ d: "cached-test-project-line-that-would-wrap-in-grid", ts: Date.now() }),
-    );
-    localStorage.setItem(
-      "wp-snap||another-project",
-      JSON.stringify({ d: "cached-another-project-line-that-would-wrap-in-grid", ts: Date.now() }),
-    );
-  });
-  await openTwoCellGrid(page);
-
-  await page.waitForSelector("#desktop-grid-container .grid-cell canvas", { timeout: 5000 });
-
-  const cachedVisibleBeforeHydration = await page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) =>
-    cells.some((cell) => cell.classList.contains("cached-visible") && !cell.classList.contains("hydrated")),
-  );
-
-  expect(cachedVisibleBeforeHydration).toBe(false);
-});
-
-test("grid viewport prefill does not seed cached prose into terminal scrollback", async ({ page }) => {
-  await loadApp(page);
-
-  await page.evaluate(() => {
-    const cachedLines = Array.from({ length: 80 }, (_, idx) => `GRID-CACHED-SCROLLBACK-${idx}`).join("\n");
-    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
-    localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: cachedLines, ts: Date.now() }));
-  });
-  await openTwoCellGrid(page);
-
-  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
-
-  const cells = await Promise.all((await page.locator("#desktop-grid-container .grid-cell").all()).map(async (cell) => {
-    const text = await terminalTail(cell, 120);
-    return {
-      session: await cell.evaluate((element) => (element as HTMLElement).dataset.session ?? ""),
-      text,
-      scrollbackLength: text.split(/\r?\n/).length,
-    };
-  }));
-
-  expect(cells).toHaveLength(2);
-  for (const cell of cells) {
-    expect(cell.text).not.toContain("GRID-CACHED-SCROLLBACK");
-    expect(cell.scrollbackLength).toBeLessThan(10);
-  }
-});
-
-test("grid output persists debounced recovery snapshots for every live cell", async ({ page }) => {
-  const sockets: WebSocketRoute[] = [];
-  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
-    sockets.push(ws);
-    ws.onMessage((message) => {
-      if (typeof message !== "string") return;
-      const parsed = JSON.parse(message) as { readonly type?: string };
-      if (parsed.type !== "attach") return;
-      ws.send(JSON.stringify({ type: "attach_ack" }));
-      ws.send(Buffer.from("INITIAL-GRID-SNAPSHOT\r\n"));
-      ws.send(JSON.stringify({ type: "prefill_viewport" }));
-      ws.send(JSON.stringify({ type: "prefill_done" }));
-      ws.send(JSON.stringify({ type: "pty_ready" }));
-    });
-  });
-  await loadApp(page);
-
-  await openTwoCellGrid(page);
-  await expect.poll(() => sockets.length).toBe(2);
-  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
-
-  sockets[0].send(Buffer.from("GRID-LIVE-SNAPSHOT-MARKER-0\r\n"));
-  sockets[1].send(Buffer.from("GRID-LIVE-SNAPSHOT-MARKER-1\r\n"));
-
-  await expect.poll(() => page.evaluate(() => {
-    const first = localStorage.getItem("wp-snap||test-project") ?? "";
-    const second = localStorage.getItem("wp-snap||another-project") ?? "";
-    return first.includes("GRID-LIVE-SNAPSHOT-MARKER") && second.includes("GRID-LIVE-SNAPSHOT-MARKER");
-  }), { timeout: 4_000 }).toBe(true);
-});
-
 test("grid viewport prefill timeout closes stalled sockets without revealing partial content", async ({ page }) => {
   const closes: Array<{ readonly code: number | undefined; readonly reason: string | undefined }> = [];
   let attachCount = 0;
@@ -562,7 +479,7 @@ test("grid manual retry hides stale content until replacement viewport prefill c
   });
 });
 
-test("viewport-only immediate layout-stable does not expose cached grid content", async ({ page }) => {
+test("viewport-only immediate layout-stable keeps grid canvases hidden until hydration", async ({ page }) => {
   const messages: Array<{ type?: string; prefillMode?: string; reason?: string }> = [];
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     ws.onMessage((message) => {
@@ -585,8 +502,6 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
   await page.evaluate(() => {
     localStorage.setItem("wolfpackDebug", "1");
     localStorage.setItem("wolfpackLayoutStableDebugMode", "viewport-immediate-and-after-paint");
-    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "STALE-GRID-CACHED-PROSE", ts: Date.now() }));
-    localStorage.setItem("wp-snap||another-project", JSON.stringify({ d: "STALE-GRID-CACHED-PROSE", ts: Date.now() }));
   });
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
@@ -600,7 +515,6 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
       const canvas = cell.querySelector("canvas") as HTMLCanvasElement | null;
       const style = canvas ? getComputedStyle(canvas) : null;
       return {
-        cachedVisible: cell.classList.contains("cached-visible"),
         hydrating: cell.classList.contains("hydrating"),
         hydrated: cell.classList.contains("hydrated"),
         opacity: style?.opacity ?? "missing",
@@ -611,7 +525,6 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
 
   expect(earlyStates.length).toBeGreaterThanOrEqual(2);
   for (const cellState of earlyStates) {
-    expect(cellState.cachedVisible).toBe(false);
     if (!cellState.hydrated) {
       expect(cellState.hydrating).toBe(true);
       expect(cellState.opacity).toBe("0");
@@ -630,7 +543,7 @@ test("viewport-only immediate layout-stable does not expose cached grid content"
 
   const cells = await Promise.all((await page.locator("#desktop-grid-container .grid-cell").all()).map((cell) => terminalTail(cell, 120)));
   expect(cells).toHaveLength(2);
-  for (const text of cells) expect(text).not.toContain("STALE-GRID-CACHED-PROSE");
+  for (const text of cells) expect(text).toContain("GRID-VIEWPORT-PREFILL");
 });
 
 test("addToGrid from non-terminal view switches to terminal view first", async ({ page }) => {

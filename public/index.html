@@ -226,7 +226,6 @@
         <a href="#settings-effects">Effects</a>
         <a href="#settings-terminal">Terminal</a>
         <a href="#settings-input">Input</a>
-        <a href="#settings-privacy">Privacy</a>
         <a href="#settings-machines">Machines</a>
         <a href="#settings-agents">Agents</a>
       </nav>
@@ -282,15 +281,6 @@
           <label class="settings-toggle">
             <input type="checkbox" id="setting-holdToSend"> Hold-to-send (large msgs)
           </label>
-        </div>
-        <div class="settings-section" id="settings-privacy">
-          <div class="settings-label">Privacy</div>
-          <label class="settings-toggle">
-            <input type="checkbox" id="setting-recoveryCache" checked> Cache terminal recovery output
-          </label>
-          <div class="settings-description">Stores up to 16 KiB per recent session in this browser for at most 24 hours. Cached output may contain secrets. Disable this option or clear it on shared devices.</div>
-          <button type="button" id="clear-recovery-cache-btn" class="add-cmd-btn">Clear cached terminal output</button>
-          <div id="recovery-cache-status" class="notification-setting-status" role="status" aria-live="polite"></div>
         </div>
         <details class="settings-disclosure" id="settings-advanced">
           <summary>Agents &amp; tools</summary>

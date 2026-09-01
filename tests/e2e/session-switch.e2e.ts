@@ -726,37 +726,45 @@ test("full prefill timeout closes the stalled socket instead of revealing partia
   expect(visualState).toEqual({ visibility: "hidden", opacity: "0" });
 });
 
-test("desktop full switchSession keeps cached snapshot hidden until hydration", async ({ page }, testInfo) => {
+test("startup removes legacy recovery snapshots and terminal output does not recreate them", async ({ page }) => {
+  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
+  await page.goto(srv.baseUrl);
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "wp-snap||legacy-session",
+      JSON.stringify({ d: "legacy-sensitive-output", savedAt: Date.now(), lastUsedAt: Date.now() }),
+    );
+  });
+
+  await page.reload();
+
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wp-snap||legacy-session"))).toBeNull();
+  await expect(page.locator("#setting-recoveryCache")).toHaveCount(0);
+
+  await openSessionFromUi(page, "test-project", "");
+  await expect(page.locator("#desktop-terminal-container"))
+    .toHaveAttribute("data-terminal-load-state", "live", { timeout: 5_000 });
+  await page.waitForTimeout(2_200);
+  const recoveryKeys = await page.evaluate(() =>
+    Object.keys(localStorage).filter((key) => key.startsWith("wp-snap|")),
+  );
+  expect(recoveryKeys).toEqual([]);
+});
+
+test("desktop full switchSession starts in a loading state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
   await page.goto(srv.baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
-
-  await page.evaluate(() => {
-    localStorage.setItem(
-      "wp-snap||another-project",
-      JSON.stringify({ d: "cached-another-session", ts: Date.now() }),
-    );
-  });
-  await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
   await openSessionFromUi(page, "test-project", "");
   await expect(page.locator("#terminal-view")).toBeVisible();
 
   await openSessionFromUi(page, "another-project", "");
-  const immediateState = await page.evaluate(() => {
-    const container = document.getElementById("desktop-terminal-container");
-    return {
-      className: container?.className || "",
-      placeholder: container?.querySelector(".cached-terminal-placeholder")?.textContent ?? "",
-      loadState: container?.getAttribute("data-terminal-load-state") || "",
-    };
-  });
+  const loadState = await page.locator("#desktop-terminal-container")
+    .getAttribute("data-terminal-load-state");
 
-  expect(immediateState.className).not.toContain("cached-visible");
-  expect(immediateState.placeholder).toBe("");
-  expect(["prefill-loading", "hydrating"]).toContain(immediateState.loadState);
+  expect(["prefill-loading", "hydrating"]).toContain(loadState);
 });
 
 async function expectSoloAttachPrefillMode(page: import("@playwright/test").Page, mode: "viewport" | "full") {
@@ -771,53 +779,18 @@ async function expectSoloAttachPrefillMode(page: import("@playwright/test").Page
   }, mode), { timeout: 5000 }).toBe(true);
 }
 
-test("desktop solo full prefill clears cached prose", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
-
-  await page.routeWebSocket(/\/ws\/pty/, mockPrefillWebSocket("full"));
-  await page.goto(srv.baseUrl);
-  await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "CACHED-HISTORY-MUST-NOT-MIX\n".repeat(60), ts: Date.now() }));
-  });
-  await page.reload();
-  await page.waitForSelector(".card", { timeout: 5000 });
-
-  await openSessionFromUi(page, "test-project", "");
-
-  const terminalContainer = page.locator("#desktop-terminal-container");
-  await expect.poll(async () => terminalTail(terminalContainer, 80), { timeout: 5000 }).toContain("FULL-PREFILL");
-
-  const tail = await terminalTail(terminalContainer, 80);
-  expect(tail).not.toContain("CACHED-HISTORY-MUST-NOT-MIX");
-});
-
-test("mobile first-session restore uses full prefill without showing cached placeholder", async ({ page }, testInfo) => {
+test("mobile first-session restore uses full prefill", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only restore path");
 
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
-  await page.evaluate(() => {
-    localStorage.setItem("wolfpackDebug", "1");
-    localStorage.setItem("wp-snap||test-project", JSON.stringify({ d: "MOBILE-CACHED-PROSE\n".repeat(60), ts: Date.now() }));
-  });
+  await page.evaluate(() => localStorage.setItem("wolfpackDebug", "1"));
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
   await openSessionFromUi(page, "test-project", "");
-  const immediateState = await page.evaluate(() => {
-    const container = document.getElementById("desktop-terminal-container");
-    return {
-      className: container?.className || "",
-      placeholder: container?.querySelector(".cached-terminal-placeholder")?.textContent || "",
-      loadState: container?.getAttribute("data-terminal-load-state") || "",
-    };
-  });
-
-  expect(immediateState.className).not.toContain("cached-visible");
-  expect(immediateState.placeholder).toBe("");
-  expect(immediateState.loadState).toBe("prefill-loading");
+  await expect(page.locator("#desktop-terminal-container"))
+    .toHaveAttribute("data-terminal-load-state", "prefill-loading");
   await expectSoloAttachPrefillMode(page, "full");
 });
 

@@ -7,7 +7,6 @@ import {
 describe("terminal loading UI copy", () => {
   test("uses concise user-facing labels for visible loading states", () => {
     const expected: ReadonlyArray<readonly [TerminalLoadVisualState, string]> = [
-      ["cached", "restoring terminal"],
       ["prefill-loading", "loading terminal"],
       ["hydrating", "preparing terminal"],
       ["reconnecting", "reconnecting terminal"],

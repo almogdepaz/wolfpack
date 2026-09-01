@@ -1,5 +1,4 @@
 export type TerminalLoadVisualState =
-  | "cached"
   | "prefill-loading"
   | "hydrating"
   | "reconnecting"
@@ -14,7 +13,6 @@ export const TERMINAL_SLOW_LOAD_THRESHOLD_MS = 1200;
 const STATE_CLASS_PREFIX = "terminal-load-state-";
 
 const STATE_LABELS: Record<TerminalLoadVisualState, string> = {
-  cached: "restoring terminal",
   "prefill-loading": "loading terminal",
   hydrating: "preparing terminal",
   reconnecting: "reconnecting terminal",

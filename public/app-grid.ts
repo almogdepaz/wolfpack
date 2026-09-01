@@ -77,7 +77,7 @@ interface GridDeps {
   showView: (name: string, skipAnimation?: boolean) => void;
   openSession: (name: string, machineUrl?: string) => void;
   destroyTerminal: () => void;
-  initTerminal: (cached?: string | null) => void;
+  initTerminal: () => void;
   backToSessions: () => void;
   renderSidebar: () => void;
   createPtyTerminalController: (opts: { session: string; machine?: string; scrollback: number; [k: string]: unknown }) => GridTerminalController;

@@ -4,7 +4,6 @@ import {
   initSettings, haptic,
   QC_STORAGE_KEY, RECENTS_STORAGE_KEY, MAX_RECENTS,
   state, setState,
-  SNAPSHOT_KEY_PREFIX, SNAPSHOT_MAX_BYTES, SNAPSHOT_SAVE_INTERVAL, SNAPSHOT_TTL_MS,
   DESKTOP_TERMINAL_SCROLLBACK,
 } from "./app-state";
 
@@ -48,10 +47,6 @@ import {
 import {
   __wfTraceStart, __wfTraceEvent, wfTraceEnabled,
 } from "./app-debug";
-import {
-  CACHED_TERMINAL_PLACEHOLDER_CLASS,
-  cachedSnapshotPlaceholderText,
-} from "./terminal-placeholder";
 import {
   createTerminalSlowPathIndicator,
   setTerminalLoadVisualState,
@@ -115,10 +110,6 @@ import {
   canonicalTailnetOrigin,
 } from "../src/tailnet-machine-contract";
 import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
-import {
-  isFreshSnapshotTimestamp,
-  snapshotKeysToEvict,
-} from "../src/snapshot-cache";
 import { serializeBufferTail } from "../src/terminal-buffer";
 import {
   encodeTerminalBinary,
@@ -864,99 +855,19 @@ function clearDraft() {
   localStorage.removeItem(draftKey(state.currentMachine, state.currentSession));
 }
 
-// ── Recovery snapshots (UX-14) ──
+// ── Legacy browser recovery-cache cleanup ──
 
-let snapshotPending = null;
+const LEGACY_TERMINAL_RECOVERY_KEY_PREFIX = "wp-snap|";
 
-function snapshotKey(machine, session) {
-  return SNAPSHOT_KEY_PREFIX + (machine || "") + "|" + session;
-}
-function snapshotMachineFromKey(key) {
-  const separator = key.lastIndexOf("|");
-  return separator > SNAPSHOT_KEY_PREFIX.length ? key.slice(SNAPSHOT_KEY_PREFIX.length, separator) : "";
-}
-function snapshotEntries() {
-  const entries = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(SNAPSHOT_KEY_PREFIX)) continue;
-    try {
-      const snapshot = JSON.parse(localStorage.getItem(key));
-      if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
-      const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
-      if (!isFreshSnapshotTimestamp(savedAt, Date.now(), SNAPSHOT_TTL_MS)) {
-        localStorage.removeItem(key);
-        continue;
-      }
-      entries.push({
-        key,
-        machine: snapshotMachineFromKey(key),
-        lastUsedAt: typeof snapshot.lastUsedAt === "number"
-          ? snapshot.lastUsedAt
-          : typeof snapshot.ts === "number" ? snapshot.ts : 0,
-      });
-    } catch {
-      localStorage.removeItem(key);
+function purgeLegacyTerminalRecoverySnapshots(): void {
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(LEGACY_TERMINAL_RECOVERY_KEY_PREFIX)) keys.push(key);
     }
-  }
-  return entries;
-}
-function enforceSnapshotCache() {
-  snapshotKeysToEvict(snapshotEntries()).forEach(key => localStorage.removeItem(key));
-}
-function saveSnapshot(machine, session, text) {
-  if (!wpSettings.recoveryCache || !session || !text) return;
-  const trimmed = text.length > SNAPSHOT_MAX_BYTES ? text.slice(-SNAPSHOT_MAX_BYTES) : text;
-  try {
-    const now = Date.now();
-    localStorage.setItem(snapshotKey(machine, session), JSON.stringify({ d: trimmed, savedAt: now, lastUsedAt: now }));
-    enforceSnapshotCache();
-  } catch { /* quota/private-mode */ }
-}
-function loadSnapshot(machine, session) {
-  if (!wpSettings.recoveryCache || !session) return null;
-  const key = snapshotKey(machine, session);
-  let snapshot;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    snapshot = JSON.parse(raw);
-    if (typeof snapshot.d !== "string") throw new Error("invalid snapshot");
-    const savedAt = typeof snapshot.savedAt === "number" ? snapshot.savedAt : snapshot.ts;
-    if (!isFreshSnapshotTimestamp(savedAt, Date.now(), SNAPSHOT_TTL_MS)) throw new Error("expired snapshot");
-  } catch {
-    localStorage.removeItem(key);
-    return null;
-  }
-  try {
-    localStorage.setItem(key, JSON.stringify({ d: snapshot.d, savedAt: snapshot.savedAt ?? snapshot.ts, lastUsedAt: Date.now() }));
-  } catch { /* preserve a readable snapshot when localStorage is full */ }
-  return snapshot.d;
-}
-function clearRecoverySnapshots(): void {
-  for (const entry of snapshotEntries()) localStorage.removeItem(entry.key);
-  const status = document.getElementById("recovery-cache-status");
-  if (status) status.textContent = "Cached terminal recovery output cleared.";
-}
-function cleanSnapshots() {
-  enforceSnapshotCache();
-}
-function scheduleSnapshotSave(text) {
-  snapshotPending = text;
-  if (state.snapshotTimer) return;
-  state.snapshotTimer = setTimeout(flushSnapshot, SNAPSHOT_SAVE_INTERVAL);
-}
-function flushSnapshot() {
-  state.snapshotTimer = null;
-  if (!state.currentSession) { snapshotPending = null; return; }
-  let text;
-  if (state.terminalController?.term) {
-    text = serializeXtermTail(state.terminalController.term, 200);
-  } else {
-    text = snapshotPending;
-  }
-  snapshotPending = null;
-  if (text) saveSnapshot(state.currentMachine, state.currentSession, text);
+    for (const key of keys) localStorage.removeItem(key);
+  } catch { /* storage unavailable */ }
 }
 function serializeXtermTail(term, maxLines) {
   return serializeBufferTail(term.buffer.active, maxLines);
@@ -1821,8 +1732,7 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
   if (label) label.textContent = `${sessionName} terminal`;
   setDelegationWorkspaceDisplay("focus");
   showView("terminal", true);
-  const cached = loadSnapshot(machineUrl, sessionName);
-  void initTerminal(cached, TERMINAL_PREFILL_MODE.FULL);
+  void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
 
@@ -2130,18 +2040,14 @@ async function openSession(name, machineUrl) {
     renderSidebar();
     return;
   }
-  // Destroy BEFORE changing state — flushSnapshot() inside destroyTerminal()
-  // reads state.currentSession to key the snapshot. If we set state first,
-  // the OLD terminal's content gets saved under the NEW session's key.
   destroyTerminal();
   setState({ currentSession: name, currentMachine: machineUrl || "" });
   recordRecent(state.currentMachine, name);
   wpMetrics.reset();
   restoreDraft();
-  const cached = loadSnapshot(state.currentMachine, name);
   showView("terminal");
-  __wfTraceEvent(trace, "dom.view.created", { cached: !!cached });
-  void initTerminal(cached, TERMINAL_PREFILL_MODE.FULL);
+  __wfTraceEvent(trace, "dom.view.created");
+  void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
 
@@ -2933,20 +2839,6 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-function renderCachedTerminalPlaceholder(container: HTMLElement, cached?: string | null): void {
-  const text = cachedSnapshotPlaceholderText(cached || "");
-  if (!text) return;
-  const pre = document.createElement("pre");
-  pre.className = CACHED_TERMINAL_PLACEHOLDER_CLASS;
-  pre.textContent = text;
-  pre.setAttribute("aria-hidden", "true");
-  container.appendChild(pre);
-}
-
-function removeCachedTerminalPlaceholder(): void {
-  document.querySelectorAll("." + CACHED_TERMINAL_PLACEHOLDER_CLASS).forEach((el) => el.remove());
-}
-
 function mobileKeyboardShiftElements(): HTMLElement[] {
   return [
     document.getElementById("conn-status"),
@@ -2962,27 +2854,17 @@ function setMobileKeyboardShift(offsetPx: number): void {
   for (const el of mobileKeyboardShiftElements()) el.style.transform = transform;
 }
 
-async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefillMode): Promise<void> {
+async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<void> {
   if (state.terminalController) return;
-  // Defensive: clear stale timer from a prior session that wasn't properly destroyed
-  if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   document.getElementById("terminal-view")?.classList.remove("terminal-swipe-peek");
   const terminalPrefillMode = prefillModeOverride ?? TERMINAL_PREFILL_MODE.FULL;
-  const showCachedPlaceholder = false;
   container.style.display = "block";
   container.innerHTML = "";
-  if (showCachedPlaceholder) {
-    container.classList.add("cached-visible");
-    container.classList.remove("hydrating", "hydrated");
-    setTerminalLoadVisualState(container, "cached");
-    renderCachedTerminalPlaceholder(container, cached);
-  } else {
-    container.classList.add("hydrating");
-    container.classList.remove("hydrated", "cached-visible");
-    setTerminalLoadVisualState(container, "prefill-loading");
-  }
+  container.classList.add("hydrating");
+  container.classList.remove("hydrated");
+  setTerminalLoadVisualState(container, "prefill-loading");
   const slowLoad = createTerminalSlowPathIndicator(container);
   slowLoad.start("waiting for terminal snapshot");
   document.getElementById("kb-accessory").classList.remove("visible");
@@ -3002,17 +2884,6 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
     setTerminalLoadVisualState(container, "live");
     scheduleGhosttyPrewarm();
   };
-  let _cachedPendingReset = showCachedPlaceholder;
-  // Cached placeholders are currently disabled for solo full because stale
-  // plaintext can flash at the wrong width before broker prefill hydrates.
-  // Keep the fallback timer wired to the flag so this path stays safe if a
-  // future gated placeholder policy re-enables it.
-  state._cachedFallbackTimer = showCachedPlaceholder ? setTimeout(() => {
-    state._cachedFallbackTimer = null;
-    const el = document.getElementById("desktop-terminal-container");
-    if (el) el.classList.add("hydrated");
-  }, 5000) : null;
-
   state.terminalController = createPtyTerminalController({
     session: state.currentSession,
     machine: state.currentMachine || "",
@@ -3043,22 +2914,8 @@ async function initTerminal(cached?: string, prefillModeOverride?: TerminalPrefi
       if (state.terminalController) state.terminalController.forceRepaint();
     },
     onOutput: () => {
-      if (_cachedPendingReset) {
-        _cachedPendingReset = false;
-        if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
-        // Drop cached-visible on first live data, but DO NOT add `hydrated`
-        // here — that's the hydration controller's job, gated on minPendingMs.
-        // Adding `hydrated` here used to bypass hydration's hide window and
-        // exposed the canvas during the post-prefill resize-redraw burst (the
-        // "scrollback flash"). Without `hydrated` the canvas falls back to
-        // its default hidden state until hydration finish() runs.
-        const el = document.getElementById("desktop-terminal-container");
-        if (el) el.classList.remove("cached-visible");
-        removeCachedTerminalPlaceholder();
-      }
       if (state.enterRetryTimer) { clearTimeout(state.enterRetryTimer); state.enterRetryTimer = null; }
       wpMetrics.wsMessagesReceived++;
-      scheduleSnapshotSave(null);
     },
     onSubSessionOpened: (parentSession, session) => {
       if (!isDesktop()) return;
@@ -3215,19 +3072,13 @@ function hideTerminalCanvasForTeardown(): void {
   const container = document.getElementById("desktop-terminal-container");
   if (!container || container.style.display === "none") return;
   if (!container.classList.contains("hydrating")) container.classList.add("hydrating");
-  container.classList.remove("hydrated", "cached-visible");
+  container.classList.remove("hydrated");
   setTerminalLoadVisualState(container, "prefill-loading");
-  removeCachedTerminalPlaceholder();
   void container.offsetHeight;
 }
 
 function destroyTerminal() {
   hideTerminalCanvasForTeardown();
-  if (state._cachedFallbackTimer) { clearTimeout(state._cachedFallbackTimer); state._cachedFallbackTimer = null; }
-  if (state.snapshotTimer) { clearTimeout(state.snapshotTimer); state.snapshotTimer = null; }
-  // Always flush snapshot before disposing terminal — even if no timer was
-  // pending, the terminal has content worth persisting for instant restore.
-  flushSnapshot();
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
   if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
@@ -3697,12 +3548,11 @@ async function switchSession(val) {
   closeDrawer(true);
   // Exit grid mode if active
   if (isGridActive()) exitGridMode();
-  // Suspend current mode (cache terminal state)
+  // Suspend the current terminal before mounting the selected session.
   destroyTerminal();
   setState({ currentSession: name, currentMachine: machineUrl });
   recordRecent(machineUrl, name);
   restoreDraft();
-  const cached = loadSnapshot(machineUrl, name);
   loadSessionSwitcher();
   // Update machine label in header (showView sets it, but drawer bypasses showView)
   const hml = document.getElementById("header-machine-label");
@@ -3713,7 +3563,7 @@ async function switchSession(val) {
     hml.textContent = mName;
     hml.style.display = "block";
   }
-  void initTerminal(cached, TERMINAL_PREFILL_MODE.FULL);
+  void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
 
@@ -4899,11 +4749,6 @@ function bindHtmlEventListeners(): void {
   on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });
   on("setting-haptics", "change", function(this: HTMLInputElement) { toggleSetting("haptics", this.checked); });
   on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
-  on("setting-recoveryCache", "change", function(this: HTMLInputElement) {
-    toggleSetting("recoveryCache", this.checked);
-    if (!this.checked) clearRecoverySnapshots();
-  });
-  on("clear-recovery-cache-btn", "click", () => clearRecoverySnapshots());
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
@@ -4967,7 +4812,7 @@ initGridDeps({
 });
 
 initSettings();
-cleanSnapshots();
+purgeLegacyTerminalRecoverySnapshots();
 renderCmdPalette();
 initSidebar(); // Init sidebar early so pin/expand/hover handlers are ready
 const initialSettingsSection = settingsSectionFromHash();
