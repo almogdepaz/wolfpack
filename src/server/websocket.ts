@@ -23,6 +23,7 @@ import {
 import { getRouter } from "./backend.js";
 import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter } from "./http.js";
+import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
 import { createLogger, errMsg } from "../log.js";
 import { shouldFlushCoalescedOutput } from "../output-coalescing.js";
 import {
@@ -369,7 +370,7 @@ function safeViewerSend(
   }
 }
 
-export function notifySubSessionOpened(parentSession: string, session: string): boolean {
+registerSubSessionOpenedNotifier((parentSession, session) => {
   const entry = activePtySessions.get(parentSession);
   if (!entry) return false;
   return safeViewerSend(entry, parentSession, JSON.stringify({
@@ -377,7 +378,7 @@ export function notifySubSessionOpened(parentSession: string, session: string): 
     parentSession,
     session,
   }));
-}
+});
 
 /** Send prefill buffer in 32KB chunks with short delays to avoid stalling mobile connections.
  *  Sends `prefill_done` message at the end so the client exits buffering state. */
