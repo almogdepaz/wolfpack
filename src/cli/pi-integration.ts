@@ -7,7 +7,7 @@ import { detectInstalledProviderCommands } from "../provider-readiness.js";
 import { WOLFPACK_PI_CONTROL_SKILL_FILES } from "./pi-skill.js";
 
 export const PI_INTEGRATION_PACKAGES = ["npm:@sgtbeatdown/pi-tasks"] as const;
-export const PI_CONTROL_SKILL_NAME = "wolfpack-tailnet-control";
+const PI_CONTROL_SKILL_NAME = "wolfpack-tailnet-control";
 const PI_INSTALL_COMMAND_PREFIX = `${AGENT_KIND.PI.cmd} install`;
 
 export type PiIntegrationSetupMode = "hidden" | "prompt" | "guidance";
