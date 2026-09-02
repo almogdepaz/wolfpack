@@ -90,6 +90,8 @@ async function touchDragTerminal(page: Page, startY: number, endY: number): Prom
     };
     dispatchTouch("touchstart", startY);
     dispatchTouch("touchmove", endY);
+    // Avoid impossible momentum from a synthetic start/move/end in one task.
+    for (let index = 0; index < 5; index += 1) dispatchTouch("touchmove", endY);
     dispatchTouch("touchend", endY);
   }, { startY, endY });
 }
@@ -98,13 +100,16 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 test("mobile copy preserves the text highlighted in scrolled-back terminal output", async ({ page }, testInfo) => {
   test.skip(!testInfo.project.name.startsWith("iphone"), "mobile touch selection test");
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.addInitScript(() => {
+    localStorage.setItem("wp-effects", JSON.stringify({ animations: false }));
+  });
   const terminalRoute = await routeCopyTerminal(page);
 
   await page.goto(server.baseUrl);

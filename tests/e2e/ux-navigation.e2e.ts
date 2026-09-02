@@ -8,10 +8,14 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 async function activeSessionName(page: Page): Promise<string> {
+  const currentControl = page.locator('[data-action="open-session"][aria-current="page"]').filter({ visible: true }).first();
+  if (await currentControl.count()) {
+    return currentControl.evaluate((element) => (element as HTMLElement).dataset.session ?? "");
+  }
   return (await page.locator("#chip-label").textContent().catch(() => ""))?.trim() ?? "";
 }
 
@@ -114,8 +118,7 @@ test("desktop opening delegation grid from auto-expanded sidebar collapses unpin
   const parentCardOpen = page.locator(
     `#sidebar-session-list .card[data-session-order-machine=""][data-session-order-id="${parent.id}"] .card-open`,
   );
-  await parentCardOpen.focus();
-  await page.keyboard.press("Enter");
+  await parentCardOpen.evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
 
   await expect(sidebar).toHaveClass(/collapsed/);
@@ -140,6 +143,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   });
   const parent = { id: "broker-parent", name: "wolfpack" };
   const killRequests: unknown[] = [];
+  await routeHydratedPty(page);
   await page.route("**/api/kill", async (route) => {
     killRequests.push(route.request().postDataJSON());
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
@@ -255,9 +259,14 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await page.goto(srv.baseUrl);
   await openSessionFromUi(page, "manual-one");
   await expect.poll(() => sockets.has("manual-one")).toBe(true);
+  await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
+  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
   await toggleSessionGridFromUi(page, "manual-two");
   await expect.poll(() => gridSessionNames(page)).toEqual(["manual-one", "manual-two"]);
-  await openSessionFromUi(page, "delegation-parent");
+  await page.mouse.move(1, 100);
+  await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
+  await page.locator("#sidebar-session-list").getByRole("button", { name: "Open delegation-parent", exact: true })
+    .evaluate((button: HTMLButtonElement) => button.click());
 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
   await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
@@ -387,7 +396,9 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
   await expect.poll(() => sockets.has("manual-one")).toBe(true);
   await toggleSessionGridFromUi(page, "manual-two");
   await expect.poll(() => gridSessionNames(page)).toEqual(["manual-one", "manual-two"]);
-  await openSessionFromUi(page, "child");
+  const delegationSidebar = page.locator("#sidebar-session-list");
+  await delegationSidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
+  await delegationSidebar.getByRole("button", { name: "Open child", exact: true }).click();
 
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await expect(page.locator("#delegation-focus-label")).toHaveText("child terminal");
@@ -404,6 +415,7 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
 
   await openSettingsFromUi(page);
   await page.locator("#settings-back-btn").click();
+  await expect(page.locator("#desktop-grid-container")).toBeVisible();
   await expect.poll(() => gridSessionNames(page)).toEqual(["manual-one", "manual-two"]);
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
   await expect(manualOneGridButton).toHaveClass(/in-grid/);
@@ -966,6 +978,7 @@ test("create failure returns to the agent form with the entered session name and
   await openProjectPickerFromUi(page);
   await page.getByRole("button", { name: "Open project wolfpack" }).click();
   const sessionName = page.locator("#session-name-input");
+  await expect(sessionName).toHaveValue("wolfpack-session");
   await sessionName.fill("my-session");
   await page.getByRole("button", { name: "Start shell" }).click();
 

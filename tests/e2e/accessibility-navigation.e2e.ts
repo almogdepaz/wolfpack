@@ -7,8 +7,8 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 test.beforeEach(async ({ page }) => {

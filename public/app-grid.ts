@@ -10,6 +10,7 @@ import { gridTerminalScrollbackBudget } from "../src/grid-scrollback-policy";
 import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
+  revealTerminalConflict,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
@@ -32,7 +33,7 @@ import type { OrderedResizeSettlement } from "./ordered-resize";
 
 interface GridTerminalController {
   readonly isConnected: boolean;
-  readonly hydration?: { forceFinish(): void };
+  readonly hydration?: { cancel(): void };
   readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
   mount(cell: HTMLElement): Promise<void>;
   connect(opts?: { readonly takeControl?: boolean }): void;
@@ -660,8 +661,7 @@ function removeGridCellConflictOverlay(gs) {
 function showGridCellConflictOverlay(gs) {
   const cell = getGridCellElement(gs);
   if (!cell) return;
-  // Force hydration complete so overlay is visible (cell may be opacity:0)
-  if (gs.controller && gs.controller.hydration) gs.controller.hydration.forceFinish();
+  revealTerminalConflict(cell, gs.controller?.hydration);
   removeGridCellConflictOverlay(gs);
   const overlay = deps.createConflictOverlay("Active on another device", "Take Control", (e) => {
     e.stopPropagation();

@@ -89,8 +89,8 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 test("opens a canonical server folder from a dedicated host-labelled picker", async ({ page }) => {

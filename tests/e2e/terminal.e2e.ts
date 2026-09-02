@@ -14,7 +14,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 test("clicking a session navigates to terminal view", async ({ page }, testInfo) => {

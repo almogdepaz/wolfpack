@@ -6,24 +6,33 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
+import {
+  createOwnedTestServerHome,
+  removeOwnedTestServerHome,
+} from "./test-server-home";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface TestServer {
   port: number;
   baseUrl: string;
-  /** Kill the server subprocess */
-  close(): void;
+  readonly processId: number;
+  /** Stop the server subprocess after its temporary home is cleaned up. */
+  close(): Promise<void>;
 }
 
 export interface TestServerOptions {
   readonly home?: string;
+  readonly ignoreSigterm?: boolean;
 }
 
 // ── Server startup ───────────────────────────────────────────────────────────
 
 const ROOT = join(import.meta.dirname, "..", "..");
+const BOOTSTRAP_OWNED_ISOLATED_HOME_ARG = "--bootstrap-owned-isolated-e2e-home";
+const SHUTDOWN_GRACE_MS = 1_000;
+const PROCESS_EXIT_POLL_MS = 10;
 
 /**
  * Start the wolfpack test server as a bun subprocess on a random port.
@@ -33,18 +42,87 @@ const ROOT = join(import.meta.dirname, "..", "..");
  */
 export function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
   return new Promise<TestServer>((resolve, reject) => {
+    const isolatedHome = createOwnedTestServerHome();
+    const removeIsolatedHome = (): void => {
+      process.off("exit", removeIsolatedHome);
+      removeOwnedTestServerHome(isolatedHome);
+    };
+    process.on("exit", removeIsolatedHome);
     const child: ChildProcess = spawn(
       "bun",
-      [join(ROOT, "tests", "e2e", "test-server.ts")],
+      [
+        join(ROOT, "tests", "e2e", "test-server.ts"),
+        BOOTSTRAP_OWNED_ISOLATED_HOME_ARG,
+        isolatedHome.path,
+        isolatedHome.token,
+      ],
       {
         cwd: ROOT,
+        detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, HOME: options.home ?? process.env.HOME, WOLFPACK_TEST: "1" },
+        env: {
+          ...process.env,
+          HOME: options.home ?? isolatedHome.path,
+          WOLFPACK_TEST: "1",
+          WOLFPACK_E2E_IGNORE_SIGTERM: options.ignoreSigterm ? "1" : undefined,
+        },
       },
     );
+    const killChildProcessGroup = (signal: NodeJS.Signals): void => {
+      if (process.platform !== "win32" && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // The process group may already be gone; fall back to the direct child.
+        }
+      }
+      child.kill(signal);
+    };
+    const processGroupExists = (): boolean => {
+      if (child.pid === undefined) return false;
+      try {
+        process.kill(process.platform === "win32" ? child.pid : -child.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const waitForProcessGroupExit = async (): Promise<void> => {
+      const deadline = Date.now() + SHUTDOWN_GRACE_MS;
+      while (processGroupExists()) {
+        if (Date.now() >= deadline) {
+          throw new Error(`test server process group did not exit: ${child.pid ?? "unknown"}`);
+        }
+        await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, PROCESS_EXIT_POLL_MS));
+      }
+    };
+    const childExit = new Promise<void>((resolveExit) => {
+      child.once("exit", () => resolveExit());
+      child.once("error", () => resolveExit());
+    });
+    const stopChildProcessGroup = async (): Promise<void> => {
+      if (child.exitCode === null && child.signalCode === null) {
+        killChildProcessGroup("SIGTERM");
+        const exitedGracefully = await Promise.race([
+          childExit.then(() => true),
+          new Promise<false>((resolveGrace) => setTimeout(() => resolveGrace(false), SHUTDOWN_GRACE_MS)),
+        ]);
+        if (!exitedGracefully) {
+          killChildProcessGroup("SIGKILL");
+          const exitedAfterKill = await Promise.race([
+            childExit.then(() => true),
+            new Promise<false>((resolveKill) => setTimeout(() => resolveKill(false), SHUTDOWN_GRACE_MS)),
+          ]);
+          if (!exitedAfterKill) throw new Error(`test server did not exit after SIGKILL: ${child.pid ?? "unknown"}`);
+        }
+      }
+      if (processGroupExists()) killChildProcessGroup("SIGKILL");
+      await waitForProcessGroupExit();
+    };
 
     const timeout = setTimeout(() => {
-      child.kill();
+      void stopChildProcessGroup().finally(removeIsolatedHome);
       reject(new Error("test server did not start within 10s"));
     }, 10_000);
 
@@ -55,11 +133,15 @@ export function startTestServer(options: TestServerOptions = {}): Promise<TestSe
       if (match) {
         clearTimeout(timeout);
         const port = Number(match[1]);
+        let closePromise: Promise<void> | null = null;
         resolve({
           port,
           baseUrl: `http://127.0.0.1:${port}`,
+          processId: child.pid ?? -1,
           close() {
-            child.kill("SIGTERM");
+            if (closePromise) return closePromise;
+            closePromise = stopChildProcessGroup().finally(removeIsolatedHome);
+            return closePromise;
           },
         });
       }
@@ -102,30 +184,54 @@ export async function waitForApp(page: Page): Promise<void> {
   await page.waitForSelector("body", { state: "visible" });
 }
 
+async function findVisibleDatasetControl(
+  candidates: Locator,
+  matches: (dataset: Readonly<Record<string, string | undefined>>) => boolean,
+  description: string,
+): Promise<Locator> {
+  let match: Locator | null = null;
+  await expect.poll(async () => {
+    match = null;
+    const count = await candidates.count();
+    for (let index = 0; index < count; index += 1) {
+      const candidate = candidates.nth(index);
+      const dataset = await candidate.evaluate((element) => ({ ...(element as HTMLElement).dataset }));
+      if (matches(dataset)) {
+        match = candidate;
+        return true;
+      }
+    }
+    return false;
+  }, { message: `waiting for ${description}` }).toBe(true);
+  if (!match) throw new Error(`${description} disappeared after becoming visible`);
+  return match;
+}
+
+function cssAttributeValue(value: string): string {
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\"", "\\\"")
+    .replaceAll("\n", "\\a ")
+    .replaceAll("\r", "\\d ")
+    .replaceAll("\f", "\\c ")}"`;
+}
+
 async function sessionAction(page: Page, action: "open-session" | "toggle-grid", session: string, machine?: string): Promise<Locator> {
-  const candidates = page.locator(`[data-action="${action}"]`).filter({ visible: true });
-  const count = await candidates.count();
-  for (let index = 0; index < count; index += 1) {
-    const candidate = candidates.nth(index);
-    const dataset = await candidate.evaluate((element) => {
-      const { session: elementSession = "", machine: elementMachine = "" } = (element as HTMLElement).dataset;
-      return { session: elementSession, machine: elementMachine };
-    });
-    if (dataset.session === session && (machine === undefined || dataset.machine === machine)) return candidate;
-  }
-  throw new Error(`visible ${action} control not found for session ${JSON.stringify(session)}`);
+  const machineSelector = machine === undefined ? "" : `[data-machine=${cssAttributeValue(machine)}]`;
+  const candidate = page.locator(
+    `[data-action=${cssAttributeValue(action)}][data-session=${cssAttributeValue(session)}]${machineSelector}`,
+  ).filter({ visible: true }).first();
+  await expect(candidate, `waiting for visible ${action} control for session ${JSON.stringify(session)}`).toBeVisible();
+  return candidate;
 }
 
 async function drawerSessionAction(page: Page, session: string, machine?: string): Promise<Locator> {
   const expectedValue = machine ? `${machine}|${session}` : session;
-  const candidates = page.locator("#session-drawer .drawer-item").filter({ visible: true });
-  const count = await candidates.count();
-  for (let index = 0; index < count; index += 1) {
-    const candidate = candidates.nth(index);
-    const value = await candidate.evaluate((element) => (element as HTMLElement).dataset.val || "");
-    if (value === expectedValue) return candidate;
-  }
-  throw new Error(`visible drawer control not found for session ${JSON.stringify(session)}`);
+  const candidate = page.locator(
+    `#session-drawer .drawer-item[data-val=${cssAttributeValue(expectedValue)}]`,
+  ).filter({ visible: true }).first();
+  await expect(candidate, `waiting for visible drawer control for session ${JSON.stringify(session)}`).toBeVisible();
+  return candidate;
 }
 
 /** Open a session through a real keyboard- or pointer-accessible UI control. */
@@ -156,16 +262,12 @@ export async function openSettingsFromUi(page: Page): Promise<void> {
 /** Open the new-session/project picker through a real visible UI control. */
 export async function openProjectPickerFromUi(page: Page, machine?: string): Promise<void> {
   const candidates = page.locator('[data-action="new-session"]').filter({ visible: true });
-  const count = await candidates.count();
-  for (let index = 0; index < count; index += 1) {
-    const candidate = candidates.nth(index);
-    const candidateMachine = await candidate.evaluate((element) => (element as HTMLElement).dataset.machine || "");
-    if (machine === undefined || candidateMachine === machine) {
-      await candidate.click();
-      return;
-    }
-  }
-  throw new Error(`visible new-session control not found for machine ${JSON.stringify(machine ?? "")}`);
+  const candidate = await findVisibleDatasetControl(
+    candidates,
+    (dataset) => machine === undefined || dataset.machine === machine,
+    `visible new-session control for machine ${JSON.stringify(machine ?? "")}`,
+  );
+  await candidate.click();
 }
 
 /** Read grid sessions from rendered grid-cell DOM. */

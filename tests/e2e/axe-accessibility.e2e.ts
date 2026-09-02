@@ -4,7 +4,7 @@ import { startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
-test.afterAll(() => server?.close());
+test.afterAll(async () => { await server?.close(); });
 test.beforeEach(async ({ page }) => {
   await page.goto(server.baseUrl);
   await expect(page.locator("#sessions-view")).toBeVisible();

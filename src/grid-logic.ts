@@ -140,46 +140,57 @@ export function gridTemplate(count: number): { columns: string; rows: string } {
   }
 }
 
-/**
- * Compute new focus index for arrow-key grid navigation.
- * Returns new index or current if move is invalid.
- */
+interface GridNavigationPosition {
+  readonly x: number;
+  readonly y: number;
+}
+
+const GRID_NAVIGATION_POSITIONS: Readonly<Record<number, readonly GridNavigationPosition[]>> = {
+  2: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
+  3: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 1 }],
+  4: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+  5: [{ x: 1, y: 0 }, { x: 3, y: 0 }, { x: 5, y: 0 }, { x: 1.5, y: 1 }, { x: 4.5, y: 1 }],
+  6: [
+    { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 },
+    { x: 0, y: 1 }, { x: 1, y: 1 }, { x: 2, y: 1 },
+  ],
+};
+
+/** Follow the visual grid rows, wrapping vertically and clamping horizontally. */
 export function gridArrowNav(
   direction: "left" | "right" | "up" | "down",
   currentIndex: number,
   cellCount: number,
 ): number {
-  if (cellCount < 2) return currentIndex;
+  const positions = GRID_NAVIGATION_POSITIONS[cellCount];
+  const current = positions?.[currentIndex];
+  if (!positions || !current) return currentIndex;
 
-  // Determine columns per row based on layout
-  let cols: number;
-  switch (cellCount) {
-    case 2: cols = 2; break;
-    case 3: cols = 2; break; // 2 top + 1 bottom spanning
-    case 4: cols = 2; break;
-    case 5: cols = 3; break; // 3 top + 2 bottom
-    case 6: cols = 3; break;
-    default: cols = 2;
+  const horizontal = direction === "left" || direction === "right";
+  let candidates = positions.flatMap((position, index) => {
+    if (index === currentIndex) return [];
+    const inDirection = horizontal
+      ? position.y === current.y && (direction === "left" ? position.x < current.x : position.x > current.x)
+      : direction === "up" ? position.y < current.y : position.y > current.y;
+    return inDirection ? [{ index, position }] : [];
+  });
+
+  if (!horizontal && candidates.length === 0 && new Set(positions.map(position => position.y)).size > 1) {
+    const wrapY = direction === "up"
+      ? Math.max(...positions.map(position => position.y))
+      : Math.min(...positions.map(position => position.y));
+    candidates = positions.flatMap((position, index) =>
+      position.y === wrapY ? [{ index, position }] : []);
   }
+  if (candidates.length === 0) return currentIndex;
 
-  let newIndex = currentIndex;
-  switch (direction) {
-    case "left":
-      newIndex = currentIndex - 1;
-      break;
-    case "right":
-      newIndex = currentIndex + 1;
-      break;
-    case "up":
-      newIndex = currentIndex - cols;
-      break;
-    case "down":
-      newIndex = currentIndex + cols;
-      break;
-  }
-
-  if (newIndex < 0 || newIndex >= cellCount) return currentIndex;
-  return newIndex;
+  candidates.sort((left, right) => {
+    const verticalDistance = Math.abs(left.position.y - current.y) - Math.abs(right.position.y - current.y);
+    if (!horizontal && verticalDistance !== 0) return verticalDistance;
+    const horizontalDistance = Math.abs(left.position.x - current.x) - Math.abs(right.position.x - current.x);
+    return horizontalDistance || left.index - right.index;
+  });
+  return candidates[0]?.index ?? currentIndex;
 }
 
 /**

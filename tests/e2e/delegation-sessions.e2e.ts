@@ -8,8 +8,8 @@ test.beforeAll(async () => {
   srv = await startTestServer();
 });
 
-test.afterAll(() => {
-  srv?.close();
+test.afterAll(async () => {
+  await srv?.close();
 });
 
 async function routeHydratedPty(page: Page): Promise<void> {
@@ -215,6 +215,29 @@ test("manual card order persists by stable identity and resets to server order",
 
   await list.getByRole("button", { name: "Reset session order" }).click();
   await expect.poll(cardNames).toEqual(["two-renamed", "one-renamed", "three-renamed", "new"]);
+});
+
+test("desktop ctrl+arrow follows the rendered manual card order", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keyboard navigation only");
+  await routeHydratedPty(page);
+  await routeDelegationSessions(page, [
+    fakeSession("one", "one-id"),
+    fakeSession("two", "two-id"),
+    fakeSession("three", "three-id"),
+  ]);
+  await page.goto(srv.baseUrl);
+
+  const list = page.locator("#sidebar-session-list");
+  const threeCard = list.locator('.card[data-session-order-id="three-id"] .card-open');
+  await threeCard.focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(() => list.locator('.card[data-session-order-machine=""] .card-name')
+    .evaluateAll((elements) => elements.map((element) => element.firstChild?.textContent))).toEqual(["one", "three", "two"]);
+
+  await openSessionFromUi(page, "one", "");
+  await page.keyboard.press("Control+ArrowDown");
+  await expect(list.locator('[data-action="open-session"][aria-current="page"]'))
+    .toHaveAttribute("data-session", "three");
 });
 
 test("desktop card reordering keeps an auto-expanded sidebar open", async ({ page }, testInfo) => {

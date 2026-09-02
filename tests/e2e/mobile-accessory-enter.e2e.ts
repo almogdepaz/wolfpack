@@ -8,7 +8,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 test("mobile accessory Enter inserts line-feed while native Enter still sends carriage-return", async ({ page }, testInfo) => {

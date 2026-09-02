@@ -164,8 +164,8 @@ test.beforeAll(async () => {
   server = await startTestServer({ home: poisonedHome });
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
   rmSync(poisonedHome, { recursive: true, force: true });
 });
 
@@ -286,6 +286,174 @@ test("loads a verified peer before an unrelated candidate machine request times 
 
   await expect.poll(() => healthySessionsRequested, { timeout: 2_000 }).toBe(true);
   await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
+});
+
+test("late local metadata survives a slower peer session refresh", async ({ page }) => {
+  let releaseInfo: () => void = () => {};
+  let releasePeerSessions: () => void = () => {};
+  let markPeerSessionsStarted: () => void = () => {};
+  const infoGate = new Promise<void>((resolve) => { releaseInfo = resolve; });
+  const peerSessionsGate = new Promise<void>((resolve) => { releasePeerSessions = resolve; });
+  const peerSessionsStarted = new Promise<void>((resolve) => { markPeerSessionsStarted = resolve; });
+
+  await page.route("**/api/info", async (route) => {
+    await infoGate;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ name: "delayed-local", version: "9.9.9" }),
+    });
+  });
+  await page.route("**/api/tailnet/v1/candidates", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ candidates: [{
+      hostname: "peer.example.ts.net",
+      tailnetNodeId: "n-peer",
+      origin: "https://peer.example.ts.net",
+      online: true,
+    }] }),
+  }));
+  await page.route("https://peer.example.ts.net/api/machine", (route) => route.fulfill({
+    contentType: "application/json",
+    headers: { "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify({
+      protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+      machine: {
+        tailnetNodeId: "n-peer",
+        installationId,
+        displayName: "verified peer",
+        origin: "https://peer.example.ts.net",
+      },
+      wolfpack: { version: "1.7.0" },
+      capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+    }),
+  }));
+  await page.route("https://peer.example.ts.net/api/sessions", async (route) => {
+    markPeerSessionsStarted();
+    await peerSessionsGate;
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ sessions: [] }),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  await peerSessionsStarted;
+  try {
+    const localGroup = visibleMachineGroup(page, "");
+    await expect(localGroup.getByRole("button", { name: "Open test-project" })).toBeVisible();
+    await expect(localGroup.locator(".machine-header")).toContainText("this machine");
+    releaseInfo();
+    await expect(visibleMachineGroup(page, "").locator(".machine-header")).toContainText("delayed-local");
+    await page.evaluate(() => {
+      const observedWindow = window as typeof window & { __localMachineHeaders?: string[] };
+      observedWindow.__localMachineHeaders = [];
+      const recordLocalHeaders = (): void => {
+        document.querySelectorAll('.machine-group[data-machine=""] .machine-header').forEach((header) => {
+          observedWindow.__localMachineHeaders?.push(header.textContent?.trim() ?? "");
+        });
+      };
+      recordLocalHeaders();
+      new MutationObserver(recordLocalHeaders).observe(document.body, { childList: true, subtree: true });
+    });
+    releasePeerSessions();
+    await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
+    await expect(visibleMachineGroup(page, "").locator(".machine-header")).toContainText("delayed-local");
+    const observedLocalHeaders = await page.evaluate(() =>
+      (window as typeof window & { __localMachineHeaders?: string[] }).__localMachineHeaders ?? [],
+    );
+    expect(observedLocalHeaders).not.toContainEqual(expect.stringContaining("this machine"));
+  } finally {
+    releaseInfo();
+    releasePeerSessions();
+  }
+});
+
+test("peer refresh scheduler recovers after a rejected session render", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only refresh coordinator regression");
+  const secondInstallationId = "50d5f3a2-70ef-4b3c-97ce-0aeff91ca851";
+  const secondPeerIdentity = `n-second:${secondInstallationId}`;
+  let peerSessionRequests = 0;
+  let releaseSecondProbe: () => void = () => {};
+  const secondProbeGate = new Promise<void>((resolve) => { releaseSecondProbe = resolve; });
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.addInitScript((machineIdentity) => {
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+    if (!descriptor?.get || !descriptor.set) throw new Error("missing Element.innerHTML descriptor");
+    let rejectedPeerRender = false;
+    Object.defineProperty(Element.prototype, "innerHTML", {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set(value: string) {
+        if (!rejectedPeerRender && value.includes(`data-machine="${machineIdentity}"`)) {
+          rejectedPeerRender = true;
+          throw new Error("intentional one-time peer render rejection");
+        }
+        descriptor.set?.call(this, value);
+      },
+    });
+  }, peerIdentity);
+
+  await page.route("**/api/tailnet/v1/candidates", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ candidates: [
+      {
+        hostname: "peer.example.ts.net",
+        tailnetNodeId: "n-peer",
+        origin: "https://peer.example.ts.net",
+        online: true,
+      },
+      {
+        hostname: "second.example.ts.net",
+        tailnetNodeId: "n-second",
+        origin: "https://second.example.ts.net",
+        online: true,
+      },
+    ] }),
+  }));
+  await page.route(/https:\/\/(peer|second)\.example\.ts\.net\/api\/machine/, async (route) => {
+    const origin = new URL(route.request().url()).origin;
+    const second = origin === "https://second.example.ts.net";
+    if (second) await secondProbeGate;
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+        machine: {
+          tailnetNodeId: second ? "n-second" : "n-peer",
+          installationId: second ? secondInstallationId : installationId,
+          displayName: second ? "second peer" : "verified peer",
+          origin,
+        },
+        wolfpack: { version: "1.7.0" },
+        capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+      }),
+    });
+  });
+  await page.route(/https:\/\/(peer|second)\.example\.ts\.net\/api\/sessions/, (route) => {
+    peerSessionRequests += 1;
+    if (peerSessionRequests === 1) releaseSecondProbe();
+    const second = new URL(route.request().url()).origin === "https://second.example.ts.net";
+    return route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        sessions: [{ name: second ? "second-peer-session" : "recovered-peer-session", triage: "idle" }],
+      }),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+
+  await expect.poll(() => peerSessionRequests, { timeout: 2_000 }).toBeGreaterThanOrEqual(3);
+  await expect(visibleMachineGroup(page, peerIdentity)
+    .getByRole("button", { name: "Open recovered-peer-session" })).toBeVisible();
+  await expect(visibleMachineGroup(page, secondPeerIdentity)
+    .getByRole("button", { name: "Open second-peer-session" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });
 
 test("does not route REST or WebSocket traffic to a former origin while its replacement probe is pending", async ({ page }) => {
@@ -772,6 +940,10 @@ test("renders local and a verified peer while a malformed candidate stays non-ro
   let legacyUrlFetched = false;
   let candidateRequests = 0;
   let peerHandshakeRequests = 0;
+  let localSessionRequests = 0;
+  page.on("request", (request) => {
+    if (request.url() === `${server.baseUrl}/api/sessions`) localSessionRequests++;
+  });
   await page.addInitScript(() => {
     localStorage.setItem("wolfpack-machines", JSON.stringify([
       { name: "stored attacker", url: "https://evil.example" },
@@ -826,12 +998,15 @@ test("renders local and a verified peer while a malformed candidate stays non-ro
     await route.abort();
   });
 
+  const localSessionsResponse = page.waitForResponse((response) => response.url() === `${server.baseUrl}/api/sessions`);
   await page.goto(server.baseUrl);
+  expect((await localSessionsResponse).ok()).toBe(true);
 
   await expect.poll(() => candidateRequests).toBeGreaterThan(0);
   await expect.poll(() => peerHandshakeRequests).toBeGreaterThan(0);
   await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await expect(visibleSessionList(page)).toContainText("test-project");
+  expect(localSessionRequests).toBeLessThanOrEqual(3);
   await expect(visibleMachineGroup(page, "candidate:n-bad")).toHaveCount(0);
   expect(malformedSessionsRequested).toBe(false);
   expect(legacyUrlFetched).toBe(false);
@@ -1069,7 +1244,7 @@ test("replacement filters a mixed suspended grid without disrupting an unrelated
   await expect.poll(() => gridSessionNames(page)).toEqual(["old-manual-one", "local-standalone", "other-manual"]);
   await openSessionFromUi(page, "local-child");
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
-  await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText(["local-parent", "local-child"]);
+  await expect(page.locator("#delegation-grid-container .grid-cell")).toHaveCount(0);
   await expect.poll(() => gridSessionNames(page)).toEqual([]);
   const socketsBeforeReplacement = await page.evaluate(() => {
     const sockets = (window as unknown as ReplacementSocketWindow).__replacementSockets ?? [];
@@ -1193,13 +1368,7 @@ test("replacement retires only old-peer members from a mixed active manual grid"
   activeInstallationId = replacementInstallationId;
   await clickRetryMachine(page, peerIdentity);
 
-  await expect.poll(() => page.locator("#desktop-grid-container .grid-cell").evaluateAll((cells) => cells.map((cell) => ({
-    session: (cell as HTMLElement).dataset.session ?? "",
-    machine: (cell as HTMLElement).dataset.machine ?? "",
-  })))).toEqual([
-    { session: "local-session", machine: "" },
-    { session: "other-peer-session", machine: otherIdentity },
-  ]);
+  await expect.poll(() => gridSessionNames(page)).toEqual(["local-session", "other-peer-session"]);
   expect(await page.evaluate(() => (
     (window as unknown as ReplacementSocketWindow).__replacementSockets?.map(socket => ({ url: socket.url, closeCount: socket.closeCount })) ?? []
   ))).toEqual(socketsBeforeReplacement.map(socket => ({
@@ -1459,7 +1628,7 @@ test("retires an active terminal when a verified peer installation is replaced",
   expect(pageErrors).toEqual([]);
 });
 
-test("replaces an invalidated initial local session load after empty Tailnet enumeration", async ({ page }) => {
+test("keeps the initial local session load authoritative after empty Tailnet enumeration", async ({ page }) => {
   let sessionRequests = 0;
   let firstSessionRequestStarted = false;
   let releaseFirstSessionRequest: () => void = () => {};
@@ -1486,8 +1655,8 @@ test("replaces an invalidated initial local session load after empty Tailnet enu
   await expect.poll(() => firstSessionRequestStarted).toBe(true);
   releaseFirstSessionRequest();
 
-  await expect.poll(() => sessionRequests, { timeout: 1_000 }).toBe(2);
   await expect(page.getByRole("button", { name: "Open test-project" })).toBeVisible();
+  expect(sessionRequests).toBe(1);
 
 });
 
@@ -1579,10 +1748,10 @@ test("creates a remote session through a ready stable identity and fails closed 
   const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
   await peerGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
-  await page.getByRole("button", { name: "Browse server directories" }).click();
-  const directoryDialog = page.getByRole("dialog", { name: "Browse server directories" });
-  await expect(directoryDialog.getByText("/remote/worktree", { exact: true })).toBeVisible();
-  await directoryDialog.getByRole("button", { name: "Open folder" }).click();
+  await page.locator("#open-folder-action").click();
+  const directoryPanel = page.locator("#directory-browser-panel");
+  await expect(directoryPanel.locator("#directory-browser-current")).toHaveText("/remote/worktree");
+  await directoryPanel.locator("#directory-browser-select").click();
   await expect(page.locator("#session-name-input")).toHaveValue("remote-created");
   await page.getByRole("button", { name: "Start shell" }).click();
 
@@ -1720,7 +1889,10 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   async function confirmRejectedOpen(machine: string): Promise<void> {
     const selectionBefore = await terminalSnapshot(page);
     const socketsBefore = await ptyDestinations();
-    await openSessionFromUi(page, "blocked-session", machine);
+    await clickTemporaryDelegatedAction(page, "Open blocked-session", "open-session", {
+      session: "blocked-session",
+      machine,
+    });
     const dialog = page.getByRole("dialog", { name: "Machine unavailable" });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Close" }).click();
