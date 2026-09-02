@@ -4037,15 +4037,16 @@ document.addEventListener("keydown", (e) => {
       : e.key === "ArrowUp" ? "up"
         : e.key === "ArrowDown" ? "down"
           : null;
-  if (isGridActive() && arrowDirection) {
+  const arrowNavigationShortcut = e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey;
+  if (isGridActive() && arrowDirection && arrowNavigationShortcut) {
     e.preventDefault();
     e.stopPropagation();
     setGridFocus(gridArrowNav(arrowDirection, state.gridFocusIndex, state.gridSessions.length));
     return;
   }
 
-  // Cmd+ArrowUp / Cmd+ArrowDown — previous/next rendered session card.
-  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+  // Ctrl+Shift+ArrowUp / Ctrl+Shift+ArrowDown — previous/next rendered session card.
+  if (arrowNavigationShortcut && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
     e.preventDefault();
     e.stopPropagation();
     const renderedTargets = renderedSessionNavigationTargets();

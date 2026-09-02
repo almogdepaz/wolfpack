@@ -140,20 +140,12 @@ export function gridTemplate(count: number): { columns: string; rows: string } {
   }
 }
 
-interface GridNavigationPosition {
-  readonly x: number;
-  readonly y: number;
-}
-
-const GRID_NAVIGATION_POSITIONS: Readonly<Record<number, readonly GridNavigationPosition[]>> = {
-  2: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
-  3: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 1 }],
-  4: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
-  5: [{ x: 1, y: 0 }, { x: 3, y: 0 }, { x: 5, y: 0 }, { x: 1.5, y: 1 }, { x: 4.5, y: 1 }],
-  6: [
-    { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 },
-    { x: 0, y: 1 }, { x: 1, y: 1 }, { x: 2, y: 1 },
-  ],
+const GRID_NAVIGATION_ROWS: Readonly<Record<number, readonly (readonly number[])[]>> = {
+  2: [[0, 1]],
+  3: [[0, 1], [2]],
+  4: [[0, 1], [2, 3]],
+  5: [[0, 1, 2], [3, 4]],
+  6: [[0, 1, 2], [3, 4, 5]],
 };
 
 /** Follow the visual grid rows, wrapping vertically and clamping horizontally. */
@@ -162,35 +154,34 @@ export function gridArrowNav(
   currentIndex: number,
   cellCount: number,
 ): number {
-  const positions = GRID_NAVIGATION_POSITIONS[cellCount];
-  const current = positions?.[currentIndex];
-  if (!positions || !current) return currentIndex;
+  const rows = GRID_NAVIGATION_ROWS[cellCount];
+  const rowIndex = rows?.findIndex(row => row.includes(currentIndex)) ?? -1;
+  const currentRow = rows?.[rowIndex];
+  if (!rows || !currentRow) return currentIndex;
 
-  const horizontal = direction === "left" || direction === "right";
-  let candidates = positions.flatMap((position, index) => {
-    if (index === currentIndex) return [];
-    const inDirection = horizontal
-      ? position.y === current.y && (direction === "left" ? position.x < current.x : position.x > current.x)
-      : direction === "up" ? position.y < current.y : position.y > current.y;
-    return inDirection ? [{ index, position }] : [];
-  });
-
-  if (!horizontal && candidates.length === 0 && new Set(positions.map(position => position.y)).size > 1) {
-    const wrapY = direction === "up"
-      ? Math.max(...positions.map(position => position.y))
-      : Math.min(...positions.map(position => position.y));
-    candidates = positions.flatMap((position, index) =>
-      position.y === wrapY ? [{ index, position }] : []);
+  const columnIndex = currentRow.indexOf(currentIndex);
+  if (direction === "left" || direction === "right") {
+    const targetColumn = columnIndex + (direction === "left" ? -1 : 1);
+    return currentRow[targetColumn] ?? currentIndex;
   }
-  if (candidates.length === 0) return currentIndex;
+  if (rows.length === 1) return currentIndex;
 
-  candidates.sort((left, right) => {
-    const verticalDistance = Math.abs(left.position.y - current.y) - Math.abs(right.position.y - current.y);
-    if (!horizontal && verticalDistance !== 0) return verticalDistance;
-    const horizontalDistance = Math.abs(left.position.x - current.x) - Math.abs(right.position.x - current.x);
-    return horizontalDistance || left.index - right.index;
-  });
-  return candidates[0]?.index ?? currentIndex;
+  const targetRowIndex = direction === "up"
+    ? (rowIndex - 1 + rows.length) % rows.length
+    : (rowIndex + 1) % rows.length;
+  const targetRow = rows[targetRowIndex];
+  if (!targetRow) return currentIndex;
+
+  const currentCenter = (columnIndex + 0.5) / currentRow.length;
+  let nearest = currentIndex;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const [candidateColumn, candidate] of targetRow.entries()) {
+    const distance = Math.abs((candidateColumn + 0.5) / targetRow.length - currentCenter);
+    if (distance >= nearestDistance) continue;
+    nearest = candidate;
+    nearestDistance = distance;
+  }
+  return nearest;
 }
 
 /**

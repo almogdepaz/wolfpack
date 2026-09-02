@@ -217,7 +217,7 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["two-renamed", "one-renamed", "three-renamed", "new"]);
 });
 
-test("desktop ctrl+arrow follows the rendered manual card order", async ({ page }, testInfo) => {
+test("desktop ctrl+shift+arrow follows the rendered manual card order", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop keyboard navigation only");
   await routeHydratedPty(page);
   await routeDelegationSessions(page, [
@@ -236,6 +236,9 @@ test("desktop ctrl+arrow follows the rendered manual card order", async ({ page 
 
   await openSessionFromUi(page, "one", "");
   await page.keyboard.press("Control+ArrowDown");
+  await expect(list.locator('[data-action="open-session"][aria-current="page"]'))
+    .toHaveAttribute("data-session", "one");
+  await page.keyboard.press("Control+Shift+ArrowDown");
   await expect(list.locator('[data-action="open-session"][aria-current="page"]'))
     .toHaveAttribute("data-session", "three");
 });
