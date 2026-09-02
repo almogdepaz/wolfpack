@@ -138,6 +138,9 @@ async function dragTerminal(page: Page, startY: number, endY: number): Promise<v
 
     dispatchTouch("touchstart", startY);
     dispatchTouch("touchmove", endY);
+    // Synthetic start/move/end in one task implies impossible real-world velocity.
+    // Stationary samples complete the gesture without adding momentum to the assertion.
+    for (let index = 0; index < 5; index += 1) dispatchTouch("touchmove", endY);
     dispatchTouch("touchend", endY);
   }, { startY, endY });
 }
@@ -147,7 +150,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 test("first mobile session opens with touch-scrollable history", async ({ page }, testInfo) => {

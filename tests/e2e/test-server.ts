@@ -7,21 +7,28 @@
  * Exits on SIGTERM or when stdin closes (parent process dies).
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  assertOwnedTestServerHome,
+  createOwnedTestServerHome,
+  removeOwnedTestServerHome,
+  type OwnedTestServerHome,
+} from "./test-server-home";
 
 const ISOLATED_HOME_ARG = "--isolated-e2e-home";
-const isolatedHome = process.argv[2] === ISOLATED_HOME_ARG ? process.argv[3] : undefined;
+const BOOTSTRAP_OWNED_ISOLATED_HOME_ARG = "--bootstrap-owned-isolated-e2e-home";
+const isolatedHomeArg = process.argv[2];
+const bootstrapOwnedHome: OwnedTestServerHome | undefined = isolatedHomeArg === BOOTSTRAP_OWNED_ISOLATED_HOME_ARG
+  ? { path: process.argv[3] ?? "", token: process.argv[4] ?? "" }
+  : undefined;
+const isolatedHome = isolatedHomeArg === ISOLATED_HOME_ARG ? process.argv[3] : undefined;
 
-// Bun resolves os.homedir() when it starts, before this script can change HOME.
-// Re-exec so every production module sees the fresh test home from process start.
-if (!isolatedHome) {
-  const freshHome = mkdtempSync(join(tmpdir(), "wolfpack-e2e-server-"));
-  const child = spawn(process.execPath, [import.meta.path, ISOLATED_HOME_ARG, freshHome], {
+async function runOwnedBootstrap(home: OwnedTestServerHome): Promise<never> {
+  assertOwnedTestServerHome(home);
+  const child = spawn(process.execPath, [import.meta.path, ISOLATED_HOME_ARG, home.path], {
     cwd: process.cwd(),
-    env: { ...process.env, HOME: freshHome },
+    env: { ...process.env, HOME: home.path },
     stdio: "inherit",
   });
   process.once("SIGTERM", () => child.kill("SIGTERM"));
@@ -32,16 +39,35 @@ if (!isolatedHome) {
       child.once("exit", (code) => resolve(code ?? 1));
     });
   } finally {
-    rmSync(freshHome, { recursive: true, force: true });
+    removeOwnedTestServerHome(home);
   }
   process.exit(exitCode);
 }
 
+// Bun resolves os.homedir() when it starts, before this script can change HOME.
+// Re-exec so every production module sees the fresh test home from process start.
+if (bootstrapOwnedHome) await runOwnedBootstrap(bootstrapOwnedHome);
+
+if (!isolatedHome) {
+  const ownedHome = createOwnedTestServerHome();
+  await runOwnedBootstrap(ownedHome);
+}
+
 process.env.HOME = isolatedHome;
 process.env.WOLFPACK_TEST = "1";
+let shuttingDown = false;
+const shutdown = (): void => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  process.exit(0);
+};
 process.stdin.resume();
-process.stdin.once("end", () => process.exit(0));
-process.once("SIGTERM", () => process.exit(0));
+process.stdin.once("end", shutdown);
+if (process.env.WOLFPACK_E2E_IGNORE_SIGTERM === "1") {
+  process.on("SIGTERM", () => {});
+} else {
+  process.once("SIGTERM", shutdown);
+}
 process.env.WOLFPACK_MACHINE_ID_PATH = join(import.meta.dirname, "fixtures", "test-server-installation-id");
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   Self: {

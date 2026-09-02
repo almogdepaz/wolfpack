@@ -11,7 +11,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 test("serves the PWA index page", async ({ page }) => {

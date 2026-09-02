@@ -14,7 +14,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 type SwitchVisualObservation = {
@@ -223,7 +223,9 @@ test("mobile drawer session tap includes the exact touch-slop boundary", async (
   await page.waitForSelector(".card", { timeout: 5000 });
   await page.locator(".card", { hasText: "test-project" }).first().click();
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  const drawerRefresh = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/sessions");
   await page.locator("#session-chip").click();
+  expect((await drawerRefresh).ok()).toBe(true);
 
   const item = page.locator('.drawer-item[data-val="another-project"]');
   await expect(item).toBeVisible();
@@ -754,17 +756,39 @@ test("startup removes legacy recovery snapshots and terminal output does not rec
 test("desktop full switchSession starts in a loading state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
+  let releaseSecondPrefill: () => void = () => {};
+  const secondPrefillGate = new Promise<void>((resolve) => { releaseSecondPrefill = resolve; });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string };
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`${session}-PREFILL\r\n`));
+      const finishPrefill = (): void => {
+        ws.send(JSON.stringify({ type: "prefill_done" }));
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+      };
+      if (session === "another-project") void secondPrefillGate.then(finishPrefill);
+      else finishPrefill();
+    });
+  });
+
   await page.goto(srv.baseUrl);
   await page.waitForSelector(".card", { timeout: 5000 });
 
+  const terminalContainer = page.locator("#desktop-terminal-container");
   await openSessionFromUi(page, "test-project", "");
-  await expect(page.locator("#terminal-view")).toBeVisible();
+  await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", "live");
 
   await openSessionFromUi(page, "another-project", "");
-  const loadState = await page.locator("#desktop-terminal-container")
-    .getAttribute("data-terminal-load-state");
-
-  expect(["prefill-loading", "hydrating"]).toContain(loadState);
+  try {
+    await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", /prefill-loading|hydrating/);
+  } finally {
+    releaseSecondPrefill();
+  }
+  await expect(terminalContainer).toHaveAttribute("data-terminal-load-state", "live");
 });
 
 async function expectSoloAttachPrefillMode(page: import("@playwright/test").Page, mode: "viewport" | "full") {
@@ -980,6 +1004,63 @@ test("terminal renders its final PTY column and sends final-width layout_stable"
   expect(finalGeometry.lastCellInk).toBeGreaterThanOrEqual(finalGeometry.referenceCellInk * 0.8);
 });
 
+test("terminal scrollbar renders in the reserved gutter and responds to pointer navigation", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop-only scrollbar interaction");
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const parsed = JSON.parse(message) as { readonly type?: string; readonly rows?: number };
+      if (parsed.type !== "attach") return;
+      const rows = parsed.rows ?? 10;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(Array.from({ length: rows + 80 }, (_, index) => `ROW_${index}\r\n`).join("")));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await openSessionFromUi(page, "test-project", "");
+
+  const terminal = page.locator("#desktop-terminal-container");
+  await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+  const track = terminal.locator(".ghostty-scrollbar-track");
+  const thumb = track.locator(".ghostty-scrollbar-thumb");
+  await expect(track).toBeAttached();
+
+  await terminal.hover();
+  await page.mouse.wheel(0, -1200);
+  await expect.poll(() => track.evaluate((element) => getComputedStyle(element).opacity)).not.toBe("0");
+  await expect(track).toBeVisible();
+  await expect(thumb).toBeVisible();
+  const scrolledThumbTop = await thumb.evaluate((element) => (element as HTMLElement).style.top);
+  const trackBox = await track.boundingBox();
+  const canvasBox = await terminal.locator("canvas").boundingBox();
+  const scrolledThumbBox = await thumb.boundingBox();
+  if (!trackBox || !canvasBox || !scrolledThumbBox) throw new Error("missing terminal scrollbar geometry");
+  expect(trackBox.x).toBeGreaterThanOrEqual(canvasBox.x + canvasBox.width);
+  const scrollbarX = trackBox.x + trackBox.width / 2;
+  const scrolledThumbTopNumber = Number.parseFloat(scrolledThumbTop);
+  await page.mouse.move(scrollbarX, scrolledThumbBox.y + scrolledThumbBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(scrollbarX, scrolledThumbBox.y + scrolledThumbBox.height / 2 + 1);
+  await page.mouse.up();
+  await expect.poll(async () => Math.abs(
+    Number.parseFloat(await thumb.evaluate((element) => (element as HTMLElement).style.top)) - scrolledThumbTopNumber,
+  )).toBeLessThanOrEqual(1);
+
+  await page.mouse.click(scrollbarX, trackBox.y + trackBox.height - 2);
+  await expect.poll(() => thumb.evaluate((element) => (element as HTMLElement).style.top)).not.toBe(scrolledThumbTop);
+  const clickedThumbTop = Number.parseFloat(await thumb.evaluate((element) => (element as HTMLElement).style.top));
+  const thumbBox = await thumb.boundingBox();
+  if (!thumbBox) throw new Error("missing scrollbar thumb geometry");
+  await page.mouse.move(scrollbarX, thumbBox.y + thumbBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(scrollbarX, trackBox.y + 2, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => Number.parseFloat(await thumb.evaluate((element) => (element as HTMLElement).style.top)))
+    .toBeLessThan(clickedThumbTop);
+});
+
 test("debug layout-stable immediate mode sends an early stable signal before attach ack", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop-only switch path");
 
@@ -1105,7 +1186,9 @@ test("desktop switch hides old canvas before auto-collapsing sidebar", async ({ 
     localStorage.setItem("wolfpackDebug", "1");
     localStorage.setItem("wolfpack-sidebar-pinned", "0");
   });
+  const reloadSessions = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/sessions");
   await page.reload();
+  expect((await reloadSessions).ok()).toBe(true);
   await page.waitForSelector(".card", { timeout: 5000 });
 
   await openSessionFromUi(page, "test-project", "");

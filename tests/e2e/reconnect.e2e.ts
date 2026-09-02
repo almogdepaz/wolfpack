@@ -19,7 +19,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  srv?.close();
+  await srv?.close();
 });
 
 function proxyToServer(ws: WebSocketRoute): void {

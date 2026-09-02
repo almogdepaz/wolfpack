@@ -32,6 +32,20 @@ export interface SlowPathIndicator {
   stop(): void;
 }
 
+export interface CancelableTerminalHydration {
+  cancel(): void;
+}
+
+export function revealTerminalConflict(
+  el: HTMLElement | null,
+  hydration: CancelableTerminalHydration | null | undefined,
+): void {
+  hydration?.cancel();
+  if (!el) return;
+  el.classList.remove("hydrating");
+  el.classList.add("hydrated");
+}
+
 export function setTerminalLoadVisualState(el: HTMLElement | null, state: TerminalLoadVisualState): void {
   if (!el) return;
   for (const name of Array.from(el.classList)) {

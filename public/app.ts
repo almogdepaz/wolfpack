@@ -12,7 +12,7 @@ import {
   isGridActive,
   hasPreservedGrid, clearPreservedGrid, retireGridSessionsForMachine,
   retirePreservedGridSessionsForMachine,
-  returnToTerminalView, setGridFocus, suspendGridMode,
+  moveGridFocusByArrow, returnToTerminalView, setGridFocus, suspendGridMode,
   backFromSettings, addToGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
@@ -49,6 +49,7 @@ import {
 } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
+  revealTerminalConflict,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { createTerminalLiveGate } from "./terminal-bootstrap";
@@ -600,32 +601,6 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
-  // Ghostty-web's FitAddon hardcodes a 15px right-edge scrollbar reservation,
-  // but ghostty-web renders its scrollbar onto the canvas itself — so that's
-  // dead space, visible as a ~15-20px gap on the right of every terminal
-  // (especially obvious framed inside grid cells). Override proposeDimensions
-  // to drop the reservation.
-  fitAddon.proposeDimensions = function () {
-    const t = this._terminal;
-    if (!t?.element) return;
-    const r = t.renderer;
-    if (!r || typeof r.getMetrics !== "function") return;
-    const m = r.getMetrics();
-    if (!m || m.width === 0 || m.height === 0) return;
-    const el = t.element;
-    if (typeof el.clientWidth === "undefined") return;
-    const cs = window.getComputedStyle(el);
-    const pT = parseInt(cs.paddingTop) || 0;
-    const pB = parseInt(cs.paddingBottom) || 0;
-    const pL = parseInt(cs.paddingLeft) || 0;
-    const pR = parseInt(cs.paddingRight) || 0;
-    const w = el.clientWidth, h = el.clientHeight;
-    if (w === 0 || h === 0) return;
-    return {
-      cols: Math.max(1, Math.floor((w - pL - pR) / m.width)),
-      rows: Math.max(1, Math.floor((h - pT - pB) / m.height)),
-    };
-  };
   // Copy (ghostty renders to canvas, so native copy doesn't work)
   // ghostty-web: true = "handled, stop", false = "not handled, continue"
   term.attachCustomKeyEventHandler((e) => {
@@ -927,18 +902,30 @@ async function showMachineUnavailable(): Promise<void> {
 
 let tailnetPeerRefreshGeneration = 0;
 let tailnetPeerSessionRefreshScheduled = false;
+let tailnetPeerSessionRefreshDirty = false;
 let tailnetPeerSessionRefreshGeneration: number | undefined;
 
 function scheduleTailnetPeerSessionRefresh(generation: number): void {
   tailnetPeerSessionRefreshGeneration = generation;
-  if (tailnetPeerSessionRefreshScheduled) return;
+  if (tailnetPeerSessionRefreshScheduled) {
+    tailnetPeerSessionRefreshDirty = true;
+    return;
+  }
   tailnetPeerSessionRefreshScheduled = true;
-  queueMicrotask(() => {
-    tailnetPeerSessionRefreshScheduled = false;
+  queueMicrotask(async () => {
     const scheduledGeneration = tailnetPeerSessionRefreshGeneration;
-    tailnetPeerSessionRefreshGeneration = undefined;
-    if (scheduledGeneration !== tailnetPeerRefreshGeneration) return;
-    void loadSessions(true);
+    tailnetPeerSessionRefreshDirty = false;
+    try {
+      if (scheduledGeneration === tailnetPeerRefreshGeneration) await loadSessions(true);
+    } catch (error) {
+      console.warn("[tailnet] session refresh failed:", error);
+    } finally {
+      const refreshAgain = tailnetPeerSessionRefreshDirty;
+      tailnetPeerSessionRefreshScheduled = false;
+      if (refreshAgain && tailnetPeerSessionRefreshGeneration === tailnetPeerRefreshGeneration) {
+        scheduleTailnetPeerSessionRefresh(tailnetPeerRefreshGeneration);
+      }
+    }
   });
 }
 
@@ -1005,10 +992,13 @@ type TailnetPeerRefreshResult = "applied" | "stale";
 
 async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
   const generation = ++tailnetPeerRefreshGeneration;
-  // A new Tailnet authority generation makes every in-flight session result
-  // stale before it can mutate peer health, rendered groups, or routes.
-  state.loadSessionsEpoch++;
-  scheduleTailnetPeerSessionRefresh(generation);
+  // Only an existing remote authority can make an in-flight session result
+  // unsafe. Local-only startup remains authoritative while an empty Tailnet
+  // enumeration completes, avoiding a redundant rate-limited refresh.
+  if (getWorkspaceMachines().length > 0) {
+    state.loadSessionsEpoch++;
+    scheduleTailnetPeerSessionRefresh(generation);
+  }
   const isCurrentGeneration = (): boolean => generation === tailnetPeerRefreshGeneration;
   try {
     const response = await api<unknown>("/tailnet/v1/candidates");
@@ -1018,9 +1008,11 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
     await probeTailnetCandidates(candidates, fetch, {
       onSettled: (probe) => {
         if (!isCurrentGeneration()) return;
+        const affectedReadyPeer = probe.status === "ready"
+          || tailnetPeers.entries().some((entry) => entry.tailnetNodeId === probe.candidate.tailnetNodeId && entry.status === "ready");
         const applied = tailnetPeers.applyProbe(probe);
         if (applied.kind === "identity-replaced") retireReplacedPeerIdentity(applied.replacement);
-        scheduleTailnetPeerSessionRefresh(generation);
+        if (affectedReadyPeer) scheduleTailnetPeerSessionRefresh(generation);
       },
     });
     if (!isCurrentGeneration()) return "stale";
@@ -1038,24 +1030,40 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
   }
 }
 
-(async () => {
+function renderUpdatedLocalMachineMetadata(): void {
+  if (state.lastSessionGroups.length === 0) return;
+  const localName = state.selfName || "this machine";
+  state.lastSessionGroups = state.lastSessionGroups.map(group => group.machine.url
+    ? group
+    : { ...group, machine: { ...group.machine, name: localName } });
+  state.allSessions = state.allSessions.map(session => session.machineUrl
+    ? session
+    : { ...session, machineName: localName });
+  state.lastSessionsHtml = "";
+  renderSessionListFromState();
+  renderSidebar();
+  if (state.drawerOpen) renderDrawerList();
+}
+
+void (async (): Promise<void> => {
   try {
     const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
     state.selfName = info.name || "this machine";
     state.selfVersion = info.version || "";
     updateProjectMachineLabels();
+    renderUpdatedLocalMachineMetadata();
     const version = document.getElementById("settings-version");
     if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
   } catch {
     state.selfName = "this machine";
     updateProjectMachineLabels();
-  }
-  try {
-    await refreshTailnetPeers();
-  } catch {
-    // Local sessions remain useful if Tailnet candidate enumeration is unavailable.
+    renderUpdatedLocalMachineMetadata();
   }
 })();
+
+void refreshTailnetPeers().catch(() => {
+  // Local sessions remain useful if Tailnet candidate enumeration is unavailable.
+});
 
 function errorMessage(err: unknown): string {
   if (err && typeof err === "object" && "message" in err) {
@@ -1178,7 +1186,7 @@ function exposeActiveView(activeView: HTMLElement): void {
   });
 }
 
-function showView(name: string, skipAnimation?: boolean): void {
+function showView(name: string, skipAnimation?: boolean, refreshSessions = true): void {
   const prevView = state.currentView;
   const prevEl = document.getElementById(prevView + "-view");
   const isMobile = !isDesktop();
@@ -1323,7 +1331,7 @@ function showView(name: string, skipAnimation?: boolean): void {
       back.onclick = null;
       gear.style.display = "";
       title.textContent = "wolfpack";
-      void loadSessions(); // immediate refresh on entering sessions view
+      if (refreshSessions) void loadSessions(); // immediate refresh on entering sessions view
     } else if (name === "projects") {
       back.style.display = "block";
       back.onclick = () => { returnFromProjectPicker(); };
@@ -1766,6 +1774,9 @@ function machineFailureLabel(category: MachineFailureCategory): string {
 
 function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal: AbortSignal) {
   const isRemote = machineIdentity !== "";
+  const currentMachineMeta = () => isRemote
+    ? machineMeta
+    : { ...machineMeta, name: state.selfName || "this machine" };
   if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
     return Promise.resolve({
       machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
@@ -1781,7 +1792,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
   return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     return {
-      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      machine: { ...currentMachineMeta(), url: machineIdentity, version: machineMeta.version || "" },
       sessions: sessions.sessions || [],
       online: true,
       pending: false,
@@ -1789,7 +1800,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
   }).catch((error: unknown) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordFailure(state.peerHealth, machineIdentity);
     return {
-      machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
+      machine: { ...currentMachineMeta(), url: machineIdentity, version: machineMeta.version || "" },
       sessions: [], online: false, pending: false,
       failure: classifyMachineFailure(error),
     };
@@ -1835,12 +1846,17 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     machine: { ...allMachines[0].meta, url: "", version: "" },
     sessions: [], online: false, pending: true,
   };
+  const withCurrentLocalMetadata = (group, machineUrl) => machineUrl
+    ? group
+    : { ...group, machine: { ...group.machine, name: state.selfName || "this machine" } };
   const visibleGroupsInOrder = () => allMachines.flatMap((machine, index) => {
     const resolved = groups[index];
-    if (resolved) return !machine.url || resolved.online ? [resolved] : [];
+    if (resolved) return !machine.url || resolved.online
+      ? [withCurrentLocalMetadata(resolved, machine.url)]
+      : [];
     const previous = prevByUrl.get(machine.url);
-    if (previous) return [previous];
-    return machine.url ? [] : [localPending];
+    if (previous) return [withCurrentLocalMetadata(previous, machine.url)];
+    return machine.url ? [] : [withCurrentLocalMetadata(localPending, machine.url)];
   });
   const renderVisibleGroups = () => {
     const visible = visibleGroupsInOrder();
@@ -1962,7 +1978,7 @@ function syncSessionRefreshTimer(refreshNow = false): void {
   }
   if (document.visibilityState !== "visible") return;
   if (!isDesktop() && state.currentView !== "sessions") return;
-  if (refreshNow) void loadSessions();
+  if (refreshNow) void loadSessions(true);
   state.sessionRefreshTimer = setInterval(() => { void loadSessions(); }, SESSION_REFRESH_INTERVAL_MS);
 }
 
@@ -2816,8 +2832,7 @@ function startDesktopTakeControlFallback(): void {
 function showDesktopConflictOverlay() {
   const container = document.getElementById("desktop-terminal-container");
   if (!container) return;
-  // Force hydration complete so overlay is visible (container may be opacity:0)
-  if (state.terminalController && state.terminalController.hydration) state.terminalController.hydration.forceFinish();
+  revealTerminalConflict(container, state.terminalController?.hydration);
   removeDesktopConflictOverlay();
   const overlay = createConflictOverlay("Session active on another device", "Take Control", () => {
     if (!state.terminalController) return;
@@ -3989,44 +4004,67 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ── Desktop keyboard shortcuts (capture phase, before terminal) ──
+interface SessionNavigationTarget {
+  readonly name: string;
+  readonly machineUrl: string;
+}
+
+function renderedSessionNavigationTargets(): SessionNavigationTarget[] {
+  const root = document.querySelector(state.sessionsExpanded ? "#session-list" : "#sidebar-session-list");
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-action="open-session"]')).flatMap((control) => {
+    const name = control.dataset.session;
+    return name ? [{ name, machineUrl: control.dataset.machine ?? "" }] : [];
+  });
+}
+
 document.addEventListener("keydown", (e) => {
   if (!isDesktop()) return;
   const mod = e.metaKey || e.ctrlKey;
-  if (!mod) return;
 
   // Cmd+B — toggle the persistent desktop sidebar without covering the terminal.
-  if (e.key.toLowerCase() === "b" && !state.sessionsExpanded) {
+  if (mod && e.key.toLowerCase() === "b" && !state.sessionsExpanded) {
     e.preventDefault();
     e.stopPropagation();
     document.getElementById("sidebar-collapse-btn")?.click();
     return;
   }
 
-  // Cmd+ArrowUp / Cmd+ArrowDown — previous/next session (grid focus or sidebar)
-  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+  const arrowDirection = e.key === "ArrowLeft" ? "left"
+    : e.key === "ArrowRight" ? "right"
+      : e.key === "ArrowUp" ? "up"
+        : e.key === "ArrowDown" ? "down"
+          : null;
+  const paneNavigationShortcut = e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey;
+  const cardNavigationShortcut = e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey;
+  if (arrowDirection && paneNavigationShortcut && moveGridFocusByArrow(arrowDirection)) {
     e.preventDefault();
     e.stopPropagation();
-    if (isGridActive()) {
-      const count = state.gridSessions.length;
-      const next = e.key === "ArrowDown"
-        ? (state.gridFocusIndex + 1) % count
-        : (state.gridFocusIndex - 1 + count) % count;
-      setGridFocus(next);
-      return;
-    }
-    if (!state.allSessions.length) return;
-    let curIdx = state.allSessions.findIndex(s => s.name === state.currentSession && (s.machineUrl || "") === state.currentMachine);
-    if (curIdx === -1) curIdx = e.key === "ArrowDown" ? -1 : state.allSessions.length;
-    const next = e.key === "ArrowDown"
-      ? (curIdx + 1) % state.allSessions.length
-      : (curIdx - 1 + state.allSessions.length) % state.allSessions.length;
-    const s = state.allSessions[next];
-    openSession(s.name, s.machineUrl || undefined);
+    return;
+  }
+
+  // Cmd+ArrowUp / Cmd+ArrowDown — previous/next rendered session card.
+  if (cardNavigationShortcut && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    e.preventDefault();
+    e.stopPropagation();
+    const renderedTargets = renderedSessionNavigationTargets();
+    const targets = renderedTargets.length > 0
+      ? renderedTargets
+      : state.allSessions.map(session => ({ name: session.name, machineUrl: session.machineUrl || "" }));
+    if (targets.length === 0) return;
+    let currentIndex = targets.findIndex(target =>
+      target.name === state.currentSession && target.machineUrl === state.currentMachine);
+    if (currentIndex === -1) currentIndex = e.key === "ArrowDown" ? -1 : targets.length;
+    const nextIndex = e.key === "ArrowDown"
+      ? (currentIndex + 1) % targets.length
+      : (currentIndex - 1 + targets.length) % targets.length;
+    const target = targets[nextIndex];
+    if (target) void openSession(target.name, target.machineUrl || undefined);
     return;
   }
 
   // Cmd+T — new session (project picker)
-  if (e.key === "t") {
+  if (mod && e.key === "t") {
     e.preventDefault();
     e.stopPropagation();
     showProjectPicker();
@@ -4034,7 +4072,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // Cmd+K — clear terminal (focused grid cell or single terminal)
-  if (e.key === "k") {
+  if (mod && e.key === "k") {
     e.preventDefault();
     e.stopPropagation();
     if (isGridActive()) {
@@ -4046,17 +4084,6 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Cmd+ArrowLeft/Right — grid cell navigation (left/right within row)
-  if (isGridActive() && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-    e.preventDefault();
-    e.stopPropagation();
-    const count = state.gridSessions.length;
-    let newIdx = state.gridFocusIndex;
-    if (e.key === "ArrowLeft") newIdx = Math.max(0, state.gridFocusIndex - 1);
-    else if (e.key === "ArrowRight") newIdx = Math.min(count - 1, state.gridFocusIndex + 1);
-    if (newIdx !== state.gridFocusIndex) setGridFocus(newIdx);
-    return;
-  }
 }, true);
 
 const newProjectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
@@ -4911,7 +4938,7 @@ const initialSettingsSection = settingsSectionFromHash();
 if (initialSettingsSection) {
   void showSettings().then(() => revealSettingsSection(initialSettingsSection, false));
 } else {
-  showView("sessions", true);
+  showView("sessions", true, false);
 }
 void loadSessions();
 scheduleGhosttyPrewarm();

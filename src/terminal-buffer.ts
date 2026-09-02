@@ -75,11 +75,12 @@ export function resizeRehydrateScrollTarget(state: ResizeRehydrateScrollState): 
  * Serialize the last N lines from a terminal buffer for test inspection.
  */
 export function serializeBufferTail(buffer: TerminalBuffer, maxLines: number): string {
-  const start = Math.max(0, buffer.length - maxLines);
+  if (maxLines <= 0) return "";
   const lines: string[] = [];
-  for (let i = start; i < buffer.length; i++) {
+  for (let i = 0; i < buffer.length; i++) {
     const line = buffer.getLine(i);
     if (line) lines.push(line.translateToString(true));
   }
-  return lines.join("\n");
+  while (lines.at(-1) === "") lines.pop();
+  return lines.slice(-maxLines).join("\n");
 }

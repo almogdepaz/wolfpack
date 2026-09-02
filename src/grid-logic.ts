@@ -140,46 +140,48 @@ export function gridTemplate(count: number): { columns: string; rows: string } {
   }
 }
 
-/**
- * Compute new focus index for arrow-key grid navigation.
- * Returns new index or current if move is invalid.
- */
+const GRID_NAVIGATION_ROWS: Readonly<Record<number, readonly (readonly number[])[]>> = {
+  2: [[0, 1]],
+  3: [[0, 1], [2]],
+  4: [[0, 1], [2, 3]],
+  5: [[0, 1, 2], [3, 4]],
+  6: [[0, 1, 2], [3, 4, 5]],
+};
+
+/** Follow the visual grid rows, wrapping vertically and clamping horizontally. */
 export function gridArrowNav(
   direction: "left" | "right" | "up" | "down",
   currentIndex: number,
   cellCount: number,
 ): number {
-  if (cellCount < 2) return currentIndex;
+  const rows = GRID_NAVIGATION_ROWS[cellCount];
+  const rowIndex = rows?.findIndex(row => row.includes(currentIndex)) ?? -1;
+  const currentRow = rows?.[rowIndex];
+  if (!rows || !currentRow) return currentIndex;
 
-  // Determine columns per row based on layout
-  let cols: number;
-  switch (cellCount) {
-    case 2: cols = 2; break;
-    case 3: cols = 2; break; // 2 top + 1 bottom spanning
-    case 4: cols = 2; break;
-    case 5: cols = 3; break; // 3 top + 2 bottom
-    case 6: cols = 3; break;
-    default: cols = 2;
+  const columnIndex = currentRow.indexOf(currentIndex);
+  if (direction === "left" || direction === "right") {
+    const targetColumn = columnIndex + (direction === "left" ? -1 : 1);
+    return currentRow[targetColumn] ?? currentIndex;
   }
+  if (rows.length === 1) return currentIndex;
 
-  let newIndex = currentIndex;
-  switch (direction) {
-    case "left":
-      newIndex = currentIndex - 1;
-      break;
-    case "right":
-      newIndex = currentIndex + 1;
-      break;
-    case "up":
-      newIndex = currentIndex - cols;
-      break;
-    case "down":
-      newIndex = currentIndex + cols;
-      break;
+  const targetRowIndex = direction === "up"
+    ? (rowIndex - 1 + rows.length) % rows.length
+    : (rowIndex + 1) % rows.length;
+  const targetRow = rows[targetRowIndex];
+  if (!targetRow) return currentIndex;
+
+  const currentCenter = (columnIndex + 0.5) / currentRow.length;
+  let nearest = currentIndex;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const [candidateColumn, candidate] of targetRow.entries()) {
+    const distance = Math.abs((candidateColumn + 0.5) / targetRow.length - currentCenter);
+    if (distance >= nearestDistance) continue;
+    nearest = candidate;
+    nearestDistance = distance;
   }
-
-  if (newIndex < 0 || newIndex >= cellCount) return currentIndex;
-  return newIndex;
+  return nearest;
 }
 
 /**

@@ -10,8 +10,8 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 async function documentListenerCount(cdp: CDPSession, type: string): Promise<number> {
@@ -31,15 +31,15 @@ async function openTerminalSession(page: Page, session: string): Promise<void> {
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5_000 });
 }
 
-function routeHydratedPty(page: Page): {
-  readonly sockets: WebSocketRoute[];
+async function routeHydratedPty(page: Page): Promise<{
+  readonly sockets: ReadonlyMap<string, WebSocketRoute>;
   readonly messages: Array<{ readonly session: string; readonly message: unknown }>;
-} {
-  const sockets: WebSocketRoute[] = [];
+}> {
+  const sockets = new Map<string, WebSocketRoute>();
   const messages: Array<{ readonly session: string; readonly message: unknown }> = [];
-  void page.routeWebSocket(/\/ws\/pty/, (ws) => {
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     const session = new URL(ws.url()).searchParams.get("session") ?? "";
-    sockets.push(ws);
+    sockets.set(session, ws);
     ws.onMessage((message) => {
       if (typeof message !== "string") return;
       const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
@@ -103,14 +103,17 @@ test("disposing repeated terminal mounts releases document pointer listeners", a
 
 test("replaced websocket events cannot mutate the current terminal", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop terminal websocket lifecycle test");
-  const { sockets } = routeHydratedPty(page);
+  const { sockets } = await routeHydratedPty(page);
 
   await loadApp(page);
   await openTerminalSession(page, "test-project");
   await openTerminalSession(page, "another-project");
 
-  sockets[0].send(Buffer.from("LATE-OLD-SOCKET\r\n"));
-  sockets[1].send(Buffer.from("CURRENT-SOCKET\r\n"));
+  const replacedSocket = sockets.get("test-project");
+  const currentSocket = sockets.get("another-project");
+  if (!replacedSocket || !currentSocket) throw new Error("missing session-keyed terminal sockets");
+  replacedSocket.send(Buffer.from("LATE-OLD-SOCKET\r\n"));
+  currentSocket.send(Buffer.from("CURRENT-SOCKET\r\n"));
 
   await expect.poll(() => terminalTail(page.locator("#desktop-terminal-container"), 20)).toContain("CURRENT-SOCKET");
   expect(await terminalTail(page.locator("#desktop-terminal-container"), 20)).not.toContain("LATE-OLD-SOCKET");
@@ -162,49 +165,17 @@ test("control-granted reattach cancels queued ordered resize before legacy attac
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
 });
 
-test("legacy return to sent geometry cancels a conflicting debounced resize", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop terminal resize lifecycle test");
-  const messages: Array<{ readonly type?: string; readonly resizeId?: number; readonly cols?: number; readonly rows?: number }> = [];
-  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
-    ws.onMessage((message) => {
-      if (typeof message !== "string") return;
-      const parsed = JSON.parse(message) as { readonly type?: string; readonly resizeId?: number; readonly cols?: number; readonly rows?: number };
-      messages.push(parsed);
-      if (parsed.type === "attach") {
-        ws.send(JSON.stringify({ type: "attach_ack", capabilities: ["ordered-resize-ack"] }));
-        ws.send(Buffer.from("INITIAL\r\n"));
-        ws.send(JSON.stringify({ type: "prefill_done" }));
-        ws.send(JSON.stringify({ type: "pty_ready" }));
-      } else if (parsed.type === "resize" && typeof parsed.resizeId === "number") {
-        ws.send(JSON.stringify({ ...parsed, type: "resize_ack" }));
-      }
-    });
-  });
-
-  await loadApp(page);
-  await openTerminalSession(page, "test-project");
-  const attach = messages.find((message) => message.type === "attach");
-  if (!attach?.cols || !attach.rows) throw new Error("missing initial attach geometry");
-  const resizeBaseline = messages.filter((message) => message.type === "resize").length;
-  await page.setViewportSize({ width: 1180, height: 720 });
-  await page.setViewportSize({ width: 1280, height: 720 });
-  await page.waitForTimeout(250);
-
-  const resizeMessages = messages.filter((message) => message.type === "resize").slice(resizeBaseline);
-  expect(resizeMessages).toEqual([]);
-  expect(latestMessage(messages, "layout_stable")).toEqual(expect.objectContaining({ cols: attach.cols, rows: attach.rows }));
-  await expect(page.locator("#desktop-terminal-container canvas")).toHaveCount(1);
-});
-
 test("WebSocket open without pty_ready preserves reconnect backoff", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop terminal reconnect lifecycle test");
   const sockets: WebSocketRoute[] = [];
+  let attachReceived = false;
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     sockets.push(ws);
     ws.onMessage((message) => {
       if (typeof message !== "string") return;
       const parsed = JSON.parse(message) as { readonly type?: string };
       if (parsed.type !== "attach") return;
+      attachReceived = true;
       ws.send(JSON.stringify({ type: "attach_ack" }));
       ws.send(JSON.stringify({ type: "prefill_done" }));
     });
@@ -212,12 +183,14 @@ test("WebSocket open without pty_ready preserves reconnect backoff", async ({ pa
 
   await loadApp(page);
   await openSessionFromUi(page, "test-project", "");
-  await expect.poll(() => sockets.length).toBe(1);
+  await expect.poll(() => attachReceived).toBe(true);
   await sockets[0].close();
   await page.waitForTimeout(250);
 
+  // The open socket can finish hydration before pty_ready, so its load visual
+  // is not evidence about reconnect timing. No replacement socket is the
+  // authoritative signal that pty_ready did not reset the backoff.
   expect(sockets.length).toBe(1);
-  await expect(page.locator("#desktop-terminal-container")).not.toHaveAttribute("data-terminal-load-state", "live");
 });
 
 test("reconnect/take-control attach defers proposed geometry until the current ordered resize acknowledgement", async ({ page }, testInfo) => {

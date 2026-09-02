@@ -33,8 +33,8 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 test("retains append-only scrollback below its configured line limit", async ({ page }, testInfo) => {

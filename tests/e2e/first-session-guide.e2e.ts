@@ -18,8 +18,8 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 async function routeEmptyLocalMachine(page: Page): Promise<void> {
@@ -147,6 +147,15 @@ test("authoritative empty sessions render one accessible first-session path that
   const sessionAuthority = new Promise<void>((resolve) => {
     releaseSessionAuthority = resolve;
   });
+  let holdNextSessionRefresh = false;
+  let releaseHeldSessionRefresh: () => void = () => {};
+  let heldSessionRefreshStarted: () => void = () => {};
+  const heldSessionRefresh = new Promise<void>((resolve) => {
+    releaseHeldSessionRefresh = resolve;
+  });
+  const heldSessionRefreshRequest = new Promise<void>((resolve) => {
+    heldSessionRefreshStarted = resolve;
+  });
 
   await page.route("**/api/tailnet/v1/candidates", (route) => route.fulfill({
     contentType: "application/json",
@@ -161,9 +170,15 @@ test("authoritative empty sessions render one accessible first-session path that
   }));
   await page.route(`${server.baseUrl}/api/sessions`, async (route) => {
     await sessionAuthority;
+    const responseSessions = sessions;
+    if (holdNextSessionRefresh) {
+      holdNextSessionRefresh = false;
+      heldSessionRefreshStarted();
+      await heldSessionRefresh;
+    }
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ sessions }),
+      body: JSON.stringify({ sessions: responseSessions }),
     });
   });
   await page.route(`${server.baseUrl}/api/projects`, (route) => route.fulfill({
@@ -302,6 +317,9 @@ test("authoritative empty sessions render one accessible first-session path that
 
   await page.keyboard.press("Escape");
   await expect(page.locator("#sessions-view")).toHaveClass(/visible/);
+  holdNextSessionRefresh = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await heldSessionRefreshRequest;
   sessions = [{
     name: "first-created-session",
     lastLine: "$ pwd",
@@ -312,6 +330,7 @@ test("authoritative empty sessions render one accessible first-session path that
     },
   }];
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  releaseHeldSessionRefresh();
 
   await expect(onboarding).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create your first session" })).toHaveCount(0);

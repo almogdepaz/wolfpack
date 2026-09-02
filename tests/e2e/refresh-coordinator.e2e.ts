@@ -7,8 +7,8 @@ test.beforeAll(async () => {
   server = await startTestServer();
 });
 
-test.afterAll(() => {
-  server?.close();
+test.afterAll(async () => {
+  await server?.close();
 });
 
 function visibleSessionList(page: Page) {
@@ -34,6 +34,28 @@ test("session summaries survive metadata endpoint failure", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Open test-project" })).toBeVisible();
 });
 
+test("session summaries do not wait for local metadata", async ({ page }) => {
+  let releaseInfo: () => void = () => {};
+  const infoReleased = new Promise<void>((resolve) => {
+    releaseInfo = resolve;
+  });
+  await page.route("**/api/info", async (route) => {
+    await infoReleased;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ name: "delayed-local", version: "9.9.9" }),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  try {
+    await expect(page.getByRole("button", { name: "Open test-project" })).toBeVisible({ timeout: 1_000 });
+  } finally {
+    releaseInfo();
+  }
+  await expect(page.locator("#session-list .machine-header")).toContainText("delayed-local");
+});
+
 test("local info metadata survives an unavailable Tailnet handshake", async ({ page }) => {
   await page.route("**/api/machine", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "tailnet machine identity unavailable" }) }));
   await page.route("**/api/info", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: "local-no-tailnet", version: "9.9.9" }) }));
@@ -43,20 +65,15 @@ test("local info metadata survives an unavailable Tailnet handshake", async ({ p
   await expect(page.locator("#session-list .machine-header")).toContainText("local-no-tailnet");
 });
 
-test("concurrent refresh requests share one in-flight capture", async ({ page }) => {
+test("concurrent forced refresh requests coalesce into one follow-up", async ({ page }) => {
   await page.goto(server.baseUrl);
   await expect(visibleSessionList(page).locator(".card").first()).toBeVisible();
 
-  let activeRequests = 0;
-  let maxActiveRequests = 0;
   let requestCount = 0;
   await page.route("**/api/sessions", async (route) => {
     requestCount++;
-    activeRequests++;
-    maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
     await new Promise((resolve) => setTimeout(resolve, 250));
     await route.continue();
-    activeRequests--;
   });
 
   await page.evaluate(() => {
@@ -64,10 +81,9 @@ test("concurrent refresh requests share one in-flight capture", async ({ page })
     document.dispatchEvent(new Event("visibilitychange"));
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await expect.poll(() => requestCount).toBe(1);
+  await expect.poll(() => requestCount).toBe(2);
 
-  expect(requestCount).toBe(1);
-  expect(maxActiveRequests).toBe(1);
+  expect(requestCount).toBe(2);
 });
 
 test("machine metadata is cached across session refreshes", async ({ page }) => {

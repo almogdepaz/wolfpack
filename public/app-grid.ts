@@ -10,12 +10,14 @@ import { gridTerminalScrollbackBudget } from "../src/grid-scrollback-policy";
 import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
+  revealTerminalConflict,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import {
   addToGridState,
+  gridArrowNav,
   removeFromGridState,
   resumeGridState,
   suspendGridState,
@@ -32,7 +34,7 @@ import type { OrderedResizeSettlement } from "./ordered-resize";
 
 interface GridTerminalController {
   readonly isConnected: boolean;
-  readonly hydration?: { forceFinish(): void };
+  readonly hydration?: { cancel(): void };
   readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
   mount(cell: HTMLElement): Promise<void>;
   connect(opts?: { readonly takeControl?: boolean }): void;
@@ -660,8 +662,7 @@ function removeGridCellConflictOverlay(gs) {
 function showGridCellConflictOverlay(gs) {
   const cell = getGridCellElement(gs);
   if (!cell) return;
-  // Force hydration complete so overlay is visible (cell may be opacity:0)
-  if (gs.controller && gs.controller.hydration) gs.controller.hydration.forceFinish();
+  revealTerminalConflict(cell, gs.controller?.hydration);
   removeGridCellConflictOverlay(gs);
   const overlay = deps.createConflictOverlay("Active on another device", "Take Control", (e) => {
     e.stopPropagation();
@@ -782,6 +783,25 @@ export function setDelegationGridFocus(idx: number): void {
   applyGridFocus(state.delegationGridSessions, idx, "#delegation-grid-container", index => {
     state.delegationGridFocusIndex = index;
   });
+}
+
+export function moveGridFocusByArrow(direction: "left" | "right" | "up" | "down"): boolean {
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    const visibleIndices = state.delegationGridSessions.flatMap((session, index) =>
+      session._collapsed ? [] : [index]);
+    if (visibleIndices.length === 0) return false;
+    const visibleFocusIndex = visibleIndices.indexOf(state.delegationGridFocusIndex);
+    const targetVisibleIndex = visibleFocusIndex === -1
+      ? (direction === "left" || direction === "up" ? visibleIndices.length - 1 : 0)
+      : gridArrowNav(direction, visibleFocusIndex, visibleIndices.length);
+    const targetIndex = visibleIndices[targetVisibleIndex];
+    if (targetIndex === undefined) return false;
+    setDelegationGridFocus(targetIndex);
+    return true;
+  }
+  if (!isGridActive()) return false;
+  setGridFocus(gridArrowNav(direction, state.gridFocusIndex, state.gridSessions.length));
+  return true;
 }
 
 export function suspendGridMode() {

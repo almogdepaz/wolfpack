@@ -298,7 +298,7 @@ describe("gridArrowNav", () => {
     expect(gridArrowNav("right", 1, 6)).toBe(2);
     expect(gridArrowNav("down", 0, 6)).toBe(3);
     expect(gridArrowNav("up", 5, 6)).toBe(2);
-    expect(gridArrowNav("left", 3, 6)).toBe(2);
+    expect(gridArrowNav("left", 3, 6)).toBe(3);
   });
 
   test("single cell: no movement", () => {
@@ -306,13 +306,13 @@ describe("gridArrowNav", () => {
     expect(gridArrowNav("right", 0, 1)).toBe(0);
   });
 
-  test("3 cells (2+1 layout): nav wraps correctly", () => {
+  test("3 cells (2+1 layout): vertical navigation uses the spanning row", () => {
     // Layout: [0][1]
     //         [ 2  ] (spanning)
-    // With cols=2: down from 0→2, down from 1→stays (index 3 OOB)
     expect(gridArrowNav("down", 0, 3)).toBe(2);
-    expect(gridArrowNav("down", 1, 3)).toBe(1); // 1+2=3, OOB
+    expect(gridArrowNav("down", 1, 3)).toBe(2);
     expect(gridArrowNav("up", 2, 3)).toBe(0);
+    expect(gridArrowNav("down", 2, 3)).toBe(0);
   });
 });
 
@@ -554,20 +554,20 @@ describe("focus switching: stdin guard across grid transitions", () => {
 });
 
 describe("gridArrowNav: focus switching across all grid sizes", () => {
-  test("5 cells (3+2 layout): full navigation map", () => {
+  test("5 cells (3+2 layout): navigation follows visual centers", () => {
     // Layout: [0][1][2]
     //         [ 3 ][ 4 ]
-    // cols=3 for 5-cell grid
     expect(gridArrowNav("right", 0, 5)).toBe(1);
     expect(gridArrowNav("right", 1, 5)).toBe(2);
-    expect(gridArrowNav("right", 2, 5)).toBe(3);
+    expect(gridArrowNav("right", 2, 5)).toBe(2);
     expect(gridArrowNav("down", 0, 5)).toBe(3);
-    expect(gridArrowNav("down", 1, 5)).toBe(4);
-    expect(gridArrowNav("down", 2, 5)).toBe(2); // 2+3=5, OOB
+    expect(gridArrowNav("down", 1, 5)).toBe(3);
+    expect(gridArrowNav("down", 2, 5)).toBe(4);
     expect(gridArrowNav("up", 3, 5)).toBe(0);
-    expect(gridArrowNav("up", 4, 5)).toBe(1);
+    expect(gridArrowNav("up", 4, 5)).toBe(2);
     expect(gridArrowNav("left", 4, 5)).toBe(3);
-    // Boundary: can't go past edges
+    expect(gridArrowNav("down", 4, 5)).toBe(2);
+    // Horizontal boundaries do not wrap.
     expect(gridArrowNav("left", 0, 5)).toBe(0);
     expect(gridArrowNav("right", 4, 5)).toBe(4);
   });
@@ -575,11 +575,10 @@ describe("gridArrowNav: focus switching across all grid sizes", () => {
   test("6 cells (3x2): complete boundary checks", () => {
     // Layout: [0][1][2]
     //         [3][4][5]
-    // Top-left corner: can't go up or left
-    expect(gridArrowNav("up", 0, 6)).toBe(0);
+    // Vertical navigation wraps by row; horizontal boundaries do not.
+    expect(gridArrowNav("up", 0, 6)).toBe(3);
     expect(gridArrowNav("left", 0, 6)).toBe(0);
-    // Bottom-right corner: can't go down or right
-    expect(gridArrowNav("down", 5, 6)).toBe(5);
+    expect(gridArrowNav("down", 5, 6)).toBe(2);
     expect(gridArrowNav("right", 5, 6)).toBe(5);
     // Full traversal right→down→left→up back to start
     let pos = 0;

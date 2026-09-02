@@ -108,6 +108,15 @@ describe("serializeBufferTail", () => {
     expect(serializeBufferTail(buf, 2)).toBe("recent 1\nrecent 2");
   });
 
+  test("ignores unused trailing viewport rows before taking the tail", () => {
+    const buf = mockBuffer({
+      viewportY: 0,
+      baseY: 0,
+      lines: ["current output", "", "", ""],
+    });
+    expect(serializeBufferTail(buf, 2)).toBe("current output");
+  });
+
   test("handles empty buffer", () => {
     const buf = mockBuffer({ viewportY: 0, baseY: 0, lines: [] });
     expect(serializeBufferTail(buf, 10)).toBe("");
