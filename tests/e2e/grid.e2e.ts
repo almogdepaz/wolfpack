@@ -237,7 +237,7 @@ test("grid requests viewport prefill", async ({ page }) => {
   }), { timeout: 5000 }).toBe(true);
 });
 
-test("option+shift+arrow follows the rendered five-cell grid arrangement", async ({ page }) => {
+test("cmd+shift+arrow follows the rendered five-cell grid arrangement", async ({ page }) => {
   await routeThirdGridSession(page);
   await routeHydratedPty(page);
   await loadApp(page);
@@ -255,14 +255,16 @@ test("option+shift+arrow follows the rendered five-cell grid arrangement", async
   await page.keyboard.press("Control+Shift+ArrowUp");
   await expect.poll(focusedSession).toBe(THIRD_GRID_SESSION);
   await page.keyboard.press("Alt+Shift+ArrowUp");
+  await expect.poll(focusedSession).toBe(THIRD_GRID_SESSION);
+  await page.keyboard.press("Meta+Shift+ArrowUp");
   await expect.poll(focusedSession).toBe("prompt-project");
-  await page.keyboard.press("Alt+Shift+ArrowLeft");
+  await page.keyboard.press("Meta+Shift+ArrowLeft");
   await expect.poll(focusedSession).toBe("another-project");
-  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await page.keyboard.press("Meta+Shift+ArrowDown");
   await expect.poll(focusedSession).toBe("error-project");
-  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await page.keyboard.press("Meta+Shift+ArrowDown");
   await expect.poll(focusedSession).toBe("test-project");
-  await page.keyboard.press("Alt+Shift+ArrowLeft");
+  await page.keyboard.press("Meta+Shift+ArrowLeft");
   await expect.poll(focusedSession).toBe("test-project");
 });
 

@@ -4035,8 +4035,7 @@ document.addEventListener("keydown", (e) => {
       : e.key === "ArrowUp" ? "up"
         : e.key === "ArrowDown" ? "down"
           : null;
-  const paneNavigationShortcut = e.shiftKey && !e.ctrlKey
-    && ((e.altKey && !e.metaKey) || (e.metaKey && !e.altKey));
+  const paneNavigationShortcut = e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey;
   const cardNavigationShortcut = e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey;
   if (arrowDirection && paneNavigationShortcut && moveGridFocusByArrow(arrowDirection)) {
     e.preventDefault();

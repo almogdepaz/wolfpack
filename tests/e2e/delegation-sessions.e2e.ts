@@ -124,6 +124,8 @@ test("desktop parent grid opens every child session expanded", async ({ page }, 
   expect(visualSessions[0]).toBe("parent");
   await expect.poll(focusedSession).toBe(visualSessions[0]);
   await page.keyboard.press("Alt+Shift+ArrowRight");
+  await expect.poll(focusedSession).toBe(visualSessions[0]);
+  await page.keyboard.press("Meta+Shift+ArrowRight");
   await expect.poll(focusedSession).toBe(visualSessions[1]);
 });
 
@@ -159,12 +161,12 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   const focusedSession = () => page.locator("#delegation-grid-container .delegation-grid-cell.grid-focused")
     .getAttribute("data-session");
   await expect(childCell).toHaveAttribute("data-terminal-load-state", "live");
-  await page.keyboard.press("Alt+Shift+ArrowRight");
+  await page.keyboard.press("Meta+Shift+ArrowRight");
   await expect.poll(focusedSession).toBe("child");
 
   await page.getByRole("button", { name: "Collapse child" }).click();
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
-  await page.keyboard.press("Alt+Shift+ArrowRight");
+  await page.keyboard.press("Meta+Shift+ArrowRight");
   await expect.poll(focusedSession).toBe("parent");
   await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
   await page.getByRole("button", { name: "Expand child" }).click();
