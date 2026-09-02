@@ -117,6 +117,14 @@ test("desktop parent grid opens every child session expanded", async ({ page }, 
 
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell")).toHaveCount(6);
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(0);
+  const focusedSession = () => page.locator("#delegation-grid-container .delegation-grid-cell.grid-focused")
+    .getAttribute("data-session");
+  const visualSessions = await page.locator("#delegation-grid-container .delegation-grid-cell")
+    .evaluateAll(cells => cells.map(cell => (cell as HTMLElement).dataset.session ?? ""));
+  expect(visualSessions[0]).toBe("parent");
+  await expect.poll(focusedSession).toBe(visualSessions[0]);
+  await page.keyboard.press("Alt+Shift+ArrowRight");
+  await expect.poll(focusedSession).toBe(visualSessions[1]);
 });
 
 test("collapsed delegation child remounts once when expanded", async ({ page }, testInfo) => {
@@ -148,10 +156,16 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   await expect(page.locator("#sidebar-session-list .delegation-parent-card")).toBeVisible();
   await openSessionFromUi(page, "parent", "");
   const childCell = page.locator('#delegation-grid-container .delegation-grid-cell[data-session="child"]');
+  const focusedSession = () => page.locator("#delegation-grid-container .delegation-grid-cell.grid-focused")
+    .getAttribute("data-session");
   await expect(childCell).toHaveAttribute("data-terminal-load-state", "live");
+  await page.keyboard.press("Alt+Shift+ArrowRight");
+  await expect.poll(focusedSession).toBe("child");
 
   await page.getByRole("button", { name: "Collapse child" }).click();
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
+  await page.keyboard.press("Alt+Shift+ArrowRight");
+  await expect.poll(focusedSession).toBe("parent");
   await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
   await page.getByRole("button", { name: "Expand child" }).click();
 

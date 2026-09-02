@@ -17,6 +17,7 @@ import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import {
   addToGridState,
+  gridArrowNav,
   removeFromGridState,
   resumeGridState,
   suspendGridState,
@@ -782,6 +783,25 @@ export function setDelegationGridFocus(idx: number): void {
   applyGridFocus(state.delegationGridSessions, idx, "#delegation-grid-container", index => {
     state.delegationGridFocusIndex = index;
   });
+}
+
+export function moveGridFocusByArrow(direction: "left" | "right" | "up" | "down"): boolean {
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    const visibleIndices = state.delegationGridSessions.flatMap((session, index) =>
+      session._collapsed ? [] : [index]);
+    if (visibleIndices.length === 0) return false;
+    const visibleFocusIndex = visibleIndices.indexOf(state.delegationGridFocusIndex);
+    const targetVisibleIndex = visibleFocusIndex === -1
+      ? (direction === "left" || direction === "up" ? visibleIndices.length - 1 : 0)
+      : gridArrowNav(direction, visibleFocusIndex, visibleIndices.length);
+    const targetIndex = visibleIndices[targetVisibleIndex];
+    if (targetIndex === undefined) return false;
+    setDelegationGridFocus(targetIndex);
+    return true;
+  }
+  if (!isGridActive()) return false;
+  setGridFocus(gridArrowNav(direction, state.gridFocusIndex, state.gridSessions.length));
+  return true;
 }
 
 export function suspendGridMode() {

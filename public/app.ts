@@ -12,7 +12,7 @@ import {
   isGridActive,
   hasPreservedGrid, clearPreservedGrid, retireGridSessionsForMachine,
   retirePreservedGridSessionsForMachine,
-  returnToTerminalView, setGridFocus, suspendGridMode,
+  moveGridFocusByArrow, returnToTerminalView, setGridFocus, suspendGridMode,
   backFromSettings, addToGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
@@ -94,7 +94,6 @@ import {
   type SessionOrderCardReference,
 } from "./session-order-ui";
 import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
-import { gridArrowNav } from "../src/grid-logic";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
@@ -4022,10 +4021,9 @@ function renderedSessionNavigationTargets(): SessionNavigationTarget[] {
 document.addEventListener("keydown", (e) => {
   if (!isDesktop()) return;
   const mod = e.metaKey || e.ctrlKey;
-  if (!mod) return;
 
   // Cmd+B — toggle the persistent desktop sidebar without covering the terminal.
-  if (e.key.toLowerCase() === "b" && !state.sessionsExpanded) {
+  if (mod && e.key.toLowerCase() === "b" && !state.sessionsExpanded) {
     e.preventDefault();
     e.stopPropagation();
     document.getElementById("sidebar-collapse-btn")?.click();
@@ -4037,12 +4035,12 @@ document.addEventListener("keydown", (e) => {
       : e.key === "ArrowUp" ? "up"
         : e.key === "ArrowDown" ? "down"
           : null;
-  const paneNavigationShortcut = e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey;
+  const paneNavigationShortcut = e.shiftKey && !e.ctrlKey
+    && ((e.altKey && !e.metaKey) || (e.metaKey && !e.altKey));
   const cardNavigationShortcut = e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey;
-  if (isGridActive() && arrowDirection && paneNavigationShortcut) {
+  if (arrowDirection && paneNavigationShortcut && moveGridFocusByArrow(arrowDirection)) {
     e.preventDefault();
     e.stopPropagation();
-    setGridFocus(gridArrowNav(arrowDirection, state.gridFocusIndex, state.gridSessions.length));
     return;
   }
 
@@ -4067,7 +4065,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // Cmd+T — new session (project picker)
-  if (e.key === "t") {
+  if (mod && e.key === "t") {
     e.preventDefault();
     e.stopPropagation();
     showProjectPicker();
@@ -4075,7 +4073,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   // Cmd+K — clear terminal (focused grid cell or single terminal)
-  if (e.key === "k") {
+  if (mod && e.key === "k") {
     e.preventDefault();
     e.stopPropagation();
     if (isGridActive()) {
