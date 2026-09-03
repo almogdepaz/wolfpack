@@ -256,12 +256,110 @@ function emitMachineFailure(
   process.exit(failure.exitCode);
 }
 
-async function main() {
+function runServiceCommand(argv: readonly string[]): void {
+  if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print(SERVICE_USAGE);
+    return;
+  }
+  const serviceCommand = parseServiceCommand(argv.slice(1));
+  if (!serviceCommand) {
+    printError(`  ${SERVICE_USAGE}`);
+    process.exit(1);
+  }
+  if (serviceCommand.action === "install") serviceInstall();
+  else if (serviceCommand.action === "uninstall") serviceUninstall();
+  else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
+  else if (serviceCommand.action === "start") serviceStart();
+  else if (serviceCommand.action === "restart") {
+    const restarted = serviceCommand.serverOnly
+      ? serviceRestart({ broker: false, skipBrokerSessionWarning: true })
+      : serviceRestart(serviceCommand.broker ? { broker: true } : {});
+    if (!restarted) process.exitCode = 1;
+  } else if (serviceCommand.action === "status") serviceStatus();
+}
+
+async function runDoctorCommand(argv: readonly string[]): Promise<void> {
+  if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack doctor [--json] [--fix]");
+    return;
+  }
+  const flags = argv.slice(1);
+  if (flags.some(flag => flag !== "--json" && flag !== "--fix")) throw new Error("Usage: wolfpack doctor [--json] [--fix]");
+  process.exit(await doctor({ fix: flags.includes("--fix"), json: flags.includes("--json") }));
+}
+
+function runUninstallCommand(argv: readonly string[]): void {
+  if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
+    print("Usage: wolfpack uninstall --yes");
+    return;
+  }
+  if (!hasUninstallConfirmationFlag(argv.slice(1))) {
+    printError(red("  Refusing to uninstall without confirmation."));
+    printError(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
+    printError(dim("  Re-run with: wolfpack uninstall --yes"));
+    process.exit(1);
+  }
+  uninstall();
+}
+
+async function dispatchCommand(
+  argv: readonly string[],
+  target: VerifiedMachineTarget | undefined,
+): Promise<void> {
+  const [cmd] = argv;
+  if (argv.length === 1 && HELP_ALIASES.has(cmd)) {
+    print(topLevelUsage());
+    return;
+  }
+  if (argv.length === 1 && (cmd === "--version" || cmd === "-V")) {
+    print(pkg.version);
+    return;
+  }
+  if (shouldStartDashboard(argv)) {
+    await start();
+    return;
+  }
+  if (cmd === "setup") {
+    if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print(setupUsage());
+    else await runSetup(argv.slice(1));
+    return;
+  }
+  if (cmd === "service") {
+    runServiceCommand(argv);
+    return;
+  }
+  if (cmd === "doctor") {
+    await runDoctorCommand(argv);
+    return;
+  }
+  if (cmd === "ls" || cmd === "list") process.exit(await lsSessions(argv.slice(1), target));
+  if (cmd === "session") process.exit(await runSessionCommand(argv.slice(1), target));
+  if (cmd === "agent") process.exit(await runAgentCommand(argv.slice(1), target));
+  if (cmd === "kill") process.exit(await killSession(argv.slice(1), target));
+  if (cmd === "logs") {
+    if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack logs [--follow] [--json] [--broker]");
+    else process.exit(await logsCommand(argv.slice(1)));
+    return;
+  }
+  if (cmd === "attach") {
+    if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack attach [session] [--take-control] [--prefill full|none]");
+    else process.exit(await attachCommand(argv.slice(1)));
+    return;
+  }
+  if (cmd === "uninstall") {
+    runUninstallCommand(argv);
+    return;
+  }
+  printError(red(`  Unknown command: ${cmd}`));
+  printError(dim("  Run 'wolfpack --help' for available commands."));
+  process.exit(1);
+}
+
+async function main(): Promise<void> {
   const rawArgv = process.argv.slice(2);
   const extracted = extractMachineSelector(rawArgv);
   if (!extracted.ok) emitMachineFailure(extracted.error, rawArgv.includes("--json"));
   const argv = [...extracted.argv];
-  const [cmd] = argv;
   let target: VerifiedMachineTarget | undefined;
   if (extracted.selector !== undefined && !isMachineHelpRequest(argv)) {
     if (!isMachineCommandSupported(argv)) {
@@ -278,72 +376,7 @@ async function main() {
     if (!verified.ok) emitMachineFailure(verified.error, argv.includes("--json"));
     target = verified.target;
   }
-
-  if (argv.length === 1 && HELP_ALIASES.has(cmd)) {
-    print(topLevelUsage());
-  } else if (argv.length === 1 && (cmd === "--version" || cmd === "-V")) {
-    print(pkg.version);
-  } else if (shouldStartDashboard(argv)) {
-    await start();
-  } else if (cmd === "setup" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print(setupUsage());
-  } else if (cmd === "setup") {
-    await runSetup(argv.slice(1));
-  } else if (cmd === "service" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print(SERVICE_USAGE);
-  } else if (cmd === "service") {
-    const serviceCommand = parseServiceCommand(argv.slice(1));
-    if (!serviceCommand) {
-      printError(`  ${SERVICE_USAGE}`);
-      process.exit(1);
-    }
-    if (serviceCommand.action === "install") serviceInstall();
-    else if (serviceCommand.action === "uninstall") serviceUninstall();
-    else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
-    else if (serviceCommand.action === "start") serviceStart();
-    else if (serviceCommand.action === "restart") {
-      const restarted = serviceCommand.serverOnly
-        ? serviceRestart({ broker: false, skipBrokerSessionWarning: true })
-        : serviceRestart(serviceCommand.broker ? { broker: true } : {});
-      if (!restarted) process.exitCode = 1;
-    } else if (serviceCommand.action === "status") serviceStatus();
-  } else if (cmd === "doctor" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print("Usage: wolfpack doctor [--json] [--fix]");
-  } else if (cmd === "doctor") {
-    const flags = argv.slice(1);
-    if (flags.some(flag => flag !== "--json" && flag !== "--fix")) throw new Error("Usage: wolfpack doctor [--json] [--fix]");
-    process.exit(await doctor({ fix: flags.includes("--fix"), json: flags.includes("--json") }));
-  } else if (cmd === "ls" || cmd === "list") {
-    process.exit(await lsSessions(argv.slice(1), target));
-  } else if (cmd === "session") {
-    process.exit(await runSessionCommand(argv.slice(1), target));
-  } else if (cmd === "agent") {
-    process.exit(await runAgentCommand(argv.slice(1), target));
-  } else if (cmd === "kill") {
-    process.exit(await killSession(argv.slice(1), target));
-  } else if (cmd === "logs" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print("Usage: wolfpack logs [--follow] [--json] [--broker]");
-  } else if (cmd === "logs") {
-    process.exit(await logsCommand(argv.slice(1)));
-  } else if (cmd === "attach" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print("Usage: wolfpack attach [session] [--take-control] [--prefill full|none]");
-  } else if (cmd === "attach") {
-    process.exit(await attachCommand(argv.slice(1)));
-  } else if (cmd === "uninstall" && argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print("Usage: wolfpack uninstall --yes");
-  } else if (cmd === "uninstall") {
-    if (!hasUninstallConfirmationFlag(argv.slice(1))) {
-      printError(red("  Refusing to uninstall without confirmation."));
-      printError(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
-      printError(dim("  Re-run with: wolfpack uninstall --yes"));
-      process.exit(1);
-    }
-    uninstall();
-  } else {
-    printError(red(`  Unknown command: ${cmd}`));
-    printError(dim("  Run 'wolfpack --help' for available commands."));
-    process.exit(1);
-  }
+  await dispatchCommand(argv, target);
 }
 
 // only run when executed directly, not when imported for tests
