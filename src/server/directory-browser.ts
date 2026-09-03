@@ -27,11 +27,17 @@ export interface DirectoryBrowseValue {
 
 export type DirectoryBrowseResult =
   | { readonly ok: true; readonly value: DirectoryBrowseValue }
-  | {
-      readonly ok: false;
-      readonly code: "invalid" | "not_found" | "permission_denied" | "too_many_entries" | "unavailable";
-      readonly error: string;
-    };
+  | DirectoryBrowseFailure;
+
+type DirectoryBrowseFailure = {
+  readonly ok: false;
+  readonly code: "invalid" | "not_found" | "permission_denied" | "too_many_entries" | "unavailable";
+  readonly error: string;
+};
+
+type DirectoryScanResult =
+  | { readonly ok: true; readonly directories: readonly DirectoryBrowseEntry[] }
+  | DirectoryBrowseFailure;
 
 interface DirectoryBrowserFilesystem {
   readonly lstat: (path: PathLike) => Promise<Stats>;
@@ -69,40 +75,8 @@ export async function browseServerDirectory(
 
     const current = await filesystem.realpath(requestedDirectory);
     const parentCandidate = dirname(current);
-    const directories: DirectoryBrowseEntry[] = [];
-    const directory = await filesystem.opendir(current);
-    try {
-      let entriesInspected = 0;
-      let entry = await directory.read();
-      while (entry) {
-        entriesInspected++;
-        if (entriesInspected > DIRECTORY_BROWSE_SCAN_LIMIT) return tooManyEntries();
-        if (!entry.name.startsWith(".")) {
-          const entryPath = join(current, entry.name);
-          let isDirectory = entry.isDirectory();
-          if (!isDirectory && directoryEntryTypeIsUnknown(entry)) {
-            try {
-              const entryStat = await filesystem.lstat(entryPath);
-              isDirectory = !entryStat.isSymbolicLink() && entryStat.isDirectory();
-            } catch (error: unknown) {
-              const code = filesystemCode(error);
-              if (!code || !NOT_FOUND_FILESYSTEM_CODES.has(code)) {
-                if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
-                return unavailableDirectory();
-              }
-            }
-          }
-          if (isDirectory) {
-            directories.push({ name: entry.name, path: entryPath });
-            directories.sort(compareDirectoryEntries);
-            if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
-          }
-        }
-        entry = await directory.read();
-      }
-    } finally {
-      await directory.close();
-    }
+    const scanResult = await scanDirectoryEntries(current, filesystem);
+    if (!scanResult.ok) return scanResult;
 
     return {
       ok: true,
@@ -110,7 +84,7 @@ export async function browseServerDirectory(
         current,
         parent: parentCandidate === current ? null : parentCandidate,
         breadcrumbs: directoryBreadcrumbs(current),
-        directories,
+        directories: scanResult.directories,
       },
     };
   } catch (error: unknown) {
@@ -123,6 +97,47 @@ export async function browseServerDirectory(
   } finally {
     activeDirectoryBrowses--;
   }
+}
+
+async function scanDirectoryEntries(
+  current: string,
+  filesystem: DirectoryBrowserFilesystem,
+): Promise<DirectoryScanResult> {
+  const directories: DirectoryBrowseEntry[] = [];
+  const directory = await filesystem.opendir(current);
+  try {
+    let entriesInspected = 0;
+    let entry = await directory.read();
+    while (entry) {
+      entriesInspected++;
+      if (entriesInspected > DIRECTORY_BROWSE_SCAN_LIMIT) return tooManyEntries();
+      if (!entry.name.startsWith(".")) {
+        const entryPath = join(current, entry.name);
+        let isDirectory = entry.isDirectory();
+        if (!isDirectory && directoryEntryTypeIsUnknown(entry)) {
+          try {
+            const entryStat = await filesystem.lstat(entryPath);
+            isDirectory = !entryStat.isSymbolicLink() && entryStat.isDirectory();
+          } catch (error: unknown) {
+            const code = filesystemCode(error);
+            if (!code || !NOT_FOUND_FILESYSTEM_CODES.has(code)) {
+              if (code && PERMISSION_DENIED_FILESYSTEM_CODES.has(code)) return permissionDeniedDirectory();
+              return unavailableDirectory();
+            }
+          }
+        }
+        if (isDirectory) {
+          directories.push({ name: entry.name, path: entryPath });
+          directories.sort(compareDirectoryEntries);
+          if (directories.length > DIRECTORY_BROWSE_LIMIT) directories.pop();
+        }
+      }
+      entry = await directory.read();
+    }
+  } finally {
+    await directory.close();
+  }
+  return { ok: true, directories };
 }
 
 function directoryEntryTypeIsUnknown(entry: Dirent): boolean {
@@ -177,15 +192,15 @@ function filesystemCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function invalidDirectory(): DirectoryBrowseResult {
+function invalidDirectory(): DirectoryBrowseFailure {
   return { ok: false, code: "invalid", error: "invalid directory" };
 }
 
-function permissionDeniedDirectory(): DirectoryBrowseResult {
+function permissionDeniedDirectory(): DirectoryBrowseFailure {
   return { ok: false, code: "permission_denied", error: "directory permission denied" };
 }
 
-function tooManyEntries(): DirectoryBrowseResult {
+function tooManyEntries(): DirectoryBrowseFailure {
   return {
     ok: false,
     code: "too_many_entries",
@@ -193,6 +208,6 @@ function tooManyEntries(): DirectoryBrowseResult {
   };
 }
 
-function unavailableDirectory(): DirectoryBrowseResult {
+function unavailableDirectory(): DirectoryBrowseFailure {
   return { ok: false, code: "unavailable", error: "directory unavailable" };
 }
