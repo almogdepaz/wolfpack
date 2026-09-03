@@ -286,92 +286,91 @@ function parseExistingProjectSelector(
   return null;
 }
 
-export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
-  const args = [...argv];
-  const action = args.shift() as SessionAction | undefined;
-  if (!action) return { ok: false, message: "Usage: wolfpack session <create|status|read|send|wait|prompt|current-context> ..." };
-  if (!["create", "open", "status", "read", "send", "wait", "prompt", "current-context"].includes(action)) {
-    return { ok: false, message: `Unknown session command: ${action}` };
-  }
-  const isLaunch = action === "create" || action === "open";
-  const promptValue = isLaunch ? consumeLaunchValue(args, "--prompt") : null;
-  const promptFileValue = isLaunch ? consumeLaunchValue(args, "--prompt-file") : null;
-  const planValue = isLaunch ? consumeLaunchValue(args, "--plan") : null;
-  const projectDirValue = isLaunch ? consumeLaunchValue(args, "--project-dir") : null;
+type LaunchSessionAction = "create" | "open";
+type TargetSessionAction = "status" | "read" | "send" | "wait" | "prompt";
+
+function isSessionAction(action: string): action is SessionAction {
+  return ["create", "open", "status", "read", "send", "wait", "prompt", "current-context"].includes(action);
+}
+
+function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]): ParsedSessionCommand {
+  const promptValue = consumeLaunchValue(args, "--prompt");
+  const promptFileValue = consumeLaunchValue(args, "--prompt-file");
+  const planValue = consumeLaunchValue(args, "--plan");
+  const projectDirValue = consumeLaunchValue(args, "--project-dir");
   const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
   const modelValue = action === "open" ? consumeLaunchValue(args, "--model") : null;
-  const notifyParent = isLaunch ? consumeFlag(args, "--notify-parent") : false;
+  const notifyParent = consumeFlag(args, "--notify-parent");
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
-  if (isLaunch) {
-    if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
-    const prompt = promptValue ?? undefined;
-    const promptFile = promptFileValue ?? undefined;
-    const plan = planValue ?? undefined;
-    const sessionName = nameValue ?? undefined;
-    const model = modelValue ?? undefined;
-    const project = args.shift();
-    const projectDir = projectDirValue ?? undefined;
-    const harness = harnessValue !== null && isCreatableHarness(harnessValue)
-      ? harnessValue
-      : undefined;
-    const promptSources = [promptValue, promptFileValue, planValue].filter(value => value !== null);
-    const validPrompt = prompt === undefined
-      || (prompt.trim().length > 0
-        && unicodeCodePointLength(prompt) <= MAX_INITIAL_PROMPT_LENGTH);
-    const validPromptFile = promptFileValue === null || Boolean(promptFileValue.trim());
-    const validPlan = planValue === null || Boolean(planValue.trim());
-    const validSessionName = action !== "open"
-      || nameValue === null
-      || (Boolean(nameValue.trim()) && isValidSessionName(nameValue));
-    const validModel = action !== "open"
-      || modelValue === null
-      || (Boolean(modelValue.trim())
-        && unicodeCodePointLength(modelValue) <= SESSION_OPEN_MAX_MODEL_LENGTH);
-    const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
-    const validHarness = action !== "create"
-      || harnessValue === null
-      || harness !== undefined;
-    const validNotify = action !== "create" || !notifyParent;
-    const selector = parseExistingProjectSelector(project, projectDir);
-    if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify) {
-      return {
-        ok: false,
-        message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
-      };
-    }
-    if (action === "create") {
-      return {
-        ok: true,
-        action,
-        selector,
-        harness,
-        prompt,
-        ...(promptFile !== undefined && { promptFile }),
-        ...(plan !== undefined && { plan }),
-        output,
-      };
-    }
+  if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
+
+  const prompt = promptValue ?? undefined;
+  const promptFile = promptFileValue ?? undefined;
+  const plan = planValue ?? undefined;
+  const sessionName = nameValue ?? undefined;
+  const model = modelValue ?? undefined;
+  const project = args.shift();
+  const projectDir = projectDirValue ?? undefined;
+  const harness = harnessValue !== null && isCreatableHarness(harnessValue)
+    ? harnessValue
+    : undefined;
+  const promptSources = [promptValue, promptFileValue, planValue].filter(value => value !== null);
+  const validPrompt = prompt === undefined
+    || (prompt.trim().length > 0
+      && unicodeCodePointLength(prompt) <= MAX_INITIAL_PROMPT_LENGTH);
+  const validPromptFile = promptFileValue === null || Boolean(promptFileValue.trim());
+  const validPlan = planValue === null || Boolean(planValue.trim());
+  const validSessionName = action !== "open"
+    || nameValue === null
+    || (Boolean(nameValue.trim()) && isValidSessionName(nameValue));
+  const validModel = action !== "open"
+    || modelValue === null
+    || (Boolean(modelValue.trim())
+      && unicodeCodePointLength(modelValue) <= SESSION_OPEN_MAX_MODEL_LENGTH);
+  const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
+  const validHarness = action !== "create"
+    || harnessValue === null
+    || harness !== undefined;
+  const validNotify = action !== "create" || !notifyParent;
+  const selector = parseExistingProjectSelector(project, projectDir);
+  if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify) {
+    return {
+      ok: false,
+      message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
+    };
+  }
+  if (action === "create") {
     return {
       ok: true,
       action,
       selector,
-      ...(sessionName !== undefined && { sessionName }),
-      ...(model !== undefined && { model }),
+      harness,
       prompt,
       ...(promptFile !== undefined && { promptFile }),
       ...(plan !== undefined && { plan }),
-      ...(notifyParent && { notifyParent: true }),
       output,
     };
   }
-  if (action === "current-context") {
-    if (args.length > 0) return { ok: false, message: "Usage: wolfpack session current-context [--json|--shell]" };
-    return { ok: true, action, output };
-  }
-  if (shellRequested) {
-    return { ok: false, message: "--shell is only valid for current-context" };
-  }
+  return {
+    ok: true,
+    action,
+    selector,
+    ...(sessionName !== undefined && { sessionName }),
+    ...(model !== undefined && { model }),
+    prompt,
+    ...(promptFile !== undefined && { promptFile }),
+    ...(plan !== undefined && { plan }),
+    ...(notifyParent && { notifyParent: true }),
+    output,
+  };
+}
+
+function parseTargetSessionCommand(
+  action: TargetSessionAction,
+  args: string[],
+  output: OutputMode,
+): ParsedSessionCommand {
   const session = args.shift();
   if (!session) return { ok: false, message: `Usage: wolfpack session ${action} <session> ...` };
   if (action === "status" || action === "read") {
@@ -422,6 +421,22 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
     return { ok: false, message: "Usage: wolfpack session wait <session> <text> [--timeout-ms <1..600000>] [--json]" };
   }
   return { ok: true, action, session, text, timeoutMs, output };
+}
+
+export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
+  const args = [...argv];
+  const action = args.shift();
+  if (!action) return { ok: false, message: "Usage: wolfpack session <create|status|read|send|wait|prompt|current-context> ..." };
+  if (!isSessionAction(action)) return { ok: false, message: `Unknown session command: ${action}` };
+  if (action === "create" || action === "open") return parseLaunchSessionCommand(action, args);
+
+  const { mode: output, shellRequested } = parseOutputMode(args);
+  if (action === "current-context") {
+    if (args.length > 0) return { ok: false, message: "Usage: wolfpack session current-context [--json|--shell]" };
+    return { ok: true, action, output };
+  }
+  if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
+  return parseTargetSessionCommand(action, args, output);
 }
 
 export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {

@@ -122,6 +122,151 @@ function installPackages(pkgs: string[]) {
   }
 }
 
+function configureInteractiveTailscaleRemoteAccess(options: {
+  readonly interactive: boolean;
+  readonly hasTailscale: boolean;
+  readonly binary: string | null;
+  readonly port: number;
+}): string | undefined {
+  const binary = options.binary;
+  if (!options.interactive || !options.hasTailscale || !binary) return undefined;
+
+  const runTailscale = (args: readonly string[]): string => {
+    const [file, fileArgs] = IS_LINUX
+      ? ["sudo", [binary, ...args]]
+      : [binary, [...args]];
+    return execFileSync(file, fileArgs, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+  };
+  const inspectSelf = () => {
+    try { return inspectTailscaleSelf(runTailscale(["status", "--self", "--json"])); }
+    catch { return { status: "unavailable" } as const; }
+  };
+  let self = inspectSelf();
+  if (self.status !== "ready" && (self.status === "logged-out" || self.status === "unavailable")) {
+    if (IS_MACOS) {
+      print(dim("  Launching Tailscale.app for sign-in..."));
+      try { execSync("open /Applications/Tailscale.app", { stdio: "ignore" }); } catch (e: unknown) {
+        log.warn("setup: failed to launch Tailscale.app", { error: e instanceof Error ? e.message : String(e) });
+      }
+    } else if (IS_LINUX) {
+      print(dim("  Run 'sudo tailscale up' in another terminal to sign in."));
+    }
+    while (self.status !== "ready" && options.interactive) {
+      const retry = ask("  Sign in, then press Enter to retry (or type skip): ");
+      if (retry.toLowerCase() === "skip") break;
+      self = inspectSelf();
+    }
+  }
+  if (self.status === "ready") {
+    const configured = configureTailscaleRemoteAccess({
+      binary,
+      port: options.port,
+      run: (_file, args) => runTailscale(args),
+    });
+    if (configured.status === "verified") {
+      print(green(`  Tailscale serving at ${configured.origin}/`));
+      return configured.hostname;
+    }
+    print(red("  Tailscale Serve could not be structurally verified; no phone QR will be shown."));
+    print(dim(`  Retry: ${IS_LINUX ? "sudo " : ""}${binary} serve --bg ${options.port}`));
+  } else if (self.status === "logged-out") {
+    print(yellow("  Tailscale is not signed in; phone and remote access remain unavailable."));
+  } else if (self.status === "malformed-status") {
+    print(red("  Tailscale returned malformed identity data; remote access remains unavailable."));
+  } else {
+    print(yellow("  Tailscale is unavailable; phone and remote access remain unavailable."));
+  }
+  return undefined;
+}
+
+function reconcileSetupService(
+  previousConfig: Config | null,
+  config: Config,
+  deferServiceRestart: boolean | undefined,
+): { readonly serviceInstalled: boolean; readonly serviceRunning: boolean } {
+  const serviceInstalled = isServiceInstalled();
+  let serviceRunning = serviceInstalled && isServiceRunning();
+  const descriptorSettingsChanged = previousConfig?.devDir !== config.devDir
+    || previousConfig?.port !== config.port;
+  const remotePolicyChanged = previousConfig?.tailscaleHostname !== config.tailscaleHostname;
+  if (descriptorSettingsChanged && serviceInstalled) {
+    refreshInstalledServerService({ reload: !deferServiceRestart });
+    if (!deferServiceRestart) serviceRunning = isServiceRunning();
+  } else if (remotePolicyChanged && serviceRunning && !deferServiceRestart) {
+    if (!serviceRestart({ broker: false, skipBrokerSessionWarning: true })) {
+      throw new Error("failed to restart server service after setup changes");
+    }
+    serviceRunning = isServiceRunning();
+  }
+  return { serviceInstalled, serviceRunning };
+}
+
+function handleOptionalPiIntegration(interactive: boolean): void {
+  const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
+  if (piIntegrationMode === "prompt") {
+    print("");
+    print(bold("  Optional Pi integration:"));
+    for (const line of piIntegrationDisclosureLines()) {
+      print(dim(line));
+    }
+    const installPi = ask("  Install Wolfpack's control skill and Pi Tasks? [y/N] ");
+    if (acceptsPiIntegrationInstall(installPi)) {
+      const installResult = installPiIntegration({ pathValue: process.env.PATH });
+      if (installResult.status === "installed") {
+        print(green("  Installed the Wolfpack control skill and Pi Tasks."));
+        print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
+      } else if (installResult.status === "skill_exists") {
+        print(red("  Pi integration stopped: Wolfpack's control skill already exists."));
+        print(dim(`  Review the existing skill before removing or replacing ${installResult.skillPath}.`));
+      } else if (installResult.status === "skill_write_failed") {
+        print(red("  Pi integration stopped: could not install Wolfpack's control skill."));
+        if (installResult.canRetry) {
+          print(dim(`  Check write access to ${installResult.skillPath} and rerun 'wolfpack setup'.`));
+        } else {
+          print(dim(`  Wolfpack could not clean the partial skill at ${installResult.skillPath}; review and remove it before rerunning setup.`));
+        }
+      } else {
+        print(red(`  Pi integration install stopped at ${installResult.failedSource}.`));
+        print(dim(`  Retry: ${installResult.retryCommand}`));
+        print(dim("  Wolfpack's control skill was installed; Pi Tasks remains unavailable until the retry succeeds."));
+      }
+    } else {
+      print(dim("  Skipped optional Pi integration."));
+    }
+  } else if (piIntegrationMode === "guidance") {
+    print("");
+    print(dim("  Pi detected; non-interactive mode skipped the optional Pi integration."));
+    print(dim("  Run 'wolfpack setup' interactively to install the control skill and Pi Tasks."));
+  }
+}
+
+function installSetupService(options: {
+  readonly serviceInstalled: boolean;
+  readonly serviceRunning: boolean;
+  readonly interactive: boolean;
+  readonly deferServiceRestart: boolean | undefined;
+}): { readonly serviceInstalled: boolean; readonly serviceRunning: boolean } {
+  if (options.serviceInstalled) return options;
+  if (options.deferServiceRestart) {
+    print(dim("  Service activation deferred."));
+    return options;
+  }
+  if (!options.interactive) {
+    print(dim("  Non-interactive mode — skipping service install."));
+    print(dim("  Run 'wolfpack service install' to start automatically on login."));
+    return options;
+  }
+  const installService = ask("  Start wolfpack automatically on login? [Y/n] ");
+  if (installService.toLowerCase() === "n") return options;
+  try {
+    serviceInstall();
+    return { serviceInstalled: true, serviceRunning: true };
+  } catch (e) {
+    print(red(`  Service install failed: ${e}`));
+    return options;
+  }
+}
+
 export interface SetupOptions {
   readonly nonInteractive?: boolean;
   readonly deferServiceRestart?: boolean;
@@ -220,51 +365,12 @@ export async function setup(options: SetupOptions = {}) {
 
   // Tailscale readiness is persisted only after `serve status --json` proves
   // this exact canonical HTTPS origin proxies to Wolfpack's loopback port.
-    let verifiedRemoteHostname: string | undefined;
-  if (interactive && hasTailscale && tsBin) {
-    const runTailscale = (args: readonly string[]): string => {
-      const [file, fileArgs] = IS_LINUX
-        ? ["sudo", [tsBin, ...args]]
-        : [tsBin, [...args]];
-      return execFileSync(file, fileArgs, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
-    };
-    const inspectSelf = () => {
-      try { return inspectTailscaleSelf(runTailscale(["status", "--self", "--json"])); }
-      catch { return { status: "unavailable" } as const; }
-    };
-    let self = inspectSelf();
-    if (self.status !== "ready" && (self.status === "logged-out" || self.status === "unavailable")) {
-      if (IS_MACOS) {
-        print(dim("  Launching Tailscale.app for sign-in..."));
-        try { execSync("open /Applications/Tailscale.app", { stdio: "ignore" }); } catch (e: unknown) {
-          log.warn("setup: failed to launch Tailscale.app", { error: e instanceof Error ? e.message : String(e) });
-        }
-      } else if (IS_LINUX) {
-        print(dim("  Run 'sudo tailscale up' in another terminal to sign in."));
-      }
-      while (self.status !== "ready" && interactive) {
-        const retry = ask("  Sign in, then press Enter to retry (or type skip): ");
-        if (retry.toLowerCase() === "skip") break;
-        self = inspectSelf();
-      }
-    }
-    if (self.status === "ready") {
-      const configured = configureTailscaleRemoteAccess({ binary: tsBin, port, run: (_file, args) => runTailscale(args) });
-      if (configured.status === "verified") {
-        verifiedRemoteHostname = configured.hostname;
-        print(green(`  Tailscale serving at ${configured.origin}/`));
-      } else {
-        print(red("  Tailscale Serve could not be structurally verified; no phone QR will be shown."));
-        print(dim(`  Retry: ${IS_LINUX ? "sudo " : ""}${tsBin} serve --bg ${port}`));
-      }
-    } else if (self.status === "logged-out") {
-      print(yellow("  Tailscale is not signed in; phone and remote access remain unavailable."));
-    } else if (self.status === "malformed-status") {
-      print(red("  Tailscale returned malformed identity data; remote access remains unavailable."));
-    } else {
-      print(yellow("  Tailscale is unavailable; phone and remote access remain unavailable."));
-    }
-  }
+  const verifiedRemoteHostname = configureInteractiveTailscaleRemoteAccess({
+    interactive,
+    hasTailscale,
+    binary: tsBin,
+    port,
+  });
 
   const config: Config = {
     devDir,
@@ -274,85 +380,27 @@ export async function setup(options: SetupOptions = {}) {
     }),
   };
   saveConfig(config);
-  let serviceInstalled = isServiceInstalled();
-  let serviceRunning = serviceInstalled && isServiceRunning();
-  const descriptorSettingsChanged = previousConfig?.devDir !== config.devDir
-    || previousConfig?.port !== config.port;
-  const remotePolicyChanged = previousConfig?.tailscaleHostname !== config.tailscaleHostname;
-  if (descriptorSettingsChanged && serviceInstalled) {
-    // The plist/unit embeds these values; a plain restart would reload stale
-    // environment. Installer-managed setup writes the descriptor now and
-    // leaves activation to the installer's final server-only restart.
-    refreshInstalledServerService({ reload: !options.deferServiceRestart });
-    if (!options.deferServiceRestart) serviceRunning = isServiceRunning();
-  } else if (remotePolicyChanged && serviceRunning && !options.deferServiceRestart) {
-    // CORS policy is loaded at server startup. A running broker remains
-    // untouched, so its PTYs and sessions survive the server restart.
-    if (!serviceRestart({ broker: false, skipBrokerSessionWarning: true })) {
-      throw new Error("failed to restart server service after setup changes");
-    }
-    serviceRunning = isServiceRunning();
-  }
+  // The plist/unit embeds config values, while the remote-origin policy is
+  // loaded by the server. Both paths must preserve broker-owned PTYs.
+  let { serviceInstalled, serviceRunning } = reconcileSetupService(
+    previousConfig,
+    config,
+    options.deferServiceRestart,
+  );
 
   initializeProviderSettingsFile({
     settingsPath: join(WOLFPACK_DIR, "bridge-settings.json"),
     pathValue: process.env.PATH,
   });
 
-  const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
-  if (piIntegrationMode === "prompt") {
-    print("");
-    print(bold("  Optional Pi integration:"));
-    for (const line of piIntegrationDisclosureLines()) {
-      print(dim(line));
-    }
-    const installPi = ask("  Install Wolfpack's control skill and Pi Tasks? [y/N] ");
-    if (acceptsPiIntegrationInstall(installPi)) {
-      const installResult = installPiIntegration({ pathValue: process.env.PATH });
-      if (installResult.status === "installed") {
-        print(green("  Installed the Wolfpack control skill and Pi Tasks."));
-        print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
-      } else if (installResult.status === "skill_exists") {
-        print(red("  Pi integration stopped: Wolfpack's control skill already exists."));
-        print(dim(`  Review the existing skill before removing or replacing ${installResult.skillPath}.`));
-      } else if (installResult.status === "skill_write_failed") {
-        print(red("  Pi integration stopped: could not install Wolfpack's control skill."));
-        if (installResult.canRetry) {
-          print(dim(`  Check write access to ${installResult.skillPath} and rerun 'wolfpack setup'.`));
-        } else {
-          print(dim(`  Wolfpack could not clean the partial skill at ${installResult.skillPath}; review and remove it before rerunning setup.`));
-        }
-      } else {
-        print(red(`  Pi integration install stopped at ${installResult.failedSource}.`));
-        print(dim(`  Retry: ${installResult.retryCommand}`));
-        print(dim("  Wolfpack's control skill was installed; Pi Tasks remains unavailable until the retry succeeds."));
-      }
-    } else {
-      print(dim("  Skipped optional Pi integration."));
-    }
-  } else if (piIntegrationMode === "guidance") {
-    print("");
-    print(dim("  Pi detected; non-interactive mode skipped the optional Pi integration."));
-    print(dim("  Run 'wolfpack setup' interactively to install the control skill and Pi Tasks."));
-  }
+  handleOptionalPiIntegration(interactive);
 
-  if (!serviceInstalled && options.deferServiceRestart) {
-    print(dim("  Service activation deferred."));
-  } else if (!serviceInstalled && !interactive) {
-    print(dim("  Non-interactive mode — skipping service install."));
-    print(dim("  Run 'wolfpack service install' to start automatically on login."));
-  } else if (!serviceInstalled) {
-    const installService = ask("  Start wolfpack automatically on login? [Y/n] ");
-    if (installService.toLowerCase() !== "n") {
-      try {
-        serviceInstall();
-        serviceInstalled = true;
-        serviceRunning = true;
-      } catch (e) {
-        print(red(`  Service install failed: ${e}`));
-      }
-    }
-  }
+  ({ serviceInstalled, serviceRunning } = installSetupService({
+    serviceInstalled,
+    serviceRunning,
+    interactive,
+    deferServiceRestart: options.deferServiceRestart,
+  }));
 
   printSetupCompletion({
     port: config.port,
