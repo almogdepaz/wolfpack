@@ -232,8 +232,8 @@ class SessionOrderDragController {
     return identifier !== undefined && touchById(changedTouches, identifier) !== null;
   }
 
-  public finish(commit: boolean): void {
-    this.finishDrag(commit);
+  public commit(): void {
+    this.finishDrag(true);
   }
 
   public cancel(): void {
@@ -411,7 +411,7 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
     if (event.pointerType === "touch") return;
     if (drag.isPointerDragging(event.pointerId)) {
       event.preventDefault();
-      drag.finish(true);
+      drag.commit();
     } else if (drag.isPointerCandidate(event.pointerId)) {
       drag.clearPendingCandidate();
     }
@@ -441,7 +441,7 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
     if (!drag.matchesTouch(event.changedTouches)) return;
     if (drag.hasDrag()) {
       event.preventDefault();
-      drag.finish(true);
+      drag.commit();
     } else {
       drag.clearPendingCandidate();
     }
