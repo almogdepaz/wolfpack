@@ -416,6 +416,9 @@ test("desktop escape cancels a nested card drag and restores the hierarchy", asy
   const childCard = list.locator('.sub-session-card[data-session-order-machine=""]');
   const soloCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="solo-id"]');
   await parentCard.getByRole("button", { name: "Expand 1 child agent" }).click();
+  await expect(childCard).toBeVisible();
+  await expect(parentCard).toBeVisible();
+  await expect(soloCard).toBeVisible();
   const parentBox = await parentCard.boundingBox();
   const soloBox = await soloCard.boundingBox();
   expect(parentBox).not.toBeNull();
