@@ -41,6 +41,43 @@ function invalidSend(path: string): SendValidationFailure {
   return { path, message: "invalid task send request" };
 }
 
+function contextValidationFailure(context: unknown): SendValidationFailure | undefined {
+  if (!isObject(context)) return invalidSend("/context");
+  const unexpectedContext = unexpectedProperty(context, ["summary", "refs"], ["context"]);
+  if (unexpectedContext !== undefined) return invalidSend(unexpectedContext);
+  if (!optionalString(context.summary)) return invalidSend("/context/summary");
+  if (context.refs !== undefined) {
+    if (!Array.isArray(context.refs)) return invalidSend("/context/refs");
+    for (const [index, ref] of context.refs.entries()) {
+      if (!isObject(ref)) return invalidSend(pointer("context", "refs", String(index)));
+      const unexpectedRef = unexpectedProperty(ref, ["path", "selector", "purpose"], ["context", "refs", String(index)]);
+      if (unexpectedRef !== undefined) return invalidSend(unexpectedRef);
+      if (typeof ref.path !== "string") return invalidSend(pointer("context", "refs", String(index), "path"));
+      if (!optionalString(ref.selector)) return invalidSend(pointer("context", "refs", String(index), "selector"));
+      if (!optionalString(ref.purpose)) return invalidSend(pointer("context", "refs", String(index), "purpose"));
+    }
+  }
+  return undefined;
+}
+
+function preflightValidationFailure(preflight: unknown): SendValidationFailure | undefined {
+  if (!isObject(preflight)) return invalidSend("/preflight");
+  const unexpectedPreflight = unexpectedProperty(preflight, ["requiredProject"], ["preflight"]);
+  if (unexpectedPreflight !== undefined) return invalidSend(unexpectedPreflight);
+  if (!optionalString(preflight.requiredProject) || (preflight.requiredProject !== undefined && preflight.requiredProject.length === 0)) return invalidSend("/preflight/requiredProject");
+  return undefined;
+}
+
+function metadataValidationFailure(metadata: unknown): SendValidationFailure | undefined {
+  if (!isObject(metadata)) return invalidSend("/metadata");
+  const unexpectedMetadata = unexpectedProperty(metadata, ["phaseId", "issueId", "verificationTier", "rootCause"], ["metadata"]);
+  if (unexpectedMetadata !== undefined) return invalidSend(unexpectedMetadata);
+  for (const key of ["phaseId", "issueId", "verificationTier", "rootCause"] as const) {
+    if (!optionalString(metadata[key])) return invalidSend(pointer("metadata", key));
+  }
+  return undefined;
+}
+
 function sendValidationFailure(body: Body): SendValidationFailure | undefined {
   const unexpected = unexpectedProperty(body, ["callerSession", "to", "task", "context", "role", "preflight", "metadata", "onCompletePrompt", "timeoutMs", "idempotencyKey"]);
   if (unexpected !== undefined) return invalidSend(unexpected);
@@ -56,35 +93,16 @@ function sendValidationFailure(body: Body): SendValidationFailure | undefined {
   if (!optionalString(body.idempotencyKey)) return invalidSend("/idempotencyKey");
   if (body.timeoutMs !== undefined && typeof body.timeoutMs !== "number") return invalidSend("/timeoutMs");
   if (body.context !== undefined) {
-    if (!isObject(body.context)) return invalidSend("/context");
-    const unexpectedContext = unexpectedProperty(body.context, ["summary", "refs"], ["context"]);
-    if (unexpectedContext !== undefined) return invalidSend(unexpectedContext);
-    if (!optionalString(body.context.summary)) return invalidSend("/context/summary");
-    if (body.context.refs !== undefined) {
-      if (!Array.isArray(body.context.refs)) return invalidSend("/context/refs");
-      for (const [index, ref] of body.context.refs.entries()) {
-        if (!isObject(ref)) return invalidSend(pointer("context", "refs", String(index)));
-        const unexpectedRef = unexpectedProperty(ref, ["path", "selector", "purpose"], ["context", "refs", String(index)]);
-        if (unexpectedRef !== undefined) return invalidSend(unexpectedRef);
-        if (typeof ref.path !== "string") return invalidSend(pointer("context", "refs", String(index), "path"));
-        if (!optionalString(ref.selector)) return invalidSend(pointer("context", "refs", String(index), "selector"));
-        if (!optionalString(ref.purpose)) return invalidSend(pointer("context", "refs", String(index), "purpose"));
-      }
-    }
+    const failure = contextValidationFailure(body.context);
+    if (failure !== undefined) return failure;
   }
   if (body.preflight !== undefined) {
-    if (!isObject(body.preflight)) return invalidSend("/preflight");
-    const unexpectedPreflight = unexpectedProperty(body.preflight, ["requiredProject"], ["preflight"]);
-    if (unexpectedPreflight !== undefined) return invalidSend(unexpectedPreflight);
-    if (!optionalString(body.preflight.requiredProject) || (body.preflight.requiredProject !== undefined && body.preflight.requiredProject.length === 0)) return invalidSend("/preflight/requiredProject");
+    const failure = preflightValidationFailure(body.preflight);
+    if (failure !== undefined) return failure;
   }
   if (body.metadata !== undefined) {
-    if (!isObject(body.metadata)) return invalidSend("/metadata");
-    const unexpectedMetadata = unexpectedProperty(body.metadata, ["phaseId", "issueId", "verificationTier", "rootCause"], ["metadata"]);
-    if (unexpectedMetadata !== undefined) return invalidSend(unexpectedMetadata);
-    for (const key of ["phaseId", "issueId", "verificationTier", "rootCause"] as const) {
-      if (!optionalString(body.metadata[key])) return invalidSend(pointer("metadata", key));
-    }
+    const failure = metadataValidationFailure(body.metadata);
+    if (failure !== undefined) return failure;
   }
   return undefined;
 }
