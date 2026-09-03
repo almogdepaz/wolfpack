@@ -5,9 +5,10 @@ import type { TriageStatus } from "../triage.js";
 import {
   collectAgentStatusSources,
   getAgentRuntimeStateStore,
-  type AgentRuntimeState,
 } from "./agent-status.js";
-import { getBackend, getRouter, type SessionListFact } from "./backend.js";
+import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
+import { getBackend, getRouter } from "./backend.js";
+import type { SessionBackend, SessionListFact } from "./backend.js";
 import {
   checkSessionTransitions,
   getSubscriptionCount,
@@ -79,141 +80,146 @@ function renderedActivityFingerprint(pane: string): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-async function collectSessionObservation(
-  fingerprints: Map<string, ActivityFingerprint>,
-): Promise<SessionObservation> {
-  const backend = getBackend();
-  const renderedFingerprint = async (
-    sessionKey: string,
-    name: string,
-    outputSequence: string | undefined,
-  ): Promise<string | undefined> => {
-    if (outputSequence === undefined) {
-      try {
-        return renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
-      } catch {
-        return undefined;
-      }
-    }
-    const cached = renderedFingerprintFlights.get(sessionKey);
-    if (cached?.outputSequence === outputSequence) return cached.promise;
-    const promise = backend.capturePane(name, { scrollbackLines: 0 })
-      .then(renderedActivityFingerprint)
-      .catch(() => undefined);
-    renderedFingerprintFlights.set(sessionKey, { outputSequence, promise });
-    const result = await promise;
-    if (result === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
-      renderedFingerprintFlights.delete(sessionKey);
-    }
-    return result;
-  };
-  const router = getRouter();
-  const routerOwnsBackend = backend === router;
-  let brokerAvailable = !(routerOwnsBackend && !router.isBrokerAvailable());
-  let sessionFacts: SessionListFact[] = [];
-  if (brokerAvailable) {
+async function renderedFingerprint(
+  backend: SessionBackend,
+  sessionKey: string,
+  name: string,
+  outputSequence: string | undefined,
+): Promise<string | undefined> {
+  if (outputSequence === undefined) {
     try {
-      sessionFacts = await backend.listSessionFacts();
+      return renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
     } catch {
-      brokerAvailable = false;
+      return undefined;
     }
   }
-
-  if (!brokerAvailable) {
-    const observedAt = new Date().toISOString();
-    const store = getAgentRuntimeStateStore();
-    const summariesBySessionKey = new Map<string, KnownSessionSummary>();
-    for (const summary of knownSessionSummaries.values()) {
-      summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
-    }
-    for (const sessionKey of Object.keys(store.snapshot().sessions)) {
-      if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
-    }
-    const sessions = Array.from(summariesBySessionKey.entries()).map(([sessionKey, { name, lastLine, identity }]) => {
-      const previous = store.get(sessionKey);
-      const runtimeState = store.reduce({
-        sessionKey,
-        broker: { state: "unavailable", observedAt },
-        sources: [],
-        fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
-        currentRun: {
-          runId: identity?.wolfpackSessionId ?? previous?.runId,
-          runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
-        },
-      }, { persist: false });
-      return { name, lastLine, triage: "idle" as TriageStatus, runtimeState, ...(identity && { identity }) };
-    }).sort((a, b) => a.name.localeCompare(b.name));
-    store.flush();
-    return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()) };
+  const cached = renderedFingerprintFlights.get(sessionKey);
+  if (cached?.outputSequence === outputSequence) return cached.promise;
+  const promise = backend.capturePane(name, { scrollbackLines: 0 })
+    .then(renderedActivityFingerprint)
+    .catch(() => undefined);
+  renderedFingerprintFlights.set(sessionKey, { outputSequence, promise });
+  const result = await promise;
+  if (result === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
+    renderedFingerprintFlights.delete(sessionKey);
   }
+  return result;
+}
 
-  const activeNames = new Set<string>();
-  const activeSessionKeys = new Set<string>();
-  const unreliableSessionKeys = new Set<string>();
+async function listAvailableSessionFacts(backend: SessionBackend): Promise<SessionListFact[] | undefined> {
+  const router = getRouter();
+  if (backend === router && !router.isBrokerAvailable()) return undefined;
+  try {
+    return await backend.listSessionFacts();
+  } catch {
+    return undefined;
+  }
+}
+
+function observeUnavailableSessions(): SessionObservation {
+  const observedAt = new Date().toISOString();
   const store = getAgentRuntimeStateStore();
-  const sessions = await Promise.all(sessionFacts.map(async (fact): Promise<ObservedSessionSummary> => {
-    const name = fact.name;
-    activeNames.add(name);
-    const brokerState = fact.alive ? "alive" : "dead";
-    const identity = fact.identity;
-    const sessionKey = identity?.wolfpackSessionId ?? name;
-    activeSessionKeys.add(sessionKey);
-
-    // The output watermark is a cheap invalidation signal. Only materialize a
-    // Ghostty snapshot when it advances; stable sessions do no terminal work.
-    // A shared per-sequence flight prevents the dashboard and notification
-    // observers from requesting the same snapshot concurrently.
-    const outputSequence = brokerOutputSequence(fact.outputSequence);
-    const previousFingerprint = fingerprints.get(sessionKey);
-    const shouldSampleRenderedState = brokerState === "alive" && (
-      previousFingerprint === undefined
-      || outputSequence === undefined
-      || previousFingerprint.outputSequence !== outputSequence
-    );
-    const currentRendered = shouldSampleRenderedState
-      ? await renderedFingerprint(sessionKey, name, outputSequence)
-      : previousFingerprint?.rendered;
-    const rawOutputChanged = shouldSampleRenderedState
-      && currentRendered !== undefined
-      && previousFingerprint?.rendered !== undefined
-      && currentRendered !== previousFingerprint.rendered;
-    if (shouldSampleRenderedState && currentRendered === undefined) {
-      unreliableSessionKeys.add(sessionKey);
-    } else if (brokerState === "alive") {
-      fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
-    }
-
-    const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-    const renderedPreview = lastTerminalPreviewLine(currentRendered);
-    const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
-    const observedAt = new Date().toISOString();
+  const summariesBySessionKey = new Map<string, KnownSessionSummary>();
+  for (const summary of knownSessionSummaries.values()) {
+    summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
+  }
+  for (const sessionKey of Object.keys(store.snapshot().sessions)) {
+    if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
+  }
+  const sessions = Array.from(summariesBySessionKey.entries()).map(([sessionKey, { name, lastLine, identity }]) => {
+    const previous = store.get(sessionKey);
     const runtimeState = store.reduce({
       sessionKey,
-      broker: { state: brokerState, observedAt },
-      sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
-        state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
-        stale: false,
-        observedAt,
-      }) : [],
-      fallback: { rawOutputChanged, observedAt, preview: lastLine },
+      broker: { state: "unavailable", observedAt },
+      sources: [],
+      fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
       currentRun: {
-        runId: identity?.wolfpackSessionId,
-        runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+        runId: identity?.wolfpackSessionId ?? previous?.runId,
+        runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
       },
     }, { persist: false });
-    const summary = {
-      name,
-      lastLine,
-      triage,
-      runtimeState,
-      ...(outputSequence !== undefined && { outputSequence }),
-      ...(identity && { identity }),
-    };
-    knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
-    return summary;
-  }));
+    return { name, lastLine, triage: "idle" as TriageStatus, runtimeState, ...(identity && { identity }) };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  store.flush();
+  return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()) };
+}
 
-  sessions.sort((a, b) => a.name.localeCompare(b.name));
+async function observeSessionFact(
+  backend: SessionBackend,
+  fact: SessionListFact,
+  fingerprints: Map<string, ActivityFingerprint>,
+  store: AgentRuntimeStateStore,
+  activeNames: Set<string>,
+  activeSessionKeys: Set<string>,
+  unreliableSessionKeys: Set<string>,
+): Promise<ObservedSessionSummary> {
+  const name = fact.name;
+  activeNames.add(name);
+  const brokerState = fact.alive ? "alive" : "dead";
+  const identity = fact.identity;
+  const sessionKey = identity?.wolfpackSessionId ?? name;
+  activeSessionKeys.add(sessionKey);
+
+  // The output watermark is a cheap invalidation signal. Only materialize a
+  // Ghostty snapshot when it advances; stable sessions do no terminal work.
+  // A shared per-sequence flight prevents the dashboard and notification
+  // observers from requesting the same snapshot concurrently.
+  const outputSequence = brokerOutputSequence(fact.outputSequence);
+  const previousFingerprint = fingerprints.get(sessionKey);
+  const shouldSampleRenderedState = brokerState === "alive" && (
+    previousFingerprint === undefined
+    || outputSequence === undefined
+    || previousFingerprint.outputSequence !== outputSequence
+  );
+  const currentRendered = shouldSampleRenderedState
+    ? await renderedFingerprint(backend, sessionKey, name, outputSequence)
+    : previousFingerprint?.rendered;
+  const rawOutputChanged = shouldSampleRenderedState
+    && currentRendered !== undefined
+    && previousFingerprint?.rendered !== undefined
+    && currentRendered !== previousFingerprint.rendered;
+  if (shouldSampleRenderedState && currentRendered === undefined) {
+    unreliableSessionKeys.add(sessionKey);
+  } else if (brokerState === "alive") {
+    fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
+  }
+
+  const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
+  const renderedPreview = lastTerminalPreviewLine(currentRendered);
+  const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
+  const observedAt = new Date().toISOString();
+  const runtimeState = store.reduce({
+    sessionKey,
+    broker: { state: brokerState, observedAt },
+    sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
+      state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+      stale: false,
+      observedAt,
+    }) : [],
+    fallback: { rawOutputChanged, observedAt, preview: lastLine },
+    currentRun: {
+      runId: identity?.wolfpackSessionId,
+      runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
+    },
+  }, { persist: false });
+  const summary = {
+    name,
+    lastLine,
+    triage,
+    runtimeState,
+    ...(outputSequence !== undefined && { outputSequence }),
+    ...(identity && { identity }),
+  };
+  knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
+  return summary;
+}
+
+function pruneSessionObservationState(
+  fingerprints: Map<string, ActivityFingerprint>,
+  activeSessionKeys: ReadonlySet<string>,
+  activeNames: ReadonlySet<string>,
+  store: AgentRuntimeStateStore,
+): void {
   for (const key of fingerprints.keys()) {
     if (!activeSessionKeys.has(key)) fingerprints.delete(key);
   }
@@ -225,6 +231,31 @@ async function collectSessionObservation(
   }
   store.prune(activeSessionKeys, { persist: false });
   store.flush();
+}
+
+async function collectSessionObservation(
+  fingerprints: Map<string, ActivityFingerprint>,
+): Promise<SessionObservation> {
+  const backend = getBackend();
+  const sessionFacts = await listAvailableSessionFacts(backend);
+  if (!sessionFacts) return observeUnavailableSessions();
+
+  const activeNames = new Set<string>();
+  const activeSessionKeys = new Set<string>();
+  const unreliableSessionKeys = new Set<string>();
+  const store = getAgentRuntimeStateStore();
+  const sessions = await Promise.all(sessionFacts.map((fact) => observeSessionFact(
+    backend,
+    fact,
+    fingerprints,
+    store,
+    activeNames,
+    activeSessionKeys,
+    unreliableSessionKeys,
+  )));
+
+  sessions.sort((a, b) => a.name.localeCompare(b.name));
+  pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store);
   return { sessions, unreliableSessionKeys };
 }
 
