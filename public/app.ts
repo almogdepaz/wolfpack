@@ -1186,46 +1186,36 @@ function exposeActiveView(activeView: HTMLElement): void {
   });
 }
 
-function showView(name: string, skipAnimation?: boolean, refreshSessions = true): void {
-  const prevView = state.currentView;
-  const prevEl = document.getElementById(prevView + "-view");
-  const isMobile = !isDesktop();
-
-  // Desktop: "sessions" view is hidden — redirect to terminal if active (unless sessions expanded)
-  const effectiveName = (!isMobile && name === "sessions" && state.currentSession && !state.sessionsExpanded) ? "terminal" : name;
-
-  const nextEl = document.getElementById(effectiveName + "-view");
-  if (!nextEl) return;
-  exposeActiveView(nextEl);
-  if (state.swipeNavigated) { skipAnimation = true; state.swipeNavigated = false; }
-  const animate = isMobile && !skipAnimation && prevView !== effectiveName && prevEl && nextEl;
-  const goingForward = (VIEW_DEPTH[effectiveName] || 0) > (VIEW_DEPTH[prevView] || 0);
-
-  // Stop debug panel refresh when leaving settings
-  if (prevView === "settings" && effectiveName !== "settings" && debugPanelTimer) {
+function stopDebugPanelRefresh(previousView: string, nextView: string): void {
+  if (previousView === "settings" && nextView !== "settings" && debugPanelTimer) {
     clearInterval(debugPanelTimer); debugPanelTimer = null;
   }
+}
 
-  // Tear down terminal connections when navigating away from terminal view
-  // Prevents background WS from auto-reconnecting and stealing control from other instances
-  if (prevView === "terminal" && effectiveName !== "terminal") {
-    closeTerminalTranscript();
-    if (state.activeDelegationRoot) {
-      destroyTerminal();
-      teardownDelegationWorkspace();
-      if (isGridActive()) suspendGridMode();
-    } else if (isGridActive()) {
-      suspendGridMode();
-    } else {
-      destroyTerminal();
-    }
+function teardownTerminalForViewChange(previousView: string, nextView: string): void {
+  // Prevents background WS from auto-reconnecting and stealing control from other instances.
+  if (previousView !== "terminal" || nextView === "terminal") return;
+  closeTerminalTranscript();
+  if (state.activeDelegationRoot) {
+    destroyTerminal();
+    teardownDelegationWorkspace();
+    if (isGridActive()) suspendGridMode();
+  } else if (isGridActive()) {
+    suspendGridMode();
+  } else {
+    destroyTerminal();
   }
+}
 
-  setState({ currentView: effectiveName });
-
-  if (animate) {
-    const fg = goingForward ? nextEl : prevEl;
-    const bg = goingForward ? prevEl : nextEl;
+function applyViewVisibility(
+  previousView: HTMLElement | null,
+  nextView: HTMLElement,
+  animate: boolean,
+  goingForward: boolean,
+): void {
+  if (animate && previousView) {
+    const fg = goingForward ? nextView : previousView;
+    const bg = goingForward ? previousView : nextView;
 
     bg.style.transition = "none";
     bg.style.transform = goingForward ? "translate3d(0,0,0)" : "translate3d(-30%,0,0)";
@@ -1248,7 +1238,7 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
     bg.style.transform = goingForward ? "translate3d(-30%,0,0)" : "translate3d(0,0,0)";
 
     let cleaned = false;
-    const cleanup = () => {
+    const cleanup = (): void => {
       if (cleaned) return;
       cleaned = true;
       [fg, bg].forEach(el => {
@@ -1257,127 +1247,142 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
         el.style.transform = "";
         el.classList.remove("swiping");
       });
-      document.querySelectorAll(".view").forEach(v => {
-        if (v !== nextEl) v.classList.remove("visible");
+      document.querySelectorAll(".view").forEach(view => {
+        if (view !== nextView) view.classList.remove("visible");
       });
-      nextEl.classList.add("visible");
+      nextView.classList.add("visible");
     };
     fg.addEventListener("transitionend", cleanup, { once: true });
     setTimeout(cleanup, 350);
-  } else {
-    // never remove .visible from target — prevents black flash
-    document.querySelectorAll(".view").forEach(v => {
-      if (v !== nextEl) v.classList.remove("visible", "animating", "swiping");
-    });
-    nextEl.classList.add("visible");
-    nextEl.style.transform = "";
-  }
-
-  const back = document.getElementById("back-btn");
-  const title = document.getElementById("header-title");
-
-  const gear = document.getElementById("gear-btn");
-
-  const chip = document.getElementById("session-chip");
-  const headerCenter = document.getElementById("header-center");
-
-  // Stop timers immediately (don't defer these)
-  if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }
-
-  // Desktop: skip all header manipulation, handle view-specific logic only
-  if (!isMobile) {
-    // Exit expanded sessions mode when navigating away from sessions
-    if (effectiveName !== "sessions" && state.sessionsExpanded) {
-      state.sessionsExpanded = false;
-      document.body.classList.remove("sessions-expanded");
-      const expandBtn = document.getElementById("sidebar-expand-btn");
-      if (expandBtn) expandBtn.classList.remove("active");
-      // Restore sidebar based on pin state
-      if (state.sidebarPinned) {
-        const sb = document.getElementById("desktop-sidebar");
-        if (sb) { sb.classList.remove("collapsed"); state.sidebarCollapsed = false; }
-      }
-    }
-    const settingsBackBtn = document.getElementById("settings-back-btn");
-    if (settingsBackBtn) settingsBackBtn.style.display = effectiveName === "settings" ? "block" : "none";
-    if (effectiveName === "settings") {
-      const advancedSettings = document.getElementById("settings-advanced") as HTMLDetailsElement | null;
-      if (advancedSettings) advancedSettings.open = true;
-      renderQuickCmdSettings();
-      loadAgentsSettings();
-    }
-    // Update sidebar active highlight
-    renderSidebar();
-    syncSessionRefreshTimer();
     return;
   }
 
-  // Mobile: full header management
-  const applyHeader = () => {
-    // Always start with kb-accessory closed on view change
-    document.getElementById("kb-accessory").classList.remove("visible");
-    state.kbAccessoryOpen = false;
-    chip.style.display = "none";
-    closeDrawer(true);
-    back.textContent = "← Back";
-    title.style.display = "";
-    title.style.cursor = "";
-    title.onclick = null;
-    document.getElementById("header-machine-label").style.display = "none";
-    headerCenter.style.transform = "";
+  // never remove .visible from target — prevents black flash
+  document.querySelectorAll(".view").forEach(view => {
+    if (view !== nextView) view.classList.remove("visible", "animating", "swiping");
+  });
+  nextView.classList.add("visible");
+  nextView.style.transform = "";
+}
 
-    if (name === "sessions") {
-      back.style.display = "none";
-      back.onclick = null;
-      gear.style.display = "";
-      title.textContent = "wolfpack";
-      if (refreshSessions) void loadSessions(); // immediate refresh on entering sessions view
-    } else if (name === "projects") {
-      back.style.display = "block";
-      back.onclick = () => { returnFromProjectPicker(); };
-      gear.style.display = "none";
-      title.textContent = "select project";
-      syncProjectPickerMobileHeader();
-
-    } else if (name === "agent") {
-      back.style.display = "block";
-      back.onclick = () => { showView("projects"); };
-      gear.style.display = "none";
-      title.textContent = "select agent";
-
-    } else if (name === "settings") {
-      back.style.display = "block";
-      back.onclick = () => { returnFromSettingsWithFocus(); };
-      gear.style.display = "none";
-      title.textContent = "settings";
-
-      renderQuickCmdSettings();
-      loadAgentsSettings();
-    } else if (name === "terminal") {
-      back.style.display = "block";
-      back.onclick = () => {
-        destroyTerminal();
-        setState({ currentSession: null, currentMachine: "" });
-        showView("sessions");
-        loadSessions();
-      };
-      gear.style.display = "none";
-      title.style.display = "none";
-      loadSessionSwitcher();
-      chip.style.display = "flex";
-      headerCenter.style.transform = "";
-      const hml = document.getElementById("header-machine-label");
-      if (getWorkspaceMachines().length > 0) {
-        const mName = state.currentMachine
-          ? (getWorkspaceMachines().find(m => m.url === state.currentMachine)?.name || "remote")
-          : (state.selfName || "local");
-        hml.textContent = mName;
-        hml.style.display = "block";
-      }
+function applyDesktopViewNavigation(viewName: string): void {
+  // Exit expanded sessions mode when navigating away from sessions.
+  if (viewName !== "sessions" && state.sessionsExpanded) {
+    state.sessionsExpanded = false;
+    document.body.classList.remove("sessions-expanded");
+    const expandBtn = document.getElementById("sidebar-expand-btn");
+    if (expandBtn) expandBtn.classList.remove("active");
+    // Restore sidebar based on pin state.
+    if (state.sidebarPinned) {
+      const sidebar = document.getElementById("desktop-sidebar");
+      if (sidebar) { sidebar.classList.remove("collapsed"); state.sidebarCollapsed = false; }
     }
-  };
+  }
+  const settingsBackBtn = document.getElementById("settings-back-btn");
+  if (settingsBackBtn) settingsBackBtn.style.display = viewName === "settings" ? "block" : "none";
+  if (viewName === "settings") {
+    const advancedSettings = document.getElementById("settings-advanced") as HTMLDetailsElement | null;
+    if (advancedSettings) advancedSettings.open = true;
+    renderQuickCmdSettings();
+    loadAgentsSettings();
+  }
+  renderSidebar();
+  syncSessionRefreshTimer();
+}
 
-  applyHeader();
+function applyMobileViewNavigation(viewName: string): void {
+  const back = document.getElementById("back-btn");
+  const title = document.getElementById("header-title");
+  const gear = document.getElementById("gear-btn");
+  const chip = document.getElementById("session-chip");
+  const headerCenter = document.getElementById("header-center");
+
+  // Always start with kb-accessory closed on view change.
+  document.getElementById("kb-accessory").classList.remove("visible");
+  state.kbAccessoryOpen = false;
+  chip.style.display = "none";
+  closeDrawer(true);
+  back.textContent = "← Back";
+  title.style.display = "";
+  title.style.cursor = "";
+  title.onclick = null;
+  document.getElementById("header-machine-label").style.display = "none";
+  headerCenter.style.transform = "";
+
+  if (viewName === "sessions") {
+    back.style.display = "none";
+    back.onclick = null;
+    gear.style.display = "";
+    title.textContent = "wolfpack";
+  } else if (viewName === "projects") {
+    back.style.display = "block";
+    back.onclick = () => { returnFromProjectPicker(); };
+    gear.style.display = "none";
+    title.textContent = "select project";
+    syncProjectPickerMobileHeader();
+  } else if (viewName === "agent") {
+    back.style.display = "block";
+    back.onclick = () => { showView("projects"); };
+    gear.style.display = "none";
+    title.textContent = "select agent";
+  } else if (viewName === "settings") {
+    back.style.display = "block";
+    back.onclick = () => { returnFromSettingsWithFocus(); };
+    gear.style.display = "none";
+    title.textContent = "settings";
+    renderQuickCmdSettings();
+    loadAgentsSettings();
+  } else if (viewName === "terminal") {
+    back.style.display = "block";
+    back.onclick = () => {
+      destroyTerminal();
+      setState({ currentSession: null, currentMachine: "" });
+      showView("sessions");
+      loadSessions();
+    };
+    gear.style.display = "none";
+    title.style.display = "none";
+    loadSessionSwitcher();
+    chip.style.display = "flex";
+    headerCenter.style.transform = "";
+    const machineLabel = document.getElementById("header-machine-label");
+    if (getWorkspaceMachines().length > 0) {
+      const machineName = state.currentMachine
+        ? (getWorkspaceMachines().find(machine => machine.url === state.currentMachine)?.name || "remote")
+        : (state.selfName || "local");
+      machineLabel.textContent = machineName;
+      machineLabel.style.display = "block";
+    }
+  }
+}
+
+function showView(name: string, skipAnimation?: boolean, refreshSessions = true): void {
+  const previousView = state.currentView;
+  const previousElement = document.getElementById(previousView + "-view");
+  const isMobile = !isDesktop();
+
+  // Desktop: "sessions" view is hidden — redirect to terminal if active (unless sessions expanded).
+  const viewName = (!isMobile && name === "sessions" && state.currentSession && !state.sessionsExpanded) ? "terminal" : name;
+  const nextElement = document.getElementById(viewName + "-view");
+  if (!nextElement) return;
+  exposeActiveView(nextElement);
+  if (state.swipeNavigated) { skipAnimation = true; state.swipeNavigated = false; }
+  const animate = isMobile && !skipAnimation && previousView !== viewName && !!previousElement;
+  const goingForward = (VIEW_DEPTH[viewName] || 0) > (VIEW_DEPTH[previousView] || 0);
+
+  stopDebugPanelRefresh(previousView, viewName);
+  teardownTerminalForViewChange(previousView, viewName);
+  setState({ currentView: viewName });
+  applyViewVisibility(previousElement, nextElement, animate, goingForward);
+
+  // Stop timers immediately (don't defer these).
+  if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }
+  if (!isMobile) {
+    applyDesktopViewNavigation(viewName);
+    return;
+  }
+  applyMobileViewNavigation(name);
+  if (name === "sessions" && refreshSessions) void loadSessions(); // immediate refresh on entering sessions view
   syncSessionRefreshTimer();
 }
 
