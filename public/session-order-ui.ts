@@ -133,46 +133,148 @@ function focusCard(reference: SessionOrderCardReference): void {
   else focus();
 }
 
-export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
-  let candidate: PointerCandidate | null = null;
-  let drag: SessionOrderDragState | null = null;
-  let suppressNextCardClick = false;
+class SessionOrderDragController {
+  private candidate: PointerCandidate | null = null;
+  private drag: SessionOrderDragState | null = null;
+  private suppressNextCardClick = false;
 
-  const clearCandidate = (): void => {
-    if (candidate?.timer != null) window.clearTimeout(candidate.timer);
-    candidate = null;
-  };
+  public constructor(private readonly handlers: SessionOrderUiHandlers) {}
 
-  const restoreDraggedCard = (active: SessionOrderDragState): void => {
+  public suppressesCardClick(target: Element): boolean {
+    if (!this.suppressNextCardClick || !target.closest(".card")) return false;
+    this.suppressNextCardClick = false;
+    return true;
+  }
+
+  public hasDrag(): boolean {
+    return this.drag !== null;
+  }
+
+  public isPointerDragging(pointerId: number): boolean {
+    return this.drag?.pointerId === pointerId;
+  }
+
+  public preview(clientX: number, clientY: number): void {
+    this.previewTarget(clientX, clientY);
+  }
+
+  public beginCandidate(
+    target: EventTarget | null,
+    pointerId: number,
+    pointerType: string,
+    clientX: number,
+    clientY: number,
+  ): void {
+    if (!(target instanceof Element) || target.closest(INTERACTIVE_CONTROL_SELECTOR)) return;
+    const card = target.closest<HTMLElement>(".card[data-session-order-id]");
+    const moving = cardReference(card);
+    if (!card || !moving) return;
+    this.clearCandidate();
+    this.candidate = {
+      pointerId,
+      pointerType,
+      originX: clientX,
+      originY: clientY,
+      card,
+      moving,
+      timer: null,
+    };
+    if (pointerType !== "mouse") {
+      const pending = this.candidate;
+      pending.timer = window.setTimeout(() => this.startDrag(pending, pending.originX, pending.originY), TOUCH_HOLD_MS);
+    }
+  }
+
+  public activateCandidate(pointerId: number, clientX: number, clientY: number): boolean {
+    const pending = this.candidate;
+    if (!pending || pending.pointerId !== pointerId) return false;
+    const distance = Math.hypot(clientX - pending.originX, clientY - pending.originY);
+    if (pending.pointerType === "mouse" && distance >= MOUSE_DRAG_THRESHOLD) {
+      this.startDrag(pending, clientX, clientY);
+      return true;
+    }
+    if (pending.pointerType !== "mouse" && distance >= TOUCH_SCROLL_THRESHOLD) this.clearCandidate();
+    return false;
+  }
+
+  public isPointerCandidate(pointerId: number): boolean {
+    return this.candidate?.pointerId === pointerId;
+  }
+
+  public clearPendingCandidate(): void {
+    this.clearCandidate();
+  }
+
+  public beginTouch(touches: TouchList, target: EventTarget | null): void {
+    if (touches.length !== 1) {
+      this.clearCandidate();
+      return;
+    }
+    const touch = touches[0];
+    this.beginCandidate(target, touch.identifier, "touch", touch.clientX, touch.clientY);
+  }
+
+  public dragTouch(touches: TouchList): Touch | null {
+    return this.drag ? touchById(touches, this.drag.pointerId) : null;
+  }
+
+  public moveTouchCandidate(touches: TouchList): void {
+    const pending = this.candidate;
+    if (!pending || pending.pointerType !== "touch") return;
+    const touch = touchById(touches, pending.pointerId);
+    if (!touch) return;
+    const distance = Math.hypot(touch.clientX - pending.originX, touch.clientY - pending.originY);
+    if (distance >= TOUCH_SCROLL_THRESHOLD) this.clearCandidate();
+  }
+
+  public matchesTouch(changedTouches: TouchList): boolean {
+    const identifier = this.drag?.pointerId ?? this.candidate?.pointerId;
+    return identifier !== undefined && touchById(changedTouches, identifier) !== null;
+  }
+
+  public finish(commit: boolean): void {
+    this.finishDrag(commit);
+  }
+
+  public cancel(): void {
+    this.finishDrag(false);
+  }
+
+  private clearCandidate(): void {
+    if (this.candidate?.timer != null) window.clearTimeout(this.candidate.timer);
+    this.candidate = null;
+  }
+
+  private restoreDraggedCard(active: SessionOrderDragState): void {
     active.card.classList.remove("session-order-floating");
     active.card.style.cssText = active.cardStyle;
     active.originParent.insertBefore(active.card, active.originNextSibling);
     active.placeholder.remove();
     for (const hidden of active.hiddenCards) hidden.element.style.display = hidden.display;
     document.body.classList.remove("session-order-pointer-active");
-    handlers.setDragActive(false);
-  };
+    this.handlers.setDragActive(false);
+  }
 
-  const finishDrag = (commit: boolean): void => {
-    const completed = drag;
-    drag = null;
-    clearCandidate();
+  private finishDrag(commit: boolean): void {
+    const completed = this.drag;
+    this.drag = null;
+    this.clearCandidate();
     if (!completed) return;
-    restoreDraggedCard(completed);
+    this.restoreDraggedCard(completed);
     if (completed.pointerType !== "touch") {
-      suppressNextCardClick = true;
-      window.setTimeout(() => { suppressNextCardClick = false; }, 0);
+      this.suppressNextCardClick = true;
+      window.setTimeout(() => { this.suppressNextCardClick = false; }, 0);
     }
     if (commit && completed.target
-      && handlers.move(completed.moving, completed.target, completed.placement)) {
+      && this.handlers.move(completed.moving, completed.target, completed.placement)) {
       focusCard(completed.moving);
     }
-  };
+  }
 
-  const startDrag = (pending: PointerCandidate, clientX: number, clientY: number): void => {
-    if (candidate !== pending || drag) return;
+  private startDrag(pending: PointerCandidate, clientX: number, clientY: number): void {
+    if (this.candidate !== pending || this.drag) return;
     if (pending.timer !== null) window.clearTimeout(pending.timer);
-    candidate = null;
+    this.candidate = null;
 
     const cardRect = pending.card.getBoundingClientRect();
     const followers = descendantCards(pending.card);
@@ -199,10 +301,10 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
     pending.card.style.height = `${cardRect.height}px`;
     document.body.appendChild(pending.card);
     document.body.classList.add("session-order-pointer-active");
-    handlers.setDragActive(true);
+    this.handlers.setDragActive(true);
     try { pending.card.setPointerCapture(pending.pointerId); } catch { /* synthetic pointer event */ }
 
-    drag = {
+    this.drag = {
       pointerId: pending.pointerId,
       pointerType: pending.pointerType,
       moving: pending.moving,
@@ -217,40 +319,48 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
       target: null,
       placement: "before",
     };
-  };
+  }
 
-  const previewTarget = (clientX: number, clientY: number): void => {
-    if (!drag) return;
-    drag.card.style.left = `${clientX - drag.pointerOffsetX}px`;
-    drag.card.style.top = `${clientY - drag.pointerOffsetY}px`;
+  private previewTarget(clientX: number, clientY: number): void {
+    const active = this.drag;
+    if (!active) return;
+    active.card.style.left = `${clientX - active.pointerOffsetX}px`;
+    active.card.style.top = `${clientY - active.pointerOffsetY}px`;
 
-    const target = scopeReferenceAtPoint(document.elementFromPoint(clientX, clientY), drag.moving);
-    if (!target || target.sessionId === drag.moving.sessionId) return;
+    const target = scopeReferenceAtPoint(document.elementFromPoint(clientX, clientY), active.moving);
+    if (!target || target.sessionId === active.moving.sessionId) return;
     const targetCard = cardForReference(target);
     if (!targetCard) return;
     const targetRect = targetCard.getBoundingClientRect();
     const placement: Placement = clientY > targetRect.top + targetRect.height / 2 ? "after" : "before";
-    if (drag.target?.sessionId === target.sessionId && drag.placement === placement) return;
+    if (active.target?.sessionId === target.sessionId && active.placement === placement) return;
 
-    const visibleCards = Array.from(drag.originParent.querySelectorAll<HTMLElement>(".card[data-session-order-id]"))
+    const visibleCards = Array.from(active.originParent.querySelectorAll<HTMLElement>(".card[data-session-order-id]"))
       .filter(card => card.style.display !== "none");
     const previousTops = new Map(visibleCards.map(card => [card, card.getBoundingClientRect().top]));
     if (placement === "before") {
-      drag.originParent.insertBefore(drag.placeholder, targetCard);
+      active.originParent.insertBefore(active.placeholder, targetCard);
     } else {
       const targetBlock = descendantCards(targetCard);
-      drag.originParent.insertBefore(drag.placeholder, targetBlock.at(-1)?.nextSibling ?? targetCard.nextSibling);
+      active.originParent.insertBefore(active.placeholder, targetBlock.at(-1)?.nextSibling ?? targetCard.nextSibling);
     }
     animateLayout(visibleCards, previousTops);
-    drag.target = target;
-    drag.placement = placement;
-  };
+    active.target = target;
+    active.placement = placement;
+  }
+}
+
+function touchById(touches: TouchList, identifier: number): Touch | null {
+  return Array.from(touches).find(touch => touch.identifier === identifier) ?? null;
+}
+
+export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
+  const drag = new SessionOrderDragController(handlers);
 
   document.addEventListener("click", event => {
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (suppressNextCardClick && target.closest(".card")) {
-      suppressNextCardClick = false;
+    if (drag.suppressesCardClick(target)) {
       event.preventDefault();
       event.stopImmediatePropagation();
       return;
@@ -263,9 +373,9 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
   }, true);
 
   document.addEventListener("keydown", event => {
-    if (event.key === "Escape" && drag) {
+    if (event.key === "Escape" && drag.hasDrag()) {
       event.preventDefault();
-      finishDrag(false);
+      drag.cancel();
       return;
     }
     const target = event.target;
@@ -280,114 +390,66 @@ export function bindSessionOrderEvents(handlers: SessionOrderUiHandlers): void {
     focusCard(moving);
   });
 
-  const beginCandidate = (
-    target: EventTarget | null,
-    pointerId: number,
-    pointerType: string,
-    clientX: number,
-    clientY: number,
-  ): void => {
-    if (!(target instanceof Element) || target.closest(INTERACTIVE_CONTROL_SELECTOR)) return;
-    const card = target.closest<HTMLElement>(".card[data-session-order-id]");
-    const moving = cardReference(card);
-    if (!card || !moving) return;
-    clearCandidate();
-    candidate = {
-      pointerId,
-      pointerType,
-      originX: clientX,
-      originY: clientY,
-      card,
-      moving,
-      timer: null,
-    };
-    if (pointerType !== "mouse") {
-      const pending = candidate;
-      pending.timer = window.setTimeout(() => startDrag(pending, pending.originX, pending.originY), TOUCH_HOLD_MS);
-    }
-  };
-
   document.addEventListener("pointerdown", event => {
     if (event.pointerType === "touch" || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
-    beginCandidate(event.target, event.pointerId, event.pointerType, event.clientX, event.clientY);
+    drag.beginCandidate(event.target, event.pointerId, event.pointerType, event.clientX, event.clientY);
   });
 
   document.addEventListener("pointermove", event => {
     if (event.pointerType === "touch") return;
-    if (drag?.pointerId === event.pointerId) {
+    if (drag.isPointerDragging(event.pointerId)) {
       event.preventDefault();
-      previewTarget(event.clientX, event.clientY);
+      drag.preview(event.clientX, event.clientY);
       return;
     }
-    if (candidate?.pointerId !== event.pointerId) return;
-    const distance = Math.hypot(event.clientX - candidate.originX, event.clientY - candidate.originY);
-    if (candidate.pointerType === "mouse" && distance >= MOUSE_DRAG_THRESHOLD) {
-      const pending = candidate;
-      startDrag(pending, event.clientX, event.clientY);
-      event.preventDefault();
-      previewTarget(event.clientX, event.clientY);
-    } else if (candidate.pointerType !== "mouse" && distance >= TOUCH_SCROLL_THRESHOLD) {
-      clearCandidate();
-    }
+    if (!drag.activateCandidate(event.pointerId, event.clientX, event.clientY)) return;
+    event.preventDefault();
+    drag.preview(event.clientX, event.clientY);
   }, { passive: false });
 
   document.addEventListener("pointerup", event => {
     if (event.pointerType === "touch") return;
-    if (drag?.pointerId === event.pointerId) {
+    if (drag.isPointerDragging(event.pointerId)) {
       event.preventDefault();
-      finishDrag(true);
-    } else if (candidate?.pointerId === event.pointerId) {
-      clearCandidate();
+      drag.finish(true);
+    } else if (drag.isPointerCandidate(event.pointerId)) {
+      drag.clearPendingCandidate();
     }
   });
   document.addEventListener("pointercancel", event => {
     if (event.pointerType === "touch") return;
-    if (drag?.pointerId === event.pointerId) finishDrag(false);
-    else if (candidate?.pointerId === event.pointerId) clearCandidate();
+    if (drag.isPointerDragging(event.pointerId)) drag.cancel();
+    else if (drag.isPointerCandidate(event.pointerId)) drag.clearPendingCandidate();
   });
 
-  const touchById = (touches: TouchList, identifier: number): Touch | null =>
-    Array.from(touches).find(touch => touch.identifier === identifier) ?? null;
-
   document.addEventListener("touchstart", event => {
-    if (event.touches.length !== 1) {
-      clearCandidate();
-      return;
-    }
-    const touch = event.touches[0];
-    beginCandidate(event.target, touch.identifier, "touch", touch.clientX, touch.clientY);
+    drag.beginTouch(event.touches, event.target);
   }, { passive: true });
 
   document.addEventListener("touchmove", event => {
-    if (drag) {
-      const touch = touchById(event.touches, drag.pointerId);
+    if (drag.hasDrag()) {
+      const touch = drag.dragTouch(event.touches);
       if (!touch) return;
       event.preventDefault();
-      previewTarget(touch.clientX, touch.clientY);
+      drag.preview(touch.clientX, touch.clientY);
       return;
     }
-    if (!candidate || candidate.pointerType !== "touch") return;
-    const touch = touchById(event.touches, candidate.pointerId);
-    if (!touch) return;
-    const distance = Math.hypot(touch.clientX - candidate.originX, touch.clientY - candidate.originY);
-    if (distance >= TOUCH_SCROLL_THRESHOLD) clearCandidate();
+    drag.moveTouchCandidate(event.touches);
   }, { passive: false });
 
   document.addEventListener("touchend", event => {
-    const identifier = drag?.pointerId ?? candidate?.pointerId;
-    if (identifier === undefined || !touchById(event.changedTouches, identifier)) return;
-    if (drag) {
+    if (!drag.matchesTouch(event.changedTouches)) return;
+    if (drag.hasDrag()) {
       event.preventDefault();
-      finishDrag(true);
+      drag.finish(true);
     } else {
-      clearCandidate();
+      drag.clearPendingCandidate();
     }
   }, { passive: false });
   document.addEventListener("touchcancel", event => {
-    const identifier = drag?.pointerId ?? candidate?.pointerId;
-    if (identifier === undefined || !touchById(event.changedTouches, identifier)) return;
-    if (drag) finishDrag(false);
-    else clearCandidate();
+    if (!drag.matchesTouch(event.changedTouches)) return;
+    if (drag.hasDrag()) drag.cancel();
+    else drag.clearPendingCandidate();
   });
-  window.addEventListener("blur", () => finishDrag(false));
+  window.addEventListener("blur", () => drag.cancel());
 }

@@ -401,6 +401,41 @@ test("direct card drag previews live movement and keeps delegation children atta
   await expect.poll(cardNames).toEqual(["solo", "parent", "child"]);
 });
 
+test("desktop escape cancels a nested card drag and restores the hierarchy", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop pointer cancellation only");
+
+  await routeDelegationSessions(page, [
+    fakeSession("parent", "parent-id"),
+    fakeSession("child", "child-id", { id: "parent-id", name: "parent" }),
+    fakeSession("solo", "solo-id"),
+  ]);
+
+  await page.goto(srv.baseUrl);
+  const list = page.locator("#sidebar-session-list");
+  const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
+  const childCard = list.locator('.sub-session-card[data-session-order-machine=""]');
+  const soloCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="solo-id"]');
+  await parentCard.getByRole("button", { name: "Expand 1 child agent" }).click();
+  const parentBox = await parentCard.boundingBox();
+  const soloBox = await soloCard.boundingBox();
+  expect(parentBox).not.toBeNull();
+  expect(soloBox).not.toBeNull();
+
+  await page.mouse.move(parentBox!.x + 16, parentBox!.y + parentBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(soloBox!.x + 16, soloBox!.y + soloBox!.height / 2, { steps: 8 });
+  await expect(page.locator(".session-order-floating")).toBeVisible();
+  await expect(childCard).not.toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+
+  await expect(page.locator(".session-order-floating")).toHaveCount(0);
+  await expect(page.locator(".session-order-placeholder")).toHaveCount(0);
+  await expect(childCard).toBeVisible();
+  await expect(list.locator('.card[data-session-order-machine=""] .card-name')).toHaveText(["parent", "child", "solo"]);
+});
+
 test("mobile moved card opens its terminal immediately after touch reorder", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile touch behavior only");
 
