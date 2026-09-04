@@ -895,7 +895,8 @@ function resolveReadyMachineOrigin(machineIdentity: string | undefined): string 
 }
 
 async function showMachineUnavailable(): Promise<void> {
-  void tailnetDiscoveryAutoRefresh.requestRefresh();
+  // This best-effort refresh may fail; the dialog reports unavailable state.
+  void tailnetDiscoveryAutoRefresh.requestRefresh().catch(() => undefined);
   await showAppDialog({
     title: "Machine unavailable",
     message: "This Tailnet machine is no longer ready. Refresh Tailnet discovery and try again.",
@@ -4241,8 +4242,7 @@ async function discoverMachines(): Promise<void> {
   statusEl.textContent = "Scanning tailnet...";
   statusEl.style.color = "#555";
   try {
-    const refreshResult = await refreshTailnetPeers();
-    if (refreshResult === "stale") return;
+    await tailnetDiscoveryAutoRefresh.requestRefresh();
     const machines = getMachines();
     const ready = machines.filter((machine) => machine.ready).length;
     renderMachinesList();

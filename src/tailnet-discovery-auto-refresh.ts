@@ -1,10 +1,10 @@
 export const TAILNET_DISCOVERY_REFRESH_INTERVAL_MS = 60_000;
 
-export type TailnetDiscoveryRefresh = () => Promise<void>;
-export type TailnetDiscoverySetInterval = (callback: () => void, ms: number) => unknown;
-export type TailnetDiscoveryClearInterval = (handle: unknown) => void;
+type TailnetDiscoveryRefresh = () => Promise<void>;
+type TailnetDiscoverySetInterval = (callback: () => void, ms: number) => unknown;
+type TailnetDiscoveryClearInterval = (handle: unknown) => void;
 
-export interface TailnetDiscoveryAutoRefreshOptions {
+interface TailnetDiscoveryAutoRefreshOptions {
   readonly refresh: TailnetDiscoveryRefresh;
   readonly isVisible: () => boolean;
   readonly setInterval?: TailnetDiscoverySetInterval;
@@ -13,7 +13,7 @@ export interface TailnetDiscoveryAutoRefreshOptions {
   readonly onError?: (error: unknown) => void;
 }
 
-export interface TailnetDiscoveryAutoRefresh {
+interface TailnetDiscoveryAutoRefresh {
   readonly sync: (refreshNow?: boolean) => void;
   readonly requestRefresh: () => Promise<void>;
   readonly stop: () => void;
@@ -29,18 +29,29 @@ export function createTailnetDiscoveryAutoRefresh(
   let inFlight: Promise<void> | undefined;
   let refreshAfterCurrent = false;
 
+  const drainRefreshRequests = async (): Promise<void> => {
+    let lastRefreshError: unknown;
+    let lastRefreshFailed = false;
+    do {
+      refreshAfterCurrent = false;
+      try {
+        await options.refresh();
+        lastRefreshFailed = false;
+      } catch (error: unknown) {
+        lastRefreshError = error;
+        lastRefreshFailed = true;
+      }
+    } while (refreshAfterCurrent && options.isVisible());
+    if (lastRefreshFailed) throw lastRefreshError;
+  };
+
   const requestRefresh = (): Promise<void> => {
     if (!options.isVisible()) return Promise.resolve();
     if (inFlight) {
       refreshAfterCurrent = true;
       return inFlight;
     }
-    inFlight = (async () => {
-      do {
-        refreshAfterCurrent = false;
-        await options.refresh();
-      } while (refreshAfterCurrent && options.isVisible());
-    })().finally(() => {
+    inFlight = drainRefreshRequests().finally(() => {
       inFlight = undefined;
     });
     return inFlight;
@@ -52,12 +63,17 @@ export function createTailnetDiscoveryAutoRefresh(
     timer = undefined;
   };
 
+  const handleBackgroundError = options.onError ?? (() => undefined);
+  const requestBackgroundRefresh = (): void => {
+    void requestRefresh().catch(handleBackgroundError);
+  };
+
   return {
     sync(refreshNow = false): void {
       stop();
       if (!options.isVisible()) return;
-      if (refreshNow) void requestRefresh().catch(options.onError);
-      timer = setIntervalFn(() => { void requestRefresh().catch(options.onError); }, intervalMs);
+      if (refreshNow) requestBackgroundRefresh();
+      timer = setIntervalFn(requestBackgroundRefresh, intervalMs);
     },
     requestRefresh,
     stop,
