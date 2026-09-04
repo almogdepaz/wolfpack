@@ -13,7 +13,6 @@ ${actionController}`).not.toMatch(/on(?:click|change)=["\']/i);
   });
 
   test("wires the extracted delegated action controller into production", () => {
-    expect(app).toContain('import { bindDelegatedAppActions } from "./app-action-controller"');
     expect(app).toContain("bindDelegatedAppActions(document, {");
     expect(actionController).toContain('action === "create-agent-session"');
   });

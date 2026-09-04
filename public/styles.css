@@ -245,6 +245,42 @@ header h1 {
   display: none !important;
 }
 
+#session-dashboard-controls {
+  flex-shrink: 0;
+  padding: 8px 8px 0;
+}
+.session-card-view-filter {
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+}
+.session-card-view-button {
+  min-width: 64px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: 700 11px/1 var(--font-mono);
+  letter-spacing: 0.8px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.session-card-view-button.selected {
+  border-color: var(--accent-border);
+  background: var(--accent-ghost);
+  color: var(--accent);
+}
+.session-card-view-button:hover { color: var(--text-primary); }
+.session-card-view-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .list {
   flex: 1;
   overflow-y: auto;
@@ -2358,6 +2394,23 @@ body.no-animations, body.no-animations * {
     overflow-y: auto;
     padding: 6px;
   }
+  .sidebar-sessions > .session-card-view-filter {
+    margin: 2px 0 8px;
+  }
+  .sidebar-sessions .session-card-view-button {
+    min-width: 0;
+    min-height: 40px;
+    flex: 1;
+    padding-inline: 8px;
+    font-size: 10px;
+  }
+  .sidebar-sessions .idle-session-empty {
+    margin: 6px 0;
+    padding: 12px;
+    gap: 8px;
+  }
+  .sidebar-sessions .idle-session-empty h2 { font-size: 12px; }
+  .sidebar-sessions .idle-session-empty p { font-size: 10px; line-height: 1.45; }
 
   /* Sidebar cards — denser than mobile */
   .sidebar-sessions .card {
@@ -2819,6 +2872,7 @@ body.no-animations, body.no-animations * {
 .machine-picker-name { color: #999; }
 .version-warning { color: var(--warning-hot); margin-left: 6px; font-size: 11px; padding: 3px 8px; border: 1px solid var(--accent); border-radius: var(--radius-sm); cursor: pointer; -webkit-tap-highlight-color: transparent; letter-spacing: 1px; }
 .group-status { padding: 4px 4px; color: var(--text-dim); font-size: 11px; }
+.idle-session-empty,
 .zero-session-card {
   min-width: 0;
   margin: 12px 4px 10px;
@@ -2830,7 +2884,9 @@ body.no-animations, body.no-animations * {
   border-radius: var(--radius-lg);
   background: var(--bg-surface-gradient);
 }
+.idle-session-empty h2,
 .zero-session-card h2 { color: var(--text-primary); font-size: 18px; line-height: 1.3; }
+.idle-session-empty p,
 .zero-session-card p { max-width: 68ch; color: var(--text-muted); line-height: 1.6; }
 .zero-session-primary {
   width: fit-content;
