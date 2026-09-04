@@ -287,10 +287,15 @@ function parseExistingProjectSelector(
 }
 
 type LaunchSessionAction = "create" | "open";
-type TargetSessionAction = "status" | "read" | "send" | "wait" | "prompt";
+const TARGET_SESSION_ACTIONS = ["status", "read", "send", "wait", "prompt"] as const;
+type TargetSessionAction = (typeof TARGET_SESSION_ACTIONS)[number];
+
+function isTargetSessionAction(action: string): action is TargetSessionAction {
+  return TARGET_SESSION_ACTIONS.some((candidate) => candidate === action);
+}
 
 function isSessionAction(action: string): action is SessionAction {
-  return ["create", "open", "status", "read", "send", "wait", "prompt", "current-context"].includes(action);
+  return action === "create" || action === "open" || action === "current-context" || isTargetSessionAction(action);
 }
 
 function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]): ParsedSessionCommand {
@@ -990,7 +995,7 @@ export async function runSessionCommand(
   }
   if (
     argv.length === 2
-    && ["status", "read", "send", "wait", "prompt"].includes(argv[0] ?? "")
+    && isTargetSessionAction(argv[0] ?? "")
     && HELP_ALIASES.has(argv[1] ?? "")
   ) {
     print(sessionUsage());
