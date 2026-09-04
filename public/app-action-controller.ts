@@ -1,3 +1,14 @@
+export const SESSION_CARD_VIEW = {
+  ALL: "all",
+  IDLE: "idle",
+} as const;
+export const SESSION_CARD_VIEWS = [SESSION_CARD_VIEW.ALL, SESSION_CARD_VIEW.IDLE] as const;
+export type SessionCardView = typeof SESSION_CARD_VIEWS[number];
+
+export function isSessionCardView(value: string): value is SessionCardView {
+  return SESSION_CARD_VIEWS.some(view => view === value);
+}
+
 export interface DelegatedAppActions {
   quickSend(index: number): void;
   quickMove(index: number, offset: -1 | 1): void;
@@ -13,6 +24,7 @@ export interface DelegatedAppActions {
   createAgentSession(command: string): void;
   agentToggle(command: string, enabled: boolean): void;
   toggleGrid(session: string, machine: string, event: MouseEvent): void;
+  setSessionCardView(view: SessionCardView): void;
 }
 
 /** Owns dynamic data-action dispatch so the app facade does not accumulate per-render listeners. */
@@ -39,6 +51,9 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "agent-remove" && button.dataset.command) actions.agentRemove(button.dataset.command);
     else if (action === "create-agent-session" && button.dataset.command) actions.createAgentSession(button.dataset.command);
     else if (action === "toggle-grid" && session) actions.toggleGrid(session, machine || "", event);
+    else if (action === "set-session-card-view" && button.dataset.sessionCardView && isSessionCardView(button.dataset.sessionCardView)) {
+      actions.setSessionCardView(button.dataset.sessionCardView);
+    }
   };
   const change = (event: Event) => {
     const target = event.target;

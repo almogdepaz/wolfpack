@@ -17,6 +17,8 @@ import {
   sameOriginPushUrl,
 } from "../src/push-subscription-origin";
 import { authenticatedFetchWithTimeout } from "./browser-auth";
+import { SESSION_CARD_VIEW } from "./app-action-controller";
+import type { SessionCardView } from "./app-action-controller";
 
 export { esc, escAttr } from "../src/html-escape";
 
@@ -389,6 +391,7 @@ export const state = {
   lastSessionGroups: [],
   firstLoad: true,
   lastSessionsHtml: "",
+  sessionCardView: SESSION_CARD_VIEW.ALL as SessionCardView,
   loadSessionsEpoch: 0,
   selfName: "",
   selfVersion: "",
