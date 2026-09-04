@@ -696,8 +696,9 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
   }
 });
 
-test("does not let an older delayed probe restore authority after a newer enumeration failure", async ({ page }) => {
+test("serializes queued manual discovery before revoking a peer", async ({ page }) => {
   let candidateMode: "valid" | "error" = "valid";
+  let candidateRequests = 0;
   let holdNextHandshake = false;
   let olderHandshakeStarted = false;
   let releaseOlderHandshake: () => void = () => {};
@@ -708,6 +709,7 @@ test("does not let an older delayed probe restore authority after a newer enumer
   let peerPtyRequests = 0;
 
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
+    candidateRequests++;
     if (candidateMode === "error") {
       await route.fulfill({
         contentType: "application/json",
@@ -763,22 +765,22 @@ test("does not let an older delayed probe restore authority after a newer enumer
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "Settings" }).click();
+  const discoverButton = page.getByRole("button", { name: "Discover Tailnet" });
+  const candidateRequestsBeforeRefresh = candidateRequests;
   holdNextHandshake = true;
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
+  await discoverButton.click();
   await expect.poll(() => olderHandshakeStarted).toBe(true);
+  expect(candidateRequests).toBe(candidateRequestsBeforeRefresh + 1);
 
   candidateMode = "error";
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
-  await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
-  await expect(peerGroup).toHaveCount(0);
-  const sessionRequestsAfterRevocation = peerSessionRequests;
+  await discoverButton.click();
+  expect(candidateRequests).toBe(candidateRequestsBeforeRefresh + 1);
 
   releaseOlderHandshake();
-  await page.waitForTimeout(150);
-
+  await expect.poll(() => candidateRequests).toBe(candidateRequestsBeforeRefresh + 2);
+  await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
   await expect(peerGroup).toHaveCount(0);
   await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
-  expect(peerSessionRequests).toBe(sessionRequestsAfterRevocation);
   expect(peerPtyRequests).toBe(0);
 });
 
@@ -861,7 +863,8 @@ test("does not let a stale session response restore a peer revoked by a newer re
   await expect(visibleSessionList(page).locator(`[data-machine="${peerIdentity}"] [aria-label="Open stale peer session"]`)).toHaveCount(0);
 });
 
-test("does not let an older probe failure overwrite a newer ready peer", async ({ page }) => {
+test("coalesces repeated manual discovery after a failed probe", async ({ page }) => {
+  let candidateRequests = 0;
   let holdOlderProbe = false;
   let olderProbeStarted = false;
   let olderFailureSettled = false;
@@ -871,6 +874,7 @@ test("does not let an older probe failure overwrite a newer ready peer", async (
   });
 
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
+    candidateRequests++;
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ candidates: [
@@ -917,22 +921,23 @@ test("does not let an older probe failure overwrite a newer ready peer", async (
   await expect(peerGroup).not.toHaveClass(/offline/);
 
   await page.getByRole("button", { name: "Settings" }).click();
+  const discoverButton = page.getByRole("button", { name: "Discover Tailnet" });
+  const candidateRequestsBeforeRefresh = candidateRequests;
   holdOlderProbe = true;
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
+  await discoverButton.click();
   await expect.poll(() => olderProbeStarted).toBe(true);
+  expect(candidateRequests).toBe(candidateRequestsBeforeRefresh + 1);
 
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
-  await expect(peerGroup).not.toHaveClass(/offline/);
-  await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "online");
-  await expect(page.locator("#discover-status")).toHaveText("Found 1 ready Tailnet machine");
+  await discoverButton.click();
+  expect(candidateRequests).toBe(candidateRequestsBeforeRefresh + 1);
 
   releaseOlderProbe();
   await expect.poll(() => olderFailureSettled).toBe(true);
+  await expect.poll(() => candidateRequests).toBe(candidateRequestsBeforeRefresh + 2);
 
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "online");
   await expect(page.locator("#discover-status")).toHaveText("Found 1 ready Tailnet machine");
-  await expect(peerGroup).not.toHaveClass(/offline/);
 });
 
 test("renders local and a verified peer while a malformed candidate stays non-routable", async ({ page }) => {
