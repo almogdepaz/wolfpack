@@ -287,10 +287,15 @@ function parseExistingProjectSelector(
 }
 
 type LaunchSessionAction = "create" | "open";
-type TargetSessionAction = "status" | "read" | "send" | "wait" | "prompt";
+const TARGET_SESSION_ACTIONS = ["status", "read", "send", "wait", "prompt"] as const;
+type TargetSessionAction = (typeof TARGET_SESSION_ACTIONS)[number];
+
+function isTargetSessionAction(action: string): action is TargetSessionAction {
+  return TARGET_SESSION_ACTIONS.some((candidate) => candidate === action);
+}
 
 function isSessionAction(action: string): action is SessionAction {
-  return ["create", "open", "status", "read", "send", "wait", "prompt", "current-context"].includes(action);
+  return action === "create" || action === "open" || action === "current-context" || isTargetSessionAction(action);
 }
 
 function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]): ParsedSessionCommand {
@@ -882,65 +887,38 @@ export async function runAgentCommand(
   return runSessionOpen(parsed, target);
 }
 
-export async function runSessionCommand(
-  argv: readonly string[],
+async function runCurrentContext(
+  parsed: Extract<ParsedSessionCommand, { readonly action: "current-context" }>,
   target?: VerifiedMachineTarget,
 ): Promise<number> {
-  if (argv.length === 1 && HELP_ALIASES.has(argv[0])) {
-    print(sessionUsage());
-    return SESSION_EXIT.OK;
-  }
-  if (argv.length === 2 && argv[0] === "create" && HELP_ALIASES.has(argv[1])) {
-    print(sessionCreateUsage());
-    return SESSION_EXIT.OK;
-  }
-  if (argv.length === 2 && argv[0] === "open" && HELP_ALIASES.has(argv[1])) {
-    print(sessionOpenUsage());
-    return SESSION_EXIT.OK;
-  }
-  if (
-    argv.length === 2
-    && ["status", "read", "send", "wait", "prompt"].includes(argv[0] ?? "")
-    && HELP_ALIASES.has(argv[1] ?? "")
-  ) {
-    print(sessionUsage());
-    return SESSION_EXIT.OK;
-  }
-
-  const parsed = parseSessionCommand(argv);
-  if (!parsed.ok) {
-    printError(red(parsed.message));
+  if (target) {
+    printError(red("--machine is not supported for session current-context"));
     return SESSION_EXIT.USAGE;
   }
-
-  if (parsed.action === "create") return runSessionCreate(parsed, target);
-  if (parsed.action === "open") return runSessionOpen(parsed, target);
-
-  if (parsed.action === "current-context") {
-    if (target) {
-      printError(red("--machine is not supported for session current-context"));
-      return SESSION_EXIT.USAGE;
-    }
-    const context = {
-      session: process.env.WOLFPACK_SESSION_NAME || "",
-      projectDir: process.env.WOLFPACK_PROJECT_DIR || "",
-    };
-    if (!context.session && !context.projectDir) {
-      if (parsed.output === "json") jsonOut(context);
-      else printError(yellow("no wolfpack context in this process"));
-      return SESSION_EXIT.NOT_FOUND;
-    }
+  const context = {
+    session: process.env.WOLFPACK_SESSION_NAME || "",
+    projectDir: process.env.WOLFPACK_PROJECT_DIR || "",
+  };
+  if (!context.session && !context.projectDir) {
     if (parsed.output === "json") jsonOut(context);
-    else if (parsed.output === "shell") {
-      process.stdout.write(`WOLFPACK_SESSION_NAME=${shellQuote(context.session)}\n`);
-      process.stdout.write(`WOLFPACK_PROJECT_DIR=${shellQuote(context.projectDir)}\n`);
-    } else {
-      if (context.session) print(context.session);
-      if (context.projectDir) print(context.projectDir);
-    }
-    return SESSION_EXIT.OK;
+    else printError(yellow("no wolfpack context in this process"));
+    return SESSION_EXIT.NOT_FOUND;
   }
+  if (parsed.output === "json") jsonOut(context);
+  else if (parsed.output === "shell") {
+    process.stdout.write(`WOLFPACK_SESSION_NAME=${shellQuote(context.session)}\n`);
+    process.stdout.write(`WOLFPACK_PROJECT_DIR=${shellQuote(context.projectDir)}\n`);
+  } else {
+    if (context.session) print(context.session);
+    if (context.projectDir) print(context.projectDir);
+  }
+  return SESSION_EXIT.OK;
+}
 
+async function runTargetSessionCommand(
+  parsed: Extract<ParsedSessionCommand, { readonly action: TargetSessionAction }>,
+  target?: VerifiedMachineTarget,
+): Promise<number> {
   try {
     if (parsed.action === "status") {
       const data = await call(
@@ -997,4 +975,41 @@ export async function runSessionCommand(
   } catch (e: unknown) {
     return mapApiError(e, parsed.output);
   }
+}
+
+export async function runSessionCommand(
+  argv: readonly string[],
+  target?: VerifiedMachineTarget,
+): Promise<number> {
+  if (argv.length === 1 && HELP_ALIASES.has(argv[0])) {
+    print(sessionUsage());
+    return SESSION_EXIT.OK;
+  }
+  if (argv.length === 2 && argv[0] === "create" && HELP_ALIASES.has(argv[1])) {
+    print(sessionCreateUsage());
+    return SESSION_EXIT.OK;
+  }
+  if (argv.length === 2 && argv[0] === "open" && HELP_ALIASES.has(argv[1])) {
+    print(sessionOpenUsage());
+    return SESSION_EXIT.OK;
+  }
+  if (
+    argv.length === 2
+    && isTargetSessionAction(argv[0] ?? "")
+    && HELP_ALIASES.has(argv[1] ?? "")
+  ) {
+    print(sessionUsage());
+    return SESSION_EXIT.OK;
+  }
+
+  const parsed = parseSessionCommand(argv);
+  if (!parsed.ok) {
+    printError(red(parsed.message));
+    return SESSION_EXIT.USAGE;
+  }
+
+  if (parsed.action === "create") return runSessionCreate(parsed, target);
+  if (parsed.action === "open") return runSessionOpen(parsed, target);
+  if (parsed.action === "current-context") return runCurrentContext(parsed, target);
+  return runTargetSessionCommand(parsed, target);
 }
