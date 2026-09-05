@@ -623,11 +623,17 @@ describe("GET /api/sessions", () => {
       expect(dead.sessions[0].activity).toMatchObject({ freshness: "unknown", observedAt: expect.any(String) });
       expect(dead.sessions[0].activity).not.toHaveProperty("quietSince");
 
+      factBackend.setPane(sessionName, "recovered changed screen\n");
       factBackend.setFacts([
-        { name: sessionName, alive: true, outputSequence: "44", identity: testIdentity(sessionName, sessionId) },
+        { name: sessionName, alive: true, outputSequence: "43", identity: testIdentity(sessionName, sessionId) },
       ]);
       const reconnected = await (await get("/api/sessions")).json();
-      expect(reconnected.sessions[0].activity).toMatchObject({ freshness: "fresh", observedAt: expect.any(String) });
+      expect(factBackend.capturePaneCalls).toBe(4);
+      expect(reconnected.sessions[0].activity).toMatchObject({
+        freshness: "fresh",
+        observedAt: expect.any(String),
+        display: "activity unobserved",
+      });
       expect(reconnected.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
       expect(reconnected.sessions[0].activity).not.toHaveProperty("quietSince");
     } finally {

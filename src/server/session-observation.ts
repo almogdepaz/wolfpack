@@ -157,6 +157,7 @@ function observeUnavailableSessions(): SessionObservation {
   activityHistory.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
+  renderedFingerprintFlights.clear();
   const observedAt = new Date().toISOString();
   const store = getAgentRuntimeStateStore();
   const summariesBySessionKey = new Map<string, KnownSessionSummary>();
@@ -230,6 +231,7 @@ async function observeSessionFact(
     // A liveness or capture gap breaks the observed continuity. The next
     // successful rendered sample is a baseline, not a fabricated transition.
     fingerprints.delete(sessionKey);
+    renderedFingerprintFlights.delete(sessionKey);
     if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
   } else {
     fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
