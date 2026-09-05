@@ -1124,6 +1124,10 @@ interface CreateSessionResponse {
   readonly session?: string;
 }
 
+interface AgentRuntimeStateAcknowledgementResponse {
+  readonly runtimeState?: DelegationSessionLike["runtimeState"];
+}
+
 async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
@@ -1372,8 +1376,54 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
 
 // ── Sessions ──
 
-function triageUi(session): ReturnType<typeof sessionRuntimeUi> {
-  return sessionRuntimeUi(session && typeof session === "object" ? session : { triage: session });
+async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdentity: string): Promise<void> {
+  const machineUrl = machineIdentity || "";
+  const group = state.lastSessionGroups.find((candidate) => (candidate.machine.url || "") === machineUrl);
+  const session = group?.sessions.find((candidate) => candidate.name === sessionName);
+  const sessionId = session && sessionIdentityId(session);
+  const transitionSequence = session?.runtimeState?.transitionSequence;
+  if (!session?.runtimeState?.unseen || !sessionId || !Number.isInteger(transitionSequence) || transitionSequence < 1) return;
+
+  try {
+    const acknowledged = await api<AgentRuntimeStateAcknowledgementResponse>("/agent-runtime-state/ack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, transitionSequence }),
+    }, machineUrl);
+    if (!acknowledged.runtimeState) throw new Error("runtime acknowledgement response omitted runtimeState");
+
+    state.lastSessionGroups = state.lastSessionGroups.map((candidate) => {
+      if ((candidate.machine.url || "") !== machineUrl) return candidate;
+      return {
+        ...candidate,
+        sessions: candidate.sessions.map((current) => current.name === sessionName
+          && sessionIdentityId(current) === sessionId
+          && current.runtimeState?.transitionSequence === transitionSequence
+          ? { ...current, runtimeState: acknowledged.runtimeState }
+          : current),
+      };
+    });
+    state.allSessions = state.allSessions.map((current) => current.machineUrl === machineUrl
+      && current.name === sessionName
+      && sessionIdentityId(current) === sessionId
+      && current.runtimeState?.transitionSequence === transitionSequence
+      ? { ...current, runtimeState: acknowledged.runtimeState }
+      : current);
+    state.lastSessionsHtml = "";
+    renderSessionListFromState();
+    renderSidebar();
+    if (state.drawerOpen) renderDrawerList();
+  } catch (error: unknown) {
+    console.warn("[terminal] runtime transition acknowledgement failed", {
+      session: sessionName,
+      machine: machineUrl || "local",
+      error: errorMessage(error),
+    });
+  }
+}
+
+function activityHtml(session: DelegationSessionLike): string {
+  return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
 }
 
 function sessionCardViewControlsHtml(): string {
@@ -1427,16 +1477,9 @@ function sessionCardGroupPresentation(
 }
 
 function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLike>): { readonly className: string; readonly dataAttribute: string } {
-  const classes: string[] = [];
-  if (row.childSummary) classes.push("delegation-parent-card");
-  if (row.role === "child") classes.push("sub-session-card");
-  if (row.role === "orphan") classes.push("orphan-session-card");
-  const dataAttribute = row.parent
-    ? ` data-parent-session="${esc(row.parent.wolfpackSessionName)}"`
-    : "";
   return {
-    className: classes.length ? " " + classes.join(" ") : "",
-    dataAttribute,
+    className: `${row.childSummary ? " delegation-parent-card" : ""}${row.role === "child" ? " sub-session-card" : row.role === "orphan" ? " orphan-session-card" : ""}`,
+    dataAttribute: row.parent ? ` data-parent-session="${esc(row.parent.wolfpackSessionName)}"` : "",
   };
 }
 
@@ -1623,7 +1666,7 @@ function renderMachineGroupHtml(g, multiMachine) {
       html += rows.map((row, i) => {
           const s = row.session;
           const lastLine = s.lastLine || "";
-          const ui = triageUi(s);
+          const ui = sessionRuntimeUi(s);
           const anim = state.firstLoad ? "animate-in" : "";
           const grouping = delegationCardAttributes(row);
           const ordering = sessionOrderCardHtml(row, machineKey);
@@ -1635,6 +1678,7 @@ function renderMachineGroupHtml(g, multiMachine) {
               ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
               ${delegationParentMissingHtml(row)}
               <div class="card-preview">${esc(lastLine)}</div>
+              ${activityHtml(s)}
             </div>
             <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
           </div>`;
@@ -1667,7 +1711,7 @@ function delegationWorkspaceContext(sessionName: string, machineUrl: string): De
 }
 
 function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, machine: string): DelegationGridMember {
-  const ui = triageUi(row.session);
+  const ui = sessionRuntimeUi(row.session);
   const idle = sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE;
   return {
     session: row.session.name,
@@ -1840,9 +1884,11 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
   const options = { signal };
   return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
+    const sessionRows = sessions.sessions || [];
+    if (isRemote) for (const session of sessionRows) session.activity = undefined;
     return {
       machine: { ...currentMachineMeta(), url: machineIdentity, version: machineMeta.version || "" },
-      sessions: sessions.sessions || [],
+      sessions: sessionRows,
       online: true,
       pending: false,
     };
@@ -3090,9 +3136,12 @@ function createTerminalBootstrapController(
   options: TerminalControllerBootstrapOptions,
 ): PtyTerminalController {
   const { container, isMobile, liveGate, prefillMode, slowLoad } = options;
+  const session = state.currentSession;
+  const machine = state.currentMachine || "";
+  let acknowledgementAttempted = false;
   return createPtyTerminalController({
-    session: state.currentSession,
-    machine: state.currentMachine || "",
+    session,
+    machine,
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
     prefillMode,
     hydrationMinPendingMs: 80,
@@ -3102,7 +3151,12 @@ function createTerminalBootstrapController(
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
     shouldReconnect: () => !!state.terminalController?.term,
-    onOpen: (wasReconnect) => handleTerminalOpened(container, slowLoad, wasReconnect),
+    onOpen: (wasReconnect) => {
+      handleTerminalOpened(container, slowLoad, wasReconnect);
+      if (acknowledgementAttempted) return;
+      acknowledgementAttempted = true;
+      void acknowledgeTerminalRuntimeState(session, machine);
+    },
     onPtyReady: handleTerminalPtyReady,
     onOutput: handleTerminalOutput,
     onSubSessionOpened: handleTerminalSubSessionOpened,
@@ -4548,7 +4602,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const s = row.session;
   const machineUrlAttr = escAttr(machineUrl);
   const lastLine = s.lastLine || "";
-  const ui = triageUi(s);
+  const ui = sessionRuntimeUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
@@ -4564,6 +4618,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
+      ${activityHtml(s)}
     </div>
     ${gridBtn}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
