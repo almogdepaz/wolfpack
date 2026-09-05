@@ -46,7 +46,15 @@ const sessions = [
       unseen: true,
       transitionSequence: 3,
     },
-    activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "" },
+    activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "active 2m" },
+  },
+  {
+    name: "unobserved",
+    lastLine: "no activity observation",
+    triage: "idle",
+    identity: { wolfpackSessionId: "id-unobserved" },
+    runtimeState: { state: "idle", unseen: true, transitionSequence: 6 },
+    activity: { freshness: "unknown", observedAt, display: "activity unobserved" },
   },
 ];
 
@@ -136,13 +144,14 @@ test("shows semantic labels only for source-backed runtime state", async ({ page
   await expect(cardBadge("active-output")).toHaveText("output");
 });
 
-test("shows rendered activity context and review changes without altering semantic status", async ({ page }) => {
+test("shows only review changes in session activity lines", async ({ page }) => {
   await page.goto(server.baseUrl);
 
   const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
   await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
-  await expect(card("unproven").locator(".session-activity")).toHaveText("activity unavailable · changed since review");
+  await expect(card("unproven").locator(".session-activity")).toHaveText("changed since review");
+  await expect(card("unobserved").locator(".session-activity")).toHaveText("changed since review");
 });
 
 test("omits activity from remote session responses", async ({ page }) => {

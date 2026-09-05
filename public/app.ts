@@ -1423,10 +1423,7 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
 }
 
 function activityHtml(session: DelegationSessionLike): string {
-  let text = session.activity?.display;
-  if (typeof text !== "string") text = "";
-  if (session.runtimeState?.unseen) text += `${text ? " · " : ""}changed since review`;
-  return text && `<div class="session-activity">${esc(text)}</div>`;
+  return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
 }
 
 function sessionCardViewControlsHtml(): string {
