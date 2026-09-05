@@ -13,7 +13,7 @@ import {
   hasPreservedGrid, clearPreservedGrid, retireGridSessionsForMachine,
   retirePreservedGridSessionsForMachine,
   moveGridFocusByArrow, returnToTerminalView, setGridFocus, suspendGridMode,
-  backFromSettings, addToGrid, exitGridMode,
+  backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
   canOpenMultiTerminalGrid, disposeDelegationGrid,
@@ -3400,6 +3400,10 @@ async function killSession(name, e, machineUrl) {
     });
     return;
   }
+  const gridIndex = isGridActive()
+    ? state.gridSessions.findIndex(session => session.session === name && (session.machine || "") === (machineUrl || ""))
+    : -1;
+  if (gridIndex !== -1) removeFromGrid(gridIndex);
   if (delegationReturnTarget) {
     destroyTerminal();
     teardownDelegationWorkspace();
