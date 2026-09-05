@@ -641,6 +641,54 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("treats blank rendered snapshots as observable activity", async () => {
+    const endpoint = `https://fcm.googleapis.com/blank-activity-${Date.now()}`;
+    const sessionName = "blank-activity";
+    const sessionId = "blank-activity-id";
+    const pushes: Array<{ readonly title: string; readonly body: string }> = [];
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "71", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async (payload) => {
+      pushes.push(payload);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      const initial = await (await get("/api/sessions")).json();
+      expect(initial.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "activity unobserved" });
+      await __runSessionNotificationObservationForTests();
+
+      factBackend.setPane(sessionName, "content\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "72", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      factBackend.setPane(sessionName, "\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "73", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const blank = await (await get("/api/sessions")).json();
+      expect(blank.sessions[0]).toMatchObject({ triage: "running", activity: { display: "active now" } });
+      await __runSessionNotificationObservationForTests();
+      await __runSessionNotificationObservationForTests();
+      expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
+        { title: "Wolfpack: blank-activity", body: "Quiet" },
+      ]);
+
+      const quiet = await (await get("/api/sessions")).json();
+      expect(quiet.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "quiet now" });
+    } finally {
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      __setTestBackend(mockBackend);
+    }
+  });
+
   test("does not restore activity from a capture retired by a dead observation", async () => {
     const endpoint = `https://fcm.googleapis.com/retired-activity-${Date.now()}`;
     const sessionName = "retired-activity";

@@ -31,11 +31,15 @@ interface ActivityFingerprint {
   readonly rendered?: string;
 }
 
+type RenderedCapture =
+  | { readonly available: true; readonly rendered: string }
+  | { readonly available: false };
+
 interface RenderedFingerprintFlight {
   readonly token: object;
   readonly outputSequence?: string;
   readonly observedAt: string;
-  readonly promise: Promise<string | undefined>;
+  readonly promise: Promise<RenderedCapture>;
   readonly activity: Promise<SessionActivityReduction>;
 }
 
@@ -89,13 +93,13 @@ export function lastTerminalPreviewLine(rendered: string | undefined): string {
   return Array.from(last).slice(0, SESSION_PREVIEW_MAX_CHARS).join("");
 }
 
-function renderedActivityFingerprint(pane: string): string | undefined {
+function renderedActivityFingerprint(pane: string): string {
   const normalized = pane
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")
     .trimEnd();
-  return normalized.length > 0 ? normalized : undefined;
+  return normalized;
 }
 
 function activityContinuityToken(sessionKey: string): object {
@@ -126,20 +130,20 @@ function createRenderedFingerprintFlight(
 ): RenderedFingerprintFlight {
   const observedAt = new Date().toISOString();
   const promise = backend.capturePane(name, { scrollbackLines: 0 })
-    .then(renderedActivityFingerprint)
-    .catch(() => undefined);
+    .then((pane) => ({ available: true as const, rendered: renderedActivityFingerprint(pane) }))
+    .catch(() => ({ available: false as const }));
   let flight: RenderedFingerprintFlight;
-  const activity = promise.then((rendered) => {
-    if (activityContinuityTokens.get(sessionKey) !== token || rendered === undefined) {
-      if (rendered === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
+  const activity = promise.then((capture) => {
+    if (activityContinuityTokens.get(sessionKey) !== token || !capture.available) {
+      if (!capture.available && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
         renderedFingerprintFlights.delete(sessionKey);
       }
-      if (rendered === undefined && activityContinuityTokens.get(sessionKey) === token) {
+      if (!capture.available && activityContinuityTokens.get(sessionKey) === token) {
         activityContinuityTokens.delete(sessionKey);
       }
       return reduceActivityObservation(undefined, { alive: false, observedAt });
     }
-    return reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered });
+    return reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered: capture.rendered });
   });
   flight = { token, outputSequence, observedAt, promise, activity };
   return flight;
@@ -158,9 +162,11 @@ async function renderedActivitySample(
     flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence, token);
     if (outputSequence !== undefined) renderedFingerprintFlights.set(sessionKey, flight);
   }
-  const rendered = await flight.promise;
+  const capture = await flight.promise;
   return {
-    rendered: activityContinuityTokens.get(sessionKey) === flight.token ? rendered : undefined,
+    rendered: activityContinuityTokens.get(sessionKey) === flight.token && capture.available
+      ? capture.rendered
+      : undefined,
     activity: flight.activity,
   };
 }
