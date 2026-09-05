@@ -151,6 +151,33 @@ test("omits activity from remote session responses", async ({ page }) => {
 });
 
 test("opening a terminal acknowledges its observed transition once after websocket open", async ({ page }) => {
+  const newerSessions = sessions.map((session) => session.name === "structured"
+    ? {
+      ...session,
+      triage: "running",
+      runtimeState: {
+        ...session.runtimeState,
+        state: "output",
+        unseen: true,
+        transitionSequence: 8,
+      },
+    }
+    : session);
+  let sessionRequests = 0;
+  let refreshResponseSent: (() => void) | undefined;
+  const refreshResponse = new Promise<void>((resolve) => { refreshResponseSent = resolve; });
+  await page.unroute("**/api/sessions");
+  await page.route("**/api/sessions", (route) => {
+    sessionRequests += 1;
+    const refreshed = sessionRequests > 1;
+    if (refreshed) refreshResponseSent?.();
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: refreshed ? newerSessions : sessions }),
+    });
+  });
+
   const acknowledgements: unknown[] = [];
   const sockets: WebSocketRoute[] = [];
   let attachCount = 0;
@@ -158,6 +185,10 @@ test("opening a terminal acknowledges its observed transition once after websock
   const firstOpenAllowed = new Promise<void>((resolve) => { allowFirstOpen = resolve; });
   let firstSocketCaptured: (() => void) | undefined;
   const firstSocket = new Promise<void>((resolve) => { firstSocketCaptured = resolve; });
+  let acknowledgeResponseSent: (() => void) | undefined;
+  const acknowledgeResponse = new Promise<void>((resolve) => { acknowledgeResponseSent = resolve; });
+  let acknowledgementRequested: (() => void) | undefined;
+  const acknowledgementRequest = new Promise<void>((resolve) => { acknowledgementRequested = resolve; });
   const hydrate = (socket: WebSocketRoute): void => {
     socket.onMessage((message) => {
       if (typeof message !== "string") return;
@@ -179,6 +210,8 @@ test("opening a terminal acknowledges its observed transition once after websock
   });
   await page.route("**/api/agent-runtime-state/ack", async (route) => {
     acknowledgements.push(route.request().postDataJSON());
+    acknowledgementRequested?.();
+    await acknowledgeResponse;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -207,10 +240,25 @@ test("opening a terminal acknowledges its observed transition once after websock
 
   allowFirstOpen?.();
   await expect.poll(() => attachCount).toBe(1);
+  await acknowledgementRequest;
   await expect.poll(() => acknowledgements).toEqual([{ sessionId: "id-structured", transitionSequence: 7 }]);
-  await expect(card.locator(".session-activity")).toHaveCount(0);
 
-  sockets[0]?.close({ code: 1006, reason: "test reconnect" });
-  await expect.poll(() => sockets.length).toBe(2);
-  await expect.poll(() => acknowledgements).toEqual([{ sessionId: "id-structured", transitionSequence: 7 }]);
+  if (test.info().project.name === "iphone-se") {
+    await page.getByRole("button", { name: "← Back" }).click();
+  } else {
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  }
+  await refreshResponse;
+  await expect(card.locator(".triage-badge")).toHaveText("output");
+  await expect(card.locator(".session-activity")).toHaveText("changed since review");
+
+  acknowledgeResponseSent?.();
+  await expect(card.locator(".triage-badge")).toHaveText("output");
+  await expect(card.locator(".session-activity")).toHaveText("changed since review");
+
+  if (test.info().project.name !== "iphone-se") {
+    sockets[0]?.close({ code: 1006, reason: "test reconnect" });
+    await expect.poll(() => sockets.length).toBe(2);
+    await expect.poll(() => acknowledgements).toEqual([{ sessionId: "id-structured", transitionSequence: 7 }]);
+  }
 });

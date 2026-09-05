@@ -1398,6 +1398,7 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
         ...candidate,
         sessions: candidate.sessions.map((current) => current.name === sessionName
           && sessionIdentityId(current) === sessionId
+          && current.runtimeState?.transitionSequence === transitionSequence
           ? { ...current, runtimeState: acknowledged.runtimeState }
           : current),
       };
@@ -1405,6 +1406,7 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
     state.allSessions = state.allSessions.map((current) => current.machineUrl === machineUrl
       && current.name === sessionName
       && sessionIdentityId(current) === sessionId
+      && current.runtimeState?.transitionSequence === transitionSequence
       ? { ...current, runtimeState: acknowledged.runtimeState }
       : current);
     state.lastSessionsHtml = "";
