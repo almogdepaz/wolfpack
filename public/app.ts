@@ -113,10 +113,7 @@ import type {
   TailnetPeerEntry,
   TailnetPeerIdentityReplacement,
 } from "../src/tailnet-peer-registry";
-import {
-  canonicalTailnetOrigin,
-} from "../src/tailnet-machine-contract";
-import type { TailnetMachineCandidate } from "../src/tailnet-machine-contract";
+import { candidateEnumerationCandidates } from "../src/tailnet-machine-contract";
 import { serializeBufferTail } from "../src/terminal-buffer";
 import {
   encodeTerminalBinary,
@@ -967,31 +964,6 @@ function retireReplacedPeerIdentity(replacement: TailnetPeerIdentityReplacement)
     peerHealth,
   });
   backToSessions();
-}
-
-function isCandidate(value: unknown): value is TailnetMachineCandidate {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  return typeof candidate.hostname === "string"
-    && typeof candidate.tailnetNodeId === "string"
-    && typeof candidate.origin === "string"
-    && canonicalTailnetOrigin(candidate.hostname) === candidate.origin
-    && typeof candidate.online === "boolean";
-}
-
-function candidateEnumerationCandidates(response: unknown): readonly TailnetMachineCandidate[] {
-  if (!response || typeof response !== "object" || Array.isArray(response)) {
-    throw new Error("tailnet candidate enumeration response is malformed");
-  }
-  const envelope = response as Record<string, unknown>;
-  if ("error" in envelope) {
-    const message = envelope.error;
-    throw new Error(typeof message === "string" && message ? message : "tailnet candidate enumeration unavailable");
-  }
-  if (!Array.isArray(envelope.candidates) || !envelope.candidates.every(isCandidate)) {
-    throw new Error("tailnet candidate enumeration response is malformed");
-  }
-  return envelope.candidates;
 }
 
 type TailnetPeerRefreshResult = "applied" | "stale";

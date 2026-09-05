@@ -106,6 +106,30 @@ export function canonicalTailnetOrigin(value: unknown): string | null {
   }
 }
 
+function isCandidate(value: unknown): value is TailnetMachineCandidate {
+  if (!isRecord(value)) return false;
+  return typeof value.hostname === "string"
+    && typeof value.tailnetNodeId === "string"
+    && typeof value.origin === "string"
+    && canonicalTailnetOrigin(value.hostname) === value.origin
+    && typeof value.online === "boolean";
+}
+
+/** Validates the browser-facing local candidate-enumeration response. */
+export function candidateEnumerationCandidates(response: unknown): readonly TailnetMachineCandidate[] {
+  if (!isRecord(response)) {
+    throw new Error("tailnet candidate enumeration response is malformed");
+  }
+  if ("error" in response) {
+    const message = response.error;
+    throw new Error(typeof message === "string" && message ? message : "tailnet candidate enumeration unavailable");
+  }
+  if (!Array.isArray(response.candidates) || !response.candidates.every(isCandidate)) {
+    throw new Error("tailnet candidate enumeration response is malformed");
+  }
+  return response.candidates;
+}
+
 export function buildMachineHandshake(input: MachineHandshakeInput): MachineHandshake | null {
   const origin = canonicalTailnetOrigin(input.tailscaleHostname);
   if (

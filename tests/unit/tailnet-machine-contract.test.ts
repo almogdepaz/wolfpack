@@ -3,6 +3,7 @@ import {
   MACHINE_CAPABILITY,
   TAILNET_MAX_CANDIDATES,
   buildMachineHandshake,
+  candidateEnumerationCandidates,
   classifyMachineHandshake,
   enumerateTailnetCandidates,
 } from "../../src/tailnet-machine-contract.ts";
@@ -95,6 +96,37 @@ describe("machine handshake contract", () => {
       ...readyHandshake,
       machine: { ...readyHandshake.machine, origin: "https://other.example.ts.net" },
     })).toEqual({ kind: "incompatible" });
+  });
+
+  test("accepts browser candidate-enumeration envelopes with canonical candidates", () => {
+    const browserCandidate = { ...candidate, tailnetNodeId: "" };
+
+    expect(candidateEnumerationCandidates({ candidates: [candidate, browserCandidate] })).toEqual([
+      candidate,
+      browserCandidate,
+    ]);
+  });
+
+  test("preserves candidate-enumeration unavailable error envelopes", () => {
+    expect(() => candidateEnumerationCandidates({ candidates: [], error: "failed to query tailscale" }))
+      .toThrow("failed to query tailscale");
+    expect(() => candidateEnumerationCandidates({ error: "" }))
+      .toThrow("tailnet candidate enumeration unavailable");
+    expect(() => candidateEnumerationCandidates({ error: {} }))
+      .toThrow("tailnet candidate enumeration unavailable");
+  });
+
+  test("rejects malformed browser candidate-enumeration envelopes and candidates", () => {
+    for (const response of [
+      null,
+      [],
+      {},
+      { candidates: {} },
+      { candidates: [{ ...candidate, origin: "https://other.example.ts.net" }] },
+      { candidates: [{ ...candidate, online: "true" }] },
+    ]) {
+      expect(() => candidateEnumerationCandidates(response)).toThrow("tailnet candidate enumeration response is malformed");
+    }
   });
 
   test("distinguishes invalid local Tailnet status from a valid empty peer set", () => {
