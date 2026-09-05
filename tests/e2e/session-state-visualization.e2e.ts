@@ -149,6 +149,7 @@ test("shows only review changes in session activity lines", async ({ page }) => 
 
   const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
   await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
+  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(102, 204, 255)");
   await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unobserved").locator(".session-activity")).toHaveText("changed since review");
