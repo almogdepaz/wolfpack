@@ -1372,19 +1372,10 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
 
 // ── Sessions ──
 
-function triageUi(session): ReturnType<typeof sessionRuntimeUi> {
-  return sessionRuntimeUi(session && typeof session === "object" ? session : { triage: session });
-}
-
-function sessionActivityHtml(s: any): string {
-  const a = s.activity;
-  const age = (t: string) => {
-    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(t)) / 60_000));
-    return minutes ? `${minutes}m` : "now";
-  };
-  let text = a?.freshness === "unknown" ? "activity unavailable" : a?.freshness === "fresh"
-    ? a.quietSince ? `quiet ${age(a.quietSince)}` : a.lastRenderedActivityAt ? `active ${age(a.lastRenderedActivityAt)}` : "activity unobserved" : "";
-  if (s.runtimeState?.unseen) text += `${text ? " · " : ""}changed since review`;
+function sessionActivityHtml(session: DelegationSessionLike): string {
+  const display = session.activity?.display;
+  let text = typeof display === "string" ? display : "";
+  if (session.runtimeState?.unseen) text += `${text ? " · " : ""}changed since review`;
   return text ? `<div class="session-activity">${esc(text)}</div>` : "";
 }
 
@@ -1439,16 +1430,9 @@ function sessionCardGroupPresentation(
 }
 
 function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLike>): { readonly className: string; readonly dataAttribute: string } {
-  const classes: string[] = [];
-  if (row.childSummary) classes.push("delegation-parent-card");
-  if (row.role === "child") classes.push("sub-session-card");
-  if (row.role === "orphan") classes.push("orphan-session-card");
-  const dataAttribute = row.parent
-    ? ` data-parent-session="${esc(row.parent.wolfpackSessionName)}"`
-    : "";
   return {
-    className: classes.length ? " " + classes.join(" ") : "",
-    dataAttribute,
+    className: `${row.childSummary ? " delegation-parent-card" : ""}${row.role === "child" ? " sub-session-card" : row.role === "orphan" ? " orphan-session-card" : ""}`,
+    dataAttribute: row.parent ? ` data-parent-session="${esc(row.parent.wolfpackSessionName)}"` : "",
   };
 }
 
@@ -1635,7 +1619,7 @@ function renderMachineGroupHtml(g, multiMachine) {
       html += rows.map((row, i) => {
           const s = row.session;
           const lastLine = s.lastLine || "";
-          const ui = triageUi(s);
+          const ui = sessionRuntimeUi(s);
           const anim = state.firstLoad ? "animate-in" : "";
           const grouping = delegationCardAttributes(row);
           const ordering = sessionOrderCardHtml(row, machineKey);
@@ -1680,7 +1664,7 @@ function delegationWorkspaceContext(sessionName: string, machineUrl: string): De
 }
 
 function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, machine: string): DelegationGridMember {
-  const ui = triageUi(row.session);
+  const ui = sessionRuntimeUi(row.session);
   const idle = sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE;
   return {
     session: row.session.name,
@@ -4561,7 +4545,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const s = row.session;
   const machineUrlAttr = escAttr(machineUrl);
   const lastLine = s.lastLine || "";
-  const ui = triageUi(s);
+  const ui = sessionRuntimeUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");

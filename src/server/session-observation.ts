@@ -1,6 +1,8 @@
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { createLogger, errMsg } from "../log.js";
+import { reduceActivityObservation } from "../session-activity.js";
+import type { SessionActivityHistory, SessionActivityObservation } from "../session-activity.js";
 import type { TriageStatus } from "../triage.js";
 import {
   collectAgentStatusSources,
@@ -19,18 +21,9 @@ const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
 const DASHBOARD_OBSERVATION_CACHE_TTL_MS = process.env.WOLFPACK_TEST ? 0 : 500;
 
-interface ActivityObservation {
-  readonly freshness: "fresh" | "unknown";
-  readonly observedAt: string;
-  readonly lastRenderedActivityAt?: string;
-  readonly quietSince?: string;
-}
-
 interface ActivityFingerprint {
   readonly outputSequence?: string;
   readonly rendered?: string;
-  readonly lastRenderedActivityAt?: string;
-  readonly quietSince?: string;
 }
 
 interface RenderedFingerprintFlight {
@@ -38,11 +31,13 @@ interface RenderedFingerprintFlight {
   readonly promise: Promise<string | undefined>;
 }
 
-const activityFingerprints = new Map<string, ActivityFingerprint>();
+const activityHistory = new Map<string, SessionActivityHistory>();
+const dashboardFingerprints = new Map<string, ActivityFingerprint>();
+const notificationFingerprints = new Map<string, ActivityFingerprint>();
 const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
 let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
 let sessionNotificationObservationPromise: Promise<void> | null = null;
-let sessionObservationPromise: Promise<SessionObservation> | null = null;
+let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
 let dashboardObservationCache: {
   readonly expiresAt: number;
   readonly sessions: readonly ObservedSessionSummary[];
@@ -59,7 +54,7 @@ interface ObservedSessionSummary {
   readonly lastLine: string;
   readonly triage: TriageStatus;
   readonly runtimeState: AgentRuntimeState;
-  readonly activity: ActivityObservation;
+  readonly activity: SessionActivityObservation;
   readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
 }
@@ -126,7 +121,9 @@ async function listAvailableSessionFacts(backend: SessionBackend): Promise<Sessi
 }
 
 function observeUnavailableSessions(): SessionObservation {
-  activityFingerprints.clear();
+  activityHistory.clear();
+  dashboardFingerprints.clear();
+  notificationFingerprints.clear();
   const observedAt = new Date().toISOString();
   const store = getAgentRuntimeStateStore();
   const summariesBySessionKey = new Map<string, KnownSessionSummary>();
@@ -153,7 +150,7 @@ function observeUnavailableSessions(): SessionObservation {
       lastLine,
       triage: "idle" as TriageStatus,
       runtimeState,
-      activity: { freshness: "unknown", observedAt },
+      activity: { freshness: "unknown", observedAt, display: "activity unavailable" },
       ...(identity && { identity }),
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
@@ -164,6 +161,7 @@ function observeUnavailableSessions(): SessionObservation {
 async function observeSessionFact(
   backend: SessionBackend,
   fact: SessionListFact,
+  fingerprints: Map<string, ActivityFingerprint>,
   store: AgentRuntimeStateStore,
   activeNames: Set<string>,
   activeSessionKeys: Set<string>,
@@ -181,7 +179,7 @@ async function observeSessionFact(
   // A shared per-sequence flight prevents duplicate snapshot requests.
   const outputSequence = brokerOutputSequence(fact.outputSequence);
   const observedAt = new Date().toISOString();
-  const previousFingerprint = activityFingerprints.get(sessionKey);
+  const previousFingerprint = fingerprints.get(sessionKey);
   const shouldSampleRenderedState = brokerState === "alive" && (
     previousFingerprint === undefined
     || outputSequence === undefined
@@ -194,33 +192,22 @@ async function observeSessionFact(
     && currentRendered !== undefined
     && previousFingerprint?.rendered !== undefined
     && currentRendered !== previousFingerprint.rendered;
-  let activity: ActivityObservation;
   if (brokerState !== "alive" || (shouldSampleRenderedState && currentRendered === undefined)) {
     // A liveness or capture gap breaks the observed continuity. The next
     // successful rendered sample is a baseline, not a fabricated transition.
-    activityFingerprints.delete(sessionKey);
+    fingerprints.delete(sessionKey);
     if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
-    activity = { freshness: "unknown", observedAt };
   } else {
-    const quietSince = rawOutputChanged
-      ? undefined
-      : previousFingerprint?.quietSince ?? (previousFingerprint === undefined ? undefined : observedAt);
-    const lastRenderedActivityAt = rawOutputChanged
-      ? observedAt
-      : previousFingerprint?.lastRenderedActivityAt;
-    activityFingerprints.set(sessionKey, {
-      ...(outputSequence !== undefined && { outputSequence }),
-      rendered: currentRendered,
-      ...(lastRenderedActivityAt && { lastRenderedActivityAt }),
-      ...(quietSince && { quietSince }),
-    });
-    activity = {
-      freshness: "fresh",
-      observedAt,
-      ...(lastRenderedActivityAt && { lastRenderedActivityAt }),
-      ...(quietSince && { quietSince }),
-    };
+    fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
   }
+  const reducedActivity = reduceActivityObservation(activityHistory.get(sessionKey), {
+    alive: brokerState === "alive",
+    observedAt,
+    rendered: currentRendered,
+  });
+  if (reducedActivity.history) activityHistory.set(sessionKey, reducedActivity.history);
+  else activityHistory.delete(sessionKey);
+  const activity = reducedActivity.activity;
 
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
   const renderedPreview = lastTerminalPreviewLine(currentRendered);
@@ -253,12 +240,16 @@ async function observeSessionFact(
 }
 
 function pruneSessionObservationState(
+  fingerprints: Map<string, ActivityFingerprint>,
   activeSessionKeys: ReadonlySet<string>,
   activeNames: ReadonlySet<string>,
   store: AgentRuntimeStateStore,
 ): void {
-  for (const key of activityFingerprints.keys()) {
-    if (!activeSessionKeys.has(key)) activityFingerprints.delete(key);
+  for (const key of fingerprints.keys()) {
+    if (!activeSessionKeys.has(key)) fingerprints.delete(key);
+  }
+  for (const key of activityHistory.keys()) {
+    if (!activeSessionKeys.has(key)) activityHistory.delete(key);
   }
   for (const key of renderedFingerprintFlights.keys()) {
     if (!activeSessionKeys.has(key)) renderedFingerprintFlights.delete(key);
@@ -270,7 +261,9 @@ function pruneSessionObservationState(
   store.flush();
 }
 
-async function collectSessionObservation(): Promise<SessionObservation> {
+async function collectSessionObservation(
+  fingerprints: Map<string, ActivityFingerprint>,
+): Promise<SessionObservation> {
   const backend = getBackend();
   const sessionFacts = await listAvailableSessionFacts(backend);
   if (!sessionFacts) return observeUnavailableSessions();
@@ -282,6 +275,7 @@ async function collectSessionObservation(): Promise<SessionObservation> {
   const sessions = await Promise.all(sessionFacts.map((fact) => observeSessionFact(
     backend,
     fact,
+    fingerprints,
     store,
     activeNames,
     activeSessionKeys,
@@ -289,16 +283,8 @@ async function collectSessionObservation(): Promise<SessionObservation> {
   )));
 
   sessions.sort((a, b) => a.name.localeCompare(b.name));
-  pruneSessionObservationState(activeSessionKeys, activeNames, store);
+  pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store);
   return { sessions, unreliableSessionKeys };
-}
-
-function observeSessions(): Promise<SessionObservation> {
-  if (sessionObservationPromise) return sessionObservationPromise;
-  sessionObservationPromise = collectSessionObservation().finally(() => {
-    sessionObservationPromise = null;
-  });
-  return sessionObservationPromise;
 }
 
 export async function observeDashboardSessions(): Promise<readonly ObservedSessionSummary[]> {
@@ -306,19 +292,26 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
   if (dashboardObservationCache && now < dashboardObservationCache.expiresAt) {
     return dashboardObservationCache.sessions;
   }
-  const { sessions } = await observeSessions();
-  dashboardObservationCache = {
-    expiresAt: Date.now() + DASHBOARD_OBSERVATION_CACHE_TTL_MS,
-    sessions,
-  };
-  return sessions;
+  if (dashboardObservationPromise) return dashboardObservationPromise;
+  dashboardObservationPromise = collectSessionObservation(dashboardFingerprints)
+    .then(({ sessions }) => {
+      dashboardObservationCache = {
+        expiresAt: Date.now() + DASHBOARD_OBSERVATION_CACHE_TTL_MS,
+        sessions,
+      };
+      return sessions;
+    })
+    .finally(() => {
+      dashboardObservationPromise = null;
+    });
+  return dashboardObservationPromise;
 }
 
 async function runSessionNotificationObservation(): Promise<void> {
   if (getSubscriptionCount() === 0) return;
   if (sessionNotificationObservationPromise) return sessionNotificationObservationPromise;
   sessionNotificationObservationPromise = (async () => {
-    const observation = await observeSessions();
+    const observation = await collectSessionObservation(notificationFingerprints);
     await checkSessionTransitions(observation.sessions.map((session) => {
       const sessionKey = session.identity?.wolfpackSessionId ?? session.name;
       return {
@@ -355,21 +348,26 @@ export function stopSessionNotificationObserver(): void {
 
 export function forgetSessionObservation(sessionId: string, sessionName: string): void {
   dashboardObservationCache = null;
-  activityFingerprints.delete(sessionId);
-  activityFingerprints.delete(sessionName);
+  activityHistory.delete(sessionId);
+  activityHistory.delete(sessionName);
+  dashboardFingerprints.delete(sessionId);
+  dashboardFingerprints.delete(sessionName);
+  notificationFingerprints.delete(sessionId);
+  notificationFingerprints.delete(sessionName);
   renderedFingerprintFlights.delete(sessionId);
   renderedFingerprintFlights.delete(sessionName);
 }
 
 export function resetNotificationObservation(): void {
-  // Push subscriptions do not own activity history. Keeping it here prevents
-  // subscription churn from creating false rendered-output transitions.
+  notificationFingerprints.clear();
 }
 
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
-  activityFingerprints.clear();
-  sessionObservationPromise = null;
+  activityHistory.clear();
+  dashboardFingerprints.clear();
+  notificationFingerprints.clear();
+  dashboardObservationPromise = null;
   dashboardObservationCache = null;
   renderedFingerprintFlights.clear();
   knownSessionSummaries.clear();

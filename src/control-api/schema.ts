@@ -405,9 +405,10 @@ export const controlApiSource: ControlApiSource = {
     ActivityObservation: object({
       freshness: { enum: ["fresh", "unknown"] },
       observedAt: { type: "string", format: "date-time" },
+      display: string(),
       lastRenderedActivityAt: { type: "string", format: "date-time" },
       quietSince: { type: "string", format: "date-time" },
-    }, ["freshness", "observedAt"]),
+    }, ["freshness", "observedAt", "display"]),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),

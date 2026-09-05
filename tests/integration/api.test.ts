@@ -388,6 +388,41 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("preserves notification transitions when dashboard observes changed output first", async () => {
+    const endpoint = `https://fcm.googleapis.com/dashboard-first-${Date.now()}`;
+    const sessionName = "dashboard-first";
+    const sessionId = "dashboard-first-id";
+    const pushes: Array<{ readonly title: string; readonly body: string }> = [];
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "61", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async (payload) => {
+      pushes.push(payload);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      await __runSessionNotificationObservationForTests();
+      factBackend.setPane(sessionName, "changed\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "62", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+      await __runSessionNotificationObservationForTests();
+
+      expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
+        { title: "Wolfpack: dashboard-first", body: "Quiet" },
+      ]);
+    } finally {
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      __setTestBackend(mockBackend);
+    }
+  });
+
   test("does not notify quiet when the server observer loses its rendered snapshot", async () => {
     const endpoint = `https://fcm.googleapis.com/server-observer-failure-${Date.now()}`;
     const pushes: unknown[] = [];
@@ -545,13 +580,14 @@ describe("GET /api/sessions", () => {
     __setTestBackend(factBackend);
     try {
       const initial = await (await get("/api/sessions")).json();
+      const initialObservedAt = initial.sessions[0].activity.observedAt;
       expect(initial.sessions[0].activity).toMatchObject({ freshness: "fresh", observedAt: expect.any(String) });
       expect(initial.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
       expect(initial.sessions[0].activity).not.toHaveProperty("quietSince");
 
       const initiallyQuiet = await (await get("/api/sessions")).json();
       expect(initiallyQuiet.sessions[0].activity).toMatchObject({ freshness: "fresh" });
-      expect(initiallyQuiet.sessions[0].activity.quietSince).toBe(initiallyQuiet.sessions[0].activity.observedAt);
+      expect(initiallyQuiet.sessions[0].activity.quietSince).toBe(initialObservedAt);
       expect(initiallyQuiet.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
 
       factBackend.setPane(sessionName, "changed screen\n");
@@ -559,7 +595,8 @@ describe("GET /api/sessions", () => {
         { name: sessionName, alive: true, outputSequence: "42", identity: testIdentity(sessionName, sessionId) },
       ]);
       const changed = await (await get("/api/sessions")).json();
-      expect(changed.sessions[0].activity.lastRenderedActivityAt).toBe(changed.sessions[0].activity.observedAt);
+      const changedObservedAt = changed.sessions[0].activity.observedAt;
+      expect(changed.sessions[0].activity.lastRenderedActivityAt).toBe(changedObservedAt);
       expect(changed.sessions[0].activity).not.toHaveProperty("quietSince");
 
       const quiet = await (await get("/api/sessions")).json();
@@ -567,7 +604,7 @@ describe("GET /api/sessions", () => {
         freshness: "fresh",
         lastRenderedActivityAt: changed.sessions[0].activity.lastRenderedActivityAt,
       });
-      expect(quiet.sessions[0].activity.quietSince).toBe(quiet.sessions[0].activity.observedAt);
+      expect(quiet.sessions[0].activity.quietSince).toBe(changedObservedAt);
 
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "43", identity: testIdentity(sessionName, sessionId) },

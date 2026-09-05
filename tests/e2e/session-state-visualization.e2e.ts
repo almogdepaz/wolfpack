@@ -12,7 +12,7 @@ const sessions = [
     triage: "idle",
     identity: { wolfpackSessionId: "id-unproven" },
     runtimeState: { state: "needs-input", unseen: true, transitionSequence: 4 },
-    activity: { freshness: "unknown", observedAt },
+    activity: { freshness: "unknown", observedAt, display: "activity unavailable" },
   },
   {
     name: "structured",
@@ -28,7 +28,7 @@ const sessions = [
       unseen: true,
       transitionSequence: 7,
     },
-    activity: { freshness: "fresh", observedAt, quietSince: observedAt },
+    activity: { freshness: "fresh", observedAt, quietSince: observedAt, display: "quiet now" },
   },
   {
     name: "active-output",
@@ -44,7 +44,15 @@ const sessions = [
       unseen: true,
       transitionSequence: 3,
     },
-    activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt },
+    activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "active now" },
+  },
+  {
+    name: "malformed-activity",
+    lastLine: "untrusted peer payload",
+    triage: "idle",
+    identity: { wolfpackSessionId: "id-malformed" },
+    runtimeState: { state: "idle", unseen: true, transitionSequence: 1 },
+    activity: { freshness: "fresh", observedAt, quietSince: "not-a-timestamp" },
   },
 ];
 
@@ -92,6 +100,7 @@ test("shows rendered activity context and review changes without altering semant
   await expect(card("active-output").locator(".session-activity")).toHaveText("active now · changed since review");
   await expect(card("structured").locator(".session-activity")).toHaveText("quiet now · changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("activity unavailable · changed since review");
+  await expect(card("malformed-activity").locator(".session-activity")).toHaveText("changed since review");
 });
 
 test("opening a session has no unseen acknowledgement side effect", async ({ page }) => {

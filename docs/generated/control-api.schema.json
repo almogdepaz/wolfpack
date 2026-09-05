@@ -3172,6 +3172,9 @@
           "type": "string",
           "format": "date-time"
         },
+        "display": {
+          "type": "string"
+        },
         "lastRenderedActivityAt": {
           "type": "string",
           "format": "date-time"
@@ -3183,7 +3186,8 @@
       },
       "required": [
         "freshness",
-        "observedAt"
+        "observedAt",
+        "display"
       ],
       "additionalProperties": false
     },
