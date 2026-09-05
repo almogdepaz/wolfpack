@@ -356,6 +356,9 @@ describe("GET /api/sessions", () => {
 
     expect(data.sessions[0].triage).toBe("idle");
     expect(data.sessions[0].runtimeState).toMatchObject({ state: "idle" });
+    expect(data.sessions[0].activity).toMatchObject({ freshness: "unknown", observedAt: expect.any(String) });
+    expect(data.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+    expect(data.sessions[0].activity).not.toHaveProperty("quietSince");
   });
 
   test("observes and notifies on the server without a sessions request", async () => {
@@ -532,6 +535,112 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("projects rendered activity and continuous quiet without inventing initial history", async () => {
+    const sessionName = "activity-projection";
+    const sessionId = "activity-projection-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "41", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "initial screen\n");
+    __setTestBackend(factBackend);
+    try {
+      const initial = await (await get("/api/sessions")).json();
+      expect(initial.sessions[0].activity).toMatchObject({ freshness: "fresh", observedAt: expect.any(String) });
+      expect(initial.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+      expect(initial.sessions[0].activity).not.toHaveProperty("quietSince");
+
+      const initiallyQuiet = await (await get("/api/sessions")).json();
+      expect(initiallyQuiet.sessions[0].activity).toMatchObject({ freshness: "fresh" });
+      expect(initiallyQuiet.sessions[0].activity.quietSince).toBe(initiallyQuiet.sessions[0].activity.observedAt);
+      expect(initiallyQuiet.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+
+      factBackend.setPane(sessionName, "changed screen\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "42", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const changed = await (await get("/api/sessions")).json();
+      expect(changed.sessions[0].activity.lastRenderedActivityAt).toBe(changed.sessions[0].activity.observedAt);
+      expect(changed.sessions[0].activity).not.toHaveProperty("quietSince");
+
+      const quiet = await (await get("/api/sessions")).json();
+      expect(quiet.sessions[0].activity).toMatchObject({
+        freshness: "fresh",
+        lastRenderedActivityAt: changed.sessions[0].activity.lastRenderedActivityAt,
+      });
+      expect(quiet.sessions[0].activity.quietSince).toBe(quiet.sessions[0].activity.observedAt);
+
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "43", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const redraw = await (await get("/api/sessions")).json();
+      expect(redraw.sessions[0].activity).toMatchObject({
+        freshness: "fresh",
+        lastRenderedActivityAt: changed.sessions[0].activity.lastRenderedActivityAt,
+        quietSince: quiet.sessions[0].activity.quietSince,
+      });
+
+      factBackend.setFacts([
+        { name: sessionName, alive: false, outputSequence: "43", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const dead = await (await get("/api/sessions")).json();
+      expect(dead.sessions[0].activity).toMatchObject({ freshness: "unknown", observedAt: expect.any(String) });
+      expect(dead.sessions[0].activity).not.toHaveProperty("quietSince");
+
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "44", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const reconnected = await (await get("/api/sessions")).json();
+      expect(reconnected.sessions[0].activity).toMatchObject({ freshness: "fresh", observedAt: expect.any(String) });
+      expect(reconnected.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+      expect(reconnected.sessions[0].activity).not.toHaveProperty("quietSince");
+    } finally {
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("shares one activity observation between concurrent dashboard and notification consumers", async () => {
+    const endpoint = `https://fcm.googleapis.com/activity-observation-${Date.now()}`;
+    const sessionName = "shared-activity";
+    const sessionId = "shared-activity-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "51", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    try {
+      await get("/api/sessions");
+      let releaseCapture: (() => void) | undefined;
+      const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
+      let captureStarted: (() => void) | undefined;
+      const captureStartedPromise = new Promise<void>((resolve) => { captureStarted = resolve; });
+      factBackend.setPane(sessionName, "changed\n");
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        captureStarted?.();
+        await captureReleased;
+        return originalCapturePane(name);
+      };
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "52", identity: testIdentity(sessionName, sessionId) },
+      ]);
+
+      const dashboard = get("/api/sessions");
+      await captureStartedPromise;
+      const notification = __runSessionNotificationObservationForTests();
+      releaseCapture?.();
+      const [response] = await Promise.all([dashboard, notification]);
+      const observed = await response.json();
+
+      expect(factBackend.capturePaneCalls).toBe(2);
+      expect(observed.sessions[0].activity.lastRenderedActivityAt).toBe(observed.sessions[0].activity.observedAt);
+      expect(observed.sessions[0].runtimeState.transitionSequence).toBe(2);
+    } finally {
+      removeSubscription(endpoint);
+      __setTestBackend(mockBackend);
+    }
+  });
+
   test("first rendered fingerprint initializes baseline without reporting recent output", async () => {
     mockBackend.setSessions(["fresh-baseline"]);
     mockBackend.setCapturePane(async () => "quiet existing screen\n");
@@ -546,6 +655,9 @@ describe("GET /api/sessions", () => {
       source: "screen-fallback",
       transitionSequence: 1,
     });
+    expect(data.sessions[0].activity).toMatchObject({ freshness: "fresh", observedAt: expect.any(String) });
+    expect(data.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+    expect(data.sessions[0].activity).not.toHaveProperty("quietSince");
   });
 
   test("restored acknowledged state stays seen on first rendered sample after restart", async () => {
@@ -571,6 +683,9 @@ describe("GET /api/sessions", () => {
       acknowledgedSequence: idle.transitionSequence,
       unseen: false,
     });
+    expect(data.sessions[0].activity).toMatchObject({ freshness: "fresh", observedAt: expect.any(String) });
+    expect(data.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+    expect(data.sessions[0].activity).not.toHaveProperty("quietSince");
   });
 
   test("preserves known sessions as unknown without pruning ack state when broker list is unavailable", async () => {
@@ -596,7 +711,10 @@ describe("GET /api/sessions", () => {
           acknowledgedSequence: sequence,
           unseen: true,
         },
+        activity: { freshness: "unknown" },
       });
+      expect(unavailable.sessions[0].activity).toMatchObject({ observedAt: expect.any(String) });
+      expect(unavailable.sessions[0].activity).not.toHaveProperty("quietSince");
       const persisted = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId);
       expect(persisted?.state).toBe("unknown");
       expect(persisted?.acknowledgedSequence).toBe(sequence);

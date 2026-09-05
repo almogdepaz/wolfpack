@@ -25,7 +25,7 @@ const result = await Bun.build({
   entrypoints: [ENTRY],
   target: "browser",
   format: "iife",
-  minify: { whitespace: true, syntax: true, identifiers: false },
+  minify: { whitespace: true, syntax: true, identifiers: true },
 });
 
 if (!result.success) {

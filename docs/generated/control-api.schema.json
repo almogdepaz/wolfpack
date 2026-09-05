@@ -3159,6 +3159,34 @@
         }
       ]
     },
+    "ActivityObservation": {
+      "type": "object",
+      "properties": {
+        "freshness": {
+          "enum": [
+            "fresh",
+            "unknown"
+          ]
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastRenderedActivityAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "quietSince": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "freshness",
+        "observedAt"
+      ],
+      "additionalProperties": false
+    },
     "SessionSummary": {
       "type": "object",
       "properties": {
@@ -3179,6 +3207,9 @@
         },
         "runtimeState": {
           "$ref": "#/$defs/AgentRuntimeState"
+        },
+        "activity": {
+          "$ref": "#/$defs/ActivityObservation"
         }
       },
       "required": [

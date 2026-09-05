@@ -402,6 +402,12 @@ export const controlApiSource: ControlApiSource = {
         }, ["id", "displayName", "command", "status", "installGuidance"]),
       ],
     },
+    ActivityObservation: object({
+      freshness: { enum: ["fresh", "unknown"] },
+      observedAt: { type: "string", format: "date-time" },
+      lastRenderedActivityAt: { type: "string", format: "date-time" },
+      quietSince: { type: "string", format: "date-time" },
+    }, ["freshness", "observedAt"]),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -409,6 +415,7 @@ export const controlApiSource: ControlApiSource = {
       outputSequence: ref("BrokerOutputSequence"),
       identity: ref("PublicSessionIdentity"),
       runtimeState: ref("AgentRuntimeState"),
+      activity: ref("ActivityObservation"),
     }, ["name", "lastLine", "triage"]),
     SessionControlIdentity: object({
       session: ref("SessionName"),

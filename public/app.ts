@@ -1376,6 +1376,18 @@ function triageUi(session): ReturnType<typeof sessionRuntimeUi> {
   return sessionRuntimeUi(session && typeof session === "object" ? session : { triage: session });
 }
 
+function sessionActivityHtml(s: any): string {
+  const a = s.activity;
+  const age = (t: string) => {
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(t)) / 60_000));
+    return minutes ? `${minutes}m` : "now";
+  };
+  let text = a?.freshness === "unknown" ? "activity unavailable" : a?.freshness === "fresh"
+    ? a.quietSince ? `quiet ${age(a.quietSince)}` : a.lastRenderedActivityAt ? `active ${age(a.lastRenderedActivityAt)}` : "activity unobserved" : "";
+  if (s.runtimeState?.unseen) text += `${text ? " · " : ""}changed since review`;
+  return text ? `<div class="session-activity">${esc(text)}</div>` : "";
+}
+
 function sessionCardViewControlsHtml(): string {
   const selectedView = state.sessionCardView;
   const button = (view: SessionCardView, label: string, accessibleLabel: string): string => {
@@ -1635,6 +1647,7 @@ function renderMachineGroupHtml(g, multiMachine) {
               ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
               ${delegationParentMissingHtml(row)}
               <div class="card-preview">${esc(lastLine)}</div>
+              ${sessionActivityHtml(s)}
             </div>
             <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
           </div>`;
@@ -4564,6 +4577,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
+      ${sessionActivityHtml(s)}
     </div>
     ${gridBtn}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
