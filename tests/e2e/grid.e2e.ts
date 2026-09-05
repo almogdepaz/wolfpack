@@ -213,6 +213,32 @@ test("sub-session notification ignores other parents, views, and existing grids"
   expect(await gridSessionNames(page)).toEqual(["test-project", "another-project"]);
 });
 
+test("stopping a grid session removes only that cell and preserves the focused survivor", async ({ page }) => {
+  const pty = await routeTrackedHydratedPty(page);
+  const killRequests: unknown[] = [];
+  await page.route("**/api/kill", async (route) => {
+    killRequests.push(route.request().postDataJSON());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await routeThirdGridSession(page);
+  await loadApp(page);
+  await openTerminal(page, "test-project");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  await toggleSessionGridFromUi(page, THIRD_GRID_SESSION, "");
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(3, { timeout: 5000 });
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", "another-project", THIRD_GRID_SESSION]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.grid-focused")).toHaveAttribute("data-session", THIRD_GRID_SESSION);
+  expect(pty.counts(THIRD_GRID_SESSION)).toMatchObject({ sockets: 1, attaches: 1 });
+
+  await page.getByRole("button", { name: "Stop another-project" }).click();
+  await page.getByRole("dialog", { name: "Stop session" }).getByRole("button", { name: "Stop session" }).click();
+
+  await expect.poll(() => gridSessionNames(page)).toEqual(["test-project", THIRD_GRID_SESSION]);
+  await expect(page.locator("#desktop-grid-container .grid-cell.grid-focused")).toHaveAttribute("data-session", THIRD_GRID_SESSION);
+  expect(pty.counts(THIRD_GRID_SESSION)).toMatchObject({ sockets: 1, attaches: 1 });
+  expect(killRequests).toEqual([{ session: "another-project" }]);
+});
+
 test("grid requests viewport prefill", async ({ page }) => {
   await loadApp(page);
   await page.evaluate(() => {
