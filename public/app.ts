@@ -1124,6 +1124,10 @@ interface CreateSessionResponse {
   readonly session?: string;
 }
 
+interface AgentRuntimeStateAcknowledgementResponse {
+  readonly runtimeState?: DelegationSessionLike["runtimeState"];
+}
+
 async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
@@ -1371,6 +1375,50 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
 
 
 // ── Sessions ──
+
+async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdentity: string): Promise<void> {
+  const machineUrl = machineIdentity || "";
+  const group = state.lastSessionGroups.find((candidate) => (candidate.machine.url || "") === machineUrl);
+  const session = group?.sessions.find((candidate) => candidate.name === sessionName);
+  const sessionId = session && sessionIdentityId(session);
+  const transitionSequence = session?.runtimeState?.transitionSequence;
+  if (!session?.runtimeState?.unseen || !sessionId || !Number.isInteger(transitionSequence) || transitionSequence < 1) return;
+
+  try {
+    const acknowledged = await api<AgentRuntimeStateAcknowledgementResponse>("/agent-runtime-state/ack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, transitionSequence }),
+    }, machineUrl);
+    if (!acknowledged.runtimeState) throw new Error("runtime acknowledgement response omitted runtimeState");
+
+    state.lastSessionGroups = state.lastSessionGroups.map((candidate) => {
+      if ((candidate.machine.url || "") !== machineUrl) return candidate;
+      return {
+        ...candidate,
+        sessions: candidate.sessions.map((current) => current.name === sessionName
+          && sessionIdentityId(current) === sessionId
+          ? { ...current, runtimeState: acknowledged.runtimeState }
+          : current),
+      };
+    });
+    state.allSessions = state.allSessions.map((current) => current.machineUrl === machineUrl
+      && current.name === sessionName
+      && sessionIdentityId(current) === sessionId
+      ? { ...current, runtimeState: acknowledged.runtimeState }
+      : current);
+    state.lastSessionsHtml = "";
+    renderSessionListFromState();
+    renderSidebar();
+    if (state.drawerOpen) renderDrawerList();
+  } catch (error: unknown) {
+    console.warn("[terminal] runtime transition acknowledgement failed", {
+      session: sessionName,
+      machine: machineUrl || "local",
+      error: errorMessage(error),
+    });
+  }
+}
 
 function activityHtml(session: DelegationSessionLike): string {
   let text = session.activity?.display;
@@ -3089,9 +3137,12 @@ function createTerminalBootstrapController(
   options: TerminalControllerBootstrapOptions,
 ): PtyTerminalController {
   const { container, isMobile, liveGate, prefillMode, slowLoad } = options;
+  const session = state.currentSession;
+  const machine = state.currentMachine || "";
+  let acknowledgementAttempted = false;
   return createPtyTerminalController({
-    session: state.currentSession,
-    machine: state.currentMachine || "",
+    session,
+    machine,
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
     prefillMode,
     hydrationMinPendingMs: 80,
@@ -3101,7 +3152,12 @@ function createTerminalBootstrapController(
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
     shouldFocus: () => !isMobile,
     shouldReconnect: () => !!state.terminalController?.term,
-    onOpen: (wasReconnect) => handleTerminalOpened(container, slowLoad, wasReconnect),
+    onOpen: (wasReconnect) => {
+      handleTerminalOpened(container, slowLoad, wasReconnect);
+      if (acknowledgementAttempted) return;
+      acknowledgementAttempted = true;
+      void acknowledgeTerminalRuntimeState(session, machine);
+    },
     onPtyReady: handleTerminalPtyReady,
     onOutput: handleTerminalOutput,
     onSubSessionOpened: handleTerminalSubSessionOpened,
