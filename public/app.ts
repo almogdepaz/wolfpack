@@ -1611,6 +1611,17 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
   return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(machineUrl)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
 }
 
+// Shared visual treatment; actions and machine routing stay on the parent button.
+const NEW_SESSION_BUTTON_CONTENT = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New<span class="machine-add-label-detail"> session</span></span>';
+
+function machineHeaderNameHtml(name: string): string {
+  return `<span class="machine-header-name" title="${escAttr(name)}">${esc(name)}</span>`;
+}
+
+function machineAddButtonHtml(machineUrl: string, machineName: string, disabled: boolean): string {
+  return `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(machineUrl)}" aria-label="Start a session on ${escAttr(machineName)}" title="New session"${disabled ? " disabled" : ""}>${NEW_SESSION_BUTTON_CONTENT}</button>`;
+}
+
 function idleSessionEmptyHtml(): string {
   return `<section class="idle-session-empty" aria-label="No idle sessions">
     <h2>No sessions are currently idle</h2>
@@ -1639,7 +1650,6 @@ function zeroSessionOnboardingHtml(machineUrl: string): string {
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine) {
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
-  const mName = esc(g.machine.name);
   const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
   const outdated = g.online && Boolean(g.machine.version) && state.lastSessionGroups.some(group =>
@@ -1649,12 +1659,11 @@ function renderMachineGroupHtml(g, multiMachine) {
   const offlineClass = multiMachine && !g.online && !g.pending ? " offline" : "";
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
-  const createDisabled = multiMachine && !g.online ? " disabled" : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
   const compactCreateButton = g.online && g.sessions.length === 0
     ? ""
-    : `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${mUrlAttr}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button>`;
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${mName}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}${compactCreateButton}</div></div>`;
+    : machineAddButtonHtml(machineKey, g.machine.name, multiMachine && !g.online);
+  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${machineHeaderNameHtml(g.machine.name)}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}${compactCreateButton}</div></div>`;
   if (multiMachine && g.pending) {
     html += `<div class="group-status">Connecting...</div>`;
   } else if (g.online) {
@@ -4541,7 +4550,7 @@ function _renderSidebarNow() {
   if (!multiMachine) {
     // Single machine — simple list with + New
     const g = groups[0];
-    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine"><span aria-hidden="true">+</span> New session</button>${sessionOrderResetButtonHtml("")}</div>`;
+    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine">${NEW_SESSION_BUTTON_CONTENT}</button>${sessionOrderResetButtonHtml("")}</div>`;
     if (g && g.online) {
       const presentation = sessionCardGroupPresentation(g.sessions, "");
       html += sidebarBtns;
@@ -4558,12 +4567,10 @@ function _renderSidebarNow() {
     // Multi-machine
     for (const g of groups) {
       const mUrl = escAttr(g.machine.url);
-      const mName = esc(g.machine.name);
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
       const offlineClass = !g.online && !g.pending ? " offline" : "";
-      const createDisabled = !g.online ? " disabled" : "";
       html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${mName}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(g.machine.url)}" aria-label="Start a session on ${escAttr(g.machine.name)}" title="New session"${createDisabled}>+</button></div></div>`;
+      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${machineHeaderNameHtml(g.machine.name)}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}${machineAddButtonHtml(g.machine.url, g.machine.name, !g.online)}</div></div>`;
       if (g.online) {
         const presentation = sessionCardGroupPresentation(g.sessions, g.machine.url);
         if (presentation.rows.length) {

@@ -14,6 +14,7 @@ CLAUDE.md
 !docs/*.gif
 *.png
 !docs/*.png
+!docs/design/visual-makeover/**/*.png
 !public/icon-192.png
 !public/icon-512.png
 !public/icon-maskable-192.png
