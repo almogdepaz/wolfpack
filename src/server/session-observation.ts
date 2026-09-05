@@ -2,7 +2,12 @@ import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
-import type { SessionActivityHistory, SessionActivityObservation } from "../session-activity.js";
+import type {
+  SessionActivityHistory,
+  SessionActivityObservation,
+  SessionActivityObservationInput,
+  SessionActivityReduction,
+} from "../session-activity.js";
 import type { TriageStatus } from "../triage.js";
 import {
   collectAgentStatusSources,
@@ -27,8 +32,15 @@ interface ActivityFingerprint {
 }
 
 interface RenderedFingerprintFlight {
-  readonly outputSequence: string;
+  readonly outputSequence?: string;
+  readonly observedAt: string;
   readonly promise: Promise<string | undefined>;
+  readonly activity: Promise<SessionActivityReduction>;
+}
+
+interface RenderedActivitySample {
+  readonly rendered: string | undefined;
+  readonly activity: Promise<SessionActivityReduction>;
 }
 
 const activityHistory = new Map<string, SessionActivityHistory>();
@@ -84,30 +96,51 @@ function renderedActivityFingerprint(pane: string): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-async function renderedFingerprint(
+function reduceSessionActivity(
+  sessionKey: string,
+  input: SessionActivityObservationInput,
+): SessionActivityReduction {
+  const reduction = reduceActivityObservation(activityHistory.get(sessionKey), input);
+  if (reduction.history) activityHistory.set(sessionKey, reduction.history);
+  else activityHistory.delete(sessionKey);
+  return reduction;
+}
+
+function createRenderedFingerprintFlight(
   backend: SessionBackend,
   sessionKey: string,
   name: string,
   outputSequence: string | undefined,
-): Promise<string | undefined> {
-  if (outputSequence === undefined) {
-    try {
-      return renderedActivityFingerprint(await backend.capturePane(name, { scrollbackLines: 0 }));
-    } catch {
-      return undefined;
-    }
-  }
-  const cached = renderedFingerprintFlights.get(sessionKey);
-  if (cached?.outputSequence === outputSequence) return cached.promise;
+): RenderedFingerprintFlight {
+  const observedAt = new Date().toISOString();
   const promise = backend.capturePane(name, { scrollbackLines: 0 })
     .then(renderedActivityFingerprint)
     .catch(() => undefined);
-  renderedFingerprintFlights.set(sessionKey, { outputSequence, promise });
-  const result = await promise;
-  if (result === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
-    renderedFingerprintFlights.delete(sessionKey);
+  let flight: RenderedFingerprintFlight;
+  const activity = promise.then((rendered) => {
+    if (rendered === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
+      renderedFingerprintFlights.delete(sessionKey);
+    }
+    return reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered });
+  });
+  flight = { outputSequence, observedAt, promise, activity };
+  return flight;
+}
+
+async function renderedActivitySample(
+  backend: SessionBackend,
+  sessionKey: string,
+  name: string,
+  outputSequence: string | undefined,
+): Promise<RenderedActivitySample> {
+  let flight = outputSequence === undefined ? undefined : renderedFingerprintFlights.get(sessionKey);
+  if (flight?.outputSequence !== outputSequence) flight = undefined;
+  if (flight === undefined) {
+    flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence);
+    if (outputSequence !== undefined) renderedFingerprintFlights.set(sessionKey, flight);
   }
-  return result;
+  const rendered = await flight.promise;
+  return { rendered, activity: flight.activity };
 }
 
 async function listAvailableSessionFacts(backend: SessionBackend): Promise<SessionListFact[] | undefined> {
@@ -185,9 +218,10 @@ async function observeSessionFact(
     || outputSequence === undefined
     || previousFingerprint.outputSequence !== outputSequence
   );
-  const currentRendered = shouldSampleRenderedState
-    ? await renderedFingerprint(backend, sessionKey, name, outputSequence)
-    : previousFingerprint?.rendered;
+  const sample = shouldSampleRenderedState
+    ? await renderedActivitySample(backend, sessionKey, name, outputSequence)
+    : undefined;
+  const currentRendered = sample === undefined ? previousFingerprint?.rendered : sample.rendered;
   const rawOutputChanged = shouldSampleRenderedState
     && currentRendered !== undefined
     && previousFingerprint?.rendered !== undefined
@@ -200,14 +234,13 @@ async function observeSessionFact(
   } else {
     fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
   }
-  const reducedActivity = reduceActivityObservation(activityHistory.get(sessionKey), {
-    alive: brokerState === "alive",
-    observedAt,
-    rendered: currentRendered,
-  });
-  if (reducedActivity.history) activityHistory.set(sessionKey, reducedActivity.history);
-  else activityHistory.delete(sessionKey);
-  const activity = reducedActivity.activity;
+  const activity = sample
+    ? (await sample.activity).activity
+    : reduceSessionActivity(sessionKey, {
+      alive: brokerState === "alive",
+      observedAt,
+      rendered: currentRendered,
+    }).activity;
 
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
   const renderedPreview = lastTerminalPreviewLine(currentRendered);

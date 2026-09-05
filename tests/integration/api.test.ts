@@ -635,7 +635,7 @@ describe("GET /api/sessions", () => {
     }
   });
 
-  test("shares one activity observation between concurrent dashboard and notification consumers", async () => {
+  test("shares a changed activity reduction when notification capture starts before dashboard", async () => {
     const endpoint = `https://fcm.googleapis.com/activity-observation-${Date.now()}`;
     const sessionName = "shared-activity";
     const sessionId = "shared-activity-id";
@@ -647,6 +647,7 @@ describe("GET /api/sessions", () => {
     addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
       let releaseCapture: (() => void) | undefined;
       const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
       let captureStarted: (() => void) | undefined;
@@ -662,15 +663,18 @@ describe("GET /api/sessions", () => {
         { name: sessionName, alive: true, outputSequence: "52", identity: testIdentity(sessionName, sessionId) },
       ]);
 
-      const dashboard = get("/api/sessions");
-      await captureStartedPromise;
       const notification = __runSessionNotificationObservationForTests();
+      await captureStartedPromise;
+      const dashboard = get("/api/sessions");
       releaseCapture?.();
       const [response] = await Promise.all([dashboard, notification]);
       const observed = await response.json();
 
       expect(factBackend.capturePaneCalls).toBe(2);
+      expect(observed.sessions[0].triage).toBe("running");
       expect(observed.sessions[0].activity.lastRenderedActivityAt).toBe(observed.sessions[0].activity.observedAt);
+      expect(observed.sessions[0].activity).not.toHaveProperty("quietSince");
+      expect(observed.sessions[0].activity.display).toBe("active now");
       expect(observed.sessions[0].runtimeState.transitionSequence).toBe(2);
     } finally {
       removeSubscription(endpoint);
@@ -959,6 +963,7 @@ describe("GET /api/sessions", () => {
     const next = await (await get("/api/sessions")).json();
     expect(next.sessions[0].runtimeState.transitionSequence).toBeGreaterThan(runtimeState.transitionSequence);
     expect(next.sessions[0].runtimeState.unseen).toBe(true);
+    expect(next.sessions[0].activity.lastRenderedActivityAt).toBe(next.sessions[0].activity.observedAt);
   });
 });
 

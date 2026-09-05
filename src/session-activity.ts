@@ -1,3 +1,6 @@
+// "activity unavailable" and the largest valid minute display are both 20 characters.
+export const SESSION_ACTIVITY_DISPLAY_MAX_LENGTH = 20;
+
 export interface SessionActivityObservation {
   readonly freshness: "fresh" | "unknown";
   readonly observedAt: string;

@@ -13,6 +13,7 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
@@ -405,7 +406,7 @@ export const controlApiSource: ControlApiSource = {
     ActivityObservation: object({
       freshness: { enum: ["fresh", "unknown"] },
       observedAt: { type: "string", format: "date-time" },
-      display: string(),
+      display: { type: "string", maxLength: SESSION_ACTIVITY_DISPLAY_MAX_LENGTH },
       lastRenderedActivityAt: { type: "string", format: "date-time" },
       quietSince: { type: "string", format: "date-time" },
     }, ["freshness", "observedAt", "display"]),

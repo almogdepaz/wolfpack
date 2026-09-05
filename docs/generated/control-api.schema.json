@@ -3173,7 +3173,8 @@
           "format": "date-time"
         },
         "display": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20
         },
         "lastRenderedActivityAt": {
           "type": "string",
