@@ -44,6 +44,8 @@ interface RenderedFingerprintFlight {
 }
 
 interface RenderedActivitySample {
+  readonly token: object;
+  readonly flight: RenderedFingerprintFlight;
   readonly rendered: string | undefined;
   readonly activity: Promise<SessionActivityReduction>;
 }
@@ -54,7 +56,7 @@ const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
 const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
 let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
-let sessionNotificationObservationPromise: Promise<void> | null = null;
+let sessionNotificationObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
 let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
 let dashboardObservationCache: {
   readonly expiresAt: number;
@@ -135,7 +137,8 @@ function createRenderedFingerprintFlight(
   let flight: RenderedFingerprintFlight;
   const activity = promise.then((capture) => {
     if (activityContinuityTokens.get(sessionKey) !== token || !capture.available) {
-      if (!capture.available && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
+      const currentFlight = renderedFingerprintFlights.get(sessionKey);
+      if (!capture.available && currentFlight?.token === token && currentFlight.promise === promise) {
         renderedFingerprintFlights.delete(sessionKey);
       }
       if (!capture.available && activityContinuityTokens.get(sessionKey) === token) {
@@ -164,11 +167,22 @@ async function renderedActivitySample(
   }
   const capture = await flight.promise;
   return {
+    token: flight.token,
+    flight,
     rendered: activityContinuityTokens.get(sessionKey) === flight.token && capture.available
       ? capture.rendered
       : undefined,
     activity: flight.activity,
   };
+}
+
+function retireRenderedActivitySample(sessionKey: string, sample: RenderedActivitySample): void {
+  if (activityContinuityTokens.get(sessionKey) === sample.token) {
+    activityContinuityTokens.delete(sessionKey);
+  }
+  if (renderedFingerprintFlights.get(sessionKey) === sample.flight) {
+    renderedFingerprintFlights.delete(sessionKey);
+  }
 }
 
 async function listAvailableSessionFacts(backend: SessionBackend): Promise<SessionListFact[] | undefined> {
@@ -260,8 +274,12 @@ async function observeSessionFact(
     // A liveness or capture gap breaks the observed continuity. The next
     // successful rendered sample is a baseline, not a fabricated transition.
     fingerprints.delete(sessionKey);
-    activityContinuityTokens.delete(sessionKey);
-    renderedFingerprintFlights.delete(sessionKey);
+    if (brokerState !== "alive") {
+      activityContinuityTokens.delete(sessionKey);
+      renderedFingerprintFlights.delete(sessionKey);
+    } else if (sample) {
+      retireRenderedActivitySample(sessionKey, sample);
+    }
     if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
   } else {
     fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
@@ -375,8 +393,8 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
   return dashboardObservationPromise;
 }
 
-async function runSessionNotificationObservation(): Promise<void> {
-  if (getSubscriptionCount() === 0) return;
+async function runSessionNotificationObservation(): Promise<readonly ObservedSessionSummary[]> {
+  if (getSubscriptionCount() === 0) return [];
   if (sessionNotificationObservationPromise) return sessionNotificationObservationPromise;
   sessionNotificationObservationPromise = (async () => {
     const observation = await collectSessionObservation(notificationFingerprints);
@@ -387,6 +405,7 @@ async function runSessionNotificationObservation(): Promise<void> {
         notificationEligible: !observation.unreliableSessionKeys.has(sessionKey),
       };
     }));
+    return observation.sessions;
   })().finally(() => {
     sessionNotificationObservationPromise = null;
   });
@@ -444,7 +463,7 @@ export function __resetSessionObservationForTests(): void {
   knownSessionSummaries.clear();
 }
 
-export async function __runSessionNotificationObservationForTests(): Promise<void> {
+export async function __runSessionNotificationObservationForTests(): Promise<readonly ObservedSessionSummary[]> {
   if (!process.env.WOLFPACK_TEST) throw new Error("__runSessionNotificationObservationForTests is test-only");
-  await runSessionNotificationObservation();
+  return runSessionNotificationObservation();
 }

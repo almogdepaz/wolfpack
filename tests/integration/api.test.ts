@@ -689,6 +689,72 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("keeps a recovered capture when a retired capture resolves later", async () => {
+    const endpoint = `https://fcm.googleapis.com/overlapping-activity-${Date.now()}`;
+    const sessionName = "overlapping-activity";
+    const sessionId = "overlapping-activity-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "before loss\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    try {
+      let releaseFirst: (() => void) | undefined;
+      const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      let releaseSecond: (() => void) | undefined;
+      const secondReleased = new Promise<void>((resolve) => { releaseSecond = resolve; });
+      let firstStarted: (() => void) | undefined;
+      const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+      let secondStarted: (() => void) | undefined;
+      const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve; });
+      let captureCount = 0;
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        captureCount += 1;
+        if (captureCount === 1) {
+          firstStarted?.();
+          await firstReleased;
+        } else {
+          secondStarted?.();
+          await secondReleased;
+        }
+        return originalCapturePane(name);
+      };
+
+      const first = get("/api/sessions");
+      await firstStartedPromise;
+      factBackend.setFacts([
+        { name: sessionName, alive: false, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+
+      factBackend.setPane(sessionName, "after loss\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const recovered = __runSessionNotificationObservationForTests();
+      await secondStartedPromise;
+
+      releaseFirst?.();
+      const retired = await (await first).json();
+      expect(retired.sessions[0].activity.freshness).toBe("unknown");
+
+      releaseSecond?.();
+      const fresh = await recovered;
+      expect(fresh[0].activity).toMatchObject({ freshness: "fresh", display: "activity unobserved" });
+      expect(fresh[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+      expect(fresh[0].activity).not.toHaveProperty("quietSince");
+
+      const quiet = await __runSessionNotificationObservationForTests();
+      expect(captureCount).toBe(2);
+      expect(quiet[0].activity).toMatchObject({ freshness: "fresh", display: "quiet now" });
+    } finally {
+      removeSubscription(endpoint);
+      __setTestBackend(mockBackend);
+    }
+  });
+
   test("does not restore activity from a capture retired by a dead observation", async () => {
     const endpoint = `https://fcm.googleapis.com/retired-activity-${Date.now()}`;
     const sessionName = "retired-activity";
