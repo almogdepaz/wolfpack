@@ -1372,11 +1372,11 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
 
 // ── Sessions ──
 
-function sessionActivityHtml(session: DelegationSessionLike): string {
-  const display = session.activity?.display;
-  let text = typeof display === "string" ? display : "";
+function activityHtml(session: DelegationSessionLike): string {
+  let text = session.activity?.display;
+  if (typeof text !== "string") text = "";
   if (session.runtimeState?.unseen) text += `${text ? " · " : ""}changed since review`;
-  return text ? `<div class="session-activity">${esc(text)}</div>` : "";
+  return text && `<div class="session-activity">${esc(text)}</div>`;
 }
 
 function sessionCardViewControlsHtml(): string {
@@ -1631,7 +1631,7 @@ function renderMachineGroupHtml(g, multiMachine) {
               ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
               ${delegationParentMissingHtml(row)}
               <div class="card-preview">${esc(lastLine)}</div>
-              ${sessionActivityHtml(s)}
+              ${activityHtml(s)}
             </div>
             <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
           </div>`;
@@ -1837,9 +1837,11 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
   const options = { signal };
   return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
+    const sessionRows = sessions.sessions || [];
+    if (isRemote) for (const session of sessionRows) session.activity = undefined;
     return {
       machine: { ...currentMachineMeta(), url: machineIdentity, version: machineMeta.version || "" },
-      sessions: sessions.sessions || [],
+      sessions: sessionRows,
       online: true,
       pending: false,
     };
@@ -4561,7 +4563,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
-      ${sessionActivityHtml(s)}
+      ${activityHtml(s)}
     </div>
     ${gridBtn}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>

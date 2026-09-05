@@ -4,6 +4,8 @@ import { startTestServer, type TestServer } from "./helpers.ts";
 let server: TestServer;
 
 const observedAt = new Date().toISOString();
+const PEER_ORIGIN = "https://activity-peer.example.ts.net";
+const PEER_INSTALLATION_ID = "6b0c31a8-f99e-4c17-b681-881c40381ef2";
 
 const sessions = [
   {
@@ -46,15 +48,22 @@ const sessions = [
     },
     activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "active now" },
   },
-  {
-    name: "malformed-activity",
-    lastLine: "untrusted peer payload",
-    triage: "idle",
-    identity: { wolfpackSessionId: "id-malformed" },
-    runtimeState: { state: "idle", unseen: true, transitionSequence: 1 },
-    activity: { freshness: "fresh", observedAt, quietSince: "not-a-timestamp" },
-  },
 ];
+
+const malformedPeerSession = {
+  name: "malformed-activity",
+  lastLine: "untrusted peer payload",
+  triage: "idle",
+  identity: { wolfpackSessionId: "id-malformed" },
+  runtimeState: { state: "idle", unseen: true, transitionSequence: 1 },
+  activity: {
+    freshness: "fresh",
+    observedAt: "not-a-timestamp",
+    lastRenderedActivityAt: "not-a-timestamp",
+    quietSince: "not-a-timestamp",
+    display: "active now",
+  },
+};
 
 test.beforeAll(async () => {
   server = await startTestServer();
@@ -100,7 +109,45 @@ test("shows rendered activity context and review changes without altering semant
   await expect(card("active-output").locator(".session-activity")).toHaveText("active now · changed since review");
   await expect(card("structured").locator(".session-activity")).toHaveText("quiet now · changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("activity unavailable · changed since review");
-  await expect(card("malformed-activity").locator(".session-activity")).toHaveText("changed since review");
+});
+
+test("omits activity from remote session responses", async ({ page }) => {
+  await page.route("**/api/tailnet/v1/candidates", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      candidates: [{
+        hostname: "activity-peer.example.ts.net",
+        tailnetNodeId: "n-activity-peer",
+        origin: PEER_ORIGIN,
+        online: true,
+      }],
+    }),
+  }));
+  await page.route(`${PEER_ORIGIN}/api/machine`, (route) => route.fulfill({
+    contentType: "application/json",
+    headers: { "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify({
+      protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+      machine: {
+        tailnetNodeId: "n-activity-peer",
+        installationId: PEER_INSTALLATION_ID,
+        displayName: "activity peer",
+        origin: PEER_ORIGIN,
+      },
+      wolfpack: { version: "1.7.0" },
+      capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+    }),
+  }));
+  await page.route(`${PEER_ORIGIN}/api/sessions`, (route) => route.fulfill({
+    contentType: "application/json",
+    headers: { "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify({ sessions: [malformedPeerSession] }),
+  }));
+
+  await page.goto(server.baseUrl);
+
+  const card = page.getByRole("button", { name: "Open malformed-activity" }).locator("xpath=..");
+  await expect(card.locator(".session-activity")).toHaveText("changed since review");
 });
 
 test("opening a session has no unseen acknowledgement side effect", async ({ page }) => {
