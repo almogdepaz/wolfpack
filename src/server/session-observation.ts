@@ -32,6 +32,7 @@ interface ActivityFingerprint {
 }
 
 interface RenderedFingerprintFlight {
+  readonly token: object;
   readonly outputSequence?: string;
   readonly observedAt: string;
   readonly promise: Promise<string | undefined>;
@@ -44,6 +45,7 @@ interface RenderedActivitySample {
 }
 
 const activityHistory = new Map<string, SessionActivityHistory>();
+const activityContinuityTokens = new Map<string, object>();
 const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
 const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
@@ -96,6 +98,15 @@ function renderedActivityFingerprint(pane: string): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function activityContinuityToken(sessionKey: string): object {
+  let token = activityContinuityTokens.get(sessionKey);
+  if (token === undefined) {
+    token = {};
+    activityContinuityTokens.set(sessionKey, token);
+  }
+  return token;
+}
+
 function reduceSessionActivity(
   sessionKey: string,
   input: SessionActivityObservationInput,
@@ -111,6 +122,7 @@ function createRenderedFingerprintFlight(
   sessionKey: string,
   name: string,
   outputSequence: string | undefined,
+  token: object,
 ): RenderedFingerprintFlight {
   const observedAt = new Date().toISOString();
   const promise = backend.capturePane(name, { scrollbackLines: 0 })
@@ -118,12 +130,18 @@ function createRenderedFingerprintFlight(
     .catch(() => undefined);
   let flight: RenderedFingerprintFlight;
   const activity = promise.then((rendered) => {
-    if (rendered === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
-      renderedFingerprintFlights.delete(sessionKey);
+    if (activityContinuityTokens.get(sessionKey) !== token || rendered === undefined) {
+      if (rendered === undefined && renderedFingerprintFlights.get(sessionKey)?.promise === promise) {
+        renderedFingerprintFlights.delete(sessionKey);
+      }
+      if (rendered === undefined && activityContinuityTokens.get(sessionKey) === token) {
+        activityContinuityTokens.delete(sessionKey);
+      }
+      return reduceActivityObservation(undefined, { alive: false, observedAt });
     }
     return reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered });
   });
-  flight = { outputSequence, observedAt, promise, activity };
+  flight = { token, outputSequence, observedAt, promise, activity };
   return flight;
 }
 
@@ -133,14 +151,18 @@ async function renderedActivitySample(
   name: string,
   outputSequence: string | undefined,
 ): Promise<RenderedActivitySample> {
+  const token = activityContinuityToken(sessionKey);
   let flight = outputSequence === undefined ? undefined : renderedFingerprintFlights.get(sessionKey);
-  if (flight?.outputSequence !== outputSequence) flight = undefined;
+  if (flight?.outputSequence !== outputSequence || flight?.token !== token) flight = undefined;
   if (flight === undefined) {
-    flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence);
+    flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence, token);
     if (outputSequence !== undefined) renderedFingerprintFlights.set(sessionKey, flight);
   }
   const rendered = await flight.promise;
-  return { rendered, activity: flight.activity };
+  return {
+    rendered: activityContinuityTokens.get(sessionKey) === flight.token ? rendered : undefined,
+    activity: flight.activity,
+  };
 }
 
 async function listAvailableSessionFacts(backend: SessionBackend): Promise<SessionListFact[] | undefined> {
@@ -155,6 +177,7 @@ async function listAvailableSessionFacts(backend: SessionBackend): Promise<Sessi
 
 function observeUnavailableSessions(): SessionObservation {
   activityHistory.clear();
+  activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
   renderedFingerprintFlights.clear();
@@ -231,6 +254,7 @@ async function observeSessionFact(
     // A liveness or capture gap breaks the observed continuity. The next
     // successful rendered sample is a baseline, not a fabricated transition.
     fingerprints.delete(sessionKey);
+    activityContinuityTokens.delete(sessionKey);
     renderedFingerprintFlights.delete(sessionKey);
     if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
   } else {
@@ -285,6 +309,9 @@ function pruneSessionObservationState(
   }
   for (const key of activityHistory.keys()) {
     if (!activeSessionKeys.has(key)) activityHistory.delete(key);
+  }
+  for (const key of activityContinuityTokens.keys()) {
+    if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
   }
   for (const key of renderedFingerprintFlights.keys()) {
     if (!activeSessionKeys.has(key)) renderedFingerprintFlights.delete(key);
@@ -385,6 +412,8 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   dashboardObservationCache = null;
   activityHistory.delete(sessionId);
   activityHistory.delete(sessionName);
+  activityContinuityTokens.delete(sessionId);
+  activityContinuityTokens.delete(sessionName);
   dashboardFingerprints.delete(sessionId);
   dashboardFingerprints.delete(sessionName);
   notificationFingerprints.delete(sessionId);
@@ -400,6 +429,7 @@ export function resetNotificationObservation(): void {
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
   activityHistory.clear();
+  activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
   dashboardObservationPromise = null;

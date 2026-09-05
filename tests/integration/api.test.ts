@@ -641,6 +641,53 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("does not restore activity from a capture retired by a dead observation", async () => {
+    const endpoint = `https://fcm.googleapis.com/retired-activity-${Date.now()}`;
+    const sessionName = "retired-activity";
+    const sessionId = "retired-activity-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "45", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "before loss\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    try {
+      let releaseCapture: (() => void) | undefined;
+      const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
+      let captureStarted: (() => void) | undefined;
+      const captureStartedPromise = new Promise<void>((resolve) => { captureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        captureStarted?.();
+        await captureReleased;
+        return originalCapturePane(name);
+      };
+
+      const beforeLoss = get("/api/sessions");
+      await captureStartedPromise;
+      factBackend.setFacts([
+        { name: sessionName, alive: false, outputSequence: "45", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+      releaseCapture?.();
+      const retired = await (await beforeLoss).json();
+      expect(retired.sessions[0].activity.freshness).toBe("unknown");
+
+      factBackend.setPane(sessionName, "after loss\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "45", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const recovered = await (await get("/api/sessions")).json();
+      expect(factBackend.capturePaneCalls).toBe(2);
+      expect(recovered.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "activity unobserved" });
+      expect(recovered.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
+      expect(recovered.sessions[0].activity).not.toHaveProperty("quietSince");
+    } finally {
+      removeSubscription(endpoint);
+      __setTestBackend(mockBackend);
+    }
+  });
+
   test("shares a changed activity reduction when notification capture starts before dashboard", async () => {
     const endpoint = `https://fcm.googleapis.com/activity-observation-${Date.now()}`;
     const sessionName = "shared-activity";
