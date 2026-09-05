@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { formatSessionActivityDisplay, reduceActivityObservation } from "../../src/session-activity";
 
 describe("session activity observation", () => {
-  test("formats bounded activity ages from explicit observation times", () => {
+  test("formats only aged activity from explicit observation times", () => {
+    expect(formatSessionActivityDisplay("2026-01-01T00:00:59.999Z", "2026-01-01T00:00:00.000Z", "active")).toBe("");
+    expect(formatSessionActivityDisplay("2026-01-01T00:00:59.999Z", "2026-01-01T00:00:00.000Z", "quiet")).toBe("");
     expect(formatSessionActivityDisplay("2026-01-01T00:02:00.000Z", "2026-01-01T00:00:00.000Z", "active")).toBe("active 2m");
+    expect(formatSessionActivityDisplay("2026-01-01T00:01:00.000Z", "2026-01-01T00:00:00.000Z", "quiet")).toBe("quiet 1m");
     expect(formatSessionActivityDisplay("2026-01-01T00:00:00.000Z", "not-a-timestamp", "quiet")).toBe("activity unobserved");
   });
 
@@ -30,10 +33,10 @@ describe("session activity observation", () => {
     });
 
     expect(baseline.activity.display).toBe("activity unobserved");
-    expect(quiet.activity).toMatchObject({ quietSince: "2026-01-01T00:00:01.000Z", display: "quiet now" });
+    expect(quiet.activity).toMatchObject({ quietSince: "2026-01-01T00:00:01.000Z", display: "" });
     expect(changed.activity).toMatchObject({
       lastRenderedActivityAt: "2026-01-01T00:00:03.000Z",
-      display: "active now",
+      display: "",
     });
     expect(quietAgain.activity).toMatchObject({
       quietSince: "2026-01-01T00:00:03.000Z",

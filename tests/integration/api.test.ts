@@ -673,7 +673,7 @@ describe("GET /api/sessions", () => {
         { name: sessionName, alive: true, outputSequence: "73", identity: testIdentity(sessionName, sessionId) },
       ]);
       const blank = await (await get("/api/sessions")).json();
-      expect(blank.sessions[0]).toMatchObject({ triage: "running", activity: { display: "active now" } });
+      expect(blank.sessions[0]).toMatchObject({ triage: "running", activity: { display: "" } });
       await __runSessionNotificationObservationForTests();
       await __runSessionNotificationObservationForTests();
       expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
@@ -681,7 +681,7 @@ describe("GET /api/sessions", () => {
       ]);
 
       const quiet = await (await get("/api/sessions")).json();
-      expect(quiet.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "quiet now" });
+      expect(quiet.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "" });
     } finally {
       pushTesting.sessionPushSender = null;
       removeSubscription(endpoint);
@@ -748,7 +748,7 @@ describe("GET /api/sessions", () => {
 
       const quiet = await __runSessionNotificationObservationForTests();
       expect(captureCount).toBe(2);
-      expect(quiet[0].activity).toMatchObject({ freshness: "fresh", display: "quiet now" });
+      expect(quiet[0].activity).toMatchObject({ freshness: "fresh", display: "" });
     } finally {
       removeSubscription(endpoint);
       __setTestBackend(mockBackend);
@@ -841,7 +841,7 @@ describe("GET /api/sessions", () => {
       expect(observed.sessions[0].triage).toBe("running");
       expect(observed.sessions[0].activity.lastRenderedActivityAt).toBe(observed.sessions[0].activity.observedAt);
       expect(observed.sessions[0].activity).not.toHaveProperty("quietSince");
-      expect(observed.sessions[0].activity.display).toBe("active now");
+      expect(observed.sessions[0].activity.display).toBe("");
       expect(observed.sessions[0].runtimeState.transitionSequence).toBe(2);
     } finally {
       removeSubscription(endpoint);

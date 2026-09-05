@@ -35,7 +35,7 @@ export function formatSessionActivityDisplay(
   const ageMs = Date.parse(observedAt) - Date.parse(activityAt);
   if (!Number.isFinite(ageMs)) return "activity unobserved";
   const minutes = Math.max(0, Math.floor(ageMs / 60_000));
-  return `${state} ${minutes ? `${minutes}m` : "now"}`;
+  return minutes ? `${state} ${minutes}m` : "";
 }
 
 export function reduceActivityObservation(

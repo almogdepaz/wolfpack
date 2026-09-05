@@ -30,7 +30,7 @@ const sessions = [
       unseen: true,
       transitionSequence: 7,
     },
-    activity: { freshness: "fresh", observedAt, quietSince: observedAt, display: "quiet now" },
+    activity: { freshness: "fresh", observedAt, quietSince: observedAt, display: "" },
   },
   {
     name: "active-output",
@@ -46,7 +46,7 @@ const sessions = [
       unseen: true,
       transitionSequence: 3,
     },
-    activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "active now" },
+    activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "" },
   },
 ];
 
@@ -106,8 +106,8 @@ test("shows rendered activity context and review changes without altering semant
   await page.goto(server.baseUrl);
 
   const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
-  await expect(card("active-output").locator(".session-activity")).toHaveText("active now · changed since review");
-  await expect(card("structured").locator(".session-activity")).toHaveText("quiet now · changed since review");
+  await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
+  await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("activity unavailable · changed since review");
 });
 
