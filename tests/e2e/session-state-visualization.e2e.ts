@@ -230,7 +230,7 @@ test("opening a terminal clears its acknowledged review change after websocket o
   await expect.poll(() => acknowledgements).toEqual([{ sessionId: "id-structured", transitionSequence: 7 }]);
   await expect(card.locator(".session-activity")).toHaveCount(0);
 
-  if (test.info().project.name !== "iphone-se") {
+  if (!(await page.getByRole("button", { name: "← Back", exact: true }).isVisible())) {
     const sidebarCard = page.locator("#sidebar-session-list .card").filter({ hasText: "structured" });
     await expect(sidebarCard).toHaveCount(1);
     await expect(sidebarCard.locator(".session-activity")).toHaveCount(0);
@@ -306,8 +306,10 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
   await acknowledgementRequest;
   await expect.poll(() => acknowledgements).toEqual([{ sessionId: "id-structured", transitionSequence: 7 }]);
 
-  if (test.info().project.name === "iphone-se") {
-    await page.getByRole("button", { name: "← Back" }).click();
+  const backButton = page.getByRole("button", { name: "← Back", exact: true });
+  const mobileLayout = await backButton.isVisible();
+  if (mobileLayout) {
+    await backButton.click();
   } else {
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   }
@@ -319,7 +321,7 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
   await expect(card.locator(".triage-badge")).toHaveText("output");
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
-  if (test.info().project.name !== "iphone-se") {
+  if (!mobileLayout) {
     websocket.sockets[0]?.close({ code: 1006, reason: "test reconnect" });
     await expect.poll(() => websocket.sockets.length).toBe(2);
     await expect.poll(() => acknowledgements).toEqual([{ sessionId: "id-structured", transitionSequence: 7 }]);
