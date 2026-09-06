@@ -15,6 +15,15 @@ export interface DelegationRuntimeState {
   readonly freshness?: string;
   readonly source?: string;
   readonly stale?: boolean;
+  readonly unseen?: boolean;
+  readonly transitionSequence?: number;
+}
+
+export interface DelegationActivityObservation {
+  readonly display?: unknown;
+  readonly freshness?: unknown;
+  readonly lastRenderedActivityAt?: unknown;
+  readonly quietSince?: unknown;
 }
 
 export interface DelegationSessionLike {
@@ -22,6 +31,7 @@ export interface DelegationSessionLike {
   readonly lastLine?: string;
   readonly identity?: DelegationSessionIdentity;
   readonly runtimeState?: DelegationRuntimeState;
+  readonly activity?: DelegationActivityObservation;
   readonly triage?: string;
 }
 

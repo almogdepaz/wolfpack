@@ -15,6 +15,7 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
@@ -28,6 +29,7 @@ import {
 } from "../session-prompt-contract.ts";
 import {
   AGENT_STATUS_AUTHORITIES,
+  AGENT_STATUS_FRESHNESS,
   AGENT_STATUS_FRESHNESSES,
   AGENT_STATUS_SOURCES,
   AGENT_STATUS_STATES,
@@ -503,6 +505,13 @@ export const controlApiSource: ControlApiSource = {
         }, ["id", "displayName", "command", "status", "installGuidance"]),
       ],
     },
+    ActivityObservation: object({
+      freshness: { enum: [AGENT_STATUS_FRESHNESS.FRESH, AGENT_STATUS_FRESHNESS.UNKNOWN] },
+      observedAt: { type: "string", format: "date-time" },
+      display: { type: "string", maxLength: SESSION_ACTIVITY_DISPLAY_MAX_LENGTH },
+      lastRenderedActivityAt: { type: "string", format: "date-time" },
+      quietSince: { type: "string", format: "date-time" },
+    }, ["freshness", "observedAt", "display"]),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -510,6 +519,7 @@ export const controlApiSource: ControlApiSource = {
       outputSequence: ref("BrokerOutputSequence"),
       identity: ref("PublicSessionIdentity"),
       runtimeState: ref("AgentRuntimeState"),
+      activity: ref("ActivityObservation"),
     }, ["name", "lastLine", "triage"]),
     SessionControlIdentity: object({
       session: ref("SessionName"),

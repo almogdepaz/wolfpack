@@ -3358,6 +3358,39 @@
         }
       ]
     },
+    "ActivityObservation": {
+      "type": "object",
+      "properties": {
+        "freshness": {
+          "enum": [
+            "fresh",
+            "unknown"
+          ]
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "display": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "lastRenderedActivityAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "quietSince": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "freshness",
+        "observedAt",
+        "display"
+      ],
+      "additionalProperties": false
+    },
     "SessionSummary": {
       "type": "object",
       "properties": {
@@ -3378,6 +3411,9 @@
         },
         "runtimeState": {
           "$ref": "#/$defs/AgentRuntimeState"
+        },
+        "activity": {
+          "$ref": "#/$defs/ActivityObservation"
         }
       },
       "required": [
