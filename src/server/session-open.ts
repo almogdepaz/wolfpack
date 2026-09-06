@@ -9,6 +9,14 @@ import type {
   SessionOpenErrorCode,
 } from "../session-open-contract.js";
 import { MAX_SESSION_NAME_LENGTH } from "../validation.js";
+import {
+  TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
+  TaskWorkerReadinessError,
+  failTaskWorkerReadiness,
+  waitForTaskWorkerReadiness,
+} from "./task-worker-readiness.js";
+import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
+import type { RelayEndpoint } from "../task-relay/domain.js";
 import { DuplicateSessionError } from "./backend.js";
 import type { SessionLaunchOptions } from "./backend.js";
 import type {
@@ -31,6 +39,8 @@ const ERROR_MESSAGE: Record<SessionOpenAllocationErrorCode, string> = {
   UNSUPPORTED_HARNESS: "parent session is not running a supported agent harness",
   NAME_COLLISION: "could not allocate a sub-agent session name",
   BACKEND_UNAVAILABLE: "backend unavailable",
+  TASK_WORKER_PREFLIGHT_FAILED: "task worker preflight failed",
+  TASK_WORKER_NOT_READY: "task worker not ready",
 };
 
 export class SessionOpenError extends Error {
@@ -55,6 +65,8 @@ export interface SessionOpenBackend {
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity>;
+  inspectSession?(selector: string): Promise<import("../session-status-contract.js").SessionInspectionResult>;
+  killSessionById?(sessionId: string): Promise<void>;
 }
 
 interface ParentState {
@@ -69,6 +81,7 @@ export interface SessionOpenSuccess {
   readonly sessionId: string;
   readonly project: string;
   readonly harness: OpenableHarness;
+  readonly taskEndpoint?: RelayEndpoint;
 }
 
 interface OpenSubSessionInput {
@@ -79,6 +92,9 @@ interface OpenSubSessionInput {
   readonly sessionName?: string;
   readonly model?: string;
   readonly initialPrompt?: string;
+  readonly taskWorker?: TaskWorkerLaunch;
+  readonly readinessTimeoutMs?: number;
+  readonly endpointForSession?: (sessionId: string) => Promise<RelayEndpoint | undefined>;
   readonly notify?: (parent: ParentSessionIdentity, session: string) => void;
 }
 
@@ -138,7 +154,10 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   };
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
-    if (input.model !== undefined && parentState.harness !== AGENT_KIND.PI.id) {
+    if (
+      (input.model !== undefined || input.taskWorker !== undefined)
+      && parentState.harness !== AGENT_KIND.PI.id
+    ) {
       throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
     }
     const session = chooseSubAgentSessionName(
@@ -158,6 +177,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
           parentSession: parentIdentity,
           ...(input.model !== undefined && { model: input.model }),
           initialPrompt: input.initialPrompt,
+          ...(input.taskWorker !== undefined && { taskWorker: input.taskWorker }),
         },
       );
     } catch (error: unknown) {
@@ -175,11 +195,29 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
       continue;
     }
 
-    await readParentState(
-      input.backend,
-      input.parentSession,
-      parentIdentity.wolfpackSessionId,
-    );
+    try {
+      await readParentState(
+        input.backend,
+        input.parentSession,
+        parentIdentity.wolfpackSessionId,
+      );
+    } catch (error: unknown) {
+      if (input.taskWorker === undefined || error instanceof TaskWorkerReadinessError) throw error;
+      return failTaskWorkerReadiness(input.backend, {
+        session,
+        sessionId: identity.wolfpackSessionId,
+      }, error instanceof Error ? error.message : "task worker parent identity check failed");
+    }
+    const taskEndpoint = input.taskWorker === undefined
+      ? undefined
+      : await waitForTaskWorkerReadiness({
+        backend: input.backend,
+        endpointForSession: input.endpointForSession ?? (async () => undefined),
+        session,
+        sessionId: identity.wolfpackSessionId,
+        projectDir: input.projectDir,
+        timeoutMs: input.readinessTimeoutMs ?? TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
+      });
     if (input.notify) {
       try {
         input.notify(parentIdentity, session);
@@ -193,6 +231,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
       sessionId: identity.wolfpackSessionId,
       project: input.project,
       harness: parentState.harness,
+      ...(taskEndpoint && { taskEndpoint }),
     };
   }
 

@@ -60,6 +60,59 @@ describe("top-level session creation", () => {
     });
   });
 
+  test("waits for the exact registered task endpoint before returning a task worker", async () => {
+    const creates: unknown[] = [];
+    const result = await createTopLevelSession({
+      backend: {
+        list: async () => [],
+        createSession: async (name, cwd, cmd, _settings, options) => {
+          creates.push({ name, cwd, cmd, options });
+          return identity(name, cmd);
+        },
+        inspectSession: async () => ({
+          ok: true,
+          session: "branchout",
+          sessionId: "id:branchout",
+          projectPath: "/dev/branchout",
+          harness: "pi",
+          alive: true,
+        }),
+        killSessionById: async () => {},
+      },
+      project: "branchout",
+      projectDir: "/dev/branchout",
+      command: "pi",
+      taskWorker: {
+        executable: "/opt/homebrew/bin/pi",
+        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
+      },
+      readinessTimeoutMs: 100,
+      endpointForSession: async () => ({
+        relay: "wolfpack-pi-tasks-v2",
+        id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5",
+      }),
+      loadSettings: () => ({ agentCmd: "pi" }),
+    });
+
+    expect(creates).toEqual([{
+      name: "branchout",
+      cwd: "/dev/branchout",
+      cmd: "pi",
+      options: {
+        agentKind: "pi",
+        initialPrompt: undefined,
+        taskWorker: {
+          executable: "/opt/homebrew/bin/pi",
+          extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
+        },
+      },
+    }]);
+    expect(result.taskEndpoint).toEqual({
+      relay: "wolfpack-pi-tasks-v2",
+      id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5",
+    });
+  });
+
   test("bounds concurrent name-collision retries", async () => {
     let calls = 0;
     const promise = createTopLevelSession({

@@ -21,6 +21,7 @@ import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
   SESSION_OPEN_MAX_MODEL_LENGTH,
+  SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
 } from "../session-open-contract.js";
 import { unicodeCodePointLength } from "../session-prompt-contract.js";
 import { DEV_DIR } from "./dev-dir.js";
@@ -52,7 +53,12 @@ import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity } from "./session-identity.js";
 import { createTopLevelSession } from "./session-create.js";
 import { openSubSession, SessionOpenError } from "./session-open.js";
+import {
+  TaskWorkerReadinessError,
+  prepareTaskWorkerLaunch,
+} from "./task-worker-readiness.js";
 import { notifySubSessionOpened } from "./session-notifications.js";
+import { getTaskRelayGateway } from "../task-relay/gateway.js";
 import type { InvalidBodyResponse } from "./http.js";
 import type { RouteHandler } from "./route-handler.js";
 
@@ -77,6 +83,23 @@ const CREATE_BODY_STRING_KEYS = [
   "initialPrompt",
 ] as const;
 const CREATE_BODY_KEYS = new Set<string>(CREATE_BODY_STRING_KEYS);
+function validTaskWorkerReadinessTimeout(value: number | undefined): boolean {
+  return value === undefined || (
+    Number.isInteger(value)
+    && value >= 1
+    && value <= SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS
+  );
+}
+
+function taskWorkerFailureBody(error: TaskWorkerReadinessError): Record<string, unknown> {
+  return {
+    error: error.message,
+    code: error.code,
+    ...(error.createdSession && { createdSession: error.createdSession }),
+    ...(error.cleanup && { cleanup: error.cleanup }),
+  };
+}
+
 const SETTINGS_BODY_STRING_KEYS = ["agentCmd", "addCmd", "removeCmd"] as const;
 const SETTINGS_BODY_KEYS = new Set<string>([...SETTINGS_BODY_STRING_KEYS, "setCmdEnabled"]);
 const SET_CMD_ENABLED_BODY_KEYS = new Set(["cmd", "enabled"]);
@@ -102,15 +125,19 @@ interface SessionCreateBody extends Record<string, unknown> {
   projectDir?: string;
   harness?: string;
   initialPrompt?: string;
+  taskWorker?: boolean;
+  readinessTimeoutMs?: number;
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "taskWorker", "readinessTimeoutMs"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && hasOptionalType(body, "harness", "string")
-    && hasOptionalType(body, "initialPrompt", "string");
+    && hasOptionalType(body, "initialPrompt", "string")
+    && hasOptionalType(body, "taskWorker", "boolean")
+    && hasOptionalType(body, "readinessTimeoutMs", "number");
 }
 
 interface SessionOpenBody extends Record<string, unknown> {
@@ -120,17 +147,21 @@ interface SessionOpenBody extends Record<string, unknown> {
   sessionName?: string;
   model?: string;
   initialPrompt?: string;
+  taskWorker?: boolean;
+  readinessTimeoutMs?: number;
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "taskWorker", "readinessTimeoutMs"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "sessionName", "string")
     && hasOptionalType(body, "model", "string")
-    && hasOptionalType(body, "initialPrompt", "string");
+    && hasOptionalType(body, "initialPrompt", "string")
+    && hasOptionalType(body, "taskWorker", "boolean")
+    && hasOptionalType(body, "readinessTimeoutMs", "number");
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -472,6 +503,13 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         && (!body.initialPrompt.trim()
           || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
       )
+      || !validTaskWorkerReadinessTimeout(body.readinessTimeoutMs)
+      || (body.taskWorker !== undefined && body.taskWorker !== true)
+      || (body.readinessTimeoutMs !== undefined && body.taskWorker !== true)
+      || (body.taskWorker === true && (
+        body.projectDir === undefined
+        || body.initialPrompt !== undefined
+      ))
     ) {
       if (body) json(res, {
         error: "invalid session-create request",
@@ -502,6 +540,12 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
     const { project, projectDir } = projectSelection.value;
 
     const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
+    if (body.taskWorker === true && configuredCommand !== AGENT_KIND.PI.id) {
+      return json(res, {
+        error: "invalid session-create request",
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      }, 400);
+    }
     if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL.id) {
       return json(res, {
         error: "initial prompt requires an agent harness",
@@ -509,17 +553,36 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       }, 400);
     }
 
+    let taskWorker;
     try {
+      taskWorker = body.taskWorker === true ? prepareTaskWorkerLaunch(process.env) : undefined;
+    } catch (error: unknown) {
+      if (error instanceof TaskWorkerReadinessError) {
+        return json(res, taskWorkerFailureBody(error), 503);
+      }
+      throw error;
+    }
+
+    try {
+      const backend = getBackend();
       const result = await createTopLevelSession({
-        backend: getBackend(),
+        backend,
         project,
         projectDir,
         command: configuredCommand,
         initialPrompt: body.initialPrompt,
+        ...(taskWorker !== undefined && {
+          taskWorker,
+          readinessTimeoutMs: body.readinessTimeoutMs,
+          endpointForSession: (sessionId) => getTaskRelayGateway().endpointForSession(sessionId),
+        }),
         loadSettings: () => ({ agentCmd: configuredCommand }),
       });
       json(res, result);
     } catch (error: unknown) {
+      if (error instanceof TaskWorkerReadinessError) {
+        return json(res, taskWorkerFailureBody(error), 503);
+      }
       if (error instanceof DuplicateSessionError) {
         return json(res, {
           error: "could not allocate a session name",
@@ -553,6 +616,13 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         && (!body.initialPrompt.trim()
           || unicodeCodePointLength(body.initialPrompt) > MAX_INITIAL_PROMPT_LENGTH)
       )
+      || !validTaskWorkerReadinessTimeout(body.readinessTimeoutMs)
+      || (body.taskWorker !== undefined && body.taskWorker !== true)
+      || (body.readinessTimeoutMs !== undefined && body.taskWorker !== true)
+      || (body.taskWorker === true && (
+        body.projectDir === undefined
+        || body.initialPrompt !== undefined
+      ))
     ) {
       return json(
         res,
@@ -582,6 +652,16 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
     }
     const { project, projectDir } = projectSelection.value;
 
+    let taskWorker;
+    try {
+      taskWorker = body.taskWorker === true ? prepareTaskWorkerLaunch(process.env) : undefined;
+    } catch (error: unknown) {
+      if (error instanceof TaskWorkerReadinessError) {
+        return json(res, taskWorkerFailureBody(error), 503);
+      }
+      throw error;
+    }
+
     const backend = getBackend();
     if (!backend.listIdentities) {
       return json(res, {
@@ -598,6 +678,8 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
           createSession: (name, cwd, cmd, loadSettings, options) => (
             backend.createSession(name, cwd, cmd, loadSettings, options)
           ),
+          inspectSession: backend.inspectSession?.bind(backend),
+          killSessionById: backend.killSessionById.bind(backend),
         },
         parentSession: body.parentSession,
         project,
@@ -605,12 +687,20 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         sessionName: body.sessionName,
         model: body.model,
         initialPrompt: body.initialPrompt,
+        ...(taskWorker !== undefined && {
+          taskWorker,
+          readinessTimeoutMs: body.readinessTimeoutMs,
+          endpointForSession: (sessionId) => getTaskRelayGateway().endpointForSession(sessionId),
+        }),
         notify: (parent, session) => {
           notifySubSessionOpened(parent.wolfpackSessionName, session);
         },
       });
       json(res, result);
     } catch (error: unknown) {
+      if (error instanceof TaskWorkerReadinessError) {
+        return json(res, taskWorkerFailureBody(error), 503);
+      }
       if (error instanceof SessionOpenError) {
         return json(
           res,

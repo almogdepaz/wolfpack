@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DuplicateSessionError } from "../../src/server/backend.ts";
 import type { SessionLaunchOptions } from "../../src/server/backend.ts";
 import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
+import type { SessionInspectionResult } from "../../src/session-status-contract.ts";
 import {
   SESSION_OPEN_MAX_CREATE_ATTEMPTS,
   SessionOpenError,
@@ -39,6 +40,7 @@ class FakeSessionOpenBackend implements SessionOpenBackend {
   identities: Record<string, PublicSessionIdentity>;
   readonly createCalls: CreateCall[] = [];
   readonly createFailures: Error[] = [];
+  readonly killedSessionIds: string[] = [];
   onList: ((count: number, backend: FakeSessionOpenBackend) => void) | undefined;
   private listCount = 0;
 
@@ -55,6 +57,34 @@ class FakeSessionOpenBackend implements SessionOpenBackend {
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
     return { ...this.identities };
+  }
+
+  async inspectSession(selector: string): Promise<SessionInspectionResult> {
+    const identity = Object.values(this.identities).find(
+      (candidate) => candidate.wolfpackSessionId === selector,
+    );
+    if (!identity || !this.sessions.includes(identity.wolfpackSessionName)) {
+      return { ok: false, code: "NOT_FOUND" };
+    }
+    return {
+      ok: true,
+      session: identity.wolfpackSessionName,
+      sessionId: identity.wolfpackSessionId,
+      projectPath: identity.projectPath,
+      harness: identity.agentKind,
+      alive: true,
+    };
+  }
+
+  async killSessionById(sessionId: string): Promise<void> {
+    this.killedSessionIds.push(sessionId);
+    const identity = Object.values(this.identities).find(
+      (candidate) => candidate.wolfpackSessionId === sessionId,
+    );
+    if (identity) {
+      this.sessions = this.sessions.filter((name) => name !== identity.wolfpackSessionName);
+      delete this.identities[identity.wolfpackSessionName];
+    }
   }
 
   async createSession(
@@ -149,6 +179,38 @@ describe("openSubSession", () => {
       parentName: "pi-main",
       session: "pi-main-sub-agent-2",
     }]);
+  });
+
+  test("waits for the child Pi Tasks endpoint before returning a task worker", async () => {
+    const backend = new FakeSessionOpenBackend("pi-main", "pi");
+    const endpoint = { relay: "wolfpack-pi-tasks-v2", id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5" };
+
+    const result = await openSubSession({
+      backend,
+      parentSession: "pi-main",
+      project: "parent",
+      projectDir: "/dev/parent",
+      taskWorker: {
+        executable: "/opt/homebrew/bin/pi",
+        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
+      },
+      readinessTimeoutMs: 100,
+      endpointForSession: async () => endpoint,
+    });
+
+    expect(result.taskEndpoint).toEqual(endpoint);
+    expect(backend.createCalls[0]?.options).toEqual({
+      agentKind: "pi",
+      parentSession: {
+        wolfpackSessionId: PARENT_ID,
+        wolfpackSessionName: "pi-main",
+      },
+      initialPrompt: undefined,
+      taskWorker: {
+        executable: "/opt/homebrew/bin/pi",
+        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
+      },
+    });
   });
 
   test("rejects model selection for a non-pi parent before creation", async () => {
@@ -318,6 +380,35 @@ describe("openSubSession", () => {
       notify: (_parent, session) => failedNotifications.push(session),
     })).rejects.toBeInstanceOf(SessionOpenError);
     expect(failedNotifications).toEqual([]);
+  });
+
+  test("cleans up the exact task-worker UUID when the parent disappears or is replaced", async () => {
+    for (const mutation of ["disappears", "replaced"] as const) {
+      const backend = new FakeSessionOpenBackend("pi-main");
+      backend.onList = (count, current) => {
+        if (count !== 2) return;
+        if (mutation === "disappears") {
+          current.sessions = [];
+          current.identities = {};
+        } else {
+          current.identities = {
+            "pi-main": identity("pi-main", "pi", "22222222-2222-2222-2222-222222222222"),
+          };
+        }
+      };
+      await expect(openSubSession({
+        backend,
+        parentSession: "pi-main",
+        project: "wolfpack",
+        projectDir: "/dev/wolfpack",
+        taskWorker: { executable: "/bin/true", extension: "/tmp/extension.ts" },
+      })).rejects.toMatchObject({
+        code: "TASK_WORKER_NOT_READY",
+        createdSession: { sessionId: "id:pi-main-sub-agent" },
+        cleanup: "completed",
+      });
+      expect(backend.killedSessionIds).toEqual(["id:pi-main-sub-agent"]);
+    }
   });
 
   test("fails closed after creation when the parent disappears or is replaced", async () => {

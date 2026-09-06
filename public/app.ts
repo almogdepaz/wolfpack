@@ -1013,7 +1013,7 @@ function renderUpdatedLocalMachineMetadata(): void {
   const localName = state.selfName || "this machine";
   state.lastSessionGroups = state.lastSessionGroups.map(group => group.machine.url
     ? group
-    : { ...group, machine: { ...group.machine, name: localName } });
+    : { ...group, machine: { ...group.machine, name: localName, version: state.selfVersion } });
   state.allSessions = state.allSessions.map(session => session.machineUrl
     ? session
     : { ...session, machineName: localName });
@@ -1642,7 +1642,10 @@ function renderMachineGroupHtml(g, multiMachine) {
   const mName = esc(g.machine.name);
   const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
-  const versionWarning = multiMachine && g.outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
+  const outdated = g.online && Boolean(g.machine.version) && state.lastSessionGroups.some(group =>
+    group.online && group.machine.version
+    && group.machine.version.localeCompare(g.machine.version, undefined, { numeric: true }) > 0);
+  const versionWarning = multiMachine && outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
   const offlineClass = multiMachine && !g.online && !g.pending ? " offline" : "";
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
@@ -1868,8 +1871,8 @@ function machineFailureLabel(category: MachineFailureCategory): string {
 function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal: AbortSignal) {
   const isRemote = machineIdentity !== "";
   const currentMachineMeta = () => isRemote
-    ? machineMeta
-    : { ...machineMeta, name: state.selfName || "this machine" };
+    ? { ...machineMeta, version: machineMeta.version || "" }
+    : { ...machineMeta, name: state.selfName || "this machine", version: state.selfVersion };
   if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
     return Promise.resolve({
       machine: { ...machineMeta, url: machineIdentity, version: machineMeta.version || "" },
@@ -1887,7 +1890,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
     const sessionRows = sessions.sessions || [];
     if (isRemote) for (const session of sessionRows) session.activity = undefined;
     return {
-      machine: { ...currentMachineMeta(), url: machineIdentity, version: machineMeta.version || "" },
+      machine: { ...currentMachineMeta(), url: machineIdentity },
       sessions: sessionRows,
       online: true,
       pending: false,
@@ -1895,7 +1898,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
   }).catch((error: unknown) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordFailure(state.peerHealth, machineIdentity);
     return {
-      machine: { ...currentMachineMeta(), url: machineIdentity, version: machineMeta.version || "" },
+      machine: { ...currentMachineMeta(), url: machineIdentity },
       sessions: [], online: false, pending: false,
       failure: classifyMachineFailure(error),
     };
@@ -1943,7 +1946,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
   };
   const withCurrentLocalMetadata = (group, machineUrl) => machineUrl
     ? group
-    : { ...group, machine: { ...group.machine, name: state.selfName || "this machine" } };
+    : { ...group, machine: { ...group.machine, name: state.selfName || "this machine", version: state.selfVersion } };
   const visibleGroupsInOrder = () => allMachines.flatMap((machine, index) => {
     const resolved = groups[index];
     if (resolved) return !machine.url || resolved.online
@@ -1976,22 +1979,6 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
 
   await Promise.all(promises);
   if (!isCurrentLoad()) return; // stale call, discard
-
-  // Version-outdated check requires all machines resolved. Re-render only
-  // groups whose outdated flag actually changed — avoids flicker.
-  const versions = groups.filter(g => g && g.online && g.machine.version).map(g => g.machine.version);
-  const newestVersion = versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0] || "";
-  if (newestVersion) {
-    for (let i = 0; i < groups.length; i++) {
-      const g = groups[i];
-      if (!g) continue;
-      const nowOutdated = g.online && g.machine.version !== newestVersion;
-      if (nowOutdated !== !!g.outdated) {
-        g.outdated = nowOutdated;
-        renderVisibleGroups();
-      }
-    }
-  }
 
   state.firstLoad = false;
   const visibleGroups = visibleGroupsInOrder();

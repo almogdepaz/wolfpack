@@ -65,6 +65,74 @@ test("local info metadata survives an unavailable Tailnet handshake", async ({ p
   await expect(page.locator("#session-list .machine-header")).toContainText("local-no-tailnet");
 });
 
+for (const { localVersion, localOutdated, peerOutdated } of [
+  { localVersion: "1.6.21", localOutdated: false, peerOutdated: false },
+  { localVersion: "1.6.20", localOutdated: true, peerOutdated: false },
+  { localVersion: "1.6.22", localOutdated: false, peerOutdated: true },
+]) {
+  test(`version warnings reflect delayed local metadata ${localVersion}`, async ({ page }) => {
+    const peerOrigin = "https://version-peer.example.ts.net";
+    const peerInstallationId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+    let releaseInfo: () => void = () => {};
+    const infoGate = new Promise<void>((resolve) => { releaseInfo = resolve; });
+    // Isolate network metadata, not the production grouping/version UI.
+    await page.route("**/api/info", async (route) => {
+      await infoGate;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ name: "version-local", version: localVersion }),
+      });
+    });
+    await page.route("**/api/tailnet/v1/candidates", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ candidates: [{
+        hostname: "version-peer.example.ts.net", tailnetNodeId: "n-version-peer", origin: peerOrigin, online: true,
+      }] }),
+    }));
+    await page.route(`${peerOrigin}/api/machine`, (route) => route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({
+        protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+        machine: {
+          tailnetNodeId: "n-version-peer", installationId: peerInstallationId,
+          displayName: "version-peer", origin: peerOrigin,
+        },
+        wolfpack: { version: "1.6.21" },
+        capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+      }),
+    }));
+    await page.route(`${peerOrigin}/api/sessions`, (route) => route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ sessions: [] }),
+    }));
+
+    await page.goto(server.baseUrl);
+    const localGroup = page.locator('#session-list > .machine-group[data-machine=""]');
+    const peerGroup = page.locator(`#session-list > .machine-group[data-machine="n-version-peer:${peerInstallationId}"]`);
+    try {
+      const expandSessions = page.getByRole("button", { name: "Expand sessions", exact: true });
+      if (await expandSessions.isVisible()) await expandSessions.click();
+      await expect(peerGroup).toBeVisible();
+      // Missing local metadata must not be presented as an outdated version.
+      await expect(localGroup.locator(".version-warning")).toHaveCount(0);
+      releaseInfo();
+      await expect(localGroup.locator(".machine-header")).toContainText("version-local");
+      await expect(localGroup.locator(".version-warning")).toHaveCount(Number(localOutdated), { timeout: 1_000 });
+      await expect(peerGroup.locator(".version-warning")).toHaveCount(Number(peerOutdated), { timeout: 1_000 });
+      if (localOutdated) {
+        await expect(localGroup.locator(".version-warning")).toHaveAttribute("title", `Running v${localVersion} — newer version available on another machine`);
+      }
+      if (peerOutdated) {
+        await expect(peerGroup.locator(".version-warning")).toHaveAttribute("title", "Running v1.6.21 — newer version available on another machine");
+      }
+    } finally {
+      releaseInfo();
+    }
+  });
+}
+
 test("concurrent forced refresh requests coalesce into one follow-up", async ({ page }) => {
   await page.goto(server.baseUrl);
   await expect(visibleSessionList(page).locator(".card").first()).toBeVisible();

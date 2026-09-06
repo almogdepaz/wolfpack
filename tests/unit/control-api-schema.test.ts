@@ -489,6 +489,73 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).toEqual([]);
   });
 
+  test("publishes opt-in task-worker readiness on both launch contracts", () => {
+    const endpoint = { relay: "wolfpack-pi-tasks-v2", id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5" };
+    const topLevel = httpRequest("createTopLevelSession");
+    const child = httpRequest("openSession");
+
+    for (const request of [topLevel, child]) {
+      expect(validate(request, {
+        projectDir: "/worktrees/wolfpack",
+        ...(request === child && { parentSession: "pi-main" }),
+        taskWorker: true,
+        readinessTimeoutMs: 30_000,
+      }, artifact)).toEqual([]);
+      expect(validate(request, {
+        projectDir: "/worktrees/wolfpack",
+        ...(request === child && { parentSession: "pi-main" }),
+        taskWorker: true,
+        readinessTimeoutMs: 60_001,
+      }, artifact)).not.toEqual([]);
+    }
+    expect(validate(httpResponse("createTopLevelSession"), {
+      ok: true,
+      session: "worker",
+      sessionId: "worker-id",
+      project: "wolfpack",
+      harness: "pi",
+      taskEndpoint: endpoint,
+    }, artifact)).toEqual([]);
+  });
+
+  test("models task-worker mode exclusions and recovery errors", () => {
+    const topLevel = httpRequest("createTopLevelSession");
+    const child = httpRequest("openSession");
+
+    for (const request of [topLevel, child]) {
+      const parent = request === child ? { parentSession: "pi-main" } : {};
+      expect(validate(request, {
+        project: "wolfpack",
+        ...parent,
+        taskWorker: true,
+      }, artifact)).not.toEqual([]);
+      expect(validate(request, {
+        projectDir: "/worktrees/wolfpack",
+        ...parent,
+        taskWorker: true,
+        initialPrompt: "do not run",
+      }, artifact)).not.toEqual([]);
+      expect(validate(request, {
+        projectDir: "/worktrees/wolfpack",
+        ...parent,
+        readinessTimeoutMs: 100,
+      }, artifact)).not.toEqual([]);
+    }
+    expect(validate(topLevel, {
+      projectDir: "/worktrees/wolfpack",
+      harness: "shell",
+      taskWorker: true,
+    }, artifact)).not.toEqual([]);
+
+    const readinessError = resolveRef({ $ref: "#/$defs/TaskWorkerLaunchErrorEnvelope" }, artifact);
+    expect(validate(readinessError, {
+      error: "task worker did not become ready",
+      code: "TASK_WORKER_NOT_READY",
+      createdSession: { session: "worker", sessionId: "worker-id" },
+      cleanup: "unconfirmed",
+    }, artifact)).toEqual([]);
+  });
+
   test("agent runtime acknowledgement request is typed", () => {
     expect(validate(httpRequest("ackAgentRuntimeState"), {
       sessionId: "broker-child",

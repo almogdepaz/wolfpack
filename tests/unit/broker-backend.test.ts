@@ -482,6 +482,29 @@ describe("BrokerBackend.createSession", () => {
     expect(params.env.flat()).not.toContain(model);
   });
 
+  test("launches task workers with explicit argv resources and no initial prompt", async () => {
+    const executable = "/opt/homebrew/bin/pi";
+    const extension = "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts";
+    const model = "openai-codex/gpt-5.6-terra";
+    client.setHandler("create_session", () => okResp({
+      session: sessionInfo({ name: "worker", id: SESSION_UUID_1 }),
+    }));
+
+    await backend.createSession("worker", "/tmp/worktree", "pi", loadSettings, {
+      agentKind: "pi",
+      model,
+      taskWorker: { executable, extension },
+    });
+
+    const create = client.requests.find((request) => request.method === "create_session");
+    const params = create?.params as { command: string[]; env: Array<[string, string]> };
+    expect(params.command.slice(3)).toEqual(["wolfpack-agent", executable, extension, model]);
+    expect(params.command[2]).toEndWith('exec "$1" --no-extensions --extension "$2" --model "$3"');
+    expect(params.command[2]).not.toContain(executable);
+    expect(params.command[2]).not.toContain(extension);
+    expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
+  });
+
   test("persists parent identity in broker env and public session identity", async () => {
     const parentSession = {
       wolfpackSessionId: SESSION_UUID_2,
@@ -551,6 +574,18 @@ describe("BrokerBackend.createSession", () => {
 });
 
 describe("BrokerBackend.killSession", () => {
+  test("kills an exact stable id without resolving a reused name", async () => {
+    let killParams: { session_id: string; signal: number } | undefined;
+    client.setHandler("kill_session", (params) => {
+      killParams = params as { session_id: string; signal: number };
+      return okResp({ killed: true });
+    });
+
+    await backend.killSessionById(SESSION_UUID_2);
+
+    expect(killParams).toEqual({ session_id: SESSION_UUID_2, signal: 1 });
+  });
+
   test("resolves name→id then calls kill_session and drops cache", async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "doomed", id: SESSION_UUID_1 })],
