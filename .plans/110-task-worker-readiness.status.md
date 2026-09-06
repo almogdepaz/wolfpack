@@ -1,9 +1,10 @@
 # #301 task-worker readiness status
 
-- phase: implementation/review/verification complete; feature commit `039ed57` pushed and pr #343 open: https://github.com/almogdepaz/wolfpack/pull/343. not merged. feature worktree retained; all parent-owned roles closed.
+- phase: user-authorized main merge and local build/deploy complete. merge `91dacce` includes fetched main `70f8689`, without conflicts. post-merge full suite: 2011 pass, 23 skip, 0 fail; typecheck/schema parity passed. canonical server-only deployment passed. pr #343 remains open; no pr merge into main. all parent-owned roles closed.
 - authorization: isolated worktree, terra implementation/review loop, then pr; no merge.
 - worktree: `/private/tmp/wolfpack-issue301`; branch: `feat/task-worker-readiness`.
-- base: `3276836bde5663927452735276736f8135a98c36`; origin/main advanced to `70f8689` during work. no merge/rebase.
+- original reviewed base: `3276836bde5663927452735276736f8135a98c36`; user-authorized follow-up merged origin/main `70f8689` via `91dacce`. no rebase.
+- deployment: `bash scripts/deploy-local.sh --broker=no` built all four server targets and deployed the local arm64 server. server pid `67547` → `83309`; broker pid unchanged `2968`; all four original session ids independently verified live afterward. served bundle/API/CLI checks passed; no generated tracked-file churn. installed server sha256 `e6eb6082eb63c7977c7b2b025d9d22130f429919bcff1e129e8a10d00b450358` independently rechecked. logs: `.plans/evidence/110-post-main-tests.log`, `110-post-main-static.log`, `110-local-deploy.log`. dirty primary checkout preserved.
 - plan: `110-task-worker-readiness.md`; final evidence: `110-task-worker-verification.md`.
 - reviews: `review-301-pass3.md` and `review-301-final-gate.md` approve with no actionable findings. TW-001..TW-007 resolved.
 - trust: honest authorized tailnet users; protect accidental placement, resource, identity, and cleanup mistakes, not hostile peers or sandboxing.
@@ -43,4 +44,4 @@ initial implementation and evidence-closure acknowledgment calls reported envelo
 - real installed Pi smoke and register-then-exit smoke passed; final typecheck, CLI build, schema parity, diff hygiene passed.
 - no all-green full-suite rerun claimed; see final verification for limits and exact commands.
 - initial direct `fetch origin main:main` refused because main was checked out. fetched/verified main and created the separate worktree without disturbing the dirty primary checkout.
-- unrelated primary-checkout `edc-context/**` edits, dotfiles edits, other worktrees, production services and user Pi configuration preserved.
+- unrelated primary-checkout `edc-context/**` edits, dotfiles edits, other worktrees, broker service and user Pi configuration preserved. only the server service was replaced/restarted by the authorized deployment.

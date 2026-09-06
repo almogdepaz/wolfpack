@@ -1,8 +1,21 @@
 # #301 verification
 
-reviewed base: `3276836bde5663927452735276736f8135a98c36`.
+original reviewed base: `3276836bde5663927452735276736f8135a98c36`.
 
-## final verdict
+## authorized main-merge and deployment follow-up
+
+user subsequently requested latest main merged into the feature branch, then build/deploy. merge `91dacce` includes origin/main `70f8689`, without conflicts; pr #343 was not merged into main.
+
+- new post-merge integration gate: `bun test` — **2011 pass, 23 skip, 0 fail**; typecheck and exact generated-schema parity passed.
+- `bash scripts/deploy-local.sh --broker=no` — exit 0, all four server targets built, local signed arm64 server installed, served bundle/API/CLI checks passed.
+- server pid changed `67547` → `83309`; broker pid remained `2968`; all four pre-existing stable session ids independently confirmed live afterward.
+- installed server sha256 independently confirmed: `e6eb6082eb63c7977c7b2b025d9d22130f429919bcff1e129e8a10d00b450358`.
+- no generated tracked-file changes from the build; dirty primary checkout and user Pi configuration preserved.
+- local logs: `.plans/evidence/110-post-main-tests.log`, `110-post-main-static.log`, `110-local-deploy.log`; before/after structured session snapshots also retained.
+
+the sections below describe the original pre-merge review/gate; their no-rerun/no-deploy limitations are superseded only by this explicitly authorized follow-up.
+
+## original final verdict
 
 no remaining actionable findings. independent full-diff review: `review-301-pass3.md`; integration-correction review: `review-301-final-gate.md`. honest authenticated-tailnet trust model; no adversarial inter-session or sandbox guarantees.
 
