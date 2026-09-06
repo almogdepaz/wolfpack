@@ -52,8 +52,12 @@ test("existing command dialog is centered, bounded, and remains keyboard cancell
   await expect(page.locator("#add-quick-cmd-btn")).toBeFocused();
 });
 
-test("machine names are prominent and the labelled session action keeps its existing flow", async ({ page }, testInfo) => {
-  await expect(page.locator("#session-list .machine-header-name").first()).toHaveCSS("font-size", "17px");
+test("machine names stay quiet and the labelled session action keeps its existing flow", async ({ page }, testInfo) => {
+  const name = page.locator("#session-list .machine-header-name").first();
+  await expect(name).toHaveCSS("font-size", "11px");
+  await expect(name).toHaveCSS("color", "rgb(143, 159, 149)");
+  await expect(name).toHaveCSS("text-transform", "uppercase");
+  expect(await name.evaluate(element => getComputedStyle(element).fontFamily)).toContain("ui-monospace");
   const add = page.locator("#session-list .machine-add-btn").first();
   await expect(add).toHaveText("New session");
   await expect(add.locator("svg")).toHaveAttribute("aria-hidden", "true");

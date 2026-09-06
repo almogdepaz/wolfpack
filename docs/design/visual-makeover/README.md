@@ -10,7 +10,7 @@ A presentation-only refinement of the existing app, not a navigation redesign. R
 - Improve secondary-text contrast and remove opacity-based dimming of inactive cards.
 - Unify radii, spacing, badges, and control surfaces. Preserve visible stop controls and destructive confirmation.
 - Center and bound native dialogs; keep mobile form text at 16px to avoid focus zoom.
-- Enlarge machine names to 17px in the main list and 14px in the compact sidebar. Long names truncate and retain their full title.
+- Keep machine names as quiet, muted uppercase monospace labels: 11px in the main list and 10px in the compact sidebar. The initial enlargement was reverted after visual feedback. Long names still truncate and retain their full title.
 - Show the original 24px wolf logo in the mobile main banner, without crowding picker or terminal controls.
 - Replace the square `+` with a quieter **New session** action and small SVG icon. Compact multi-machine sidebar buttons show **New**; accessible names still identify the target machine. Mobile hit targets remain 44px high.
 
@@ -38,7 +38,8 @@ Fresh Brave captures compare untouched `70f8689` with the rebased makeover. Both
 - `bun test tests/unit`: **1,571 passed, 1 platform skip, zero failures** on the final run. A test-server shutdown timing failure in an earlier concurrent run also passed independently.
 - Visual-makeover, UI-polish, axe-accessibility, and first-session-guide Playwright suites across desktop, iPhone SE, and iPhone 14: **39 passed, 12 platform skips**.
 - Verified-peer rendering and remote session creation checks: **4 passed, 2 platform skips**.
-- New tests exercise original-logo usage, prominent and bounded machine names, labelled actions, case-preserving typography, bounded dialogs, keyboard cancellation, mobile input size, and reduced motion. Existing assertions for old colors, uppercase labels, radii, and glowing delegation controls now reflect the new visual contract; functional assertions remain intact.
+- The quieter-header follow-up passed typecheck, bundle budgets, and 27 visual/shell/axe checks across desktop and both mobile profiles (9 platform skips).
+- New tests exercise original-logo usage, quiet and bounded machine names, labelled actions, case-preserving session typography, bounded dialogs, keyboard cancellation, mobile input size, and reduced motion. Existing assertions for old colors, uppercase labels, radii, and glowing delegation controls now reflect the new visual contract; functional assertions remain intact.
 
 The **full browser suite is not claimed green**. Broader navigation/activity/idle runs exposed the following failures, reproduced in an untouched archive of `70f8689`:
 
@@ -58,4 +59,4 @@ scripts/deploy-local.sh --broker=no
 
 Both server-only deployments preserved the broker and existing session identity. Live CSS/logo bytes and fresh Brave rendering were verified, with no JavaScript page errors. Previous server binaries were backed up locally.
 
-The rebased PR has **not** been redeployed. No broker replacement, remote deployment, or package release is included.
+The rebased version with quieter headers has now been deployed server-only. The existing broker and session identity were preserved; served CSS matches source, and fresh mobile Brave confirms the quiet labels, original logo, and unchanged action with no JavaScript page errors. No broker replacement, remote deployment, or package release is included.

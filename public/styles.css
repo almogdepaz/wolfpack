@@ -1412,10 +1412,12 @@ body.no-animations, body.no-animations * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-primary);
-  font-size: 17px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: -0.25px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
   line-height: 1.4;
 }
 .machine-header-identity { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
@@ -1488,7 +1490,7 @@ body.no-animations, body.no-animations * {
   min-height: 44px;
 }
 .machine-item .dot { width: 6px; height: 6px; }
-.machine-item-name { flex: 1; font-size: 16px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.machine-item-name { flex: 1; font-size: 14px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .machine-item-url { font-size: 10px; color: var(--text-ghost); margin-left: 4px; }
 .machine-notification-setup { flex: 0 0 auto; min-height: 32px; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--accent); font: inherit; font-size: 10px; cursor: pointer; }
 .machine-notification-setup:hover, .machine-notification-setup:focus-visible { border-color: var(--accent); outline: none; }
@@ -2302,7 +2304,7 @@ body.no-animations, body.no-animations * {
     min-height: 0;
   }
   .machine-item-name {
-    font-size: 14px;
+    font-size: 12px;
   }
   .machine-remove-btn {
     font-size: 16px;
@@ -2602,7 +2604,7 @@ body.no-animations, body.no-animations * {
   .sidebar-sessions .machine-header {
     padding: 8px 4px 6px;
   }
-  .sidebar-sessions .machine-header-name { font-size: 14px; }
+  .sidebar-sessions .machine-header-name { font-size: 10px; }
   .sidebar-sessions .machine-add-btn { padding-inline: 9px; }
   .sidebar-sessions .machine-add-btn .machine-add-label-detail { display: none; }
   .sidebar-sessions .new-btn {
