@@ -93,15 +93,56 @@ test("long machine names stay bounded without squeezing the session action", asy
   await expect(name).toHaveCSS("text-overflow", "ellipsis");
   const add = page.getByRole("button", { name: `Start a session on ${machineName}`, exact: true });
   await expect(add).toBeVisible();
-  const nameBox = (await name.boundingBox())!;
-  const addBox = (await add.boundingBox())!;
-  expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(addBox.x);
-  expect(addBox.x + addBox.width).toBeLessThanOrEqual(page.viewportSize()!.width);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(page.viewportSize()!.width);
+  // Measure both controls in the same frame while the expanded view settles.
+  await expect.poll(() => name.evaluate(element => {
+    const nameBox = element.getBoundingClientRect();
+    const addBox = element.closest(".machine-header")!.querySelector(".machine-add-btn")!.getBoundingClientRect();
+    return nameBox.right <= addBox.left && addBox.right <= innerWidth
+      && document.documentElement.scrollWidth === innerWidth;
+  })).toBe(true);
+});
+
+test("All and Idle form a quiet, keyboard-operable segmented control", async ({ page }, testInfo) => {
+  const filter = page.locator("#session-dashboard-controls").getByRole("group", { name: "Session view" });
+  const all = filter.getByRole("button", { name: "All sessions", exact: true });
+  const idle = filter.getByRole("button", { name: "Idle sessions", exact: true });
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await expect(all).toHaveCSS("border-radius", "999px");
+  await expect(all).toHaveCSS("font-size", "12px");
+  await expect(all).toHaveCSS("letter-spacing", /^(normal|0px)$/);
+  await expect(all).toHaveCSS("color", "rgb(237, 243, 239)");
+  const minimumHeight = testInfo.project.name === "desktop" ? 40 : 44;
+  for (const button of [all, idle]) {
+    expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(minimumHeight);
+  }
+  await all.focus();
+  await page.keyboard.press("Tab");
+  await expect(idle).toBeFocused();
+  await expect(idle).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect(idle).toHaveAttribute("aria-pressed", "true");
+  await expect(all).toHaveAttribute("aria-pressed", "false");
+  await all.click();
+  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
+
+  if (testInfo.project.name === "desktop") {
+    await expect.poll(() => filter.evaluate(element => {
+      const card = document.querySelector("#session-list .card")!;
+      return Math.abs(element.getBoundingClientRect().x - card.getBoundingClientRect().x);
+    })).toBeLessThanOrEqual(1);
+    await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
+    const sidebar = page.locator("#sidebar-session-list").getByRole("group", { name: "Session view" });
+    await expect(sidebar).toBeVisible();
+    await expect(sidebar.getByRole("button", { name: "All sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await sidebar.getByRole("button", { name: "Idle sessions", exact: true }).click();
+    await expect(sidebar.getByRole("button", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
+  }
 });
 
 test("visual transitions still respect reduced motion", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(page.locator("#session-list .card").first()).toHaveCSS("transition-duration", "0s");
   await expect(page.locator("#session-list .card").first()).toHaveCSS("animation-name", "none");
+  await expect(page.locator("#session-dashboard-controls .session-card-view-button").first()).toHaveCSS("transition-duration", "0s");
 });

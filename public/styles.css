@@ -251,36 +251,37 @@ header h1 {
 
 #session-dashboard-controls {
   flex-shrink: 0;
-  padding: 8px 8px 0;
+  padding: 12px 12px 0;
 }
 .session-card-view-filter {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   width: fit-content;
   padding: 3px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: 999px;
   background: var(--bg-inset);
 }
 .session-card-view-button {
-  min-width: 64px;
+  min-width: 58px;
   min-height: 40px;
   padding: 8px 12px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--text-muted);
-  font: 700 11px/1 var(--font-mono);
-  letter-spacing: 0.8px;
+  font: 500 12px/1 var(--font-ui);
+  letter-spacing: 0;
   cursor: pointer;
   touch-action: manipulation;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 .session-card-view-button.selected {
-  border-color: var(--accent-border);
-  background: var(--accent-ghost);
-  color: var(--accent);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--border-hover), 0 1px 3px rgba(0,0,0,0.25);
 }
-.session-card-view-button:hover { color: var(--text-primary); }
+.session-card-view-button:hover { background: var(--bg-hover); color: var(--text-primary); }
 .session-card-view-button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -2434,11 +2435,8 @@ body.no-animations, body.no-animations * {
     margin: 2px 0 8px;
   }
   .sidebar-sessions .session-card-view-button {
-    min-width: 0;
-    min-height: 40px;
-    flex: 1;
-    padding-inline: 8px;
-    font-size: 10px;
+    min-width: 52px;
+    padding-inline: 10px;
   }
   .sidebar-sessions .idle-session-empty {
     margin: 6px 0;
@@ -2667,6 +2665,15 @@ body.no-animations, body.no-animations * {
   body.sessions-expanded #sessions-view {
     display: flex;
     flex-direction: column;
+  }
+  body.sessions-expanded #session-dashboard-controls {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 12px 24px 0;
+  }
+  body.sessions-expanded #sessions-view:has(#session-list > .machine-group:only-child) #session-dashboard-controls {
+    max-width: 968px;
   }
   /* Column per machine — fills screen width */
   body.sessions-expanded #sessions-view #session-list {
@@ -3056,6 +3063,7 @@ body.no-animations, body.no-animations * {
   box-shadow: none;
 }
 @media (max-width: 768px) {
+  .session-card-view-button { min-height: 44px; }
   .list { padding: 12px; }
   .card { margin-bottom: 10px; }
   .session-order-placeholder { margin-bottom: 10px; }
