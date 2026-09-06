@@ -8,7 +8,10 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
 import { buildSessionNotificationUrl } from "../session-notification-route.js";
-import { onQuietAlertPolicyInvalidation } from "../quiet-alert-policy-invalidation.js";
+import {
+  onQuietAlertPolicyInvalidation,
+  quietAlertPolicyEpoch,
+} from "../quiet-alert-policy-invalidation.js";
 import { isQuietAlertFact } from "../quiet-alert-policy.js";
 import type { QuietAlertFact } from "../quiet-alert-policy.js";
 import { readValidatedJsonFile } from "./persistence.js";
@@ -18,6 +21,8 @@ const log = createLogger("push");
 const WOLFPACK_DIR = join(homedir(), ".wolfpack");
 const VAPID_PATH = join(WOLFPACK_DIR, "vapid-keys.json");
 const SUBS_PATH = join(WOLFPACK_DIR, "push-subscriptions.json");
+let nextSubscriptionEnrollmentGeneration = 0;
+const subscriptionEnrollmentGenerations = new Map<string, number>();
 
 // ── Types ──
 
@@ -183,9 +188,11 @@ export function addSubscription(sub: PushSubscription): { ok: boolean; error?: s
   const idx = subs.findIndex((s) => s.endpoint === sub.endpoint);
   if (idx >= 0) {
     subs[idx] = sub;
+    subscriptionEnrollmentGeneration(sub.endpoint);
   } else {
     if (subs.length >= MAX_SUBSCRIPTIONS) return { ok: false, error: "subscription limit reached (max " + MAX_SUBSCRIPTIONS + ")" };
     subs.push(sub);
+    subscriptionEnrollmentGenerations.set(sub.endpoint, ++nextSubscriptionEnrollmentGeneration);
   }
   saveSubscriptions(subs);
   if (!hadSubscriptions) resetSessionTransitionTracking();
@@ -195,6 +202,7 @@ export function addSubscription(sub: PushSubscription): { ok: boolean; error?: s
 
 export function removeSubscription(endpoint: string): void {
   const subs = loadSubscriptions().filter((s) => s.endpoint !== endpoint);
+  retireSubscriptionEnrollment(endpoint);
   saveSubscriptions(subs);
   if (subs.length === 0) resetSessionTransitionTracking();
   log.info("push subscription removed", { endpoint: endpoint.slice(0, 60) });
@@ -204,9 +212,26 @@ export function getSubscriptionCount(): number {
   return loadSubscriptions().length;
 }
 
-function registeredSubscriptionEndpoints(): ReadonlySet<string> {
-  return new Set(loadSubscriptions().map((subscription) => subscription.endpoint));
+function retireSubscriptionEnrollment(endpoint: string): void {
+  subscriptionEnrollmentGenerations.delete(endpoint);
 }
+
+function subscriptionEnrollmentGeneration(endpoint: string): number {
+  let generation = subscriptionEnrollmentGenerations.get(endpoint);
+  if (generation === undefined) {
+    generation = ++nextSubscriptionEnrollmentGeneration;
+    subscriptionEnrollmentGenerations.set(endpoint, generation);
+  }
+  return generation;
+}
+
+function registeredSubscriptionGenerations(): ReadonlyMap<string, number> {
+  return new Map(loadSubscriptions().map((subscription) => [
+    subscription.endpoint,
+    subscriptionEnrollmentGeneration(subscription.endpoint),
+  ]));
+}
+
 
 // ── VAPID JWT (RFC 8292) ──
 
@@ -416,6 +441,7 @@ async function sendSubscriptionWithRetry(
   vapid: VapidKeys,
   fetcher: PushFetch = fetch,
   sleep: PushSleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  retryDelays: readonly number[] = PUSH_RETRY_DELAYS_MS,
 ): Promise<number> {
   const audience = new URL(sub.endpoint).origin;
   const jwt = createVapidJwt(audience, "mailto:noreply@wolfpack.local", vapid);
@@ -434,11 +460,11 @@ async function sendSubscriptionWithRetry(
   for (let attempt = 0; ; attempt++) {
     try {
       const response = await fetchWithDeadline(sub.endpoint, request, PUSH_FETCH_TIMEOUT_MS, fetcher);
-      const retryDelay = PUSH_RETRY_DELAYS_MS[attempt];
+      const retryDelay = retryDelays[attempt];
       if (!retryablePushStatus(response.status) || retryDelay === undefined) return response.status;
       await sleep(retryDelay);
     } catch (error: unknown) {
-      const retryDelay = PUSH_RETRY_DELAYS_MS[attempt];
+      const retryDelay = retryDelays[attempt];
       if (retryDelay === undefined) throw error;
       await sleep(retryDelay);
     }
@@ -465,6 +491,7 @@ interface PushDeliveryOutcome extends PushDeliveryResult {
 async function sendPushToSubscriptions(
   payload: PushPayload,
   targetEndpoints: ReadonlySet<string> | undefined,
+  retryDelays: readonly number[] = PUSH_RETRY_DELAYS_MS,
 ): Promise<PushDeliveryOutcome> {
   const subs = loadSubscriptions();
   if (subs.length === 0) {
@@ -482,26 +509,33 @@ async function sendPushToSubscriptions(
     } catch { return false; }
   });
   if (validSubs.length < subs.length) {
+    for (const subscription of subs) {
+      if (!validSubs.includes(subscription)) retireSubscriptionEnrollment(subscription.endpoint);
+    }
     saveSubscriptions(validSubs);
     log.warn("pruned invalid subscriptions on send", { count: subs.length - validSubs.length });
   }
   const selectedSubs = targetEndpoints === undefined
     ? validSubs
     : validSubs.filter((subscription) => targetEndpoints.has(subscription.endpoint));
+  const selectedEnrollmentGenerations = new Map(selectedSubs.map((subscription) => [
+    subscription.endpoint,
+    subscriptionEnrollmentGeneration(subscription.endpoint),
+  ]));
   if (selectedSubs.length === 0) {
     return { sent: 0, failed: 0, pruned: 0, successfulEndpoints: [], failedEndpoints: [] };
   }
 
   const results = await Promise.allSettled(selectedSubs.map(async (sub) => ({
     endpoint: sub.endpoint,
-    status: await sendSubscriptionWithRetry(sub, payloadBuf, vapid),
+    status: await sendSubscriptionWithRetry(sub, payloadBuf, vapid, fetch, undefined, retryDelays),
   })));
 
   let sent = 0;
   let failed = 0;
   const successfulEndpoints: string[] = [];
   const failedEndpoints: string[] = [];
-  const toRemove: string[] = [];
+  const expiredEnrollmentGenerations = new Map<string, number>();
 
   for (const result of results) {
     if (result.status === "rejected") {
@@ -517,7 +551,10 @@ async function sendPushToSubscriptions(
       sent++;
       successfulEndpoints.push(result.value.endpoint);
     } else if (result.value.status === 404 || result.value.status === 410) {
-      toRemove.push(result.value.endpoint);
+      const enrollmentGeneration = selectedEnrollmentGenerations.get(result.value.endpoint);
+      if (enrollmentGeneration !== undefined) {
+        expiredEnrollmentGenerations.set(result.value.endpoint, enrollmentGeneration);
+      }
     } else {
       log.warn("push delivery failed", { status: result.value.status, endpoint: result.value.endpoint.slice(0, 60) });
       failed++;
@@ -534,14 +571,20 @@ async function sendPushToSubscriptions(
     }
   }
 
-  if (toRemove.length > 0) {
-    const remaining = validSubs.filter((subscription) => !toRemove.includes(subscription.endpoint));
+  const currentSubs = loadSubscriptions();
+  const currentEnrollmentGenerations = registeredSubscriptionGenerations();
+  const expiredCurrentEndpoints = new Set([...expiredEnrollmentGenerations].flatMap(([endpoint, enrollmentGeneration]) => (
+    currentEnrollmentGenerations.get(endpoint) === enrollmentGeneration ? [endpoint] : []
+  )));
+  if (expiredCurrentEndpoints.size > 0) {
+    const remaining = currentSubs.filter((subscription) => !expiredCurrentEndpoints.has(subscription.endpoint));
+    for (const endpoint of expiredCurrentEndpoints) retireSubscriptionEnrollment(endpoint);
     saveSubscriptions(remaining);
     if (remaining.length === 0) resetSessionTransitionTracking();
-    log.info("pruned expired push subscriptions", { count: toRemove.length });
+    log.info("pruned expired push subscriptions", { count: expiredCurrentEndpoints.size });
   }
 
-  return { sent, failed, pruned: toRemove.length, successfulEndpoints, failedEndpoints };
+  return { sent, failed, pruned: expiredCurrentEndpoints.size, successfulEndpoints, failedEndpoints };
 }
 
 export async function sendPush(payload: PushPayload): Promise<PushDeliveryResult> {
@@ -564,8 +607,14 @@ interface QuietAlertDeliveryState {
   readonly nextAttemptAtMs: number;
 }
 
+interface QuietAlertRecipientSnapshot {
+  readonly policyEpoch: number;
+  readonly endpointGenerations: ReadonlyMap<string, number>;
+}
+
 const quietAlertDeliveries = new Map<string, QuietAlertDeliveryState>();
 const lastSessionPushTime = new Map<string, number>();
+const quietAlertRecipientSnapshots = new Map<string, Map<string, QuietAlertRecipientSnapshot>>();
 const PUSH_DEBOUNCE_MS = 30_000;
 const QUIET_ALERT_MAX_DELIVERY_ATTEMPTS = 3;
 
@@ -595,15 +644,54 @@ function quietAlertPayload(session: SessionTransitionFact, sessionId: string): P
 
 type SessionPushResult = PushDeliveryResult & Partial<Pick<PushDeliveryOutcome, "successfulEndpoints" | "failedEndpoints">>;
 type SessionPushSender = (payload: PushPayload, targetEndpoints: ReadonlySet<string>) => Promise<SessionPushResult>;
+type SessionTransitionPermission = () => boolean;
 let testSessionPushSender: SessionPushSender | null = null;
 
 async function sendSessionPush(payload: PushPayload, targetEndpoints: ReadonlySet<string>): Promise<SessionPushResult> {
   if (testSessionPushSender) return testSessionPushSender(payload, targetEndpoints);
-  return sendPushToSubscriptions(payload, targetEndpoints);
+  return sendPushToSubscriptions(payload, targetEndpoints, []);
 }
 
 function deliveryKey(sessionId: string): string {
   return sessionId;
+}
+
+/** Records the recipients entitled to an episode when canonical policy first emits it. */
+export function recordQuietAlertEmission(sessionId: string, episodeId: string): void {
+  let episodes = quietAlertRecipientSnapshots.get(sessionId);
+  if (episodes === undefined) {
+    episodes = new Map();
+    quietAlertRecipientSnapshots.set(sessionId, episodes);
+  }
+  if (episodes.has(episodeId)) return;
+  episodes.clear();
+  episodes.set(episodeId, {
+    policyEpoch: quietAlertPolicyEpoch(),
+    endpointGenerations: registeredSubscriptionGenerations(),
+  });
+}
+
+function recipientSnapshot(sessionId: string, episodeId: string): ReadonlyMap<string, number> | undefined {
+  const snapshot = quietAlertRecipientSnapshots.get(sessionId)?.get(episodeId);
+  return snapshot?.policyEpoch === quietAlertPolicyEpoch() ? snapshot.endpointGenerations : undefined;
+}
+
+export function pruneQuietAlertRecipientSnapshots(
+  activeSessionIds: ReadonlySet<string>,
+  policyEpoch = quietAlertPolicyEpoch(),
+): void {
+  if (policyEpoch !== quietAlertPolicyEpoch()) return;
+  for (const sessionId of quietAlertRecipientSnapshots.keys()) {
+    if (!activeSessionIds.has(sessionId)) quietAlertRecipientSnapshots.delete(sessionId);
+  }
+}
+
+export function forgetQuietAlertRecipientSnapshots(sessionIds: readonly string[]): void {
+  for (const sessionId of sessionIds) quietAlertRecipientSnapshots.delete(sessionId);
+}
+
+export function clearQuietAlertRecipientSnapshots(policyEpoch = quietAlertPolicyEpoch()): void {
+  if (policyEpoch === quietAlertPolicyEpoch()) quietAlertRecipientSnapshots.clear();
 }
 
 function validQuietAlert(session: SessionTransitionFact, sessionId: string): QuietAlertFact | null {
@@ -617,7 +705,10 @@ async function deliverQuietAlert(
   sessionId: string,
   alert: QuietAlertFact,
   now: number,
+  policyEpoch: number,
+  canInitiate: SessionTransitionPermission,
 ): Promise<void> {
+  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   const key = deliveryKey(sessionId);
   const existing = quietAlertDeliveries.get(key);
   if (existing?.episodeId === alert.episodeId && existing.pendingEndpoints.size === 0) return;
@@ -626,11 +717,13 @@ async function deliverQuietAlert(
   // Freeze the original recipients before debounce can defer the first attempt.
   // A device that subscribes after the episode becomes eligible must not get a
   // historical quiet alert when the delay expires.
-  const initialEndpoints = registeredSubscriptionEndpoints();
+  const registeredGenerations = registeredSubscriptionGenerations();
   const matchingEpisode = existing?.episodeId === alert.episodeId;
+  const recipients = recipientSnapshot(sessionId, alert.episodeId);
+  if (recipients === undefined) return;
   const targetEndpoints = matchingEpisode
-    ? new Set([...existing.pendingEndpoints].filter((endpoint) => initialEndpoints.has(endpoint)))
-    : initialEndpoints;
+    ? new Set([...existing.pendingEndpoints].filter((endpoint) => registeredGenerations.get(endpoint) === recipients.get(endpoint)))
+    : new Set([...recipients.keys()].filter((endpoint) => registeredGenerations.get(endpoint) === recipients.get(endpoint)));
   const last = lastSessionPushTime.get(sessionId) ?? 0;
   if (now - last < PUSH_DEBOUNCE_MS) {
     if (!matchingEpisode) {
@@ -660,17 +753,20 @@ async function deliverQuietAlert(
     pendingEndpoints: targetEndpoints,
     nextAttemptAtMs: now,
   } as const;
+  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   quietAlertDeliveries.set(key, ownership);
   const delivery = await sendSessionPush(quietAlertPayload(session, sessionId), targetEndpoints);
   // A new activity episode, continuity loss, disable, or removal can retire
   // this entry while the transport is in flight. Never let stale completion
   // consume or clear the newer episode.
-  if (quietAlertDeliveries.get(key) !== ownership) return;
+  if (policyEpoch !== quietAlertPolicyEpoch() || quietAlertDeliveries.get(key) !== ownership) return;
 
   if (delivery.sent > 0) lastSessionPushTime.set(sessionId, now);
   const failedEndpoints = delivery.failedEndpoints === undefined
     ? (delivery.failed > 0 ? targetEndpoints : new Set<string>())
-    : new Set(delivery.failedEndpoints.filter((endpoint) => registeredSubscriptionEndpoints().has(endpoint)));
+    : new Set(delivery.failedEndpoints.filter((endpoint) => (
+      registeredSubscriptionGenerations().get(endpoint) === recipients.get(endpoint)
+    )));
   quietAlertDeliveries.set(key, {
     episodeId: alert.episodeId,
     attempts: attempt,
@@ -680,11 +776,16 @@ async function deliverQuietAlert(
 }
 
 /** Deliver each observed quiet episode once per subscription, with bounded retries. */
-export async function checkSessionTransitions(sessions: readonly SessionTransitionFact[]): Promise<void> {
-  if (getSubscriptionCount() === 0) return;
+export async function checkSessionTransitions(
+  sessions: readonly SessionTransitionFact[],
+  policyEpoch = quietAlertPolicyEpoch(),
+  canInitiate: SessionTransitionPermission = () => true,
+): Promise<void> {
+  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate() || getSubscriptionCount() === 0) return;
   const now = Date.now();
   const activeSessionIds = new Set<string>();
   for (const session of sessions) {
+    if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
     const sessionId = sessionNotificationStableId(session);
     if (!sessionId) continue;
     activeSessionIds.add(sessionId);
@@ -693,14 +794,17 @@ export async function checkSessionTransitions(sessions: readonly SessionTransiti
       quietAlertDeliveries.delete(deliveryKey(sessionId));
       continue;
     }
-    await deliverQuietAlert(session, sessionId, alert, now);
+    await deliverQuietAlert(session, sessionId, alert, now, policyEpoch, canInitiate);
+    if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   }
+  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   for (const sessionId of quietAlertDeliveries.keys()) {
     if (!activeSessionIds.has(sessionId)) quietAlertDeliveries.delete(sessionId);
   }
   for (const sessionId of lastSessionPushTime.keys()) {
     if (!activeSessionIds.has(sessionId)) lastSessionPushTime.delete(sessionId);
   }
+  pruneQuietAlertRecipientSnapshots(activeSessionIds, policyEpoch);
 }
 
 export function resetSessionTransitionTracking(): void {
@@ -708,7 +812,12 @@ export function resetSessionTransitionTracking(): void {
   lastSessionPushTime.clear();
 }
 
-onQuietAlertPolicyInvalidation(resetSessionTransitionTracking);
+function invalidateQuietAlertDeliveryOwnership(): void {
+  resetSessionTransitionTracking();
+  clearQuietAlertRecipientSnapshots();
+}
+
+onQuietAlertPolicyInvalidation(invalidateQuietAlertDeliveryOwnership);
 
 /** Check notify rate limit (10/min). Returns error string or null if ok. */
 export function checkNotifyRateLimit(): string | null {
@@ -724,7 +833,7 @@ export function checkNotifyRateLimit(): string | null {
 /** Reset all per-namespace debounce and rate-limit state. Tests should call this in beforeEach. */
 export function _testingResetDebounce(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("_testingResetDebounce() is only available in test mode");
-  resetSessionTransitionTracking();
+  invalidateQuietAlertDeliveryOwnership();
   notifyTimestamps = [];
   testSessionPushSender = null;
 }
@@ -738,6 +847,8 @@ export const _testing = {
   b64urlDecode,
   quietAlertDeliveries,
   lastSessionPushTime,
+  quietAlertRecipientSnapshots,
+  subscriptionEnrollmentGenerations,
   PUSH_DEBOUNCE_MS,
   PUSH_FETCH_TIMEOUT_MS,
   fetchWithDeadline,

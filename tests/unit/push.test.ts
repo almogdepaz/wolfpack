@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 process.env.WOLFPACK_TEST = "1";
 
+const { recordQuietAlertEmission } = await import("../../src/server/push.ts");
+
 // We need to mock the WOLFPACK_DIR before importing push module.
 // Instead, test the crypto helpers and subscription logic via the exports.
 
@@ -470,23 +472,29 @@ describe("push: delivery deadline", () => {
 
 describe("push: checkSessionTransitions", () => {
   const sessionId = "stable-id";
-  const quietAlert = (episodeId = "episode-one") => ({
-    kind: "quiet" as const,
-    sessionId,
-    episodeId,
-    eligibleAtMs: 1,
-    observedAtMs: Date.now(),
-  });
-  const session = (episodeId?: string) => [{
-    name: "agent",
-    identity: { wolfpackSessionId: sessionId },
-    quietAlert: quietAlert(episodeId),
-  }];
+  const quietAlert = (episodeId = "episode-one") => {
+    const eligibleAtMs = Date.now() + 1;
+    return {
+      kind: "quiet" as const,
+      sessionId,
+      episodeId,
+      eligibleAtMs,
+      observedAtMs: eligibleAtMs,
+    };
+  };
+  const session = (episodeId?: string) => {
+    const alert = quietAlert(episodeId);
+    recordQuietAlertEmission(sessionId, alert.episodeId);
+    return [{
+      name: "agent",
+      identity: { wolfpackSessionId: sessionId },
+      quietAlert: alert,
+    }];
+  };
 
   beforeEach(async () => {
     const { _testing } = await import("../../src/server/push.ts");
-    _testing.quietAlertDeliveries.clear();
-    _testing.lastSessionPushTime.clear();
+    _testing.resetDebounce();
   });
 
   test("does nothing when no subscriptions", async () => {
@@ -587,6 +595,159 @@ describe("push: checkSessionTransitions", () => {
     }
   });
 
+  test("limits automatic quiet delivery to three physical posts at least 30 seconds apart", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription } = await import("../../src/server/push.ts");
+    const originalNow = Date.now;
+    const originalFetch = globalThis.fetch;
+    let now = 4_000_000;
+    Date.now = () => now;
+    const client = createECDH("prime256v1");
+    client.generateKeys();
+    const endpoint = `https://fcm.googleapis.com/quiet-physical-attempts-${now}`;
+    const postTimes: number[] = [];
+    const failingFetch = Object.assign(
+      async (..._args: Parameters<typeof fetch>): Promise<Response> => {
+        postTimes.push(Date.now());
+        return new Response(null, { status: 503 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    globalThis.fetch = failingFetch;
+    addSubscription({
+      endpoint,
+      keys: {
+        p256dh: (await import("../../src/server/push.ts"))._testing.b64urlEncode(client.getPublicKey() as Buffer),
+        auth: (await import("../../src/server/push.ts"))._testing.b64urlEncode(Buffer.alloc(16, 7)),
+      },
+    });
+    try {
+      await checkSessionTransitions(session("physical-attempts"));
+      now += 30_000;
+      await checkSessionTransitions(session("physical-attempts"));
+      now += 30_000;
+      await checkSessionTransitions(session("physical-attempts"));
+
+      expect(postTimes).toHaveLength(3);
+      expect(postTimes.slice(1).every((time, index) => time - postTimes[index] >= 30_000)).toBe(true);
+    } finally {
+      Date.now = originalNow;
+      globalThis.fetch = originalFetch;
+      removeSubscription(endpoint);
+    }
+  });
+
+  test("retires a transport-pruned endpoint registration lifetime after 410", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, sendPush, _testing } = await import("../../src/server/push.ts");
+    const originalFetch = globalThis.fetch;
+    const endpoint = `https://fcm.googleapis.com/quiet-pruned-lifetime-${Date.now()}`;
+    const client = createECDH("prime256v1");
+    client.generateKeys();
+    addSubscription({
+      endpoint,
+      keys: {
+        p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
+        auth: _testing.b64urlEncode(Buffer.alloc(16, 11)),
+      },
+    });
+    const oldEpisode = "transport-pruned-episode";
+    recordQuietAlertEmission(sessionId, oldEpisode);
+    const firstGeneration = _testing.subscriptionEnrollmentGenerations.get(endpoint);
+    globalThis.fetch = Object.assign(
+      async (..._args: Parameters<typeof fetch>): Promise<Response> => new Response(null, { status: 410 }),
+      { preconnect: originalFetch.preconnect },
+    );
+    try {
+      await sendPush({ title: "Test", body: "transport prune" });
+      expect(_testing.subscriptionEnrollmentGenerations.has(endpoint)).toBe(false);
+
+      addSubscription({
+        endpoint,
+        keys: {
+          p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
+          auth: _testing.b64urlEncode(Buffer.alloc(16, 11)),
+        },
+      });
+      expect(_testing.subscriptionEnrollmentGenerations.get(endpoint)).not.toBe(firstGeneration);
+      const targets: string[][] = [];
+      _testing.sessionPushSender = async (_payload, endpoints) => {
+        targets.push([...endpoints]);
+        return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
+      };
+      await checkSessionTransitions([{
+        name: "agent",
+        identity: { wolfpackSessionId: sessionId },
+        quietAlert: quietAlert(oldEpisode),
+      }]);
+      expect(targets).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
+
+  test("does not let a stale 410 remove replacement or concurrent registrations", async () => {
+    const { addSubscription, checkSessionTransitions, getSubscriptionCount, removeSubscription, sendPush, _testing } = await import("../../src/server/push.ts");
+    const originalFetch = globalThis.fetch;
+    const suffix = Date.now();
+    const firstEndpoint = `https://fcm.googleapis.com/quiet-stale-first-${suffix}`;
+    const secondEndpoint = `https://fcm.googleapis.com/quiet-stale-second-${suffix}`;
+    const client = createECDH("prime256v1");
+    client.generateKeys();
+    const keys = {
+      p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
+      auth: _testing.b64urlEncode(Buffer.alloc(16, 13)),
+    };
+    addSubscription({ endpoint: firstEndpoint, keys });
+    const oldEpisode = "stale-transport-episode";
+    recordQuietAlertEmission(sessionId, oldEpisode);
+    let releaseFetch: (() => void) | undefined;
+    const fetchReleased = new Promise<void>((resolve) => { releaseFetch = resolve; });
+    let fetchStarted: (() => void) | undefined;
+    const fetchStartedPromise = new Promise<void>((resolve) => { fetchStarted = resolve; });
+    globalThis.fetch = Object.assign(
+      async (..._args: Parameters<typeof fetch>): Promise<Response> => {
+        fetchStarted?.();
+        await fetchReleased;
+        return new Response(null, { status: 410 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    try {
+      const staleSend = sendPush({ title: "Test", body: "held stale transport" });
+      await fetchStartedPromise;
+      removeSubscription(firstEndpoint);
+      addSubscription({ endpoint: firstEndpoint, keys });
+      addSubscription({ endpoint: secondEndpoint, keys });
+      const replacementGeneration = _testing.subscriptionEnrollmentGenerations.get(firstEndpoint);
+      const concurrentGeneration = _testing.subscriptionEnrollmentGenerations.get(secondEndpoint);
+
+      releaseFetch?.();
+      await staleSend;
+      expect(getSubscriptionCount()).toBe(2);
+      expect(_testing.subscriptionEnrollmentGenerations.get(firstEndpoint)).toBe(replacementGeneration);
+      expect(_testing.subscriptionEnrollmentGenerations.get(secondEndpoint)).toBe(concurrentGeneration);
+
+      const targets: string[][] = [];
+      _testing.sessionPushSender = async (_payload, endpoints) => {
+        targets.push([...endpoints]);
+        return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
+      };
+      await checkSessionTransitions([{
+        name: "agent",
+        identity: { wolfpackSessionId: sessionId },
+        quietAlert: quietAlert(oldEpisode),
+      }]);
+      expect(targets).toEqual([]);
+    } finally {
+      releaseFetch?.();
+      globalThis.fetch = originalFetch;
+      _testing.sessionPushSender = null;
+      removeSubscription(firstEndpoint);
+      removeSubscription(secondEndpoint);
+    }
+  });
+
   test("retires a failed endpoint that is unregistered before its retry", async () => {
     const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
     const originalNow = Date.now;
@@ -637,6 +798,85 @@ describe("push: checkSessionTransitions", () => {
       await inFlight;
 
       expect(_testing.quietAlertDeliveries.get(sessionId)?.episodeId).toBe("episode-two");
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
+
+  test("does not start a later stale delivery after invalidation during an earlier send", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const { invalidateQuietAlertPolicy } = await import("../../src/quiet-alert-policy-invalidation.ts");
+    const endpoint = `https://fcm.googleapis.com/invalidate-batch-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    let releaseFirst: (() => void) | undefined;
+    const firstDelivery = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const deliveredSessions: string[] = [];
+    _testing.sessionPushSender = async (payload) => {
+      deliveredSessions.push(payload.title);
+      if (deliveredSessions.length === 1) await firstDelivery;
+      return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
+    };
+    try {
+      const firstAlert = { ...quietAlert("invalidate-episode-first"), sessionId: "invalidate-first" };
+      const secondAlert = { ...quietAlert("invalidate-episode-second"), sessionId: "invalidate-second" };
+      recordQuietAlertEmission("invalidate-first", firstAlert.episodeId);
+      recordQuietAlertEmission("invalidate-second", secondAlert.episodeId);
+      const inFlight = checkSessionTransitions([
+        { name: "first", identity: { wolfpackSessionId: "invalidate-first" }, quietAlert: firstAlert },
+        { name: "second", identity: { wolfpackSessionId: "invalidate-second" }, quietAlert: secondAlert },
+      ]);
+      await Promise.resolve();
+      invalidateQuietAlertPolicy();
+      releaseFirst?.();
+      await inFlight;
+
+      expect(deliveredSessions).toEqual(["Wolfpack: first"]);
+      expect(_testing.quietAlertDeliveries.size).toBe(0);
+      expect(_testing.lastSessionPushTime.size).toBe(0);
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
+
+  test("does not start a later delivery after observation authority changes during the first send", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/observation-authority-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const firstSessionId = "observation-authority-first";
+    const secondSessionId = "observation-authority-second";
+    const firstAlert = { ...quietAlert("observation-authority-first-episode"), sessionId: firstSessionId };
+    const secondAlert = { ...quietAlert("observation-authority-second-episode"), sessionId: secondSessionId };
+    recordQuietAlertEmission(firstSessionId, firstAlert.episodeId);
+    recordQuietAlertEmission(secondSessionId, secondAlert.episodeId);
+    let currentAuthority = true;
+    let releaseFirst: (() => void) | undefined;
+    const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted: (() => void) | undefined;
+    const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const deliveredSessions: string[] = [];
+    _testing.sessionPushSender = async (payload) => {
+      deliveredSessions.push(payload.title);
+      if (deliveredSessions.length === 1) {
+        firstStarted?.();
+        await firstReleased;
+      }
+      return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
+    };
+    try {
+      const delivery = checkSessionTransitions([
+        { name: "first", identity: { wolfpackSessionId: firstSessionId }, quietAlert: firstAlert },
+        { name: "second", identity: { wolfpackSessionId: secondSessionId }, quietAlert: secondAlert },
+      ], undefined, () => currentAuthority);
+      await firstStartedPromise;
+      currentAuthority = false;
+      releaseFirst?.();
+      await delivery;
+
+      expect(deliveredSessions).toEqual(["Wolfpack: first"]);
+      expect(_testing.quietAlertDeliveries.get(firstSessionId)?.pendingEndpoints.size).toBe(0);
+      expect(_testing.quietAlertDeliveries.has(secondSessionId)).toBe(false);
     } finally {
       _testing.sessionPushSender = null;
       removeSubscription(endpoint);

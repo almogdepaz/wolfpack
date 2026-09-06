@@ -104,6 +104,7 @@ const {
 } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
 const { AgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
+const { forgetSessionObservation } = await import("../../src/server/session-observation.ts");
 
 const {
   __resetSessionObservationForTests,
@@ -460,6 +461,80 @@ describe("GET /api/sessions", () => {
     } finally {
       pushTesting.sessionPushSender = null;
       removeSubscription(endpoint);
+    }
+  });
+
+  test("requires new activity after a current capture failure before delivering quiet", async () => {
+    const originalNow = Date.now;
+    let now = 19_000_000;
+    Date.now = () => now;
+    const sessionName = "capture-gap-continuity";
+    const sessionId = "capture-gap-continuity-id";
+    const endpoint = `https://fcm.googleapis.com/capture-gap-continuity-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "301", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const deliveries: string[] = [];
+    pushTesting.sessionPushSender = async (payload) => {
+      deliveries.push(payload.title);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(sessionName, "armed activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "302", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      now += 1_000;
+      factBackend.capturePane = async () => { throw new Error("capture failed"); };
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "303", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const failed = await __runSessionNotificationObservationForTests();
+      expect(failed[0]).toMatchObject({ activity: { freshness: "unknown" } });
+      expect(failed[0]?.quietAlert).toBeUndefined();
+
+      now += 5_000;
+      factBackend.capturePane = originalCapturePane;
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "304", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const recovered = await __runSessionNotificationObservationForTests();
+      expect(recovered[0]?.quietAlert).toBeUndefined();
+      expect(deliveries).toEqual([]);
+
+      now += 1;
+      factBackend.setPane(sessionName, "new activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "305", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+      now += 5_000;
+      const matured = await __runSessionNotificationObservationForTests();
+      expect(matured[0]?.quietAlert).toMatchObject({
+        sessionId,
+        eligibleAtMs: 19_011_002,
+      });
+      expect(deliveries).toEqual(["Wolfpack: capture-gap-continuity"]);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
     }
   });
 
@@ -878,6 +953,659 @@ describe("GET /api/sessions", () => {
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("does not publish a pre-disable quiet fact from a held multi-session dashboard batch", async () => {
+    const originalNow = Date.now;
+    let now = 9_000_000;
+    Date.now = () => now;
+    const first = "batch-first";
+    const second = "batch-second";
+    const factBackend = new FactBackend([
+      { name: first, alive: true, outputSequence: "131", identity: testIdentity(first, "batch-first-id") },
+      { name: second, alive: true, outputSequence: "131", identity: testIdentity(second, "batch-second-id") },
+    ]);
+    factBackend.setPane(first, "first baseline\n");
+    factBackend.setPane(second, "second baseline\n");
+    __setTestBackend(factBackend);
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+
+      now += 1;
+      factBackend.setPane(first, "first activity\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "132", identity: testIdentity(first, "batch-first-id") },
+        { name: second, alive: true, outputSequence: "131", identity: testIdentity(second, "batch-second-id") },
+      ]);
+      await get("/api/sessions");
+
+      now += 5_000;
+      let releaseSecondCapture: (() => void) | undefined;
+      const secondCaptureReleased = new Promise<void>((resolve) => { releaseSecondCapture = resolve; });
+      let secondCaptureStarted: (() => void) | undefined;
+      const secondCaptureStartedPromise = new Promise<void>((resolve) => { secondCaptureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        if (name === second) {
+          secondCaptureStarted?.();
+          await secondCaptureReleased;
+        }
+        return originalCapturePane(name);
+      };
+      factBackend.setPane(second, "second delayed activity\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "132", identity: testIdentity(first, "batch-first-id") },
+        { name: second, alive: true, outputSequence: "132", identity: testIdentity(second, "batch-second-id") },
+      ]);
+      const staleBatch = get("/api/sessions");
+      await secondCaptureStartedPromise;
+
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "disabled", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      releaseSecondCapture?.();
+      const retired = await (await staleBatch).json();
+      expect(retired.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toBeUndefined();
+      const fresh = await (await get("/api/sessions")).json();
+      expect(fresh.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toBeUndefined();
+
+      now += 1;
+      factBackend.setPane(first, "first rearmed activity\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "133", identity: testIdentity(first, "batch-first-id") },
+        { name: second, alive: true, outputSequence: "132", identity: testIdentity(second, "batch-second-id") },
+      ]);
+      await get("/api/sessions");
+      now += 5_000;
+      const rearmed = await (await get("/api/sessions")).json();
+      expect(rearmed.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toMatchObject({
+        sessionId: "batch-first-id",
+        eligibleAtMs: 9_010_002,
+      });
+    } finally {
+      Date.now = originalNow;
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("does not deliver already-eligible episodes to initial or re-enrolled subscriptions", async () => {
+    const originalNow = Date.now;
+    let now = 10_000_000;
+    Date.now = () => now;
+    const sessionName = "enrollment-quiet";
+    const sessionId = "enrollment-quiet-id";
+    const endpoint = `https://fcm.googleapis.com/enrollment-quiet-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "141", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    const delivered: string[] = [];
+    pushTesting.sessionPushSender = async (payload) => {
+      delivered.push(payload.title);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+
+      now += 1;
+      factBackend.setPane(sessionName, "first activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "142", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+      now += 5_000;
+      expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toMatchObject({ sessionId });
+
+      addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      await __runSessionNotificationObservationForTests();
+      expect(delivered).toEqual([]);
+
+      now += 1;
+      factBackend.setPane(sessionName, "second activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "143", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+      now += 5_000;
+      await __runSessionNotificationObservationForTests();
+      expect(delivered).toEqual(["Wolfpack: enrollment-quiet"]);
+
+      removeSubscription(endpoint);
+      addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      await __runSessionNotificationObservationForTests();
+      expect(delivered).toEqual(["Wolfpack: enrollment-quiet"]);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("freezes recipients when a second endpoint enrolls after dashboard emits", async () => {
+    const originalNow = Date.now;
+    let now = 11_000_000;
+    Date.now = () => now;
+    const sessionName = "recipient-snapshot";
+    const sessionId = "recipient-snapshot-id";
+    const firstEndpoint = `https://fcm.googleapis.com/recipient-first-${now}`;
+    const secondEndpoint = `https://fcm.googleapis.com/recipient-second-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "151", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    const deliveries: string[][] = [];
+    pushTesting.sessionPushSender = async (_payload, endpoints) => {
+      deliveries.push([...endpoints].sort());
+      return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
+    };
+    addSubscription({ endpoint: firstEndpoint, keys: { p256dh: "key", auth: "auth" } });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      now += 1;
+      factBackend.setPane(sessionName, "first activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "152", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+      now += 5_000;
+      expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toMatchObject({ sessionId });
+
+      addSubscription({ endpoint: secondEndpoint, keys: { p256dh: "key", auth: "auth" } });
+      await __runSessionNotificationObservationForTests();
+      expect(deliveries).toEqual([[firstEndpoint]]);
+
+      now += 1;
+      factBackend.setPane(sessionName, "second activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "153", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+      // The first A-only delivery starts the per-session 30-second transport debounce.
+      // This is a later episode, so wait past that invariant before asserting A+B.
+      now += 30_000;
+      await __runSessionNotificationObservationForTests();
+      expect(deliveries).toEqual([[firstEndpoint], [firstEndpoint, secondEndpoint].sort()]);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(firstEndpoint);
+      removeSubscription(secondEndpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("delivers a duration-reevaluated episode that emits after enrollment", async () => {
+    const originalNow = Date.now;
+    let now = 12_000_000;
+    Date.now = () => now;
+    const sessionName = "duration-recipient";
+    const sessionId = "duration-recipient-id";
+    const endpoint = `https://fcm.googleapis.com/duration-recipient-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "161", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    const deliveries: string[][] = [];
+    pushTesting.sessionPushSender = async (_payload, endpoints) => {
+      deliveries.push([...endpoints]);
+      return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
+    };
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 60 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      now += 1;
+      factBackend.setPane(sessionName, "pending activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "162", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+
+      now += 9_999;
+      addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await __runSessionNotificationObservationForTests();
+      expect(deliveries).toEqual([[endpoint]]);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("retires departed dashboard-only recipient snapshots without clearing active empty snapshots", async () => {
+    const originalNow = Date.now;
+    let now = 13_000_000;
+    Date.now = () => now;
+    const departed = "departed-empty-recipient";
+    const active = "active-empty-recipient";
+    const departedId = "departed-empty-recipient-id";
+    const activeId = "active-empty-recipient-id";
+    const factBackend = new FactBackend([
+      { name: departed, alive: true, outputSequence: "171", identity: testIdentity(departed, departedId) },
+      { name: active, alive: true, outputSequence: "171", identity: testIdentity(active, activeId) },
+    ]);
+    factBackend.setPane(departed, "departed baseline\n");
+    factBackend.setPane(active, "active baseline\n");
+    __setTestBackend(factBackend);
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      now += 1;
+      factBackend.setPane(departed, "departed activity\n");
+      factBackend.setPane(active, "active activity\n");
+      factBackend.setFacts([
+        { name: departed, alive: true, outputSequence: "172", identity: testIdentity(departed, departedId) },
+        { name: active, alive: true, outputSequence: "172", identity: testIdentity(active, activeId) },
+      ]);
+      await get("/api/sessions");
+      now += 5_000;
+      await get("/api/sessions");
+      expect(pushTesting.quietAlertRecipientSnapshots.has(departedId)).toBe(true);
+      expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(true);
+
+      factBackend.setFacts([
+        { name: active, alive: true, outputSequence: "172", identity: testIdentity(active, activeId) },
+      ]);
+      await get("/api/sessions");
+      expect(pushTesting.quietAlertRecipientSnapshots.has(departedId)).toBe(false);
+      expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(true);
+
+      forgetSessionObservation(activeId, active);
+      expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(false);
+    } finally {
+      Date.now = originalNow;
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("retires all dashboard-only recipient snapshots when continuity is unavailable", async () => {
+    const originalNow = Date.now;
+    let now = 14_000_000;
+    Date.now = () => now;
+    const sessionName = "unavailable-empty-recipient";
+    const sessionId = "unavailable-empty-recipient-id";
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "181", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      now += 1;
+      factBackend.setPane(sessionName, "activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "182", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+      now += 5_000;
+      await get("/api/sessions");
+      expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
+
+      now += 1_001;
+      factBackend.listSessionFacts = async () => { throw new Error("broker unavailable"); };
+      await get("/api/sessions");
+      expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(false);
+    } finally {
+      Date.now = originalNow;
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("observation authority prevents an older notification batch from sending after newer dashboard continuity loss", async () => {
+    const originalNow = Date.now;
+    let now = 16_000_000;
+    Date.now = () => now;
+    const first = "stale-notification-a";
+    const held = "stale-notification-b";
+    const firstId = "stale-notification-a-id";
+    const heldId = "stale-notification-b-id";
+    const endpoint = `https://fcm.googleapis.com/stale-notification-${now}`;
+    const factBackend = new FactBackend([
+      { name: first, alive: true, outputSequence: "201", identity: testIdentity(first, firstId) },
+      { name: held, alive: true, outputSequence: "201", identity: testIdentity(held, heldId) },
+    ]);
+    factBackend.setPane(first, "first baseline\n");
+    factBackend.setPane(held, "held baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const deliveries: string[] = [];
+    pushTesting.sessionPushSender = async (payload) => {
+      deliveries.push(payload.title);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(first, "first activity\n");
+      factBackend.setPane(held, "held dashboard update\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "202", identity: testIdentity(first, firstId) },
+        { name: held, alive: true, outputSequence: "202", identity: testIdentity(held, heldId) },
+      ]);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+      now += 5_000;
+      const armed = await (await get("/api/sessions")).json();
+      expect(armed.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toMatchObject({ sessionId: firstId });
+
+      let releaseHeldCapture: (() => void) | undefined;
+      const heldCaptureReleased = new Promise<void>((resolve) => { releaseHeldCapture = resolve; });
+      let heldCaptureStarted: (() => void) | undefined;
+      const heldCaptureStartedPromise = new Promise<void>((resolve) => { heldCaptureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        if (name === held) {
+          heldCaptureStarted?.();
+          await heldCaptureReleased;
+        }
+        return originalCapturePane(name);
+      };
+      factBackend.setPane(held, "held delayed notification update\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "202", identity: testIdentity(first, firstId) },
+        { name: held, alive: true, outputSequence: "203", identity: testIdentity(held, heldId) },
+      ]);
+      const staleNotification = __runSessionNotificationObservationForTests();
+      await heldCaptureStartedPromise;
+
+      factBackend.setFacts([
+        { name: first, alive: false, outputSequence: "202", identity: testIdentity(first, firstId) },
+      ]);
+      const continuityLost = await (await get("/api/sessions")).json();
+      expect(continuityLost.sessions).toHaveLength(1);
+      expect(continuityLost.sessions[0].activity.freshness).toBe("unknown");
+      expect(continuityLost.sessions[0].quietAlert).toBeUndefined();
+
+      releaseHeldCapture?.();
+      await staleNotification;
+      expect(deliveries).toEqual([]);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("observation authority does not return a retired quiet fact from an older dashboard batch", async () => {
+    const originalNow = Date.now;
+    let now = 17_000_000;
+    Date.now = () => now;
+    const first = "stale-dashboard-a";
+    const held = "stale-dashboard-b";
+    const firstId = "stale-dashboard-a-id";
+    const heldId = "stale-dashboard-b-id";
+    const endpoint = `https://fcm.googleapis.com/stale-dashboard-${now}`;
+    const factBackend = new FactBackend([
+      { name: first, alive: true, outputSequence: "211", identity: testIdentity(first, firstId) },
+      { name: held, alive: true, outputSequence: "211", identity: testIdentity(held, heldId) },
+    ]);
+    factBackend.setPane(first, "first baseline\n");
+    factBackend.setPane(held, "held baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(first, "first activity\n");
+      factBackend.setPane(held, "held ready\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "212", identity: testIdentity(first, firstId) },
+        { name: held, alive: true, outputSequence: "212", identity: testIdentity(held, heldId) },
+      ]);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+      now += 5_000;
+      await get("/api/sessions");
+
+      let releaseHeldCapture: (() => void) | undefined;
+      const heldCaptureReleased = new Promise<void>((resolve) => { releaseHeldCapture = resolve; });
+      let heldCaptureStarted: (() => void) | undefined;
+      const heldCaptureStartedPromise = new Promise<void>((resolve) => { heldCaptureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        if (name === held) {
+          heldCaptureStarted?.();
+          await heldCaptureReleased;
+        }
+        return originalCapturePane(name);
+      };
+      factBackend.setPane(held, "held delayed dashboard update\n");
+      factBackend.setFacts([
+        { name: first, alive: true, outputSequence: "212", identity: testIdentity(first, firstId) },
+        { name: held, alive: true, outputSequence: "213", identity: testIdentity(held, heldId) },
+      ]);
+      const staleDashboard = get("/api/sessions");
+      await heldCaptureStartedPromise;
+
+      factBackend.setFacts([
+        { name: first, alive: false, outputSequence: "212", identity: testIdentity(first, firstId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+
+      releaseHeldCapture?.();
+      const retired = await (await staleDashboard).json();
+      expect(retired.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toBeUndefined();
+      const fresh = await (await get("/api/sessions")).json();
+      expect(fresh.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toBeUndefined();
+    } finally {
+      Date.now = originalNow;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("observation authority prevents a delayed successful pane from restoring older canonical state", async () => {
+    const originalNow = Date.now;
+    let now = 18_000_000;
+    Date.now = () => now;
+    const sessionName = "stale-successful-pane";
+    const sessionId = "stale-successful-pane-id";
+    const endpoint = `https://fcm.googleapis.com/stale-successful-pane-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "221", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(sessionName, "older successful output\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "222", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      let releaseOlderCapture: (() => void) | undefined;
+      const olderCaptureReleased = new Promise<void>((resolve) => { releaseOlderCapture = resolve; });
+      let olderCaptureStarted: (() => void) | undefined;
+      const olderCaptureStartedPromise = new Promise<void>((resolve) => { olderCaptureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      let captureCount = 0;
+      factBackend.capturePane = async (name: string) => {
+        const captured = await originalCapturePane(name);
+        captureCount += 1;
+        if (captureCount === 1) {
+          olderCaptureStarted?.();
+          await olderCaptureReleased;
+        }
+        return captured;
+      };
+      const staleDashboard = get("/api/sessions");
+      await olderCaptureStartedPromise;
+
+      now += 1;
+      factBackend.setPane(sessionName, "newer authoritative output\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "223", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const newer = await __runSessionNotificationObservationForTests();
+      expect(newer[0]?.lastLine).toBe("newer authoritative output");
+
+      releaseOlderCapture?.();
+      const retired = await (await staleDashboard).json();
+      expect(retired.sessions).toHaveLength(1);
+      expect(retired.sessions[0].activity.freshness).toBe("unknown");
+      expect(retired.sessions[0].quietAlert).toBeUndefined();
+      now += 5_000;
+      const current = await (await get("/api/sessions")).json();
+      expect(current.sessions).toHaveLength(1);
+      expect(current.sessions[0].lastLine).toBe("newer authoritative output");
+      expect(current.sessions[0].quietAlert).toMatchObject({
+        sessionId,
+        eligibleAtMs: 18_005_002,
+      });
+    } finally {
+      Date.now = originalNow;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("does not let stale same-policy dashboard cleanup cancel a newer notification retry", async () => {
+    const originalNow = Date.now;
+    let now = 15_000_000;
+    Date.now = () => now;
+    try {
+      for (const staleResult of ["omitted", "unavailable"] as const) {
+        const sessionName = `same-policy-${staleResult}`;
+        const sessionId = `${sessionName}-id`;
+        const endpoint = `https://fcm.googleapis.com/${sessionName}-${now}`;
+        const fact = { name: sessionName, alive: true, outputSequence: "191", identity: testIdentity(sessionName, sessionId) };
+        const factBackend = new FactBackend([fact]);
+        factBackend.setPane(sessionName, "baseline\n");
+        __setTestBackend(factBackend);
+        addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+        const attempts: string[][] = [];
+        pushTesting.sessionPushSender = async (_payload, endpoints) => {
+          attempts.push([...endpoints]);
+          return attempts.length === 1
+            ? { sent: 0, failed: endpoints.size, pruned: 0, successfulEndpoints: [], failedEndpoints: [...endpoints] }
+            : { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
+        };
+        try {
+          expect((await post("/api/settings", {
+            quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+          })).status).toBe(200);
+          await get("/api/sessions");
+          now += 1;
+          factBackend.setPane(sessionName, "activity\n");
+          factBackend.setFacts([{ ...fact, outputSequence: "192" }]);
+          await get("/api/sessions");
+          now += 5_000;
+
+          const originalListSessionFacts = factBackend.listSessionFacts.bind(factBackend);
+          let releaseOlderList: (() => void) | undefined;
+          const olderListReleased = new Promise<void>((resolve) => { releaseOlderList = resolve; });
+          let olderListStarted: (() => void) | undefined;
+          const olderListStartedPromise = new Promise<void>((resolve) => { olderListStarted = resolve; });
+          let listCalls = 0;
+          factBackend.listSessionFacts = async () => {
+            listCalls += 1;
+            if (listCalls === 1) {
+              olderListStarted?.();
+              await olderListReleased;
+              if (staleResult === "unavailable") throw new Error("older broker unavailable");
+              return [];
+            }
+            return originalListSessionFacts();
+          };
+          const staleDashboard = get("/api/sessions");
+          await olderListStartedPromise;
+
+          await __runSessionNotificationObservationForTests();
+          expect(attempts).toEqual([[endpoint]]);
+          expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
+
+          releaseOlderList?.();
+          await staleDashboard;
+          expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
+
+          now += pushTesting.PUSH_DEBOUNCE_MS;
+          await __runSessionNotificationObservationForTests();
+          expect(attempts).toEqual([[endpoint], [endpoint]]);
+        } finally {
+          pushTesting.sessionPushSender = null;
+          removeSubscription(endpoint);
+          await post("/api/settings", {
+            quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+          });
+          __resetSessionObservationForTests();
+          pushTesting.resetDebounce();
+          now += 100_000;
+        }
+      }
+    } finally {
+      Date.now = originalNow;
       __setTestBackend(mockBackend);
     }
   });
