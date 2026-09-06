@@ -379,7 +379,7 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[0].activity).not.toHaveProperty("quietSince");
   });
 
-  test("observes and notifies on the server without a sessions request", async () => {
+  test("does not notify before the configured quiet interval without a sessions request", async () => {
     const endpoint = `https://fcm.googleapis.com/server-observer-${Date.now()}`;
     const pushes: Array<{ readonly title: string; readonly body: string }> = [];
     addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
@@ -396,17 +396,14 @@ describe("GET /api/sessions", () => {
       await __runSessionNotificationObservationForTests();
       await __runSessionNotificationObservationForTests();
 
-      expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
-        { title: "Wolfpack: wolf-1", body: "Quiet" },
-        { title: "Wolfpack: wolf-2", body: "Quiet" },
-      ]);
+      expect(pushes).toEqual([]);
     } finally {
       pushTesting.sessionPushSender = null;
       removeSubscription(endpoint);
     }
   });
 
-  test("preserves notification transitions when dashboard observes changed output first", async () => {
+  test("does not turn a dashboard-observed change into an immediate quiet alert", async () => {
     const endpoint = `https://fcm.googleapis.com/dashboard-first-${Date.now()}`;
     const sessionName = "dashboard-first";
     const sessionId = "dashboard-first-id";
@@ -431,9 +428,7 @@ describe("GET /api/sessions", () => {
       await __runSessionNotificationObservationForTests();
       await __runSessionNotificationObservationForTests();
 
-      expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
-        { title: "Wolfpack: dashboard-first", body: "Quiet" },
-      ]);
+      expect(pushes).toEqual([]);
     } finally {
       pushTesting.sessionPushSender = null;
       removeSubscription(endpoint);
@@ -659,6 +654,234 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("projects one quiet fact at the exact threshold across dashboard and observer sampling", async () => {
+    const originalNow = Date.now;
+    let now = 4_000_000;
+    Date.now = () => now;
+    const sessionName = "exact-quiet-threshold";
+    const sessionId = "exact-quiet-threshold-id";
+    const endpoint = `https://fcm.googleapis.com/exact-quiet-threshold-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "81", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+
+      now += 1;
+      factBackend.setPane(sessionName, "changed\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "82", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const changed = await (await get("/api/sessions")).json();
+      expect(changed.sessions[0].quietAlert).toBeUndefined();
+
+      now += 4_999;
+      const beforeThreshold = await __runSessionNotificationObservationForTests();
+      expect(beforeThreshold[0].quietAlert).toBeUndefined();
+
+      now += 1;
+      const matured = await __runSessionNotificationObservationForTests();
+      expect(matured[0].quietAlert).toEqual({
+        kind: "quiet",
+        sessionId,
+        episodeId: expect.any(String),
+        eligibleAtMs: 4_005_001,
+        observedAtMs: 4_005_001,
+      });
+      const dashboard = await (await get("/api/sessions")).json();
+      expect(dashboard.sessions[0].quietAlert).toEqual(matured[0].quietAlert);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("keeps one quiet episode when dashboard observes output before a delayed observer", async () => {
+    const originalNow = Date.now;
+    let now = 5_000_000;
+    Date.now = () => now;
+    const sessionName = "shared-quiet-episode";
+    const sessionId = "shared-quiet-episode-id";
+    const endpoint = `https://fcm.googleapis.com/shared-quiet-episode-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "91", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(sessionName, "changed\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "92", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toBeUndefined();
+
+      now += 4_999;
+      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+
+      now += 1;
+      const observerAtThreshold = await __runSessionNotificationObservationForTests();
+      expect(observerAtThreshold[0].quietAlert).toMatchObject({
+        sessionId,
+        eligibleAtMs: 5_005_001,
+        observedAtMs: 5_005_001,
+      });
+      const dashboardAtThreshold = await (await get("/api/sessions")).json();
+      expect(dashboardAtThreshold.sessions[0].quietAlert).toEqual(observerAtThreshold[0].quietAlert);
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("disabling and reenabling quiet alerts between samples cancels an armed episode", async () => {
+    const originalNow = Date.now;
+    let now = 7_000_000;
+    Date.now = () => now;
+    const sessionName = "settings-cancel-quiet";
+    const sessionId = "settings-cancel-quiet-id";
+    const endpoint = `https://fcm.googleapis.com/settings-cancel-quiet-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "111", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(sessionName, "armed activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "112", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "disabled", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+
+      now += 5_000;
+      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+
+      now += 1;
+      factBackend.setPane(sessionName, "new activity after reenable\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "113", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await get("/api/sessions");
+      now += 5_000;
+      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toMatchObject({
+        sessionId,
+        eligibleAtMs: 7_010_002,
+        observedAtMs: 7_010_002,
+      });
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("does not arm an old capture after quiet alerts are disabled and reenabled", async () => {
+    const originalNow = Date.now;
+    let now = 8_000_000;
+    Date.now = () => now;
+    const sessionName = "settings-retire-capture";
+    const sessionId = "settings-retire-capture-id";
+    const endpoint = `https://fcm.googleapis.com/settings-retire-capture-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "121", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      let releaseCapture: (() => void) | undefined;
+      const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
+      let captureStarted: (() => void) | undefined;
+      const captureStartedPromise = new Promise<void>((resolve) => { captureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      factBackend.capturePane = async (name: string) => {
+        captureStarted?.();
+        await captureReleased;
+        return originalCapturePane(name);
+      };
+
+      now += 1;
+      factBackend.setPane(sessionName, "old captured activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "122", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const oldCapture = get("/api/sessions");
+      await captureStartedPromise;
+
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "disabled", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      releaseCapture?.();
+      await oldCapture;
+
+      now += 5_000;
+      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
+      __setTestBackend(mockBackend);
+    }
+  });
+
   test("treats blank rendered snapshots as observable activity", async () => {
     const endpoint = `https://fcm.googleapis.com/blank-activity-${Date.now()}`;
     const sessionName = "blank-activity";
@@ -694,9 +917,7 @@ describe("GET /api/sessions", () => {
       expect(blank.sessions[0]).toMatchObject({ triage: "running", activity: { display: "" } });
       await __runSessionNotificationObservationForTests();
       await __runSessionNotificationObservationForTests();
-      expect(pushes.map(({ title, body }) => ({ title, body }))).toEqual([
-        { title: "Wolfpack: blank-activity", body: "Quiet" },
-      ]);
+      expect(pushes).toEqual([]);
 
       const quiet = await (await get("/api/sessions")).json();
       expect(quiet.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "" });
@@ -769,6 +990,88 @@ describe("GET /api/sessions", () => {
       expect(quiet[0].activity).toMatchObject({ freshness: "fresh", display: "" });
     } finally {
       removeSubscription(endpoint);
+      __setTestBackend(mockBackend);
+    }
+  });
+
+  test("does not let a retired capture clear a recovered quiet episode", async () => {
+    const originalNow = Date.now;
+    let now = 6_000_000;
+    Date.now = () => now;
+    const sessionName = "retired-quiet-episode";
+    const sessionId = "retired-quiet-episode-id";
+    const endpoint = `https://fcm.googleapis.com/retired-quiet-episode-${now}`;
+    const factBackend = new FactBackend([
+      { name: sessionName, alive: true, outputSequence: "101", identity: testIdentity(sessionName, sessionId) },
+    ]);
+    factBackend.setPane(sessionName, "baseline\n");
+    __setTestBackend(factBackend);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    try {
+      expect((await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+      })).status).toBe(200);
+      await get("/api/sessions");
+      await __runSessionNotificationObservationForTests();
+
+      let releaseOldCapture: (() => void) | undefined;
+      const oldCaptureReleased = new Promise<void>((resolve) => { releaseOldCapture = resolve; });
+      let oldCaptureStarted: (() => void) | undefined;
+      const oldCaptureStartedPromise = new Promise<void>((resolve) => { oldCaptureStarted = resolve; });
+      const originalCapturePane = factBackend.capturePane.bind(factBackend);
+      let holdOldCapture = true;
+      factBackend.capturePane = async (name: string) => {
+        if (holdOldCapture) {
+          oldCaptureStarted?.();
+          await oldCaptureReleased;
+        }
+        return originalCapturePane(name);
+      };
+
+      now += 1;
+      factBackend.setPane(sessionName, "retired output\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      const retiredDashboard = get("/api/sessions");
+      await oldCaptureStartedPromise;
+
+      factBackend.setFacts([
+        { name: sessionName, alive: false, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+
+      holdOldCapture = false;
+      factBackend.setPane(sessionName, "recovered baseline\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+
+      now += 1;
+      factBackend.setPane(sessionName, "recovered activity\n");
+      factBackend.setFacts([
+        { name: sessionName, alive: true, outputSequence: "103", identity: testIdentity(sessionName, sessionId) },
+      ]);
+      await __runSessionNotificationObservationForTests();
+
+      releaseOldCapture?.();
+      await retiredDashboard;
+      now += 5_000;
+      const matured = await __runSessionNotificationObservationForTests();
+      expect(matured[0].quietAlert).toMatchObject({
+        sessionId,
+        eligibleAtMs: 6_005_002,
+        observedAtMs: 6_005_002,
+      });
+    } finally {
+      Date.now = originalNow;
+      pushTesting.sessionPushSender = null;
+      removeSubscription(endpoint);
+      await post("/api/settings", {
+        quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+      });
       __setTestBackend(mockBackend);
     }
   });
@@ -2663,6 +2966,9 @@ async function resetSettingsToDefaults() {
     await post("/api/settings", { setCmdEnabled: { cmd, enabled: true } });
   }
   await post("/api/settings", { agentCmd: "shell" });
+  await post("/api/settings", {
+    quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+  });
 }
 
 describe("GET /api/providers", () => {
@@ -2720,6 +3026,33 @@ describe("GET /api/settings", () => {
     expect(data.presets).toBeUndefined();
   });
 
+});
+
+describe("POST /api/settings — quiet alerts", () => {
+  beforeEach(async () => { await resetSettingsToDefaults(); });
+
+  test("persists the host-wide mode and duration", async () => {
+    const res = await post("/api/settings", {
+      quietAlerts: { mode: "disabled", quietAfterSeconds: 45 },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).settings.quietAlerts).toEqual({ mode: "disabled", quietAfterSeconds: 45 });
+  });
+
+  test("rejects fractional, out-of-range, and malformed policies without mutating settings", async () => {
+    const before = await (await get("/api/settings")).json();
+    for (const quietAlerts of [
+      { mode: "quiet-after-activity", quietAfterSeconds: 4 },
+      { mode: "quiet-after-activity", quietAfterSeconds: 30.5 },
+      { mode: "quiet-after-activity", quietAfterSeconds: 3_601 },
+      { mode: "unknown", quietAfterSeconds: 30 },
+      { mode: "disabled" },
+    ]) {
+      expect((await post("/api/settings", { quietAlerts })).status).toBe(400);
+    }
+    expect(await (await get("/api/settings")).json()).toEqual(before);
+  });
 });
 
 describe("POST /api/settings — addCmd", () => {

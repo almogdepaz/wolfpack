@@ -254,6 +254,20 @@
             </div>
             <div id="notification-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
           </div>
+          <div class="quiet-alert-setting">
+            <div class="settings-sub-heading">Automatic quiet alerts</div>
+            <p class="quiet-alert-setting-help">Host-wide. Alerts follow new rendered terminal activity after a continuous quiet interval; they do not signal completion.</p>
+            <label class="settings-toggle" for="setting-quiet-alert-mode">Mode
+              <select id="setting-quiet-alert-mode">
+                <option value="quiet-after-activity">After rendered activity becomes quiet</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </label>
+            <label class="settings-toggle" for="setting-quiet-alert-duration">Quiet duration (seconds)
+              <input id="setting-quiet-alert-duration" type="number" min="5" max="3600" step="1" inputmode="numeric" aria-describedby="quiet-alert-setting-status">
+            </label>
+            <div id="quiet-alert-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
+          </div>
         </div>
         <div class="settings-section" id="settings-terminal">
           <div class="settings-label">Terminal</div>

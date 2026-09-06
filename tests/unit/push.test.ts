@@ -469,176 +469,202 @@ describe("push: delivery deadline", () => {
 });
 
 describe("push: checkSessionTransitions", () => {
+  const sessionId = "stable-id";
+  const quietAlert = (episodeId = "episode-one") => ({
+    kind: "quiet" as const,
+    sessionId,
+    episodeId,
+    eligibleAtMs: 1,
+    observedAtMs: Date.now(),
+  });
+  const session = (episodeId?: string) => [{
+    name: "agent",
+    identity: { wolfpackSessionId: sessionId },
+    quietAlert: quietAlert(episodeId),
+  }];
+
   beforeEach(async () => {
     const { _testing } = await import("../../src/server/push.ts");
-    _testing.prevTriageState.clear();
+    _testing.quietAlertDeliveries.clear();
     _testing.lastSessionPushTime.clear();
   });
 
   test("does nothing when no subscriptions", async () => {
     const { checkSessionTransitions, getSubscriptionCount } = await import("../../src/server/push.ts");
-    // With 0 subs (after cleanup from cap test), should be a no-op
-    if (getSubscriptionCount() > 0) return; // skip if other tests left subs
-    // Just verify it doesn't throw
-    await checkSessionTransitions([{ name: "test", triage: "idle" }]);
+    if (getSubscriptionCount() > 0) return;
+    await checkSessionTransitions(session());
   });
 
-  test("does not convert an unreliable idle observation into a notification transition", async () => {
+  test("fails closed without a stable identity or a matching quiet-alert session id", async () => {
     const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
-    const endpoint = `https://fcm.googleapis.com/unreliable-observation-${Date.now()}`;
+    const endpoint = `https://fcm.googleapis.com/untrusted-quiet-${Date.now()}`;
     addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    _testing.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
-    _testing.prevTriageState.set("stable-id", "output");
-    try {
-      await checkSessionTransitions([{
-        name: "agent",
-        triage: "idle",
-        identity: { wolfpackSessionId: "stable-id" },
-        runtimeState: { state: "idle" },
-        notificationEligible: false,
-      }]);
-
-      expect(_testing.prevTriageState.get("stable-id")).toBe("output");
-      expect(_testing.lastSessionPushTime.has("stable-id")).toBe(false);
-    } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
-    }
-  });
-
-  test("retries an undelivered transition but does not redeliver after success", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
-    const endpoint = `https://fcm.googleapis.com/transition-retry-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    const deliveries = [
-      { sent: 0, failed: 1, pruned: 0 },
-      { sent: 1, failed: 0, pruned: 0 },
-    ];
     const payloads: unknown[] = [];
     _testing.sessionPushSender = async (payload) => {
       payloads.push(payload);
-      return deliveries.shift() ?? { sent: 1, failed: 0, pruned: 0 };
+      return { sent: 1, failed: 0, pruned: 0 };
     };
-    _testing.prevTriageState.set("stable-id", "output");
-    const quiet = [{
-      name: "agent",
-      triage: "idle" as const,
-      identity: { wolfpackSessionId: "stable-id" },
-      runtimeState: { state: "idle" as const },
-    }];
-
     try {
-      await checkSessionTransitions(quiet);
-      await checkSessionTransitions(quiet);
-      await checkSessionTransitions(quiet);
-
-      expect(payloads).toHaveLength(2);
-      expect(payloads[0]).toMatchObject({
-        title: "Wolfpack: agent",
-        url: "/?sessionId=stable-id&session=agent&machine=local",
-      });
+      await checkSessionTransitions([{ name: "same-name", quietAlert: quietAlert() }]);
+      await checkSessionTransitions([{
+        name: "agent",
+        identity: { wolfpackSessionId: sessionId },
+        quietAlert: { ...quietAlert(), sessionId: "other-session" },
+      }]);
+      expect(payloads).toEqual([]);
     } finally {
       _testing.sessionPushSender = null;
       removeSubscription(endpoint);
     }
   });
 
-  test("debounce prevents rapid push within 30s", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    const now = Date.now();
+  test("retries only failed original endpoints and never redelivers successes", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const originalNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    const first = `https://fcm.googleapis.com/quiet-first-${now}`;
+    const second = `https://fcm.googleapis.com/quiet-second-${now}`;
+    const later = `https://fcm.googleapis.com/quiet-later-${now}`;
+    addSubscription({ endpoint: first, keys: { p256dh: "key", auth: "auth" } });
+    addSubscription({ endpoint: second, keys: { p256dh: "key", auth: "auth" } });
+    const targets: string[][] = [];
+    const attemptTimes: number[] = [];
+    _testing.sessionPushSender = async (_payload, endpoints) => {
+      targets.push([...endpoints].sort());
+      attemptTimes.push(Date.now());
+      return targets.length === 1
+        ? { sent: 1, failed: 1, pruned: 0, successfulEndpoints: [first], failedEndpoints: [second] }
+        : { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [second], failedEndpoints: [] };
+    };
+    try {
+      await checkSessionTransitions(session());
+      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints).toEqual(new Set([second]));
+      addSubscription({ endpoint: later, keys: { p256dh: "key", auth: "auth" } });
+      now += _testing.PUSH_DEBOUNCE_MS;
+      await checkSessionTransitions(session());
+      await checkSessionTransitions(session());
 
-    // Simulate a recent push for "sess1"
-    _testing.lastSessionPushTime.set("sess1", now);
-
-    // A transition happening now should be debounced
-    const last = _testing.lastSessionPushTime.get("sess1") || 0;
-    expect(now - last).toBeLessThan(_testing.PUSH_DEBOUNCE_MS);
-
-    // A transition 31s later should not be debounced
-    const future = now - 31_000;
-    _testing.lastSessionPushTime.set("sess1", future);
-    const futureGap = now - (_testing.lastSessionPushTime.get("sess1") || 0);
-    expect(futureGap).toBeGreaterThan(_testing.PUSH_DEBOUNCE_MS);
+      expect(targets).toEqual([[first, second].sort(), [second]]);
+      expect(attemptTimes[1] - attemptTimes[0]).toBeGreaterThanOrEqual(_testing.PUSH_DEBOUNCE_MS);
+      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints.size).toBe(0);
+    } finally {
+      Date.now = originalNow;
+      _testing.sessionPushSender = null;
+      removeSubscription(first);
+      removeSubscription(second);
+      removeSubscription(later);
+    }
   });
 
-  test("labels observed quiet and broker unavailability without claiming a stop", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+  test("stops retrying after three failed attempts", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const originalNow = Date.now;
+    let now = 2_000_000;
+    Date.now = () => now;
+    const endpoint = `https://fcm.googleapis.com/quiet-exhaustion-${now}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const targets: string[][] = [];
+    _testing.sessionPushSender = async (_payload, endpoints) => {
+      targets.push([...endpoints]);
+      return { sent: 0, failed: 1, pruned: 0, successfulEndpoints: [], failedEndpoints: [endpoint] };
+    };
+    try {
+      await checkSessionTransitions(session());
+      now += _testing.PUSH_DEBOUNCE_MS;
+      await checkSessionTransitions(session());
+      now += _testing.PUSH_DEBOUNCE_MS;
+      await checkSessionTransitions(session());
+      now += _testing.PUSH_DEBOUNCE_MS;
+      await checkSessionTransitions(session());
 
-    expect(_testing.sessionNotificationLabel("idle")).toBe("Quiet");
-    expect(_testing.sessionNotificationLabel("unknown")).toBe("Unavailable");
-    expect(_testing.sessionNotificationLabel("off")).toBe("Stopped");
+      expect(targets).toEqual([[endpoint], [endpoint], [endpoint]]);
+      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints.size).toBe(0);
+    } finally {
+      Date.now = originalNow;
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
   });
 
-  test("builds a stable-identity route for a session transition", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+  test("retires a failed endpoint that is unregistered before its retry", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const originalNow = Date.now;
+    let now = 3_000_000;
+    Date.now = () => now;
+    const successful = `https://fcm.googleapis.com/quiet-registered-${now}`;
+    const failed = `https://fcm.googleapis.com/quiet-removed-${now}`;
+    addSubscription({ endpoint: successful, keys: { p256dh: "key", auth: "auth" } });
+    addSubscription({ endpoint: failed, keys: { p256dh: "key", auth: "auth" } });
+    const targets: string[][] = [];
+    _testing.sessionPushSender = async (_payload, endpoints) => {
+      targets.push([...endpoints].sort());
+      return { sent: 1, failed: 1, pruned: 0, successfulEndpoints: [successful], failedEndpoints: [failed] };
+    };
+    try {
+      await checkSessionTransitions(session());
+      removeSubscription(failed);
+      now += _testing.PUSH_DEBOUNCE_MS;
+      await checkSessionTransitions(session());
 
-    expect(_testing.sessionTransitionPayload({
-      name: "agent one",
-      triage: "idle",
-      identity: { wolfpackSessionId: "broker/session id" },
-      runtimeState: { state: "done" },
-    })).toEqual({
+      expect(targets).toEqual([[failed, successful].sort()]);
+      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints.size).toBe(0);
+    } finally {
+      Date.now = originalNow;
+      _testing.sessionPushSender = null;
+      removeSubscription(successful);
+      removeSubscription(failed);
+    }
+  });
+
+  test("keeps in-flight completion from consuming a replacement episode", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/inflight-quiet-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    let releaseFirst: (() => void) | undefined;
+    const firstDelivery = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    _testing.sessionPushSender = async () => {
+      calls += 1;
+      if (calls === 1) await firstDelivery;
+      return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
+    };
+    try {
+      const inFlight = checkSessionTransitions(session("episode-one"));
+      await Promise.resolve();
+      await checkSessionTransitions(session("episode-two"));
+      releaseFirst?.();
+      await inFlight;
+
+      expect(_testing.quietAlertDeliveries.get(sessionId)?.episodeId).toBe("episode-two");
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
+
+  test("builds a stable-identity route for an observed quiet episode", async () => {
+    const { _testing } = await import("../../src/server/push.ts");
+    expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id")).toEqual({
       title: "Wolfpack: agent one",
-      body: "Done",
+      body: "Quiet",
       tag: "session-broker/session id",
       url: "/?sessionId=broker%2Fsession+id&session=agent+one&machine=local",
     });
   });
 
-  test("keys transition and debounce state by stable identity", async () => {
-    const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
-    const ep = `https://fcm.googleapis.com/stable-route-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-
-    _testing.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
-    _testing.prevTriageState.set("stable-id", "output");
-    await checkSessionTransitions([{
-      name: "renamed-agent",
-      triage: "idle",
-      identity: { wolfpackSessionId: "stable-id" },
-      runtimeState: { state: "needs-input" },
-    }]);
-
-    expect(_testing.prevTriageState.get("stable-id")).toBe("needs-input");
-    expect(_testing.prevTriageState.has("renamed-agent")).toBe(false);
-    expect(_testing.lastSessionPushTime.has("stable-id")).toBe(true);
-    removeSubscription(ep);
-  });
-
-  test("tracks canonical runtime state ahead of legacy triage", async () => {
-    const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
-
-    const ep = `https://fcm.googleapis.com/runtime-state-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-
-    _testing.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
-    _testing.prevTriageState.set("agent", "output");
-    await checkSessionTransitions([{ name: "agent", triage: "running", runtimeState: { state: "needs-input" } }]);
-
-    expect(_testing.prevTriageState.get("agent")).toBe("needs-input");
-    expect(_testing.lastSessionPushTime.has("agent")).toBe(true);
-
-    removeSubscription(ep);
-  });
-
-  test("prunes state for removed sessions", async () => {
-    const { checkSessionTransitions, addSubscription, removeSubscription, _testing } = await import("../../src/server/push.ts");
-
-    // Need at least 1 sub for transitions to run
-    const ep = `https://fcm.googleapis.com/prune-test-${Date.now()}`;
-    addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
-
-    // Seed state for a session that will disappear
-    _testing.prevTriageState.set("old-session", "idle");
-    _testing.lastSessionPushTime.set("old-session", Date.now());
-
-    // Call with only "new-session" — old-session should be pruned
-    await checkSessionTransitions([{ name: "new-session", triage: "running" }]);
-
-    expect(_testing.prevTriageState.has("old-session")).toBe(false);
-    expect(_testing.lastSessionPushTime.has("old-session")).toBe(false);
-    expect(_testing.prevTriageState.get("new-session")).toBe("running");
-
-    removeSubscription(ep);
+  test("prunes delivery and debounce state for removed sessions", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/prune-quiet-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    _testing.quietAlertDeliveries.set("removed", { episodeId: "old", attempts: 1, pendingEndpoints: new Set(), nextAttemptAtMs: 0 });
+    _testing.lastSessionPushTime.set("removed", Date.now());
+    try {
+      await checkSessionTransitions(session());
+      expect(_testing.quietAlertDeliveries.has("removed")).toBe(false);
+      expect(_testing.lastSessionPushTime.has("removed")).toBe(false);
+    } finally {
+      removeSubscription(endpoint);
+    }
   });
 });

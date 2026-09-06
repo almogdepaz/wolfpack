@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DEFAULT_QUIET_ALERT_POLICY } from "../../src/quiet-alert-policy.ts";
 
 process.env.WOLFPACK_TEST = "1";
 
@@ -121,6 +122,7 @@ describe("loadSettings — defaults", () => {
       expect(s.agentCmd).toBe("shell");
       expect(s.cmds.map(c => c.cmd)).toEqual(["shell", "claude", "pi", "codex"]);
       expect(s.cmds.every(c => c.enabled)).toBe(true);
+      expect(s.quietAlerts).toEqual(DEFAULT_QUIET_ALERT_POLICY);
     });
   });
 
@@ -136,6 +138,32 @@ describe("loadSettings — defaults", () => {
     } finally {
       process.env.WOLFPACK_SETTINGS_PATH = prev;
       try { unlinkSync(path); } catch { /* missing is fine */ }
+    }
+  });
+});
+
+describe("loadSettings — quiet alerts", () => {
+  test("preserves a strict persisted host-wide quiet-alert policy", () => {
+    withSettingsFile({
+      agentCmd: "shell",
+      cmds: [],
+      quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 45 },
+    }, () => {
+      expect(loadSettings().quietAlerts).toEqual({ mode: "quiet-after-activity", quietAfterSeconds: 45 });
+    });
+  });
+
+  test("falls back to defaults for malformed, fractional, or out-of-range quiet-alert settings", () => {
+    for (const quietAlerts of [
+      { mode: "quiet-after-activity", quietAfterSeconds: 4 },
+      { mode: "quiet-after-activity", quietAfterSeconds: 30.5 },
+      { mode: "disabled", quietAfterSeconds: 3_601 },
+      { mode: "surprise", quietAfterSeconds: 30 },
+      { mode: "disabled" },
+    ]) {
+      withSettingsFile({ agentCmd: "shell", cmds: [], quietAlerts }, () => {
+        expect(loadSettings().quietAlerts).toEqual(DEFAULT_QUIET_ALERT_POLICY);
+      });
     }
   });
 });

@@ -1,6 +1,12 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
 
+declare global {
+  interface Window {
+    __quietAlertHaptics?: unknown[];
+  }
+}
+
 let server: TestServer;
 
 const observedAt = new Date().toISOString();
@@ -122,6 +128,239 @@ async function gateFirstTerminalWebsocketOpen(page: Page) {
     attachCount: () => attachCount,
   };
 }
+
+test("preserves session baseline through no-fact activity and haptics each new local quiet episode", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("wp-effects", JSON.stringify({ notifications: true, haptics: true }));
+    const samples: unknown[] = [];
+    const registration = {
+      pushManager: {
+        subscribe: async () => ({ toJSON: () => ({ endpoint: "https://fcm.googleapis.com/test", keys: { p256dh: "key", auth: "auth" } }) }),
+      },
+    };
+    Object.defineProperty(window, "PushManager", { configurable: true, value: class PushManager {} });
+    Object.defineProperty(Notification, "permission", { configurable: true, get: () => "granted" });
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { register: async () => registration, ready: Promise.resolve(registration) },
+    });
+    Object.defineProperty(window, "__quietAlertHaptics", { configurable: true, value: samples });
+    Object.defineProperty(navigator, "vibrate", {
+      configurable: true,
+      value: (pattern: unknown) => {
+        samples.push(pattern);
+        return true;
+      },
+    });
+  });
+  await page.route("**/api/push/vapid-key", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ publicKey: "AQ" }),
+  }));
+  await page.route("**/api/push/subscribe", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  await page.unroute("**/api/sessions");
+  let sessionRequests = 0;
+  let releaseSecondResponse: (() => void) | undefined;
+  const secondResponseReleased = new Promise<void>((resolve) => { releaseSecondResponse = resolve; });
+  let secondRequestStarted: (() => void) | undefined;
+  const secondRequest = new Promise<void>((resolve) => { secondRequestStarted = resolve; });
+  let releaseThirdResponse: (() => void) | undefined;
+  const thirdResponseReleased = new Promise<void>((resolve) => { releaseThirdResponse = resolve; });
+  let thirdRequestStarted: (() => void) | undefined;
+  const thirdRequest = new Promise<void>((resolve) => { thirdRequestStarted = resolve; });
+  const session = (name: string, sessionId: string, episodeId?: string) => ({
+    name,
+    lastLine: "quiet terminal",
+    triage: "idle",
+    identity: { wolfpackSessionId: sessionId },
+    runtimeState: { state: "idle", unseen: false, transitionSequence: 1 },
+    ...(episodeId && {
+      quietAlert: {
+        kind: "quiet",
+        sessionId,
+        episodeId,
+        eligibleAtMs: Date.now() - 1,
+        observedAtMs: Date.now(),
+      },
+    }),
+  });
+  const sessionsFor = (phase: number) => phase === 1
+    ? [
+      session("new-episode-initial", "new-episode-id"),
+      session("historical-baseline", "historical-id", "historical-episode-one"),
+    ]
+    : phase === 2
+      ? [
+        session("new-episode-activity", "new-episode-id"),
+        session("historical-activity", "historical-id"),
+      ]
+      : [
+        session("new-episode-quiet", "new-episode-id", "new-episode-one"),
+        session("historical-quiet", "historical-id", "historical-episode-two"),
+      ];
+  await page.route("**/api/sessions", async (route) => {
+    sessionRequests += 1;
+    if (sessionRequests === 2) {
+      secondRequestStarted?.();
+      await secondResponseReleased;
+    }
+    if (sessionRequests === 3) {
+      thirdRequestStarted?.();
+      await thirdResponseReleased;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: sessionsFor(sessionRequests) }),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  await expect(page.getByRole("button", { name: "Open historical-baseline" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wp-effects") ?? "{}").notifications)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__quietAlertHaptics!)).toEqual([]);
+
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await secondRequest;
+  releaseSecondResponse?.();
+  await expect(page.getByRole("button", { name: "Open historical-activity" })).toBeVisible();
+
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await thirdRequest;
+  releaseThirdResponse?.();
+  await expect(page.getByRole("button", { name: "Open historical-quiet" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__quietAlertHaptics!)).toEqual([
+    [200, 100, 200],
+    [200, 100, 200],
+  ]);
+});
+
+test("haptics only fresh episodes and fails closed for stale or malformed facts from a ready verified peer", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("wp-effects", JSON.stringify({ notifications: true, haptics: true }));
+    const samples: unknown[] = [];
+    const registration = {
+      pushManager: {
+        subscribe: async () => ({ toJSON: () => ({ endpoint: "https://fcm.googleapis.com/test", keys: { p256dh: "key", auth: "auth" } }) }),
+      },
+    };
+    Object.defineProperty(window, "PushManager", { configurable: true, value: class PushManager {} });
+    Object.defineProperty(Notification, "permission", { configurable: true, get: () => "granted" });
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { register: async () => registration, ready: Promise.resolve(registration) },
+    });
+    Object.defineProperty(window, "__quietAlertHaptics", { configurable: true, value: samples });
+    Object.defineProperty(navigator, "vibrate", {
+      configurable: true,
+      value: (pattern: unknown) => {
+        samples.push(pattern);
+        return true;
+      },
+    });
+  });
+  await page.route("**/api/push/vapid-key", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ publicKey: "AQ" }),
+  }));
+  await page.route("**/api/push/subscribe", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  await page.route("**/api/tailnet/v1/candidates", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      candidates: [{ hostname: "activity-peer.example.ts.net", tailnetNodeId: "n-activity-peer", origin: PEER_ORIGIN, online: true }],
+    }),
+  }));
+  await page.route(`${PEER_ORIGIN}/api/machine`, (route) => route.fulfill({
+    contentType: "application/json",
+    headers: { "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify({
+      protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+      machine: { tailnetNodeId: "n-activity-peer", installationId: PEER_INSTALLATION_ID, displayName: "activity peer", origin: PEER_ORIGIN },
+      wolfpack: { version: "1.7.0" },
+      capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+    }),
+  }));
+  let remoteRequests = 0;
+  let releaseSecondResponse: (() => void) | undefined;
+  const secondResponseReleased = new Promise<void>((resolve) => { releaseSecondResponse = resolve; });
+  let secondRequestStarted: (() => void) | undefined;
+  const secondRequest = new Promise<void>((resolve) => { secondRequestStarted = resolve; });
+  let releaseThirdResponse: (() => void) | undefined;
+  const thirdResponseReleased = new Promise<void>((resolve) => { releaseThirdResponse = resolve; });
+  let thirdRequestStarted: (() => void) | undefined;
+  const thirdRequest = new Promise<void>((resolve) => { thirdRequestStarted = resolve; });
+  const remoteSessions = (request: number) => {
+    const stale = request >= 3;
+    const observedAtMs = stale ? Date.now() - 15_001 : Date.now();
+    const name = request === 1 ? "remote-stale" : request === 2 ? "remote-verified-new" : "remote-stale-after-refresh";
+    const episodeId = request === 1 ? "remote-episode-one" : request === 2 ? "remote-episode-two" : "remote-episode-three";
+    return [
+      {
+        name,
+        lastLine: "remote terminal",
+        triage: "idle",
+        identity: { wolfpackSessionId: "remote-stale-id" },
+        runtimeState: { state: "idle", unseen: false, transitionSequence: request },
+        quietAlert: {
+          kind: "quiet",
+          sessionId: "remote-stale-id",
+          episodeId,
+          eligibleAtMs: observedAtMs - 1,
+          observedAtMs,
+        },
+      },
+      {
+        name: "remote-malformed",
+        lastLine: "remote terminal",
+        triage: "idle",
+        identity: { wolfpackSessionId: "remote-malformed-id" },
+        runtimeState: { state: "idle", unseen: false, transitionSequence: request },
+        quietAlert: {
+          kind: "quiet",
+          sessionId: "remote-malformed-id",
+          episodeId: "remote-malformed-episode",
+          eligibleAtMs: 1,
+          observedAtMs: "not-a-timestamp",
+        },
+      },
+    ];
+  };
+  await page.route(`${PEER_ORIGIN}/api/sessions`, async (route) => {
+    remoteRequests += 1;
+    if (remoteRequests === 2) {
+      secondRequestStarted?.();
+      await secondResponseReleased;
+    }
+    if (remoteRequests === 3) {
+      thirdRequestStarted?.();
+      await thirdResponseReleased;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ sessions: remoteSessions(remoteRequests) }),
+    });
+  });
+
+  await page.goto(server.baseUrl);
+  await expect(page.getByRole("button", { name: "Open remote-stale" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wp-effects") ?? "{}").notifications)).toBe(true);
+  // Tailnet discovery has already started the follow-up fetch. Do not force a
+  // refresh here: that aborts this response and makes its result stale.
+  await secondRequest;
+  await page.evaluate(() => window.__quietAlertHaptics!.splice(0));
+  releaseSecondResponse?.();
+  await expect(page.getByRole("button", { name: "Open remote-verified-new" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__quietAlertHaptics!)).toEqual([[200, 100, 200]]);
+
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await thirdRequest;
+  releaseThirdResponse?.();
+  await expect(page.getByRole("button", { name: "Open remote-stale-after-refresh" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__quietAlertHaptics!)).toEqual([[200, 100, 200]]);
+});
 
 test("removes attention controls and unseen decoration", async ({ page }) => {
   await page.goto(server.baseUrl);

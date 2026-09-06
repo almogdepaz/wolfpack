@@ -1,7 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
+import { reduceQuietAlertPolicy } from "../quiet-alert-policy.js";
+import {
+  onQuietAlertPolicyInvalidation,
+  quietAlertPolicyEpoch,
+} from "../quiet-alert-policy-invalidation.js";
+import type { QuietAlertFact, QuietAlertPolicyState } from "../quiet-alert-policy.js";
 import type {
   SessionActivityHistory,
   SessionActivityObservation,
@@ -20,6 +27,7 @@ import {
   checkSessionTransitions,
   getSubscriptionCount,
 } from "./push.js";
+import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 
 const log = createLogger("session-observation");
@@ -38,6 +46,7 @@ type RenderedCapture =
 interface RenderedFingerprintFlight {
   readonly token: object;
   readonly outputSequence?: string;
+  readonly observedAtMs: number;
   readonly observedAt: string;
   readonly promise: Promise<RenderedCapture>;
   readonly activity: Promise<SessionActivityReduction>;
@@ -51,6 +60,7 @@ interface RenderedActivitySample {
 }
 
 const activityHistory = new Map<string, SessionActivityHistory>();
+const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
 const activityContinuityTokens = new Map<string, object>();
 const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
@@ -62,6 +72,11 @@ let dashboardObservationCache: {
   readonly expiresAt: number;
   readonly sessions: readonly ObservedSessionSummary[];
 } | null = null;
+
+onQuietAlertPolicyInvalidation(() => {
+  quietAlertHistory.clear();
+  dashboardObservationCache = null;
+});
 
 interface KnownSessionSummary {
   readonly name: string;
@@ -75,6 +90,7 @@ interface ObservedSessionSummary {
   readonly triage: TriageStatus;
   readonly runtimeState: AgentRuntimeState;
   readonly activity: SessionActivityObservation;
+  readonly quietAlert?: QuietAlertFact;
   readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
 }
@@ -123,38 +139,73 @@ function reduceSessionActivity(
   return reduction;
 }
 
+function reduceSessionQuietAlert(
+  sessionKey: string,
+  sessionId: string | undefined,
+  observedAtMs: number,
+  continuity: "fresh" | "lost",
+  renderedActivityAtMs?: number,
+  episodeId?: string,
+): QuietAlertFact | undefined {
+  if (!sessionId) {
+    quietAlertHistory.delete(sessionKey);
+    return undefined;
+  }
+  const reduction = reduceQuietAlertPolicy(quietAlertHistory.get(sessionKey), {
+    sessionId,
+    observedAtMs,
+    continuity,
+    renderedActivityAt: renderedActivityAtMs,
+    episodeId,
+    policy: loadSettings().quietAlerts,
+  });
+  if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
+  else quietAlertHistory.delete(sessionKey);
+  return reduction.fact;
+}
+
 function createRenderedFingerprintFlight(
   backend: SessionBackend,
   sessionKey: string,
+  sessionId: string | undefined,
   name: string,
   outputSequence: string | undefined,
   token: object,
 ): RenderedFingerprintFlight {
-  const observedAt = new Date().toISOString();
+  const observedAtMs = Date.now();
+  const policyEpoch = quietAlertPolicyEpoch();
+  const observedAt = new Date(observedAtMs).toISOString();
   const promise = backend.capturePane(name, { scrollbackLines: 0 })
     .then((pane) => ({ available: true as const, rendered: renderedActivityFingerprint(pane) }))
     .catch(() => ({ available: false as const }));
   let flight: RenderedFingerprintFlight;
   const activity = promise.then((capture) => {
-    if (activityContinuityTokens.get(sessionKey) !== token || !capture.available) {
+    const ownsContinuity = activityContinuityTokens.get(sessionKey) === token;
+    if (!ownsContinuity || !capture.available) {
       const currentFlight = renderedFingerprintFlights.get(sessionKey);
       if (!capture.available && currentFlight?.token === token && currentFlight.promise === promise) {
         renderedFingerprintFlights.delete(sessionKey);
       }
-      if (!capture.available && activityContinuityTokens.get(sessionKey) === token) {
+      if (!capture.available && ownsContinuity) {
         activityContinuityTokens.delete(sessionKey);
+        reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "lost");
       }
       return reduceActivityObservation(undefined, { alive: false, observedAt });
     }
-    return reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered: capture.rendered });
+    const reduction = reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered: capture.rendered });
+    if (policyEpoch === quietAlertPolicyEpoch() && reduction.activity.lastRenderedActivityAt === observedAt) {
+      reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, randomUUID());
+    }
+    return reduction;
   });
-  flight = { token, outputSequence, observedAt, promise, activity };
+  flight = { token, outputSequence, observedAtMs, observedAt, promise, activity };
   return flight;
 }
 
 async function renderedActivitySample(
   backend: SessionBackend,
   sessionKey: string,
+  sessionId: string | undefined,
   name: string,
   outputSequence: string | undefined,
 ): Promise<RenderedActivitySample> {
@@ -162,7 +213,7 @@ async function renderedActivitySample(
   let flight = outputSequence === undefined ? undefined : renderedFingerprintFlights.get(sessionKey);
   if (flight?.outputSequence !== outputSequence || flight?.token !== token) flight = undefined;
   if (flight === undefined) {
-    flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence, token);
+    flight = createRenderedFingerprintFlight(backend, sessionKey, sessionId, name, outputSequence, token);
     if (outputSequence !== undefined) renderedFingerprintFlights.set(sessionKey, flight);
   }
   const capture = await flight.promise;
@@ -197,6 +248,7 @@ async function listAvailableSessionFacts(backend: SessionBackend): Promise<Sessi
 
 function observeUnavailableSessions(): SessionObservation {
   activityHistory.clear();
+  quietAlertHistory.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
@@ -255,7 +307,8 @@ async function observeSessionFact(
   // Ghostty snapshot when it advances; stable sessions do no terminal work.
   // A shared per-sequence flight prevents duplicate snapshot requests.
   const outputSequence = brokerOutputSequence(fact.outputSequence);
-  const observedAt = new Date().toISOString();
+  const observedAtMs = Date.now();
+  const observedAt = new Date(observedAtMs).toISOString();
   const previousFingerprint = fingerprints.get(sessionKey);
   const shouldSampleRenderedState = brokerState === "alive" && (
     previousFingerprint === undefined
@@ -263,7 +316,7 @@ async function observeSessionFact(
     || previousFingerprint.outputSequence !== outputSequence
   );
   const sample = shouldSampleRenderedState
-    ? await renderedActivitySample(backend, sessionKey, name, outputSequence)
+    ? await renderedActivitySample(backend, sessionKey, identity?.wolfpackSessionId, name, outputSequence)
     : undefined;
   const currentRendered = sample === undefined ? previousFingerprint?.rendered : sample.rendered;
   const rawOutputChanged = shouldSampleRenderedState
@@ -291,6 +344,15 @@ async function observeSessionFact(
       observedAt,
       rendered: currentRendered,
     }).activity;
+  // Rendered activity is reduced once by its shared capture flight. Individual
+  // dashboard/observer consumers only advance that canonical episode or retire
+  // it for a current dead observation; a retired capture cannot clear newer
+  // quiet state after its token loses ownership.
+  const quietAlert = brokerState === "alive" && currentRendered !== undefined
+    ? reduceSessionQuietAlert(sessionKey, identity?.wolfpackSessionId, observedAtMs, "fresh")
+    : brokerState !== "alive"
+      ? reduceSessionQuietAlert(sessionKey, identity?.wolfpackSessionId, observedAtMs, "lost")
+      : undefined;
 
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
   const renderedPreview = lastTerminalPreviewLine(currentRendered);
@@ -315,6 +377,7 @@ async function observeSessionFact(
     triage,
     runtimeState,
     activity,
+    ...(quietAlert && { quietAlert }),
     ...(outputSequence !== undefined && { outputSequence }),
     ...(identity && { identity }),
   };
@@ -333,6 +396,9 @@ function pruneSessionObservationState(
   }
   for (const key of activityHistory.keys()) {
     if (!activeSessionKeys.has(key)) activityHistory.delete(key);
+  }
+  for (const key of quietAlertHistory.keys()) {
+    if (!activeSessionKeys.has(key)) quietAlertHistory.delete(key);
   }
   for (const key of activityContinuityTokens.keys()) {
     if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
@@ -437,6 +503,8 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   dashboardObservationCache = null;
   activityHistory.delete(sessionId);
   activityHistory.delete(sessionName);
+  quietAlertHistory.delete(sessionId);
+  quietAlertHistory.delete(sessionName);
   activityContinuityTokens.delete(sessionId);
   activityContinuityTokens.delete(sessionName);
   dashboardFingerprints.delete(sessionId);
@@ -454,6 +522,7 @@ export function resetNotificationObservation(): void {
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
   activityHistory.clear();
+  quietAlertHistory.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();

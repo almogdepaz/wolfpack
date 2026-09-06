@@ -97,6 +97,54 @@ test("notification setup exposes progress while the permission request is pendin
   await expect(page.locator("#notification-setting-status")).toHaveText("Enabling notifications…");
 });
 
+test("persists host-wide quiet-alert settings from the notification controls", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.getByRole("button", { name: "Settings" }).first().click();
+
+  const mode = page.locator("#setting-quiet-alert-mode");
+  const duration = page.locator("#setting-quiet-alert-duration");
+  const status = page.locator("#quiet-alert-setting-status");
+  await expect(mode).toHaveValue("quiet-after-activity");
+  await expect(duration).toHaveValue("30");
+
+  await duration.fill("45");
+  await duration.press("Tab");
+  await expect(status).toHaveText("Host-wide quiet alert settings saved.");
+  await expect.poll(async () => page.evaluate(async () => {
+    const response = await fetch("/api/settings");
+    return (await response.json()).settings.quietAlerts;
+  })).toEqual({ mode: "quiet-after-activity", quietAfterSeconds: 45 });
+
+  await mode.selectOption("disabled");
+  await expect(status).toHaveText("Host-wide quiet alert settings saved.");
+  await expect(duration).toBeDisabled();
+
+  await mode.selectOption("quiet-after-activity");
+  await expect(duration).toBeEnabled();
+  await duration.fill("30");
+  await duration.press("Tab");
+  await expect(status).toHaveText("Host-wide quiet alert settings saved.");
+});
+
+test("reports a quiet-alert settings save failure without leaving controls disabled", async ({ page }) => {
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto(server.baseUrl);
+  await page.getByRole("button", { name: "Settings" }).first().click();
+
+  const duration = page.locator("#setting-quiet-alert-duration");
+  await duration.fill("46");
+  await duration.press("Tab");
+
+  await expect(page.locator("#quiet-alert-setting-status")).toHaveText("Could not save host-wide quiet alert settings.");
+  await expect(duration).toBeEnabled();
+});
+
 test("focus refresh removes stale blocked guidance after permission changes", async ({ page }) => {
   await page.addInitScript(() => {
     let permission: NotificationPermission = "denied";

@@ -7,10 +7,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, openSyn
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
-import type { TriageStatus } from "../triage.js";
-import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
-import type { AgentStatusState } from "../agent-status-contract.js";
 import { buildSessionNotificationUrl } from "../session-notification-route.js";
+import { onQuietAlertPolicyInvalidation } from "../quiet-alert-policy-invalidation.js";
+import { isQuietAlertFact } from "../quiet-alert-policy.js";
+import type { QuietAlertFact } from "../quiet-alert-policy.js";
 import { readValidatedJsonFile } from "./persistence.js";
 
 const log = createLogger("push");
@@ -202,6 +202,10 @@ export function removeSubscription(endpoint: string): void {
 
 export function getSubscriptionCount(): number {
   return loadSubscriptions().length;
+}
+
+function registeredSubscriptionEndpoints(): ReadonlySet<string> {
+  return new Set(loadSubscriptions().map((subscription) => subscription.endpoint));
 }
 
 // ── VAPID JWT (RFC 8292) ──
@@ -447,14 +451,30 @@ export interface PushDeliveryResult {
   readonly pruned: number;
 }
 
-export async function sendPush(payload: PushPayload): Promise<PushDeliveryResult> {
+interface PushDeliveryOutcome extends PushDeliveryResult {
+  readonly successfulEndpoints: readonly string[];
+  readonly failedEndpoints: readonly string[];
+}
+
+/**
+ * Delivers to every current subscription or an explicit subset. The subset is
+ * intersected with the current persisted store, so retries never pick up a
+ * newly enrolled device. Endpoint details stay internal to notification
+ * delivery and are never returned from public routes.
+ */
+async function sendPushToSubscriptions(
+  payload: PushPayload,
+  targetEndpoints: ReadonlySet<string> | undefined,
+): Promise<PushDeliveryOutcome> {
   const subs = loadSubscriptions();
-  if (subs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
+  if (subs.length === 0) {
+    return { sent: 0, failed: 0, pruned: 0, successfulEndpoints: [], failedEndpoints: [] };
+  }
 
   const vapid = getVapidKeys();
   const payloadBuf = Buffer.from(JSON.stringify(payload));
 
-  // Filter out stored subscriptions with invalid endpoints (defense-in-depth for legacy data)
+  // Filter out stored subscriptions with invalid endpoints (defense-in-depth for legacy data).
   const validSubs = subs.filter(sub => {
     try {
       const url = new URL(sub.endpoint);
@@ -465,104 +485,104 @@ export async function sendPush(payload: PushPayload): Promise<PushDeliveryResult
     saveSubscriptions(validSubs);
     log.warn("pruned invalid subscriptions on send", { count: subs.length - validSubs.length });
   }
-  if (validSubs.length === 0) return { sent: 0, failed: 0, pruned: 0 };
+  const selectedSubs = targetEndpoints === undefined
+    ? validSubs
+    : validSubs.filter((subscription) => targetEndpoints.has(subscription.endpoint));
+  if (selectedSubs.length === 0) {
+    return { sent: 0, failed: 0, pruned: 0, successfulEndpoints: [], failedEndpoints: [] };
+  }
 
-  const results = await Promise.allSettled(validSubs.map(async (sub) => ({
+  const results = await Promise.allSettled(selectedSubs.map(async (sub) => ({
     endpoint: sub.endpoint,
     status: await sendSubscriptionWithRetry(sub, payloadBuf, vapid),
   })));
 
   let sent = 0;
   let failed = 0;
+  const successfulEndpoints: string[] = [];
+  const failedEndpoints: string[] = [];
   const toRemove: string[] = [];
 
-  for (const r of results) {
-    if (r.status === "rejected") {
-      if (r.reason instanceof PushDeliveryTimeoutError) {
-        log.warn("push delivery timed out", { endpoint: r.reason.endpoint.slice(0, 60) });
+  for (const result of results) {
+    if (result.status === "rejected") {
+      if (result.reason instanceof PushDeliveryTimeoutError) {
+        log.warn("push delivery timed out", { endpoint: result.reason.endpoint.slice(0, 60) });
       } else {
-        log.warn("push send error", { error: errMsg(r.reason) });
+        log.warn("push send error", { error: errMsg(result.reason) });
       }
       failed++;
-    } else if (r.value.status === 200 || r.value.status === 201) {
+      continue;
+    }
+    if (result.value.status === 200 || result.value.status === 201) {
       sent++;
-    } else if (r.value.status === 404 || r.value.status === 410) {
-      toRemove.push(r.value.endpoint);
+      successfulEndpoints.push(result.value.endpoint);
+    } else if (result.value.status === 404 || result.value.status === 410) {
+      toRemove.push(result.value.endpoint);
     } else {
-      log.warn("push delivery failed", { status: r.value.status, endpoint: r.value.endpoint.slice(0, 60) });
+      log.warn("push delivery failed", { status: result.value.status, endpoint: result.value.endpoint.slice(0, 60) });
       failed++;
+      failedEndpoints.push(result.value.endpoint);
     }
   }
 
-  // Prune dead subscriptions
+  // Rejected promises do not carry a safe endpoint in the settled result. Map
+  // their positions back to the selected subscription list without logging it.
+  for (const [index, result] of results.entries()) {
+    if (result.status === "rejected") {
+      const subscription = selectedSubs[index];
+      if (subscription) failedEndpoints.push(subscription.endpoint);
+    }
+  }
+
   if (toRemove.length > 0) {
-    const remaining = validSubs.filter((s) => !toRemove.includes(s.endpoint));
+    const remaining = validSubs.filter((subscription) => !toRemove.includes(subscription.endpoint));
     saveSubscriptions(remaining);
     if (remaining.length === 0) resetSessionTransitionTracking();
     log.info("pruned expired push subscriptions", { count: toRemove.length });
   }
 
-  return { sent, failed, pruned: toRemove.length };
+  return { sent, failed, pruned: toRemove.length, successfulEndpoints, failedEndpoints };
 }
 
-// ── Push state tracking (transition-based notifications) ──
+export async function sendPush(payload: PushPayload): Promise<PushDeliveryResult> {
+  const { sent, failed, pruned } = await sendPushToSubscriptions(payload, undefined);
+  return { sent, failed, pruned };
+}
 
-type SessionNotificationState = TriageStatus | AgentStatusState;
+// ── Push state tracking (quiet-alert delivery) ──
 
 interface SessionTransitionFact {
   readonly name: string;
-  readonly triage: TriageStatus;
   readonly identity?: { readonly wolfpackSessionId?: string };
-  readonly runtimeState?: { readonly state?: AgentStatusState };
-  readonly notificationEligible?: boolean;
+  readonly quietAlert?: QuietAlertFact;
 }
 
-const prevTriageState = new Map<string, SessionNotificationState>();
+interface QuietAlertDeliveryState {
+  readonly episodeId: string;
+  readonly attempts: number;
+  readonly pendingEndpoints: ReadonlySet<string>;
+  readonly nextAttemptAtMs: number;
+}
+
+const quietAlertDeliveries = new Map<string, QuietAlertDeliveryState>();
 const lastSessionPushTime = new Map<string, number>();
 const PUSH_DEBOUNCE_MS = 30_000;
+const QUIET_ALERT_MAX_DELIVERY_ATTEMPTS = 3;
 
 /** Rate-limit timestamps for POST /api/notify (10/min). */
 let notifyTimestamps: number[] = [];
-
-const SESSION_RUNNING_STATES = new Set<SessionNotificationState>([
-  "running",
-  AGENT_STATUS_STATE.WORKING,
-  AGENT_STATUS_STATE.AUDIT,
-  AGENT_STATUS_STATE.CLEANUP,
-  AGENT_STATUS_STATE.OUTPUT,
-]);
-
-function sessionNotificationState(session: SessionTransitionFact): SessionNotificationState {
-  return session.runtimeState?.state ?? session.triage;
-}
-
-function sessionNotificationLabel(state: SessionNotificationState): string {
-  if (state === AGENT_STATUS_STATE.NEEDS_INPUT) return "Needs input";
-  if (state === AGENT_STATUS_STATE.DONE) return "Done";
-  if (state === AGENT_STATUS_STATE.FAILED) return "Failed";
-  if (state === AGENT_STATUS_STATE.OFF || state === AGENT_STATUS_STATE.STOPPED) return "Stopped";
-  if (state === AGENT_STATUS_STATE.IDLE) return "Quiet";
-  if (state === AGENT_STATUS_STATE.UNKNOWN) return "Unavailable";
-  return "Quiet";
-}
 
 function sessionNotificationStableId(session: SessionTransitionFact): string | null {
   const id = session.identity?.wolfpackSessionId;
   return typeof id === "string" && id.length > 0 && id.length <= 256 ? id : null;
 }
 
-function sessionNotificationKey(session: SessionTransitionFact): string {
-  return sessionNotificationStableId(session) ?? session.name;
-}
-
-function sessionTransitionPayload(session: SessionTransitionFact): PushPayload {
-  const current = sessionNotificationState(session);
-  const sessionId = sessionNotificationStableId(session);
-  const canRoute = sessionId !== null && session.name.length > 0 && session.name.length <= 100;
+function quietAlertPayload(session: SessionTransitionFact, sessionId: string): PushPayload {
+  const canRoute = session.name.length > 0 && session.name.length <= 100;
   return {
     title: `Wolfpack: ${session.name}`,
-    body: sessionNotificationLabel(current),
-    tag: `session-${sessionId ?? session.name}`,
+    body: "Quiet",
+    tag: `session-${sessionId}`,
     ...(canRoute && {
       url: buildSessionNotificationUrl({
         sessionId,
@@ -573,53 +593,122 @@ function sessionTransitionPayload(session: SessionTransitionFact): PushPayload {
   };
 }
 
-type SessionPushSender = (payload: PushPayload) => Promise<PushDeliveryResult>;
+type SessionPushResult = PushDeliveryResult & Partial<Pick<PushDeliveryOutcome, "successfulEndpoints" | "failedEndpoints">>;
+type SessionPushSender = (payload: PushPayload, targetEndpoints: ReadonlySet<string>) => Promise<SessionPushResult>;
 let testSessionPushSender: SessionPushSender | null = null;
 
-async function sendSessionPush(payload: PushPayload): Promise<PushDeliveryResult> {
-  return (testSessionPushSender ?? sendPush)(payload);
+async function sendSessionPush(payload: PushPayload, targetEndpoints: ReadonlySet<string>): Promise<SessionPushResult> {
+  if (testSessionPushSender) return testSessionPushSender(payload, targetEndpoints);
+  return sendPushToSubscriptions(payload, targetEndpoints);
 }
 
-/** Check session runtime transitions and fire push notifications when an active session stops needing live watch. */
+function deliveryKey(sessionId: string): string {
+  return sessionId;
+}
+
+function validQuietAlert(session: SessionTransitionFact, sessionId: string): QuietAlertFact | null {
+  const alert = session.quietAlert;
+  if (!isQuietAlertFact(alert) || alert.sessionId !== sessionId) return null;
+  return alert;
+}
+
+async function deliverQuietAlert(
+  session: SessionTransitionFact,
+  sessionId: string,
+  alert: QuietAlertFact,
+  now: number,
+): Promise<void> {
+  const key = deliveryKey(sessionId);
+  const existing = quietAlertDeliveries.get(key);
+  if (existing?.episodeId === alert.episodeId && existing.pendingEndpoints.size === 0) return;
+  if (existing?.episodeId === alert.episodeId && now < existing.nextAttemptAtMs) return;
+
+  // Freeze the original recipients before debounce can defer the first attempt.
+  // A device that subscribes after the episode becomes eligible must not get a
+  // historical quiet alert when the delay expires.
+  const initialEndpoints = registeredSubscriptionEndpoints();
+  const matchingEpisode = existing?.episodeId === alert.episodeId;
+  const targetEndpoints = matchingEpisode
+    ? new Set([...existing.pendingEndpoints].filter((endpoint) => initialEndpoints.has(endpoint)))
+    : initialEndpoints;
+  const last = lastSessionPushTime.get(sessionId) ?? 0;
+  if (now - last < PUSH_DEBOUNCE_MS) {
+    if (!matchingEpisode) {
+      quietAlertDeliveries.set(key, {
+        episodeId: alert.episodeId,
+        attempts: 0,
+        pendingEndpoints: targetEndpoints,
+        nextAttemptAtMs: last + PUSH_DEBOUNCE_MS,
+      });
+    }
+    return;
+  }
+  if (targetEndpoints.size === 0) {
+    quietAlertDeliveries.set(key, {
+      episodeId: alert.episodeId,
+      attempts: existing?.episodeId === alert.episodeId ? existing.attempts : 1,
+      pendingEndpoints: new Set(),
+      nextAttemptAtMs: now,
+    });
+    return;
+  }
+
+  const attempt = (existing?.episodeId === alert.episodeId ? existing.attempts : 0) + 1;
+  const ownership = {
+    episodeId: alert.episodeId,
+    attempts: attempt,
+    pendingEndpoints: targetEndpoints,
+    nextAttemptAtMs: now,
+  } as const;
+  quietAlertDeliveries.set(key, ownership);
+  const delivery = await sendSessionPush(quietAlertPayload(session, sessionId), targetEndpoints);
+  // A new activity episode, continuity loss, disable, or removal can retire
+  // this entry while the transport is in flight. Never let stale completion
+  // consume or clear the newer episode.
+  if (quietAlertDeliveries.get(key) !== ownership) return;
+
+  if (delivery.sent > 0) lastSessionPushTime.set(sessionId, now);
+  const failedEndpoints = delivery.failedEndpoints === undefined
+    ? (delivery.failed > 0 ? targetEndpoints : new Set<string>())
+    : new Set(delivery.failedEndpoints.filter((endpoint) => registeredSubscriptionEndpoints().has(endpoint)));
+  quietAlertDeliveries.set(key, {
+    episodeId: alert.episodeId,
+    attempts: attempt,
+    pendingEndpoints: attempt < QUIET_ALERT_MAX_DELIVERY_ATTEMPTS ? failedEndpoints : new Set(),
+    nextAttemptAtMs: now + PUSH_DEBOUNCE_MS,
+  });
+}
+
+/** Deliver each observed quiet episode once per subscription, with bounded retries. */
 export async function checkSessionTransitions(sessions: readonly SessionTransitionFact[]): Promise<void> {
   if (getSubscriptionCount() === 0) return;
   const now = Date.now();
-  const activeKeys = new Set(sessions.map(sessionNotificationKey));
+  const activeSessionIds = new Set<string>();
   for (const session of sessions) {
-    const key = sessionNotificationKey(session);
-    if (session.notificationEligible === false) continue;
-    const prev = prevTriageState.get(key);
-    const current = sessionNotificationState(session);
-    const transitionedToQuiet = prev
-      && SESSION_RUNNING_STATES.has(prev)
-      && !SESSION_RUNNING_STATES.has(current);
-    if (!transitionedToQuiet) {
-      prevTriageState.set(key, current);
+    const sessionId = sessionNotificationStableId(session);
+    if (!sessionId) continue;
+    activeSessionIds.add(sessionId);
+    const alert = validQuietAlert(session, sessionId);
+    if (!alert) {
+      quietAlertDeliveries.delete(deliveryKey(sessionId));
       continue;
     }
-
-    const last = lastSessionPushTime.get(key) || 0;
-    if (now - last <= PUSH_DEBOUNCE_MS) {
-      prevTriageState.set(key, current);
-      continue;
-    }
-
-    const delivery = await sendSessionPush(sessionTransitionPayload(session));
-    if (delivery.sent > 0) {
-      prevTriageState.set(key, current);
-      lastSessionPushTime.set(key, now);
-    }
+    await deliverQuietAlert(session, sessionId, alert, now);
   }
-  // Prune state for removed sessions
-  for (const key of prevTriageState.keys()) {
-    if (!activeKeys.has(key)) { prevTriageState.delete(key); lastSessionPushTime.delete(key); }
+  for (const sessionId of quietAlertDeliveries.keys()) {
+    if (!activeSessionIds.has(sessionId)) quietAlertDeliveries.delete(sessionId);
+  }
+  for (const sessionId of lastSessionPushTime.keys()) {
+    if (!activeSessionIds.has(sessionId)) lastSessionPushTime.delete(sessionId);
   }
 }
 
 export function resetSessionTransitionTracking(): void {
-  prevTriageState.clear();
+  quietAlertDeliveries.clear();
   lastSessionPushTime.clear();
 }
+
+onQuietAlertPolicyInvalidation(resetSessionTransitionTracking);
 
 /** Check notify rate limit (10/min). Returns error string or null if ok. */
 export function checkNotifyRateLimit(): string | null {
@@ -647,14 +736,13 @@ export const _testing = {
   hkdfSha256,
   b64urlEncode,
   b64urlDecode,
-  prevTriageState,
+  quietAlertDeliveries,
   lastSessionPushTime,
   PUSH_DEBOUNCE_MS,
   PUSH_FETCH_TIMEOUT_MS,
   fetchWithDeadline,
   sendSubscriptionWithRetry,
-  sessionNotificationLabel,
-  sessionTransitionPayload,
+  quietAlertPayload,
   resetDebounce: _testingResetDebounce,
   get sessionPushSender() { return testSessionPushSender; },
   set sessionPushSender(sender: SessionPushSender | null) {

@@ -101,6 +101,15 @@ import { WOLFPACK_TERMINAL_THEME } from "../src/terminal-theme";
 import { nextMenuSelection } from "../src/menu-navigation";
 import { parseSessionNotificationRoute } from "../src/session-notification-route";
 import {
+  DEFAULT_QUIET_ALERT_POLICY,
+  isQuietAlertFact,
+  isQuietAlertPolicy,
+  QUIET_ALERT_MAX_SECONDS,
+  QUIET_ALERT_MIN_SECONDS,
+  QUIET_ALERT_MODE,
+} from "../src/quiet-alert-policy";
+import type { QuietAlertPolicy } from "../src/quiet-alert-policy";
+import {
   createTailnetDiscoveryAutoRefresh,
 } from "../src/tailnet-discovery-auto-refresh";
 import {
@@ -1084,6 +1093,7 @@ interface AgentCommandSetting {
 interface SettingsResponse {
   readonly settings?: {
     readonly cmds?: AgentCommandSetting[];
+    readonly quietAlerts?: unknown;
   };
   readonly effective?: {
     readonly cmds?: string[];
@@ -3778,27 +3788,57 @@ async function switchSession(val) {
 }
 
 
-// ── Notifications ──
-// Push notifications are handled server-side. Frontend only tracks state for haptic feedback.
+// ── Quiet-alert haptics ──
+// The server owns episode eligibility. The browser only deduplicates fresh,
+// verified event facts; its first observation is a baseline, never playback.
 
-const prevSessionStates = {};  // "machineUrl|sessionName" → triage
+const QUIET_ALERT_HAPTIC_MAX_AGE_MS = 15_000;
+const MAX_QUIET_ALERT_HAPTIC_SESSIONS = 256;
+// `undefined` records a currently observed session before it has any eligible
+// event. That session baseline is distinct from a historical event baseline:
+// the first event after normal activity must haptic, while an event first seen
+// on session discovery must not replay.
+const seenQuietAlertEpisodes = new Map<string, string | undefined>();
+
 function checkStateTransitions(groups) {
   if (!wpSettings.notifications) return;
-
-  for (const g of groups) {
-    if (!g.online) continue;
-    const mUrl = g.machine.url || "";
-
-    for (const s of g.sessions) {
-      const key = mUrl + "|" + s.name;
-      const prev = prevSessionStates[key];
-      const cur = s.triage || "idle";
-      prevSessionStates[key] = cur;
-      if (prev === "running" && cur === "idle") {
-        haptic([200, 100, 200]);
+  const activeKeys = new Set<string>();
+  const now = Date.now();
+  for (const group of groups) {
+    if (!group.online) continue;
+    const machineIdentity = group.machine.url || "";
+    if (machineIdentity && !resolveReadyMachineOrigin(machineIdentity)) continue;
+    for (const session of group.sessions) {
+      const sessionId = sessionIdentityId(session);
+      if (!sessionId) continue;
+      const key = `${machineIdentity}|${sessionId}`;
+      activeKeys.add(key);
+      const alert = session.quietAlert;
+      if (
+        !isQuietAlertFact(alert)
+        || alert.sessionId !== sessionId
+        || alert.observedAtMs > now
+        || now - alert.observedAtMs > QUIET_ALERT_HAPTIC_MAX_AGE_MS
+      ) {
+        if (!seenQuietAlertEpisodes.has(key) && seenQuietAlertEpisodes.size < MAX_QUIET_ALERT_HAPTIC_SESSIONS) {
+          seenQuietAlertEpisodes.set(key, undefined);
+        }
+        continue;
       }
+      if (!seenQuietAlertEpisodes.has(key)) {
+        if (seenQuietAlertEpisodes.size < MAX_QUIET_ALERT_HAPTIC_SESSIONS) {
+          seenQuietAlertEpisodes.set(key, alert.episodeId);
+        }
+        continue;
+      }
+      const previousEpisodeId = seenQuietAlertEpisodes.get(key);
+      if (previousEpisodeId === alert.episodeId) continue;
+      seenQuietAlertEpisodes.set(key, alert.episodeId);
+      haptic([200, 100, 200]);
     }
-
+  }
+  for (const key of seenQuietAlertEpisodes.keys()) {
+    if (!activeKeys.has(key)) seenQuietAlertEpisodes.delete(key);
   }
 }
 
@@ -4257,6 +4297,85 @@ function revealSettingsSection(sectionId: string, updateLocation = true): void {
 }
 
 let settingsFocusReturn: HTMLElement | null = null;
+let quietAlertSettingsBusy = false;
+
+function quietAlertControls(): {
+  readonly mode: HTMLSelectElement | null;
+  readonly duration: HTMLInputElement | null;
+  readonly status: HTMLElement | null;
+} {
+  return {
+    mode: document.getElementById("setting-quiet-alert-mode") as HTMLSelectElement | null,
+    duration: document.getElementById("setting-quiet-alert-duration") as HTMLInputElement | null,
+    status: document.getElementById("quiet-alert-setting-status"),
+  };
+}
+
+function renderQuietAlertSettings(policy: QuietAlertPolicy, status: string, state: "idle" | "error" | "success"): void {
+  const controls = quietAlertControls();
+  if (controls.mode) {
+    controls.mode.value = policy.mode;
+    controls.mode.disabled = quietAlertSettingsBusy;
+  }
+  if (controls.duration) {
+    controls.duration.value = String(policy.quietAfterSeconds);
+    controls.duration.disabled = quietAlertSettingsBusy || policy.mode === QUIET_ALERT_MODE.DISABLED;
+  }
+  if (controls.status) {
+    controls.status.textContent = status;
+    controls.status.dataset.state = state;
+  }
+}
+
+function quietAlertPolicyFromControls(): QuietAlertPolicy | null {
+  const { mode, duration } = quietAlertControls();
+  const quietAfterSeconds = Number(duration?.value);
+  const policy = { mode: mode?.value, quietAfterSeconds };
+  return isQuietAlertPolicy(policy) ? policy : null;
+}
+
+async function loadQuietAlertSettings(): Promise<void> {
+  try {
+    const response = await api<SettingsResponse>("/settings");
+    const policy = response.settings?.quietAlerts;
+    if (!isQuietAlertPolicy(policy)) throw new Error("invalid quiet alert settings response");
+    renderQuietAlertSettings(policy, "Host-wide automatic quiet alerts.", "idle");
+  } catch {
+    renderQuietAlertSettings(DEFAULT_QUIET_ALERT_POLICY, "Could not load host-wide quiet alert settings.", "error");
+  }
+}
+
+async function saveQuietAlertSettings(): Promise<void> {
+  if (quietAlertSettingsBusy) return;
+  const policy = quietAlertPolicyFromControls();
+  if (!policy) {
+    renderQuietAlertSettings(DEFAULT_QUIET_ALERT_POLICY, `Duration must be a whole number from ${QUIET_ALERT_MIN_SECONDS} to ${QUIET_ALERT_MAX_SECONDS} seconds.`, "error");
+    return;
+  }
+  let renderedPolicy = policy;
+  let message = "Saving host-wide quiet alert settings…";
+  let status: "idle" | "error" | "success" = "idle";
+  quietAlertSettingsBusy = true;
+  renderQuietAlertSettings(renderedPolicy, message, status);
+  try {
+    const response = await api<SettingsResponse>("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quietAlerts: policy }),
+    });
+    const saved = response.settings?.quietAlerts;
+    if (!isQuietAlertPolicy(saved)) throw new Error("invalid quiet alert settings response");
+    renderedPolicy = saved;
+    message = "Host-wide quiet alert settings saved.";
+    status = "success";
+  } catch {
+    message = "Could not save host-wide quiet alert settings.";
+    status = "error";
+  } finally {
+    quietAlertSettingsBusy = false;
+    renderQuietAlertSettings(renderedPolicy, message, status);
+  }
+}
 
 function returnFromSettingsWithFocus(): void {
   const focusReturn = settingsFocusReturn;
@@ -4281,6 +4400,7 @@ async function showSettings() {
     : document.getElementById("back-btn");
   requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
   renderMachinesList();
+  void loadQuietAlertSettings();
   toggleDebugPanel();
 }
 
@@ -5009,6 +5129,8 @@ function bindHtmlEventListeners(): void {
   on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });
   on("setting-haptics", "change", function(this: HTMLInputElement) { toggleSetting("haptics", this.checked); });
   on("setting-notifications", "change", function(this: HTMLInputElement) { toggleSetting("notifications", this.checked); });
+  on("setting-quiet-alert-mode", "change", saveQuietAlertSettings);
+  on("setting-quiet-alert-duration", "change", saveQuietAlertSettings);
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
