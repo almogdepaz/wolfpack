@@ -2827,6 +2827,11 @@ body.no-animations, body.no-animations * {
 .notification-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .notification-setting-help { color: var(--accent); font-size: 10px; line-height: 1.45; text-align: right; }
 .notification-setting-status { min-height: 16px; margin: -4px 0 6px 48px; font-size: 10px; line-height: 1.45; color: var(--text-dim); }
+.quiet-alert-setting { margin: 8px 0 6px 48px; }
+.quiet-alert-setting-help { margin: 0 0 6px; color: var(--text-dim); font-size: 10px; line-height: 1.45; }
+.quiet-alert-setting .settings-toggle { justify-content: space-between; gap: 12px; }
+.quiet-alert-setting select, .quiet-alert-setting input { max-width: 190px; min-height: 32px; padding: 4px 6px; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font: inherit; }
+.quiet-alert-setting input { width: 82px; }
 .notification-setting-status[data-state="pending"] { color: var(--warning); }
 .notification-setting-status[data-state="success"] { color: var(--accent); }
 .notification-setting-status[data-state="error"] { color: var(--danger-bright); }

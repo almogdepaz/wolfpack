@@ -26,12 +26,21 @@ export interface DelegationActivityObservation {
   readonly quietSince?: unknown;
 }
 
+export interface DelegationQuietAlert {
+  readonly kind?: unknown;
+  readonly sessionId?: unknown;
+  readonly episodeId?: unknown;
+  readonly eligibleAtMs?: unknown;
+  readonly observedAtMs?: unknown;
+}
+
 export interface DelegationSessionLike {
   readonly name: string;
   readonly lastLine?: string;
   readonly identity?: DelegationSessionIdentity;
   readonly runtimeState?: DelegationRuntimeState;
   readonly activity?: DelegationActivityObservation;
+  readonly quietAlert?: DelegationQuietAlert;
   readonly triage?: string;
 }
 
