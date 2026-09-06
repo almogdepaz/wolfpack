@@ -257,15 +257,15 @@ header h1 {
   display: flex;
   gap: 2px;
   width: fit-content;
-  padding: 3px;
+  padding: 1px;
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
   background: var(--bg-inset);
 }
 .session-card-view-button {
-  min-width: 58px;
+  min-width: 48px;
   min-height: 40px;
-  padding: 8px 12px;
+  padding: 8px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -2435,8 +2435,8 @@ body.no-animations, body.no-animations * {
     margin: 2px 0 8px;
   }
   .sidebar-sessions .session-card-view-button {
-    min-width: 52px;
-    padding-inline: 10px;
+    min-width: 46px;
+    padding-inline: 8px;
   }
   .sidebar-sessions .idle-session-empty {
     margin: 6px 0;
