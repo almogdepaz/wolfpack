@@ -334,7 +334,9 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell.locator("canvas")).toHaveCount(0);
-  await expect.poll(() => collapsedIdleTab.evaluate(button => getComputedStyle(button).boxShadow)).not.toBe("none");
+  // Restored-session affordances use a defined edge, not a neon glow.
+  await expect(collapsedIdleTab).toHaveCSS("border-top-style", "solid");
+  await expect(collapsedIdleTab).toHaveCSS("border-top-width", "1px");
   await collapsedIdleTab.click();
   await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeVisible();
@@ -1020,14 +1022,14 @@ test("stop confirmation is styled, cancellable, and restores focus", async ({ pa
       confirmTransform: confirmStyle.textTransform,
     };
   })).toEqual({
-    titleColor: "rgb(0, 255, 65)",
-    titleTransform: "uppercase",
-    cancelBackground: "rgb(26, 26, 26)",
-    cancelBorderRadius: "6px",
-    cancelTransform: "uppercase",
+    titleColor: "rgb(237, 243, 239)",
+    titleTransform: "none",
+    cancelBackground: "rgb(28, 33, 30)",
+    cancelBorderRadius: "9px",
+    cancelTransform: "none",
     confirmBackground: "rgba(204, 51, 51, 0.12)",
-    confirmBorderRadius: "6px",
-    confirmTransform: "uppercase",
+    confirmBorderRadius: "9px",
+    confirmTransform: "none",
   });
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
