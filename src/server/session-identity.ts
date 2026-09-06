@@ -263,6 +263,14 @@ export class SessionIdentityStore {
     }
   }
 
+  deleteById(sessionId: string): void {
+    const file = this.read();
+    const next = file.sessions.filter((s) => s.wolfpackSessionId !== sessionId);
+    if (next.length !== file.sessions.length) {
+      this.write({ schemaVersion: SESSION_IDENTITY_SCHEMA_VERSION, sessions: next });
+    }
+  }
+
   deleteAll(): void {
     this.memory = emptyStore();
     if (this.mode === "private") rmSync(this.path, { force: true });

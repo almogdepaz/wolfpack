@@ -1,12 +1,15 @@
 import { access, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { isCreatableHarness } from "../agent-kind.js";
+import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
 import type { CreatableHarness } from "../agent-kind.js";
 import {
   isOpenableHarness,
   isSessionOpenErrorCode,
   SESSION_OPEN_ERROR,
   SESSION_OPEN_MAX_MODEL_LENGTH,
+  SESSION_TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
+  SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
+  SESSION_TASK_WORKER_RESPONSE_GRACE_MS,
 } from "../session-open-contract.js";
 import type {
   OpenableHarness,
@@ -60,7 +63,7 @@ const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
   return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
-       wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+       wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session create ...
 
@@ -71,7 +74,7 @@ The server owns validation, naming, identity, and launch.`;
 
 export function sessionOpenUsage(): string {
   return `Usage: wolfpack session open <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-       wolfpack session open --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+       wolfpack session open --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 
@@ -85,7 +88,7 @@ Global selector: wolfpack --machine <short-name-or-fqdn> agent spawn ...
 
 Commands:
   wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-  wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
 
 Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
@@ -118,6 +121,8 @@ export type ParsedSessionCommand =
     readonly prompt: string | undefined;
     readonly promptFile?: string;
     readonly plan?: string;
+    readonly taskWorker?: true;
+    readonly readinessTimeoutMs?: number;
     readonly output: OutputMode;
   }
   | {
@@ -130,6 +135,8 @@ export type ParsedSessionCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly notifyParent?: true;
+    readonly taskWorker?: true;
+    readonly readinessTimeoutMs?: number;
     readonly output: OutputMode;
   }
   | { readonly ok: true; readonly action: "status"; readonly session: string; readonly output: OutputMode }
@@ -151,6 +158,8 @@ export type ParsedAgentCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly notifyParent?: true;
+    readonly taskWorker?: true;
+    readonly readinessTimeoutMs?: number;
     readonly output: OutputMode;
   }
   | {
@@ -206,10 +215,15 @@ async function call(
   path: string,
   init: RequestInit = {},
   target?: VerifiedMachineTarget,
+  timeoutMs?: number,
 ): Promise<unknown> {
   let resp: Response;
   try {
-    resp = await callApi(path, init, target);
+    resp = await callApi(
+      path,
+      timeoutMs === undefined ? init : { ...init, signal: AbortSignal.timeout(timeoutMs) },
+      target,
+    );
   } catch (e: unknown) {
     throw { status: 0, body: e instanceof Error ? e.message : String(e) } satisfies ApiError;
   }
@@ -249,6 +263,8 @@ const LAUNCH_KNOWN_OPTIONS = new Set([
   "--harness",
   "--message",
   "--project-dir",
+  "--task-worker",
+  "--readiness-timeout-ms",
 ]);
 
 function consumeLaunchValue(args: string[], flag: string): string | null {
@@ -306,6 +322,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
   const modelValue = action === "open" ? consumeLaunchValue(args, "--model") : null;
   const notifyParent = consumeFlag(args, "--notify-parent");
+  const taskWorker = consumeFlag(args, "--task-worker");
+  const readinessTimeoutValue = consumeLaunchValue(args, "--readiness-timeout-ms");
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
   if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
@@ -339,7 +357,21 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     || harness !== undefined;
   const validNotify = action !== "create" || !notifyParent;
   const selector = parseExistingProjectSelector(project, projectDir);
-  if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify) {
+  const readinessTimeoutMs = readinessTimeoutValue === null ? undefined : Number(readinessTimeoutValue);
+  const validTaskWorker = !taskWorker || (
+    selector?.kind === "projectDir"
+    && promptSources.length === 0
+    && !notifyParent
+    && (action !== "create" || harnessValue === null || harness === AGENT_KIND.PI.id)
+  );
+  const validReadinessTimeout = readinessTimeoutValue === null || (
+    taskWorker
+    && readinessTimeoutMs !== undefined
+    && Number.isInteger(readinessTimeoutMs)
+    && readinessTimeoutMs >= 1
+    && readinessTimeoutMs <= SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS
+  );
+  if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify || !validTaskWorker || !validReadinessTimeout) {
     return {
       ok: false,
       message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -354,6 +386,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
       prompt,
       ...(promptFile !== undefined && { promptFile }),
       ...(plan !== undefined && { plan }),
+      ...(taskWorker && { taskWorker: true }),
+      ...(readinessTimeoutMs !== undefined && { readinessTimeoutMs }),
       output,
     };
   }
@@ -367,6 +401,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     ...(promptFile !== undefined && { promptFile }),
     ...(plan !== undefined && { plan }),
     ...(notifyParent && { notifyParent: true }),
+    ...(taskWorker && { taskWorker: true }),
+    ...(readinessTimeoutMs !== undefined && { readinessTimeoutMs }),
     output,
   };
 }
@@ -461,7 +497,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]";
+  const usage = "Usage: wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
   if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
@@ -474,6 +510,8 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
     ...(parsed.plan !== undefined && { plan: parsed.plan }),
     ...(parsed.notifyParent && { notifyParent: true }),
+    ...(parsed.taskWorker && { taskWorker: true }),
+    ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
     output: parsed.output,
   };
 }
@@ -548,6 +586,7 @@ interface SessionLaunchResponse {
   readonly sessionId: string;
   readonly project: string;
   readonly harness: string;
+  readonly taskEndpoint?: { readonly relay: string; readonly id: string };
 }
 
 interface SessionPromptResponse extends SessionPromptWaitResult {
@@ -583,13 +622,56 @@ interface SessionStatusResponse {
   };
 }
 
+interface TaskWorkerRecovery {
+  readonly createdSession: {
+    readonly session: string;
+    readonly sessionId: string;
+  };
+  readonly cleanup: "completed" | "unconfirmed";
+}
+
+function parseTaskWorkerRecovery(
+  body: string,
+  code: string,
+): TaskWorkerRecovery | undefined {
+  if (code !== SESSION_CREATE_ERROR.TASK_WORKER_NOT_READY && code !== SESSION_OPEN_ERROR.TASK_WORKER_NOT_READY) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const envelope = parsed as Record<string, unknown>;
+    const createdSession = envelope.createdSession;
+    if (!createdSession || typeof createdSession !== "object" || Array.isArray(createdSession)) return undefined;
+    const identity = createdSession as Record<string, unknown>;
+    if (
+      !isBoundedSessionStatusIdentity(identity.session)
+      || !isBoundedSessionStatusIdentity(identity.sessionId)
+      || (envelope.cleanup !== "completed" && envelope.cleanup !== "unconfirmed")
+    ) {
+      return undefined;
+    }
+    return {
+      createdSession: { session: identity.session, sessionId: identity.sessionId },
+      cleanup: envelope.cleanup,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function writeOpenError(
   output: OutputMode,
   code: string,
   message: string,
   exitCode: number,
+  recovery: TaskWorkerRecovery | undefined = undefined,
 ): number {
-  if (output === "json") jsonOut({ ok: false, error: { code, message } });
+  if (output === "json") jsonOut({
+    ok: false,
+    error: { code, message },
+    ...(recovery && { createdSession: recovery.createdSession, cleanup: recovery.cleanup }),
+  });
   else printError(red(message));
   return exitCode;
 }
@@ -632,6 +714,14 @@ const OPEN_API_ERRORS: Readonly<Record<SessionOpenErrorCode, CliErrorDescriptor>
     message: "backend unavailable",
     exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
   },
+  [SESSION_OPEN_ERROR.TASK_WORKER_PREFLIGHT_FAILED]: {
+    message: "task worker preflight failed",
+    exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
+  },
+  [SESSION_OPEN_ERROR.TASK_WORKER_NOT_READY]: {
+    message: "task worker not ready",
+    exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
+  },
 };
 
 export function sessionOpenCliError(code: SessionOpenErrorCode): CliErrorDescriptor {
@@ -659,6 +749,14 @@ const CREATE_API_ERRORS: Readonly<Record<SessionCreateErrorCode, CliErrorDescrip
     message: "backend unavailable",
     exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
   },
+  [SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED]: {
+    message: "task worker preflight failed",
+    exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
+  },
+  [SESSION_CREATE_ERROR.TASK_WORKER_NOT_READY]: {
+    message: "task worker not ready",
+    exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
+  },
 };
 
 function mapCreateApiError(output: OutputMode, error: unknown): number {
@@ -668,7 +766,13 @@ function mapCreateApiError(output: OutputMode, error: unknown): number {
   }
   if (apiError.code && isSessionCreateErrorCode(apiError.code)) {
     const known = CREATE_API_ERRORS[apiError.code];
-    return writeOpenError(output, apiError.code, known.message, known.exitCode);
+    return writeOpenError(
+      output,
+      apiError.code,
+      known.message,
+      known.exitCode,
+      parseTaskWorkerRecovery(apiError.body ?? "", apiError.code),
+    );
   }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }
@@ -680,7 +784,13 @@ function mapOpenApiError(output: OutputMode, error: unknown): number {
   }
   if (apiError.code && isSessionOpenErrorCode(apiError.code)) {
     const known = sessionOpenCliError(apiError.code);
-    return writeOpenError(output, apiError.code, known.message, known.exitCode);
+    return writeOpenError(
+      output,
+      apiError.code,
+      known.message,
+      known.exitCode,
+      parseTaskWorkerRecovery(apiError.body ?? "", apiError.code),
+    );
   }
   if (apiError.status === 404) {
     return writeOpenError(
@@ -713,6 +823,15 @@ interface SessionOpenLaunchArgs extends LaunchPromptSource {
   readonly selector: ExistingProjectSelector;
   readonly sessionName?: string;
   readonly model?: string;
+  readonly taskWorker?: true;
+  readonly readinessTimeoutMs?: number;
+}
+
+function launchRequestTimeoutMs(taskWorker: boolean, readinessTimeoutMs: number | undefined): number | undefined {
+  return taskWorker
+    ? (readinessTimeoutMs ?? SESSION_TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS)
+      + SESSION_TASK_WORKER_RESPONSE_GRACE_MS
+    : undefined;
 }
 
 function projectSelectorRequest(selector: ExistingProjectSelector):
@@ -791,9 +910,11 @@ async function runSessionOpen(
         parentSession: context.parentSession,
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(parsed.model !== undefined && { model: parsed.model }),
+        ...(parsed.taskWorker && { taskWorker: true }),
+        ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
-    }, target) as SessionLaunchResponse;
+    }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response, target);
     else print(response.session);
     return SESSION_EXIT.OK;
@@ -815,9 +936,11 @@ async function runSessionCreate(
       body: JSON.stringify({
         ...projectSelectorRequest(parsed.selector),
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
+        ...(parsed.taskWorker && { taskWorker: true }),
+        ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
-    }, target) as SessionLaunchResponse;
+    }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response, target);
     else print(response.session);
     return SESSION_EXIT.OK;

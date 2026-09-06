@@ -67,7 +67,7 @@ console.error = (...args: unknown[]) => {
   origError(...args);
 };
 
-server.listen(0, "127.0.0.1", () => {
+server.listen(Number(process.env.WOLFPACK_PORT) || 0, "127.0.0.1", () => {
   const port = (server.address() as AddressInfo).port;
   console.log(`READY:${port}`);
 });

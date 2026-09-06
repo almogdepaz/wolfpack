@@ -342,6 +342,10 @@ export class BackendRouter implements SessionBackend {
     await this.requireBroker().killSession(name);
   }
 
+  async killSessionById(sessionId: string): Promise<void> {
+    await this.requireBroker().killSessionById(sessionId);
+  }
+
   async hasSession(name: string): Promise<boolean> {
     return this.requireBroker().hasSession(name);
   }

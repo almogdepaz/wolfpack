@@ -1322,9 +1322,6 @@
           "project": {
             "$ref": "#/$defs/ProjectName"
           },
-          "projectDir": {
-            "$ref": "#/$defs/ProjectDirectory"
-          },
           "harness": {
             "$ref": "#/$defs/CreatableHarness"
           },
@@ -1332,30 +1329,88 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 32768
+          },
+          "projectDir": {
+            "$ref": "#/$defs/ProjectDirectory"
+          },
+          "taskWorker": {
+            "type": "boolean",
+            "description": "Opt into Pi Tasks endpoint readiness before success is returned"
+          },
+          "readinessTimeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60000
           }
         },
-        "required": [],
         "additionalProperties": false,
-        "allOf": [
+        "oneOf": [
           {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {},
-                "required": [
-                  "project"
-                ],
-                "additionalProperties": true
+            "type": "object",
+            "properties": {
+              "project": {
+                "$ref": "#/$defs/ProjectName"
               },
+              "projectDir": {
+                "$ref": "#/$defs/ProjectDirectory"
+              },
+              "harness": {
+                "$ref": "#/$defs/CreatableHarness"
+              },
+              "initialPrompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32768
+              }
+            },
+            "required": [],
+            "additionalProperties": false,
+            "allOf": [
               {
-                "type": "object",
-                "properties": {},
-                "required": [
-                  "projectDir"
-                ],
-                "additionalProperties": true
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [
+                      "project"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [
+                      "projectDir"
+                    ],
+                    "additionalProperties": true
+                  }
+                ]
               }
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "projectDir": {
+                "$ref": "#/$defs/ProjectDirectory"
+              },
+              "harness": {
+                "const": "pi"
+              },
+              "taskWorker": {
+                "const": true
+              },
+              "readinessTimeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "projectDir",
+              "taskWorker"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -1379,6 +1434,9 @@
           },
           "harness": {
             "type": "string"
+          },
+          "taskEndpoint": {
+            "$ref": "#/$defs/RelayEndpoint"
           }
         },
         "required": [
@@ -1394,7 +1452,7 @@
         "400 ErrorEnvelope",
         "404 ErrorEnvelope",
         "409 ErrorEnvelope",
-        "503 ErrorEnvelope"
+        "503 ErrorEnvelope|TaskWorkerLaunchErrorEnvelope"
       ]
     },
     "openSession": {
@@ -1429,32 +1487,106 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 32768
+          },
+          "taskWorker": {
+            "type": "boolean",
+            "description": "Opt into Pi Tasks endpoint readiness before success is returned"
+          },
+          "readinessTimeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60000
           }
         },
-        "required": [
-          "parentSession"
-        ],
         "additionalProperties": false,
-        "allOf": [
+        "oneOf": [
           {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {},
-                "required": [
-                  "project"
-                ],
-                "additionalProperties": true
+            "type": "object",
+            "properties": {
+              "project": {
+                "$ref": "#/$defs/ProjectName"
               },
+              "projectDir": {
+                "$ref": "#/$defs/ProjectDirectory"
+              },
+              "parentSession": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "sessionName": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Opaque pi model pattern or ID passed to the child harness"
+              },
+              "initialPrompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32768
+              }
+            },
+            "required": [
+              "parentSession"
+            ],
+            "additionalProperties": false,
+            "allOf": [
               {
-                "type": "object",
-                "properties": {},
-                "required": [
-                  "projectDir"
-                ],
-                "additionalProperties": true
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [
+                      "project"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {},
+                    "required": [
+                      "projectDir"
+                    ],
+                    "additionalProperties": true
+                  }
+                ]
               }
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "parentSession": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "projectDir": {
+                "$ref": "#/$defs/ProjectDirectory"
+              },
+              "sessionName": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Opaque pi model pattern or ID passed to the child harness"
+              },
+              "taskWorker": {
+                "const": true
+              },
+              "readinessTimeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "parentSession",
+              "projectDir",
+              "taskWorker"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -1478,6 +1610,9 @@
           },
           "harness": {
             "$ref": "#/$defs/OpenableHarness"
+          },
+          "taskEndpoint": {
+            "$ref": "#/$defs/RelayEndpoint"
           }
         },
         "required": [
@@ -1493,7 +1628,8 @@
         "400 INVALID_REQUEST|UNSUPPORTED_HARNESS",
         "404 PARENT_SESSION_NOT_FOUND|PROJECT_NOT_FOUND",
         "409 NAME_COLLISION|PARENT_SESSION_CHANGED",
-        "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE"
+        "503 BACKEND_UNAVAILABLE|PARENT_IDENTITY_UNAVAILABLE|TASK_WORKER_NOT_READY|TASK_WORKER_PREFLIGHT_FAILED",
+        "503 TaskWorkerLaunchErrorEnvelope"
       ]
     },
     "listProviderReadiness": {
@@ -2703,6 +2839,69 @@
         "error"
       ],
       "additionalProperties": true
+    },
+    "TaskWorkerCreatedSession": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session",
+        "sessionId"
+      ],
+      "additionalProperties": false
+    },
+    "TaskWorkerLaunchErrorEnvelope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "code": {
+              "const": "TASK_WORKER_PREFLIGHT_FAILED"
+            }
+          },
+          "required": [
+            "error",
+            "code"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "code": {
+              "const": "TASK_WORKER_NOT_READY"
+            },
+            "createdSession": {
+              "$ref": "#/$defs/TaskWorkerCreatedSession"
+            },
+            "cleanup": {
+              "enum": [
+                "completed",
+                "unconfirmed"
+              ]
+            }
+          },
+          "required": [
+            "error",
+            "code",
+            "createdSession",
+            "cleanup"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "DirectoryBrowseErrorEnvelope": {
       "type": "object",

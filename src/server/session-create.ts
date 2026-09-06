@@ -2,6 +2,12 @@ import { MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validatio
 import { DuplicateSessionError } from "./backend.js";
 import type { SessionLaunchOptions } from "./backend.js";
 import { inferAgentKind } from "./session-identity.js";
+import {
+  TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
+  waitForTaskWorkerReadiness,
+} from "./task-worker-readiness.js";
+import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
+import type { RelayEndpoint } from "../task-relay/domain.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 
 const MAX_CREATE_ATTEMPTS = 4;
@@ -15,6 +21,8 @@ export interface SessionCreateBackend {
     loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity>;
+  inspectSession?(selector: string): Promise<import("../session-status-contract.js").SessionInspectionResult>;
+  killSessionById?(sessionId: string): Promise<void>;
 }
 
 export interface TopLevelSessionSuccess {
@@ -23,6 +31,7 @@ export interface TopLevelSessionSuccess {
   readonly sessionId: string;
   readonly project: string;
   readonly harness: string;
+  readonly taskEndpoint?: RelayEndpoint;
 }
 
 interface CreateTopLevelSessionInput {
@@ -31,6 +40,9 @@ interface CreateTopLevelSessionInput {
   readonly projectDir: string;
   readonly command?: string;
   readonly initialPrompt?: string;
+  readonly taskWorker?: TaskWorkerLaunch;
+  readonly readinessTimeoutMs?: number;
+  readonly endpointForSession?: (sessionId: string) => Promise<RelayEndpoint | undefined>;
   readonly loadSettings: () => { agentCmd: string };
 }
 
@@ -65,14 +77,26 @@ export async function createTopLevelSession(
         {
           agentKind: harness,
           initialPrompt: input.initialPrompt,
+          ...(input.taskWorker !== undefined && { taskWorker: input.taskWorker }),
         },
       );
+      const taskEndpoint = input.taskWorker === undefined
+        ? undefined
+        : await waitForTaskWorkerReadiness({
+          backend: input.backend,
+          endpointForSession: input.endpointForSession ?? (async () => undefined),
+          session,
+          sessionId: identity.wolfpackSessionId,
+          projectDir: input.projectDir,
+          timeoutMs: input.readinessTimeoutMs ?? TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
+        });
       return {
         ok: true,
         session,
         sessionId: identity.wolfpackSessionId,
         project: input.project,
         harness,
+        ...(taskEndpoint && { taskEndpoint }),
       };
     } catch (error: unknown) {
       if (!(error instanceof DuplicateSessionError)) throw error;

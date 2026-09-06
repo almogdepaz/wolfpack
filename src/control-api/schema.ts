@@ -1,10 +1,12 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
   OPENABLE_HARNESSES,
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
   SESSION_OPEN_MAX_MODEL_LENGTH,
+  SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
 } from "../session-open-contract.ts";
 import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import {
@@ -168,6 +170,87 @@ function existingProjectSelectorSchema(
   };
 }
 
+function sessionCreateRequestSchema(): JsonSchema {
+  const ordinaryProperties = {
+    harness: ref("CreatableHarness"),
+    initialPrompt: {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_INITIAL_PROMPT_LENGTH,
+    },
+  };
+  const taskWorkerProperties = {
+    projectDir: ref("ProjectDirectory"),
+    harness: { const: "pi" },
+    taskWorker: { const: true },
+    readinessTimeoutMs: {
+      type: "integer",
+      minimum: 1,
+      maximum: SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
+    },
+  };
+  return {
+    type: "object",
+    properties: {
+      project: ref("ProjectName"),
+      ...ordinaryProperties,
+      projectDir: ref("ProjectDirectory"),
+      taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
+      readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
+    },
+    additionalProperties: false,
+    oneOf: [
+      existingProjectSelectorSchema(ordinaryProperties),
+      object(taskWorkerProperties, ["projectDir", "taskWorker"]),
+    ],
+  };
+}
+
+function sessionOpenRequestSchema(): JsonSchema {
+  const ordinaryProperties = {
+    parentSession: ref("SessionName"),
+    sessionName: ref("SessionName"),
+    model: {
+      type: "string",
+      minLength: 1,
+      maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
+      description: "Opaque pi model pattern or ID passed to the child harness",
+    },
+    initialPrompt: {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_INITIAL_PROMPT_LENGTH,
+    },
+  };
+  const taskWorkerProperties = {
+    parentSession: ref("SessionName"),
+    projectDir: ref("ProjectDirectory"),
+    sessionName: ref("SessionName"),
+    model: ordinaryProperties.model,
+    taskWorker: { const: true },
+    readinessTimeoutMs: {
+      type: "integer",
+      minimum: 1,
+      maximum: SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
+    },
+  };
+  return {
+    type: "object",
+    properties: {
+      project: ref("ProjectName"),
+      projectDir: ref("ProjectDirectory"),
+      ...ordinaryProperties,
+      taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
+      readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
+    },
+    additionalProperties: false,
+    oneOf: [
+      existingProjectSelectorSchema(ordinaryProperties, ["parentSession"]),
+      object(taskWorkerProperties, ["parentSession", "projectDir", "taskWorker"]),
+    ],
+  };
+}
+
 function nextSessionNameSelectorSchema(): JsonSchema {
   return {
     ...object({
@@ -280,6 +363,24 @@ export const controlApiSource: ControlApiSource = {
   ],
   defs: {
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    TaskWorkerCreatedSession: object({
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+    }, ["session", "sessionId"]),
+    TaskWorkerLaunchErrorEnvelope: {
+      oneOf: [
+        object({
+          error: string(),
+          code: { const: SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED },
+        }, ["error", "code"]),
+        object({
+          error: string(),
+          code: { const: SESSION_CREATE_ERROR.TASK_WORKER_NOT_READY },
+          createdSession: ref("TaskWorkerCreatedSession"),
+          cleanup: { enum: ["completed", "unconfirmed"] },
+        }, ["error", "code", "createdSession", "cleanup"]),
+      ],
+    },
     DirectoryBrowseErrorEnvelope: object({
       error: {
         enum: [
@@ -1005,50 +1106,31 @@ export const controlApiSource: ControlApiSource = {
       operationId: "createTopLevelSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: existingProjectSelectorSchema({
-        harness: ref("CreatableHarness"),
-        initialPrompt: {
-          type: "string",
-          minLength: 1,
-          maxLength: MAX_INITIAL_PROMPT_LENGTH,
-        },
-      }),
+      request: sessionCreateRequestSchema(),
       response: object({
         ok: { const: true },
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
         project: ref("ProjectLabel"),
         harness: string(),
+        taskEndpoint: ref("RelayEndpoint"),
       }, ["ok", "session", "sessionId", "project", "harness"]),
-      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope|TaskWorkerLaunchErrorEnvelope"],
     },
     "POST /api/session-open": {
       operationId: "openSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: existingProjectSelectorSchema({
-        parentSession: ref("SessionName"),
-        sessionName: ref("SessionName"),
-        model: {
-          type: "string",
-          minLength: 1,
-          maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
-          description: "Opaque pi model pattern or ID passed to the child harness",
-        },
-        initialPrompt: {
-          type: "string",
-          minLength: 1,
-          maxLength: MAX_INITIAL_PROMPT_LENGTH,
-        },
-      }, ["parentSession"]),
+      request: sessionOpenRequestSchema(),
       response: object({
         ok: { const: true },
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
         project: ref("ProjectLabel"),
         harness: ref("OpenableHarness"),
+        taskEndpoint: ref("RelayEndpoint"),
       }, ["ok", "session", "sessionId", "project", "harness"]),
-      errors: sessionOpenErrorLines(),
+      errors: [...sessionOpenErrorLines(), "503 TaskWorkerLaunchErrorEnvelope"],
     },
     "GET /api/providers": {
       operationId: "listProviderReadiness",

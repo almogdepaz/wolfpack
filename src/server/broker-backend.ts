@@ -396,25 +396,47 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (agentCmd !== AGENT_KIND.SHELL.id && !CMD_REGEX.test(agentCmd)) {
       throw new Error(`invalid command: ${agentCmd}`);
     }
+    const taskWorker = options?.taskWorker;
     const launchCmd = resolveAgentCommand(agentCmd);
     let shellCmd: string;
+    let commandArgs: string[] = [];
     if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI.id) {
       throw new Error("model selection requires the pi harness");
+    }
+    if (taskWorker !== undefined && (agentCmd !== AGENT_KIND.PI.id || options?.initialPrompt !== undefined)) {
+      throw new Error("task worker requires the Pi harness without an initial prompt");
     }
     if (agentCmd === AGENT_KIND.SHELL.id) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }
       shellCmd = SHELL;
+    } else if (taskWorker !== undefined) {
+      const modelArg = options?.model !== undefined ? ' --model "$3"' : "";
+      // Task-worker readiness is Pi-process liveness, not a wrapper shell.
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$1" --no-extensions --extension "$2"${modelArg}`;
+      commandArgs = [taskWorker.executable, taskWorker.extension, ...(options?.model !== undefined ? [options.model] : [])];
     } else {
       const modelArg = options?.model !== undefined ? ' --model "$1"' : "";
       const promptArg = options?.initialPrompt !== undefined
         ? ` "$${options.model !== undefined ? 2 : 1}"`
         : "";
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${modelArg}${promptArg}; exec ${SHELL}`;
+      commandArgs = [
+        ...(options?.model !== undefined ? [options.model] : []),
+        ...(options?.initialPrompt !== undefined ? [options.initialPrompt] : []),
+      ];
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
+    const taskWorkerEnv: Array<[string, string]> = [];
+    if (taskWorker !== undefined) {
+      taskWorkerEnv.push(["PI_TASK_WORKER", "1"]);
+      const port = process.env.WOLFPACK_PORT;
+      if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
+      const home = process.env.HOME;
+      if (home) taskWorkerEnv.push(["HOME", home]);
+    }
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],
       ["COLORTERM", "truecolor"],
@@ -425,6 +447,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         agentKind,
         parentSession: options?.parentSession,
       }),
+      ...taskWorkerEnv,
     ];
 
     let resp: ControlResponse;
@@ -436,13 +459,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           SHELL,
           "-lic",
           shellCmd,
-          ...(options?.model !== undefined || options?.initialPrompt !== undefined
-            ? [
-                "wolfpack-agent",
-                ...(options.model !== undefined ? [options.model] : []),
-                ...(options.initialPrompt !== undefined ? [options.initialPrompt] : []),
-              ]
-            : []),
+          ...(commandArgs.length > 0 ? ["wolfpack-agent", ...commandArgs] : []),
         ],
         env,
         cols: DEFAULT_COLS,
@@ -480,6 +497,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   async killSession(name: string): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
+    await this.killSessionById(id);
+  }
+
+  async killSessionById(id: string): Promise<void> {
     // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
     // the foreground process group via the controlling PTY and reliably tears
     // down nested shells (e.g. `bash -lic /bin/zsh`).
@@ -490,9 +511,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         throw new BrokerRpcError(code ?? "internal_error", resp.error?.message ?? "kill failed");
       }
     }
-    this.nameToId.delete(name);
+    const name = this.idToInfo.get(id)?.name;
+    if (name !== undefined && this.nameToId.get(name) === id) this.nameToId.delete(name);
     this.idToInfo.delete(id);
-    getSessionIdentityStore().deleteByName(name);
+    getSessionIdentityStore().deleteById(id);
   }
 
   async hasSession(name: string): Promise<boolean> {

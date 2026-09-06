@@ -1,4 +1,5 @@
 import type { SessionInspectionResult } from "../session-status-contract.js";
+import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
 import type {
   AgentKind,
   CaptureSessionIdentityInput,
@@ -35,6 +36,7 @@ export interface SessionLaunchOptions {
   readonly parentSession?: ParentSessionIdentity;
   readonly model?: string;
   readonly initialPrompt?: string;
+  readonly taskWorker?: TaskWorkerLaunch;
 }
 
 export interface SessionListFact {
@@ -65,6 +67,8 @@ export interface SessionBackend {
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity>;
   killSession(name: string): Promise<void>;
+  /** Kill the exact broker identity captured at creation; never resolve a reusable name. */
+  killSessionById(sessionId: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
   capturePane(name: string, options?: CapturePaneOptions): Promise<string>;
   resize(name: string, cols: number, rows: number): Promise<void>;

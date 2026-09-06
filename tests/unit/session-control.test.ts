@@ -5,6 +5,32 @@ import {
   resolveSessionOpenContext,
 } from "../../src/cli/session-control.ts";
 
+function taskWorkerFailureCli(
+  command: "create" | "spawn",
+): ReturnType<typeof Bun.spawnSync> {
+  const invocation = command === "create"
+    ? 'runSessionCommand(["create", "--project-dir", "/worktree", "--harness", "pi", "--task-worker", "--json"])'
+    : 'runAgentCommand(["spawn", "--project-dir", "/worktree", "--task-worker", "--json"])';
+  const script = `
+    process.env.WOLFPACK_SESSION_NAME = "pi-main";
+    process.env.WOLFPACK_AGENT_KIND = "pi";
+    globalThis.fetch = async () => Response.json({
+      error: "task worker readiness timed out",
+      code: "TASK_WORKER_NOT_READY",
+      createdSession: { session: "worker", sessionId: "worker-id" },
+      cleanup: "unconfirmed",
+    }, { status: 503 });
+    const { runSessionCommand, runAgentCommand } = await import("./src/cli/session-control.ts");
+    process.exit(await ${invocation});
+  `;
+  return Bun.spawnSync([process.execPath, "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, NO_COLOR: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 describe("session control cli parsing", () => {
   test("parses open with project and json output", () => {
     expect(parseSessionCommand(["open", "wolfpack", "--json"])).toEqual({
@@ -14,6 +40,46 @@ describe("session control cli parsing", () => {
       prompt: undefined,
       output: "json",
     });
+  });
+
+  test("parses task-worker launches only for explicit worktree roots", () => {
+    expect(parseSessionCommand([
+      "create",
+      "--project-dir", "/worktrees/wolfpack",
+      "--harness", "pi",
+      "--task-worker",
+      "--readiness-timeout-ms", "250",
+      "--json",
+    ])).toEqual({
+      ok: true,
+      action: "create",
+      selector: { kind: "projectDir", projectDir: "/worktrees/wolfpack" },
+      harness: "pi",
+      prompt: undefined,
+      taskWorker: true,
+      readinessTimeoutMs: 250,
+      output: "json",
+    });
+    expect(parseSessionCommand(["open", "wolfpack", "--task-worker"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--task-worker", "--prompt", "run"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--task-worker", "--notify-parent"]).ok).toBe(false);
+  });
+
+  test("preserves task-worker recovery fields in create and spawn JSON failures", () => {
+    for (const command of ["create", "spawn"] as const) {
+      const child = taskWorkerFailureCli(command);
+      expect(child.stderr!.toString()).toBe("");
+      expect(child.exitCode).toBe(SESSION_EXIT.BACKEND_UNAVAILABLE);
+      expect(JSON.parse(child.stdout!.toString())).toEqual({
+        ok: false,
+        error: {
+          code: "TASK_WORKER_NOT_READY",
+          message: "task worker not ready",
+        },
+        createdSession: { session: "worker", sessionId: "worker-id" },
+        cleanup: "unconfirmed",
+      });
+    }
   });
 
   test("parses an explicit launch instruction and model without inherited context", () => {

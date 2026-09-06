@@ -36,6 +36,16 @@ wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--pro
 - rejects prompts when the effective command is a plain shell.
 - json success: `{ "ok": true, "session": string, "sessionId": string, "project": string, "harness": string }`.
 
+## Opt into Pi task-worker readiness
+
+Add `--task-worker` to `session create` or `agent spawn` only with `--project-dir <absolute-existing-worktree>`. It requires the Pi harness, accepts optional `--model` only for child Pi sessions, and rejects named-only project selection, `--prompt`, `--prompt-file`, `--plan`, and `--notify-parent`. `--readiness-timeout-ms <1..60000>` bounds the server gate (default 30000 ms); the CLI request deadline includes a small response grace period.
+
+Before creating anything, Wolfpack resolves and validates only the resources it will launch: `WOLFPACK_TASK_WORKER_PI_EXECUTABLE` (otherwise `pi` from `PATH`) and `WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION` (otherwise `$PI_CODING_AGENT_DIR/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts`, or `~/.pi/agent/...` when the Pi config directory is unset). Both configured paths must be absolute; the executable must be a regular executable file (working package-manager symlinks are accepted), and the extension must be a readable regular file.
+
+The child launches Pi with the explicit extension and `PI_TASK_WORKER=1`; no startup assignment prompt runs. Success waits only for the exact live broker `sessionId`, exact canonical project root, Pi harness, and a lease-valid opaque relay v2 endpoint. It does not infer model readiness, task execution, or state from terminal output. A ready success additionally returns `taskEndpoint: { relay, id }`.
+
+After creation, a failed root/identity/liveness/endpoint check or deadline kills only the exact created stable ID. Failure responses use `TASK_WORKER_NOT_READY`; they retain `createdSession` plus `cleanup: "completed" | "unconfirmed"`. Resource preflight failure returns `TASK_WORKER_PREFLIGHT_FAILED` without creating a session.
+
 ## Spawn a child agent
 
 ```bash

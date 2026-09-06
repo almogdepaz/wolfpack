@@ -39,6 +39,7 @@ export class MockBackend implements SessionBackend {
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
   private readonly _parentSessions = new Map<string, ParentSessionIdentity>();
+  private readonly _createdIdentities = new Map<string, PublicSessionIdentity>();
   /** Per-session alive override — when set, isSessionAlive() returns this
    *  instead of `_sessions.has(name)`. Used by tests to simulate a session
    *  that's listed (so WS upgrade passes) but whose backing process has
@@ -78,6 +79,9 @@ export class MockBackend implements SessionBackend {
     for (const name of this._parentSessions.keys()) {
       if (!this._sessions.has(name)) this._parentSessions.delete(name);
     }
+    for (const name of this._createdIdentities.keys()) {
+      if (!this._sessions.has(name)) this._createdIdentities.delete(name);
+    }
   }
 
   /** Override capturePane at runtime. */
@@ -115,7 +119,8 @@ export class MockBackend implements SessionBackend {
     const now = new Date(0).toISOString();
     const out: Record<string, PublicSessionIdentity> = {};
     for (const name of this._sessions) {
-      out[name] = {
+      const created = this._createdIdentities.get(name);
+      out[name] = created ?? {
         wolfpackSessionId: `mock:${name}`,
         wolfpackSessionName: name,
         projectPath: "",
@@ -177,7 +182,7 @@ export class MockBackend implements SessionBackend {
     this._outputSequences.set(name, "0");
     if (options?.parentSession) this._parentSessions.set(name, options.parentSession);
     const now = new Date(0).toISOString();
-    return {
+    const identity: PublicSessionIdentity = {
       wolfpackSessionId: `mock:${name}`,
       wolfpackSessionName: name,
       projectPath: cwd,
@@ -186,12 +191,20 @@ export class MockBackend implements SessionBackend {
       updatedAt: now,
       ...(options?.parentSession && { parentSession: options.parentSession }),
     };
+    this._createdIdentities.set(name, identity);
+    return identity;
   }
 
   async killSession(name: string): Promise<void> {
     this._sessions.delete(name);
+    this._createdIdentities.delete(name);
     this._outputSequences.delete(name);
     this._parentSessions.delete(name);
+  }
+
+  async killSessionById(sessionId: string): Promise<void> {
+    const name = [...this._sessions].find((candidate) => `mock:${candidate}` === sessionId);
+    if (name !== undefined) await this.killSession(name);
   }
 
   async hasSession(name: string): Promise<boolean> {

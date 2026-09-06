@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } fr
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
@@ -27,6 +27,12 @@ import {
   TAILNET_SIBLING_ORIGIN,
 } from "./tailnet-origin-fixture.ts";
 import type { TailnetOriginServerFixture } from "./tailnet-origin-fixture.ts";
+import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
+import {
+  isJsonObject as isSchemaObject,
+  validateControlApiSchemaValue as validateSchema,
+} from "../control-api-schema-validator.ts";
+import type { JsonObject } from "../control-api-schema-validator.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
@@ -66,6 +72,18 @@ __resetJwtAuthConfig();
 // Other test files may have imported tmux.ts first with a different env value.
 __setDevDir(TEST_DEV_DIR);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
+
+const controlApiSchema = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf8")) as JsonObject;
+
+function responseSchema(operationId: string): JsonObject {
+  const http = controlApiSchema.http;
+  if (!isSchemaObject(http)) throw new Error("control API HTTP schema is missing");
+  const operation = http[operationId];
+  if (!isSchemaObject(operation) || !isSchemaObject(operation.response)) {
+    throw new Error(`control API response schema is missing for ${operationId}`);
+  }
+  return operation.response;
+}
 
 const mockBackend = new MockBackend({
   sessions: ["wolf-1", "wolf-2"],
@@ -910,6 +928,95 @@ describe("agent-native top-level session control", () => {
 
     expect(res.status).toBe(400);
     expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects task-worker requests without an explicit root, Pi harness, or bounded prompt-free options", async () => {
+    const projectDir = createExplicitProjectDir("task-worker");
+    for (const body of [
+      { project: "my-app", harness: "pi", taskWorker: true },
+      { projectDir, harness: "shell", taskWorker: true },
+      { projectDir, harness: "pi", taskWorker: true, initialPrompt: "start now" },
+      { projectDir, harness: "pi", taskWorker: true, readinessTimeoutMs: 60_001 },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-create", body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "invalid session-create request",
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("publishes task-worker create/open success and recovery bodies that satisfy generated schemas", async () => {
+    const root = createExplicitProjectDir("task-worker-public");
+    const executable = join(root, "pi");
+    const extension = join(root, "extension.ts");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    writeFileSync(extension, "export {}\n");
+    const priorExecutable = process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+    const priorExtension = process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+    process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = executable;
+    process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = extension;
+    mockBackend.setSessions([]);
+    mockBackend.setOnBeforeCreate((name) => {
+      queueMicrotask(() => {
+        void getTaskRelayGateway().connect({
+          callerSession: name,
+          generation: `test-${name}`,
+          protocolVersions: [2],
+        });
+      });
+    });
+    try {
+      for (const [path, body, operation] of [
+        ["/api/session-create", { projectDir: root, harness: "pi", taskWorker: true, readinessTimeoutMs: 500 }, "createTopLevelSession"],
+        ["/api/session-open", { projectDir: root, parentSession: "pi-parent", taskWorker: true, readinessTimeoutMs: 500 }, "openSession"],
+      ] as const) {
+        if (path === "/api/session-open") {
+          await mockBackend.createSession("pi-parent", root, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+        }
+        const response = await post(path, body);
+        const responseBody = await response.json();
+        expect(response.ok, JSON.stringify(responseBody)).toBeTruthy();
+        expect(validateSchema(responseSchema(operation), responseBody, controlApiSchema)).toEqual([]);
+        expect(responseBody).toMatchObject({ ok: true, harness: "pi", taskEndpoint: { relay: "wolfpack-pi-tasks-v2" } });
+      }
+
+      mockBackend.setOnBeforeCreate(null);
+      for (const [path, body] of [
+        ["/api/session-create", {
+          projectDir: createExplicitProjectDir("task-worker-public-failure"),
+          harness: "pi",
+          taskWorker: true,
+          readinessTimeoutMs: 1,
+        }],
+        ["/api/session-open", {
+          projectDir: root,
+          parentSession: "pi-parent",
+          taskWorker: true,
+          readinessTimeoutMs: 1,
+        }],
+      ] as const) {
+        const failed = await post(path, body);
+        const failedBody = await failed.json();
+        expect(failed.status).toBe(503);
+        expect(validateSchema({ $ref: "#/$defs/TaskWorkerLaunchErrorEnvelope" }, failedBody, controlApiSchema)).toEqual([]);
+        expect(failedBody).toMatchObject({
+          code: SESSION_CREATE_ERROR.TASK_WORKER_NOT_READY,
+          createdSession: { sessionId: expect.any(String) },
+          cleanup: "completed",
+        });
+      }
+    } finally {
+      mockBackend.setOnBeforeCreate(null);
+      if (priorExecutable === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+      else process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = priorExecutable;
+      if (priorExtension === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+      else process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = priorExtension;
+    }
   });
 
   test("resolves stable ids for list, status, read, send, wait, and kill", async () => {
