@@ -81,7 +81,7 @@ read `edc-context/index.md`, manifest and routed module docs; generated context 
 - [x] CLI/API/schema/docs agree
 - [x] focused verification and independent review pass
 - [x] final integration result classified against baseline
-- [ ] scoped commit pushed and pr opened
+- [x] scoped commit pushed and pr opened: https://github.com/almogdepaz/wolfpack/pull/343
 - [x] terminal tasks acknowledged and role sessions cleaned up
 
 final evidence and limitations: `110-task-worker-verification.md`; final independent reviews: `review-301-pass3.md`, `review-301-final-gate.md`.

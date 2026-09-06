@@ -1,6 +1,6 @@
 # #301 task-worker readiness status
 
-- phase: implementation, independent review, integration classification, focused corrections, and final static checks complete; scoped commit/push/pr pending.
+- phase: implementation/review/verification complete; feature commit `039ed57` pushed and pr #343 open: https://github.com/almogdepaz/wolfpack/pull/343. not merged. feature worktree retained; all parent-owned roles closed.
 - authorization: isolated worktree, terra implementation/review loop, then pr; no merge.
 - worktree: `/private/tmp/wolfpack-issue301`; branch: `feat/task-worker-readiness`.
 - base: `3276836bde5663927452735276736f8135a98c36`; origin/main advanced to `70f8689` during work. no merge/rebase.
