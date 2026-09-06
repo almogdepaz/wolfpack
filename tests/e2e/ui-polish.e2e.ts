@@ -103,10 +103,20 @@ test("desktop sidebar restores saved unpin and pin choices after reload", async 
   await expect(page.getByRole("button", { name: "Unpin sidebar" })).toBeVisible();
 });
 
-test("desktop grid actions expose intent", async ({ page }, testInfo) => {
+test("desktop session creation and grid controls are visually distinct", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop grid contract");
 
-  await page.getByRole("button", { name: "Add to grid: another-project" }).click();
+  const newSessionButton = page.getByRole("button", { name: "Start a session on this machine" });
+  const newSessionBox = await newSessionButton.boundingBox();
+  expect(newSessionBox?.height).toBeLessThanOrEqual(28);
+
+  const addAnotherToGrid = page.getByRole("button", { name: "Add to grid: another-project" });
+  const gridIcon = addAnotherToGrid.locator("svg.ui-icon");
+  await expect(gridIcon).toBeVisible();
+  await expect(gridIcon.locator("path")).toBeVisible();
+  await expect(addAnotherToGrid).not.toHaveText("+");
+
+  await addAnotherToGrid.click();
   await page.getByRole("button", { name: "Add to grid: error-project" }).click();
   await expect(page.getByRole("button", { name: "Remove another-project from grid" })).toBeVisible();
 });
