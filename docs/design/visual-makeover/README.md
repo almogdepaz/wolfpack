@@ -1,6 +1,6 @@
 # Wolfpack visual makeover
 
-A presentation-only refinement of the existing app, not a navigation redesign. Rebased onto `main` at `70f8689`, preserving its onboarding, default-pinned sidebar, Idle filter, session activity, and terminal workflows.
+A presentation-only refinement of the existing app, not a navigation redesign. Originally validated against `main` at `70f8689`, and now rebased onto `e8df7be`, preserving onboarding, the default-pinned sidebar, Idle filter, session activity, terminal workflows, and main's distinct grid/session actions.
 
 ## Finish
 
@@ -33,7 +33,16 @@ Fresh Brave captures compare untouched `70f8689` with the rebased makeover. Both
 | Mobile terminal | [Before](before/mobile-terminal.png) | [After](after/mobile-terminal.png) |
 | Desktop grid | [Before](before/desktop-grid.png) | [After](after/desktop-grid.png) |
 
-## Verification after rebase
+## Latest rebase onto `e8df7be`
+
+- All four visual commits were replayed; conflicts were limited to `src/public-assets.ts`, regenerated from the merged sources at each step.
+- Shortened the internal new-session markup constant name without changing behavior. The combined app bundle remains within the unchanged budget: 301,992 raw / 75,518 gzip bytes.
+- Typecheck, bundle budgets, and `git diff --check` pass.
+- `bun test tests/unit`: **1,593 passed, 1 platform skip, zero failures**. The first attempt hit the command's 120-second timeout; the complete rerun finished in 137 seconds.
+- Visual-makeover, UI-polish, and axe-accessibility suites in Brave across desktop, iPhone SE, and iPhone 14 emulation: **30 passed, 9 platform skips**. Includes main's distinct grid/session action regression.
+- The captures and deployment history below describe the earlier revision; this rebase did not refresh screenshots or deploy/restart services. The full browser suite was not rerun.
+
+## Earlier verification against `70f8689`
 
 - `bun run typecheck`, `bun run check:bundle-budgets`, and `git diff --check` pass. Existing bundle limits are unchanged.
 - `bun test tests/unit`: **1,571 passed, 1 platform skip, zero failures** on the final run. A test-server shutdown timing failure in an earlier concurrent run also passed independently.

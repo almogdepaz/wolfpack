@@ -1612,14 +1612,14 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
 }
 
 // Shared visual treatment; actions and machine routing stay on the parent button.
-const NEW_SESSION_BUTTON_CONTENT = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New<span class="machine-add-label-detail"> session</span></span>';
+const NEW_SESSION_CONTENT = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New<span class="machine-add-label-detail"> session</span></span>';
 
 function machineHeaderNameHtml(name: string): string {
   return `<span class="machine-header-name" title="${escAttr(name)}">${esc(name)}</span>`;
 }
 
 function machineAddButtonHtml(machineUrl: string, machineName: string, disabled: boolean): string {
-  return `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(machineUrl)}" aria-label="Start a session on ${escAttr(machineName)}" title="New session"${disabled ? " disabled" : ""}>${NEW_SESSION_BUTTON_CONTENT}</button>`;
+  return `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(machineUrl)}" aria-label="Start a session on ${escAttr(machineName)}" title="New session"${disabled ? " disabled" : ""}>${NEW_SESSION_CONTENT}</button>`;
 }
 
 function idleSessionEmptyHtml(): string {
@@ -4550,7 +4550,7 @@ function _renderSidebarNow() {
   if (!multiMachine) {
     // Single machine — simple list with + New
     const g = groups[0];
-    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine">${NEW_SESSION_BUTTON_CONTENT}</button>${sessionOrderResetButtonHtml("")}</div>`;
+    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine">${NEW_SESSION_CONTENT}</button>${sessionOrderResetButtonHtml("")}</div>`;
     if (g && g.online) {
       const presentation = sessionCardGroupPresentation(g.sessions, "");
       html += sidebarBtns;
