@@ -4594,7 +4594,10 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
   const gridAction = inGrid ? "Remove from grid" : "Add to grid";
-  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${inGrid ? '⊠' : '+'}</button>`;
+  const gridIcon = inGrid
+    ? "⊠"
+    : '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>';
+  const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${gridIcon}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
