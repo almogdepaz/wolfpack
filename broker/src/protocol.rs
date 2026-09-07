@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -218,8 +220,11 @@ pub enum ResponsePayload {
     CreateSession { session: SessionInfo },
     KillSession { killed: bool },
     SessionInfo { session: SessionInfo },
-    Snapshot { snapshot: Snapshot },
-    SnapshotSubscribe { snapshot: Snapshot, current_seq: u64, replay_truncated: bool },
+    /// Snapshots are immutable and potentially history-sized. `Arc` avoids
+    /// copying the cell graph from the per-session cache into a response;
+    /// serde's `rc` support retains the exact Snapshot JSON shape.
+    Snapshot { snapshot: Arc<Snapshot> },
+    SnapshotSubscribe { snapshot: Arc<Snapshot>, current_seq: u64, replay_truncated: bool },
     Resize { ok: bool },
     Subscribe { ok: bool, current_seq: u64, replay_truncated: bool },
     Unsubscribe { ok: bool },
@@ -558,13 +563,20 @@ mod tests {
 
     #[test]
     fn snapshot_payload_envelope() {
+        let snapshot = Arc::new(sample_snapshot());
         let resp = ControlResponse::ok(
             3,
-            ResponsePayload::Snapshot { snapshot: sample_snapshot() },
+            ResponsePayload::Snapshot { snapshot: Arc::clone(&snapshot) },
         );
+        let payload_snapshot = match resp.payload.as_ref().expect("snapshot payload") {
+            ResponsePayload::Snapshot { snapshot } => snapshot,
+            other => panic!("unexpected payload: {other:?}"),
+        };
+        assert!(Arc::ptr_eq(&snapshot, payload_snapshot), "response must retain shared snapshot ownership");
         let s = serde_json::to_string(&resp).unwrap();
         let back: ControlResponse = serde_json::from_str(&s).unwrap();
         assert_eq!(resp, back);
+        assert_eq!(serde_json::to_value(&snapshot).unwrap(), serde_json::to_value(sample_snapshot()).unwrap());
     }
 
     #[test]

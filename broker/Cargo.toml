@@ -8,7 +8,8 @@ license = "MIT"
 build = "build.rs"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+# `rc` serializes `Arc<Snapshot>` as the unchanged Snapshot wire shape.
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "1"
 uuid = { version = "1", features = ["v4", "serde"] }

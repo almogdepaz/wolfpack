@@ -194,7 +194,7 @@ struct CachedSnapshot {
     seq: u64,
     scrollback_lines: Option<u32>,
     target_cols: Option<u16>,
-    snapshot: Snapshot,
+    snapshot: Arc<Snapshot>,
 }
 
 pub struct Session {
@@ -218,7 +218,7 @@ pub struct Session {
     bus: Arc<OutputBus>,
     /// Most recent materialized snapshot. JSON encoding happens later on the
     /// connection writer, outside the terminal lock; identical sequence/key
-    /// requests reuse this immutable protocol value.
+    /// requests reuse this immutable `Arc` without cloning its cell graph.
     snapshot_cache: Mutex<Option<CachedSnapshot>>,
 }
 
@@ -477,7 +477,7 @@ impl Session {
         &self,
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
-    ) -> Result<Snapshot, TerminalStateError> {
+    ) -> Result<Arc<Snapshot>, TerminalStateError> {
         let id = self.id();
         let term = self.terminal.lock().expect("terminal poisoned");
         // Read seq under the same lock the drainer holds while bumping it,
@@ -486,14 +486,14 @@ impl Session {
         if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
             return Ok(cached);
         }
-        let snapshot = term.try_snapshot_with_reflow(
+        let snapshot = Arc::new(term.try_snapshot_with_reflow(
             id,
             seq,
             now_ms(),
             scrollback_lines.map(|n| n as usize),
             target_cols.map(|c| c as usize),
-        )?;
-        self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
+        )?);
+        self.cache_snapshot(seq, scrollback_lines, target_cols, Arc::clone(&snapshot));
         Ok(snapshot)
     }
 
@@ -502,21 +502,21 @@ impl Session {
         &self,
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
-    ) -> Result<(Snapshot, Subscription), TerminalStateError> {
+    ) -> Result<(Arc<Snapshot>, Subscription), TerminalStateError> {
         let id = self.id();
         let term = self.terminal.lock().expect("terminal poisoned");
         let seq = self.seq.load(Ordering::SeqCst);
         let snapshot = if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
             cached
         } else {
-            let snapshot = term.try_snapshot_with_reflow(
+            let snapshot = Arc::new(term.try_snapshot_with_reflow(
                 id,
                 seq,
                 now_ms(),
                 scrollback_lines.map(|n| n as usize),
                 target_cols.map(|c| c as usize),
-            )?;
-            self.cache_snapshot(seq, scrollback_lines, target_cols, &snapshot);
+            )?);
+            self.cache_snapshot(seq, scrollback_lines, target_cols, Arc::clone(&snapshot));
             snapshot
         };
         let subscription = self.bus.subscribe(Some(seq));
@@ -528,7 +528,7 @@ impl Session {
         seq: u64,
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
-    ) -> Option<Snapshot> {
+    ) -> Option<Arc<Snapshot>> {
         self.snapshot_cache
             .lock()
             .expect("snapshot cache poisoned")
@@ -536,7 +536,7 @@ impl Session {
             .filter(|cached| cached.seq == seq
                 && cached.scrollback_lines == scrollback_lines
                 && cached.target_cols == target_cols)
-            .map(|cached| cached.snapshot.clone())
+            .map(|cached| Arc::clone(&cached.snapshot))
     }
 
     fn cache_snapshot(
@@ -544,13 +544,13 @@ impl Session {
         seq: u64,
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
-        snapshot: &Snapshot,
+        snapshot: Arc<Snapshot>,
     ) {
         *self.snapshot_cache.lock().expect("snapshot cache poisoned") = Some(CachedSnapshot {
             seq,
             scrollback_lines,
             target_cols,
-            snapshot: snapshot.clone(),
+            snapshot,
         });
     }
 
@@ -1182,17 +1182,57 @@ mod tests {
     }
 
     #[test]
-    fn repeated_snapshot_key_reuses_sequence_cache() {
+    fn repeated_snapshot_key_reuses_immutable_cache_without_deep_copying() {
         let sess = spawn_session(opts(vec!["printf", "cached"])).expect("spawn");
         assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
         let first = sess.snapshot_terminal(Some(10), Some(80)).expect("snapshot");
         let second = sess.snapshot_terminal(Some(10), Some(80)).expect("cached snapshot");
-        assert_eq!(first, second);
+        assert!(Arc::ptr_eq(&first, &second), "cache hit must share the snapshot graph");
         let cache = sess.snapshot_cache.lock().expect("snapshot cache poisoned");
         let cached = cache.as_ref().expect("snapshot should be cached");
+        assert!(Arc::ptr_eq(&first, &cached.snapshot));
         assert_eq!(cached.seq, first.seq);
         assert_eq!(cached.scrollback_lines, Some(10));
         assert_eq!(cached.target_cols, Some(80));
+        drop(cache);
+
+        // A caller can opt into copy-on-write without mutating the cache or a
+        // future response. The ordinary cache-hit path above remains shared.
+        let mut caller_copy = Arc::clone(&second);
+        Arc::make_mut(&mut caller_copy).title = Some("caller-local".into());
+        assert!(!Arc::ptr_eq(&second, &caller_copy));
+        assert_ne!(second.title.as_deref(), Some("caller-local"));
+        assert_eq!(caller_copy.title.as_deref(), Some("caller-local"));
+
+        // One-entry replacement releases the old graph as soon as no caller
+        // retains it; callers that still hold an Arc remain valid by design.
+        let old = Arc::downgrade(&second);
+        drop(first);
+        drop(second);
+        drop(caller_copy);
+        let replacement = sess.snapshot_terminal(Some(9), Some(80)).expect("different key materializes replacement");
+        assert!(old.upgrade().is_none(), "replaced cache must not retain old graph");
+        assert_eq!(sess.snapshot_cache.lock().expect("snapshot cache poisoned").as_ref().unwrap().seq, replacement.seq);
+    }
+
+    #[test]
+    fn new_output_replaces_cache_and_releases_unheld_old_snapshot() {
+        let sess = spawn_session(opts(vec!["cat"])).expect("spawn");
+        sess.write_stdin(b"FIRST\\n").expect("write first marker");
+        wait_for_bus_quiet(&sess, Duration::from_millis(100), Duration::from_secs(5));
+        let first = sess.snapshot_terminal(None, None).expect("first snapshot");
+        let first_seq = first.seq;
+        let old = Arc::downgrade(&first);
+        drop(first);
+
+        sess.write_stdin(b"SECOND\\n").expect("write second marker");
+        wait_for_bus_quiet(&sess, Duration::from_millis(100), Duration::from_secs(5));
+        let second = sess.snapshot_terminal(None, None).expect("second snapshot");
+        assert!(second.seq > first_seq, "new terminal output must advance the cache key");
+        assert!(old.upgrade().is_none(), "new cache entry must release unheld prior graph");
+
+        let _ = sess.kill(libc::SIGKILL);
+        let _ = sess.wait_for_exit(Duration::from_secs(5));
     }
 
     #[test]
@@ -1355,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_pty_failure_rolls_terminal_back_without_committing_state_or_events() {
+    fn resize_pty_failure_rolls_terminal_back_without_invalidating_cached_snapshot() {
         let id = Uuid::new_v4();
         let inner = resize_test_state(id);
         let (events, mut receiver) = broadcast::channel(4);
@@ -1364,12 +1404,38 @@ mod tests {
             ..RecordingPtyResize::default()
         };
         let terminal = Mutex::new(RecordingTerminalResize::new(80, 24));
+        let cached = Arc::new(Snapshot {
+            session_id: id,
+            seq: 0,
+            cols: 80,
+            rows: 24,
+            visible_screen: vec![],
+            scrollback: vec![],
+            cursor: Default::default(),
+            modes: Default::default(),
+            scroll_region: Default::default(),
+            title: None,
+            captured_at_ms: 0,
+        });
+        let cache = Mutex::new(Some(Arc::clone(&cached)));
+        let cached_weak = Arc::downgrade(&cached);
+        drop(cached);
 
-        let error =
-            resize_terminal_pty_and_state(&inner, id, &mut pty, &terminal, 132, 50, &events, || {})
-                .expect_err("PTY resize failure must abort transaction");
+        let error = resize_terminal_pty_and_state(
+            &inner,
+            id,
+            &mut pty,
+            &terminal,
+            132,
+            50,
+            &events,
+            || *cache.lock().expect("snapshot cache poisoned") = None,
+        )
+        .expect_err("PTY resize failure must abort transaction");
 
         assert!(matches!(error, ResizeError::Pty(_)));
+        assert!(cached_weak.upgrade().is_some(), "failed resize must retain valid cache");
+        assert!(cache.lock().expect("snapshot cache poisoned").is_some());
         assert_eq!(pty.calls, vec![(132, 50)]);
         let terminal = terminal.lock().expect("terminal poisoned");
         assert_eq!(terminal.calls, vec![(132, 50), (80, 24)]);
@@ -1413,8 +1479,12 @@ mod tests {
         let sess = spawn_session(opts(vec!["sleep", "30"])).expect("spawn");
         let before = sess.snapshot();
         assert_eq!((before.cols, before.rows), (80, 24));
+        let stale = sess.snapshot_terminal(None, None).expect("snapshot before resize");
+        let stale_weak = Arc::downgrade(&stale);
+        drop(stale);
 
         sess.resize(132, 50, &test_events()).expect("resize ok");
+        assert!(stale_weak.upgrade().is_none(), "successful resize must release cache ownership");
 
         let after = sess.snapshot();
         assert_eq!((after.cols, after.rows), (132, 50));
