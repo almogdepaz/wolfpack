@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -49,6 +49,31 @@ const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// frame and this depth caps queued data before socket backpressure applies.
 const INPUT_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const INPUT_QUEUE_CAPACITY: usize = INPUT_QUEUE_MAX_BYTES / MAX_INPUT_BINARY_PAYLOAD as usize;
+
+/// Private successful-write acknowledgement for a control boundary. A
+/// subscription forwarder waits on this instead of treating queue insertion as
+/// a socket-ordering barrier.
+struct QueuedControl {
+    frame: Frame,
+    written: Option<oneshot::Sender<()>>,
+}
+
+impl QueuedControl {
+    fn plain(frame: Frame) -> Self {
+        Self { frame, written: None }
+    }
+
+    fn response_with_barrier(response: ControlResponse) -> (Self, oneshot::Receiver<()>) {
+        let (written, barrier) = oneshot::channel();
+        (
+            Self {
+                frame: Frame::ControlResponse(response),
+                written: Some(written),
+            },
+            barrier,
+        )
+    }
+}
 
 struct SocketBindUmaskGuard {
     previous_umask: libc::mode_t,
@@ -294,7 +319,7 @@ async fn handle_connection(
     // redraw burst. The socket writer prioritises this queue over output.
     let control_queue_cap = writer_queue_cap.unwrap_or(CONTROL_QUEUE_CAPACITY);
     let output_queue_cap = writer_queue_cap.unwrap_or(WRITER_QUEUE_CAPACITY);
-    let (writer_tx, writer_rx) = mpsc::channel::<Frame>(control_queue_cap);
+    let (writer_tx, writer_rx) = mpsc::channel::<QueuedControl>(control_queue_cap);
     let (output_tx, output_rx) = mpsc::channel::<Frame>(output_queue_cap);
     let writer_task = tokio::spawn(connection_writer(
         write_half,
@@ -400,11 +425,11 @@ async fn handle_connection(
 /// Drain the per-connection event receiver into the writer queue. Logs
 /// and continues on lag (events are best-effort by protocol contract);
 /// returns when the broadcast channel closes or the writer queue dies.
-async fn forward_events(mut rx: broadcast::Receiver<Event>, writer_tx: mpsc::Sender<Frame>) {
+async fn forward_events(mut rx: broadcast::Receiver<Event>, writer_tx: mpsc::Sender<QueuedControl>) {
     loop {
         match rx.recv().await {
             Ok(ev) => {
-                if writer_tx.send(Frame::Event(ev)).await.is_err() {
+                if writer_tx.send(QueuedControl::plain(Frame::Event(ev))).await.is_err() {
                     return;
                 }
             }
@@ -442,7 +467,7 @@ fn record_queue_high_water(queue: &'static str, depth: usize) {
 
 async fn connection_writer(
     mut w: tokio::net::unix::OwnedWriteHalf,
-    mut control_rx: mpsc::Receiver<Frame>,
+    mut control_rx: mpsc::Receiver<QueuedControl>,
     mut output_rx: mpsc::Receiver<Frame>,
     control_queue_cap: usize,
     output_queue_cap: usize,
@@ -463,10 +488,10 @@ async fn connection_writer(
                 continue;
             }
         }
-        let (is_control, frame) = tokio::select! {
+        let (is_control, frame, written) = tokio::select! {
             biased;
-            Some(frame) = control_rx.recv() => (true, frame),
-            Some(frame) = output_rx.recv() => (false, frame),
+            Some(control) = control_rx.recv() => (true, control.frame, control.written),
+            Some(frame) = output_rx.recv() => (false, frame, None),
             else => return,
         };
         record_queue_high_water(
@@ -478,8 +503,13 @@ async fn connection_writer(
             },
         );
         if let Err(error) = write_frame_async(&mut w, &frame).await {
+            // Dropping `written` makes boundary forwarders stop without
+            // emitting output after a failed response write.
             warn!(%error, "broker writer failed; closing connection");
             return;
+        }
+        if let Some(written) = written {
+            let _ = written.send(());
         }
         control_streak = if is_control { control_streak + 1 } else { 0 };
     }
@@ -491,7 +521,7 @@ async fn dispatch_frame(
     frame: Frame,
     router: &SessionRouter,
     registry: &Arc<Registry>,
-    writer_tx: &mpsc::Sender<Frame>,
+    writer_tx: &mpsc::Sender<QueuedControl>,
     output_tx: &mpsc::Sender<Frame>,
     input_tx: &mpsc::Sender<InputFrame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
@@ -505,7 +535,7 @@ async fn dispatch_frame(
             methods::UNSUBSCRIBE => handle_unsubscribe(req, writer_tx, subs).await,
             _ => {
                 let resp = router.handle(req);
-                writer_tx.send(Frame::ControlResponse(resp)).await.is_ok()
+                send_response(writer_tx, resp).await
             }
         },
         Frame::InputBinary(inp) => input_tx.send(inp).await.is_ok(),
@@ -525,7 +555,7 @@ async fn dispatch_frame(
 async fn handle_snapshot_subscribe(
     req: ControlRequest,
     registry: &Arc<Registry>,
-    writer_tx: &mpsc::Sender<Frame>,
+    writer_tx: &mpsc::Sender<QueuedControl>,
     output_tx: &mpsc::Sender<Frame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
@@ -615,7 +645,7 @@ async fn handle_snapshot_subscribe(
     if let Some(previous) = subs.remove(&params.session_id) {
         previous.abort();
     }
-    if !send_response(
+    let Some(response_written) = send_response_with_barrier(
         writer_tx,
         ControlResponse::ok(
             id,
@@ -627,11 +657,15 @@ async fn handle_snapshot_subscribe(
         ),
     )
     .await
-    {
+    else {
         return false;
-    }
+    };
     let session_id = params.session_id;
-    let handle = tokio::spawn(forward_output(
+    // Do not await the socket write in this dispatcher: unsubscribe,
+    // replacement, shutdown and input must remain responsive while a slow peer
+    // is blocked. The subscription map owns this waiting task for cancellation.
+    let handle = tokio::spawn(forward_after_response_written(
+        response_written,
         session_id,
         sub.replay,
         sub.receiver,
@@ -654,7 +688,7 @@ async fn handle_snapshot_subscribe(
 async fn handle_subscribe(
     req: ControlRequest,
     registry: &Arc<Registry>,
-    writer_tx: &mpsc::Sender<Frame>,
+    writer_tx: &mpsc::Sender<QueuedControl>,
     output_tx: &mpsc::Sender<Frame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
@@ -706,7 +740,7 @@ async fn handle_subscribe(
         prev.abort();
     }
 
-    if !send_response(
+    let Some(response_written) = send_response_with_barrier(
         writer_tx,
         ControlResponse::ok(
             id,
@@ -718,12 +752,13 @@ async fn handle_subscribe(
         ),
     )
     .await
-    {
+    else {
         return false;
-    }
+    };
 
     let session_id = params.session_id;
-    let handle = tokio::spawn(forward_output(
+    let handle = tokio::spawn(forward_after_response_written(
+        response_written,
         session_id,
         sub.replay,
         sub.receiver,
@@ -735,7 +770,7 @@ async fn handle_subscribe(
 
 async fn handle_unsubscribe(
     req: ControlRequest,
-    writer_tx: &mpsc::Sender<Frame>,
+    writer_tx: &mpsc::Sender<QueuedControl>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
     let id = req.id;
@@ -895,8 +930,29 @@ fn chunk_to_frame(session_id: Uuid, chunk: OutputChunk) -> OutputFrame {
     }
 }
 
-async fn send_response(writer_tx: &mpsc::Sender<Frame>, resp: ControlResponse) -> bool {
-    writer_tx.send(Frame::ControlResponse(resp)).await.is_ok()
+async fn send_response(writer_tx: &mpsc::Sender<QueuedControl>, resp: ControlResponse) -> bool {
+    writer_tx.send(QueuedControl::plain(Frame::ControlResponse(resp))).await.is_ok()
+}
+
+async fn send_response_with_barrier(
+    writer_tx: &mpsc::Sender<QueuedControl>,
+    response: ControlResponse,
+) -> Option<oneshot::Receiver<()>> {
+    let (queued, barrier) = QueuedControl::response_with_barrier(response);
+    writer_tx.send(queued).await.ok()?;
+    Some(barrier)
+}
+
+async fn forward_after_response_written(
+    barrier: oneshot::Receiver<()>,
+    session_id: Uuid,
+    replay: Vec<OutputChunk>,
+    receiver: tokio::sync::broadcast::Receiver<OutputChunk>,
+    output_tx: mpsc::Sender<Frame>,
+) {
+    if barrier.await.is_ok() {
+        forward_output(session_id, replay, receiver, output_tx).await;
+    }
 }
 
 fn unknown_session(id: u64, session_id: Uuid) -> ControlResponse {
@@ -997,7 +1053,7 @@ mod tests {
             .await
         );
 
-        let response = match writer_rx.recv().await.expect("snapshot response") {
+        let response = match writer_rx.recv().await.expect("snapshot response").frame {
             Frame::ControlResponse(response) => response,
             frame => panic!("unexpected frame: {frame:?}"),
         };
@@ -1226,7 +1282,7 @@ mod tests {
             .await
             .expect("queue output");
         control_tx
-            .send(Frame::ControlResponse(unknown_session(7, Uuid::nil())))
+            .send(QueuedControl::plain(Frame::ControlResponse(unknown_session(7, Uuid::nil()))))
             .await
             .expect("queue control response");
         drop(control_tx);
@@ -1259,7 +1315,7 @@ mod tests {
         let (output_tx, output_rx) = mpsc::channel(16);
         for id in 0..12 {
             control_tx
-                .send(Frame::ControlResponse(unknown_session(id, Uuid::nil())))
+                .send(QueuedControl::plain(Frame::ControlResponse(unknown_session(id, Uuid::nil()))))
                 .await
                 .unwrap();
         }
@@ -1290,6 +1346,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_subscribe_response_write_precedes_associated_output_after_control_burst() {
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events));
+        let session = registry
+            .create(CreateOptions {
+                name: Some("writer-boundary".into()),
+                cwd: "/tmp".into(),
+                command: vec!["sleep".into(), "30".into()],
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            })
+            .expect("create session");
+        // This is replay at the snapshot cut. A second chunk is live after
+        // the handler has installed its receiver; both must wait for the
+        // successful socket write of response id 99.
+        session.output_bus().publish(OutputChunk {
+            seq: 1,
+            data: Arc::new(b"replay".to_vec()),
+        });
+
+        let (broker_stream, mut client_stream) = UnixStream::pair().expect("socket pair");
+        let (_read_half, write_half) = broker_stream.into_split();
+        let (control_tx, control_rx) = mpsc::channel(16);
+        let (output_tx, output_rx) = mpsc::channel(16);
+        for id in 0..8 {
+            control_tx
+                .send(QueuedControl::plain(Frame::ControlResponse(unknown_session(id, Uuid::nil()))))
+                .await
+                .expect("queue prior control");
+        }
+        let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx, 16, 16));
+        let mut subscriptions = HashMap::new();
+        assert!(handle_snapshot_subscribe(
+            ControlRequest {
+                id: 99,
+                method: methods::SNAPSHOT_SUBSCRIBE.into(),
+                params: json!({ "session_id": session.id() }),
+            },
+            &registry,
+            &control_tx,
+            &output_tx,
+            &mut subscriptions,
+        )
+        .await);
+        session.output_bus().publish(OutputChunk {
+            seq: 2,
+            data: Arc::new(b"live".to_vec()),
+        });
+
+        for id in 0..8 {
+            assert!(matches!(
+                read_frame_async(&mut client_stream).await.expect("read prior control"),
+                Frame::ControlResponse(ControlResponse { id: received, .. }) if received == id
+            ));
+        }
+        assert!(matches!(
+            read_frame_async(&mut client_stream).await.expect("read snapshot boundary"),
+            Frame::ControlResponse(ControlResponse { id: 99, payload: Some(ResponsePayload::SnapshotSubscribe { .. }), .. })
+        ));
+        let mut associated = Vec::new();
+        while associated.len() < b"replaylive".len() {
+            match read_frame_async(&mut client_stream).await.expect("read associated output") {
+                Frame::OutputBinary(OutputFrame { session_id, data, .. }) if session_id == session.id() => {
+                    associated.extend_from_slice(&data);
+                }
+                frame => panic!("unexpected frame after snapshot boundary: {frame:?}"),
+            }
+        }
+        assert_eq!(associated, b"replaylive");
+
+        for (_, handle) in subscriptions.drain() {
+            handle.abort();
+        }
+        drop(control_tx);
+        drop(output_tx);
+        writer.await.expect("writer task failed");
+        let _ = session.kill(libc::SIGKILL);
+        let _ = session.wait_for_exit(std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn dropped_boundary_ack_cancels_waiting_forwarder_without_output() {
+        let session_id = Uuid::new_v4();
+        let bus = crate::output_bus::OutputBus::new(8, 8);
+        bus.publish(OutputChunk { seq: 1, data: Arc::new(b"replay".to_vec()) });
+        let sub = bus.subscribe(Some(0));
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (written, barrier) = oneshot::channel();
+        drop(written);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            forward_after_response_written(barrier, session_id, sub.replay, sub.receiver, output_tx),
+        )
+        .await
+        .expect("forwarder should stop when writer drops ack");
+        assert!(output_rx.try_recv().is_err(), "failed response must not release associated output");
+    }
+
+    #[tokio::test]
+    async fn pending_boundary_forwarder_is_abortable_for_replacement_or_shutdown() {
+        let session_id = Uuid::new_v4();
+        let bus = crate::output_bus::OutputBus::new(8, 8);
+        bus.publish(OutputChunk { seq: 1, data: Arc::new(b"replay".to_vec()) });
+        let sub = bus.subscribe(Some(0));
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (_written, barrier) = oneshot::channel();
+        let forwarder = tokio::spawn(forward_after_response_written(
+            barrier,
+            session_id,
+            sub.replay,
+            sub.receiver,
+            output_tx,
+        ));
+        forwarder.abort();
+        assert!(forwarder.await.expect_err("aborted forwarder").is_cancelled());
+        assert!(output_rx.try_recv().is_err(), "aborted boundary must not emit replay");
+    }
+
+    #[tokio::test]
     async fn output_burst_leaves_writer_capacity_for_control_response() {
         const OUTPUT_CHUNKS: u64 = 400;
         let session_id = Uuid::new_v4();
@@ -1316,14 +1492,14 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            control_tx.send(Frame::ControlResponse(unknown_session(7, Uuid::nil()))),
+            control_tx.send(QueuedControl::plain(Frame::ControlResponse(unknown_session(7, Uuid::nil())))),
         )
         .await
         .expect("output saturated the writer queue and starved a control response")
         .expect("control queue closed");
         assert!(matches!(
             control_rx.recv().await,
-            Some(Frame::ControlResponse(ControlResponse { id: 7, .. }))
+            Some(QueuedControl { frame: Frame::ControlResponse(ControlResponse { id: 7, .. }), .. })
         ));
 
         forwarder.abort();
