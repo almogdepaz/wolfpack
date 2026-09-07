@@ -531,8 +531,29 @@ export function agentRuntimeStatePath(): string {
   return process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH || resolve(homedir(), ".wolfpack", "agent-runtime-state.json");
 }
 
+function sameRuntimeState(previous: AgentRuntimeState | undefined, next: AgentRuntimeState): boolean {
+  if (!previous || previous.observedAt !== next.observedAt) return false;
+  const keys = Object.keys(next) as (keyof AgentRuntimeState)[];
+  return keys.length === Object.keys(previous).length
+    && keys.every((key) => Object.hasOwn(previous, key) && Object.is(previous[key], next[key]));
+}
+
+/** Freeze constructor-owned JSON, including any extension fields accepted on disk. */
+function freezePersistedState(state: AgentRuntimeState): void {
+  const pending: object[] = [state];
+  while (pending.length > 0) {
+    const value = pending.pop()!;
+    for (const child of Object.values(value)) {
+      if (child !== null && typeof child === "object") pending.push(child);
+    }
+    Object.freeze(value);
+  }
+}
+
+/** Single-owner projection: load once, update entries, then persist a batch. */
 export class AgentRuntimeStateStore {
-  private file: AgentRuntimeStateFile;
+  private readonly file: AgentRuntimeStateFile;
+  private dirty = true;
 
   constructor(readonly path = agentRuntimeStatePath()) {
     this.file = this.read();
@@ -557,15 +578,9 @@ export class AgentRuntimeStateStore {
       ...input,
       previous: this.file.sessions[input.sessionKey],
     });
-    this.file = {
-      schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION,
-      sessions: {
-        ...this.file.sessions,
-        [input.sessionKey]: next,
-      },
-    };
+    const stored = this.set(input.sessionKey, next);
     if (options.persist !== false) this.write();
-    return next;
+    return stored;
   }
 
   acknowledge(sessionKey: string, transitionSequence: number, acknowledgedAt = new Date().toISOString()): AgentRuntimeState | null {
@@ -578,41 +593,60 @@ export class AgentRuntimeStateStore {
       acknowledgedSequence,
       unseen: current.transitionSequence > acknowledgedSequence,
     };
-    this.file = {
-      schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION,
-      sessions: {
-        ...this.file.sessions,
-        [sessionKey]: next,
-      },
-    };
+    const stored = this.set(sessionKey, next);
     this.write();
-    return next;
+    return stored;
   }
 
   prune(
     activeSessionKeys: ReadonlySet<string>,
     options: { readonly persist?: boolean } = {},
   ): void {
-    const sessions = Object.fromEntries(
-      Object.entries(this.file.sessions).filter(([key]) => activeSessionKeys.has(key)),
-    );
-    this.file = { schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION, sessions };
+    for (const key of Object.keys(this.file.sessions)) {
+      if (!activeSessionKeys.has(key)) {
+        delete this.file.sessions[key];
+        this.dirty = true;
+      }
+    }
     if (options.persist !== false) this.write();
   }
 
-  /** Persist a group of in-memory reductions with one full-file write. */
+  private set(sessionKey: string, next: AgentRuntimeState): AgentRuntimeState {
+    const previous = this.file.sessions[sessionKey];
+    if (sameRuntimeState(previous, next)) return previous!;
+    // Reducer values are flat; acknowledgement only shares already-frozen disk
+    // extensions. Never mutate old results or freeze caller-owned input graphs.
+    this.file.sessions[sessionKey] = Object.freeze(next);
+    this.dirty = true;
+    return next;
+  }
+
+  /** Persist pending reductions once; unchanged flushes do no serialization/write. */
   flush(): void {
     this.write();
   }
 
   private read(): AgentRuntimeStateFile {
-    if (!existsSync(this.path)) return { schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION, sessions: {} };
+    // Null-prototype storage keeps opaque names such as __proto__ safe even
+    // though per-entry updates no longer use computed-property object spreads.
+    const sessions: Record<string, AgentRuntimeState> = Object.create(null);
+    const file: AgentRuntimeStateFile = { schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION, sessions };
+    if (!existsSync(this.path)) return file;
     const parsed = JSON.parse(readFileSync(this.path, "utf-8")) as unknown;
-    if (!isAgentRuntimeStateFile(parsed)) return { schemaVersion: AGENT_RUNTIME_STATE_SCHEMA_VERSION, sessions: {} };
-    return parsed;
+    if (!isAgentRuntimeStateFile(parsed)) return file;
+    for (const [key, state] of Object.entries(parsed.sessions)) {
+      freezePersistedState(state);
+      sessions[key] = state;
+    }
+    this.dirty = false;
+    return file;
   }
 
   private write(): void {
+    // Preserve explicit flush/recreation after removal. This is not external
+    // writer/replacement detection: the existing load-once ownership model stays.
+    if (!this.dirty && existsSync(this.path)) return;
+    this.dirty = true; // Recreation attempts must also remain retryable on failure.
     const directory = dirname(this.path);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
@@ -634,6 +668,9 @@ export class AgentRuntimeStateStore {
       if (fd !== undefined) closeSync(fd);
       rmSync(tmp, { force: true });
     }
+    // Only a fully successful write/cleanup clears pending changes. An error
+    // retains the existing in-memory update and the next flush retries it.
+    this.dirty = false;
   }
 }
 

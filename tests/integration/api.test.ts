@@ -1,4 +1,5 @@
-import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -103,7 +104,7 @@ const {
   _testing: pushTesting,
 } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
-const { AgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
+const { AgentRuntimeStateStore, getAgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
 const { forgetSessionObservation } = await import("../../src/server/session-observation.ts");
 
 const {
@@ -315,6 +316,61 @@ describe("GET /api/sessions", () => {
     // Reset backend to known state
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
     mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
+  });
+
+  test("persists one real runtime-state write per changed dashboard batch, none for an identical batch", async () => {
+    mockBackend.setSessions(Array.from({ length: 100 }, (_, i) => `batch-${i}`));
+    const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-25T00:00:00.000Z"));
+    const rename = spyOn(fs, "renameSync");
+    const runtimePath = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!;
+    const writes = () => rename.mock.calls.filter(([, destination]) => destination === runtimePath).length;
+    try {
+      const first = await (await get("/api/sessions")).json();
+      expect(first.sessions).toHaveLength(100);
+      expect(writes()).toBe(1);
+      expect(Object.keys(new AgentRuntimeStateStore(runtimePath).snapshot().sessions)).toHaveLength(100);
+      const same = await (await get("/api/sessions")).json();
+      expect(same.sessions.map((s: any) => s.runtimeState)).toEqual(first.sessions.map((s: any) => s.runtimeState));
+      expect(writes()).toBe(1);
+      clock.mockReturnValue(Date.parse("2026-07-25T00:01:00.000Z"));
+      await get("/api/sessions");
+      expect(writes()).toBe(2); // New observation timestamps must still persist.
+      mockBackend.setSessions([]);
+      await get("/api/sessions");
+      expect(writes()).toBe(3); // Real removals persist.
+      await get("/api/sessions");
+      expect(writes()).toBe(3); // Repeated empty observation does not rewrite.
+    } finally {
+      rename.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  test("a capture-pending observation preserves an acknowledgement made while it awaited", async () => {
+    mockBackend.setSessions(["ack-flight"]);
+    mockBackend.setCapturePane(async () => "same screen\n");
+    const first = await (await get("/api/sessions")).json();
+    const sessionId = first.sessions[0].identity.wolfpackSessionId;
+    const transitionSequence = first.sessions[0].runtimeState.transitionSequence;
+    let started!: () => void;
+    let release!: () => void;
+    const capturing = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mockBackend.setCapturePane(async () => { started(); await gate; return "same screen\n"; });
+    mockBackend.setOutputSequence("ack-flight", "1");
+    const pending = get("/api/sessions");
+    try {
+      await capturing;
+      // Apply the ack route's real store operation while capture is held.
+      expect(getAgentRuntimeStateStore().acknowledge(sessionId, transitionSequence)?.unseen).toBe(false);
+      release();
+      const observed = await (await pending).json();
+      expect(observed.sessions[0].runtimeState).toMatchObject({ transitionSequence, acknowledgedSequence: transitionSequence, unseen: false });
+      expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ acknowledgedSequence: transitionSequence, unseen: false });
+    } finally {
+      release();
+      await pending;
+    }
   });
 
   test("returns session list with lastLine and triage", async () => {
