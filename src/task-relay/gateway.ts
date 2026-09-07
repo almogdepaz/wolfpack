@@ -183,6 +183,14 @@ export class TaskRelayGateway {
     return (await this.#store.registrationForSession(sessionId, this.#now()))?.endpoint;
   }
 
+  async endpointsForSessions(sessionIds: readonly string[]): Promise<ReadonlyMap<string, RelayEndpoint>> {
+    const endpoints = new Map<string, RelayEndpoint>();
+    for (const [sessionId, registration] of await this.#store.registrationsForSessions(sessionIds, this.#now())) {
+      endpoints.set(sessionId, registration.endpoint);
+    }
+    return endpoints;
+  }
+
   async disconnect(input: { readonly callerSession: string; readonly endpoint: RelayEndpoint }): Promise<RelayResult<Record<never, never>>> {
     if (!isRelayEndpoint(input.endpoint)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay endpoint");
     const caller = await this.#caller(input.callerSession);
@@ -301,13 +309,14 @@ export class TaskRelayGateway {
   }
 
   async flushPeerOutbox(recoverImmediately = false): Promise<{ readonly forwarded: number; readonly pending: number }> {
+    const outbox = await this.#store.outbox();
+    if (outbox.length === 0) return { forwarded: 0, pending: 0 };
     let forwarded = 0;
-    for (const item of await this.#store.outbox()) {
+    for (const item of outbox) {
       if (item.forwardedAt !== undefined || item.exhaustedAt !== undefined) continue;
       if (await this.#forwardEnvelope(item.envelope.envelopeId, recoverImmediately)) forwarded += 1;
     }
-    const pending = (await this.#store.outbox()).filter((item) => item.forwardedAt === undefined && item.exhaustedAt === undefined).length;
-    return { forwarded, pending };
+    return { forwarded, pending: await this.#store.pendingOutboxCount() };
   }
 
   async cleanup(before: Date): Promise<number> {
@@ -330,7 +339,7 @@ export class TaskRelayGateway {
   }
 
   async #forwardEnvelopeOnce(envelopeId: string, recoverImmediately = false): Promise<boolean> {
-    const item = (await this.#store.outbox()).find((candidate) => candidate.envelope.envelopeId === envelopeId);
+    const item = await this.#store.outboxItem(envelopeId);
     if (!item || item.forwardedAt !== undefined || item.exhaustedAt !== undefined) return item?.forwardedAt !== undefined;
     if (item.attempts >= RELAY_LIMITS.MAX_FORWARD_ATTEMPTS) {
       await this.#store.updateOutbox(envelopeId, (current) => current.exhaustedAt === undefined

@@ -126,6 +126,11 @@ describe("task relay v2 routes", () => {
 
     const sessionProjection = await fetch(`${base}/api/session-control/status?session=receiver`);
     expect(await sessionProjection.json()).toMatchObject({ taskEndpoint: receiver.endpoint });
+    const sessionList = await fetch(`${base}/api/session-control/list`);
+    expect(await sessionList.json()).toMatchObject({ sessions: [
+      expect.objectContaining({ sessionId: "receiver-id", taskEndpoint: receiver.endpoint }),
+      expect.objectContaining({ sessionId: "sender-id", taskEndpoint: sender.endpoint }),
+    ] });
     const accepted = await post("/api/task-relay/v2/send", {
       callerSession: "sender",
       envelope: {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalJson } from "../canonical-json.ts";
@@ -83,6 +83,32 @@ const PEER_RELAY_PREFIX = `${RELAY_ID}:peer:`;
 const locks = new Map<string, Promise<void>>();
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const DECIMAL_CURSOR_PATTERN = /^[1-9][0-9]*$/;
+
+/**
+ * A store instance observes external writers only when they atomically replace or
+ * remove/recreate relay-state.json. Same-process writers are serialized below.
+ * Direct in-place edits are unsupported: they can defeat file identity checks
+ * and were never a safe concurrent mutation protocol for this JSON store.
+ */
+interface FileVersion {
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}
+
+interface RelaySnapshot {
+  readonly state: RelayState;
+  readonly version: FileVersion | undefined;
+  readonly registrationBySession: ReadonlyMap<string, RelayRegistration>;
+  readonly registrationByEndpoint: ReadonlyMap<string, RelayRegistration>;
+  readonly peerOriginByRoute: ReadonlyMap<string, string>;
+  readonly envelopeById: ReadonlyMap<string, StoredEnvelope>;
+  readonly mailboxByEndpoint: ReadonlyMap<string, readonly StoredMailboxItem[]>;
+  readonly outboxByEnvelopeId: ReadonlyMap<string, PeerOutboxItem>;
+  readonly pendingOutboxCount: number;
+}
 
 function digestJson(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -268,12 +294,12 @@ export class MalformedRelayStoreError extends TypeError {
   }
 }
 
-function atomicWrite(path: string, state: RelayState): void {
+function atomicWrite(path: string, source: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
   const descriptor = openSync(temporary, "w", 0o600);
   try {
-    writeFileSync(descriptor, canonicalJson(state), "utf8");
+    writeFileSync(descriptor, source, "utf8");
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
@@ -281,6 +307,54 @@ function atomicWrite(path: string, state: RelayState): void {
   renameSync(temporary, path);
   const directory = openSync(dirname(path), "r");
   try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+
+function fileVersion(path: string): FileVersion | undefined {
+  try {
+    const stat = statSync(path);
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+  } catch (cause: unknown) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw cause;
+  }
+}
+
+function sameFileVersion(left: FileVersion | undefined, right: FileVersion | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function freeze(value: unknown): void {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return;
+  for (const item of Object.values(value)) freeze(item);
+  Object.freeze(value);
+}
+
+function snapshot(state: RelayState, version: FileVersion | undefined): RelaySnapshot {
+  freeze(state);
+  const registrationBySession = new Map(state.registrations.map(item => [item.sessionId, item]));
+  const registrationByEndpoint = new Map(state.registrations.map(item => [item.endpoint.id, item]));
+  const peerOriginByRoute = new Map(state.peerRoutes.map(item => [item.id, item.origin]));
+  const envelopeById = new Map(state.envelopes.map(item => [item.envelope.envelopeId, item]));
+  const mailboxByEndpoint = new Map<string, StoredMailboxItem[]>();
+  for (const item of state.mailbox) {
+    const mailbox = mailboxByEndpoint.get(item.endpointId) ?? [];
+    mailbox.push(item);
+    mailboxByEndpoint.set(item.endpointId, mailbox);
+  }
+  for (const mailbox of mailboxByEndpoint.values()) mailbox.sort((left, right) => BigInt(left.cursor) < BigInt(right.cursor) ? -1 : 1);
+  return {
+    state,
+    version,
+    registrationBySession,
+    registrationByEndpoint,
+    peerOriginByRoute,
+    envelopeById,
+    mailboxByEndpoint,
+    outboxByEnvelopeId: new Map(state.outbox.map(item => [item.envelope.envelopeId, item])),
+    pendingOutboxCount: state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined).length,
+  };
 }
 
 async function serialized<T>(path: string, operation: () => Promise<T>): Promise<T> {
@@ -299,6 +373,7 @@ async function serialized<T>(path: string, operation: () => Promise<T>): Promise
 export class TaskRelayStore {
   readonly root: string;
   readonly path: string;
+  #snapshot: RelaySnapshot | undefined;
 
   constructor(root: string | undefined = undefined) {
     this.root = resolve(root ?? join(homedir(), ".wolfpack", "pi-tasks-relay-v2"));
@@ -311,23 +386,36 @@ export class TaskRelayStore {
       const registration = existing
         ? { ...existing, protocolVersions: input.protocolVersions, leaseExpiresAt: input.leaseExpiresAt }
         : input;
+      if (existing && canonicalJson(existing) === canonicalJson(registration)) return { state, value: existing };
       return { state: { ...state, registrations: [...state.registrations.filter((item) => item.sessionId !== input.sessionId), registration] }, value: registration };
     });
   }
 
   async registrationForSession(sessionId: string, now: Date): Promise<RelayRegistration | undefined> {
-    return this.#read().registrations.find((item) => item.sessionId === sessionId && Date.parse(item.leaseExpiresAt) > now.getTime());
+    const registration = this.#read().registrationBySession.get(sessionId);
+    return registration && Date.parse(registration.leaseExpiresAt) > now.getTime() ? registration : undefined;
+  }
+
+  async registrationsForSessions(sessionIds: readonly string[], now: Date): Promise<ReadonlyMap<string, RelayRegistration>> {
+    const registrations = new Map<string, RelayRegistration>();
+    const snapshot = this.#read();
+    for (const sessionId of sessionIds) {
+      const registration = snapshot.registrationBySession.get(sessionId);
+      if (registration && Date.parse(registration.leaseExpiresAt) > now.getTime()) registrations.set(sessionId, registration);
+    }
+    return registrations;
   }
 
   async registration(endpointId: string, now: Date): Promise<RelayRegistration | undefined> {
-    return this.#read().registrations.find((item) => item.endpoint.id === endpointId && Date.parse(item.leaseExpiresAt) > now.getTime());
+    const registration = this.#read().registrationByEndpoint.get(endpointId);
+    return registration && Date.parse(registration.leaseExpiresAt) > now.getTime() ? registration : undefined;
   }
 
   async deactivateRegistration(sessionId: string, endpointId: string, leaseExpiresAt: string): Promise<boolean> {
     return this.#mutate((state) => {
       const registration = state.registrations.find((item) => item.sessionId === sessionId && item.endpoint.id === endpointId);
       return {
-        state: registration
+        state: registration && registration.leaseExpiresAt !== leaseExpiresAt
           ? { ...state, registrations: state.registrations.map((item) => item === registration ? { ...item, leaseExpiresAt } : item) }
           : state,
         value: registration !== undefined,
@@ -358,30 +446,22 @@ export class TaskRelayStore {
   }
 
   async inbox(endpointId: string, cursor: string): Promise<RelayInboxPage> {
-    const state = this.#read();
-    const selectedMailbox: StoredMailboxItem[] = [];
-    let matchingItems = 0;
-    for (const item of state.mailbox) {
-      if (item.endpointId !== endpointId || BigInt(item.cursor) <= BigInt(cursor)) continue;
-      matchingItems += 1;
-      const insertionIndex = selectedMailbox.findIndex(candidate => BigInt(item.cursor) < BigInt(candidate.cursor));
-      if (insertionIndex === -1) selectedMailbox.push(item);
-      else selectedMailbox.splice(insertionIndex, 0, item);
-      if (selectedMailbox.length > RELAY_LIMITS.INBOX_PAGE_ITEMS) selectedMailbox.pop();
+    const snapshot = this.#read();
+    const mailbox = snapshot.mailboxByEndpoint.get(endpointId) ?? [];
+    const requestedCursor = BigInt(cursor);
+    let first = 0;
+    let last = mailbox.length;
+    while (first < last) {
+      const middle = first + Math.floor((last - first) / 2);
+      if (BigInt(mailbox[middle]!.cursor) <= requestedCursor) first = middle + 1;
+      else last = middle;
     }
-
-    const selectedEnvelopeIds = new Set(selectedMailbox.map(item => item.envelopeId));
-    const envelopes = new Map<string, RelayEnvelope>();
-    for (const item of state.envelopes) {
-      if (selectedEnvelopeIds.has(item.envelope.envelopeId)) {
-        envelopes.set(item.envelope.envelopeId, item.envelope);
-      }
-    }
-
+    const matchingItems = mailbox.length - first;
+    const selectedMailbox = mailbox.slice(first, first + RELAY_LIMITS.INBOX_PAGE_ITEMS);
     const items: RelayInboxItem[] = [];
     let bytes = 0;
     for (const item of selectedMailbox) {
-      const envelope = envelopes.get(item.envelopeId);
+      const envelope = snapshot.envelopeById.get(item.envelopeId)?.envelope;
       if (envelope === undefined) continue;
       const itemBytes = encodedJsonBytes(envelope);
       if (bytes + itemBytes > RELAY_LIMITS.INBOX_PAGE_BYTES) break;
@@ -410,7 +490,7 @@ export class TaskRelayStore {
   }
 
   async peerOrigin(routeId: string): Promise<string | undefined> {
-    return this.#read().peerRoutes.find((item) => item.id === routeId)?.origin;
+    return this.#read().peerOriginByRoute.get(routeId);
   }
 
   async queuePeer(input: Omit<PeerOutboxItem, "digest" | "acceptanceId">): Promise<{ readonly kind: "accepted" | "duplicate" | "conflict"; readonly acceptanceId: string }> {
@@ -430,11 +510,28 @@ export class TaskRelayStore {
   }
 
   async outbox(): Promise<readonly PeerOutboxItem[]> {
-    return this.#read().outbox;
+    return this.#read().state.outbox;
+  }
+
+  async outboxItem(envelopeId: string): Promise<PeerOutboxItem | undefined> {
+    return this.#read().outboxByEnvelopeId.get(envelopeId);
+  }
+
+  async pendingOutboxCount(): Promise<number> {
+    return this.#read().pendingOutboxCount;
   }
 
   async updateOutbox(envelopeId: string, update: (item: PeerOutboxItem) => PeerOutboxItem): Promise<void> {
-    await this.#mutate((state) => ({ state: { ...state, outbox: state.outbox.map((item) => item.envelope.envelopeId === envelopeId ? update(item) : item) }, value: undefined }));
+    await this.#mutate((state) => {
+      const index = state.outbox.findIndex(item => item.envelope.envelopeId === envelopeId);
+      if (index === -1) return { state, value: undefined };
+      const previous = state.outbox[index]!;
+      const next = update(previous);
+      if (next === previous || canonicalJson(next) === canonicalJson(previous)) return { state, value: undefined };
+      const outbox = [...state.outbox];
+      outbox[index] = next;
+      return { state: { ...state, outbox }, value: undefined };
+    });
   }
 
   async cleanup(before: Date): Promise<number> {
@@ -469,8 +566,12 @@ export class TaskRelayStore {
         ...retainedMailbox.map(item => item.endpointId),
       ]);
       const retainedMailboxCursors = state.mailboxCursors.filter(item => retainedCursorEndpoints.has(item.endpointId));
+      const removed = state.registrations.length - retainedRegistrations.length
+        + state.mailbox.length - retainedMailbox.length
+        + state.outbox.length - retainedOutbox.length;
+      const changed = removed !== 0 || state.mailboxCursors.length !== retainedMailboxCursors.length;
       return {
-        state: {
+        state: !changed ? state : {
           ...state,
           registrations: retainedRegistrations,
           mailbox: retainedMailbox,
@@ -478,35 +579,64 @@ export class TaskRelayStore {
           envelopes: retainedEnvelopes,
           outbox: retainedOutbox,
         },
-        value: state.registrations.length - retainedRegistrations.length
-          + state.mailbox.length - retainedMailbox.length
-          + state.outbox.length - retainedOutbox.length,
+        value: removed,
       };
     });
   }
 
-  #read(): RelayState {
-    if (!existsSync(this.path)) return EMPTY;
-    const source = readFileSync(this.path, "utf8");
+  #read(): RelaySnapshot {
+    const currentVersion = fileVersion(this.path);
+    if (this.#snapshot && sameFileVersion(this.#snapshot.version, currentVersion)) return this.#snapshot;
+    if (currentVersion === undefined) return this.#snapshot = snapshot(EMPTY, undefined);
+
+    // Read a stable file identity. An external atomic replacement between stat
+    // and read is retried rather than publishing a snapshot for the old file.
+    for (let attempts = 0; attempts < 3; attempts += 1) {
+      const before = fileVersion(this.path);
+      if (before === undefined) return this.#snapshot = snapshot(EMPTY, undefined);
+      let source: string;
+      try {
+        source = readFileSync(this.path, "utf8");
+      } catch (cause: unknown) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw cause;
+      }
+      const after = fileVersion(this.path);
+      if (!sameFileVersion(before, after)) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(source);
+      } catch (cause) {
+        throw new MalformedRelayStoreError(cause);
+      }
+      const state = parsePersistedRelayState(parsed);
+      if (!state) throw new MalformedRelayStoreError();
+      if (state === "reset") return this.#write(EMPTY);
+      return this.#snapshot = snapshot(state, after);
+    }
+    throw new MalformedRelayStoreError(new Error("relay store changed while loading"));
+  }
+
+  #write(state: RelayState): RelaySnapshot {
+    const source = canonicalJson(state);
+    atomicWrite(this.path, source);
     let parsed: unknown;
     try {
       parsed = JSON.parse(source);
     } catch (cause) {
       throw new MalformedRelayStoreError(cause);
     }
-    const state = parsePersistedRelayState(parsed);
-    if (!state) throw new MalformedRelayStoreError();
-    if (state === "reset") {
-      atomicWrite(this.path, EMPTY);
-      return EMPTY;
-    }
-    return state;
+    const persisted = parsePersistedRelayState(parsed);
+    if (!persisted || persisted === "reset") throw new MalformedRelayStoreError();
+    const version = fileVersion(this.path);
+    return this.#snapshot = snapshot(version === undefined ? EMPTY : persisted, version);
   }
 
   async #mutate<T>(operation: (state: RelayState) => { readonly state: RelayState; readonly value: T }): Promise<T> {
     return serialized(this.path, async () => {
-      const { state, value } = operation(this.#read());
-      atomicWrite(this.path, state);
+      const previous = this.#read();
+      const { state, value } = operation(previous.state);
+      if (state !== previous.state) this.#write(state);
       return value;
     });
   }

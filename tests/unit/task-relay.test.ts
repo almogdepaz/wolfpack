@@ -1,5 +1,6 @@
 import { describe, expect, jest, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encodedJsonBytes, isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
@@ -788,6 +789,109 @@ describe("pi tasks relay v2", () => {
     } finally {
       gateway?.close();
       jest.useRealTimers();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("caches validated snapshots, invalidates atomic replacements, and reparses only cold reads", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    try {
+      const first = new TaskRelayStore(directory);
+      await first.register(VALID_REGISTRATION);
+      const cold = new TaskRelayStore(directory);
+      const readSpy = jest.spyOn(fs, "readFileSync");
+      try {
+        await cold.registrationForSession("sender", NOW);
+        await cold.registrationForSession("sender", NOW);
+        await cold.registration(SENDER_ID, NOW);
+        expect(readSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      const second = new TaskRelayStore(directory);
+      await second.register({ ...VALID_REGISTRATION, leaseExpiresAt: "2026-08-09T00:02:00.000Z" });
+      await expect(cold.registrationForSession("sender", new Date("2026-08-09T00:01:30.000Z"))).resolves.toMatchObject({
+        leaseExpiresAt: "2026-08-09T00:02:00.000Z",
+      });
+
+      const validSource = readFileSync(path, "utf8");
+      const temporary = `${path}.replacement`;
+      writeFileSync(temporary, "{");
+      renameSync(temporary, path);
+      await expectMalformedRelayStore(() => cold.outbox(), "atomically replaced malformed store");
+
+      writeFileSync(temporary, validSource);
+      renameSync(temporary, path);
+      await expect(cold.registrationForSession("sender", NOW)).resolves.toMatchObject({
+        leaseExpiresAt: "2026-08-09T00:02:00.000Z",
+      });
+
+      rmSync(path);
+      await expect(cold.registrationForSession("sender", NOW)).resolves.toBeUndefined();
+      writeFileSync(temporary, validSource);
+      renameSync(temporary, path);
+      await expect(cold.registrationForSession("sender", NOW)).resolves.toMatchObject({
+        leaseExpiresAt: "2026-08-09T00:02:00.000Z",
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("serializes same-path store mutations without stale cached registrations", async () => {
+    const directory = root();
+    try {
+      const left = new TaskRelayStore(directory);
+      const right = new TaskRelayStore(directory);
+      await Promise.all([
+        left.register(VALID_REGISTRATION),
+        right.register({ ...VALID_REGISTRATION, endpoint: { relay: RELAY_ID, id: RECEIVER_ID }, sessionId: "receiver", generation: "receiver-generation" }),
+      ]);
+      await expect(left.registrationForSession("receiver", NOW)).resolves.toMatchObject({ endpoint: { id: RECEIVER_ID } });
+      await expect(right.registrationForSession("sender", NOW)).resolves.toMatchObject({ endpoint: { id: SENDER_ID } });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("does not replace durable state for validated duplicate and empty-maintenance operations", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.register(VALID_REGISTRATION);
+      await store.accept(LOCAL_ENVELOPE, NOW.toISOString());
+      await store.acknowledge(RECEIVER_ID, LOCAL_ENVELOPE.envelopeId, NOW.toISOString());
+      const path = join(directory, "relay-state.json");
+      const before = statSync(path);
+
+      await store.register(VALID_REGISTRATION);
+      await store.acknowledge(RECEIVER_ID, LOCAL_ENVELOPE.envelopeId, NOW.toISOString());
+      await store.updateOutbox("missing", item => item);
+      await store.cleanup(new Date(NOW.getTime() - 1));
+
+      const after = statSync(path);
+      expect({ dev: after.dev, ino: after.ino, size: after.size, mtimeMs: after.mtimeMs, ctimeMs: after.ctimeMs }).toEqual({
+        dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs, ctimeMs: before.ctimeMs,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("indexes stable mailbox reads and batches active session registration lookups", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.register(VALID_REGISTRATION);
+      await acceptInboxEnvelopes(store, RELAY_LIMITS.INBOX_PAGE_ITEMS + 10);
+      const page = await store.inbox(RECEIVER_ID, "0");
+      expect(page.items).toHaveLength(RELAY_LIMITS.INBOX_PAGE_ITEMS);
+      const registrations = await store.registrationsForSessions(["sender", "missing", "sender"], NOW);
+      expect([...registrations]).toEqual([["sender", expect.objectContaining({ endpoint: VALID_REGISTRATION.endpoint })]]);
+      expect(await store.pendingOutboxCount()).toBe(0);
+    } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   });
