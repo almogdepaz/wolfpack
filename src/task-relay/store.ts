@@ -86,9 +86,10 @@ const DECIMAL_CURSOR_PATTERN = /^[1-9][0-9]*$/;
 
 /**
  * A store instance observes external writers only when they atomically replace or
- * remove/recreate relay-state.json. Same-process writers are serialized below.
- * Direct in-place edits are unsupported: they can defeat file identity checks
- * and were never a safe concurrent mutation protocol for this JSON store.
+ * remove/recreate relay-state.json. Same-process writers are serialized below;
+ * independent processes must coordinate a single writer because this JSON store
+ * has no cross-process compare-and-swap. Direct in-place edits are unsupported:
+ * they can defeat file identity checks and were never a safe mutation protocol.
  */
 interface FileVersion {
   readonly dev: number;
@@ -635,16 +636,11 @@ export class TaskRelayStore {
       this.#snapshot = undefined;
       throw cause;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(source);
-    } catch (cause) {
-      throw new MalformedRelayStoreError(cause);
-    }
-    const persisted = parsePersistedRelayState(parsed);
-    if (!persisted || persisted === "reset") throw new MalformedRelayStoreError();
-    const version = fileVersion(this.path);
-    return this.#snapshot = snapshot(version === undefined ? EMPTY : persisted, version);
+    // Do not pair our serialized bytes with a later path stat: another atomic
+    // replacement could win after rename. Reload through #read's stable
+    // before/read/after identity check so cache authority always matches bytes.
+    this.#snapshot = undefined;
+    return this.#read();
   }
 
   async #mutate<T>(operation: (state: RelayState) => { readonly state: RelayState; readonly value: T }): Promise<T> {

@@ -840,6 +840,36 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("does not publish own write bytes under an atomically replaced file identity", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    const replacement = `${path}.replacement`;
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.register(VALID_REGISTRATION);
+      writeFileSync(replacement, readFileSync(path, "utf8").replace(
+        VALID_REGISTRATION.leaseExpiresAt,
+        "2026-08-09T00:03:00.000Z",
+      ));
+      let fsyncCalls = 0;
+      const fsyncSpy = jest.spyOn(fs, "fsyncSync").mockImplementation((_descriptor: number) => {
+        fsyncCalls += 1;
+        if (fsyncCalls === 2) renameSync(replacement, path);
+      });
+      try {
+        const registered = await store.register({ ...VALID_REGISTRATION, leaseExpiresAt: "2026-08-09T00:02:00.000Z" });
+        expect(registered.leaseExpiresAt).toBe("2026-08-09T00:03:00.000Z");
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      await expect(store.registrationForSession("sender", new Date("2026-08-09T00:02:30.000Z"))).resolves.toMatchObject({
+        leaseExpiresAt: "2026-08-09T00:03:00.000Z",
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("serializes same-path store mutations without stale cached registrations", async () => {
     const directory = root();
     try {
