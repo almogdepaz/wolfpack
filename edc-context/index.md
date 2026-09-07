@@ -7,8 +7,6 @@ Start here to route work, then open only the module document(s) for the paths or
 - `edc-context/modules/wolfpack.md` for Bun server/CLI/browser/runtime, sessions, broker client boundary, terminal attach/inspection, Tailnet, tasks/relay/push, setup/service/install/build.
 - `edc-context/modules/broker.md` for the Rust PTY broker daemon, socket protocol, registry/tombstones, PTY lifecycle, replay/snapshots, resize, and Ghostty VT FFI.
 - `edc-context/modules/tests.md` for Bun/integration/Playwright/snapshot/schema fixtures and executable regression contracts.
-- `edc-context/modules/docs.md` for operator docs, public site/media, generated API schema publication, and documentation authority boundaries.
-- `edc-context/modules/skills.md` for the bundled Pi Wolfpack control skill and agent-facing CLI/task-worker policy.
 
 Do not treat generated bundles, staged EDC artifacts, screenshots/media, generated schemas, site assets, or prior test results as source truth. Reports and contextless machine coverage are intentionally outside the normal human read path.
 
@@ -19,12 +17,10 @@ Do not treat generated bundles, staged EDC artifacts, screenshots/media, generat
 | `broker/**` | `modules/broker.md` | Broker owns PTY children, registry/tombstones, output sequence/replay, snapshots, resize transaction, socket codec/server, and Ghostty VT FFI bounds. |
 | `src/**`, `public/**`, `bin/**`, `scripts/**` | `modules/wolfpack.md` | Covers server HTTP/WS auth, session/project APIs, broker client/backend, passive inspection, browser terminal/grid/session cards, Tailnet peers, tasks/relay/push, setup/service/install/build. |
 | `tests/**` | `modules/tests.md` | Use for harness behavior and regression intent; production modules remain semantic authority. |
-| `docs/**`, `site/**` | `modules/docs.md` | Docs/site publish user contracts but do not override runtime validation, auth, broker, service, installer, or schema-source behavior. |
-| `skills/**` | `modules/skills.md` | Skill is a policy wrapper over public Wolfpack CLI/API, not an independent protocol/auth authority. |
 | Broker protocol, terminal attach/reconnect, passive snapshot, or conflict/take-control changes | `modules/broker.md` + `modules/wolfpack.md` + relevant `modules/tests.md` sections | Highest coupling: Rust protocol/session sequencing, TS broker client/backend, WS attach, browser hydration/inspection, and real-broker tests must stay aligned. |
-| Auth, Tailnet, remote machine, or browser peer changes | `modules/wolfpack.md` + `modules/docs.md` + `modules/skills.md` as needed | Stable machine identity/canonical origin are routing authority; labels and forwarded headers are not. |
-| Tasks, relay, notifications, quiet alerts, Pi integration, child-agent model selection, or task-worker readiness | `modules/wolfpack.md` + `modules/tests.md` + `modules/docs.md` + `modules/skills.md` | Durable task/relay data and exact broker session IDs are authority; terminal output is not task/model readiness evidence. |
-| Install, release, setup, service, provider detection, or broker artifact changes | `modules/wolfpack.md` + `modules/broker.md` + `modules/docs.md` + `modules/tests.md` | Preserve artifact provenance checks and server-only vs broker restart blast-radius claims. |
+| Auth, Tailnet, remote machine, or browser peer changes | `modules/wolfpack.md` | Stable machine identity/canonical origin are routing authority; labels and forwarded headers are not. |
+| Tasks, relay, notifications, quiet alerts, Pi integration, child-agent model selection, or task-worker readiness | `modules/wolfpack.md` + `modules/tests.md` | Durable task/relay data and exact broker session IDs are authority; terminal output is not task/model readiness evidence. |
+| Install, release, setup, service, provider detection, or broker artifact changes | `modules/wolfpack.md` + `modules/broker.md` + `modules/tests.md` | Preserve artifact provenance checks and server-only vs broker restart blast-radius claims. |
 
 ## Critical global invariants
 

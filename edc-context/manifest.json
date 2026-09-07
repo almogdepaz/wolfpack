@@ -49,33 +49,20 @@
           "tests/"
         ]
       }
-    },
-    {
-      "name": "docs",
-      "doc": "edc-context/modules/docs.md",
-      "summary": "Operator documentation, public site/LLM surfaces, generated API-contract publication, install/Tailnet/PWA/task/session guidance, design evidence, and doc drift boundaries.",
-      "priority": 70,
-      "match": {
-        "prefixes": [
-          "docs/",
-          "site/"
-        ]
-      }
-    },
-    {
-      "name": "skills",
-      "doc": "edc-context/modules/skills.md",
-      "summary": "Bundled Pi Wolfpack control skill and agent-facing policy over public CLI/API/session/task-worker surfaces.",
-      "priority": 60,
-      "match": {
-        "prefixes": [
-          "skills/"
-        ]
-      }
     }
   ],
   "contextless": {
     "entries": [
+      {
+        "id": "documentation-and-skills",
+        "globs": [
+          "docs/**",
+          "site/**",
+          "skills/**"
+        ],
+        "reason": "Documentation, site assets, and skill guidance do not need dedicated context files; inspect owning runtime source when behavior is in question.",
+        "reviewPolicy": "no-context-review"
+      },
       {
         "id": "repository-metadata",
         "globs": [
@@ -117,6 +104,9 @@
   },
   "unmapped": {
     "allowedGlobs": [
+      "docs/**",
+      "site/**",
+      "skills/**",
       "README.md",
       "CONTRIBUTING.md",
       "SECURITY.md",
@@ -145,14 +135,14 @@
   "generatedAt": "2026-09-07T17:39:43Z",
   "sourceCommit": "cbc513e48e75b85646154befb886cb854b483458",
   "coverage": {
-    "contextMappedFileCount": 494,
-    "contextlessFileCount": 36,
+    "contextMappedFileCount": 436,
+    "contextlessFileCount": 94,
     "uncoveredFileCount": 0,
     "ambiguousPathCount": 0,
     "ignoredFileCount": 0,
     "ignoreSource": "none",
     "ignoreGlobs": [],
-    "mappedFileCount": 494,
-    "unmappedFileCount": 36
+    "mappedFileCount": 436,
+    "unmappedFileCount": 94
   }
 }
