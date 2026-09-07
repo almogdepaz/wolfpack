@@ -9,7 +9,7 @@ import {
   type RelayGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
 } from "./worker-protocol.ts";
 
-const log = createLogger("task-relay-worker");
+const log = createLogger("task-relay");
 const owners = new Set<string>();
 class WorkerUnavailable extends Error {}
 class InvalidWorkerRequest extends Error {}
