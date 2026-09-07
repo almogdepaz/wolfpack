@@ -1,5 +1,6 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
+import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
   OPENABLE_HARNESSES,
@@ -563,6 +564,16 @@ export const controlApiSource: ControlApiSource = {
         },
       }, ["code", "message"]),
     }, ["ok", "error"]),
+    SessionSnapshot: object({
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+      text: string("Bounded plain text from the broker's visible screen; not a live stream"),
+      capturedAt: { type: "string", format: "date-time" },
+      cols: { type: "integer", minimum: 1 },
+      rows: { type: "integer", minimum: 1 },
+      truncated: boolean(),
+      freshness: { enum: Object.values(SESSION_SNAPSHOT_FRESHNESS) },
+    }, ["session", "sessionId", "text", "capturedAt", "cols", "rows", "truncated", "freshness"]),
     SessionStatus: object({
       ok: { const: true },
       selector: ref("SessionSelector"),
@@ -1244,6 +1255,14 @@ export const controlApiSource: ControlApiSource = {
         "410 SessionStatusFailure",
         "503 SessionStatusFailure",
       ],
+    },
+    "GET /api/session-control/snapshot": {
+      operationId: "snapshotSessionVisibleScreen",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ sessionId: ref("SessionId") }, ["sessionId"]),
+      response: ref("SessionSnapshot"),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "410 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/session-control/read": {
       operationId: "readSession",

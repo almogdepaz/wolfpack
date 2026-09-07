@@ -89,6 +89,22 @@
       </form>
     </dialog>
 
+    <dialog id="session-inspector-dialog" class="session-inspector-dialog" aria-labelledby="session-inspector-title">
+      <div class="session-inspector-header">
+        <div>
+          <h2 id="session-inspector-title">Inspect session</h2>
+          <p>Read-only visible-screen snapshot. Not live.</p>
+        </div>
+        <button id="session-inspector-close" type="button" aria-label="Close inspection">close</button>
+      </div>
+      <div id="session-inspector-status" role="status" aria-live="polite"></div>
+      <div id="session-inspector-metadata"></div>
+      <pre id="session-inspector-output" tabindex="0"></pre>
+      <div class="session-inspector-actions">
+        <button id="session-inspector-retry" type="button">Retry snapshot</button>
+      </div>
+    </dialog>
+
     <main id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible" role="region" aria-label="Sessions">

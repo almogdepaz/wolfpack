@@ -35,6 +35,7 @@ import type {
   SessionPrefill,
   SessionPrefillOptions,
   SessionPromptBackendMethods,
+  SessionSnapshotCapture,
 } from "./backend-contract.js";
 import {
   SESSION_PROMPT_OUTCOME,
@@ -69,6 +70,7 @@ import { brokerOutputSequence } from "../broker-output-sequence.js";
 import {
   plainLine,
   renderSnapshotToAnsi,
+  renderSnapshotToPlainText,
   type SnapshotForRender,
 } from "../broker/snapshot-render.js";
 import {
@@ -174,8 +176,12 @@ interface StyledLine {
 }
 
 interface SnapshotPayload extends SnapshotForRender {
+  session_id?: string;
   visible_screen: StyledLine[];
   scrollback?: StyledLine[];
+  cols?: number;
+  rows?: number;
+  captured_at_ms?: number;
   /** Final broker PTY-chunk seq covered at capture time. Present on all broker snapshots. */
   seq?: number;
 }
@@ -528,6 +534,41 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (!id) return "";
     const snap = await this.fetchSnapshot(id, name, "capturePane", undefined, options?.scrollbackLines);
     return renderSnapshot(snap);
+  }
+
+  async captureSessionSnapshotById(sessionId: string): Promise<SessionSnapshotCapture> {
+    const session = await this.exactSessionInfo(sessionId);
+    if (!session.alive) throw new BrokerRpcError("session_not_alive", `session is not alive: ${sessionId}`);
+    let snapshot: SnapshotPayload;
+    try {
+      snapshot = await this.fetchSnapshot(sessionId, session.name, "captureSessionSnapshotById", undefined, 0);
+    } catch (error: unknown) {
+      if (error instanceof BrokerRpcError && (error.code === "unknown_session" || error.code === "session_not_alive")) {
+        throw new BrokerRpcError("session_not_alive", `session ended during capture: ${sessionId}`);
+      }
+      throw error;
+    }
+    if (
+      snapshot.session_id !== sessionId
+      || typeof snapshot.captured_at_ms !== "number"
+      || typeof snapshot.cols !== "number"
+      || typeof snapshot.rows !== "number"
+      || !Number.isInteger(snapshot.captured_at_ms)
+      || !Number.isInteger(snapshot.cols)
+      || !Number.isInteger(snapshot.rows)
+      || snapshot.cols < 1
+      || snapshot.rows < 1
+    ) {
+      throw new BrokerRpcError("invalid_snapshot", "broker returned an invalid exact-ID snapshot");
+    }
+    return {
+      session: session.name,
+      sessionId,
+      text: renderSnapshotToPlainText(snapshot),
+      capturedAtMs: snapshot.captured_at_ms,
+      cols: snapshot.cols,
+      rows: snapshot.rows,
+    };
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {
@@ -1143,6 +1184,21 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       throw new BrokerRpcError("invalid_snapshot", "broker returned no snapshot payload");
     }
     return snapshot as SnapshotPayload;
+  }
+
+  private async exactSessionInfo(sessionId: string): Promise<BrokerSessionInfo> {
+    const payload = unwrap(await this.client.request("session_info", { session_id: sessionId }));
+    const session = payload.session;
+    if (
+      !session
+      || typeof session !== "object"
+      || (session as BrokerSessionInfo).id !== sessionId
+      || typeof (session as BrokerSessionInfo).name !== "string"
+      || typeof (session as BrokerSessionInfo).alive !== "boolean"
+    ) {
+      throw new BrokerRpcError("invalid_session", "broker returned an invalid exact-ID session record");
+    }
+    return session as BrokerSessionInfo;
   }
 
   private async resolveId(name: string): Promise<string | undefined> {

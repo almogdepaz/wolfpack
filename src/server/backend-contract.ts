@@ -52,6 +52,16 @@ export interface CapturePaneOptions {
   readonly scrollbackLines?: number;
 }
 
+/** Exact-ID, non-streaming visible-screen capture from the broker's current geometry. */
+export interface SessionSnapshotCapture {
+  readonly session: string;
+  readonly sessionId: string;
+  readonly text: string;
+  readonly capturedAtMs: number;
+  readonly cols: number;
+  readonly rows: number;
+}
+
 export interface SessionBackend {
   /** Live-only session names for terminal attach/control consumers. */
   list(): Promise<string[]>;
@@ -71,6 +81,8 @@ export interface SessionBackend {
   killSessionById(sessionId: string): Promise<void>;
   hasSession(name: string): Promise<boolean>;
   capturePane(name: string, options?: CapturePaneOptions): Promise<string>;
+  /** Capture only a live session with this durable broker UUID; names are never resolved here. */
+  captureSessionSnapshotById(sessionId: string): Promise<SessionSnapshotCapture>;
   resize(name: string, cols: number, rows: number): Promise<void>;
   send(name: string, text: string, noEnter?: boolean): Promise<void>;
   sendKey(name: string, key: string): Promise<void>;

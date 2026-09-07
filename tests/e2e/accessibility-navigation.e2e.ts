@@ -104,6 +104,40 @@ test("quick command form is modal and restores focus when cancelled", async ({ p
   await expect(trigger).toBeFocused();
 });
 
+test("sidebar details and actions remain independently pointer-accessible", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop sidebar layout");
+
+  const card = page.locator(".sidebar-sessions .card").filter({
+    has: page.getByRole("button", { name: "Open test-project", exact: true }),
+  });
+  const name = card.locator(".card-name-text");
+  await expect.poll(() => name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+  await card.getByRole("button", { name: "Inspect test-project", exact: true }).click();
+  const inspector = page.getByRole("dialog", { name: "Inspect test-project", exact: true });
+  await expect(inspector).toBeVisible();
+  await inspector.getByRole("button", { name: "Close inspection" }).click();
+  await expect(inspector).toBeHidden();
+
+  await card.getByRole("button", { name: "Stop test-project", exact: true }).click();
+  const stop = page.getByRole("dialog", { name: "Stop session", exact: true });
+  await expect(stop).toBeVisible();
+  await stop.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(stop).toBeHidden();
+
+  // A grid needs a second session; adding the first opens a single terminal.
+  await page.getByRole("button", { name: "Open another-project", exact: true }).click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  await card.getByRole("button", { name: "Add to grid: test-project", exact: true }).click();
+  const removeFromGrid = card.getByRole("button", { name: "Remove from grid: test-project", exact: true });
+  await expect(removeFromGrid).toHaveAttribute("aria-pressed", "true");
+  await removeFromGrid.click();
+  await expect(card.getByRole("button", { name: "Add to grid: test-project", exact: true })).toHaveAttribute("aria-pressed", "false");
+
+  await card.getByRole("button", { name: "Open test-project", exact: true }).click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+});
+
 test("terminal transcript exposes authoritative plain text without a second parser", async ({ page }) => {
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);

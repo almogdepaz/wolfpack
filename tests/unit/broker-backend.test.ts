@@ -715,6 +715,43 @@ describe("BrokerBackend.capturePane", () => {
 
 });
 
+describe("BrokerBackend.captureSessionSnapshotById", () => {
+  test("uses exact session_info authority before requesting a visible-screen snapshot", async () => {
+    client.setHandler("session_info", (params) => {
+      expect(params).toEqual({ session_id: SESSION_UUID_1 });
+      return okResp({ session: sessionInfo({ id: SESSION_UUID_1, name: "exact" }) });
+    });
+    client.setHandler("snapshot", (params) => {
+      expect(params).toEqual({ session_id: SESSION_UUID_1, scrollback_lines: 0 });
+      return okResp(styledSnapshot(["visible"]));
+    });
+
+    await expect(backend.captureSessionSnapshotById(SESSION_UUID_1)).resolves.toMatchObject({
+      session: "exact",
+      sessionId: SESSION_UUID_1,
+      text: "visible",
+    });
+    expect(client.requests.map((request) => request.method)).toEqual(["session_info", "snapshot"]);
+  });
+
+  test("classifies an exact dead tombstone without requesting a snapshot", async () => {
+    client.setHandler("session_info", () => okResp({
+      session: sessionInfo({ id: SESSION_UUID_1, alive: false }),
+    }));
+
+    await expect(backend.captureSessionSnapshotById(SESSION_UUID_1)).rejects.toThrow("session_not_alive");
+    expect(client.requests.map((request) => request.method)).toEqual(["session_info"]);
+  });
+
+  test("classifies a target that dies between exact lookup and capture as not alive", async () => {
+    client.setHandler("session_info", () => okResp({ session: sessionInfo({ id: SESSION_UUID_1 }) }));
+    client.setHandler("snapshot", () => errResp("unknown_session", "session reaped during capture"));
+
+    await expect(backend.captureSessionSnapshotById(SESSION_UUID_1)).rejects.toThrow("session_not_alive");
+    expect(client.requests.map((request) => request.method)).toEqual(["session_info", "snapshot"]);
+  });
+});
+
 describe("BrokerBackend.resize", () => {
   test("forwards to broker resize RPC", async () => {
     client.setHandler("list_sessions", () => okResp({

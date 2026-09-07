@@ -1289,6 +1289,23 @@ body.no-animations, body.no-animations * {
   align-items: center;
   justify-content: center;
 }
+.inspect-btn {
+  min-width: 44px;
+  min-height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-ui);
+  cursor: pointer;
+}
+.inspect-btn:hover,
+.inspect-btn:focus-visible {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  outline: none;
+}
 .kill-btn:hover {
   color: var(--danger-bright);
   border-color: rgba(255,68,68,0.28);
@@ -2446,13 +2463,23 @@ body.no-animations, body.no-animations * {
   .sidebar-sessions .idle-session-empty h2 { font-size: 12px; }
   .sidebar-sessions .idle-session-empty p { font-size: 10px; line-height: 1.45; }
 
-  /* Sidebar cards — denser than mobile */
+  /* Keep sidebar details and their open target above the secondary actions. */
   .sidebar-sessions .card {
+    display: grid;
+    grid-template:
+      "dot info info info" auto
+      ". grid inspect stop" auto / 7px minmax(0, 1fr) auto auto;
     padding: 8px;
     min-height: 0;
     margin-bottom: 6px;
     border-left-width: 2px;
   }
+  .sidebar-sessions .card-open { grid-area: 1 / 1 / 2 / -1; }
+  .sidebar-sessions .dot { grid-area: dot; }
+  .sidebar-sessions .card-info { grid-area: info; }
+  .sidebar-sessions .grid-btn { grid-area: grid; justify-self: end; }
+  .sidebar-sessions .inspect-btn { grid-area: inspect; }
+  .sidebar-sessions .kill-btn { grid-area: stop; }
   .sidebar-sessions .card-name {
     font-size: 11px;
     letter-spacing: -0.2px;
@@ -2857,7 +2884,9 @@ body.no-animations, body.no-animations * {
 .terminal-transcript-btn { position: absolute; top: 8px; right: 8px; z-index: 20; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: rgba(17,17,17,0.9); color: var(--text-muted); font: inherit; font-size: 10px; text-transform: uppercase; cursor: pointer; }
 #terminal-view:has(#desktop-grid-container.active) .terminal-transcript-btn { top: 40px; }
 .terminal-transcript-btn:hover, .terminal-transcript-btn:focus-visible { color: var(--accent); border-color: var(--accent-border); }
+.session-inspector-dialog,
 .terminal-transcript-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); margin: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
+.session-inspector-dialog::backdrop,
 .terminal-transcript-dialog::backdrop { background: rgba(0,0,0,0.75); }
 .app-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.55); }
 .app-dialog::backdrop { background: rgba(0,0,0,0.65); backdrop-filter: blur(4px); }
@@ -2875,12 +2904,23 @@ body.no-animations, body.no-animations * {
 
 .app-dialog-actions .destructive { border-color: rgba(255,68,68,0.55); background: rgba(204,51,51,0.12); color: var(--danger-hot); }
 .app-dialog-actions .destructive:hover { border-color: var(--danger-hot); background: rgba(204,51,51,0.22); color: #fff; }
+.session-inspector-header,
 .terminal-transcript-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.session-inspector-header h2,
 .terminal-transcript-header h2 { margin: 0; color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
-.terminal-transcript-header button { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--text-muted); font: inherit; cursor: pointer; }
+.session-inspector-header p { margin-top: 4px; color: var(--text-dim); font-size: 10px; }
+.session-inspector-header button,
+.terminal-transcript-header button,
+.session-inspector-actions button { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--text-muted); font: inherit; cursor: pointer; }
+#session-inspector-status,
 #terminal-transcript-status { min-height: 28px; padding: 8px 14px 0; color: var(--text-dim); font-size: 10px; }
+#session-inspector-metadata { min-height: 20px; margin: 4px 14px 0; color: var(--text-dim); font: 11px/1.4 var(--font-mono); }
+#session-inspector-output,
 #terminal-transcript-output { max-height: calc(80vh - 86px); margin: 0; padding: 10px 14px 16px; overflow: auto; color: var(--text-primary); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
+#session-inspector-output { white-space: pre; overflow-wrap: normal; }
+#session-inspector-output:focus-visible,
 #terminal-transcript-output:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-border); }
+.session-inspector-actions { display: flex; justify-content: flex-end; margin: 0; padding: 0 14px 14px; }
 .accent-val { color: var(--accent); font-size: 11px; }
 .range-input { width: 100%; accent-color: var(--accent); margin-top: 4px; }
 .settings-description { padding: 4px 0; font-size: 11px; color: var(--text-dim); line-height: 1.5; }

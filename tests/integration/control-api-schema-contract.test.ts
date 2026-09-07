@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
+import { SESSION_SNAPSHOT_MAX_RESPONSE_BYTES, SESSION_SNAPSHOT_MAX_TEXT_BYTES } from "../../src/server/session-snapshot.ts";
 import {
   isJsonObject as isObject,
   validateControlApiSchemaValue as validate,
@@ -168,6 +169,30 @@ describe("control api generated schema against runtime responses", () => {
 
     for (const [operationId, payload] of samples) {
       expect(validate(httpResponse(operationId), payload, artifact), operationId).toEqual([]);
+    }
+  });
+
+  test("rejects an encoded snapshot response above the route byte guard", async () => {
+    const sessionId = "00000000-0000-4000-8000-0000000000fe";
+    const boundedBackend = new MockBackend();
+    boundedBackend.captureSessionSnapshotById = async (requestedId) => ({
+      session: "encoded-bound",
+      sessionId: requestedId,
+      text: "\0".repeat(SESSION_SNAPSHOT_MAX_TEXT_BYTES),
+      capturedAtMs: Date.now(),
+      cols: 80,
+      rows: 24,
+    });
+    __setTestBackend(boundedBackend);
+    try {
+      const response = await fetch(`${base}/api/session-control/snapshot?sessionId=${sessionId}`);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const body = await response.text();
+      expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(SESSION_SNAPSHOT_MAX_RESPONSE_BYTES);
+      expect(JSON.parse(body)).toEqual({ error: "snapshot response unavailable" });
+    } finally {
+      __setTestBackend(mockBackend);
     }
   });
 
