@@ -90,6 +90,8 @@ const DECIMAL_CURSOR_PATTERN = /^[1-9][0-9]*$/;
  * independent processes must coordinate a single writer because this JSON store
  * has no cross-process compare-and-swap. Direct in-place edits are unsupported:
  * they can defeat file identity checks and were never a safe mutation protocol.
+ * An idle second instance may retain its prior immutable snapshot until its next
+ * access or collection; there is no process-global strong cache/eager invalidator.
  */
 interface FileVersion {
   readonly dev: bigint;

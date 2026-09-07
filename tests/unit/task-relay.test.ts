@@ -1017,6 +1017,25 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("releases pruned store graphs and reloads another instance on its next access", async () => {
+    const directory = root();
+    try {
+      const mutatingStore = new TaskRelayStore(directory);
+      const observingStore = new TaskRelayStore(directory);
+      await mutatingStore.accept({ ...LOCAL_ENVELOPE, envelopeId: "cleanup-reaccess", payload: { retained: true } }, NOW.toISOString());
+      const externallyRetained = await observingStore.inbox(RECEIVER_ID, "0");
+      expect(externallyRetained.items).toHaveLength(1);
+
+      await expect(mutatingStore.cleanup(new Date(NOW.getTime() + 1))).resolves.toBe(1);
+      await expect(mutatingStore.inbox(RECEIVER_ID, "0")).resolves.toEqual({ items: [], hasMore: false });
+      await expect(observingStore.inbox(RECEIVER_ID, "0")).resolves.toEqual({ items: [], hasMore: false });
+      // This is a caller-owned historical result, not a store-owned cache graph.
+      expect(externallyRetained.items[0]!.envelope.payload).toEqual({ retained: true });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("keeps first-match indexes and update-all semantics for accepted duplicate persisted IDs", async () => {
     const directory = root();
     const path = join(directory, "relay-state.json");
