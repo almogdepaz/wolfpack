@@ -1892,6 +1892,38 @@
         "503 SessionStatusFailure"
       ]
     },
+    "snapshotSessionVisibleScreen": {
+      "route": "GET /api/session-control/snapshot",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:snapshotSessionVisibleScreen:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "snapshotSessionVisibleScreen request",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:snapshotSessionVisibleScreen:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "snapshotSessionVisibleScreen response",
+        "$ref": "#/$defs/SessionSnapshot"
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "410 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "readSession": {
       "route": "GET /api/session-control/read",
       "stable": true,
@@ -3574,6 +3606,53 @@
       "required": [
         "ok",
         "error"
+      ],
+      "additionalProperties": false
+    },
+    "SessionSnapshot": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "text": {
+          "type": "string",
+          "description": "Bounded plain text from the broker's visible screen; not a live stream"
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "cached"
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "sessionId",
+        "text",
+        "capturedAt",
+        "cols",
+        "rows",
+        "truncated",
+        "freshness"
       ],
       "additionalProperties": false
     },

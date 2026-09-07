@@ -16,6 +16,7 @@ import type {
   CapturePaneOptions,
   PtyBackendMethods,
   SessionAttachLease,
+  SessionSnapshotCapture,
   SessionBackend,
   SessionDataUnsubscribe,
   SessionLaunchOptions,
@@ -29,6 +30,7 @@ export type {
   CapturePaneOptions,
   PtyBackendMethods,
   SessionAttachLease,
+  SessionSnapshotCapture,
   SessionBackend,
   SessionDataUnsubscribe,
   SessionLaunchOptions,
@@ -352,6 +354,10 @@ export class BackendRouter implements SessionBackend {
 
   async capturePane(name: string, options?: CapturePaneOptions): Promise<string> {
     return this.requireBroker().capturePane(name, options);
+  }
+
+  async captureSessionSnapshotById(sessionId: string): Promise<SessionSnapshotCapture> {
+    return this.requireBroker().captureSessionSnapshotById(sessionId);
   }
 
   async resize(name: string, cols: number, rows: number): Promise<void> {

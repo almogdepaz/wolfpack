@@ -216,6 +216,29 @@ export class MockBackend implements SessionBackend {
     return stripAnsi(await this._capturePane(name));
   }
 
+  async captureSessionSnapshotById(sessionId: string): Promise<{
+    readonly session: string;
+    readonly sessionId: string;
+    readonly text: string;
+    readonly capturedAtMs: number;
+    readonly cols: number;
+    readonly rows: number;
+  }> {
+    const identities = await this.listIdentities();
+    const identity = Object.values(identities).find((candidate) => candidate.wolfpackSessionId === sessionId);
+    if (!identity || !this._sessions.has(identity.wolfpackSessionName)) {
+      throw new Error("unknown session");
+    }
+    return {
+      session: identity.wolfpackSessionName,
+      sessionId,
+      text: await this.capturePane(identity.wolfpackSessionName),
+      capturedAtMs: Date.now(),
+      cols: 80,
+      rows: 24,
+    };
+  }
+
   async resize(name: string, cols: number, rows: number): Promise<void> {
     this.lastResizeArgs = { name, cols, rows };
   }

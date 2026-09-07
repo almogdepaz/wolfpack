@@ -17,6 +17,7 @@ export interface DelegatedAppActions {
   delegationToggle(key: string, event: MouseEvent): void;
   newSession(machine?: string): void;
   openSession(session: string, machine?: string): void;
+  inspectSession(session: string, sessionId: string, machine: string | undefined, invoker: HTMLElement): void;
   killSession(session: string, event: MouseEvent, machine?: string): void;
   retryMachine(machine: string, event: MouseEvent): void;
   selectProject(project: string): void;
@@ -45,6 +46,7 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "delegation-toggle" && button.dataset.delegationKey) actions.delegationToggle(button.dataset.delegationKey, event);
     else if (action === "new-session") actions.newSession(machine);
     else if (action === "open-session" && session) actions.openSession(session, machine);
+    else if (action === "inspect-session" && session && button.dataset.sessionId) actions.inspectSession(session, button.dataset.sessionId, machine, button);
     else if (action === "kill-session" && session) actions.killSession(session, event, machine);
     else if (action === "retry-machine") actions.retryMachine(machine || "", event);
     else if (action === "select-project" && button.dataset.project) actions.selectProject(button.dataset.project);

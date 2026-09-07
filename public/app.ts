@@ -25,6 +25,7 @@ import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-control
 import type { SessionCardView } from "./app-action-controller";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
+import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
 import { authenticatedFetchWithTimeout, getBrowserAuthToken } from "./browser-auth";
 import { RequestTimeoutError } from "./fetch-timeout";
@@ -1163,6 +1164,19 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
   return data as TResponse;
 }
 
+const sessionInspector = createSessionInspector({
+  requestSnapshot: (sessionId, machine, signal) => api(
+    "/session-control/snapshot?sessionId=" + encodeURIComponent(sessionId),
+    { signal },
+    machine,
+  ),
+  isMachineReady: (machine) => !machine || machine === LOCAL_MACHINE_IDENTITY || resolveReadyMachineOrigin(machine) !== undefined,
+});
+
+function inspectSession(session: string, sessionId: string, machine: string | undefined, invoker: HTMLElement): void {
+  sessionInspector.open({ session, sessionId, machine }, invoker);
+}
+
 // set by swipe engine so showView() skips animation after gesture already handled it
 
 // navigation hierarchy — higher depth = "deeper" (forward = left, back = right)
@@ -1692,6 +1706,10 @@ function renderMachineGroupHtml(g, multiMachine) {
           const anim = state.firstLoad ? "animate-in" : "";
           const grouping = delegationCardAttributes(row);
           const ordering = sessionOrderCardHtml(row, machineKey);
+          const sessionId = sessionIdentityId(s);
+          const inspectButton = sessionId
+            ? `<button type="button" class="inspect-btn" data-action="inspect-session" data-session="${escAttr(s.name)}" data-session-id="${escAttr(sessionId)}" data-machine="${mUrlAttr}" aria-label="Inspect ${escAttr(s.name)}" title="Read visible screen">Inspect</button>`
+            : "";
           return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
             <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
             <div class="dot ${ui.dot}" title="${ui.title}"></div>
@@ -1702,6 +1720,7 @@ function renderMachineGroupHtml(g, multiMachine) {
               <div class="card-preview">${esc(lastLine)}</div>
               ${activityHtml(s)}
             </div>
+            ${inspectButton}
             <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
           </div>`;
       }).join("");
@@ -4169,6 +4188,7 @@ function renderedSessionNavigationTargets(): SessionNavigationTarget[] {
 
 document.addEventListener("keydown", (e) => {
   if (!isDesktop()) return;
+  if (e.composedPath().some((node) => node instanceof HTMLDialogElement && node.open)) return;
   const mod = e.metaKey || e.ctrlKey;
 
   // Cmd+B — toggle the persistent desktop sidebar without covering the terminal.
@@ -4727,6 +4747,10 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${gridIcon}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
+  const sessionId = sessionIdentityId(s);
+  const inspectButton = sessionId
+    ? `<button type="button" class="inspect-btn" data-action="inspect-session" data-session="${escAttr(s.name)}" data-session-id="${escAttr(sessionId)}" data-machine="${machineUrlAttr}" aria-label="Inspect ${escAttr(s.name)}" title="Read visible screen">Inspect</button>`
+    : "";
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
@@ -4738,6 +4762,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       ${activityHtml(s)}
     </div>
     ${gridBtn}
+    ${inspectButton}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
   </div>`;
 }
@@ -5056,6 +5081,7 @@ function bindHtmlEventListeners(): void {
     delegationToggle: toggleSidebarDelegationChildren,
     newSession: machine => { void showProjectPicker(machine); },
     openSession: (session, machine) => { void openSession(session, machine); },
+    inspectSession,
     killSession: (session, event, machine) => { void killSession(session, event, machine); },
     retryMachine,
     selectProject,

@@ -37,12 +37,33 @@ import type { PublicSessionIdentity } from "./session-identity.js";
 import { getTaskRelayGateway } from "../task-relay/gateway.ts";
 import type { RelayEndpoint } from "../task-relay/domain.ts";
 import type { RouteHandler } from "./route-handler.js";
+import {
+  SESSION_SNAPSHOT_MAX_RESPONSE_BYTES,
+  SessionSnapshotBusyError,
+  SessionSnapshotService,
+} from "./session-snapshot.js";
 
 const log = createLogger("routes");
 
 const SESSION_WAIT_DEFAULT_TIMEOUT_MS = 30_000;
 const SESSION_WAIT_MAX_TIMEOUT_MS = 600_000;
 const SESSION_WAIT_BUFFER_MAX_CHARS = 128 * 1024;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+let sessionSnapshotService: SessionSnapshotService | null = null;
+
+function snapshots(): SessionSnapshotService {
+  sessionSnapshotService ??= new SessionSnapshotService((sessionId) =>
+    getBackend().captureSessionSnapshotById(sessionId),
+  );
+  return sessionSnapshotService;
+}
+
+function snapshotErrorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
 
 interface SessionPromptBody extends Record<string, unknown> {
   session: string;
@@ -312,6 +333,32 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
         ),
         503,
       );
+    }
+  },
+
+  "GET /api/session-control/snapshot": async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const sessionId = url.searchParams.get("sessionId");
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return json(res, { error: "full sessionId UUID required" }, 400);
+    }
+    try {
+      const snapshot = await snapshots().read(sessionId);
+      if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") > SESSION_SNAPSHOT_MAX_RESPONSE_BYTES) {
+        return json(res, { error: "snapshot response unavailable" }, 503);
+      }
+      return json(res, snapshot);
+    } catch (error: unknown) {
+      if (error instanceof SessionSnapshotBusyError) {
+        res.setHeader("Retry-After", "1");
+        return json(res, { error: "snapshot busy" }, 503);
+      }
+      const code = snapshotErrorCode(error);
+      if (code === "unknown_session") return json(res, { error: "session not found" }, 404);
+      if (code === "session_not_alive") return json(res, { error: "session is not alive" }, 410);
+      log.warn("session snapshot failed", { sessionId, error: errMsg(error) });
+      return json(res, { error: "snapshot unavailable" }, 503);
     }
   },
 
