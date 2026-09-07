@@ -22,12 +22,12 @@ try {
 } finally { await g.close(); }
 `);
     const build = Bun.spawn([process.execPath, "build", "--compile", "--entry-naming", "[name].js", entry,
-      resolve(import.meta.dir, "../../src/task-relay/worker-entry.ts"), "--outfile", binary], { stdout: "pipe", stderr: "pipe" });
+      resolve(import.meta.dir, "../../src/task-relay/worker-entry.ts"), "--outfile", binary], { stdout: "pipe", stderr: "pipe", timeout: 60_000, killSignal: "SIGKILL" });
     const [code, stdout, stderr] = await Promise.all([build.exited, new Response(build.stdout).text(), new Response(build.stderr).text()]);
     expect(code, stdout + stderr).toBe(0);
     renameSync(entry, join(root, "source-hidden.txt"));
     const run = Bun.spawn([binary, join(root, "relay")], { cwd: runDir,
-      env: { HOME: runDir, PATH: "/usr/bin:/bin", WOLFPACK_TEST: "1" }, stdout: "pipe", stderr: "pipe" });
+      env: { HOME: runDir, PATH: "/usr/bin:/bin", WOLFPACK_TEST: "1" }, stdout: "pipe", stderr: "pipe", timeout: 15_000, killSignal: "SIGKILL" });
     const [exit, result, diagnostic] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()]);
     expect(exit, diagnostic).toBe(0);
     expect(JSON.parse(result)).toEqual({ ok: true, compiled: true });

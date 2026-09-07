@@ -58,6 +58,10 @@ test("worker preserves input/result ownership, duplicate/content conflicts, curs
     expect(await g.send({ callerSession: "sender", envelope: submitted })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.ENVELOPE_CONFLICT } });
     expect(await g.send({ callerSession: "receiver", envelope: original })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.SOURCE_MISMATCH } });
     expect(await g.send({ callerSession: "sender", envelope: { ...original, envelopeId: randomUUID(), payload: { value: NaN } } })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
+    class NotJson { value = "must not become a plain payload after cloning"; }
+    const nonJson = { ...original, envelopeId: randomUUID(), payload: new NotJson() as unknown as RelayEnvelope["payload"] };
+    expect(await g.send({ callerSession: "sender", envelope: nonJson })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
+    expect(await g.receivePeer({ origin: "https://sender.example.ts.net", envelope: nonJson })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
     const page = await g.receive({ callerSession: "receiver", cursor: "0" }); if (!page.ok) throw new Error("receive failed");
     expect(page.envelopes).toEqual([original]); expect(page.nextCursor).toBe("1");
     expect(await g.acknowledgeDelivery({ callerSession: "receiver", envelopeId: original.envelopeId })).toMatchObject({ ok: true, kind: "acknowledged" });
