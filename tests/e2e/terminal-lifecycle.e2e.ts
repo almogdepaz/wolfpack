@@ -76,6 +76,161 @@ function terminalHiddenBeforeResizeSettlement(page: Page): ReturnType<Page["eval
   }));
 }
 
+test("settings suspension restores the original known target instead of a refreshed same-name fact", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "settings-back terminal remount is desktop-only");
+  let replacement = false;
+  let conflictOnAttach = false;
+  let sessionLoads = 0;
+  await page.route("**/api/sessions", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as { readonly sessions: ReadonlyArray<Record<string, unknown>> };
+    sessionLoads++;
+    await route.fulfill({ response, json: { sessions: body.sessions.map((session) =>
+      session.name === "test-project" && replacement
+        ? { ...session, identity: { ...(session.identity as Record<string, unknown>), wolfpackSessionId: "replacement-test-project-id" } }
+        : session) } });
+  });
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:test-project");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session: "test-project", sessionId, text: "settings-original snapshot", capturedAt: new Date().toISOString(),
+      cols: 80, rows: 24, truncated: false, freshness: "fresh",
+    }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string" || JSON.parse(message).type !== "attach") return;
+      if (conflictOnAttach) {
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await loadApp(page);
+  await openTerminalSession(page, "test-project");
+  await openSettingsFromUi(page);
+  replacement = true;
+  conflictOnAttach = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => sessionLoads).toBeGreaterThan(1);
+  const settingsBack = testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn";
+  await page.locator(settingsBack).click();
+  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect test-project", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect test-project", exact: true })).toContainText("settings-original snapshot");
+});
+
+test("same-name refresh cannot retarget an existing single-terminal conflict", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop same-card lifecycle coverage");
+  let replacement = false;
+  await page.route("**/api/sessions", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as { readonly sessions: ReadonlyArray<Record<string, unknown>> };
+    await route.fulfill({
+      response,
+      json: {
+        sessions: body.sessions.map((session) => session.name === "test-project" && replacement
+          ? { ...session, identity: { ...(session.identity as Record<string, unknown>), wolfpackSessionId: "replacement-test-project-id" } }
+          : session),
+      },
+    });
+  });
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:test-project");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session: "test-project", sessionId, text: "original-controller snapshot", capturedAt: new Date().toISOString(),
+      cols: 80, rows: 24, truncated: false, freshness: "fresh",
+    }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string" || JSON.parse(message).type !== "attach") return;
+      ws.send(JSON.stringify({ type: "viewer_conflict" }));
+    });
+  });
+  await loadApp(page);
+  await openSessionFromUi(page, "test-project", "");
+  const conflict = page.locator("#desktop-conflict-overlay");
+  await expect(conflict).toBeVisible();
+  replacement = true;
+  await page.waitForTimeout(5_200);
+  await page.locator('[data-action="open-session"][data-session="test-project"]').filter({ visible: true }).first().press("Enter");
+  await conflict.getByRole("button", { name: "Inspect test-project", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Inspect test-project", exact: true })).toContainText("original-controller snapshot");
+});
+
+test("displaced single-terminal conflict retains its controller inspection target", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop displaced lifecycle coverage");
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:test-project");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session: "test-project", sessionId, text: "displaced-pinned snapshot", capturedAt: new Date().toISOString(),
+      cols: 80, rows: 24, truncated: false, freshness: "fresh",
+    }) });
+  });
+  const pty = await routeHydratedPty(page);
+  await loadApp(page);
+  await openTerminalSession(page, "test-project");
+  const socket = pty.sockets.get("test-project");
+  if (!socket) throw new Error("missing test-project websocket");
+  await socket.close({ code: CLOSE_CODE_DISPLACED, reason: WS_CLOSE_REASONS.DISPLACED });
+  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect test-project", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect test-project", exact: true })).toContainText("displaced-pinned snapshot");
+});
+
+test("mobile drawer switch pins the occupied terminal target before its controller is created", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "iphone-se", "mobile drawer lifecycle coverage");
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:another-project");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        session: "another-project",
+        sessionId,
+        text: "drawer-pinned snapshot",
+        capturedAt: new Date().toISOString(),
+        cols: 80,
+        rows: 24,
+        truncated: false,
+        freshness: "fresh",
+      }),
+    });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string };
+      if (frame.type !== "attach") return;
+      if (session === "another-project") {
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await loadApp(page);
+  await openTerminalSession(page, "test-project");
+  await openSessionFromUi(page, "another-project", "");
+  const conflict = page.locator("#desktop-conflict-overlay");
+  const inspect = conflict.getByRole("button", { name: "Inspect another-project", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect another-project", exact: true })).toContainText("drawer-pinned snapshot");
+});
+
 test("disposing repeated terminal mounts releases document pointer listeners", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop terminal lifecycle test");
   const cdp = await page.context().newCDPSession(page);
@@ -218,7 +373,7 @@ test("reconnect/take-control attach defers proposed geometry until the current o
   await loadApp(page);
   await openTerminalSession(page, "test-project");
   await sockets[0].close({ code: CLOSE_CODE_DISPLACED, reason: WS_CLOSE_REASONS.DISPLACED });
-  await page.locator("#desktop-conflict-overlay .conflict-btn").click();
+  await page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Take Control", exact: true }).click();
   await expect.poll(() => sockets.length).toBe(2);
 
   await expect.poll(() => messages.some((message) => message.type === "attach" && message.takeControl === true)).toBe(true);

@@ -8,6 +8,7 @@ export const MAX_GRID_CELLS = 6;
 export interface GridSession {
   session: string;
   machine: string;
+  sessionId?: string;
 }
 
 export function gridLayoutClass(count: number): string {
@@ -29,18 +30,20 @@ export function addToGridState(
   machine: string,
   currentSession: string,
   currentMachine: string,
+  sessionId?: string,
+  currentSessionId?: string,
 ): { sessions: GridSession[]; focusIndex: number } | null {
   if (gridSessions.length >= MAX_GRID_CELLS) return null;
   // Already in grid?
   if (gridSessions.some(gs => gs.session === session && gs.machine === machine)) return null;
 
-  const newSessions = [...gridSessions, { session, machine }];
+  const newSessions = [...gridSessions, { session, machine, ...(sessionId && { sessionId }) }];
 
   // If transitioning from empty/single to grid, add current session too
   if (newSessions.length === 1 && currentSession) {
     const alreadyAdded = session === currentSession && machine === currentMachine;
     if (!alreadyAdded) {
-      newSessions.unshift({ session: currentSession, machine: currentMachine });
+      newSessions.unshift({ session: currentSession, machine: currentMachine, ...(currentSessionId && { sessionId: currentSessionId }) });
     }
   }
 
@@ -97,7 +100,7 @@ type ClonedGridState = {
 };
 
 function cloneGridState(sessions: GridSession[], focusIndex: number): ClonedGridState {
-  const cloned = sessions.map(gs => ({ session: gs.session, machine: gs.machine }));
+  const cloned = sessions.map(gs => ({ session: gs.session, machine: gs.machine, ...(gs.sessionId && { sessionId: gs.sessionId }) }));
   if (!cloned.length) return { sessions: [], focusIndex: 0 };
   const clamped = Math.max(0, Math.min(focusIndex, cloned.length - 1));
   return { sessions: cloned, focusIndex: clamped, focusedSession: cloned[clamped] };

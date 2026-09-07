@@ -113,11 +113,7 @@ test("sidebar details and actions remain independently pointer-accessible", asyn
   const name = card.locator(".card-name-text");
   await expect.poll(() => name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
-  await card.getByRole("button", { name: "Inspect test-project", exact: true }).click();
-  const inspector = page.getByRole("dialog", { name: "Inspect test-project", exact: true });
-  await expect(inspector).toBeVisible();
-  await inspector.getByRole("button", { name: "Close inspection" }).click();
-  await expect(inspector).toBeHidden();
+  await expect(card.getByRole("button", { name: "Inspect test-project", exact: true })).toHaveCount(0);
 
   await card.getByRole("button", { name: "Stop test-project", exact: true }).click();
   const stop = page.getByRole("dialog", { name: "Stop session", exact: true });

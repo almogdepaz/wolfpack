@@ -10,7 +10,7 @@ describe("terminal loading UI copy", () => {
       ["prefill-loading", "loading terminal"],
       ["hydrating", "preparing terminal"],
       ["reconnecting", "reconnecting terminal"],
-      ["viewer-conflict", "take control to view"],
+      ["viewer-conflict", "session active elsewhere"],
       ["displaced", "opened elsewhere"],
       ["live", "terminal connected"],
       ["ended", "terminal ended"],

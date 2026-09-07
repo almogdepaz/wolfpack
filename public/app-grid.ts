@@ -15,6 +15,7 @@ import {
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import {
   addToGridState,
   gridArrowNav,
@@ -29,6 +30,7 @@ import {
   handleViewerConflict,
 } from "../src/take-control-logic";
 import type { OrderedResizeSettlement } from "./ordered-resize";
+import type { SessionInspectorTarget } from "./session-inspector";
 
 // ── Dependency injection ──
 
@@ -51,6 +53,7 @@ interface GridTerminalController {
 interface GridSession {
   readonly session: string;
   readonly machine: string;
+  readonly sessionId?: string;
   controller?: GridTerminalController | null;
   _cellElement?: HTMLElement | null;
   _displaced?: boolean;
@@ -68,6 +71,7 @@ interface GridSession {
 
 export interface DelegationGridMember {
   readonly session: string;
+  readonly sessionId: string | null;
   readonly machine: string;
   readonly role: "root" | "child";
   readonly statusClass: string;
@@ -79,11 +83,19 @@ interface GridDeps {
   showView: (name: string, skipAnimation?: boolean) => void;
   openSession: (name: string, machineUrl?: string) => void;
   destroyTerminal: () => void;
-  initTerminal: () => void;
+  initTerminal: (prefillMode?: TerminalPrefillMode, inspectionTarget?: SessionInspectorTarget | null) => void;
   backToSessions: () => void;
   renderSidebar: () => void;
   createPtyTerminalController: (opts: { session: string; machine?: string; scrollback: number; [k: string]: unknown }) => GridTerminalController;
-  createConflictOverlay: (message: string, buttonLabel: string, onClick: (e: Event) => void) => HTMLElement;
+  createConflictOverlay: (
+    message: string,
+    buttonLabel: string,
+    onClick: (e: Event) => void,
+    inspection?: { readonly label: string; readonly onClick: (event: Event) => void },
+  ) => HTMLElement;
+  sessionIdFor: (session: string, machine: string) => string | null;
+  termTarget: () => SessionInspectorTarget | null;
+  inspectSession: (session: string, sessionId: string, machine: string | undefined, invoker: HTMLElement) => void;
   showNotice: (title: string, message: string) => void;
   canUseWasmTerminal?: () => boolean;
   isGhosttyRendererReady?: () => boolean;
@@ -154,6 +166,10 @@ export function canOpenMultiTerminalGrid(): boolean {
     return false;
   }
   return true;
+}
+
+export function gridInspectionTarget(gs: GridSession | undefined): SessionInspectorTarget | null {
+  return gs?.sessionId ? { session: gs.session, sessionId: gs.sessionId, machine: gs.machine } : null;
 }
 
 function sessionsForGridSession(gs: GridSession): GridSession[] {
@@ -544,20 +560,21 @@ export function renderDelegationGridCells(): void {
   }, false);
 }
 
-function gridSessionKey(session: string, machine: string): string {
-  return `${machine}|${session}`;
+function gridSessionKey(session: string, machine: string, sessionId: string | null = null): string {
+  return `${machine}|${sessionId ?? session}`;
 }
 
 export function setDelegationGridMembers(members: readonly DelegationGridMember[]): void {
   const previous = new Map(
-    state.delegationGridSessions.map(gs => [gridSessionKey(gs.session, gs.machine || ""), gs]),
+    state.delegationGridSessions.map(gs => [gridSessionKey(gs.session, gs.machine || "", gs.sessionId ?? null), gs]),
   );
   const next = members.map(member => {
-    const key = gridSessionKey(member.session, member.machine || "");
+    const key = gridSessionKey(member.session, member.machine || "", member.sessionId);
     const existing = previous.get(key);
     previous.delete(key);
     const gridSession = existing || {
       session: member.session,
+      sessionId: member.sessionId ?? undefined,
       machine: member.machine || "",
       controller: null,
       _delegation: true,
@@ -664,10 +681,20 @@ function showGridCellConflictOverlay(gs) {
   if (!cell) return;
   revealTerminalConflict(cell, gs.controller?.hydration);
   removeGridCellConflictOverlay(gs);
+  const inspectionTarget = gridInspectionTarget(gs);
   const overlay = deps.createConflictOverlay("Active on another device", "Take Control", (e) => {
     e.stopPropagation();
     takeControlOfCell(gs);
-  });
+  }, inspectionTarget ? {
+    label: `Inspect ${inspectionTarget.session}`,
+    onClick: (event) => {
+      event.stopPropagation();
+      const invoker = event.currentTarget;
+      if (invoker instanceof HTMLElement) {
+        deps.inspectSession(inspectionTarget.session, inspectionTarget.sessionId, inspectionTarget.machine || undefined, invoker);
+      }
+    },
+  } : undefined);
   overlay.dataset.conflictType = "conflict";
   cell.appendChild(overlay);
 }
@@ -845,6 +872,7 @@ export function restorePreservedGrid() {
   const restored = resumeGridState(state.preservedGridSessions, state.preservedGridFocusIndex);
   state.gridSessions = restored.sessions.map(gs => ({
     session: gs.session,
+    sessionId: gs.sessionId,
     machine: gs.machine || "",
     controller: null,
   }));
@@ -882,6 +910,8 @@ export function addToGrid(session: string, machine?: string): void {
       targetMachine,
       state.currentSession || "",
       state.currentMachine || "",
+      deps.sessionIdFor(session, targetMachine) ?? undefined,
+      state.currentSession ? deps.sessionIdFor(state.currentSession, state.currentMachine || "") ?? undefined : undefined,
     );
     if (!result) return;
     state.preservedGridSessions = result.sessions;
@@ -915,8 +945,10 @@ export function addToGrid(session: string, machine?: string): void {
   // Track which session had a full-width PTY (needs reset on grid connect)
   const singleTermSession = (state.terminalController?.term && state.currentSession) ? state.currentSession : null;
   const singleTermMachine = singleTermSession ? (state.currentMachine || "") : "";
+  const termTarget = deps.termTarget();
   const gs = {
     session,
+    sessionId: deps.sessionIdFor(session, targetMachine) ?? undefined,
     machine: machine || "",
     controller: null,
   };
@@ -927,6 +959,10 @@ export function addToGrid(session: string, machine?: string): void {
     if (!alreadyAdded) {
       state.gridSessions.unshift({
         session: state.currentSession,
+        sessionId: termTarget?.session === state.currentSession
+          && termTarget.machine === (state.currentMachine || "")
+          ? termTarget.sessionId
+          : undefined,
         machine: state.currentMachine,
         controller: null,
       });
@@ -996,6 +1032,7 @@ export function exitGridMode(skipRestore?) {
   const remaining = state.gridSessions.length >= 1 ? state.gridSessions[0] : null;
   const restoreSession = remaining ? remaining.session : state.currentSession;
   const restoreMachine = remaining ? (remaining.machine || "") : state.currentMachine;
+  const restoreInspectionTarget = remaining ? gridInspectionTarget(remaining) : null;
   // Destroy all grid sessions
   for (const gs of state.gridSessions) {
     clearGridCellTakeControlTimer(gs);
@@ -1022,7 +1059,7 @@ export function exitGridMode(skipRestore?) {
   }
   // Restore single-terminal mode (skip when navigating away from terminal view)
   if (!skipRestore && restoreSession) {
-    deps.initTerminal();
+    deps.initTerminal(undefined, restoreInspectionTarget);
     deps.renderSidebar();
   }
 }
