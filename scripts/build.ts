@@ -35,6 +35,7 @@ const NPM_DIR = join(DIST, "npm");
 const BROKER_DIR = join(DIST, "broker");
 const LOCAL_BROKER_DIR = join(DIST, "local");
 const ENTRY = join(ROOT, "src", "cli", "index.ts");
+const RELAY_WORKER_ENTRY = join(ROOT, "src", "task-relay", "worker-entry.ts");
 const THIRD_PARTY_NOTICES = join(ROOT, "THIRD_PARTY_NOTICES");
 const TARGETS = Object.keys(BROKER_TARGETS) as BrokerTarget[];
 
@@ -130,7 +131,7 @@ if (mode === "local") {
 console.log("\n=== compiling binaries ===");
 for (const target of TARGETS) {
   const name = `wolfpack-${target.replace("bun-", "")}`;
-  run(`bun build --compile --target=${target} ${ENTRY} --outfile ${join(DIST, name)}`);
+  run(`bun build --compile --target=${target} --entry-naming '[name].js' ${ENTRY} ${RELAY_WORKER_ENTRY} --outfile ${join(DIST, name)}`);
 }
 
 if (mode === "package-all") {
