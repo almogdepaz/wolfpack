@@ -33,7 +33,7 @@ async fn main() {
 
     let (events, _) = broadcast::channel::<Event>(EVENT_BUS_CAPACITY);
     let registry = Arc::new(Registry::new(events.clone()));
-    spawn_exit_reaper(&registry);
+    let _exit_reaper = spawn_exit_reaper(&registry);
     let server = match start(ServerConfig {
         socket_path: socket_path.clone(),
         router: Arc::new(SessionRouter::new(Arc::clone(&registry), events.clone())),

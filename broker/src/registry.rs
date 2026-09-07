@@ -13,10 +13,11 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use thiserror::Error;
 use tokio::sync::broadcast;
+use tokio::time::{Instant, MissedTickBehavior};
 use uuid::Uuid;
 
 use crate::protocol::Event;
@@ -41,6 +42,9 @@ pub enum CreateError {
 }
 
 const EXITED_TOMBSTONE_TTL: Duration = Duration::from_secs(30);
+// The reaper owns one bounded timer for the registry, so an idle tombstone is
+// released within this cadence after its TTL subject to Tokio scheduling.
+const TOMBSTONE_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_EXITED_TOMBSTONES: usize = 64;
 pub(crate) const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
 pub(crate) const SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE: &str =
@@ -71,18 +75,43 @@ struct Inner {
 }
 
 impl Inner {
-    fn purge_expired_tombstones(&mut self) {
-        let now = Instant::now();
-        self.tombstones.retain(|_, tombstone| tombstone.expires_at > now);
+    /// Remove expired tombstones and enforce the cap. The returned Arcs must
+    /// be dropped after releasing the registry mutex: destroying a Session can
+    /// release a large terminal/output graph and must not extend global lock
+    /// hold time.
+    fn purge_expired_tombstones_at(&mut self, now: Instant) -> Vec<Arc<Session>> {
+        let expired: Vec<Uuid> = self
+            .tombstones
+            .iter()
+            .filter_map(|(id, tombstone)| (tombstone.expires_at <= now).then_some(*id))
+            .collect();
+        let mut released: Vec<Arc<Session>> = expired
+            .into_iter()
+            .filter_map(|id| {
+                self.tombstones
+                    .remove(&id)
+                    .map(|tombstone| tombstone.session)
+            })
+            .collect();
         while self.tombstones.len() > MAX_EXITED_TOMBSTONES {
-            let Some(oldest) = self.tombstones
+            let Some(oldest) = self
+                .tombstones
                 .iter()
                 .min_by_key(|(_, tombstone)| tombstone.expires_at)
                 .map(|(id, _)| *id)
-            else { break };
-            self.tombstones.remove(&oldest);
+            else {
+                break;
+            };
+            if let Some(tombstone) = self.tombstones.remove(&oldest) {
+                released.push(tombstone.session);
+            }
         }
+        released
     }
+}
+
+fn purge_expired_tombstones(inner: &mut Inner) -> Vec<Arc<Session>> {
+    inner.purge_expired_tombstones_at(Instant::now())
 }
 
 pub struct Registry {
@@ -113,15 +142,22 @@ impl Registry {
         // Reserve the name atomically, then release the registry lock before
         // openpty/spawn/thread setup. Concurrent creates see the reservation
         // as occupied without serialising unrelated process creation.
-        let (name, reservation_id) = {
+        let (reservation, released) = {
             let mut guard = self.inner.lock().expect("registry poisoned");
             let inner = &mut *guard;
-            inner.purge_expired_tombstones();
-            let name = resolve_name(opts.name.as_deref(), &inner.names, &mut inner.next_anon)?;
-            let reservation_id = Uuid::new_v4();
-            inner.names.insert(name.clone(), reservation_id);
-            (name, reservation_id)
+            let released = purge_expired_tombstones(inner);
+            let reservation =
+                resolve_name(opts.name.as_deref(), &inner.names, &mut inner.next_anon).map(
+                    |name| {
+                        let reservation_id = Uuid::new_v4();
+                        inner.names.insert(name.clone(), reservation_id);
+                        (name, reservation_id)
+                    },
+                );
+            (reservation, released)
         };
+        drop(released);
+        let (name, reservation_id) = reservation?;
         let spawn_opts = SpawnOptions {
             name: name.clone(),
             cwd: opts.cwd,
@@ -157,10 +193,30 @@ impl Registry {
     }
 
     pub fn get(&self, id: Uuid) -> Option<Arc<Session>> {
-        let mut inner = self.inner.lock().expect("registry poisoned");
-        inner.purge_expired_tombstones();
-        inner.sessions.get(&id).cloned()
-            .or_else(|| inner.tombstones.get(&id).map(|tombstone| Arc::clone(&tombstone.session)))
+        let (session, released) = {
+            let mut inner = self.inner.lock().expect("registry poisoned");
+            let released = purge_expired_tombstones(&mut inner);
+            let session = inner.sessions.get(&id).cloned().or_else(|| {
+                inner
+                    .tombstones
+                    .get(&id)
+                    .map(|tombstone| Arc::clone(&tombstone.session))
+            });
+            (session, released)
+        };
+        drop(released);
+        session
+    }
+
+    /// Run the bounded tombstone-only maintenance pass. Live sessions are not
+    /// inspected or cloned, and removed Session graphs are released after the
+    /// registry lock is dropped.
+    fn purge_expired_tombstones(&self) {
+        let released = {
+            let mut inner = self.inner.lock().expect("registry poisoned");
+            purge_expired_tombstones(&mut inner)
+        };
+        drop(released);
     }
 
     pub fn list(&self) -> Vec<Arc<Session>> {
@@ -181,20 +237,26 @@ impl Registry {
     /// Called by the reaper task spawned via [`spawn_exit_reaper`]; safe to
     /// call repeatedly with the same id (no-op after the first call).
     pub fn reap(&self, id: Uuid) {
-        let mut guard = self.inner.lock().expect("registry poisoned");
-        let inner = &mut *guard;
-        let Some(session) = inner.sessions.remove(&id) else {
-            return;
+        let released = {
+            let mut guard = self.inner.lock().expect("registry poisoned");
+            let inner = &mut *guard;
+            let Some(session) = inner.sessions.remove(&id) else {
+                return;
+            };
+            let name = session.snapshot().name;
+            if inner.names.get(&name) == Some(&id) {
+                inner.names.remove(&name);
+            }
+            inner.tombstones.insert(
+                id,
+                Tombstone {
+                    session,
+                    expires_at: Instant::now() + EXITED_TOMBSTONE_TTL,
+                },
+            );
+            purge_expired_tombstones(inner)
         };
-        let name = session.snapshot().name;
-        if inner.names.get(&name) == Some(&id) {
-            inner.names.remove(&name);
-        }
-        inner.tombstones.insert(id, Tombstone {
-            session,
-            expires_at: Instant::now() + EXITED_TOMBSTONE_TTL,
-        });
-        inner.purge_expired_tombstones();
+        drop(released);
     }
 }
 
@@ -205,12 +267,22 @@ impl Registry {
 /// this, a dropped exit event would pin the session in the registry forever
 /// (SessionExited fires once per session, so the next event for that id
 /// never arrives).
-pub fn spawn_exit_reaper(registry: &Arc<Registry>) {
+pub fn spawn_exit_reaper(registry: &Arc<Registry>) -> tokio::task::JoinHandle<()> {
     let weak: Weak<Registry> = Arc::downgrade(registry);
     let mut rx = registry.events.subscribe();
     tokio::spawn(async move {
+        let mut maintenance = tokio::time::interval(TOMBSTONE_MAINTENANCE_INTERVAL);
+        maintenance.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            match rx.recv().await {
+            // Biased selection gives a due maintenance tick priority over a
+            // continuous event stream, preventing tombstone expiry starvation.
+            tokio::select! {
+                biased;
+                _ = maintenance.tick() => {
+                    let Some(reg) = weak.upgrade() else { break };
+                    reg.purge_expired_tombstones();
+                }
+                event = rx.recv() => match event {
                 Ok(Event::SessionExited { session_id, .. }) => {
                     let Some(reg) = weak.upgrade() else { break };
                     reg.reap(session_id);
@@ -232,10 +304,11 @@ pub fn spawn_exit_reaper(registry: &Arc<Registry>) {
                         reg.reap(id);
                     }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
             }
         }
-    });
+    })
 }
 
 /// Pure name resolver. If `requested` is `Some(name)`, validate uniqueness; if
@@ -323,10 +396,7 @@ mod tests {
 
     #[test]
     fn resolve_name_anonymous_skips_existing_collisions() {
-        let names = map_with(&[
-            ("session-1", Uuid::new_v4()),
-            ("session-2", Uuid::new_v4()),
-        ]);
+        let names = map_with(&[("session-1", Uuid::new_v4()), ("session-2", Uuid::new_v4())]);
         let mut counter = 0u64;
         let resolved = resolve_name(None, &names, &mut counter).expect("resolve");
         assert_eq!(resolved, "session-3");
@@ -421,7 +491,7 @@ mod tests {
     async fn exited_session_frees_its_name_for_recreate() {
         let events = test_events();
         let reg = Arc::new(Registry::new(events));
-        spawn_exit_reaper(&reg);
+        let _reaper = spawn_exit_reaper(&reg);
 
         // Use `true` so the child exits immediately and the reaper publishes
         // SessionExited without us having to send a signal.
@@ -429,7 +499,10 @@ mod tests {
             .create(create_opts(Some("ghost"), &["true"]))
             .expect("create ghost");
         let id = sess.id();
-        assert!(sess.wait_for_exit(Duration::from_secs(5)), "child must exit");
+        assert!(
+            sess.wait_for_exit(Duration::from_secs(5)),
+            "child must exit"
+        );
         drop(sess);
 
         // The reaper removes the session from the live list and name map but
@@ -439,10 +512,16 @@ mod tests {
             if reg.list().iter().all(|session| session.id() != id) {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "reaper did not tombstone exited session");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reaper did not tombstone exited session"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(reg.get(id).is_some(), "exited session should remain replayable by id");
+        assert!(
+            reg.get(id).is_some(),
+            "exited session should remain replayable by id"
+        );
 
         // Name slot must be free — recreating with the same name must succeed.
         let sess2 = reg
@@ -450,5 +529,215 @@ mod tests {
             .expect("recreate after reap");
         assert_eq!(sess2.snapshot().name, "ghost");
         cleanup(&sess2);
+    }
+
+    #[test]
+    fn tombstone_deadline_retains_before_and_removes_at_the_inclusive_boundary() {
+        let reg = Registry::new(test_events());
+        let session = reg
+            .create(create_opts(Some("deadline-source"), &["sleep", "30"]))
+            .expect("create");
+        let id = Uuid::new_v4();
+        let expires_at = Instant::now() + Duration::from_secs(1);
+        let mut inner = reg.inner.lock().expect("registry poisoned");
+        inner.tombstones.insert(
+            id,
+            Tombstone {
+                session: Arc::clone(&session),
+                expires_at,
+            },
+        );
+        assert!(inner
+            .purge_expired_tombstones_at(expires_at - Duration::from_millis(1))
+            .is_empty());
+        assert!(
+            inner.tombstones.contains_key(&id),
+            "must retain immediately before its deadline"
+        );
+        assert_eq!(inner.purge_expired_tombstones_at(expires_at).len(), 1);
+        assert!(
+            !inner.tombstones.contains_key(&id),
+            "must remove exactly at its deadline"
+        );
+        drop(inner);
+        cleanup(&session);
+    }
+
+    #[test]
+    fn tombstone_cap_evicts_the_oldest_without_touching_live_sessions() {
+        let reg = Registry::new(test_events());
+        let session = reg
+            .create(create_opts(Some("cap-source"), &["sleep", "30"]))
+            .expect("create");
+        let now = Instant::now();
+        let oldest = Uuid::new_v4();
+        let newer: Vec<Uuid> = (0..MAX_EXITED_TOMBSTONES).map(|_| Uuid::new_v4()).collect();
+        let released = {
+            let mut inner = reg.inner.lock().expect("registry poisoned");
+            inner.tombstones.insert(
+                oldest,
+                Tombstone {
+                    session: Arc::clone(&session),
+                    expires_at: now + Duration::from_secs(1),
+                },
+            );
+            for (offset, id) in newer.iter().enumerate() {
+                inner.tombstones.insert(
+                    *id,
+                    Tombstone {
+                        session: Arc::clone(&session),
+                        expires_at: now + Duration::from_secs(offset as u64 + 2),
+                    },
+                );
+            }
+            inner.purge_expired_tombstones_at(now)
+        };
+        assert_eq!(
+            released.len(),
+            1,
+            "one oldest tombstone must be evicted at the cap"
+        );
+        assert_eq!(
+            reg.count(),
+            1,
+            "cap maintenance must not scan or remove live sessions"
+        );
+        let inner = reg.inner.lock().expect("registry poisoned");
+        assert!(
+            !inner.tombstones.contains_key(&oldest),
+            "the earliest deadline must be evicted"
+        );
+        assert!(
+            newer.iter().all(|id| inner.tombstones.contains_key(id)),
+            "newer tombstones remain"
+        );
+        assert_eq!(inner.tombstones.len(), MAX_EXITED_TOMBSTONES);
+        drop(inner);
+        drop(released);
+        cleanup(&session);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn periodic_maintenance_releases_an_idle_expired_tombstone_without_lazy_access() {
+        let events = test_events();
+        // Keep this sender alive after Registry drop so the join proves Weak
+        // lifecycle termination from a maintenance wake, not RecvError::Closed.
+        let external_events = events.clone();
+        let reg = Arc::new(Registry::new(events));
+        let reaper = spawn_exit_reaper(&reg);
+        // Spawn is not synchronously polled. Establish the interval at virtual
+        // time zero before constructing the deadline-sensitive fixture.
+        tokio::task::yield_now().await;
+        let session = reg
+            .create(create_opts(Some("idle-tombstone"), &["sleep", "30"]))
+            .expect("create");
+        cleanup(&session);
+        let id = session.id();
+        reg.reap(id);
+        let weak_session = Arc::downgrade(&session);
+        assert!(
+            reg.get(id).is_some(),
+            "the pre-TTL tombstone remains replayable"
+        );
+        drop(session);
+        assert!(
+            weak_session.upgrade().is_some(),
+            "the registry owns the pre-TTL session graph"
+        );
+
+        // Do not call get/list/count/reap after advancing: only the reaper's
+        // timer may release the registry-owned Arc. Tokio's virtual Instant is
+        // shared by tombstone deadlines and the established interval.
+        tokio::time::advance(EXITED_TOMBSTONE_TTL - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            weak_session.upgrade().is_some(),
+            "must retain immediately before the TTL boundary"
+        );
+        // The maintenance guarantee is TTL plus one cadence, rather than an
+        // exact wall-clock deletion point. The direct helper test covers the
+        // inclusive exact deadline separately.
+        tokio::time::advance(TOMBSTONE_MAINTENANCE_INTERVAL).await;
+        tokio::task::yield_now().await;
+        assert!(
+            weak_session.upgrade().is_none(),
+            "timer must release an idle expired tombstone within one cadence"
+        );
+
+        drop(reg);
+        tokio::time::advance(TOMBSTONE_MAINTENANCE_INTERVAL).await;
+        tokio::time::timeout(Duration::from_secs(1), reaper)
+            .await
+            .expect("reaper must stop after the next maintenance wake")
+            .expect("reaper task must not panic");
+        drop(external_events);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn due_maintenance_tick_precedes_ready_event_traffic() {
+        let events = test_events();
+        let reg = Arc::new(Registry::new(events.clone()));
+        let _reaper = spawn_exit_reaper(&reg);
+        tokio::task::yield_now().await;
+        let session = reg
+            .create(create_opts(Some("priority-tombstone"), &["sleep", "30"]))
+            .expect("create");
+        cleanup(&session);
+        reg.reap(session.id());
+        let weak_session = Arc::downgrade(&session);
+        drop(session);
+        // Make receive ready before the tombstone deadline becomes due. One
+        // reaper poll after advance must select the biased timer branch first.
+        let _ = events.send(Event::SnapshotInvalidated {
+            session_id: Uuid::nil(),
+        });
+        tokio::time::advance(EXITED_TOMBSTONE_TTL).await;
+        tokio::task::yield_now().await;
+        assert!(
+            weak_session.upgrade().is_none(),
+            "due maintenance cannot be starved by a ready event"
+        );
+    }
+
+    #[tokio::test]
+    async fn lagged_exit_events_still_sweep_dead_sessions() {
+        let (events, _) = broadcast::channel::<Event>(1);
+        let reg = Arc::new(Registry::new(events.clone()));
+        let session = reg
+            .create(create_opts(Some("lagged-exit"), &["true"]))
+            .expect("create");
+        let id = session.id();
+        assert!(
+            session.wait_for_exit(Duration::from_secs(5)),
+            "child must exit"
+        );
+        drop(session);
+        // On the default current-thread runtime, spawn subscribes synchronously
+        // but cannot poll until this test yields. A probe with the same timing
+        // proves the receiver backlog is truly Lagged before yielding reaper.
+        let _reaper = spawn_exit_reaper(&reg);
+        let mut lag_probe = events.subscribe();
+        for _ in 0..4 {
+            let _ = events.send(Event::SnapshotInvalidated {
+                session_id: Uuid::nil(),
+            });
+        }
+        assert!(
+            matches!(
+                lag_probe.try_recv(),
+                Err(broadcast::error::TryRecvError::Lagged(_))
+            ),
+            "fixture must force broadcast lag"
+        );
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        // The pre-subscription exit event was unavailable, so only the proven
+        // Lagged branch's authoritative alive=false sweep can remove it.
+        assert_eq!(reg.count(), 0, "lag sweep must reap the exited live entry");
+        assert!(
+            reg.get(id).is_some(),
+            "lag sweep preserves the replay tombstone"
+        );
     }
 }
