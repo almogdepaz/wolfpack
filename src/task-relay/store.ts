@@ -319,6 +319,22 @@ export class TaskRelayStore {
     return this.#read().registrations.find((item) => item.sessionId === sessionId && Date.parse(item.leaseExpiresAt) > now.getTime());
   }
 
+  /** One fresh validated read for a batch; no cache or retained payload graph. */
+  async registrationsForSessions(sessionIds: readonly string[], now: Date): Promise<ReadonlyMap<string, RelayRegistration>> {
+    const requested = new Set(sessionIds);
+    const selected = new Map<string, RelayRegistration>();
+    if (requested.size === 0) return selected;
+    const nowMs = now.getTime();
+    for (const registration of this.#read().registrations) {
+      if (requested.has(registration.sessionId) && !selected.has(registration.sessionId)
+        && Date.parse(registration.leaseExpiresAt) > nowMs) {
+        // Preserve find() semantics: first ACTIVE match, not first/last stored.
+        selected.set(registration.sessionId, registration);
+      }
+    }
+    return selected;
+  }
+
   async registration(endpointId: string, now: Date): Promise<RelayRegistration | undefined> {
     return this.#read().registrations.find((item) => item.endpoint.id === endpointId && Date.parse(item.leaseExpiresAt) > now.getTime());
   }

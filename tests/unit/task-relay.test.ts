@@ -86,6 +86,7 @@ function storeOperations(store: TaskRelayStore): readonly (() => Promise<unknown
   return [
     () => store.register(VALID_REGISTRATION),
     () => store.registrationForSession("sender", NOW),
+    () => store.registrationsForSessions(["sender", "receiver"], NOW),
     () => store.registration(SENDER_ID, NOW),
     () => store.deactivateRegistration("sender", SENDER_ID, NOW.toISOString()),
     () => store.accept(LOCAL_ENVELOPE, NOW.toISOString()),

@@ -264,10 +264,12 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
       if (!identities || names.some(name => !identities[name])) {
         return json(res, { error: "session identity unavailable" }, 503);
       }
-      const sessions = (await Promise.all(names.map(async (name) => {
+      if (names.length === 0) return json(res, { sessions: [] });
+      const endpoints = await getTaskRelayGateway().endpointsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
+      const sessions = names.map((name) => {
         const identity = identities[name]!;
-        return sessionStatusPayload(name, identity, await getTaskRelayGateway().endpointForSession(identity.wolfpackSessionId));
-      }))).sort((left, right) => left.session.localeCompare(right.session));
+        return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
+      }).sort((left, right) => left.session.localeCompare(right.session));
       json(res, { sessions });
     } catch (error: unknown) {
       log.warn("session-control list failed", { error: errMsg(error) });

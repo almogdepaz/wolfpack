@@ -183,6 +183,13 @@ export class TaskRelayGateway {
     return (await this.#store.registrationForSession(sessionId, this.#now()))?.endpoint;
   }
 
+  async endpointsForSessions(sessionIds: readonly string[]): Promise<ReadonlyMap<string, RelayEndpoint>> {
+    const registrations = await this.#store.registrationsForSessions(sessionIds, this.#now());
+    const endpoints = new Map<string, RelayEndpoint>();
+    for (const [sessionId, registration] of registrations) endpoints.set(sessionId, registration.endpoint);
+    return endpoints;
+  }
+
   async disconnect(input: { readonly callerSession: string; readonly endpoint: RelayEndpoint }): Promise<RelayResult<Record<never, never>>> {
     if (!isRelayEndpoint(input.endpoint)) return relayFailure(RELAY_ERROR.INVALID_REQUEST, "invalid relay endpoint");
     const caller = await this.#caller(input.callerSession);
