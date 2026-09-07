@@ -422,14 +422,15 @@ export function getTaskRelayGateway(): RelayGateway {
   return singleton;
 }
 
-export function __setTaskRelayGatewayForTests(gateway: RelayGateway): void {
+export async function __setTaskRelayGatewayForTests(gateway: RelayGateway): Promise<void> {
   if (!process.env.WOLFPACK_TEST) throw new Error("task relay gateway setup is test-only");
-  singleton?.close();
+  if (singleton === gateway) return;
+  await singleton?.close();
   singleton = gateway;
 }
 
-export function __resetTaskRelayGatewayForTests(): void {
+export async function __resetTaskRelayGatewayForTests(): Promise<void> {
   if (!process.env.WOLFPACK_TEST) throw new Error("task relay gateway reset is test-only");
-  singleton?.close();
+  await singleton?.close();
   singleton = undefined;
 }

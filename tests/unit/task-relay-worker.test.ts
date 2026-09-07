@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, test, jest, spyOn } from "bun:test";
+import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,25 @@ import { randomUUID } from "node:crypto";
 import { AGENT_KIND } from "../../src/agent-kind.ts";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 import { RELAY_ID, RELAY_ERROR, RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "../../src/task-relay/domain.ts";
+
+test("background maintenance cannot accumulate overlapping history scans", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "relay-maintenance-test-"));
+  const gateway = new TaskRelayGateway({ root: directory, retryIntervalMs: 20 });
+  const flush = spyOn(gateway, "flushPeerOutbox").mockResolvedValue({ forwarded: 0, pending: 0 });
+  jest.useFakeTimers();
+  let release!: () => void;
+  try {
+    await gateway.initialize(); flush.mockClear();
+    const blocked = new Promise<void>(r => { release = r; });
+    flush.mockImplementation(async () => { await blocked; return { forwarded: 0, pending: 0 }; });
+    jest.advanceTimersByTime(100);
+    expect(flush).toHaveBeenCalledTimes(1);
+    release();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    jest.advanceTimersByTime(20);
+    expect(flush).toHaveBeenCalledTimes(2);
+  } finally { release?.(); gateway.close(); flush.mockRestore(); jest.useRealTimers(); rmSync(directory, { recursive: true, force: true }); }
+});
 
 const root = () => mkdtempSync(join(tmpdir(), "relay-worker-test-"));
 const inspect = async (selector: string) => ({ ok: true as const, session: selector, sessionId: selector, projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true });
