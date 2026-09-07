@@ -17,6 +17,11 @@ import {
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
+  QUIET_ALERT_MAX_SECONDS,
+  QUIET_ALERT_MIN_SECONDS,
+  QUIET_ALERT_MODE,
+} from "../quiet-alert-policy.ts";
+import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
 } from "../server/directory-browser.ts";
@@ -462,10 +467,15 @@ export const controlApiSource: ControlApiSource = {
       cmd: ref("Command"),
       enabled: boolean(),
     }, ["cmd", "enabled"]),
+    QuietAlertPolicy: object({
+      mode: { enum: Object.values(QUIET_ALERT_MODE) },
+      quietAfterSeconds: { type: "integer", minimum: QUIET_ALERT_MIN_SECONDS, maximum: QUIET_ALERT_MAX_SECONDS },
+    }, ["mode", "quietAfterSeconds"]),
     Settings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("CmdEntry")),
-    }, ["agentCmd", "cmds"]),
+      quietAlerts: ref("QuietAlertPolicy"),
+    }, ["agentCmd", "cmds", "quietAlerts"]),
     EffectiveSettings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("Command")),
@@ -512,6 +522,13 @@ export const controlApiSource: ControlApiSource = {
       lastRenderedActivityAt: { type: "string", format: "date-time" },
       quietSince: { type: "string", format: "date-time" },
     }, ["freshness", "observedAt", "display"]),
+    QuietAlertFact: object({
+      kind: { const: "quiet" },
+      sessionId: ref("SessionId"),
+      episodeId: { type: "string", minLength: 1, maxLength: 128 },
+      eligibleAtMs: { type: "integer", minimum: 0 },
+      observedAtMs: { type: "integer", minimum: 0 },
+    }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -520,6 +537,7 @@ export const controlApiSource: ControlApiSource = {
       identity: ref("PublicSessionIdentity"),
       runtimeState: ref("AgentRuntimeState"),
       activity: ref("ActivityObservation"),
+      quietAlert: ref("QuietAlertFact"),
     }, ["name", "lastLine", "triage"]),
     SessionControlIdentity: object({
       session: ref("SessionName"),
@@ -1173,6 +1191,7 @@ export const controlApiSource: ControlApiSource = {
           cmd: ref("Command"),
           enabled: boolean(),
         }, ["cmd", "enabled"]),
+        quietAlerts: ref("QuietAlertPolicy"),
       }),
       response: object({
         ok: boolean(),

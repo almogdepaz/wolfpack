@@ -59,6 +59,13 @@ import {
 } from "./task-worker-readiness.js";
 import { notifySubSessionOpened } from "./session-notifications.js";
 import { getTaskRelayGateway } from "../task-relay/gateway.js";
+import {
+  DEFAULT_QUIET_ALERT_POLICY,
+  isQuietAlertPolicy,
+  QUIET_ALERT_MODE,
+} from "../quiet-alert-policy.js";
+import { invalidateQuietAlertPolicy } from "../quiet-alert-policy-invalidation.js";
+import type { QuietAlertPolicy } from "../quiet-alert-policy.js";
 import type { InvalidBodyResponse } from "./http.js";
 import type { RouteHandler } from "./route-handler.js";
 
@@ -101,7 +108,7 @@ function taskWorkerFailureBody(error: TaskWorkerReadinessError): Record<string, 
 }
 
 const SETTINGS_BODY_STRING_KEYS = ["agentCmd", "addCmd", "removeCmd"] as const;
-const SETTINGS_BODY_KEYS = new Set<string>([...SETTINGS_BODY_STRING_KEYS, "setCmdEnabled"]);
+const SETTINGS_BODY_KEYS = new Set<string>([...SETTINGS_BODY_STRING_KEYS, "setCmdEnabled", "quietAlerts"]);
 const SET_CMD_ENABLED_BODY_KEYS = new Set(["cmd", "enabled"]);
 
 interface CreateBody extends Record<string, unknown> {
@@ -169,17 +176,19 @@ interface SettingsBody extends Record<string, unknown> {
   addCmd?: string;
   removeCmd?: string;
   setCmdEnabled?: { cmd: string; enabled: boolean };
+  quietAlerts?: QuietAlertPolicy;
 }
 
 function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
   if (!hasOnlyKeys(body, SETTINGS_BODY_KEYS)
     || !SETTINGS_BODY_STRING_KEYS.every(key => hasOptionalType(body, key, "string"))) return false;
-  return body.setCmdEnabled === undefined || (
+  const validCommandToggle = body.setCmdEnabled === undefined || (
     isJsonObject(body.setCmdEnabled) &&
     hasOnlyKeys(body.setCmdEnabled, SET_CMD_ENABLED_BODY_KEYS) &&
     typeof body.setCmdEnabled.cmd === "string" &&
     typeof body.setCmdEnabled.enabled === "boolean"
   );
+  return validCommandToggle && (body.quietAlerts === undefined || isQuietAlertPolicy(body.quietAlerts));
 }
 
 function listDevProjects(): string[] {
@@ -249,6 +258,8 @@ interface Settings {
   agentCmd: string;
   /** Full list of known commands. Each toggleable independently. */
   cmds: CmdEntry[];
+  /** Host-wide automatic quiet-alert policy. */
+  quietAlerts: QuietAlertPolicy;
 }
 
 /** A command is valid if it's literally `"shell"` or matches CMD_REGEX. */
@@ -268,6 +279,9 @@ export function loadSettings(): Settings {
   const agentCmd = raw && typeof raw.agentCmd === "string" && isValidCmd(raw.agentCmd)
     ? raw.agentCmd
     : AGENT_KIND.SHELL.id;
+  const quietAlerts = raw && isQuietAlertPolicy(raw.quietAlerts)
+    ? raw.quietAlerts
+    : DEFAULT_QUIET_ALERT_POLICY;
 
   // A persisted `cmds` array is authoritative, including an explicitly empty
   // array. Synthesizing built-ins would undo the user's explicit configuration.
@@ -281,7 +295,7 @@ export function loadSettings(): Settings {
       seen.add(obj.cmd);
       cmds.push({ cmd: obj.cmd, enabled: obj.enabled !== false });
     }
-    return { agentCmd, cmds };
+    return { agentCmd, cmds, quietAlerts };
   }
 
   // Legacy settings still receive the session-picker defaults.
@@ -295,18 +309,22 @@ export function loadSettings(): Settings {
       cmds.push({ cmd: command, enabled: true });
     }
   }
-  return { agentCmd, cmds };
+  return { agentCmd, cmds, quietAlerts };
 }
 
 function saveSettings(s: Settings): void {
-  // Persist exactly what we expose in the API response — a clean { agentCmd, cmds }
-  // object. Drop any legacy keys (customCmds) that may still be in the file.
-  writeFileSync(settingsPath(), JSON.stringify({ agentCmd: s.agentCmd, cmds: s.cmds }, null, 2));
+  // Persist exactly what we expose in the API response. Drop legacy keys
+  // (`customCmds`) that may still be in the file.
+  writeFileSync(settingsPath(), JSON.stringify({
+    agentCmd: s.agentCmd,
+    cmds: s.cmds,
+    quietAlerts: s.quietAlerts,
+  }, null, 2));
 }
 
 /** Resolve the agent that should actually run for a new session.
  *  Priority: settings.agentCmd if it's enabled → first enabled cmd → shell. */
-export function effectiveAgentCmd(s: Settings): string {
+export function effectiveAgentCmd(s: Pick<Settings, "agentCmd" | "cmds">): string {
   const enabled = s.cmds.filter(c => c.enabled);
   const requested = enabled.find(c => c.cmd === s.agentCmd);
   if (requested) return requested.cmd;
@@ -316,7 +334,7 @@ export function effectiveAgentCmd(s: Settings): string {
 
 /** What the session-create picker should show: enabled cmds, or ["shell"] if
  *  the user has disabled everything (always-on fallback). */
-export function effectiveCmds(s: Settings): string[] {
+export function effectiveCmds(s: Pick<Settings, "agentCmd" | "cmds">): string[] {
   const enabled = s.cmds.filter(c => c.enabled).map(c => c.cmd);
   return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL.id];
 }
@@ -784,6 +802,10 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       if (entry) entry.enabled = target.enabled;
     }
 
+    const invalidatesQuietAlerts = body.quietAlerts?.mode === QUIET_ALERT_MODE.DISABLED
+      && settings.quietAlerts.mode !== QUIET_ALERT_MODE.DISABLED;
+    if (body.quietAlerts !== undefined) settings.quietAlerts = body.quietAlerts;
+
     if (body.agentCmd != null) {
       const cmd = body.agentCmd.trim();
       if (!isValidCmd(cmd)) {
@@ -793,6 +815,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
     }
 
     saveSettings(settings);
+    if (invalidatesQuietAlerts) invalidateQuietAlertPolicy();
     json(res, {
       ok: true,
       settings,

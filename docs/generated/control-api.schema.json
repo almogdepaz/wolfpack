@@ -1715,6 +1715,9 @@
               "enabled"
             ],
             "additionalProperties": false
+          },
+          "quietAlerts": {
+            "$ref": "#/$defs/QuietAlertPolicy"
           }
         },
         "required": [],
@@ -3175,6 +3178,27 @@
       ],
       "additionalProperties": false
     },
+    "QuietAlertPolicy": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "quiet-after-activity",
+            "disabled"
+          ]
+        },
+        "quietAfterSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "mode",
+        "quietAfterSeconds"
+      ],
+      "additionalProperties": false
+    },
     "Settings": {
       "type": "object",
       "properties": {
@@ -3186,11 +3210,15 @@
           "items": {
             "$ref": "#/$defs/CmdEntry"
           }
+        },
+        "quietAlerts": {
+          "$ref": "#/$defs/QuietAlertPolicy"
         }
       },
       "required": [
         "agentCmd",
-        "cmds"
+        "cmds",
+        "quietAlerts"
       ],
       "additionalProperties": false
     },
@@ -3391,6 +3419,38 @@
       ],
       "additionalProperties": false
     },
+    "QuietAlertFact": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "quiet"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "episodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "eligibleAtMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observedAtMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "sessionId",
+        "episodeId",
+        "eligibleAtMs",
+        "observedAtMs"
+      ],
+      "additionalProperties": false
+    },
     "SessionSummary": {
       "type": "object",
       "properties": {
@@ -3414,6 +3474,9 @@
         },
         "activity": {
           "$ref": "#/$defs/ActivityObservation"
+        },
+        "quietAlert": {
+          "$ref": "#/$defs/QuietAlertFact"
         }
       },
       "required": [

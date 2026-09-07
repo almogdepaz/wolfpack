@@ -7,6 +7,7 @@ import {
 } from "../../scripts/gen-control-api-schema.ts";
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
 import { SESSION_OPEN_MAX_MODEL_LENGTH } from "../../src/session-open-contract.ts";
+import { DEFAULT_QUIET_ALERT_POLICY } from "../../src/quiet-alert-policy.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
@@ -649,7 +650,7 @@ describe("control api schema compatibility samples", () => {
         },
       }] }],
       ["getSettings", {
-        settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }] },
+        settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }], quietAlerts: DEFAULT_QUIET_ALERT_POLICY },
         effective: { agentCmd: "shell", cmds: ["shell"] },
       }],
       ["getSessionStatus", {

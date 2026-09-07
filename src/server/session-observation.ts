@@ -1,7 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
+import { reduceQuietAlertPolicy } from "../quiet-alert-policy.js";
+import {
+  onQuietAlertPolicyInvalidation,
+  quietAlertPolicyEpoch,
+} from "../quiet-alert-policy-invalidation.js";
+import type { QuietAlertFact, QuietAlertPolicyState } from "../quiet-alert-policy.js";
 import type {
   SessionActivityHistory,
   SessionActivityObservation,
@@ -18,8 +25,13 @@ import { getBackend, getRouter } from "./backend.js";
 import type { SessionBackend, SessionListFact } from "./backend.js";
 import {
   checkSessionTransitions,
+  clearQuietAlertRecipientSnapshots,
+  forgetQuietAlertRecipientSnapshots,
   getSubscriptionCount,
+  pruneQuietAlertRecipientSnapshots,
+  recordQuietAlertEmission,
 } from "./push.js";
+import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 
 const log = createLogger("session-observation");
@@ -37,20 +49,28 @@ type RenderedCapture =
 
 interface RenderedFingerprintFlight {
   readonly token: object;
+  readonly policyEpoch: number;
   readonly outputSequence?: string;
+  readonly observedAtMs: number;
   readonly observedAt: string;
   readonly promise: Promise<RenderedCapture>;
-  readonly activity: Promise<SessionActivityReduction>;
+  reduction?: SessionActivityReduction;
 }
 
 interface RenderedActivitySample {
   readonly token: object;
   readonly flight: RenderedFingerprintFlight;
+  readonly capture: RenderedCapture;
   readonly rendered: string | undefined;
-  readonly activity: Promise<SessionActivityReduction>;
+}
+
+interface ObservationAuthority {
+  readonly policyEpoch: number;
+  readonly id: number;
 }
 
 const activityHistory = new Map<string, SessionActivityHistory>();
+const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
 const activityContinuityTokens = new Map<string, object>();
 const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
@@ -62,6 +82,11 @@ let dashboardObservationCache: {
   readonly expiresAt: number;
   readonly sessions: readonly ObservedSessionSummary[];
 } | null = null;
+
+onQuietAlertPolicyInvalidation(() => {
+  quietAlertHistory.clear();
+  dashboardObservationCache = null;
+});
 
 interface KnownSessionSummary {
   readonly name: string;
@@ -75,6 +100,7 @@ interface ObservedSessionSummary {
   readonly triage: TriageStatus;
   readonly runtimeState: AgentRuntimeState;
   readonly activity: SessionActivityObservation;
+  readonly quietAlert?: QuietAlertFact;
   readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
 }
@@ -82,9 +108,16 @@ interface ObservedSessionSummary {
 interface SessionObservation {
   readonly sessions: readonly ObservedSessionSummary[];
   readonly unreliableSessionKeys: ReadonlySet<string>;
+  readonly authoritative: boolean;
+}
+
+function withoutQuietAlerts(sessions: readonly ObservedSessionSummary[]): readonly ObservedSessionSummary[] {
+  return sessions.map(({ quietAlert: _quietAlert, ...session }) => session);
 }
 
 const knownSessionSummaries = new Map<string, KnownSessionSummary>();
+let nextObservationOwnership = 0;
+let latestAuthoritativeObservation = 0;
 
 const SESSION_PREVIEW_MAX_CHARS = 240;
 
@@ -123,6 +156,32 @@ function reduceSessionActivity(
   return reduction;
 }
 
+function reduceSessionQuietAlert(
+  sessionKey: string,
+  sessionId: string | undefined,
+  observedAtMs: number,
+  continuity: "fresh" | "lost",
+  renderedActivityAtMs?: number,
+  episodeId?: string,
+): QuietAlertFact | undefined {
+  if (!sessionId) {
+    quietAlertHistory.delete(sessionKey);
+    return undefined;
+  }
+  const reduction = reduceQuietAlertPolicy(quietAlertHistory.get(sessionKey), {
+    sessionId,
+    observedAtMs,
+    continuity,
+    renderedActivityAt: renderedActivityAtMs,
+    episodeId,
+    policy: loadSettings().quietAlerts,
+  });
+  if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
+  else quietAlertHistory.delete(sessionKey);
+  if (reduction.event) recordQuietAlertEmission(sessionId, reduction.event.episodeId);
+  return reduction.fact;
+}
+
 function createRenderedFingerprintFlight(
   backend: SessionBackend,
   sessionKey: string,
@@ -130,26 +189,13 @@ function createRenderedFingerprintFlight(
   outputSequence: string | undefined,
   token: object,
 ): RenderedFingerprintFlight {
-  const observedAt = new Date().toISOString();
+  const observedAtMs = Date.now();
+  const policyEpoch = quietAlertPolicyEpoch();
+  const observedAt = new Date(observedAtMs).toISOString();
   const promise = backend.capturePane(name, { scrollbackLines: 0 })
     .then((pane) => ({ available: true as const, rendered: renderedActivityFingerprint(pane) }))
     .catch(() => ({ available: false as const }));
-  let flight: RenderedFingerprintFlight;
-  const activity = promise.then((capture) => {
-    if (activityContinuityTokens.get(sessionKey) !== token || !capture.available) {
-      const currentFlight = renderedFingerprintFlights.get(sessionKey);
-      if (!capture.available && currentFlight?.token === token && currentFlight.promise === promise) {
-        renderedFingerprintFlights.delete(sessionKey);
-      }
-      if (!capture.available && activityContinuityTokens.get(sessionKey) === token) {
-        activityContinuityTokens.delete(sessionKey);
-      }
-      return reduceActivityObservation(undefined, { alive: false, observedAt });
-    }
-    return reduceSessionActivity(sessionKey, { alive: true, observedAt, rendered: capture.rendered });
-  });
-  flight = { token, outputSequence, observedAt, promise, activity };
-  return flight;
+  return { token, policyEpoch, outputSequence, observedAtMs, observedAt, promise };
 }
 
 async function renderedActivitySample(
@@ -169,11 +215,49 @@ async function renderedActivitySample(
   return {
     token: flight.token,
     flight,
+    capture,
     rendered: activityContinuityTokens.get(sessionKey) === flight.token && capture.available
       ? capture.rendered
       : undefined,
-    activity: flight.activity,
   };
+}
+
+function reduceRenderedActivitySample(
+  sessionKey: string,
+  sessionId: string | undefined,
+  sample: RenderedActivitySample,
+  authority: ObservationAuthority,
+): SessionActivityReduction | undefined {
+  if (!ownsObservationAuthority(authority)) return undefined;
+  if (sample.flight.reduction !== undefined) return sample.flight.reduction;
+  const ownsContinuity = activityContinuityTokens.get(sessionKey) === sample.token;
+  if (!ownsContinuity || !sample.capture.available) {
+    const currentFlight = renderedFingerprintFlights.get(sessionKey);
+    if (!sample.capture.available && currentFlight === sample.flight) {
+      renderedFingerprintFlights.delete(sessionKey);
+    }
+    if (!sample.capture.available && ownsContinuity) {
+      activityContinuityTokens.delete(sessionKey);
+      reduceSessionQuietAlert(sessionKey, sessionId, sample.flight.observedAtMs, "lost");
+    }
+    const reduction = reduceActivityObservation(undefined, { alive: false, observedAt: sample.flight.observedAt });
+    sample.flight.reduction = reduction;
+    return reduction;
+  }
+  const reduction = reduceSessionActivity(sessionKey, {
+    alive: true,
+    observedAt: sample.flight.observedAt,
+    rendered: sample.capture.rendered,
+  });
+  if (
+    sample.flight.policyEpoch === authority.policyEpoch
+    && authority.policyEpoch === quietAlertPolicyEpoch()
+    && reduction.activity.lastRenderedActivityAt === sample.flight.observedAt
+  ) {
+    reduceSessionQuietAlert(sessionKey, sessionId, sample.flight.observedAtMs, "fresh", sample.flight.observedAtMs, randomUUID());
+  }
+  sample.flight.reduction = reduction;
+  return reduction;
 }
 
 function retireRenderedActivitySample(sessionKey: string, sample: RenderedActivitySample): void {
@@ -195,12 +279,35 @@ async function listAvailableSessionFacts(backend: SessionBackend): Promise<Sessi
   }
 }
 
-function observeUnavailableSessions(): SessionObservation {
+function beginObservationOwnership(): number {
+  return ++nextObservationOwnership;
+}
+
+// A collection becomes authoritative when its list result completes. Its
+// authority lasts only until a newer completed list claims the same policy epoch.
+function claimObservationAuthority(observationOwnership: number, policyEpoch: number): ObservationAuthority | undefined {
+  if (policyEpoch !== quietAlertPolicyEpoch() || observationOwnership < latestAuthoritativeObservation) return undefined;
+  latestAuthoritativeObservation = observationOwnership;
+  return { policyEpoch, id: observationOwnership };
+}
+
+function ownsObservationAuthority(authority: ObservationAuthority): boolean {
+  return authority.policyEpoch === quietAlertPolicyEpoch()
+    && authority.id === latestAuthoritativeObservation;
+}
+
+function observeUnavailableSessions(policyEpoch: number, observationOwnership: number): SessionObservation {
+  const authority = claimObservationAuthority(observationOwnership, policyEpoch);
+  if (authority === undefined) {
+    return { sessions: [], unreliableSessionKeys: new Set(), authoritative: false };
+  }
   activityHistory.clear();
+  quietAlertHistory.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
   renderedFingerprintFlights.clear();
+  clearQuietAlertRecipientSnapshots(policyEpoch);
   const observedAt = new Date().toISOString();
   const store = getAgentRuntimeStateStore();
   const summariesBySessionKey = new Map<string, KnownSessionSummary>();
@@ -232,7 +339,32 @@ function observeUnavailableSessions(): SessionObservation {
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
   store.flush();
-  return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()) };
+  return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()), authoritative: true };
+}
+
+function staleSessionProjection(
+  sessions: readonly Pick<ObservedSessionSummary, "name" | "identity">[],
+): SessionObservation {
+  const observedAt = new Date().toISOString();
+  const store = getAgentRuntimeStateStore();
+  const unreliableSessionKeys = new Set<string>();
+  const projection = sessions.flatMap<ObservedSessionSummary>((session) => {
+    const known = knownSessionSummaries.get(session.name);
+    const identity = known?.identity ?? session.identity;
+    const sessionKey = identity?.wolfpackSessionId ?? session.name;
+    unreliableSessionKeys.add(sessionKey);
+    const runtimeState = store.get(sessionKey);
+    if (runtimeState === undefined) return [];
+    return [{
+      name: session.name,
+      lastLine: known?.lastLine ?? "",
+      triage: "idle" as TriageStatus,
+      runtimeState,
+      activity: reduceActivityObservation(undefined, { alive: false, observedAt }).activity,
+      ...(identity && { identity }),
+    }];
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  return { sessions: projection, unreliableSessionKeys, authoritative: false };
 }
 
 async function observeSessionFact(
@@ -243,7 +375,9 @@ async function observeSessionFact(
   activeNames: Set<string>,
   activeSessionKeys: Set<string>,
   unreliableSessionKeys: Set<string>,
-): Promise<ObservedSessionSummary> {
+  authority: ObservationAuthority,
+): Promise<ObservedSessionSummary | undefined> {
+  if (!ownsObservationAuthority(authority)) return undefined;
   const name = fact.name;
   activeNames.add(name);
   const brokerState = fact.alive ? "alive" : "dead";
@@ -255,7 +389,8 @@ async function observeSessionFact(
   // Ghostty snapshot when it advances; stable sessions do no terminal work.
   // A shared per-sequence flight prevents duplicate snapshot requests.
   const outputSequence = brokerOutputSequence(fact.outputSequence);
-  const observedAt = new Date().toISOString();
+  const observedAtMs = Date.now();
+  const observedAt = new Date(observedAtMs).toISOString();
   const previousFingerprint = fingerprints.get(sessionKey);
   const shouldSampleRenderedState = brokerState === "alive" && (
     previousFingerprint === undefined
@@ -265,6 +400,7 @@ async function observeSessionFact(
   const sample = shouldSampleRenderedState
     ? await renderedActivitySample(backend, sessionKey, name, outputSequence)
     : undefined;
+  if (!ownsObservationAuthority(authority)) return undefined;
   const currentRendered = sample === undefined ? previousFingerprint?.rendered : sample.rendered;
   const rawOutputChanged = shouldSampleRenderedState
     && currentRendered !== undefined
@@ -277,20 +413,30 @@ async function observeSessionFact(
     if (brokerState !== "alive") {
       activityContinuityTokens.delete(sessionKey);
       renderedFingerprintFlights.delete(sessionKey);
-    } else if (sample) {
+    } else if (sample?.capture.available) {
       retireRenderedActivitySample(sessionKey, sample);
     }
     if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
   } else {
     fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
   }
-  const activity = sample
-    ? (await sample.activity).activity
+  const reduction = sample
+    ? reduceRenderedActivitySample(sessionKey, identity?.wolfpackSessionId, sample, authority)
     : reduceSessionActivity(sessionKey, {
       alive: brokerState === "alive",
       observedAt,
       rendered: currentRendered,
-    }).activity;
+    });
+  if (!ownsObservationAuthority(authority) || reduction === undefined) return undefined;
+  // Rendered activity is reduced once by its shared capture flight. Individual
+  // dashboard/observer consumers can adopt that reduction, but a collection
+  // retired while awaiting the capture cannot mutate its canonical state.
+  const quietAlert = brokerState === "alive" && currentRendered !== undefined
+    ? reduceSessionQuietAlert(sessionKey, identity?.wolfpackSessionId, observedAtMs, "fresh")
+    : brokerState !== "alive"
+      ? reduceSessionQuietAlert(sessionKey, identity?.wolfpackSessionId, observedAtMs, "lost")
+      : undefined;
+  if (!ownsObservationAuthority(authority)) return undefined;
 
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
   const renderedPreview = lastTerminalPreviewLine(currentRendered);
@@ -314,7 +460,8 @@ async function observeSessionFact(
     lastLine,
     triage,
     runtimeState,
-    activity,
+    activity: reduction.activity,
+    ...(quietAlert && { quietAlert }),
     ...(outputSequence !== undefined && { outputSequence }),
     ...(identity && { identity }),
   };
@@ -327,12 +474,17 @@ function pruneSessionObservationState(
   activeSessionKeys: ReadonlySet<string>,
   activeNames: ReadonlySet<string>,
   store: AgentRuntimeStateStore,
+  authority: ObservationAuthority,
 ): void {
+  if (!ownsObservationAuthority(authority)) return;
   for (const key of fingerprints.keys()) {
     if (!activeSessionKeys.has(key)) fingerprints.delete(key);
   }
   for (const key of activityHistory.keys()) {
     if (!activeSessionKeys.has(key)) activityHistory.delete(key);
+  }
+  for (const key of quietAlertHistory.keys()) {
+    if (!activeSessionKeys.has(key)) quietAlertHistory.delete(key);
   }
   for (const key of activityContinuityTokens.keys()) {
     if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
@@ -345,20 +497,25 @@ function pruneSessionObservationState(
   }
   store.prune(activeSessionKeys, { persist: false });
   store.flush();
+  pruneQuietAlertRecipientSnapshots(activeSessionKeys, authority.policyEpoch);
 }
 
 async function collectSessionObservation(
   fingerprints: Map<string, ActivityFingerprint>,
+  policyEpoch = quietAlertPolicyEpoch(),
+  observationOwnership = beginObservationOwnership(),
 ): Promise<SessionObservation> {
   const backend = getBackend();
   const sessionFacts = await listAvailableSessionFacts(backend);
-  if (!sessionFacts) return observeUnavailableSessions();
+  if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership);
+  const store = getAgentRuntimeStateStore();
+  const authority = claimObservationAuthority(observationOwnership, policyEpoch);
+  if (authority === undefined) return staleSessionProjection(sessionFacts);
 
   const activeNames = new Set<string>();
   const activeSessionKeys = new Set<string>();
   const unreliableSessionKeys = new Set<string>();
-  const store = getAgentRuntimeStateStore();
-  const sessions = await Promise.all(sessionFacts.map((fact) => observeSessionFact(
+  const observedSessions = await Promise.all(sessionFacts.map((fact) => observeSessionFact(
     backend,
     fact,
     fingerprints,
@@ -366,11 +523,14 @@ async function collectSessionObservation(
     activeNames,
     activeSessionKeys,
     unreliableSessionKeys,
+    authority,
   )));
+  if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
 
+  const sessions = observedSessions.filter((session): session is ObservedSessionSummary => session !== undefined);
   sessions.sort((a, b) => a.name.localeCompare(b.name));
-  pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store);
-  return { sessions, unreliableSessionKeys };
+  pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
+  return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };
 }
 
 export async function observeDashboardSessions(): Promise<readonly ObservedSessionSummary[]> {
@@ -379,13 +539,20 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
     return dashboardObservationCache.sessions;
   }
   if (dashboardObservationPromise) return dashboardObservationPromise;
-  dashboardObservationPromise = collectSessionObservation(dashboardFingerprints)
-    .then(({ sessions }) => {
+  const policyEpoch = quietAlertPolicyEpoch();
+  const observationOwnership = beginObservationOwnership();
+  const authority = { policyEpoch, id: observationOwnership } as const;
+  dashboardObservationPromise = collectSessionObservation(dashboardFingerprints, policyEpoch, observationOwnership)
+    .then((observation) => {
+      if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
+      if (!observation.authoritative || !ownsObservationAuthority(authority)) {
+        return staleSessionProjection(observation.sessions).sessions;
+      }
       dashboardObservationCache = {
         expiresAt: Date.now() + DASHBOARD_OBSERVATION_CACHE_TTL_MS,
-        sessions,
+        sessions: observation.sessions,
       };
-      return sessions;
+      return observation.sessions;
     })
     .finally(() => {
       dashboardObservationPromise = null;
@@ -397,15 +564,25 @@ async function runSessionNotificationObservation(): Promise<readonly ObservedSes
   if (getSubscriptionCount() === 0) return [];
   if (sessionNotificationObservationPromise) return sessionNotificationObservationPromise;
   sessionNotificationObservationPromise = (async () => {
-    const observation = await collectSessionObservation(notificationFingerprints);
+    const policyEpoch = quietAlertPolicyEpoch();
+    const observationOwnership = beginObservationOwnership();
+    const authority = { policyEpoch, id: observationOwnership } as const;
+    const observation = await collectSessionObservation(notificationFingerprints, policyEpoch, observationOwnership);
+    if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
+    if (!observation.authoritative || !ownsObservationAuthority(authority)) {
+      return staleSessionProjection(observation.sessions).sessions;
+    }
     await checkSessionTransitions(observation.sessions.map((session) => {
       const sessionKey = session.identity?.wolfpackSessionId ?? session.name;
       return {
         ...session,
         notificationEligible: !observation.unreliableSessionKeys.has(sessionKey),
       };
-    }));
-    return observation.sessions;
+    }), policyEpoch, () => ownsObservationAuthority(authority));
+    if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
+    return ownsObservationAuthority(authority)
+      ? observation.sessions
+      : staleSessionProjection(observation.sessions).sessions;
   })().finally(() => {
     sessionNotificationObservationPromise = null;
   });
@@ -437,6 +614,8 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   dashboardObservationCache = null;
   activityHistory.delete(sessionId);
   activityHistory.delete(sessionName);
+  quietAlertHistory.delete(sessionId);
+  quietAlertHistory.delete(sessionName);
   activityContinuityTokens.delete(sessionId);
   activityContinuityTokens.delete(sessionName);
   dashboardFingerprints.delete(sessionId);
@@ -445,6 +624,7 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   notificationFingerprints.delete(sessionName);
   renderedFingerprintFlights.delete(sessionId);
   renderedFingerprintFlights.delete(sessionName);
+  forgetQuietAlertRecipientSnapshots([sessionId, sessionName]);
 }
 
 export function resetNotificationObservation(): void {
@@ -454,6 +634,7 @@ export function resetNotificationObservation(): void {
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
   activityHistory.clear();
+  quietAlertHistory.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
@@ -461,6 +642,8 @@ export function __resetSessionObservationForTests(): void {
   dashboardObservationCache = null;
   renderedFingerprintFlights.clear();
   knownSessionSummaries.clear();
+  nextObservationOwnership = 0;
+  latestAuthoritativeObservation = 0;
 }
 
 export async function __runSessionNotificationObservationForTests(): Promise<readonly ObservedSessionSummary[]> {
