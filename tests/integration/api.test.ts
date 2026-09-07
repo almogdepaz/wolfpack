@@ -2239,6 +2239,63 @@ describe("GET /api/sessions", () => {
   });
 });
 
+describe("session-control relay lookup batching", () => {
+  test("lists stable-ID endpoints with one fresh read, fails closed, and skips empty-list relay reads", async () => {
+    const { TaskRelayStore } = await import("../../src/task-relay/store.ts");
+    const { TaskRelayGateway, __setTaskRelayGatewayForTests } = await import("../../src/task-relay/gateway.ts");
+    const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
+    const { randomUUID } = await import("node:crypto");
+    const relayRoot = mkdtempSync(join(TEST_DEV_DIR, "relay-list-batch-"));
+    const store = new TaskRelayStore(relayRoot);
+    const now = new Date("2026-08-09T00:00:00.000Z");
+    const names = Array.from({ length: 20 }, (_, i) => `relay-list-${19 - i}`);
+    const backend = new MockBackend({ sessions: names });
+    const identities = await backend.listIdentities();
+    const registrations = names.map(name => ({
+      sessionId: identities[name]!.wolfpackSessionId,
+      endpoint: { relay: RELAY_ID, id: randomUUID() }, generation: "process-1",
+      protocolVersions: [RELAY_PROTOCOL_VERSION], leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    }));
+    for (const registration of registrations) await store.register(registration);
+    const previousGateway = getTaskRelayGateway();
+    const gateway = new TaskRelayGateway({ root: relayRoot, now: () => now });
+    __setTaskRelayGatewayForTests(gateway);
+    __setTestBackend(backend);
+    const read = spyOn(fs, "readFileSync");
+    const relayReads = () => read.mock.calls.filter(([path]) => path === store.path).length;
+    try {
+      const response = await get("/api/session-control/list");
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.sessions.map((s: any) => s.session)).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+      for (const registration of registrations) {
+        expect(body.sessions.find((s: any) => s.sessionId === registration.sessionId)?.taskEndpoint).toEqual(registration.endpoint);
+      }
+      expect(relayReads()).toBe(1);
+      await store.deactivateRegistration(registrations[0]!.sessionId, registrations[0]!.endpoint.id, now.toISOString());
+      read.mockClear();
+      const updated = await (await get("/api/session-control/list")).json();
+      expect(updated.sessions.find((s: any) => s.sessionId === registrations[0]!.sessionId)).not.toHaveProperty("taskEndpoint");
+      expect(relayReads()).toBe(1);
+      writeFileSync(store.path, "{malformed");
+      read.mockClear();
+      expect((await get("/api/session-control/list")).status).toBe(503);
+      expect(relayReads()).toBe(1);
+      backend.setSessions([]);
+      read.mockClear();
+      const empty = await get("/api/session-control/list");
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toEqual({ sessions: [] });
+      expect(relayReads()).toBe(0);
+    } finally {
+      read.mockRestore();
+      __setTaskRelayGatewayForTests(previousGateway);
+      __setTestBackend(mockBackend);
+      rmSync(relayRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("agent-native top-level session control", () => {
   beforeEach(() => {
     mockBackend.setSessions(["wolf-1", "wolf-2"]);
