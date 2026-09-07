@@ -17,7 +17,7 @@
     {
       "name": "wolfpack",
       "doc": "edc-context/modules/wolfpack.md",
-      "summary": "Bun server, CLI, browser PWA, TypeScript broker boundary, Tailnet peers, tasks/relay, notifications, setup/service, and packaging.",
+      "summary": "Bun server, CLI, browser PWA, TypeScript broker boundary, sessions/control, Tailnet peers, tasks/relay, notifications, setup/service, and packaging.",
       "priority": 100,
       "match": {
         "prefixes": [
@@ -31,7 +31,7 @@
     {
       "name": "broker",
       "doc": "edc-context/modules/broker.md",
-      "summary": "Rust Unix-socket PTY broker daemon, binary/JSON protocol, session registry, output replay, terminal snapshots, resize, and Ghostty VT FFI.",
+      "summary": "Rust Unix-socket PTY broker daemon, binary/JSON protocol, session registry/tombstones, output replay, terminal snapshots, resize, and Ghostty VT FFI.",
       "priority": 90,
       "match": {
         "prefixes": [
@@ -42,40 +42,27 @@
     {
       "name": "tests",
       "doc": "edc-context/modules/tests.md",
-      "summary": "Bun, integration, Playwright, snapshot, schema, fixture, and real-broker regression contracts.",
+      "summary": "Bun, integration, Playwright, snapshot, schema, fixture, isolation, and real-broker regression contracts.",
       "priority": 80,
       "match": {
         "prefixes": [
           "tests/"
         ]
       }
-    },
-    {
-      "name": "docs",
-      "doc": "edc-context/modules/docs.md",
-      "summary": "Operator documentation, public site/LLM surfaces, generated API-contract publication, install/Tailnet/PWA/task/session guidance, and doc drift boundaries.",
-      "priority": 70,
-      "match": {
-        "prefixes": [
-          "docs/",
-          "site/"
-        ]
-      }
-    },
-    {
-      "name": "skills",
-      "doc": "edc-context/modules/skills.md",
-      "summary": "Bundled Pi Wolfpack control skill and agent-facing policy over public CLI/API surfaces.",
-      "priority": 60,
-      "match": {
-        "prefixes": [
-          "skills/"
-        ]
-      }
     }
   ],
   "contextless": {
     "entries": [
+      {
+        "id": "documentation-and-skills",
+        "globs": [
+          "docs/**",
+          "site/**",
+          "skills/**"
+        ],
+        "reason": "Documentation, site assets, and skill guidance do not need dedicated context files; inspect owning runtime source when behavior is in question.",
+        "reviewPolicy": "no-context-review"
+      },
       {
         "id": "repository-metadata",
         "globs": [
@@ -117,6 +104,9 @@
   },
   "unmapped": {
     "allowedGlobs": [
+      "docs/**",
+      "site/**",
+      "skills/**",
       "README.md",
       "CONTRIBUTING.md",
       "SECURITY.md",
@@ -142,17 +132,17 @@
       "patches/**"
     ]
   },
-  "generatedAt": "2026-08-25T18:16:38Z",
-  "sourceCommit": "9d1d2d87c10ac32d6b88a52261f1885d04f1e887",
+  "generatedAt": "2026-09-07T17:39:43Z",
+  "sourceCommit": "cbc513e48e75b85646154befb886cb854b483458",
   "coverage": {
-    "contextMappedFileCount": 442,
-    "contextlessFileCount": 31,
+    "contextMappedFileCount": 436,
+    "contextlessFileCount": 94,
     "uncoveredFileCount": 0,
     "ambiguousPathCount": 0,
     "ignoredFileCount": 0,
     "ignoreSource": "none",
     "ignoreGlobs": [],
-    "mappedFileCount": 442,
-    "unmappedFileCount": 31
+    "mappedFileCount": 436,
+    "unmappedFileCount": 94
   }
 }

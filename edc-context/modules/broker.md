@@ -2,68 +2,104 @@
 # broker Module Context
 
 ## When To Read This
-Read this when auditing the Rust PTY broker daemon, its Unix-socket protocol, session lifecycle, output replay/streaming, terminal snapshots, or Ghostty VT integration. Do **not** read sibling source bodies first for client behavior; the broker-side contract is authoritative here, while TypeScript clients/docs are adjacent consumers to inspect only when checking end-to-end compatibility.
+
+Read this when changing or auditing the Rust PTY broker daemon, Unix-socket protocol, session lifecycle, registry/tombstones, output replay/streaming, terminal snapshots, resize, socket startup permissions, or Ghostty VT FFI. TypeScript clients/docs are consumers; inspect them for compatibility, but broker-side source is authoritative for daemon behavior.
 
 ## Ownership And Boundaries
-`broker` owns the local daemon process, Unix-domain socket listener, binary frame codec, JSON control protocol structs, in-memory session registry, PTY child ownership, output fanout/replay, terminal-state snapshots, and the C shim around the bundled `libghostty-vt`. It does **not** own browser/UI rendering, TypeScript client reconnect policy, docs text, or Ghostty upstream internals.
 
-The visible Ghostty bundle under `broker/native/ghostty-vt/<target>` is a verified binary/header artifact. Build-time trust is enforced by `broker/build.rs` against the bundle manifest and `ghostty-vt.lock.json`; future agents must inspect the lock, build/release scripts, and `patches/**` before relying on provenance details beyond the checks expressed in `build.rs` and the checked-in manifest.
+`broker` owns the local daemon process, owner-only Unix socket listener, binary/JSON frame codec, protocol structs, request router, in-memory session registry, PTY child ownership, terminal emulator state, output fanout/replay, terminal snapshots, resize transactions, and C shim around bundled `libghostty-vt`.
+
+It does not own browser rendering, TypeScript client reconnect policy, HTTP auth, docs wording, package release orchestration, or Ghostty upstream internals. The checked-in Ghostty bundle/headers are verified artifacts; provenance depends on `broker/build.rs`, `ghostty-vt.lock.json`, release scripts, and `patches/**`.
 
 ## High-Value Contracts
 
 ### Wire framing is the first resource boundary
-The codec validates frame kind and per-kind payload budget before allocating payload buffers. Binary output/input frames have fixed UUID/seq prefixes, while control/event frames are JSON over the same 5-byte length-prefixed envelope. Unknown kind, oversized payload, short binary payload, or malformed JSON causes the server connection loop to drop that connection; integration tests assert the server survives and accepts later clients. Source truth: `broker/src/codec.rs`, `broker/src/server.rs`, `broker/tests/socket_integration.rs` failure-mode tests.
 
-Only clients may send `control_request` and `input_binary`; `control_response`, `output_binary`, and `event` are broker-to-client only. `server::dispatch_frame` intentionally tears down a connection on inverse-direction frames instead of routing them. This is a protocol-synchronization contract, not a recoverable request error.
+`broker/src/codec.rs` validates frame kind and per-kind payload budgets before allocating or writing payload data. Binary output frames carry UUID + final per-session sequence + owned bytes. JSON control/event frames share the same 5-byte length-prefixed envelope. Unknown kind, oversize payload, short binary payload, malformed JSON, or inverse-direction frame tears down only that connection.
 
-### Socket path handling is security-sensitive startup state
-`server::start` creates the socket parent directory, hardens it, refuses to replace non-socket paths, distinguishes live vs stale sockets by connecting, removes stale socket files, binds under a restrictive umask, then chmods the socket as a belt-and-suspenders step. Keep this ordering intact: checking/removing before bind prevents clobbering arbitrary files, and umask-before-bind removes the pre-chmod exposure window. Source truth: `broker/src/server.rs`; integration assertions near the socket startup/permissions tests in `broker/tests/socket_integration.rs`.
+Output frame writes now compute the 24-byte-prefix payload length with checked arithmetic and refuse oversize output before writing any partial header/body. Do not reintroduce saturating casts or partial sync writes for output frames.
 
-The default path derives from `XDG_RUNTIME_DIR` or falls back under the user home. The binary adds an srt-specific explanation only for permission-denied bind failures when `SANDBOX_RUNTIME` is present; do not generalize that into broker authorization. Source truth: `broker/src/bin/wolfpack-broker.rs`, `broker/src/server.rs`.
+Only clients may send `control_request` and `input_binary`; `control_response`, `output_binary`, and `event` are broker-to-client only. `server::dispatch_frame` drops connections on direction violations as a protocol-sync failure.
 
-### Registry names use reservation, not long spawn locking
-`Registry::create` reserves a session name under the registry mutex, releases the mutex while PTY/process/thread setup runs, then replaces the reservation UUID with the real session id after spawn. On spawn failure it removes only its own reservation. This allows concurrent creation without serializing process spawn while preserving duplicate-name rejection. Anonymous names are monotonic and not rewound on reap. Source truth: `broker/src/registry.rs`.
+### Socket path and process umask are security-sensitive startup state
 
-Exited sessions are removed from the live map by an async reaper listening for `SessionExited`, but a bounded tombstone keeps the `Arc<Session>` reachable briefly so late output replay/snapshot flows can still resolve the id. Reaper lag is handled by sweeping live sessions for `!alive`; this matters because each session emits one exit event, so losing it otherwise pins the registry entry.
+`server::start` creates/hardens the parent directory, refuses non-socket paths, distinguishes live vs stale sockets by connecting, removes stale socket files, binds under an owner-only `0o077` umask, then chmods the socket. A process-wide `SocketBindUmaskGuard` serializes umask changes behind a mutex and restores the previous umask immediately after bind. Keep this ordering: removing before bind prevents clobbering arbitrary files, and umask-before-bind removes the pre-chmod exposure window.
 
-### Session state has two separate but coupled clocks
-Per-session `seq` is the authoritative output/snapshot watermark. The PTY reader feeds bytes into `TerminalState`, increments `seq`, and publishes the same seq as `OutputChunk.seq` while holding the terminal lock. Snapshot code reads terminal state and `seq` under that same lock. Therefore `Snapshot.seq == max terminal-fed output chunk seq` at capture time. Breaking the terminal-lock/seq/publish ordering creates duplicate-or-missing output around attach. Source truth: `broker/src/session.rs`, `broker/src/output_bus.rs`, `broker/src/ring_buffer.rs`.
+The default socket path derives from `XDG_RUNTIME_DIR` or user home. The binary adds an srt-specific bind-error explanation only for permission-denied failures with `SANDBOX_RUNTIME`; this is not broker authorization.
 
-`snapshot_and_subscribe` is stronger than separate `snapshot` + `subscribe`: it snapshots under the terminal lock and then subscribes to the bus with `since_seq = snapshot.seq` before releasing the cut. The server queues the `snapshot_subscribe` response before spawning the output forwarder, so the client receives the snapshot/control boundary before replay/live bytes. Source truth: `broker/src/session.rs`, `broker/src/server.rs`, integration test `snapshot_subscribe_establishes_atomic_live_cut`.
+### Request routing is concrete and session-aware
 
-### Output fanout intentionally separates global events from per-session bytes
-Every connection gets a control queue and an output queue. Control responses and lifecycle events are prioritized so PTY bursts cannot starve RPC responses, but the writer yields after a bounded control burst to avoid starving terminal output. Per-subscription forwarders coalesce adjacent output chunks up to a bounded frame size, keep draining broadcast while the socket is backpressured up to a local byte cap, and then rely on broadcast `Lagged` plus `SubscriptionDropped` as the replay-recovery signal. Source truth: `broker/src/server.rs` forwarder/writer tests.
+The old generic `router.rs` trait is removed. `ServerConfig` carries `Arc<SessionRouter>`, and `SessionRouter::handle` directly owns request dispatch for session lifecycle methods. Connection-owned `subscribe`/`unsubscribe`/`snapshot_subscribe` stay in `server.rs` because they need per-connection output queues and subscription handles.
 
-`OutputBus::subscribe` locks the broadcast sender and replay ring as one atomic pair: a concurrent publish is either included in replay or received live, not both and not neither. `replay_truncated` means the requested `since_seq` predates the retained ring window; clients should re-snapshot before trusting replay continuity. The bus deliberately surfaces broadcast lag instead of hiding it. Source truth: `broker/src/output_bus.rs`, `broker/src/ring_buffer.rs`.
+### Registry names use reservation; tombstones are bounded and maintained
+
+`Registry::create` reserves a name while holding the registry mutex, drops expired tombstones outside the lock, releases the lock during PTY/process/thread setup, then replaces its reservation UUID with the real session ID. On spawn failure it removes only its own reservation. Anonymous names remain monotonic.
+
+Exited sessions are removed from the live map/name map by the async reaper and retained briefly as tombstones so late replay/snapshot by UUID can resolve the `Arc<Session>`. Tombstones are capped, expire at an inclusive deadline, and are purged by both lazy registry access and a periodic maintenance interval. The reaper uses biased `tokio::select!` so a due maintenance tick cannot be starved by ready event traffic; lagged exit events also trigger sweeping `!alive` live sessions. Removed session graphs are released after dropping the registry lock.
+
+### Session state has one output sequence domain
+
+Per-session `seq` is the authoritative output/snapshot watermark. The PTY reader feeds bytes into `TerminalState`, increments `seq`, and publishes `OutputChunk.seq` while holding the terminal lock; snapshot reads terminal state and `seq` under that same lock. Therefore `Snapshot.seq` is the max terminal-fed output chunk at capture time.
+
+If the reaper times out waiting for the drainer, forced `OutputBus::close` is serialized with the terminal lock. The drainer checks `bus.is_closed()` under the same lock before feeding; late PTY bytes after forced close must not advance terminal state, `seq`, replay, or final watermark.
+
+### OutputBus close is a hard final-output boundary
+
+`OutputBus::subscribe` locks sender and ring as an atomic pair: a concurrent publish is either replay or live, never both/neither. `publish` after `close` is ignored entirely and must not mutate replay or `current_seq`. `replay_truncated` remains the authoritative discontinuity signal.
+
+### Snapshot/live response ordering is socket-write based
+
+For `subscribe` and `snapshot_subscribe`, replay/live forwarding waits on a private oneshot barrier that fires only after the matching control response is successfully written to the socket. Queue insertion is not sufficient because the writer prioritizes bounded control bursts. If the response write fails or the barrier is dropped, the waiting forwarder exits without emitting associated output. This preserves the client-observable snapshot/control boundary even behind queued control responses without blocking input/unsubscribe handling in the dispatcher.
+
+### Snapshots are immutable shared protocol values
+
+`Session::snapshot_terminal` and `snapshot_and_subscribe` return `Arc<Snapshot>`, and `ResponsePayload::Snapshot` / `SnapshotSubscribe` serialize `Arc<Snapshot>` with the same JSON shape. The per-session cache shares the immutable graph across identical `(seq, scrollback_lines, target_cols)` requests and releases the old graph on key replacement or successful resize. Callers that need mutation must use `Arc::make_mut`; do not clone large cell graphs on ordinary cache hits.
+
+Snapshot validation checks `target_cols` before session lookup and before snapshot concurrency permits. `target_cols` must be greater than zero and at most the terminal-column ceiling. Unknown-session precedence is preserved over saturated snapshot permits after validation succeeds.
 
 ### Resize is a three-resource transaction
-`Session::resize` serializes on the PTY master lock and updates terminal emulator, PTY size, session metadata, snapshot cache, and lifecycle events in a specific order. Terminal resize happens before PTY resize; if PTY resize fails, the terminal is rolled back to old dimensions before state is committed. Success emits `SessionResized` followed by `SnapshotInvalidated`. The router validates normal create/resize dimensions before reaching session state; snapshot reflow target validation is intentionally looser for backward-compatible snapshot requests but still capped before lookup for oversized values. Source truth: `broker/src/session.rs`, `broker/src/session_router.rs`.
 
-### Spawn rollback must reap children on post-spawn setup failure
-After `spawn_command` succeeds, a `SpawnedChildGuard` owns the child until reader/writer acquisition, terminal initialization, and drainer/reaper thread setup are complete. Dropping the guard kills and waits the child, preventing setup-error leaks. Once disarmed into the reaper thread, the reaper waits for child exit, waits briefly for the PTY drainer to close the output bus, then records final seq and emits at most one exit event. Source truth: `broker/src/session.rs` tests around forced setup failures and PTY read failure.
+`Session::resize` serializes on the PTY master lock and updates terminal emulator, PTY size, metadata, snapshot cache, and lifecycle events in order. Terminal resize happens before PTY resize; PTY failure rolls terminal dimensions back and must not invalidate a still-valid cached snapshot. Success commits dimensions, invalidates snapshot cache, emits `SessionResized`, then `SnapshotInvalidated`.
 
-`kill(signal)` sends directly to the recorded pid and treats both already-marked-dead and ESRCH as `NotAlive`; callers should not assume an OK kill response means the reaper has already updated `alive=false` or `exit_code`.
+### Spawn rollback and exit must not leak children
+
+`SpawnedChildGuard` owns the child after process spawn until reader/writer acquisition, terminal initialization, and drainer/reaper setup complete; dropping it kills/waits the child on post-spawn setup failure. Once disarmed, the reaper waits for child exit, waits briefly for PTY drainer closure, may force output-bus close under terminal lock, records final seq, marks alive false at most once, and emits exit.
+
+`kill(signal)` sends directly to the recorded pid and treats already-dead/ESRCH as `NotAlive`; an OK kill response does not mean the reaper has finished updating liveness.
 
 ### Terminal snapshots are bounded FFI materialization
-Rust owns the public snapshot schema and resource limits; the C shim owns only translating Ghostty terminal/render state into bounded rows/cells/text/title metadata. Rust checks allocation sizes before vectors, retries row text extraction only up to a hard cap below the max codec payload, validates returned text offsets before slicing, clamps cursor/scroll-region metadata, and rejects snapshots if Ghostty reports VT-processing error metadata. Source truth: `broker/src/terminal_state.rs`.
 
-The C shim disables/limits Ghostty features that would violate the snapshot contract (notably image/glyph protocols), applies the Wolfpack ANSI palette before materializing palette colors as RGB, and uses Wolfpack-owned row-source enum values rather than passing arbitrary integers through to Ghostty point tags. Integer-sensitive C paths use checked add/multiply/narrowing helpers for cell indexes, row y coordinates, UTF-8 text accumulation, and u32 offset/length conversion. Source truth: `broker/native/ghostty_vt_shim.c`, `broker/native/ghostty_vt_shim.h`, terminal FFI tests.
+Rust owns the public snapshot schema and resource limits; the C shim only translates Ghostty terminal/render state into bounded rows/cells/text/title metadata. Rust validates allocation sizes, row text ranges, cursor/scroll-region metadata, and Ghostty VT error metadata.
+
+C helper arithmetic and row-source mapping moved from exported production shim header into `broker/native/ghostty_vt_internal.h`, with a static C test harness. Keep test-only helpers out of `ghostty_vt_shim.h`. The shim uses checked add/multiply/narrowing helpers for cell indexes, y coordinates, UTF-8 text accumulation, and u32 offset/length conversion, and accepts only Wolfpack-owned row-source enum values.
 
 ## Validation Authority
-The broker validates transport size/kind in `codec`, method/param shapes through serde in `protocol` consumers, dimension and snapshot target bounds in `session_router` and `server` subscribe handlers, session existence and name uniqueness in `registry`, and terminal extraction limits across Rust/C FFI. It does **not** validate `cwd`, `command`, or environment for policy safety beyond spawn errors; those are local-process capabilities exposed by whoever can connect to the owner-only Unix socket.
+
+- `codec` validates frame kind/size/shape and output write boundaries.
+- `server` validates connection direction, socket startup state, per-connection subscription limits, subscribe/snapshot_subscribe params, and response-before-output ordering.
+- `session_router` validates method params, dimensions, snapshot targets, session existence/name uniqueness, and error mapping.
+- `registry` validates names/reservations/tombstone lookup and snapshot concurrency.
+- `session` validates PTY lifecycle, resize ordering, final-output cutoff, sequence/snapshot cache keys, and kill semantics.
+- `terminal_state` + C shim validate FFI snapshot bounds and Ghostty render extraction.
+
+The broker does not validate `cwd`, command, or environment for policy safety beyond spawn errors; whoever can connect to the owner-only socket has local-process capabilities.
 
 ## Cross-Module Coupling Notes
-- TypeScript clients must tolerate lifecycle events and output frames interleaving before the matching control response; broker tests drain incidental events while awaiting response ids.
-- Client reconnect/replay logic must treat `replay_truncated` and `SubscriptionDropped` as authoritative discontinuity signals.
-- UI color/theme changes must stay synchronized with the first ANSI palette entries in `ghostty_vt_shim.c`, because snapshots materialize palette colors as RGB while live output is rendered client-side.
-- Docs/protocol references should point to `broker/src/protocol.rs` and `broker/src/codec.rs` for exact methods, enum names, frame kinds, and size budgets rather than duplicating tables.
+
+- TypeScript broker clients must tolerate lifecycle events/output frames interleaving before unrelated control responses, but associated subscribe/snapshot output must not precede its own written response.
+- Client reconnect/replay logic must treat `replay_truncated` and `SubscriptionDropped` as continuity loss requiring a fresh snapshot.
+- TS passive snapshot and browser inspector rely on exact-ID broker snapshots at existing geometry; changing snapshot params/shape affects `src/server/broker-backend.ts`, Control API schema/docs, and browser `session-inspector`.
+- Terminal palette/theme or Ghostty shim changes affect browser live rendering, snapshot RGB materialization, visual tests, and `patches/ghostty-web@0.4.0.patch`.
+- Registry/tombstone TTL/cap changes affect TS exact-ID cleanup/readiness, prompt waiting, passive inspection, and tests that rely on late lookup of recently exited sessions.
+- Socket permission/startup changes affect install/service docs and integration tests around stale sockets, sandbox hints, and owner-only access.
 
 ## Source Pointers
-- Runtime entrypoint/startup: `broker/src/bin/wolfpack-broker.rs`, `broker/src/server.rs`.
-- Protocol schema and wire framing: `broker/src/protocol.rs`, `broker/src/codec.rs`.
-- Session routing and error mapping: `broker/src/session_router.rs`.
-- Registry/name/tombstone/reaper behavior: `broker/src/registry.rs`.
-- PTY lifecycle, sequencing, resize transaction, snapshot cache: `broker/src/session.rs`.
+
+- Runtime entrypoint/startup/socket: `broker/src/bin/wolfpack-broker.rs`, `broker/src/server.rs`.
+- Protocol/wire framing: `broker/src/protocol.rs`, `broker/src/codec.rs`.
+- Request dispatch: `broker/src/session_router.rs`.
+- Registry/tombstones/reaper: `broker/src/registry.rs`.
+- PTY lifecycle, sequencing, resize, snapshot cache: `broker/src/session.rs`.
 - Replay/live fanout: `broker/src/output_bus.rs`, `broker/src/ring_buffer.rs`.
-- Ghostty FFI and bounds: `broker/src/terminal_state.rs`, `broker/native/ghostty_vt_shim.c`, `broker/native/ghostty_vt_shim.h`.
-- Build-time Ghostty artifact verification and provenance inputs: `broker/build.rs`, `broker/native/ghostty-vt/*/manifest.json`, `ghostty-vt.lock.json`, `patches/**`, `scripts/broker-artifacts.ts`.
+- Ghostty FFI and bounds: `broker/src/terminal_state.rs`, `broker/native/ghostty_vt_shim.c`, `broker/native/ghostty_vt_shim.h`, `broker/native/ghostty_vt_internal.h`.
+- Build/provenance/tests: `broker/build.rs`, `broker/native/ghostty-vt/*/manifest.json`, `ghostty-vt.lock.json`, `patches/**`, `broker/tests/**`, `scripts/broker-artifacts.ts`.

@@ -46,23 +46,6 @@
       ],
       "doc": "edc-context/modules/tests.md",
       "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-3.md"
-    },
-    {
-      "name": "docs",
-      "paths": [
-        "docs",
-        "site"
-      ],
-      "doc": "edc-context/modules/docs.md",
-      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-4.md"
-    },
-    {
-      "name": "skills",
-      "paths": [
-        "skills"
-      ],
-      "doc": "edc-context/modules/skills.md",
-      "auditReport": "/Users/home/Dev/wolfpack/.git/edc/runs/build-20260824T163111Z-56217-27868/staged/audit-tasks/module-5.md"
     }
   ],
   "notes": [
