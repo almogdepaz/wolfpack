@@ -856,6 +856,85 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("owns cached values rather than retaining caller aliases and exposes immutable read boundaries", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      const registrationInput = {
+        ...VALID_REGISTRATION,
+        endpoint: { ...VALID_REGISTRATION.endpoint },
+        protocolVersions: [...VALID_REGISTRATION.protocolVersions],
+      };
+      const returnedRegistration = await store.register(registrationInput);
+      registrationInput.endpoint.id = RECEIVER_ID;
+      registrationInput.protocolVersions.push(99);
+      registrationInput.leaseExpiresAt = "2026-08-09T00:02:00.000Z";
+
+      const acceptedEnvelope: RelayEnvelope = { ...LOCAL_ENVELOPE, envelopeId: "alias-local", payload: { opaque: "before" } };
+      await store.accept(acceptedEnvelope, NOW.toISOString());
+      (acceptedEnvelope.payload as { opaque: string }).opaque = "after";
+
+      const route = await store.peerRoute(PEER_ORIGIN);
+      const queuedEnvelope: RelayEnvelope = {
+        ...REMOTE_ENVELOPE,
+        envelopeId: "alias-peer",
+        target: { relay: route.id, id: RECEIVER_ID },
+        payload: { opaque: "before" },
+      };
+      await store.queuePeer({
+        envelope: queuedEnvelope,
+        peerOrigin: PEER_ORIGIN,
+        queuedAt: NOW.toISOString(),
+        attempts: 0,
+        lastAttemptAt: undefined,
+        forwardedAt: undefined,
+        exhaustedAt: undefined,
+        lastError: undefined,
+      });
+      (queuedEnvelope.payload as { opaque: string }).opaque = "after";
+
+      const registration = await store.registrationForSession("sender", NOW);
+      const inbox = await store.inbox(RECEIVER_ID, "0");
+      const outbox = await store.outbox();
+      expect(registration).toMatchObject({ endpoint: { id: SENDER_ID }, protocolVersions: [RELAY_PROTOCOL_VERSION], leaseExpiresAt: VALID_REGISTRATION.leaseExpiresAt });
+      expect(inbox.items).toEqual([expect.objectContaining({ envelope: expect.objectContaining({ payload: { opaque: "before" } }) })]);
+      expect(outbox).toEqual([expect.objectContaining({ envelope: expect.objectContaining({ payload: { opaque: "before" } }) })]);
+      expect(Object.isFrozen(returnedRegistration)).toBe(true);
+      expect(Object.isFrozen(registration)).toBe(true);
+      expect(Object.isFrozen(inbox.items[0]!.envelope)).toBe(true);
+      expect(Object.isFrozen(outbox)).toBe(true);
+      expect(() => { (returnedRegistration as unknown as { endpoint: { id: string } }).endpoint.id = RECEIVER_ID; }).toThrow();
+      expect(() => { (registration as unknown as { endpoint: { id: string } }).endpoint.id = RECEIVER_ID; }).toThrow();
+      expect(() => { (inbox.items[0]!.envelope.payload as { opaque: string }).opaque = "mutated"; }).toThrow();
+      expect(() => { (outbox[0]!.envelope.payload as { opaque: string }).opaque = "mutated"; }).toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("invalidates cached state when persistence fails after rename during directory fsync", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      await store.register(VALID_REGISTRATION);
+      let fsyncCalls = 0;
+      const fsyncSpy = jest.spyOn(fs, "fsyncSync").mockImplementation((_descriptor: number) => {
+        fsyncCalls += 1;
+        if (fsyncCalls === 2) throw new Error("directory fsync failed");
+      });
+      try {
+        await expect(store.register({ ...VALID_REGISTRATION, leaseExpiresAt: "2026-08-09T00:02:00.000Z" })).rejects.toThrow("directory fsync failed");
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      await expect(store.registrationForSession("sender", new Date("2026-08-09T00:01:30.000Z"))).resolves.toMatchObject({
+        leaseExpiresAt: "2026-08-09T00:02:00.000Z",
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("does not replace durable state for validated duplicate and empty-maintenance operations", async () => {
     const directory = root();
     try {

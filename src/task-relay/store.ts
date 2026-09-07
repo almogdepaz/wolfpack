@@ -331,6 +331,12 @@ function freeze(value: unknown): void {
   Object.freeze(value);
 }
 
+function immutableCopy<T>(value: T): T {
+  const copy = JSON.parse(canonicalJson(value)) as T;
+  freeze(copy);
+  return copy;
+}
+
 function snapshot(state: RelayState, version: FileVersion | undefined): RelaySnapshot {
   freeze(state);
   const registrationBySession = new Map(state.registrations.map(item => [item.sessionId, item]));
@@ -381,7 +387,7 @@ export class TaskRelayStore {
   }
 
   async register(input: Omit<RelayRegistration, "endpoint" | "leaseExpiresAt"> & { readonly endpoint: RelayEndpoint; readonly leaseExpiresAt: string }): Promise<RelayRegistration> {
-    return this.#mutate((state) => {
+    const registered = await this.#mutate((state) => {
       const existing = state.registrations.find((item) => item.sessionId === input.sessionId && item.generation === input.generation);
       const registration = existing
         ? { ...existing, protocolVersions: input.protocolVersions, leaseExpiresAt: input.leaseExpiresAt }
@@ -389,6 +395,8 @@ export class TaskRelayStore {
       if (existing && canonicalJson(existing) === canonicalJson(registration)) return { state, value: existing };
       return { state: { ...state, registrations: [...state.registrations.filter((item) => item.sessionId !== input.sessionId), registration] }, value: registration };
     });
+    // Return the owned, persisted snapshot rather than an input alias.
+    return this.#read().registrationBySession.get(registered.sessionId) ?? immutableCopy(registered);
   }
 
   async registrationForSession(sessionId: string, now: Date): Promise<RelayRegistration | undefined> {
@@ -619,7 +627,14 @@ export class TaskRelayStore {
 
   #write(state: RelayState): RelaySnapshot {
     const source = canonicalJson(state);
-    atomicWrite(this.path, source);
+    try {
+      atomicWrite(this.path, source);
+    } catch (cause) {
+      // A failure can happen before rename or after it during directory fsync.
+      // Re-read durable authority on the next operation in either case.
+      this.#snapshot = undefined;
+      throw cause;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(source);
