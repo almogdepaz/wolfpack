@@ -7,6 +7,7 @@ import { encodedJsonBytes, isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, REL
 import type { RelayEnvelope } from "../../src/task-relay/domain.ts";
 import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
 import { MalformedRelayStoreError, TaskRelayStore } from "../../src/task-relay/store.ts";
+import type { PeerOutboxItem } from "../../src/task-relay/store.ts";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const session = (sessionId: string, harness = "pi", alive = true) => async (selector: string) => selector === sessionId
@@ -895,14 +896,16 @@ describe("pi tasks relay v2", () => {
         endpoint: { ...VALID_REGISTRATION.endpoint },
         protocolVersions: [...VALID_REGISTRATION.protocolVersions],
       };
-      const returnedRegistration = await store.register(registrationInput);
+      const pendingRegistration = store.register(registrationInput);
       registrationInput.endpoint.id = RECEIVER_ID;
       registrationInput.protocolVersions.push(99);
       registrationInput.leaseExpiresAt = "2026-08-09T00:02:00.000Z";
+      const returnedRegistration = await pendingRegistration;
 
       const acceptedEnvelope: RelayEnvelope = { ...LOCAL_ENVELOPE, envelopeId: "alias-local", payload: { opaque: "before" } };
-      await store.accept(acceptedEnvelope, NOW.toISOString());
+      const pendingAcceptance = store.accept(acceptedEnvelope, NOW.toISOString());
       (acceptedEnvelope.payload as { opaque: string }).opaque = "after";
+      await pendingAcceptance;
 
       const route = await store.peerRoute(PEER_ORIGIN);
       const queuedEnvelope: RelayEnvelope = {
@@ -911,7 +914,7 @@ describe("pi tasks relay v2", () => {
         target: { relay: route.id, id: RECEIVER_ID },
         payload: { opaque: "before" },
       };
-      await store.queuePeer({
+      const pendingQueue = store.queuePeer({
         envelope: queuedEnvelope,
         peerOrigin: PEER_ORIGIN,
         queuedAt: NOW.toISOString(),
@@ -922,13 +925,22 @@ describe("pi tasks relay v2", () => {
         lastError: undefined,
       });
       (queuedEnvelope.payload as { opaque: string }).opaque = "after";
+      await pendingQueue;
+      let callbackResult: PeerOutboxItem | undefined;
+      await store.updateOutbox("alias-peer", (item) => {
+        expect(Object.isFrozen(item)).toBe(true);
+        expect(() => { (item.envelope.payload as { opaque: string }).opaque = "mutated"; }).toThrow();
+        callbackResult = { ...item, lastError: "callback", envelope: { ...item.envelope, payload: { opaque: "before" } } };
+        return callbackResult;
+      });
+      (callbackResult!.envelope.payload as { opaque: string }).opaque = "after";
 
       const registration = await store.registrationForSession("sender", NOW);
       const inbox = await store.inbox(RECEIVER_ID, "0");
       const outbox = await store.outbox();
       expect(registration).toMatchObject({ endpoint: { id: SENDER_ID }, protocolVersions: [RELAY_PROTOCOL_VERSION], leaseExpiresAt: VALID_REGISTRATION.leaseExpiresAt });
       expect(inbox.items).toEqual([expect.objectContaining({ envelope: expect.objectContaining({ payload: { opaque: "before" } }) })]);
-      expect(outbox).toEqual([expect.objectContaining({ envelope: expect.objectContaining({ payload: { opaque: "before" } }) })]);
+      expect(outbox).toEqual([expect.objectContaining({ lastError: "callback", envelope: expect.objectContaining({ payload: { opaque: "before" } }) })]);
       expect(Object.isFrozen(returnedRegistration)).toBe(true);
       expect(Object.isFrozen(registration)).toBe(true);
       expect(Object.isFrozen(inbox.items[0]!.envelope)).toBe(true);

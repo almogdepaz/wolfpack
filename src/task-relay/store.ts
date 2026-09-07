@@ -92,11 +92,11 @@ const DECIMAL_CURSOR_PATTERN = /^[1-9][0-9]*$/;
  * they can defeat file identity checks and were never a safe mutation protocol.
  */
 interface FileVersion {
-  readonly dev: number;
-  readonly ino: number;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly ctimeMs: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
 }
 
 interface RelaySnapshot {
@@ -312,8 +312,8 @@ function atomicWrite(path: string, source: string): void {
 
 function fileVersion(path: string): FileVersion | undefined {
   try {
-    const stat = statSync(path);
-    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+    const stat = statSync(path, { bigint: true });
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
   } catch (cause: unknown) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw cause;
@@ -323,7 +323,7 @@ function fileVersion(path: string): FileVersion | undefined {
 function sameFileVersion(left: FileVersion | undefined, right: FileVersion | undefined): boolean {
   if (left === undefined || right === undefined) return left === right;
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size
-    && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+    && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
 function freeze(value: unknown): void {
@@ -400,13 +400,16 @@ export class TaskRelayStore {
   }
 
   async register(input: Omit<RelayRegistration, "endpoint" | "leaseExpiresAt"> & { readonly endpoint: RelayEndpoint; readonly leaseExpiresAt: string }): Promise<RelayRegistration> {
+    // Copy before #mutate yields on the per-path queue: callers may mutate the
+    // object immediately after receiving this Promise.
+    const ownedInput = immutableCopy(input);
     const registered = await this.#mutate((state) => {
-      const existing = state.registrations.find((item) => item.sessionId === input.sessionId && item.generation === input.generation);
+      const existing = state.registrations.find((item) => item.sessionId === ownedInput.sessionId && item.generation === ownedInput.generation);
       const registration = existing
-        ? { ...existing, protocolVersions: input.protocolVersions, leaseExpiresAt: input.leaseExpiresAt }
-        : input;
+        ? { ...existing, protocolVersions: ownedInput.protocolVersions, leaseExpiresAt: ownedInput.leaseExpiresAt }
+        : ownedInput;
       if (existing && canonicalJson(existing) === canonicalJson(registration)) return { state, value: existing };
-      return { state: { ...state, registrations: [...state.registrations.filter((item) => item.sessionId !== input.sessionId), registration] }, value: registration };
+      return { state: { ...state, registrations: [...state.registrations.filter((item) => item.sessionId !== ownedInput.sessionId), registration] }, value: registration };
     });
     // Return the owned, persisted snapshot rather than an input alias.
     return this.#read().registrationBySession.get(registered.sessionId) ?? immutableCopy(registered);
@@ -445,21 +448,22 @@ export class TaskRelayStore {
   }
 
   async accept(envelope: RelayEnvelope, acceptedAt: string): Promise<{ readonly kind: "accepted" | "duplicate" | "conflict"; readonly acceptanceId: string }> {
+    const ownedEnvelope = immutableCopy(envelope);
     return this.#mutate<{ readonly kind: "accepted" | "duplicate" | "conflict"; readonly acceptanceId: string }>((state) => {
-      const existing = state.envelopes.find((item) => item.envelope.envelopeId === envelope.envelopeId);
-      const nextDigest = digest(envelope);
+      const existing = state.envelopes.find((item) => item.envelope.envelopeId === ownedEnvelope.envelopeId);
+      const nextDigest = digest(ownedEnvelope);
       if (existing) return { state, value: { kind: existing.digest === nextDigest ? "duplicate" as const : "conflict" as const, acceptanceId: existing.acceptanceId } };
-      const stored: StoredEnvelope = { envelope, digest: nextDigest, acceptedAt, acceptanceId: randomUUID() };
-      const previousCursor = state.mailboxCursors.find(item => item.endpointId === envelope.target.id)?.cursor ?? "0";
+      const stored: StoredEnvelope = { envelope: ownedEnvelope, digest: nextDigest, acceptedAt, acceptanceId: randomUUID() };
+      const previousCursor = state.mailboxCursors.find(item => item.endpointId === ownedEnvelope.target.id)?.cursor ?? "0";
       const cursor = (BigInt(previousCursor) + 1n).toString();
-      const mailbox: StoredMailboxItem = { endpointId: envelope.target.id, envelopeId: envelope.envelopeId, cursor, acknowledgedAt: undefined };
-      const mailboxCursor = { endpointId: envelope.target.id, cursor };
+      const mailbox: StoredMailboxItem = { endpointId: ownedEnvelope.target.id, envelopeId: ownedEnvelope.envelopeId, cursor, acknowledgedAt: undefined };
+      const mailboxCursor = { endpointId: ownedEnvelope.target.id, cursor };
       return {
         state: {
           ...state,
           envelopes: [...state.envelopes, stored],
           mailbox: [...state.mailbox, mailbox],
-          mailboxCursors: [...state.mailboxCursors.filter(item => item.endpointId !== envelope.target.id), mailboxCursor],
+          mailboxCursors: [...state.mailboxCursors.filter(item => item.endpointId !== ownedEnvelope.target.id), mailboxCursor],
         },
         value: { kind: "accepted" as const, acceptanceId: stored.acceptanceId },
       };
@@ -515,9 +519,10 @@ export class TaskRelayStore {
   }
 
   async queuePeer(input: Omit<PeerOutboxItem, "digest" | "acceptanceId">): Promise<{ readonly kind: "accepted" | "duplicate" | "conflict"; readonly acceptanceId: string }> {
+    const ownedInput = immutableCopy(input);
     return this.#mutate<{ readonly kind: "accepted" | "duplicate" | "conflict"; readonly acceptanceId: string }>((state) => {
-      const existing = state.outbox.find((item) => item.envelope.envelopeId === input.envelope.envelopeId);
-      const nextDigest = digest(input.envelope);
+      const existing = state.outbox.find((item) => item.envelope.envelopeId === ownedInput.envelope.envelopeId);
+      const nextDigest = digest(ownedInput.envelope);
       if (existing) return {
         state,
         value: {
@@ -525,7 +530,7 @@ export class TaskRelayStore {
           acceptanceId: existing.acceptanceId,
         },
       };
-      const item: PeerOutboxItem = { ...input, digest: nextDigest, acceptanceId: randomUUID() };
+      const item: PeerOutboxItem = { ...ownedInput, digest: nextDigest, acceptanceId: randomUUID() };
       return { state: { ...state, outbox: [...state.outbox, item] }, value: { kind: "accepted" as const, acceptanceId: item.acceptanceId } };
     });
   }
@@ -547,8 +552,10 @@ export class TaskRelayStore {
       let changed = false;
       const outbox = state.outbox.map((item) => {
         if (item.envelope.envelopeId !== envelopeId) return item;
-        const next = update(item);
-        if (next === item || canonicalJson(next) === canonicalJson(item)) return item;
+        // Callers receive a detached immutable item, and their result is copied
+        // before this synchronous mutation operation can yield to persistence.
+        const next = immutableCopy(update(immutableCopy(item)));
+        if (canonicalJson(next) === canonicalJson(item)) return item;
         changed = true;
         return next;
       });
