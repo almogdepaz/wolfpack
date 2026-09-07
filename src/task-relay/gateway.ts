@@ -309,11 +309,10 @@ export class TaskRelayGateway {
   }
 
   async flushPeerOutbox(recoverImmediately = false): Promise<{ readonly forwarded: number; readonly pending: number }> {
-    const outbox = await this.#store.outbox();
-    if (outbox.length === 0) return { forwarded: 0, pending: 0 };
+    const pendingOutbox = await this.#store.pendingOutbox();
+    if (pendingOutbox.length === 0) return { forwarded: 0, pending: 0 };
     let forwarded = 0;
-    for (const item of outbox) {
-      if (item.forwardedAt !== undefined || item.exhaustedAt !== undefined) continue;
+    for (const item of pendingOutbox) {
       if (await this.#forwardEnvelope(item.envelope.envelopeId, recoverImmediately)) forwarded += 1;
     }
     return { forwarded, pending: await this.#store.pendingOutboxCount() };

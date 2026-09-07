@@ -550,6 +550,28 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("flushes zero pending outbox work without iterating retained terminal history", async () => {
+    const directory = root();
+    let iterations = 0;
+    const terminalHistory = Array.from({ length: 1_000 }, (_, index) => ({ envelope: { envelopeId: `terminal-${index}` } }));
+    Object.defineProperty(terminalHistory, Symbol.iterator, {
+      value: function* () { for (let index = 0; index < terminalHistory.length; index += 1) { iterations += 1; yield terminalHistory[index]; } },
+    });
+    const pendingSpy = jest.spyOn(TaskRelayStore.prototype, "pendingOutbox").mockResolvedValue([]);
+    const outboxSpy = jest.spyOn(TaskRelayStore.prototype, "outbox").mockResolvedValue(terminalHistory as never);
+    const gateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => NOW });
+    try {
+      await expect(gateway.flushPeerOutbox()).resolves.toEqual({ forwarded: 0, pending: 0 });
+      expect(outboxSpy).not.toHaveBeenCalled();
+      expect(iterations).toBe(0);
+    } finally {
+      gateway.close();
+      pendingSpy.mockRestore();
+      outboxSpy.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("retains recent forwarding diagnostics until their retention cutoff", async () => {
     const directory = root();
     try {
@@ -977,6 +999,31 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("retries a post-rename acceptance failure as one durable duplicate", async () => {
+    const directory = root();
+    try {
+      const store = new TaskRelayStore(directory);
+      let fsyncCalls = 0;
+      const fsyncSpy = jest.spyOn(fs, "fsyncSync").mockImplementation((_descriptor: number) => {
+        fsyncCalls += 1;
+        if (fsyncCalls === 2) throw new Error("directory fsync failed");
+      });
+      try {
+        await expect(store.accept({ ...LOCAL_ENVELOPE, envelopeId: "failed-accept" }, NOW.toISOString())).rejects.toThrow("directory fsync failed");
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      const retry = await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "failed-accept" }, new Date(NOW.getTime() + 1).toISOString());
+      expect(retry.kind).toBe("duplicate");
+      const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8"));
+      expect(state.envelopes).toHaveLength(1);
+      expect(state.mailbox).toEqual([expect.objectContaining({ envelopeId: "failed-accept", cursor: "1" })]);
+      expect(state.envelopes[0].acceptanceId).toBe(retry.acceptanceId);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("does not replace durable state for validated duplicate and empty-maintenance operations", async () => {
     const directory = root();
     try {
@@ -1062,6 +1109,30 @@ describe("pi tasks relay v2", () => {
         expect.objectContaining({ attempts: 2 }),
         expect.objectContaining({ attempts: 3 }),
       ]);
+      await store.register(VALID_REGISTRATION);
+      expect(JSON.parse(readFileSync(path, "utf8")).registrations).toHaveLength(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("selects the first active registration rather than letting an expired duplicate hide it", async () => {
+    const directory = root();
+    try {
+      writeFileSync(join(directory, "relay-state.json"), JSON.stringify({
+        version: 2,
+        registrations: [
+          { ...VALID_REGISTRATION, leaseExpiresAt: "2026-08-08T23:59:59.999Z" },
+          { ...VALID_REGISTRATION, endpoint: { relay: RELAY_ID, id: RECEIVER_ID }, generation: "active-later" },
+        ],
+        envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [], outbox: [],
+      }));
+      const store = new TaskRelayStore(directory);
+      await expect(store.registrationForSession("sender", NOW)).resolves.toMatchObject({ endpoint: { id: RECEIVER_ID }, generation: "active-later" });
+      await expect(store.registration(RECEIVER_ID, NOW)).resolves.toMatchObject({ generation: "active-later" });
+      await expect(store.registrationsForSessions(["sender"], NOW)).resolves.toEqual(new Map([
+        ["sender", expect.objectContaining({ generation: "active-later" })],
+      ]));
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

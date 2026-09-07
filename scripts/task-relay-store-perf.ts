@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalJson } from "../src/canonical-json.ts";
 import { RELAY_ID, RELAY_PROTOCOL_VERSION } from "../src/task-relay/domain.ts";
+import { TaskRelayGateway } from "../src/task-relay/gateway.ts";
 
 const storeModule = resolve(process.argv[2] ?? "src/task-relay/store.ts");
 const { TaskRelayStore } = await import(pathToFileURL(storeModule).href) as typeof import("../src/task-relay/store.ts");
@@ -96,6 +97,33 @@ try {
     ));
     await warmStore.acknowledge(endpoint.id, envelopes[0]!.envelope.envelopeId, now.toISOString());
     const duplicateAcknowledgementMs = await measure(() => warmStore.acknowledge(endpoint.id, envelopes[0]!.envelope.envelopeId, now.toISOString()));
+    let terminalOutboxFlushMs: number | undefined;
+    if (storeModule === resolve("src/task-relay/store.ts")) {
+      const route = { id: `${RELAY_ID}:peer:${randomUUID()}`, origin: "https://receiver.example.ts.net" };
+      const terminalOutbox = envelopes.map((item, index) => {
+        const envelope = { ...item.envelope, envelopeId: `terminal-${index}`, target: { relay: route.id, id: endpoint.id } };
+        return {
+          envelope,
+          peerOrigin: route.origin,
+          digest: createHash("sha256").update(canonicalJson(envelope)).digest("hex"),
+          acceptanceId: randomUUID(),
+          queuedAt: now.toISOString(),
+          attempts: 1,
+          lastAttemptAt: now.toISOString(),
+          forwardedAt: now.toISOString(),
+          exhaustedAt: undefined,
+          lastError: undefined,
+        };
+      });
+      writeFileSync(warmStore.path, canonicalJson({ ...JSON.parse(state), peerRoutes: [route], outbox: terminalOutbox }));
+      const gateway = new TaskRelayGateway({ root, inspectSession: async () => ({ ok: false as const, code: "NOT_FOUND" as const }) });
+      try {
+        await gateway.flushPeerOutbox();
+        terminalOutboxFlushMs = await measure(() => gateway.flushPeerOutbox());
+      } finally {
+        gateway.close();
+      }
+    }
     console.log(JSON.stringify({
       kind: "relay-store-perf-result",
       envelopes: count,
@@ -105,6 +133,7 @@ try {
       emptyOutboxTwoReadsMs,
       twentyWarmLookupsMs,
       duplicateAcknowledgementMs,
+      terminalOutboxFlushMs,
     }));
   }
 } finally {

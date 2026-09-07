@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalJson } from "../canonical-json.ts";
@@ -104,12 +104,13 @@ interface FileVersion {
 interface RelaySnapshot {
   readonly state: RelayState;
   readonly version: FileVersion | undefined;
-  readonly registrationBySession: ReadonlyMap<string, RelayRegistration>;
-  readonly registrationByEndpoint: ReadonlyMap<string, RelayRegistration>;
+  readonly registrationsBySession: ReadonlyMap<string, readonly RelayRegistration[]>;
+  readonly registrationsByEndpoint: ReadonlyMap<string, readonly RelayRegistration[]>;
   readonly peerOriginByRoute: ReadonlyMap<string, string>;
   readonly envelopeById: ReadonlyMap<string, StoredEnvelope>;
   readonly mailboxByEndpoint: ReadonlyMap<string, readonly StoredMailboxItem[]>;
   readonly outboxByEnvelopeId: ReadonlyMap<string, PeerOutboxItem>;
+  readonly pendingOutbox: readonly PeerOutboxItem[];
   readonly pendingOutboxCount: number;
 }
 
@@ -312,10 +313,13 @@ function atomicWrite(path: string, source: string): void {
   try { fsyncSync(directory); } finally { closeSync(directory); }
 }
 
+function versionFromStat(stat: { readonly dev: bigint; readonly ino: bigint; readonly size: bigint; readonly mtimeNs: bigint; readonly ctimeNs: bigint }): FileVersion {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+}
+
 function fileVersion(path: string): FileVersion | undefined {
   try {
-    const stat = statSync(path, { bigint: true });
-    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+    return versionFromStat(statSync(path, { bigint: true }));
   } catch (cause: unknown) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw cause;
@@ -349,13 +353,28 @@ function firstBy<T>(values: readonly T[], key: (value: T) => string): Map<string
   return index;
 }
 
+function groupBy<T>(values: readonly T[], key: (value: T) => string): Map<string, readonly T[]> {
+  const index = new Map<string, T[]>();
+  for (const value of values) {
+    const id = key(value);
+    const group = index.get(id) ?? [];
+    group.push(value);
+    index.set(id, group);
+  }
+  return index;
+}
+
+function activeRegistration(registrations: readonly RelayRegistration[] | undefined, now: Date): RelayRegistration | undefined {
+  return registrations?.find(registration => Date.parse(registration.leaseExpiresAt) > now.getTime());
+}
+
 function snapshot(state: RelayState, version: FileVersion | undefined): RelaySnapshot {
   freeze(state);
   // Persisted validation permits duplicate registrations, routes, and outbox
   // IDs. Array callers historically use find(), so indexes deliberately retain
   // the first entry instead of introducing last-write-wins behavior.
-  const registrationBySession = firstBy(state.registrations, item => item.sessionId);
-  const registrationByEndpoint = firstBy(state.registrations, item => item.endpoint.id);
+  const registrationsBySession = groupBy(state.registrations, item => item.sessionId);
+  const registrationsByEndpoint = groupBy(state.registrations, item => item.endpoint.id);
   const peerOriginByRoute = new Map([...firstBy(state.peerRoutes, item => item.id)].map(([id, route]) => [id, route.origin]));
   const envelopeById = new Map(state.envelopes.map(item => [item.envelope.envelopeId, item]));
   const mailboxByEndpoint = new Map<string, StoredMailboxItem[]>();
@@ -368,12 +387,13 @@ function snapshot(state: RelayState, version: FileVersion | undefined): RelaySna
   return {
     state,
     version,
-    registrationBySession,
-    registrationByEndpoint,
+    registrationsBySession,
+    registrationsByEndpoint,
     peerOriginByRoute,
     envelopeById,
     mailboxByEndpoint,
     outboxByEnvelopeId: firstBy(state.outbox, item => item.envelope.envelopeId),
+    pendingOutbox: state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined),
     pendingOutboxCount: state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined).length,
   };
 }
@@ -410,31 +430,30 @@ export class TaskRelayStore {
       const registration = existing
         ? { ...existing, protocolVersions: ownedInput.protocolVersions, leaseExpiresAt: ownedInput.leaseExpiresAt }
         : ownedInput;
-      if (existing && canonicalJson(existing) === canonicalJson(registration)) return { state, value: existing };
+      if (existing && canonicalJson(existing) === canonicalJson(registration)
+        && state.registrations.filter(item => item.sessionId === ownedInput.sessionId).length === 1) return { state, value: existing };
       return { state: { ...state, registrations: [...state.registrations.filter((item) => item.sessionId !== ownedInput.sessionId), registration] }, value: registration };
     });
     // Return the owned, persisted snapshot rather than an input alias.
-    return this.#read().registrationBySession.get(registered.sessionId) ?? immutableCopy(registered);
+    return this.#read().registrationsBySession.get(registered.sessionId)?.[0] ?? immutableCopy(registered);
   }
 
   async registrationForSession(sessionId: string, now: Date): Promise<RelayRegistration | undefined> {
-    const registration = this.#read().registrationBySession.get(sessionId);
-    return registration && Date.parse(registration.leaseExpiresAt) > now.getTime() ? registration : undefined;
+    return activeRegistration(this.#read().registrationsBySession.get(sessionId), now);
   }
 
   async registrationsForSessions(sessionIds: readonly string[], now: Date): Promise<ReadonlyMap<string, RelayRegistration>> {
     const registrations = new Map<string, RelayRegistration>();
     const snapshot = this.#read();
     for (const sessionId of sessionIds) {
-      const registration = snapshot.registrationBySession.get(sessionId);
-      if (registration && Date.parse(registration.leaseExpiresAt) > now.getTime()) registrations.set(sessionId, registration);
+      const registration = activeRegistration(snapshot.registrationsBySession.get(sessionId), now);
+      if (registration) registrations.set(sessionId, registration);
     }
     return registrations;
   }
 
   async registration(endpointId: string, now: Date): Promise<RelayRegistration | undefined> {
-    const registration = this.#read().registrationByEndpoint.get(endpointId);
-    return registration && Date.parse(registration.leaseExpiresAt) > now.getTime() ? registration : undefined;
+    return activeRegistration(this.#read().registrationsByEndpoint.get(endpointId), now);
   }
 
   async deactivateRegistration(sessionId: string, endpointId: string, leaseExpiresAt: string): Promise<boolean> {
@@ -545,6 +564,10 @@ export class TaskRelayStore {
     return this.#read().outboxByEnvelopeId.get(envelopeId);
   }
 
+  async pendingOutbox(): Promise<readonly PeerOutboxItem[]> {
+    return this.#read().pendingOutbox;
+  }
+
   async pendingOutboxCount(): Promise<number> {
     return this.#read().pendingOutboxCount;
   }
@@ -615,41 +638,61 @@ export class TaskRelayStore {
     });
   }
 
-  #read(): RelaySnapshot {
+  #read(resetAttempted = false): RelaySnapshot {
     const currentVersion = fileVersion(this.path);
     if (this.#snapshot && sameFileVersion(this.#snapshot.version, currentVersion)) return this.#snapshot;
     if (currentVersion === undefined) return this.#snapshot = snapshot(EMPTY, undefined);
 
-    // Read a stable file identity. An external atomic replacement between stat
-    // and read is retried rather than publishing a snapshot for the old file.
+    // Bind source bytes to one descriptor identity, then verify the path still
+    // names that descriptor. Atomic replacements during either read phase retry.
     for (let attempts = 0; attempts < 3; attempts += 1) {
-      const before = fileVersion(this.path);
-      if (before === undefined) return this.#snapshot = snapshot(EMPTY, undefined);
-      let source: string;
+      let descriptor: number;
       try {
-        source = readFileSync(this.path, "utf8");
+        descriptor = openSync(this.path, "r");
       } catch (cause: unknown) {
         if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw cause;
       }
-      const after = fileVersion(this.path);
-      if (!sameFileVersion(before, after)) continue;
+      let source: string;
+      let descriptorVersion: FileVersion;
+      try {
+        const before = versionFromStat(fstatSync(descriptor, { bigint: true }));
+        source = readFileSync(descriptor, "utf8");
+        const after = versionFromStat(fstatSync(descriptor, { bigint: true }));
+        if (!sameFileVersion(before, after)) continue;
+        descriptorVersion = after;
+      } finally {
+        closeSync(descriptor);
+      }
+      if (!sameFileVersion(descriptorVersion!, fileVersion(this.path))) continue;
       let parsed: unknown;
       try {
-        parsed = JSON.parse(source);
+        parsed = JSON.parse(source!);
       } catch (cause) {
         throw new MalformedRelayStoreError(cause);
       }
       const state = parsePersistedRelayState(parsed);
       if (!state) throw new MalformedRelayStoreError();
-      if (state === "reset") return this.#write(EMPTY);
-      return this.#snapshot = snapshot(state, after);
+      if (state === "reset") {
+        if (resetAttempted) throw new MalformedRelayStoreError(new Error("relay store changed during v1 reset"));
+        return this.#write(EMPTY, true);
+      }
+      return this.#snapshot = snapshot(state, descriptorVersion!);
     }
     throw new MalformedRelayStoreError(new Error("relay store changed while loading"));
   }
 
-  #write(state: RelayState): RelaySnapshot {
+  #write(state: RelayState, resetAttempted = false): RelaySnapshot {
     const source = canonicalJson(state);
+    // Reject malformed updater output before it can cross the rename boundary.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(source);
+    } catch (cause) {
+      throw new MalformedRelayStoreError(cause);
+    }
+    const prepared = parsePersistedRelayState(parsed);
+    if (!prepared || prepared === "reset") throw new MalformedRelayStoreError();
     try {
       atomicWrite(this.path, source);
     } catch (cause) {
@@ -659,10 +702,9 @@ export class TaskRelayStore {
       throw cause;
     }
     // Do not pair our serialized bytes with a later path stat: another atomic
-    // replacement could win after rename. Reload through #read's stable
-    // before/read/after identity check so cache authority always matches bytes.
+    // replacement could win after rename. Reload through descriptor-bound read.
     this.#snapshot = undefined;
-    return this.#read();
+    return this.#read(resetAttempted);
   }
 
   async #mutate<T>(operation: (state: RelayState) => { readonly state: RelayState; readonly value: T }): Promise<T> {
