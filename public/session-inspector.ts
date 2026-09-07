@@ -1,3 +1,6 @@
+import { SESSION_SNAPSHOT_FRESHNESS } from "../src/session-snapshot-contract.js";
+import type { SessionSnapshotFreshness } from "../src/session-snapshot-contract.js";
+
 export interface SessionSnapshot {
   readonly session: string;
   readonly sessionId: string;
@@ -6,7 +9,7 @@ export interface SessionSnapshot {
   readonly cols: number;
   readonly rows: number;
   readonly truncated: boolean;
-  readonly freshness: "fresh" | "cached";
+  readonly freshness: SessionSnapshotFreshness;
 }
 
 export interface SessionInspectorTarget {
@@ -83,7 +86,7 @@ export function createSessionInspector(options: SessionInspectorOptions): Sessio
     title.textContent = `Inspect ${snapshot.session}`;
     output.textContent = snapshot.text || "(visible screen is empty)";
     renderMetadata(snapshot);
-    status.textContent = snapshot.freshness === "cached" ? "Snapshot cached; not live." : "Snapshot; not live.";
+    status.textContent = snapshot.freshness === SESSION_SNAPSHOT_FRESHNESS.CACHED ? "Snapshot cached; not live." : "Snapshot; not live.";
   };
   const refresh = async (expectedGeneration: number): Promise<void> => {
     if (!isActive(expectedGeneration)) return;

@@ -1,5 +1,6 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
+import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
   OPENABLE_HARNESSES,
@@ -571,7 +572,7 @@ export const controlApiSource: ControlApiSource = {
       cols: { type: "integer", minimum: 1 },
       rows: { type: "integer", minimum: 1 },
       truncated: boolean(),
-      freshness: { enum: ["fresh", "cached"] },
+      freshness: { enum: Object.values(SESSION_SNAPSHOT_FRESHNESS) },
     }, ["session", "sessionId", "text", "capturedAt", "cols", "rows", "truncated", "freshness"]),
     SessionStatus: object({
       ok: { const: true },

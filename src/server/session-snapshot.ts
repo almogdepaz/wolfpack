@@ -1,3 +1,5 @@
+import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.js";
+import type { SessionSnapshotFreshness } from "../session-snapshot-contract.js";
 import type { SessionSnapshotCapture } from "./backend-contract.js";
 
 export const SESSION_SNAPSHOT_REFRESH_MS = 2_000;
@@ -14,7 +16,7 @@ export interface SessionSnapshotResponse {
   readonly cols: number;
   readonly rows: number;
   readonly truncated: boolean;
-  readonly freshness: "fresh" | "cached";
+  readonly freshness: SessionSnapshotFreshness;
 }
 
 export class SessionSnapshotBusyError extends Error {
@@ -44,7 +46,7 @@ export class SessionSnapshotService {
     if (cached && this.now() - cached.cachedAtMs < SESSION_SNAPSHOT_REFRESH_MS) {
       this.cache.delete(sessionId);
       this.cache.set(sessionId, cached);
-      return { ...cached.response, freshness: "cached" };
+      return { ...cached.response, freshness: SESSION_SNAPSHOT_FRESHNESS.CACHED };
     }
     if (cached) this.cache.delete(sessionId);
 
@@ -83,7 +85,7 @@ function toResponse(capture: SessionSnapshotCapture): SessionSnapshotResponse {
     cols: capture.cols,
     rows: capture.rows,
     truncated,
-    freshness: "fresh",
+    freshness: SESSION_SNAPSHOT_FRESHNESS.FRESH,
   };
 }
 
