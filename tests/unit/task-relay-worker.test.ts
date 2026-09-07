@@ -126,9 +126,12 @@ test("two workers preserve opaque routes and recover a lost peer response withou
 
 test("dead/missing host inspection and malformed fresh state remain fail-closed", async () => {
   const directory = root(); let alive = true;
-  const g = new WorkerRelayGateway({ root: directory, inspectSession: async selector => ({ ...await inspect(selector), alive }) });
+  const g = new WorkerRelayGateway({ root: directory, inspectSession: async selector => selector === "missing"
+    ? { ok: false as const, code: "NOT_FOUND" as const } : ({ ...await inspect(selector), alive }) });
   try {
-    await connect(g, "sender"); alive = false;
+    await connect(g, "sender");
+    expect(await g.connect(input("missing"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.CALLER_NOT_FOUND } });
+    alive = false;
     expect(await g.connect(input("sender"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.CALLER_DEAD } });
     alive = true;
     const path = join(directory, "relay-state.json"), good = readFileSync(path);
