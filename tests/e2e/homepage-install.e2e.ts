@@ -21,7 +21,6 @@ const HOMEPAGE_PREFIX = "/homepage/";
 const BUNX_COMMAND = "bunx wolfpack-bridge@latest";
 const LOCAL_FCP_BUDGET_MS = 5_000;
 const FIRST_PARTY_TRANSFER_BUDGET_BYTES = 1_000_000;
-const HAVE_METADATA_READY_STATE = 1;
 const GOOGLE_FONTS_URL = /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\//;
 const CONTENT_TYPES_BY_EXTENSION: Readonly<Record<string, string>> = {
   ".css": "text/css; charset=utf-8",
@@ -182,12 +181,25 @@ test("captures a full-page diagnostic and stays within generous local budgets", 
   }
   for (const video of await page.locator("video").all()) {
     await video.scrollIntoViewIfNeeded();
-    await expect.poll(() => video.evaluate(
-      (element) => (element as HTMLVideoElement).readyState,
-    )).toBeGreaterThanOrEqual(HAVE_METADATA_READY_STATE);
+    const media = await video.evaluate((element) => {
+      const htmlVideo = element as HTMLVideoElement;
+      return {
+        poster: htmlVideo.poster,
+        preload: htmlVideo.preload,
+        sourceUrls: [...htmlVideo.querySelectorAll("source[src]")]
+          .map((source) => (source as HTMLSourceElement).src),
+      };
+    });
+    expect(media.preload).toBe("none");
+    expect(media.poster).not.toBe("");
+    expect(media.sourceUrls.length).toBeGreaterThan(0);
+    for (const sourceUrl of media.sourceUrls) {
+      const sourceFile = resolveSiteFile(new URL(sourceUrl));
+      expect(sourceFile).not.toBeNull();
+    }
   }
   const dependencyUrls = await page.locator(
-    'link[rel="icon"][href], link[rel="stylesheet"][href], script[src], source[src], img[src]',
+    'link[rel="icon"][href], link[rel="stylesheet"][href], script[src], img[src]',
   ).evaluateAll((elements) => elements.map((element) =>
     (element as HTMLLinkElement).href || (element as HTMLScriptElement).src
   ));
@@ -201,7 +213,7 @@ test("captures a full-page diagnostic and stays within generous local budgets", 
   expect(successfulPaths).toContain(HOMEPAGE_PREFIX);
   for (const expectedPath of expectedPaths) expect(successfulPaths).toContain(expectedPath);
   expect(new Set([...expectedPaths].map((path) => extname(path)))).toEqual(
-    new Set([".css", ".js", ".mp4", ".png", ".svg", ".webp"]),
+    new Set([".css", ".js", ".png", ".svg", ".webp"]),
   );
 
   const diagnosticPath = homepageScreenshotPath(testInfo.project.name);
